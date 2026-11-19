@@ -8,10 +8,14 @@ import io.github.atengk.boot.encrypt.decryptor.ConfigEncryptor;
 import io.github.atengk.boot.encrypt.decryptor.RsaConfigDecryptor;
 import io.github.atengk.boot.encrypt.decryptor.Sm2ConfigDecryptor;
 import io.github.atengk.boot.encrypt.decryptor.Sm4ConfigDecryptor;
+import io.github.atengk.boot.encrypt.key.MultiKeyRegistry;
 import io.github.atengk.boot.encrypt.parser.CiphertextParser;
+import io.github.atengk.boot.encrypt.tool.InPlaceRewriter;
 
 import java.io.InputStream;
 import java.io.PrintStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.KeyPair;
 import java.util.HashMap;
 import java.util.Map;
@@ -69,6 +73,14 @@ public class EncryptCli {
             return handleKeygen(params);
         }
 
+        if (params.containsKey("encrypt-file") || params.containsKey("ef")) {
+            return handleFileRewrite(params, true);
+        }
+
+        if (params.containsKey("decrypt-file") || params.containsKey("df")) {
+            return handleFileRewrite(params, false);
+        }
+
         if (params.containsKey("encrypt") || params.containsKey("e")) {
             return handleEncrypt(params);
         }
@@ -88,7 +100,7 @@ public class EncryptCli {
         printBanner();
         while (true) {
             printMenu();
-            out.print("请选择操作编号 [1-5]: ");
+            out.print("请选择操作编号 [1-7]: ");
             if (!scanner.hasNextLine()) {
                 break;
             }
@@ -98,7 +110,9 @@ public class EncryptCli {
                 case "2" -> interactiveDecrypt();
                 case "3" -> interactiveRsaKeygen();
                 case "4" -> interactiveSm2Keygen();
-                case "5", "q", "exit" -> {
+                case "5" -> interactiveFileRewrite(true);
+                case "6" -> interactiveFileRewrite(false);
+                case "7", "q", "exit" -> {
                     out.println("退出安全工具箱，再见！");
                     return 0;
                 }
@@ -229,6 +243,105 @@ public class EncryptCli {
         }
     }
 
+    private void interactiveFileRewrite(boolean isEncrypt) {
+        String action = isEncrypt ? "加密" : "解密还原";
+        out.println("\n--- [配置文件就地" + action + "] ---");
+        out.print("请输入配置文件路径 (.yml / .yaml / .properties): ");
+        String filePath = readLine();
+        if (filePath.isEmpty()) {
+            out.println("[WARN] 配置文件路径不能为空！\n");
+            return;
+        }
+
+        out.print("请输入" + (isEncrypt ? "加密" : "解密") + "主密钥口令 (或公私钥): ");
+        String password = readLine();
+        if (password.isEmpty()) {
+            out.println("[WARN] 密钥不能为空！\n");
+            return;
+        }
+
+        EncryptAlgorithm algo = EncryptAlgorithm.AES_GCM;
+        if (isEncrypt) {
+            out.print("请输入加密算法 [AES-GCM (默认) / AES-CBC / SM4-CBC / SM4-ECB / RSA / SM2]: ");
+            String algoStr = readLine();
+            algo = algoStr.isEmpty() ? EncryptAlgorithm.AES_GCM : EncryptAlgorithm.fromCode(algoStr);
+            if (algo == null) {
+                out.println("[ERROR] 不支持的算法类型: " + algoStr + "\n");
+                return;
+            }
+        }
+
+        out.print("请输入 KeyId 别名 (留空为默认): ");
+        String keyId = readLine();
+
+        executeFileRewrite(filePath, password, algo, keyId, isEncrypt);
+        out.println();
+    }
+
+    private int handleFileRewrite(Map<String, String> params, boolean isEncrypt) {
+        String filePath = getParam(params, "file", "f");
+        if (filePath == null || filePath.trim().isEmpty()) {
+            String modeVal = isEncrypt ? getParam(params, "encrypt-file", "ef") : getParam(params, "decrypt-file", "df");
+            if (modeVal != null && !"true".equalsIgnoreCase(modeVal.trim())) {
+                filePath = modeVal;
+            }
+        }
+        String password = getParam(params, "password", "p");
+        if (filePath == null || filePath.trim().isEmpty() || password == null || password.trim().isEmpty()) {
+            out.println("[ERROR] 文件就地" + (isEncrypt ? "加密" : "解密") + "模式必须提供 --file (-f) 与 --password (-p) 参数！");
+            return 1;
+        }
+
+        EncryptAlgorithm algo = parseAlgorithmOrPrintError(params);
+        if (algo == null) {
+            return 1;
+        }
+
+        String keyId = params.get("key-id");
+        return executeFileRewrite(filePath, password, algo, keyId, isEncrypt) ? 0 : 1;
+    }
+
+    private boolean executeFileRewrite(String filePath,
+                                       String password,
+                                       EncryptAlgorithm algo,
+                                       String keyId,
+                                       boolean isEncrypt) {
+        String action = isEncrypt ? "加密" : "解密还原";
+        Path targetPath = Path.of(filePath.trim());
+        if (!Files.exists(targetPath) || Files.isDirectory(targetPath) || !Files.isRegularFile(targetPath)) {
+            out.println("[ERROR] 目标配置文件不存在或非法（非普通文件）: " + targetPath);
+            return false;
+        }
+
+        try {
+            MultiKeyRegistry registry = new MultiKeyRegistry(password);
+            if (keyId != null && !keyId.trim().isEmpty()) {
+                registry.registerKey(keyId.trim(), password);
+            }
+            InPlaceRewriter rewriter = new InPlaceRewriter(
+                    registry, algo, InPlaceRewriter.DEFAULT_SENSITIVE_KEY_PATTERN, true, keyId);
+            int modifiedCount = isEncrypt ? rewriter.rewriteEncrypt(targetPath) : rewriter.rewriteDecrypt(targetPath);
+            Path backupPath = InPlaceRewriter.resolveBackupPath(targetPath);
+
+            out.println("\n[SUCCESS] 配置文件就地" + action + "完成: " + targetPath);
+            out.println("处理字段数: " + modifiedCount);
+            out.println("备份文件: " + backupPath);
+            return true;
+        } catch (Exception e) {
+            out.println("[ERROR] 配置文件就地" + action + "失败: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private EncryptAlgorithm parseAlgorithmOrPrintError(Map<String, String> params) {
+        String algoStr = getParam(params, "algorithm", "a");
+        EncryptAlgorithm algo = (algoStr != null) ? EncryptAlgorithm.fromCode(algoStr) : EncryptAlgorithm.AES_GCM;
+        if (algo == null) {
+            out.println("[ERROR] 不支持的算法类型: " + algoStr);
+        }
+        return algo;
+    }
+
     private int handleEncrypt(Map<String, String> params) {
         String value = getParam(params, "value", "v");
         String password = getParam(params, "password", "p");
@@ -237,10 +350,8 @@ public class EncryptCli {
             return 1;
         }
 
-        String algoStr = getParam(params, "algorithm", "a");
-        EncryptAlgorithm algo = (algoStr != null) ? EncryptAlgorithm.fromCode(algoStr) : EncryptAlgorithm.AES_GCM;
+        EncryptAlgorithm algo = parseAlgorithmOrPrintError(params);
         if (algo == null) {
-            out.println("[ERROR] 不支持的算法类型: " + algoStr);
             return 1;
         }
 
@@ -379,20 +490,27 @@ public class EncryptCli {
         out.println("[2] 单值快速解密");
         out.println("[3] 一键生成非对称 RSA 密钥对 (2048 / 4096 位)");
         out.println("[4] 一键生成纯原生国密 SM2 密钥对");
-        out.println("[5] 退出工具箱");
+        out.println("[5] 配置文件就地加密 (YAML / Properties)");
+        out.println("[6] 配置文件就地解密还原 (YAML / Properties)");
+        out.println("[7] 退出工具箱");
         out.println("-----------------------------------------------------------------");
     }
 
     private void printUsage() {
         out.println("ateng-boot-encrypt 终端脱机安全工具箱使用说明：");
         out.println("用法:");
-        out.println("  1. 交互式菜单模式: 直接运行命令（不带参数）");
-        out.println("  2. 单值加密模式:   --encrypt -v <明文> -p <密钥> [-a <算法>] [--key-id <别名>]");
-        out.println("  3. 单值解密模式:   --decrypt -v <密文> -p <密钥> [-a <算法>]");
-        out.println("  4. 密钥对生成模式: --keygen [-a RSA|SM2] [--key-size 2048|4096]");
+        out.println("  1. 交互式菜单模式:   直接运行命令（不带参数）");
+        out.println("  2. 单值加密模式:     --encrypt -v <明文> -p <密钥> [-a <算法>] [--key-id <别名>]");
+        out.println("  3. 单值解密模式:     --decrypt -v <密文> -p <密钥> [-a <算法>]");
+        out.println("  4. 整文件加密模式:   --encrypt-file -f <文件路径> -p <密钥> [-a <算法>] [--key-id <别名>]");
+        out.println("  5. 整文件解密模式:   --decrypt-file -f <文件路径> -p <密钥> [-a <算法>] [--key-id <别名>]");
+        out.println("  6. 密钥对生成模式:   --keygen [-a RSA|SM2] [--key-size 2048|4096]");
         out.println("选项:");
-        out.println("  -e, --encrypt         执行加密");
-        out.println("  -d, --decrypt         执行解密");
+        out.println("  -e, --encrypt         执行单值加密");
+        out.println("  -d, --decrypt         执行单值解密");
+        out.println("  -ef, --encrypt-file   执行配置文件就地加密");
+        out.println("  -df, --decrypt-file   执行配置文件就地解密还原");
+        out.println("  -f, --file            指定目标 YAML/Properties 配置文件路径");
         out.println("  -k, --keygen          生成密钥对");
         out.println("  -v, --value           待处理的明文或密文字符串");
         out.println("  -p, --password        主密钥口令或公私钥");

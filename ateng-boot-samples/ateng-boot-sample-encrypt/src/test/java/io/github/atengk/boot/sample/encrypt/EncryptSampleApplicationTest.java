@@ -228,6 +228,27 @@ class EncryptSampleApplicationTest {
         assertEquals(1, decPropCount);
         String restoredProp = Files.readString(propFile, StandardCharsets.UTF_8);
         assertTrue(restoredProp.contains("myPropertiesPassword888"));
+
+        // 3. 测试 YAML 多行 PEM 块标量 '|' 无损往返回写
+        String pemYaml = """
+                rsa:
+                  # @encrypt
+                  private-key: |
+                    -----BEGIN PRIVATE KEY-----
+                    MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7
+                    -----END PRIVATE KEY-----
+                """;
+        Path pemFile = tempDir.resolve("sample-pem.yml");
+        Files.writeString(pemFile, pemYaml, StandardCharsets.UTF_8);
+
+        assertEquals(1, inPlaceRewriteScenarioService.rewriteEncryptYaml(pemFile, "SampleMasterSecretKey2026!"));
+        assertTrue(Files.exists(tempDir.resolve("sample-pem.yml.bak")));
+        String encryptedPemYaml = Files.readString(pemFile, StandardCharsets.UTF_8);
+        assertTrue(encryptedPemYaml.contains("  private-key: ENC("));
+        assertFalse(encryptedPemYaml.contains("-----BEGIN PRIVATE KEY-----"));
+
+        assertEquals(1, inPlaceRewriteScenarioService.rewriteDecryptYaml(pemFile, "SampleMasterSecretKey2026!"));
+        assertEquals(pemYaml, Files.readString(pemFile, StandardCharsets.UTF_8));
     }
 
     @Test

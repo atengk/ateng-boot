@@ -13,7 +13,11 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.hamcrest.Matchers.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -564,5 +568,74 @@ class SampleEncryptWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400))
                 .andExpect(jsonPath("$.success").value(false));
+    }
+
+    @Test
+    @DisplayName("RewriteController: YAML 多行 PEM 块标量 '|' 沙箱往返加密还原与临时沙箱确定性清理")
+    void testEncryptAndDecryptYamlMultilinePemBlockScalar() throws Exception {
+        String originalPemYaml = """
+                rsa:
+                  # @encrypt
+                  private-key: |
+                    -----BEGIN PRIVATE KEY-----
+                    MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7
+                    AbCdEfGhIjKlMnOpQrStUvWxYz0123456789+/==
+                    -----END PRIVATE KEY-----
+                """;
+        Path tmpRoot = Path.of(System.getProperty("java.io.tmpdir"));
+        Set<Path> beforeSandboxes = listSandboxDirectories(tmpRoot);
+
+        InPlaceRewriteRequest encryptReq = InPlaceRewriteRequest.builder()
+                .content(originalPemYaml)
+                .password("SampleMasterSecretKey2026!")
+                .algorithm(EncryptAlgorithm.AES_GCM)
+                .build();
+
+        String encResp = mockMvc.perform(post("/sample/encrypt/rewrite/encrypt-yaml")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(encryptReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.modifiedCount").value(1))
+                .andExpect(jsonPath("$.data.backupCreated").value(true))
+                .andExpect(jsonPath("$.data.fileType").value("yml"))
+                .andExpect(jsonPath("$.data.rewrittenContent").value(containsString("private-key: ENC(")))
+                .andExpect(jsonPath("$.data.rewrittenContent").value(not(containsString("-----BEGIN PRIVATE KEY-----"))))
+                .andReturn().getResponse().getContentAsString();
+
+        String encryptedYaml = objectMapper.readTree(encResp).path("data").path("rewrittenContent").asText();
+
+        InPlaceRewriteRequest decryptReq = InPlaceRewriteRequest.builder()
+                .content(encryptedYaml)
+                .password("SampleMasterSecretKey2026!")
+                .algorithm(EncryptAlgorithm.AES_GCM)
+                .build();
+
+        String decResp = mockMvc.perform(post("/sample/encrypt/rewrite/decrypt-yaml")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(decryptReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.modifiedCount").value(1))
+                .andExpect(jsonPath("$.data.backupCreated").value(true))
+                .andExpect(jsonPath("$.data.fileType").value("yml"))
+                .andExpect(jsonPath("$.data.rewrittenContent").value(containsString("  private-key: |")))
+                .andExpect(jsonPath("$.data.rewrittenContent").value(containsString("    -----BEGIN PRIVATE KEY-----")))
+                .andReturn().getResponse().getContentAsString();
+
+        String restoredYaml = objectMapper.readTree(decResp).path("data").path("rewrittenContent").asText();
+        org.junit.jupiter.api.Assertions.assertEquals(originalPemYaml, restoredYaml);
+
+        Set<Path> afterSandboxes = listSandboxDirectories(tmpRoot);
+        afterSandboxes.removeAll(beforeSandboxes);
+        org.junit.jupiter.api.Assertions.assertTrue(afterSandboxes.isEmpty(),
+                "临时沙箱目录必须在 finally 中确定性清理无残留: " + afterSandboxes);
+    }
+
+    private Set<Path> listSandboxDirectories(Path tmpRoot) throws Exception {
+        try (Stream<Path> stream = Files.list(tmpRoot)) {
+            return stream.filter(p -> p.getFileName().toString().startsWith("encrypt-sandbox-"))
+                    .collect(Collectors.toSet());
+        }
     }
 }

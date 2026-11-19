@@ -22,6 +22,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -72,9 +73,25 @@ public class InPlaceRewriter {
     private final Pattern sensitivePattern;
     private final boolean autoDetectSensitiveKeys;
     private final CiphertextParser parser;
+    private final String defaultKeyId;
 
     public InPlaceRewriter(MultiKeyRegistry keyRegistry, EncryptAlgorithm defaultAlgorithm,
                            String sensitiveKeyPattern, boolean autoDetectSensitiveKeys) {
+        this(keyRegistry, defaultAlgorithm, sensitiveKeyPattern, autoDetectSensitiveKeys, null);
+    }
+
+    /**
+     * 构造支持指定默认密钥别名的配置文件就地回写器
+     *
+     * @param keyRegistry             多密钥命名注册表
+     * @param defaultAlgorithm        默认加解密算法
+     * @param sensitiveKeyPattern     敏感属性正则模式
+     * @param autoDetectSensitiveKeys 是否自动识别敏感字段
+     * @param defaultKeyId            可选默认密钥别名（未声明行级指令时生效）
+     */
+    public InPlaceRewriter(MultiKeyRegistry keyRegistry, EncryptAlgorithm defaultAlgorithm,
+                           String sensitiveKeyPattern, boolean autoDetectSensitiveKeys,
+                           String defaultKeyId) {
         this.keyRegistry = keyRegistry != null ? keyRegistry : new MultiKeyRegistry();
         this.defaultAlgorithm = defaultAlgorithm != null ? defaultAlgorithm : EncryptAlgorithm.AES_GCM;
         String pattern = (sensitiveKeyPattern != null && !sensitiveKeyPattern.trim().isEmpty())
@@ -82,6 +99,7 @@ public class InPlaceRewriter {
         this.sensitivePattern = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE);
         this.autoDetectSensitiveKeys = autoDetectSensitiveKeys;
         this.parser = new CiphertextParser();
+        this.defaultKeyId = (defaultKeyId != null && !defaultKeyId.trim().isEmpty()) ? defaultKeyId.trim() : null;
     }
 
     public InPlaceRewriter(String defaultPassword, EncryptAlgorithm defaultAlgorithm) {
@@ -158,13 +176,8 @@ public class InPlaceRewriter {
             }
 
             // 4. 解析 YAML / Properties 键值行
-            Matcher matcher = QUOTED_LINE_PATTERN.matcher(line);
-            boolean isQuoted = matcher.matches();
-            if (!isQuoted) {
-                matcher = STANDARD_LINE_PATTERN.matcher(line);
-            }
-
-            if (isQuoted || matcher.matches()) {
+            Matcher matcher = matchKeyValueLine(line);
+            if (matcher != null) {
                 String indent = matcher.group(1);
                 String key = matcher.group(2);
                 String separator = matcher.group(3);
@@ -268,7 +281,9 @@ public class InPlaceRewriter {
 
     private String encryptAndReconstructLine(String indent, String key, String separator, String comment,
                                             String plainValue, Directive effectiveDirective) {
-        String keyId = (effectiveDirective != null) ? effectiveDirective.keyId() : null;
+        String keyId = (effectiveDirective != null && effectiveDirective.keyId() != null)
+                ? effectiveDirective.keyId()
+                : defaultKeyId;
         EncryptAlgorithm algorithm = (effectiveDirective != null && effectiveDirective.algorithmCode() != null)
                 ? resolveAlgorithm(effectiveDirective.algorithmCode()) : defaultAlgorithm;
 
@@ -295,6 +310,7 @@ public class InPlaceRewriter {
         List<String> lines = prep.lines();
         List<String> rewrittenLines = new ArrayList<>(lines.size());
         int decryptedCount = 0;
+        boolean isPropertiesFile = targetFile.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".properties");
 
         for (String line : lines) {
             if (!parser.hasEncrypted(line)) {
@@ -302,30 +318,71 @@ public class InPlaceRewriter {
                 continue;
             }
 
-            // 替换该行中包含的所有 ENC(...) 密文为明文
-            String decryptedLine = parser.replaceTokens(line, token -> {
-                String keyId = token.getKeyId();
-                String password = keyRegistry.getKeyOrDefault(keyId);
-                if (password == null || password.trim().isEmpty()) {
-                    throw new ConfigDecryptionException(String.format("缺失解密主密钥 [KeyId: '%s']",
-                            keyId != null ? keyId : "default"));
-                }
-                EncryptAlgorithm algo = token.getAlgorithm() != null ? token.getAlgorithm() : defaultAlgorithm;
-                ConfigDecryptor decryptor = resolveDecryptor(algo);
-                try {
-                    return decryptor.decrypt(token.getCiphertext(), password);
-                } catch (Exception e) {
-                    throw new ConfigDecryptionException("解密失败: " + e.getMessage(), e);
-                }
-            });
+            if (!isPropertiesFile && tryAppendYamlBlockScalar(line, rewrittenLines)) {
+                decryptedCount++;
+                continue;
+            }
 
-            rewrittenLines.add(decryptedLine);
+            // 替换该行中包含的所有 ENC(...) 密文为明文
+            rewrittenLines.add(decryptTokensInText(line));
             decryptedCount++;
         }
 
         writeLinesPreservingEol(targetFile, rewrittenLines, prep.eol(), prep.endsWithEol());
         log.info("[ateng-boot-encrypt] 就地解密还原完成，共还原 {} 行密文字段", decryptedCount);
         return decryptedCount;
+    }
+
+    private boolean tryAppendYamlBlockScalar(String line, List<String> rewrittenLines) {
+        Matcher matcher = matchKeyValueLine(line);
+        if (matcher == null) {
+            return false;
+        }
+        String separator = matcher.group(3);
+        String rawValue = matcher.group(4);
+        if (separator == null || separator.contains("=") || rawValue == null || !parser.hasEncrypted(rawValue)) {
+            return false;
+        }
+
+        String decryptedValue = decryptTokensInText(unquote(rawValue.trim()));
+        if (!decryptedValue.contains("\n") && !decryptedValue.contains("\r")) {
+            return false;
+        }
+
+        String indent = matcher.group(1);
+        String key = matcher.group(2);
+        String comment = matcher.group(5) != null ? matcher.group(5) : "";
+        rewrittenLines.add(indent + key + separator + "|" + comment);
+
+        String normalized = decryptedValue.replace("\r\n", "\n").replace("\r", "\n");
+        if (normalized.endsWith("\n")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        String childIndent = indent + "  ";
+        for (String contentLine : normalized.split("\n", -1)) {
+            rewrittenLines.add(contentLine.isEmpty() ? "" : childIndent + contentLine);
+        }
+        return true;
+    }
+
+    private String decryptTokensInText(String text) {
+        return parser.replaceTokens(text, token -> {
+            String keyId = (token.getKeyId() != null && !token.getKeyId().trim().isEmpty())
+                    ? token.getKeyId()
+                    : defaultKeyId;
+            String password = keyRegistry.getKeyOrDefault(keyId);
+            if (password == null || password.trim().isEmpty()) {
+                throw new ConfigDecryptionException(String.format("缺失解密主密钥 [KeyId: '%s']",
+                        keyId != null ? keyId : "default"));
+            }
+            EncryptAlgorithm algo = token.getAlgorithm() != null ? token.getAlgorithm() : defaultAlgorithm;
+            ConfigDecryptor decryptor = resolveDecryptor(algo);
+            try {
+                return decryptor.decrypt(token.getCiphertext(), password);
+            } catch (Exception e) {
+                throw new ConfigDecryptionException("解密失败: " + e.getMessage(), e);
+            }
+        });
     }
 
     private void writeLinesPreservingEol(Path targetFile, List<String> lines, String eol, boolean endsWithEol) throws IOException {
@@ -353,9 +410,29 @@ public class InPlaceRewriter {
         return new InPlaceRewriter(password).rewriteDecrypt(file.toPath());
     }
 
-    private Path createBackup(Path targetFile) throws IOException {
+    /**
+     * 解析目标配置文件对应的 .bak 备份文件路径
+     *
+     * @param targetFile 目标配置文件路径
+     * @return 备份文件路径
+     */
+    public static Path resolveBackupPath(Path targetFile) {
+        Objects.requireNonNull(targetFile, "targetFile 不能为空");
         String fileName = targetFile.getFileName().toString();
-        Path backupFile = targetFile.resolveSibling(fileName + ".bak");
+        return targetFile.resolveSibling(fileName + ".bak");
+    }
+
+    private Matcher matchKeyValueLine(String line) {
+        Matcher quoted = QUOTED_LINE_PATTERN.matcher(line);
+        if (quoted.matches()) {
+            return quoted;
+        }
+        Matcher standard = STANDARD_LINE_PATTERN.matcher(line);
+        return standard.matches() ? standard : null;
+    }
+
+    private Path createBackup(Path targetFile) throws IOException {
+        Path backupFile = resolveBackupPath(targetFile);
         Files.copy(targetFile, backupFile, StandardCopyOption.REPLACE_EXISTING);
         return backupFile;
     }

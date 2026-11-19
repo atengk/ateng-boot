@@ -5,12 +5,14 @@ import io.github.atengk.boot.encrypt.key.MultiKeyRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.yaml.snakeyaml.Yaml;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -431,5 +433,90 @@ class InPlaceRewriterTest {
         String restored = Files.readString(file, StandardCharsets.UTF_8);
         assertTrue(restored.contains("p#ss:w=rd!2026"));
         assertTrue(restored.contains("another#secret"));
+    }
+
+    @Test
+    @DisplayName("测试 YAML 多行 PEM 块标量 '|' 无损往返回写：前置指令、行内指令与 SnakeYAML 可解析性")
+    @SuppressWarnings("unchecked")
+    void testYamlBlockScalarRoundTripRewriteLf() throws IOException {
+        String originalYaml = """
+                rsa:
+                  # @encrypt[rsa-key](SM4-CBC)
+                  private-key: |
+                    -----BEGIN PRIVATE KEY-----
+                    MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7
+                    AbCdEfGhIjKlMnOpQrStUvWxYz0123456789+/==
+                    -----END PRIVATE KEY-----
+                  public-key: | # @encrypt
+                    -----BEGIN PUBLIC KEY-----
+                    MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw==
+                    -----END PUBLIC KEY-----
+                  password: singleLinePassword
+                """;
+        Path yamlFile = tempDir.resolve("pem-roundtrip-lf.yml");
+        Files.writeString(yamlFile, originalYaml, StandardCharsets.UTF_8);
+
+        MultiKeyRegistry registry = new MultiKeyRegistry("MasterKey!");
+        registry.registerKey("rsa-key", "RsaDedicatedSecret2026!");
+        InPlaceRewriter rewriter = new InPlaceRewriter(registry, EncryptAlgorithm.AES_GCM,
+                InPlaceRewriter.DEFAULT_SENSITIVE_KEY_PATTERN, true);
+
+        int encCount = rewriter.rewriteEncrypt(yamlFile);
+        assertEquals(3, encCount);
+
+        String encryptedContent = Files.readString(yamlFile, StandardCharsets.UTF_8);
+        assertTrue(encryptedContent.contains("  private-key: ENC[rsa-key](SM4-CBC@"));
+        assertTrue(encryptedContent.contains("  public-key: ENC(") && encryptedContent.contains(") # @encrypt"));
+        assertFalse(encryptedContent.contains("-----BEGIN PRIVATE KEY-----"));
+        assertFalse(encryptedContent.contains("-----BEGIN PUBLIC KEY-----"));
+
+        int decCount = rewriter.rewriteDecrypt(yamlFile);
+        assertEquals(3, decCount);
+
+        String restoredContent = Files.readString(yamlFile, StandardCharsets.UTF_8);
+        assertFalse(restoredContent.contains("\r\n"), "LF 源文件解密后必须严格保持 LF 换行符");
+        assertEquals(originalYaml, restoredContent, "YAML 多行块标量就地加密再解密必须 100% 无损还原");
+
+        // 使用 SnakeYAML 验证还原后的 YAML 合法可解析且多行 PEM 正文完整一致
+        Map<String, Object> parsed = new Yaml().load(restoredContent);
+        Map<String, Object> rsaSection = (Map<String, Object>) parsed.get("rsa");
+        assertEquals("""
+                -----BEGIN PRIVATE KEY-----
+                MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7
+                AbCdEfGhIjKlMnOpQrStUvWxYz0123456789+/==
+                -----END PRIVATE KEY-----
+                """, rsaSection.get("private-key"));
+        assertEquals("""
+                -----BEGIN PUBLIC KEY-----
+                MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw==
+                -----END PUBLIC KEY-----
+                """, rsaSection.get("public-key"));
+        assertEquals("singleLinePassword", rsaSection.get("password"));
+    }
+
+    @Test
+    @DisplayName("测试 YAML 多行块标量 '|' 在 CRLF 换行符文件下的无损往返回写")
+    void testYamlBlockScalarRoundTripRewriteCrlf() throws IOException {
+        String originalLf = """
+                tls:
+                  # @encrypt
+                  certificate: |
+                    -----BEGIN CERTIFICATE-----
+                    MIIDXTCCAkWgAwIBAgIJALa1fKw2b3c4MA0GCSqGSIb3DQEBCwUA
+                    -----END CERTIFICATE-----
+                  token: plainTokenValue
+                """;
+        String originalCrlf = originalLf.replace("\n", "\r\n");
+        Path yamlFile = tempDir.resolve("pem-roundtrip-crlf.yaml");
+        Files.writeString(yamlFile, originalCrlf, StandardCharsets.UTF_8);
+
+        InPlaceRewriter rewriter = new InPlaceRewriter("MasterKeyCrlf2026!");
+        assertEquals(2, rewriter.rewriteEncrypt(yamlFile));
+        String encrypted = Files.readString(yamlFile, StandardCharsets.UTF_8);
+        assertTrue(encrypted.contains("\r\n"), "加密后文件应保留 CRLF");
+
+        assertEquals(2, rewriter.rewriteDecrypt(yamlFile));
+        String restored = Files.readString(yamlFile, StandardCharsets.UTF_8);
+        assertEquals(originalCrlf, restored, "CRLF 源文件多行块标量往返回写后必须 100% 保留 CRLF 与块结构");
     }
 }
