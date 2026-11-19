@@ -9,6 +9,7 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.datasource.enums.MultiTenancyMode;
 import io.github.atengk.boot.datasource.exception.TenantDataSourceNotFoundException;
 import io.github.atengk.boot.datasource.guard.DynamicDatasourceGuard;
+import io.github.atengk.boot.datasource.guard.TransactionRoutingContext;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
 import io.github.atengk.boot.datasource.readwrite.DefaultWriteOccurredResolver;
 import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteManager;
@@ -137,7 +138,7 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
                 }
 
                 // 3.2 租户只读事务 (@Transactional(readOnly = true))
-                if (readWrite.isEnabled() && TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
+                if (readWrite.isEnabled() && isTransactionReadOnly()) {
                     if (writeOccurred) {
                         log.debug("写后即读防延迟生效，租户 [{}] 只读事务回退主库: [{}]", currentTenantId, tenantMasterKey);
                         return resolveAndBindTransaction(tenantMasterKey);
@@ -173,7 +174,7 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
         }
 
         // 4. 全局读写分离：只读事务 (@Transactional(readOnly = true))
-        if (readWrite.isEnabled() && TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
+        if (readWrite.isEnabled() && isTransactionReadOnly()) {
             if (writeOccurred) {
                 log.debug("写后即读防延迟生效，只读事务回退全局主库: [{}]", masterKey);
                 return resolveAndBindTransaction(masterKey);
@@ -196,7 +197,7 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
 
         // 6. 默认路由至主数据源（基于 Baomidou 原生 primary 机制）
         String primaryKey = StringUtils.hasText(getPrimary()) ? getPrimary() : masterKey;
-        DynamicDatasourceGuard.bindTransactionDataSourceKeyIfAbsent(primaryKey);
+        bindResolvedTransactionKey(primaryKey);
         return super.determineDataSource();
     }
 
@@ -264,8 +265,32 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
 
     private boolean isActiveWriteTransaction(DatasourceProperties.ReadWriteSplitProperties readWrite) {
         return readWrite.isEnabled()
-                && TransactionSynchronizationManager.isActualTransactionActive()
-                && !TransactionSynchronizationManager.isCurrentTransactionReadOnly();
+                && isTransactionActive()
+                && !isTransactionReadOnly();
+    }
+
+    private boolean isTransactionActive() {
+        return TransactionSynchronizationManager.isActualTransactionActive()
+                || TransactionRoutingContext.isStartingActualTransaction();
+    }
+
+    private boolean isTransactionReadOnly() {
+        if (TransactionRoutingContext.isStartingActualTransaction()) {
+            return TransactionRoutingContext.isStartingReadOnly();
+        }
+        return TransactionSynchronizationManager.isCurrentTransactionReadOnly();
+    }
+
+    private void bindResolvedTransactionKey(String dsKey) {
+        if (!StringUtils.hasText(dsKey)) {
+            return;
+        }
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+                && TransactionSynchronizationManager.isSynchronizationActive()) {
+            DynamicDatasourceGuard.bindTransactionDataSourceKeyIfAbsent(dsKey);
+        } else if (TransactionRoutingContext.isStartingActualTransaction()) {
+            TransactionRoutingContext.recordResolvedDataSourceKey(dsKey);
+        }
     }
 
     private void markWriteOccurredIfPresent() {
@@ -287,7 +312,7 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
 
     private DataSource resolveAndBindTransaction(String dsKey, String fallbackMasterKey) {
         ResolvedDataSource resolved = resolveWithFailoverInternal(dsKey, fallbackMasterKey);
-        DynamicDatasourceGuard.bindTransactionDataSourceKeyIfAbsent(resolved.effectiveKey());
+        bindResolvedTransactionKey(resolved.effectiveKey());
         return resolved.dataSource();
     }
 

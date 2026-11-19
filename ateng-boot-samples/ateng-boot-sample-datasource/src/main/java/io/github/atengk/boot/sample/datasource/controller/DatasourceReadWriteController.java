@@ -1,11 +1,13 @@
 package io.github.atengk.boot.sample.datasource.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.datasource.dto.GroupMemberRequest;
 import io.github.atengk.boot.sample.datasource.dto.OrderCreateRequest;
 import io.github.atengk.boot.sample.datasource.entity.OrderEntity;
 import io.github.atengk.boot.sample.datasource.service.DatasourceActiveProbingScenarioService;
 import io.github.atengk.boot.sample.datasource.service.DatasourceTenantReadWriteScenarioService;
 import io.github.atengk.boot.sample.datasource.service.OrderService;
+import io.github.atengk.boot.sample.datasource.vo.GroupMemberResponse;
 import io.github.atengk.boot.sample.datasource.vo.OrderResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -45,7 +47,19 @@ public class DatasourceReadWriteController {
     }
 
     /**
-     * 2. 从库只读查询订单 (在写后读主保护期内自动自适应回退到 master 读取)
+     * 2. 显式 @DS("master") 写事务创建订单（框架自动触发写后即读保护）
+     *
+     * @param request 订单创建请求
+     * @return 订单展示强类型结果
+     */
+    @PostMapping("/order/master-explicit")
+    public Result<OrderResponse> createMasterOrderExplicit(@Valid @RequestBody OrderCreateRequest request) {
+        OrderResponse response = orderService.createMasterOrderExplicitDs(request);
+        return Result.success(response);
+    }
+
+    /**
+     * 3. 从库只读查询订单 (在写后读主保护期内自动自适应回退到 master 读取)
      *
      * @param orderNo 业务订单号
      * @return 订单展示强类型结果
@@ -53,6 +67,32 @@ public class DatasourceReadWriteController {
     @GetMapping("/order/get/{orderNo}")
     public Result<OrderResponse> getOrderReadWrite(@PathVariable String orderNo) {
         OrderResponse response = orderService.getOrderReadWrite(orderNo);
+        return Result.success(response);
+    }
+
+    /**
+     * 4. 动态追加从库分组物理节点
+     *
+     * @param request 分组节点成员请求
+     * @return 分组节点变更强类型展示结果
+     */
+    @PostMapping("/group/member/add")
+    public Result<GroupMemberResponse> addGroupMember(@Valid @RequestBody GroupMemberRequest request) {
+        GroupMemberResponse response = tenantReadWriteScenarioService.addGroupMember(
+                request.getGroupKey(), request.getMemberKey());
+        return Result.success(response);
+    }
+
+    /**
+     * 5. 对称摘除从库分组物理节点
+     *
+     * @param request 分组节点成员请求
+     * @return 分组节点变更强类型展示结果
+     */
+    @PostMapping("/group/member/remove")
+    public Result<GroupMemberResponse> removeGroupMember(@Valid @RequestBody GroupMemberRequest request) {
+        GroupMemberResponse response = tenantReadWriteScenarioService.removeGroupMember(
+                request.getGroupKey(), request.getMemberKey());
         return Result.success(response);
     }
 

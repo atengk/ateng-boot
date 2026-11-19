@@ -1,9 +1,14 @@
 package io.github.atengk.boot.sample.datasource.controller;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.datasource.dto.GuardTransactionRequest;
 import io.github.atengk.boot.sample.datasource.service.DatasourceTransactionGuardScenarioService;
+import io.github.atengk.boot.sample.datasource.vo.GuardTransactionResponse;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -64,5 +69,72 @@ public class DatasourceGuardController {
         log.info("[GuardController] 发起同源事务安全重入演练: orderNo={}", orderNo);
         guardScenarioService.transactionWithSameDsReentrant(orderNo);
         return Result.success("Reentrant same-datasource switch completed successfully");
+    }
+
+    /**
+     * 4. 演示 @DSTransactional 本地多源协调事务安全跨库切源
+     *
+     * @param request 多源协调事务演练请求
+     * @return 强类型演练展示结果
+     */
+    @PostMapping("/ds-transactional")
+    public Result<GuardTransactionResponse> dsTransactional(@Valid @RequestBody GuardTransactionRequest request) {
+        log.info("[GuardController] 发起 @DSTransactional 本地多源协调事务演练: primary={}, target={}",
+                request.getPrimaryOrderNo(), request.getTargetOrderNo());
+        guardScenarioService.transactionWithDsTransactional(request.getPrimaryOrderNo(), request.getTargetOrderNo());
+        return Result.success(GuardTransactionResponse.builder()
+                .mode("DS_TRANSACTIONAL")
+                .primaryOrderNo(request.getPrimaryOrderNo())
+                .targetOrderNo(request.getTargetOrderNo())
+                .tenantId(TenantContextHolder.getTenantId())
+                .message("@DSTransactional local multi-datasource transaction committed safely")
+                .build());
+    }
+
+    /**
+     * 5. 演示无 @DS 注解的租户透明本地事务内跨库假切源拦截（触发 59002 错误码）
+     *
+     * @param request 事务切源演练请求
+     * @return 正常情况下不会返回，预期抛出 DataSourceSwitchException
+     */
+    @PostMapping("/tenant-tx-false-switch")
+    public Result<GuardTransactionResponse> tenantTxFalseSwitch(@Valid @RequestBody GuardTransactionRequest request) {
+        String effectiveTenant = resolveEffectiveTenantId();
+        TenantContextHolder.runWithTenant(effectiveTenant, () ->
+                guardScenarioService.tenantTransactionWithIllegalSwitch(
+                        request.getPrimaryOrderNo(), request.getTargetOrderNo()));
+        return Result.success(GuardTransactionResponse.builder()
+                .mode("TENANT_TX_FALSE_SWITCH")
+                .primaryOrderNo(request.getPrimaryOrderNo())
+                .targetOrderNo(request.getTargetOrderNo())
+                .tenantId(effectiveTenant)
+                .message("Unexpected execution without guard interception")
+                .build());
+    }
+
+    /**
+     * 6. 演示无 @DS 注解的租户透明本地事务内同租户物理库重入放行
+     *
+     * @param request 事务切源演练请求
+     * @return 强类型演练展示结果
+     */
+    @PostMapping("/tenant-tx-reentrant")
+    public Result<GuardTransactionResponse> tenantTxReentrant(@Valid @RequestBody GuardTransactionRequest request) {
+        String effectiveTenant = resolveEffectiveTenantId();
+        TenantContextHolder.runWithTenant(effectiveTenant, () ->
+                guardScenarioService.tenantTransactionWithSameTenantReentrant(
+                        request.getPrimaryOrderNo(), request.getTargetOrderNo()));
+        return Result.success(GuardTransactionResponse.builder()
+                .mode("TENANT_TX_REENTRANT")
+                .primaryOrderNo(request.getPrimaryOrderNo())
+                .targetOrderNo(request.getTargetOrderNo())
+                .tenantId(effectiveTenant)
+                .message("Same-tenant physical datasource reentrant transaction completed safely")
+                .build());
+    }
+
+    private String resolveEffectiveTenantId() {
+        String tenantId = TenantContextHolder.getTenantId();
+        return StringUtils.hasText(tenantId) ? tenantId : "1001";
     }
 }

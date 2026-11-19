@@ -7,6 +7,7 @@ import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteManager;
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.sample.datasource.entity.OrderEntity;
 import io.github.atengk.boot.sample.datasource.mapper.OrderMapper;
+import io.github.atengk.boot.sample.datasource.vo.GroupMemberResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -51,6 +52,44 @@ public class DatasourceTenantReadWriteScenarioService {
     public void cleanTenantSlaveGroup(String groupKey) {
         log.info("[TenantReadWriteScenario] 清理租户只读从库组: {}", groupKey);
         dynamicDatasourceTemplate.removeGroupDataSource(groupKey);
+    }
+
+    /**
+     * 动态追加从库分组物理节点
+     *
+     * @param groupKey  分组标识
+     * @param memberKey 物理节点标识
+     * @return 分组变更视图对象
+     */
+    public GroupMemberResponse addGroupMember(String groupKey, String memberKey) {
+        log.info("[TenantReadWriteScenario] 向分组 [{}] 追加物理节点 [{}]", groupKey, memberKey);
+        dynamicDatasourceTemplate.addGroupMember(groupKey, memberKey);
+        return GroupMemberResponse.builder()
+                .groupKey(groupKey)
+                .memberKey(memberKey)
+                .operation("ADDED")
+                .operated(true)
+                .activeGroupKeys(dynamicDatasourceTemplate.getGroupKeys())
+                .build();
+    }
+
+    /**
+     * 对称摘除从库分组物理节点
+     *
+     * @param groupKey  分组标识
+     * @param memberKey 物理节点标识
+     * @return 分组变更视图对象
+     */
+    public GroupMemberResponse removeGroupMember(String groupKey, String memberKey) {
+        log.info("[TenantReadWriteScenario] 从分组 [{}] 对称摘除物理节点 [{}]", groupKey, memberKey);
+        boolean removed = dynamicDatasourceTemplate.removeGroupMember(groupKey, memberKey);
+        return GroupMemberResponse.builder()
+                .groupKey(groupKey)
+                .memberKey(memberKey)
+                .operation("REMOVED")
+                .operated(removed)
+                .activeGroupKeys(dynamicDatasourceTemplate.getGroupKeys())
+                .build();
     }
 
     /**

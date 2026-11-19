@@ -5,7 +5,9 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.sample.datasource.config.DatasourceSampleInitConfig;
 import io.github.atengk.boot.sample.datasource.dto.DataSourceCreateRequest;
+import io.github.atengk.boot.sample.datasource.dto.DataSourceReloadRequest;
 import io.github.atengk.boot.sample.datasource.service.DatasourceLifecycleScenarioService;
+import io.github.atengk.boot.sample.datasource.vo.DataSourceReloadResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -72,7 +74,21 @@ public class DatasourceLifecycleController {
     }
 
     /**
-     * 3. 超时优雅排空在途事务并安全注销数据源
+     * 3. 动态数据源无损热重载（连通性预检、并发预热、原子切流与旧连接池超时优雅排空）
+     *
+     * @param request 热重载请求参数
+     * @return 热重载强类型展示结果
+     */
+    @PostMapping("/reload")
+    public Result<DataSourceReloadResponse> reloadDynamicDataSource(@Valid @RequestBody DataSourceReloadRequest request) {
+        log.info("[LifecycleController] 触发动态数据源无损热重载: dsKey={}, preWarm={}, graceful={}",
+                request.getDsKey(), request.isPreWarm(), request.isGraceful());
+        DataSourceReloadResponse response = lifecycleScenarioService.reloadDynamicDataSource(request);
+        return Result.success(response);
+    }
+
+    /**
+     * 4. 超时优雅排空在途事务并安全注销数据源
      *
      * @param dsKey 数据源标识
      * @param drain 是否等待在途事务连接排空 (默认 true)

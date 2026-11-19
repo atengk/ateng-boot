@@ -1285,7 +1285,7 @@ public class DynamicDatasourceTemplate {
      * @param newProperty 新的数据源创建配置属性
      */
     public void reloadDataSource(String dsKey, DataSourceProperty newProperty) {
-        reloadDataSource(dsKey, newProperty, isPreWarmEnabled(), true);
+        reloadDataSource(dsKey, newProperty, isPreWarmEnabled(), resolvePreWarmCount(), true);
     }
 
     /**
@@ -1297,6 +1297,23 @@ public class DynamicDatasourceTemplate {
      * @param graceful    是否优雅排空旧连接池在途连接
      */
     public void reloadDataSource(String dsKey, DataSourceProperty newProperty, boolean preWarm, boolean graceful) {
+        reloadDataSource(dsKey, newProperty, preWarm, resolvePreWarmCount(), graceful);
+    }
+
+    /**
+     * 热重载已存在的数据源配置（支持显式指定是否预热、预热连接数与优雅排空）
+     *
+     * @param dsKey              数据源唯一标识
+     * @param newProperty        新的数据源创建配置属性
+     * @param preWarm            是否预热新连接池
+     * @param preWarmConnections 预热物理连接数（<= 0 时回退全局配置默认值）
+     * @param graceful           是否优雅排空旧连接池在途连接
+     */
+    public void reloadDataSource(String dsKey,
+                                 DataSourceProperty newProperty,
+                                 boolean preWarm,
+                                 int preWarmConnections,
+                                 boolean graceful) {
         Assert.hasText(dsKey, "数据源标识 (dsKey) 不能为空");
         Objects.requireNonNull(newProperty, "新数据源属性配置 (newProperty) 不能为空");
         if (defaultDataSourceCreator == null) {
@@ -1321,7 +1338,8 @@ public class DynamicDatasourceTemplate {
         validateConnection(dsKey, newDs);
 
         if (preWarm) {
-            preWarmDataSourceInternal(dsKey, newDs, resolvePreWarmCount());
+            int targetWarmCount = preWarmConnections > 0 ? preWarmConnections : resolvePreWarmCount();
+            preWarmDataSourceInternal(dsKey, newDs, targetWarmCount);
         }
 
         // 2. 互斥切流与替换

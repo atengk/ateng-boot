@@ -80,6 +80,34 @@ public class DatasourceBatchScenarioService {
     }
 
     /**
+     * 全物理数据源带返回值批处理结果聚合（直接返回 BatchExecutionResult）
+     *
+     * @param policy 批处理容错策略
+     * @return 包含各数据源订单总数映射与容错状态的批处理结果
+     */
+    public BatchExecutionResult<Long> inspectAllDataSourcesWithResult(BatchExecutionPolicy policy) {
+        log.info("[BatchScenario] 触发全库带返回值批处理结果聚合 (策略: {})", policy);
+        return dynamicDatasourceTemplate.forEachDataSourceWithResult(policy, dsKey -> {
+            Long count = orderMapper.selectCount(new LambdaQueryWrapper<>());
+            return count != null ? count : 0L;
+        });
+    }
+
+    /**
+     * 全租户带返回值批处理结果聚合（直接返回 BatchExecutionResult）
+     *
+     * @param policy 批处理容错策略
+     * @return 包含各租户订单总数映射与容错状态的批处理结果
+     */
+    public BatchExecutionResult<Long> inspectAllTenantsWithResult(BatchExecutionPolicy policy) {
+        log.info("[BatchScenario] 触发全租户带返回值批处理结果聚合 (策略: {})", policy);
+        return dynamicDatasourceTemplate.forEachTenantWithResult(policy, (tenantId, dsKey) -> {
+            Long count = orderMapper.selectCount(new LambdaQueryWrapper<>());
+            return count != null ? count : 0L;
+        });
+    }
+
+    /**
      * 编程式连接池并发预热
      *
      * @param dsKey       目标物理数据源标识

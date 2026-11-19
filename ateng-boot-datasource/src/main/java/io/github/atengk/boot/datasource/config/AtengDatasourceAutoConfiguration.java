@@ -16,6 +16,7 @@ import com.baomidou.dynamic.datasource.spring.boot.autoconfigure.DynamicDataSour
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.datasource.context.DataSourceAsyncContextSnapshotProvider;
 import io.github.atengk.boot.datasource.guard.AtengDynamicDataSourceAnnotationInterceptor;
+import io.github.atengk.boot.datasource.guard.AtengTransactionExecutionListener;
 import io.github.atengk.boot.datasource.guard.DynamicDatasourceGuard;
 import io.github.atengk.boot.datasource.listener.DynamicDatasourceLifecycleListener;
 import io.github.atengk.boot.datasource.loader.DynamicDataSourceLoader;
@@ -55,6 +56,7 @@ import org.springframework.context.expression.BeanFactoryResolver;
 import org.springframework.core.Ordered;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
+import org.springframework.transaction.TransactionExecutionListener;
 import org.springframework.util.ClassUtils;
 
 import javax.sql.DataSource;
@@ -156,6 +158,18 @@ public class AtengDatasourceAutoConfiguration {
                 readAfterWriteManagerProvider::getIfAvailable,
                 routingDataSourceProvider::getIfAvailable
         );
+    }
+
+    /**
+     * 注册 Spring 事务启动阶段路由感知与初始数据源绑定监听器
+     *
+     * @return 事务执行监听器实例
+     */
+    @Bean
+    @ConditionalOnClass(TransactionExecutionListener.class)
+    @ConditionalOnMissingBean(AtengTransactionExecutionListener.class)
+    public AtengTransactionExecutionListener atengTransactionExecutionListener() {
+        return new AtengTransactionExecutionListener();
     }
 
     /**
