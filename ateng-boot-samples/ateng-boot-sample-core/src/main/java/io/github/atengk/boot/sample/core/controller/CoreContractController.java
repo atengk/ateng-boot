@@ -14,6 +14,7 @@ import io.github.atengk.boot.sample.core.service.CoreResilienceScenarioService;
 import io.github.atengk.boot.sample.core.vo.OrderCheckVO;
 import io.github.atengk.boot.sample.core.vo.OrderSummaryVO;
 import io.github.atengk.boot.sample.core.vo.PageNormalizeVO;
+import io.github.atengk.boot.sample.core.vo.RemoteTraceUnpackVO;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -134,5 +135,20 @@ public class CoreContractController {
                 .build();
 
         return Result.success(vo);
+    }
+
+    /**
+     * 6. 跨进程异常 traceId 透传解包验证
+     * 演示下游失败 Result.fail(...).traceId(...) 经 getOrThrow() 还原为 BusinessException 并保留原始链路标识
+     *
+     * @param orderNo       订单编号
+     * @param remoteTraceId 远端下游返回的链路标识
+     * @return 解包还原后的跨进程追踪视图
+     */
+    @GetMapping("/remote-trace-unpack")
+    public Result<RemoteTraceUnpackVO> unpackRemoteTrace(
+            @RequestParam(required = false, defaultValue = "ORD-20261119-001") String orderNo,
+            @RequestParam(required = false, defaultValue = "rpc-inventory-trace-001") String remoteTraceId) {
+        return Result.success(resilienceScenarioService.unpackRemoteFailureWithTraceId(orderNo, remoteTraceId));
     }
 }

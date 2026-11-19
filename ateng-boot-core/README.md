@@ -8,10 +8,10 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **API 响应契约** | 强类型通用统一响应模型 | `Result<T>` | - | `Result.success()`, `Result.success(data)`, `Result.fail(...)`, `getOrThrow()`, `map()`, `peek()`, `ifFail()`, `orElseGet()`, `orElseThrow()` | `ResultTest.java`, `CoreContractControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **API 响应契约** | 强类型通用统一响应模型 | `Result<T>` | - | `Result.success()`, `Result.success(data)`, `Result.fail(...)`, `getOrThrow()`（失败抛出 `BusinessException` 时自动透传 `traceId`）, `map()`, `peek()`, `ifFail()`, `orElseGet()`, `orElseThrow()` | `ResultTest.java`, `CoreContractControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **标准状态码与号段治理** | 统一状态码契约、预置枚举与千位号段治理 | `IResultCode`, `CommonResultCode`, `ResultCodeSegment`, `ResultCodeUtil` | - | `CommonResultCode.SUCCESS(200)`, `BAD_REQUEST(400)`, `UNAUTHORIZED(401)`, `FORBIDDEN(403)`, `NOT_FOUND(404)`, `INTERNAL_SERVER_ERROR(500)`; `ResultCodeSegment.SYSTEM_CORE/AUTH_SECURITY/...`; `ResultCodeUtil.getSegment(code)`, `isInSegment(...)`, `assertInSegment(int, segment)`, `assertInSegment(IResultCode, segment)`, `assertUnique(...)` | `CommonResultCodeTest.java`, `ResultCodeUtilTest.java`, `CoreContractControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **分页传输契约** | 防越界分页入参、强类型排序、安全清洗与纯净出参模型 | `PageQuery`, `SortItem`, `PageResult<T>` | - | `PageQuery.getCurrent()`, `PageQuery.getSize()`, `PageQuery.safeCurrent()`, `PageQuery.safeSize()`, `PageQuery.normalize()`, `PageQuery.offset()` (防溢出计算), `PageQuery.addAsc/Desc()`, `SortItem.asc/desc()`, `PageResult.of(list, total, current, size)`, `PageResult.map(mapper)`, `hasPrevious()`, `hasNext()`, `isEmpty()` | `PageQueryTest.java`, `SortItemTest.java`, `PageResultTest.java`, `CoreContractControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
-| **因果异常体系** | 业务受控异常、双模堆栈治理与幂等专用异常 | `BusinessException`, `IdempotentException` | - | `BusinessException(resultCode)`, `BusinessException(code, msg, cause)`（有 cause 默认保留完整调用栈与因果链，无 cause 零抓栈开销）, `BusinessException(..., writableStackTrace)`; `new IdempotentException("请求重复")` 防重拦截 | `BusinessExceptionTest.java`, `IdempotentExceptionTest.java`, `CoreContractControllerTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
+| **因果异常体系** | 业务受控异常、双模堆栈治理、跨进程 `traceId` 透传与幂等专用异常 | `BusinessException`, `IdempotentException` | - | `BusinessException(resultCode)`, `BusinessException(code, msg, cause)`（有 cause 默认保留完整调用栈与因果链，无 cause 零抓栈开销）, `BusinessException(..., writableStackTrace)`, `withTraceId(traceId)` / `getTraceId()`（支持跨进程透传并由 `Result.getOrThrow()` 自动绑定）; `new IdempotentException("请求重复")` 防重拦截 | `BusinessExceptionTest.java`, `ResultTest.java`, `IdempotentExceptionTest.java`, `CoreContractControllerTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
 | **业务语义断言** | 快速失败业务语义前置防卫门面 | `BusinessAssert` | - | `isTrue(...)`, `isFalse(...)`, `notNull(...)`, `isNull(...)`, `hasText(...)`, `notEmpty(...)`, `equals(...)`, `{}` 占位符惰性格式化, `Supplier<String>`, 数值区间断言 (`gt`, `gte`, `lt`, `lte`, `between`) | `BusinessAssertTest.java`, `CoreContractControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **分层双防校验** | 批量列表防漏检、分组标记与编程式防卫 | `ValidList<E>`, `ValidationGroups`, `ValidatorUtil` | - | `ValidList<E>` 解决 Spring 默认直接注入 `List<T>` 漏检 JSR-303 问题；`ValidationGroups.Create/Update`；`ValidatorUtil.validate(obj)` 非 Web 边界快速失败 | `ValidListTest.java`, `ValidatorUtilTest.java`, `CoreContractControllerTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **强类型通用枚举** | 通用枚举契约、标准选项模型、别名注解、高速解析门面与 JSR-303 格式防卫 | `IBaseEnum<T>`, `OptionItem<T>`, `@EnumAlias`, `EnumUtil`, `@InEnum`, `InEnumValidator` | - | `IBaseEnum.getCode()`, `getLabel()`, `matches(code)`, `toOption()`, `getValue()`; `OptionItem.of(...)`; `EnumUtil.fromCode(...)`, `getByCodeOrThrow(...)`, `getLabelByCode(...)`, `isValidCode(...)`, `toOptions(...)`, `getAllCodes(...)`; `@InEnum(value = OrderStatusEnum.class)` 第一道防线校验拦截 | `EnumUtilTest.java`, `InEnumValidatorTest.java`, `CoreContractControllerTest.java` |
@@ -404,6 +404,16 @@ public class OrderCheckoutService {
                     "外部支付网关通信超时",
                     new java.io.IOException("Socket read timeout")
             );
+        }
+
+        // 4. 跨进程 RPC/Feign 异常还原与远端 traceId 透传（1:1 提取自 CoreResilienceScenarioService#unpackRemoteFailureWithTraceId）
+        Result<Void> remoteResult = Result.<Void>fail(4001, "下游库存扣减服务异常: " + request.getOrderNo())
+                .traceId("rpc-inventory-trace-001");
+        try {
+            remoteResult.getOrThrow();
+        } catch (BusinessException ex) {
+            log.info("跨进程异常解包透传 traceId: code={}, msg={}, traceId={}",
+                    ex.getCode(), ex.getMsg(), ex.getTraceId());
         }
     }
 }

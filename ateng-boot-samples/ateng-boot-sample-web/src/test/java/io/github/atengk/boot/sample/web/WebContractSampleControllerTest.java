@@ -261,15 +261,28 @@ class WebContractSampleControllerTest {
     }
 
     @Test
-    @DisplayName("10. 契约解包测试：Result.getOrThrow() 正常解包与异常校验")
+    @DisplayName("10. 契约解包测试：Result.getOrThrow() 正常解包与异常校验（含 traceId 透传）")
     void shouldSupportResultUnpack() {
         Result<String> successResult = Result.success("测试数据");
         assertThat(successResult.getOrThrow()).isEqualTo("测试数据");
 
-        Result<String> failResult = Result.fail(403, "无权限访问");
+        Result<String> failResult = Result.<String>fail(403, "无权限访问").traceId("rpc-auth-trace-403");
         assertThatThrownBy(failResult::getOrThrow)
                 .isInstanceOf(BusinessException.class)
-                .hasMessage("无权限访问");
+                .hasMessage("无权限访问")
+                .satisfies(ex -> assertThat(((BusinessException) ex).getTraceId()).isEqualTo("rpc-auth-trace-403"));
+    }
+
+    @Test
+    @DisplayName("10.1 跨进程异常透传端点：远程 Result.getOrThrow() 转译并保留本地 TraceFilter 优先链路")
+    void shouldTranslateRemoteBusinessException() throws Exception {
+        mockMvc.perform(get("/sample/web/contract/error/remote-business"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("X-Trace-Id"))
+                .andExpect(jsonPath("$.code").value(5002))
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.msg").value("下游库存服务锁定失败"))
+                .andExpect(jsonPath("$.traceId").isNotEmpty());
     }
 
     @Test

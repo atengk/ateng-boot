@@ -147,6 +147,19 @@ public class WebContractAndExceptionController {
     }
 
     /**
+     * 模拟跨进程 RPC 调用失败后还原 BusinessException 并绑定远端 traceId
+     *
+     * @return 无返回值
+     */
+    @GetMapping("/error/remote-business")
+    public Result<Void> triggerRemoteBusinessException() {
+        Result<Void> remoteResponse = Result.<Void>fail(5002, "下游库存服务锁定失败")
+                .traceId("rpc-inventory-trace-502");
+        remoteResponse.getOrThrow();
+        return Result.success();
+    }
+
+    /**
      * 未捕获未知根异常（生产强制脱敏，禁止泄露内部代码堆栈，MDC traceId 闭环溯源）
      *
      * @return 无返回值

@@ -131,7 +131,7 @@ public class Result<T> implements Serializable {
     @JsonIgnore
     public T getOrThrow() {
         if (!isSuccess()) {
-            throw new BusinessException(this.code, this.msg);
+            throw new BusinessException(this.code, this.msg).withTraceId(this.traceId);
         }
         return this.data;
     }

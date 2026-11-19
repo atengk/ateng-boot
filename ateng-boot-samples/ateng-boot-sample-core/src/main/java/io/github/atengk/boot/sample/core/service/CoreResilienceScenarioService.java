@@ -27,6 +27,7 @@ import io.github.atengk.boot.sample.core.vo.ExchangeRateVO;
 import io.github.atengk.boot.sample.core.vo.OrderCheckVO;
 import io.github.atengk.boot.sample.core.vo.OrderSummaryVO;
 import io.github.atengk.boot.sample.core.vo.RateLimitVO;
+import io.github.atengk.boot.sample.core.vo.RemoteTraceUnpackVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -176,6 +177,31 @@ public class CoreResilienceScenarioService {
 
         log.info("BusinessException 双模堆栈验证: lightweightLen={}, causalLen={}", lightweightStackLen, causalStackLen);
         return Pair.of(lightweightStackLen, causalStackLen);
+    }
+
+    /**
+     * 4.1 模拟跨进程 RPC/Feign 异常解包并透传远端 traceId 至 BusinessException
+     *
+     * @param orderNo       订单编号
+     * @param remoteTraceId 下游响应携带的远端 traceId
+     * @return 解包还原后的异常追踪信息视图
+     */
+    public RemoteTraceUnpackVO unpackRemoteFailureWithTraceId(String orderNo, String remoteTraceId) {
+        Result<Void> remoteResult = Result.<Void>fail(4001, "下游库存扣减服务异常: " + orderNo)
+                .traceId(remoteTraceId);
+        try {
+            remoteResult.getOrThrow();
+            throw new IllegalStateException("预期应由 Result.getOrThrow() 抛出 BusinessException");
+        } catch (BusinessException ex) {
+            log.info("跨进程异常解包透传 traceId: code={}, msg={}, traceId={}",
+                    ex.getCode(), ex.getMsg(), ex.getTraceId());
+            return RemoteTraceUnpackVO.builder()
+                    .orderNo(orderNo)
+                    .code(ex.getCode())
+                    .msg(ex.getMsg())
+                    .propagatedTraceId(ex.getTraceId())
+                    .build();
+        }
     }
 
     /**

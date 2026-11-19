@@ -196,4 +196,18 @@ class CoreContractControllerTest {
                 .andExpect(jsonPath("$.data.normalizedCurrent", is("3")))
                 .andExpect(jsonPath("$.data.normalizedSize", is("20")));
     }
+
+    @Test
+    @DisplayName("测试跨进程异常解包透传 traceId 端到端接口")
+    void testUnpackRemoteTrace() throws Exception {
+        mockMvc.perform(get("/sample/core/contract/remote-trace-unpack")
+                        .param("orderNo", "ORD-20261119-009")
+                        .param("remoteTraceId", "rpc-inventory-trace-009"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.orderNo", is("ORD-20261119-009")))
+                .andExpect(jsonPath("$.data.code", is(4001)))
+                .andExpect(jsonPath("$.data.propagatedTraceId", is("rpc-inventory-trace-009")));
+    }
 }

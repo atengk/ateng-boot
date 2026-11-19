@@ -41,6 +41,7 @@
 | **批量聚合枚举字典 (只读端点)** | `EnumDictionaryController` (内置) | `POST /api/system/enums/batch` | `curl -X POST "http://localhost:8080/api/system/enums/batch" -H "Content-Type: application/json" -d "[\"userStatus\",\"orderType\"]"` |
 | **受控业务异常 (轻量日志)** | `WebContractAndExceptionController` | `GET /sample/web/contract/error/business` | `curl "http://localhost:8080/sample/web/contract/error/business"` |
 | **因果链底层驱动异常 (完整堆栈)** | `WebContractAndExceptionController` | `GET /sample/web/contract/error/causal` | `curl "http://localhost:8080/sample/web/contract/error/causal"` |
+| **跨进程业务异常 traceId 透传** | `WebContractAndExceptionController` | `GET /sample/web/contract/error/remote-business` | `curl "http://localhost:8080/sample/web/contract/error/remote-business"` |
 | **未知系统异常 (生产强制脱敏)** | `WebContractAndExceptionController` | `GET /sample/web/contract/error/unexpected` | `curl "http://localhost:8080/sample/web/contract/error/unexpected"` |
 | **支付通道领域异常 (SPI 转译)** | `WebContractAndExceptionController` | `GET /sample/web/contract/error/payment` | `curl "http://localhost:8080/sample/web/contract/error/payment"` |
 | **媒体类型约束验证 (415/406)** | `WebContractAndExceptionController` | `POST /sample/web/contract/error/media-type` | `curl -X POST "http://localhost:8080/sample/web/contract/error/media-type" -H "Content-Type: text/plain" -d "invalid-type"` |

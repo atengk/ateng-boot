@@ -37,6 +37,7 @@
 | **批量客户入驻级联校验与枚举拦截** | `CoreContractController` | `POST /sample/core/contract/users/batch-validate` | `curl -X POST "http://localhost:8080/sample/core/contract/users/batch-validate" -H "Content-Type: application/json" -d '[{"name":"张三","phone":"13812345678","statusCode":1},{"name":"李四","phone":"13987654321","statusCode":2}]'` |
 | **通用字典枚举下拉选项渲染** | `CoreContractController` | `GET /sample/core/contract/enums/options` | `curl "http://localhost:8080/sample/core/contract/enums/options"` |
 | **编程式安全分页纠偏与防溢出偏移** | `CoreContractController` | `GET /sample/core/contract/page-normalize` | `curl "http://localhost:8080/sample/core/contract/page-normalize?current=0&size=-5"` |
+| **跨进程异常 traceId 透传解包** | `CoreContractController` | `GET /sample/core/contract/remote-trace-unpack` | `curl "http://localhost:8080/sample/core/contract/remote-trace-unpack?orderNo=ORD-20261119-001&remoteTraceId=rpc-inventory-trace-001"` |
 | **分布式业务发号与 IdUtil Base62 短码** | `CoreSecurityController` | `GET /sample/core/security/distributed-id` | `curl "http://localhost:8080/sample/core/security/distributed-id"` |
 | **分布式业务发号与短码（兼容路由）** | `CoreSecurityController` | `GET /sample/core/security/ids/generate` | `curl "http://localhost:8080/sample/core/security/ids/generate"` |
 | **客户隐私档案动态脱敏与内存真明文** | `CoreSecurityController` | `GET /sample/core/security/customer/masked` | `curl "http://localhost:8080/sample/core/security/customer/masked"` |

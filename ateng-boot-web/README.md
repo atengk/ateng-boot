@@ -10,7 +10,7 @@
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Web 全局开关** | Web 模块总控自动装配 | `WebProperties`, `AtengWebAutoConfiguration` | `ateng.boot.web.enabled` | 总体开关控制所有 Web 过滤器、Jackson 定制与增强切面是否自动装配（默认 `true`） | `AtengWebAutoConfigurationTest.java` |
 | **链路追踪** | HTTP 链路追踪过滤器与门面 | `TraceFilter`, `TraceUtil` | `ateng.boot.web.trace.enabled`, `header` (或 `header-name`), `max-length` | `TraceUtil.getTraceId()`, `setTraceId(id)`, `clear()`, `TraceFilter.getActiveRequestCount()`；校验入站 `X-Trace-Id`（长度上限 `max-length: 64` 与安全字符集 `[a-zA-Z0-9._:-]` 防日志注入，非法时生成安全 UUID）；排除 `/pre-stop`、`/actuator/pre-stop` 与 `mvc-endpoint-path` 避免在途自计数阻塞；MDC `traceId` 注入并在 `finally` 严格清理 | `TraceFilterTest.java`, `TraceUtilTest.java`, `WebObservabilityAndAuditControllerTest.java` |
-| **全局异常防御** | 全局统一异常拦截与生产脱敏 | `GlobalExceptionHandler`, `GlobalExceptionCustomizer` | - | 挂载 `GlobalExceptionCustomizer` SPI 链式定制，拦截 `BusinessException`（双模因果堆栈）、`MethodArgumentNotValidException`、`HandlerMethodValidationException`、`BindException`、`ConstraintViolationException`、400/404/405/406/413/415/503/500 精细化转译与生产脱敏 | `GlobalExceptionHandlerTest.java`, `WebContractAndExceptionControllerTest.java`, `WebExceptionSampleControllerTest.java` |
+| **全局异常防御** | 全局统一异常拦截、跨进程 `traceId` 兜底回填与生产脱敏 | `GlobalExceptionHandler`, `GlobalExceptionCustomizer` | - | 挂载 `GlobalExceptionCustomizer` SPI 链式定制，拦截 `BusinessException`（双模因果堆栈，本地 MDC 为空时自动由 `ex.getTraceId()` 兜底回填 `Result.traceId`）、`MethodArgumentNotValidException`、`HandlerMethodValidationException`、`BindException`、`ConstraintViolationException`、400/404/405/406/413/415/503/500 精细化转译与生产脱敏 | `GlobalExceptionHandlerTest.java`, `WebContractSampleControllerTest.java`, `WebExceptionSampleControllerTest.java` |
 | **精度与时间规范** | 53 位雪花精度防截断、`BigDecimal` 平铺与时间序列化 | `JacksonCustomizer` | `ateng.boot.web.long-to-string`, `jackson.write-big-decimal-as-plain` | `Long`/`BigInteger` 序列化为 String，`BigDecimal` 启用 `WRITE_BIGDECIMAL_AS_PLAIN` 禁用科学计数法，标准 `yyyy-MM-dd HH:mm:ss` 格式化，不覆盖原生 `ObjectMapper` | `JacksonCustomizerTest.java`, `WebContractAndExceptionControllerTest.java`, `WebContractSampleControllerTest.java` |
 | **接口审计日志** | 声明式接口耗时审计与安全防 OOM | `@WebLog`, `WebLogAspect` | `ateng.boot.web.log.enabled`, `default-exclude-params` | `@WebLog(value, printParams, printResult, printCostTime, excludeParams)`（默认关闭 `enabled: false` 按需开启），自动合并全局 11 项默认敏感基线 `default-exclude-params`（嵌套对象/集合忽略大小写递归替换为 `[EXCLUDED]`），大文件 Multipart 自动占位防 OOM | `WebLogAspectTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **动态 CORS 跨域** | 动态跨域来源校验与凭证安全反射 | `CorsOriginProvider`, `DefaultCorsOriginProvider`, `DynamicCorsConfigurationSource` | `ateng.boot.web.cors.enabled`, `allowed-origins`, `allowed-methods`, `allowed-headers`, `allow-credentials`, `allow-localhost`, `exposed-headers`, `max-age` | 基于配置属性通配或 `CorsOriginProvider.isAllowed(origin)` SPI 动态扩展校验 Origin，安全反射并支持凭据传输（Cookie），放行本地 localhost 调试 | `DynamicCorsTest.java`, `WebSecurityAndSignControllerTest.java` |
@@ -416,9 +416,10 @@ public Result<DateTimeDemoVO> getDateTimeDemo() {
 ### 3.3 全局异常防御体系与因果堆栈双模治理
 
 #### 核心机制与异常边界
-1. **业务受控异常双模治理 (`BusinessException`)**：
+1. **业务受控异常双模治理与跨进程 `traceId` 兜底回填 (`BusinessException`)**：
    - **无 `cause` 异常**：属于前置常规业务阻断，记录 INFO 级别日志，返回业务错误码与提示，无须打印巨幅堆栈；
-   - **有 `cause` 异常**：属于底层驱动或依赖异常转译，记录 ERROR 级别日志并打印完整因果链调用栈与 `traceId`，对外返回受管提示。
+   - **有 `cause` 异常**：属于底层驱动或依赖异常转译，记录 ERROR 级别日志并打印完整因果链调用栈与 `traceId`，对外返回受管提示；
+   - **跨进程 `traceId` 兜底回填**：处理 `BusinessException`（含 `GlobalExceptionCustomizer` 定制分支）时优先保留当前线程 MDC `traceId`；若本地 MDC 为空（如非 Web 或脱钩线程）且 `ex.getTraceId()` 非空，自动回填至 `Result.traceId` 与 `[TraceId: {}]` 错误日志。
 2. **JSR-303 参数校验失败**：
    - 统一拦截 `MethodArgumentNotValidException`、`HandlerMethodValidationException`（Spring 6.1+）、`ConstraintViolationException` 与 `BindException`，自动提取首个不合规字段的友好提示返回 HTTP 200 + Code 400。
 3. **精细化 Web 传输层协议异常拦截**：
@@ -443,6 +444,15 @@ public Result<Void> triggerBusinessException() {
 public Result<Void> triggerCausalException() {
     throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "网关代理服务通信异常",
             new IOException("Connection reset by peer"));
+}
+
+// 2.1 模拟跨进程 RPC 调用失败后还原 BusinessException 并绑定远端 traceId
+@GetMapping("/error/remote-business")
+public Result<Void> triggerRemoteBusinessException() {
+    Result<Void> remoteResponse = Result.<Void>fail(5002, "下游库存服务锁定失败")
+            .traceId("rpc-inventory-trace-502");
+    remoteResponse.getOrThrow();
+    return Result.success();
 }
 
 // 3. 未捕获未知根异常（生产强制脱敏，MDC traceId 闭环溯源）

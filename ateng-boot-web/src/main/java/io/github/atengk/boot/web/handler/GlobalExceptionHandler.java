@@ -77,24 +77,35 @@ public class GlobalExceptionHandler {
 
     /**
      * 拦截受控业务中断异常 BusinessException
-     * 当异常携带底层驱动 cause 根因时，记录完整调用栈与 traceId 闭环；无 cause 时以 INFO 记录轻量业务提示
+     * 当异常携带底层驱动 cause 根因时，记录完整调用栈与 traceId 闭环；无 cause 时以 INFO 记录轻量业务提示；
+     * 若当前线程 MDC 无 traceId 且异常携带跨进程 traceId，则兜底回填至 Result.traceId
      *
      * @param e 业务异常
      * @return 业务错误响应结果
      */
     @ExceptionHandler(BusinessException.class)
     public Result<?> handleBusinessException(BusinessException e) {
+        String mdcTraceId = MDC.get(TraceFilter.MDC_TRACE_ID_KEY);
+        String effectiveTraceId = org.springframework.util.StringUtils.hasText(mdcTraceId) ? mdcTraceId : e.getTraceId();
         Result<?> customized = tryCustomize(e);
         if (customized != null) {
-            return customized;
+            return applyFallbackTraceId(customized, mdcTraceId, e.getTraceId());
         }
         if (e.getCause() != null) {
-            String traceId = MDC.get(TraceFilter.MDC_TRACE_ID_KEY);
-            log.error("[TraceId: {}] 业务因果异常中断: code={}, msg={}, cause: ", traceId, e.getCode(), e.getMsg(), e);
+            log.error("[TraceId: {}] 业务因果异常中断: code={}, msg={}, cause: ", effectiveTraceId, e.getCode(), e.getMsg(), e);
         } else {
             log.info("业务逻辑中断: code={}, msg={}", e.getCode(), e.getMsg());
         }
-        return Result.fail(e.getCode(), e.getMsg());
+        return applyFallbackTraceId(Result.fail(e.getCode(), e.getMsg()), mdcTraceId, e.getTraceId());
+    }
+
+    private Result<?> applyFallbackTraceId(Result<?> result, String mdcTraceId, String exceptionTraceId) {
+        if (!org.springframework.util.StringUtils.hasText(mdcTraceId)
+                && !org.springframework.util.StringUtils.hasText(result.getTraceId())
+                && org.springframework.util.StringUtils.hasText(exceptionTraceId)) {
+            result.traceId(exceptionTraceId);
+        }
+        return result;
     }
 
     /**

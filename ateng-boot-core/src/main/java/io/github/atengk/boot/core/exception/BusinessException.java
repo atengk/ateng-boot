@@ -35,6 +35,11 @@ public class BusinessException extends RuntimeException {
     private final boolean writableStackTrace;
 
     /**
+     * 可选跨进程链路追踪标识（用于 RPC/Feign 反序列化远端异常时透传原始 traceId）
+     */
+    private String traceId;
+
+    /**
      * 基于预置状态码契约构造（默认无堆栈轻量模式）
      *
      * @param resultCode 状态码对象
@@ -160,6 +165,17 @@ public class BusinessException extends RuntimeException {
             return customMsg;
         }
         return resultCode != null ? resultCode.getMsg() : CommonResultCode.INTERNAL_SERVER_ERROR.getMsg();
+    }
+
+    /**
+     * 链式绑定可选的跨进程链路追踪标识（空白字符串归一化为 null）
+     *
+     * @param traceId 远端或跨进程透传的链路追踪标识
+     * @return 当前异常实例
+     */
+    public BusinessException withTraceId(String traceId) {
+        this.traceId = (traceId != null && !traceId.isBlank()) ? traceId.trim() : null;
+        return this;
     }
 
     /**

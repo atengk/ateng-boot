@@ -21,7 +21,7 @@ _Avoid_: IErrorCode, StatusCodeInterface, ResultCodeApi
 _Avoid_: StandardErrorCode, BaseResultCode, DefaultStatusCode
 
 **BusinessException**:
-表征业务逻辑中断的受控运行时异常，携带对应的 ResultCode 供全局拦截转译为标准响应。
+表征业务逻辑中断的受控运行时异常，携带对应的 ResultCode 供全局拦截转译为标准响应，并支持可选 `traceId`（`withTraceId`）承接跨进程链路标识透传。
 _Avoid_: ServiceException, AppException, BizException
 
 **BusinessAssert**:

@@ -117,13 +117,21 @@ class ResultTest {
     }
 
     @Test
-    @DisplayName("getOrThrow 在失败状态下抛出对应 BusinessException")
+    @DisplayName("getOrThrow 在失败状态下抛出对应 BusinessException 并透传 traceId")
     void shouldThrowBusinessExceptionOnGetOrThrowWhenFailed() {
         Result<String> result = Result.fail(CommonResultCode.NOT_FOUND);
 
         BusinessException exception = assertThrows(BusinessException.class, result::getOrThrow);
         assertEquals(404, exception.getCode());
         assertEquals("请求资源不存在", exception.getMsg());
+        assertNull(exception.getTraceId());
+
+        Result<String> remoteFail = Result.<String>fail(503, "下游库存服务繁忙")
+                .traceId("remote-trace-503");
+        BusinessException remoteEx = assertThrows(BusinessException.class, remoteFail::getOrThrow);
+        assertEquals(503, remoteEx.getCode());
+        assertEquals("下游库存服务繁忙", remoteEx.getMsg());
+        assertEquals("remote-trace-503", remoteEx.getTraceId());
     }
 
     @Test
