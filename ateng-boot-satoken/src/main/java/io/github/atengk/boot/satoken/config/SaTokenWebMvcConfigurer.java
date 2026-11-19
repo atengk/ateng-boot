@@ -65,11 +65,11 @@ public class SaTokenWebMvcConfigurer implements WebMvcConfigurer {
                 ? interceptorProps.getIncludes()
                 : List.of("/**");
 
-        log.info("Sa-Token 注册全局路由拦截器: includes={}, excludes={}", includes, finalExcludes);
+        log.info("Sa-Token 注册全局路由拦截器: includes={}, whitelist={}", includes, finalExcludes);
 
-        // 4. 注册并挂载拦截规则
+        // 4. 注册并挂载拦截规则（静态白名单统一由 AtengSaTokenInterceptor.isWhitelisted 短路放行，
+        //    以保障白名单请求同样进入路由上下文、匿名租户头解析及 afterCompletion 清理闭环）
         registry.addInterceptor(saInterceptor)
-                .addPathPatterns(includes)
-                .excludePathPatterns(finalExcludes);
+                .addPathPatterns(includes);
     }
 }

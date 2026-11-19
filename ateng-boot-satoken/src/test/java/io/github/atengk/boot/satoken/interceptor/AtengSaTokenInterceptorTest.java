@@ -53,6 +53,8 @@ class AtengSaTokenInterceptorTest {
         TenantContextHolder.clear();
         UserContextHolder.setUserProvider(null);
         TenantContextHolder.setTenantProvider(null);
+        io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder.clear();
+        io.github.atengk.boot.satoken.context.SaTokenRouteContextHolder.clear();
     }
 
     @AfterEach
@@ -61,6 +63,8 @@ class AtengSaTokenInterceptorTest {
         TenantContextHolder.clear();
         UserContextHolder.setUserProvider(null);
         TenantContextHolder.setTenantProvider(null);
+        io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder.clear();
+        io.github.atengk.boot.satoken.context.SaTokenRouteContextHolder.clear();
     }
 
     @Test
@@ -615,6 +619,86 @@ class AtengSaTokenInterceptorTest {
             loginHelperMock.when(() -> LoginHelper.getUserId("member")).thenReturn("member-user");
             assertThat(passiveInterceptor.preHandle(request, response, new Object())).isTrue();
             assertThat(UserContextHolder.get()).isEqualTo("member-user");
+        }
+    }
+
+    @Test
+    @DisplayName("测试弱依赖自动桥接 DataPermissionContextHolder：超管注入与普通用户前置重置，afterCompletion 与异常时清理")
+    void testDataPermissionSuperAdminBridgeAndResetCleanup() throws Exception {
+        SaTokenProperties props = new SaTokenProperties();
+        props.setPrimaryLoginType("admin");
+        AtengSaTokenInterceptor bridgeInterceptor = new AtengSaTokenInterceptor(props);
+        bridgeInterceptor.isAnnotation(false);
+
+        when(request.getRequestURI()).thenReturn("/api/orders/list");
+
+        try (MockedStatic<LoginHelper> loginHelperMock = mockStatic(LoginHelper.class)) {
+            // 1. 模拟线程残留上一请求的脏 superAdmin 状态
+            io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder.setSuperAdmin(true);
+
+            // 普通用户进入 preHandle，应先重置为 false 再写入 false
+            loginHelperMock.when(() -> LoginHelper.getActiveLoginType("admin")).thenReturn("admin");
+            loginHelperMock.when(() -> LoginHelper.getUserId("admin")).thenReturn("user-1");
+            loginHelperMock.when(() -> LoginHelper.isSuperAdmin("admin")).thenReturn(false);
+
+            assertThat(bridgeInterceptor.preHandle(request, response, new Object())).isTrue();
+            assertThat(io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder.isSuperAdmin()).isFalse();
+
+            bridgeInterceptor.afterCompletion(request, response, new Object(), null);
+            assertThat(io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder.isSuperAdmin()).isFalse();
+
+            // 2. 超级管理员进入 preHandle，自动注入 true，afterCompletion 清理为 false
+            loginHelperMock.when(() -> LoginHelper.isSuperAdmin("admin")).thenReturn(true);
+            assertThat(bridgeInterceptor.preHandle(request, response, new Object())).isTrue();
+            assertThat(io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder.isSuperAdmin()).isTrue();
+
+            bridgeInterceptor.afterCompletion(request, response, new Object(), null);
+            assertThat(io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder.isSuperAdmin()).isFalse();
+
+            // 3. preHandle 中途抛出鉴权异常时，残留 superAdmin 状态亦应被重置清理
+            io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder.setSuperAdmin(true);
+            props.getInterceptor().setCheckLogin(true);
+            loginHelperMock.when(() -> LoginHelper.checkLogin("admin"))
+                    .thenThrow(new cn.dev33.satoken.exception.NotLoginException("未登录", "admin", "-1"));
+            assertThatThrownBy(() -> bridgeInterceptor.preHandle(request, response, new Object()))
+                    .isInstanceOf(cn.dev33.satoken.exception.NotLoginException.class);
+            assertThat(io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder.isSuperAdmin()).isFalse();
+        }
+    }
+
+    @Test
+    @DisplayName("测试 preHandle（含白名单分支）写入路由 loginType 上下文，afterCompletion 与异常分支确定性清理")
+    void testRouteLoginTypeContextLifecycleIncludingWhitelist() throws Exception {
+        SaTokenProperties props = new SaTokenProperties();
+        props.getInterceptor().setLoginTypeRoutes(Map.of("admin", List.of("/admin/**")));
+        AtengSaTokenInterceptor routeInterceptor = new AtengSaTokenInterceptor(props);
+        routeInterceptor.isAnnotation(false);
+        routeInterceptor.setWhitelist(List.of("/admin/public/**"));
+
+        try (MockedStatic<LoginHelper> loginHelperMock = mockStatic(LoginHelper.class)) {
+            // 1. 白名单分支命中 /admin/public/**：应写入路由 loginType="admin"，afterCompletion 清理
+            when(request.getRequestURI()).thenReturn("/admin/public/ping");
+            assertThat(routeInterceptor.preHandle(request, response, new Object())).isTrue();
+            assertThat(io.github.atengk.boot.satoken.context.SaTokenRouteContextHolder.get()).isEqualTo("admin");
+
+            routeInterceptor.afterCompletion(request, response, new Object(), null);
+            assertThat(io.github.atengk.boot.satoken.context.SaTokenRouteContextHolder.get()).isNull();
+
+            // 2. 非白名单分支命中 /admin/users：写入 "admin"，afterCompletion 清理
+            when(request.getRequestURI()).thenReturn("/admin/users");
+            assertThat(routeInterceptor.preHandle(request, response, new Object())).isTrue();
+            assertThat(io.github.atengk.boot.satoken.context.SaTokenRouteContextHolder.get()).isEqualTo("admin");
+
+            routeInterceptor.afterCompletion(request, response, new Object(), null);
+            assertThat(io.github.atengk.boot.satoken.context.SaTokenRouteContextHolder.get()).isNull();
+
+            // 3. 非白名单分支中途抛出异常：preHandle 清理路由上下文，不泄漏
+            props.getInterceptor().setCheckLogin(true);
+            loginHelperMock.when(() -> LoginHelper.checkLogin("admin"))
+                    .thenThrow(new cn.dev33.satoken.exception.NotLoginException("未登录", "admin", "-1"));
+            assertThatThrownBy(() -> routeInterceptor.preHandle(request, response, new Object()))
+                    .isInstanceOf(cn.dev33.satoken.exception.NotLoginException.class);
+            assertThat(io.github.atengk.boot.satoken.context.SaTokenRouteContextHolder.get()).isNull();
         }
     }
 }

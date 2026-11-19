@@ -259,4 +259,30 @@ class SaCheckDataOwnerAspectTest {
                     .hasMessage("仅管理员体系本人可操作");
         }
     }
+
+    @Test
+    @DisplayName("6. 未指定 type 时优先读取当前请求路由上下文 SaTokenRouteContextHolder 的 loginType")
+    void testRouteContextTakesPrecedenceOverActiveLoginType() {
+        io.github.atengk.boot.satoken.context.SaTokenRouteContextHolder.set("member");
+        try (MockedStatic<io.github.atengk.boot.satoken.util.LoginHelper> helperMock =
+                     mockStatic(io.github.atengk.boot.satoken.util.LoginHelper.class)) {
+            helperMock.when(io.github.atengk.boot.satoken.util.LoginHelper::getActiveLoginType).thenReturn("admin");
+            helperMock.when(() -> io.github.atengk.boot.satoken.util.LoginHelper.isSuperAdmin("member")).thenReturn(false);
+            helperMock.when(() -> io.github.atengk.boot.satoken.util.LoginHelper.isSelf("member", "member-100")).thenReturn(true);
+
+            MultiAccountOrderOwnerProvider provider = new MultiAccountOrderOwnerProvider();
+            ApplicationContext applicationContext = mock(ApplicationContext.class);
+            when(applicationContext.getBean(MultiAccountOrderOwnerProvider.class)).thenReturn(provider);
+
+            TestOrderServiceImpl target = new TestOrderServiceImpl();
+            AspectJProxyFactory factory = new AspectJProxyFactory(target);
+            factory.addAspect(new SaCheckDataOwnerAspect(applicationContext));
+            TestOrderService proxy = factory.getProxy();
+
+            assertThat(proxy.memberScopedCancel(2001L)).isEqualTo("SUCCESS_MEMBER_CANCEL_2001");
+            assertThat(provider.getLastLoginType()).isEqualTo("member");
+        } finally {
+            io.github.atengk.boot.satoken.context.SaTokenRouteContextHolder.clear();
+        }
+    }
 }

@@ -1,5 +1,6 @@
 package io.github.atengk.boot.satoken.properties;
 
+import io.github.atengk.boot.satoken.model.PathPermissionRule;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
@@ -30,6 +31,16 @@ public class SaTokenProperties {
      * 主账号登录类型标识（多账号共存时，用于优先映射当前请求操作人至 UserContextHolder），默认 login
      */
     private String primaryLoginType = "login";
+
+    /**
+     * 超级管理员角色编码列表（命中任意角色即视为超级管理员，默认保留 ["admin", "super_admin"] 向后兼容）
+     */
+    private List<String> superAdminRoles = new ArrayList<>(Arrays.asList("admin", "super_admin"));
+
+    /**
+     * 超级管理员通配符权限码列表（命中任意权限码即视为超级管理员，默认 ["*", "*:*:*"]；显式配置为空列表 [] 时禁用通配符超管判定）
+     */
+    private List<String> superAdminPermissions = new ArrayList<>(Arrays.asList("*", "*:*:*"));
 
     /**
      * Token 与底层会话核心生命周期强类型配置
@@ -86,6 +97,12 @@ public class SaTokenProperties {
     private DataOwnerProperties dataOwner = new DataOwnerProperties();
 
     /**
+     * 请求头租户解析与平台超管受控切换租户配置
+     */
+    @NestedConfigurationProperty
+    private TenantProperties tenant = new TenantProperties();
+
+    /**
      * 路由拦截器详细配置属性
      */
     @Data
@@ -100,6 +117,13 @@ public class SaTokenProperties {
          * 是否开启全局路由强制登录校验（严格模式，开启后除白名单外的所有路由均强制校验登录）
          */
         private boolean checkLogin = false;
+
+        /**
+         * 是否开启 Sa-Token 鉴权注解多账号自动路由（默认 true）。
+         * 开启后，未显式声明 {@code type} 的 {@code @SaCheckPermission}/{@code @SaCheckRole}/{@code @SaCheckLogin}/{@code @SaCheckSafe}/{@code @SaCheckDisable}
+         * 及 {@code @SaCheckOr} 注解将按 [当前请求路由 loginType > primary-login-type > "login"] 自动路由至对应 {@code StpLogic}。
+         */
+        private boolean autoRouteAnnotationType = true;
 
         /**
          * 拦截匹配的路径列表，默认为全部路径
@@ -131,6 +155,25 @@ public class SaTokenProperties {
          * </p>
          */
         private Map<String, List<String>> loginTypeRoutes = new LinkedHashMap<>();
+
+        /**
+         * YAML 静态路径权限规则列表（复用 {@link PathPermissionRule} 模型，按声明顺序匹配）。
+         * <p>
+         * 无需手写 {@code DynamicPathPermissionProvider} Java Bean 即可通过 YAML 配置接口路径（如 {@code /api/system/enums/**}）
+         * 所需的权限码、HTTP Method、校验模式及可选 {@code loginType}；
+         * 当同时存在动态 {@code DynamicPathPermissionProvider} Bean 时，优先匹配动态规则，未命中时回退本配置列表。
+         * </p>
+         */
+        private List<PathPermissionRule> pathPermissions = new ArrayList<>();
+
+        /**
+         * 多账号共享路径模式列表（支持 AntPath，如 {@code /api/system/enums/**}、{@code /api/common/**}）。
+         * <p>
+         * 在多账号体系共存且开启 {@code check-login=true} 时，未命中显式 {@code login-type-routes} 与规则显式 {@code loginType}
+         * 的共享路径将按请求实际携带的任一有效活跃账号体系探测放行，避免因单一绑定 {@code primary-login-type} 误杀其他端合法请求。
+         * </p>
+         */
+        private List<String> sharedLoginTypePaths = new ArrayList<>();
     }
 
     /**
@@ -331,6 +374,33 @@ public class SaTokenProperties {
          * 是否启用数据所有权 (@CheckDataOwner) 切面防御
          */
         private boolean enabled = true;
+    }
+
+    /**
+     * 请求头租户解析与平台超管受控动态切换租户属性
+     */
+    @Data
+    public static class TenantProperties {
+
+        /**
+         * 租户标识请求头名称，默认 X-Tenant-Id
+         */
+        private String headerName = "X-Tenant-Id";
+
+        /**
+         * 是否允许未登录（白名单 / @Anonymous）请求通过请求头解析租户上下文，默认 false
+         */
+        private boolean allowAnonymousHeader = false;
+
+        /**
+         * 是否允许平台超级管理员通过请求头受控临时切换租户上下文，默认 false
+         */
+        private boolean allowSuperAdminSwitch = false;
+
+        /**
+         * 允许超管执行跨租户切换的平台租户标识白名单（为空时不额外限制超管所属租户；非空时须同时命中超管身份与该集合）
+         */
+        private List<String> platformTenantIds = new ArrayList<>();
     }
 
     /**

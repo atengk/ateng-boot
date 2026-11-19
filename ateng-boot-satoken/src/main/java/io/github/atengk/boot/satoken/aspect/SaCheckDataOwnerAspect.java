@@ -4,6 +4,7 @@ import cn.dev33.satoken.stp.StpUtil;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.satoken.annotation.CheckDataOwner;
+import io.github.atengk.boot.satoken.context.SaTokenRouteContextHolder;
 import io.github.atengk.boot.satoken.spi.DataOwnerProvider;
 import io.github.atengk.boot.satoken.spi.DefaultDataOwnerProvider;
 import io.github.atengk.boot.satoken.util.LoginHelper;
@@ -74,6 +75,10 @@ public class SaCheckDataOwnerAspect {
         String explicitType = checkDataOwner.type();
         if (explicitType != null && !explicitType.isBlank()) {
             return explicitType.trim();
+        }
+        String routeType = SaTokenRouteContextHolder.get();
+        if (routeType != null && !routeType.isBlank()) {
+            return routeType.trim();
         }
         String activeType = LoginHelper.getActiveLoginType();
         return (activeType != null && !activeType.isBlank()) ? activeType : StpUtil.TYPE;

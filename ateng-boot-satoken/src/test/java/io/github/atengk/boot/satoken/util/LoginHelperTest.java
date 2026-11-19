@@ -515,5 +515,47 @@ class LoginHelperTest {
             verify(memberLogic).renewTimeout("member-tok-1", 2700L);
         }
     }
+
+    @Test
+    @DisplayName("18. superAdminRoles / superAdminPermissions 可配置收敛与通配符禁用")
+    void testConfigurableSuperAdminRolesAndPermissions() {
+        try (MockedStatic<StpUtil> stpUtilMock = mockStatic(StpUtil.class)) {
+            cn.dev33.satoken.session.SaSession mockSession = mock(cn.dev33.satoken.session.SaSession.class);
+            stpUtilMock.when(StpUtil::isLogin).thenReturn(true);
+            stpUtilMock.when(() -> StpUtil.getSession(false)).thenReturn(mockSession);
+            stpUtilMock.when(StpUtil::getLoginIdDefaultNull).thenReturn("u-100");
+
+            LoginUser tenantAdminUser = LoginUser.builder()
+                    .userId("u-100")
+                    .roles(Set.of("admin"))
+                    .permissions(Set.of("*", "*:*:*"))
+                    .build();
+            when(mockSession.get(SaTokenConstant.LOGIN_USER_KEY))
+                    .thenReturn(io.github.atengk.boot.core.util.JsonUtil.toJsonString(tenantAdminUser));
+
+            // 1. 默认配置兼容："admin" 与 "*" 均判定为超管
+            assertThat(LoginHelper.isSuperAdmin()).isTrue();
+
+            // 2. 收敛超管角色为仅 "super_admin"，但保留默认通配符权限时，"*" 仍触发超管
+            LoginHelper.setSuperAdminRoles(java.util.List.of("super_admin"));
+            assertThat(LoginHelper.isSuperAdmin()).isTrue();
+
+            // 3. 显式配置空权限列表禁用通配符超管判定后，仅携带 "admin" + "*" 返回 false
+            LoginHelper.setSuperAdminPermissions(java.util.Collections.emptyList());
+            assertThat(LoginHelper.isSuperAdmin()).isFalse();
+
+            // 4. 携带 "super_admin" 角色返回 true
+            LoginUser platformAdminUser = LoginUser.builder()
+                    .userId("u-1")
+                    .roles(Set.of("super_admin"))
+                    .permissions(Set.of())
+                    .build();
+            when(mockSession.get(SaTokenConstant.LOGIN_USER_KEY))
+                    .thenReturn(io.github.atengk.boot.core.util.JsonUtil.toJsonString(platformAdminUser));
+            assertThat(LoginHelper.isSuperAdmin()).isTrue();
+        } finally {
+            LoginHelper.resetSuperAdminConfig();
+        }
+    }
 }
 

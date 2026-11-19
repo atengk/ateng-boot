@@ -23,8 +23,10 @@ import org.springframework.util.ClassUtils;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
@@ -61,6 +63,26 @@ public final class LoginHelper {
     private static volatile String primaryLoginType = StpUtil.TYPE;
 
     /**
+     * 默认超级管理员角色编码集合（向后兼容默认包含 admin 与 super_admin）
+     */
+    private static final Set<String> DEFAULT_SUPER_ADMIN_ROLES = Set.of("admin", "super_admin");
+
+    /**
+     * 默认超级管理员通配符权限集合
+     */
+    private static final Set<String> DEFAULT_SUPER_ADMIN_PERMISSIONS = Set.of("*", "*:*:*");
+
+    /**
+     * 当前生效的超级管理员角色编码集合
+     */
+    private static volatile Set<String> superAdminRoles = DEFAULT_SUPER_ADMIN_ROLES;
+
+    /**
+     * 当前生效的超级管理员通配符权限集合（为空集时表示禁用通配符超管判定）
+     */
+    private static volatile Set<String> superAdminPermissions = DEFAULT_SUPER_ADMIN_PERMISSIONS;
+
+    /**
      * 可选 Web IP 工具存在性标记，防止无 ateng-boot-web 运行时触发 NoClassDefFoundError
      */
     private static final boolean WEB_IP_UTIL_PRESENT =
@@ -93,6 +115,63 @@ public final class LoginHelper {
         if (type != null && !type.isBlank()) {
             primaryLoginType = type.trim();
         }
+    }
+
+    /**
+     * 获取当前生效的超级管理员角色编码集合
+     *
+     * @return 不可变角色编码集合
+     */
+    public static Set<String> getSuperAdminRoles() {
+        return superAdminRoles;
+    }
+
+    /**
+     * 设置超级管理员角色编码集合（传入 null 或空集合时视为空集，即不通过角色判定超管）
+     *
+     * @param roles 角色编码集合
+     */
+    public static void setSuperAdminRoles(Collection<String> roles) {
+        superAdminRoles = normalizeSuperAdminSet(roles);
+    }
+
+    /**
+     * 获取当前生效的超级管理员通配符权限集合
+     *
+     * @return 不可变权限码集合
+     */
+    public static Set<String> getSuperAdminPermissions() {
+        return superAdminPermissions;
+    }
+
+    /**
+     * 设置超级管理员通配符权限集合（传入 null 或空集合时视为空集，即禁用通配符超管判定）
+     *
+     * @param permissions 通配符权限集合
+     */
+    public static void setSuperAdminPermissions(Collection<String> permissions) {
+        superAdminPermissions = normalizeSuperAdminSet(permissions);
+    }
+
+    /**
+     * 重置超级管理员角色与通配符权限配置为框架默认值
+     */
+    public static void resetSuperAdminConfig() {
+        superAdminRoles = DEFAULT_SUPER_ADMIN_ROLES;
+        superAdminPermissions = DEFAULT_SUPER_ADMIN_PERMISSIONS;
+    }
+
+    private static Set<String> normalizeSuperAdminSet(Collection<String> source) {
+        if (source == null || source.isEmpty()) {
+            return Collections.emptySet();
+        }
+        Set<String> normalized = new LinkedHashSet<>();
+        for (String item : source) {
+            if (item != null && !item.isBlank()) {
+                normalized.add(item.trim());
+            }
+        }
+        return normalized.isEmpty() ? Collections.emptySet() : Collections.unmodifiableSet(normalized);
     }
 
     /**
@@ -1489,17 +1568,12 @@ public final class LoginHelper {
 
     /**
      * 判断当前登录用户是否具备超级管理员特权
-     * 判定标准：角色集合包含 "admin" 或 "super_admin"，或权限集合包含 "*" 或 "*:*:*"
+     * 判定标准：命中已配置的 {@link #getSuperAdminRoles()} 角色，或命中已配置的 {@link #getSuperAdminPermissions()} 通配符权限
      *
      * @return true 表示具备超级管理员特权
      */
     public static boolean isSuperAdmin() {
-        Set<String> roles = getRoles();
-        if (roles.contains("admin") || roles.contains("super_admin")) {
-            return true;
-        }
-        Set<String> permissions = getPermissions();
-        return permissions.contains("*") || permissions.contains("*:*:*");
+        return matchesSuperAdmin(getRoles(), getPermissions());
     }
 
     /**
@@ -1512,12 +1586,27 @@ public final class LoginHelper {
         if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
             return isSuperAdmin();
         }
-        Set<String> roles = getRoles(loginType);
-        if (roles.contains("admin") || roles.contains("super_admin")) {
-            return true;
+        return matchesSuperAdmin(getRoles(loginType), getPermissions(loginType));
+    }
+
+    private static boolean matchesSuperAdmin(Set<String> roles, Set<String> permissions) {
+        Set<String> configuredRoles = superAdminRoles;
+        if (!configuredRoles.isEmpty() && roles != null && !roles.isEmpty()) {
+            for (String role : configuredRoles) {
+                if (roles.contains(role)) {
+                    return true;
+                }
+            }
         }
-        Set<String> permissions = getPermissions(loginType);
-        return permissions.contains("*") || permissions.contains("*:*:*");
+        Set<String> configuredPermissions = superAdminPermissions;
+        if (!configuredPermissions.isEmpty() && permissions != null && !permissions.isEmpty()) {
+            for (String perm : configuredPermissions) {
+                if (permissions.contains(perm)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     // ==================== 二级安全认证 (Safe Mode) ====================

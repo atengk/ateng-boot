@@ -31,9 +31,13 @@ import io.github.atengk.boot.satoken.processor.AnonymousUrlProcessor;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
 import io.github.atengk.boot.satoken.provider.SaTokenCurrentTenantProvider;
 import io.github.atengk.boot.satoken.provider.SaTokenCurrentUserProvider;
+import io.github.atengk.boot.satoken.spi.DataPermissionBridge;
 import io.github.atengk.boot.satoken.spi.DynamicPathPermissionProvider;
+import io.github.atengk.boot.satoken.spi.MyBatisPlusDataPermissionBridge;
 import io.github.atengk.boot.satoken.spi.SaTokenWhitelistProvider;
+import io.github.atengk.boot.satoken.spi.TenantHeaderSwitchValidator;
 import io.github.atengk.boot.satoken.stp.DefaultStpInterface;
+import io.github.atengk.boot.satoken.strategy.SaTokenAnnotationAutoRouteRegistrar;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import java.time.Duration;
 import java.util.List;
@@ -98,8 +102,17 @@ public class AtengSaTokenAutoConfiguration {
         // 自动桥接 TokenProperties 强类型配置至 SaManager.getConfig()
         applyTokenProperties(properties.getToken());
 
-        // 同步配置的主账号体系类型至 LoginHelper 门面
+        // 同步配置的主账号体系类型及超级管理员判定集合至 LoginHelper 门面
         LoginHelper.setPrimaryLoginType(properties.getPrimaryLoginType());
+        LoginHelper.setSuperAdminRoles(properties.getSuperAdminRoles());
+        LoginHelper.setSuperAdminPermissions(properties.getSuperAdminPermissions());
+
+        // 根据配置注册或恢复 Sa-Token 鉴权注解多账号自动路由策略
+        if (properties.getInterceptor() != null && properties.getInterceptor().isAutoRouteAnnotationType()) {
+            SaTokenAnnotationAutoRouteRegistrar.register();
+        } else {
+            SaTokenAnnotationAutoRouteRegistrar.restoreDefaultsIfManaged();
+        }
 
         // 自动挂载 Sa-Token 当前操作人与当前租户提取 SPI 至 Core 核心底座
         UserContextHolder.setUserProvider(new SaTokenCurrentUserProvider(properties));
@@ -348,18 +361,49 @@ public class AtengSaTokenAutoConfiguration {
     }
 
     /**
+     * 存在 ateng-boot-mybatis-plus 类路径时自动注册数据权限超管上下文桥接 SPI
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder")
+    static class DataPermissionBridgeConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(DataPermissionBridge.class)
+        public DataPermissionBridge dataPermissionBridge() {
+            return MyBatisPlusDataPermissionBridge.getInstance();
+        }
+    }
+
+    /**
+     * 注册默认的请求头租户切换校验 SPI（默认通过前置格式校验即放行，业务侧可自定义 Bean 校验租户存在性与启用状态）
+     *
+     * @return TenantHeaderSwitchValidator 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(TenantHeaderSwitchValidator.class)
+    public TenantHeaderSwitchValidator tenantHeaderSwitchValidator() {
+        return (targetTenantId, currentTenantId, loginType, anonymous) -> true;
+    }
+
+    /**
      * 注册 Sa-Token 增强路由拦截器实例
      *
-     * @param dynamicPathPermissionProvider 动态路径权限提供者 ObjectProvider
+     * @param dynamicPathPermissionProvider      动态路径权限提供者 ObjectProvider
+     * @param dataPermissionBridgeProvider       数据权限超管上下文桥接器 ObjectProvider
+     * @param tenantHeaderSwitchValidatorProvider 请求头租户切换校验器 ObjectProvider
      * @return AtengSaTokenInterceptor 拦截器实例
      */
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.satoken.interceptor", name = "enabled", havingValue = "true", matchIfMissing = true)
     public AtengSaTokenInterceptor atengSaTokenInterceptor(
-            ObjectProvider<DynamicPathPermissionProvider> dynamicPathPermissionProvider) {
+            ObjectProvider<DynamicPathPermissionProvider> dynamicPathPermissionProvider,
+            ObjectProvider<DataPermissionBridge> dataPermissionBridgeProvider,
+            ObjectProvider<TenantHeaderSwitchValidator> tenantHeaderSwitchValidatorProvider) {
         AtengSaTokenInterceptor saInterceptor = new AtengSaTokenInterceptor(properties, dynamicPathPermissionProvider);
         saInterceptor.isAnnotation(false);
+        dataPermissionBridgeProvider.ifAvailable(saInterceptor::setDataPermissionBridge);
+        tenantHeaderSwitchValidatorProvider.ifAvailable(saInterceptor::setTenantHeaderSwitchValidator);
         return saInterceptor;
     }
 

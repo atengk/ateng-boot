@@ -5,11 +5,17 @@ import cn.dev33.satoken.fun.SaParamFunction;
 import cn.dev33.satoken.interceptor.SaInterceptor;
 import cn.dev33.satoken.stp.StpLogic;
 import cn.dev33.satoken.stp.StpUtil;
+import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.satoken.context.SaTokenRouteContextHolder;
 import io.github.atengk.boot.satoken.model.PathPermissionRule;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
+import io.github.atengk.boot.satoken.spi.DataPermissionBridge;
 import io.github.atengk.boot.satoken.spi.DynamicPathPermissionProvider;
+import io.github.atengk.boot.satoken.spi.MyBatisPlusDataPermissionBridge;
+import io.github.atengk.boot.satoken.spi.TenantHeaderSwitchValidator;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -27,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.regex.Pattern;
 
 /**
  * ateng-boot Sa-Token 增强路由拦截器
@@ -41,6 +48,8 @@ import java.util.concurrent.locks.ReentrantLock;
 @Slf4j
 public class AtengSaTokenInterceptor extends SaInterceptor {
 
+    private static final Pattern TENANT_ID_PATTERN = Pattern.compile("^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$");
+
     private final PathMatcher pathMatcher = new AntPathMatcher();
     private final UrlPathHelper urlPathHelper = UrlPathHelper.defaultInstance;
     private final ReentrantLock whitelistLock = new ReentrantLock();
@@ -48,6 +57,8 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
     private final SaTokenProperties properties;
     private final ObjectProvider<DynamicPathPermissionProvider> dynamicPathPermissionProvider;
     private DynamicPathPermissionProvider customProvider;
+    private volatile DataPermissionBridge dataPermissionBridge = MyBatisPlusDataPermissionBridge.getInstance();
+    private volatile TenantHeaderSwitchValidator tenantHeaderSwitchValidator;
     private volatile boolean customAuthConfigured;
 
     public AtengSaTokenInterceptor() {
@@ -102,6 +113,26 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
      */
     public void setDynamicPathPermissionProvider(DynamicPathPermissionProvider customProvider) {
         this.customProvider = customProvider;
+    }
+
+    /**
+     * 设置数据权限超管上下文桥接器
+     *
+     * @param dataPermissionBridge 数据权限桥接器（为 null 时回退默认弱依赖桥接器）
+     */
+    public void setDataPermissionBridge(DataPermissionBridge dataPermissionBridge) {
+        this.dataPermissionBridge = dataPermissionBridge != null
+                ? dataPermissionBridge
+                : MyBatisPlusDataPermissionBridge.getInstance();
+    }
+
+    /**
+     * 设置请求头租户切换与匿名解析校验器 SPI
+     *
+     * @param tenantHeaderSwitchValidator 租户切换校验器
+     */
+    public void setTenantHeaderSwitchValidator(TenantHeaderSwitchValidator tenantHeaderSwitchValidator) {
+        this.tenantHeaderSwitchValidator = tenantHeaderSwitchValidator;
     }
 
     /**
@@ -179,43 +210,68 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
-        String lookupPath = getRequestPath(request);
-        if (isWhitelisted(lookupPath)) {
-            // 白名单/匿名路由：跳过 Sa-Token 鉴权（如 checkLogin），若携带有效凭据仍按路由提示同步上下文
-            String routeLoginType = resolveRouteLoginType(lookupPath);
-            syncContextIfLoggedIn(routeLoginType, routeLoginType != null);
+        // 前置重置路由上下文与超管数据权限上下文，防止工作线程残留上一请求的脏状态
+        SaTokenRouteContextHolder.clear();
+        resetDataPermissionSuperAdmin();
+        try {
+            String lookupPath = getRequestPath(request);
+            if (isWhitelisted(lookupPath)) {
+                // 白名单/匿名路由：先写入命中的路由 loginType 上下文，再跳过 Sa-Token 鉴权并按需同步上下文
+                String routeLoginType = resolveRouteLoginType(lookupPath);
+                if (routeLoginType != null) {
+                    SaTokenRouteContextHolder.set(routeLoginType);
+                }
+                boolean loggedIn = syncContextIfLoggedIn(request, routeLoginType, routeLoginType != null);
+                if (!loggedIn) {
+                    applyAnonymousTenantHeaderIfAllowed(request, routeLoginType);
+                }
+                return true;
+            }
+
+            // 1. 先解析路径权限规则（DynamicPathPermissionProvider SPI 优先，未命中回退 YAML path-permissions）与路由 loginType
+            PathPermissionRule matchedRule = resolveDynamicPathRule(request, lookupPath);
+            String explicitTargetLoginType = resolveExplicitTargetLoginType(matchedRule, lookupPath);
+            String routedOrDetectedLoginType = explicitTargetLoginType;
+            if (routedOrDetectedLoginType == null && (isSharedLoginTypePath(lookupPath) || matchedRule != null)) {
+                routedOrDetectedLoginType = resolveActiveLoginTypeCandidate(resolvePrimaryLoginType());
+            }
+            if (routedOrDetectedLoginType != null) {
+                SaTokenRouteContextHolder.set(routedOrDetectedLoginType);
+            }
+            String checkLoginTargetType = (routedOrDetectedLoginType != null)
+                    ? routedOrDetectedLoginType
+                    : resolvePrimaryLoginType();
+
+            // 2. 执行父类注解/自定义 auth 回调
+            boolean pass = super.preHandle(request, response, handler);
+            if (!pass) {
+                clearAllRequestContexts();
+                return false;
+            }
+
+            // 3. 若未设置自定义 auth 且开启全域严格登录校验，则按解析出的目标账号体系执行 checkLogin
+            String checkedLoginType = null;
+            if (!this.customAuthConfigured && isCheckLoginEnabled()) {
+                LoginHelper.checkLogin(checkLoginTargetType);
+                checkedLoginType = checkLoginTargetType;
+            }
+
+            // 4. 校验路径权限规则（动态 SPI 或 YAML path-permissions）
+            if (matchedRule != null) {
+                checkMatchedRulePermission(matchedRule, routedOrDetectedLoginType, checkedLoginType);
+            }
+
+            // 5. 将当前命中账号体系的租户、用户与数据权限超管上下文同步至底座
+            String syncPreferredType = routedOrDetectedLoginType != null ? routedOrDetectedLoginType : checkedLoginType;
+            boolean loggedIn = syncContextIfLoggedIn(request, syncPreferredType, explicitTargetLoginType != null);
+            if (!loggedIn) {
+                applyAnonymousTenantHeaderIfAllowed(request, explicitTargetLoginType);
+            }
             return true;
+        } catch (Throwable ex) {
+            clearAllRequestContexts();
+            throw ex;
         }
-
-        // 1. 先解析动态路径权限规则与静态路由 loginType 映射（优先级：动态规则 loginType > 路由映射 > primary-login-type）
-        PathPermissionRule matchedRule = resolveDynamicPathRule(request, lookupPath);
-        String explicitTargetLoginType = resolveExplicitTargetLoginType(matchedRule, lookupPath);
-        String checkLoginTargetType = (explicitTargetLoginType != null)
-                ? explicitTargetLoginType
-                : resolvePrimaryLoginType();
-
-        // 2. 执行父类注解/自定义 auth 回调
-        boolean pass = super.preHandle(request, response, handler);
-        if (!pass) {
-            return false;
-        }
-
-        // 3. 若未设置自定义 auth 且开启全域严格登录校验，则按解析出的目标账号体系执行 checkLogin
-        String checkedLoginType = null;
-        if (!this.customAuthConfigured && isCheckLoginEnabled()) {
-            LoginHelper.checkLogin(checkLoginTargetType);
-            checkedLoginType = checkLoginTargetType;
-        }
-
-        // 4. 校验动态路径权限规则
-        if (matchedRule != null) {
-            checkMatchedRulePermission(matchedRule, explicitTargetLoginType, checkedLoginType);
-        }
-
-        // 5. 将当前命中账号体系的租户与用户上下文同步至 Core 底座
-        String syncPreferredType = explicitTargetLoginType != null ? explicitTargetLoginType : checkedLoginType;
-        syncContextIfLoggedIn(syncPreferredType, explicitTargetLoginType != null);
-        return true;
     }
 
     /**
@@ -284,29 +340,110 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
 
     private PathPermissionRule resolveDynamicPathRule(HttpServletRequest request, String lookupPath) {
         String httpMethod = request != null ? request.getMethod() : null;
+        // 1. 优先匹配外部编程式或 Spring 容器注册的 DynamicPathPermissionProvider SPI
         if (this.customProvider != null) {
-            return this.customProvider.matchRule(this.pathMatcher, lookupPath, httpMethod);
-        }
-        if (this.dynamicPathPermissionProvider == null) {
-            return null;
-        }
-
-        DynamicPathPermissionProvider single = null;
-        try {
-            single = this.dynamicPathPermissionProvider.getIfAvailable();
-        } catch (Exception ignored) {
-        }
-        if (single != null) {
-            return single.matchRule(this.pathMatcher, lookupPath, httpMethod);
-        }
-
-        for (DynamicPathPermissionProvider provider : this.dynamicPathPermissionProvider.orderedStream().toList()) {
-            if (provider == null) {
-                continue;
-            }
-            PathPermissionRule matched = provider.matchRule(this.pathMatcher, lookupPath, httpMethod);
+            PathPermissionRule matched = this.customProvider.matchRule(this.pathMatcher, lookupPath, httpMethod);
             if (matched != null) {
                 return matched;
+            }
+        }
+        if (this.dynamicPathPermissionProvider != null) {
+            DynamicPathPermissionProvider single = null;
+            try {
+                single = this.dynamicPathPermissionProvider.getIfAvailable();
+            } catch (Exception ignored) {
+            }
+            if (single != null) {
+                PathPermissionRule matched = single.matchRule(this.pathMatcher, lookupPath, httpMethod);
+                if (matched != null) {
+                    return matched;
+                }
+            } else {
+                for (DynamicPathPermissionProvider provider : this.dynamicPathPermissionProvider.orderedStream().toList()) {
+                    if (provider == null) {
+                        continue;
+                    }
+                    PathPermissionRule matched = provider.matchRule(this.pathMatcher, lookupPath, httpMethod);
+                    if (matched != null) {
+                        return matched;
+                    }
+                }
+            }
+        }
+        // 2. 动态规则未命中时，回退匹配 YAML 静态路径权限规则 (interceptor.path-permissions)
+        return resolveStaticPathPermissionRule(lookupPath, httpMethod);
+    }
+
+    private PathPermissionRule resolveStaticPathPermissionRule(String lookupPath, String httpMethod) {
+        if (properties == null || properties.getInterceptor() == null) {
+            return null;
+        }
+        List<PathPermissionRule> staticRules = properties.getInterceptor().getPathPermissions();
+        if (staticRules == null || staticRules.isEmpty()) {
+            return null;
+        }
+        for (PathPermissionRule rule : staticRules) {
+            if (rule != null && rule.matches(this.pathMatcher, lookupPath, httpMethod)) {
+                return rule;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 判断指定路径是否命中多账号共享路径模式列表 (interceptor.shared-login-type-paths)
+     *
+     * @param lookupPath 请求路径
+     * @return true 表示属于多账号共享路径
+     */
+    public boolean isSharedLoginTypePath(String lookupPath) {
+        if (!hasText(lookupPath) || properties == null || properties.getInterceptor() == null) {
+            return false;
+        }
+        List<String> sharedPaths = properties.getInterceptor().getSharedLoginTypePaths();
+        if (sharedPaths == null || sharedPaths.isEmpty()) {
+            return false;
+        }
+        for (String rawPattern : sharedPaths) {
+            String pattern = normalizeRoutePattern(rawPattern);
+            if (pattern != null && pathMatcher.match(pattern, lookupPath)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String resolveActiveLoginTypeCandidate(String preferredType) {
+        String activeType = LoginHelper.getActiveLoginType(preferredType);
+        if (hasText(activeType)) {
+            return activeType.trim();
+        }
+        if (hasText(preferredType) && LoginHelper.isLogin(preferredType.trim())) {
+            return preferredType.trim();
+        }
+        if (properties == null || properties.getInterceptor() == null) {
+            return null;
+        }
+        Set<String> candidates = new LinkedHashSet<>();
+        Map<String, List<String>> routes = properties.getInterceptor().getLoginTypeRoutes();
+        if (routes != null) {
+            for (String routeType : routes.keySet()) {
+                if (hasText(routeType)) {
+                    candidates.add(routeType.trim());
+                }
+            }
+        }
+        List<PathPermissionRule> staticRules = properties.getInterceptor().getPathPermissions();
+        if (staticRules != null) {
+            for (PathPermissionRule rule : staticRules) {
+                if (rule != null && hasText(rule.getLoginType())) {
+                    candidates.add(rule.getLoginType().trim());
+                }
+            }
+        }
+        for (String candidate : candidates) {
+            if (LoginHelper.isLogin(candidate)) {
+                return candidate;
             }
         }
         return null;
@@ -327,7 +464,7 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
         String targetType = explicitTargetLoginType;
         if (targetType == null) {
             String preferredType = properties != null ? properties.getPrimaryLoginType() : null;
-            String activeType = LoginHelper.getActiveLoginType(preferredType);
+            String activeType = resolveActiveLoginTypeCandidate(preferredType);
             targetType = hasText(activeType) ? activeType : StpUtil.TYPE;
         }
         StpLogic logic = LoginHelper.getStpLogic(targetType);
@@ -358,58 +495,209 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
         try {
             super.afterCompletion(request, response, handler, ex);
         } finally {
-            // 无论请求成功与否，强制清空当前线程用户与多租户上下文，彻底杜绝容器线程池复用污染
+            // 无论请求成功与否，强制清空当前线程用户、多租户及数据权限上下文，彻底杜绝容器线程池复用污染
+            clearAllRequestContexts();
+        }
+    }
+
+    private void resetDataPermissionSuperAdmin() {
+        DataPermissionBridge bridge = this.dataPermissionBridge;
+        if (bridge != null) {
+            bridge.setSuperAdmin(false);
+        }
+    }
+
+    private void clearAllRequestContexts() {
+        try {
+            SaTokenRouteContextHolder.clear();
+        } finally {
             try {
                 UserContextHolder.clear();
             } finally {
-                TenantContextHolder.clear();
+                try {
+                    TenantContextHolder.clear();
+                } finally {
+                    DataPermissionBridge bridge = this.dataPermissionBridge;
+                    if (bridge != null) {
+                        bridge.clear();
+                    }
+                }
             }
         }
     }
 
     /**
-     * 若已登录，同步用户与多租户上下文（支持多账号路由映射与 primary-login-type 探测）
+     * 若已登录，同步用户、多租户与数据权限超管上下文（支持多账号路由映射与 primary-login-type 探测）
      *
+     * @param request            HTTP 请求（用于提取受控租户切换头）
      * @param preferredLoginType 优先同步的账号体系类型
      * @param strictExplicitType 是否为路由/规则显式绑定的账号体系（为 true 时仅同步该体系，避免跨账号串号）
+     * @return true 表示当前请求已处于登录态并完成上下文同步；false 表示当前未登录
      */
-    private void syncContextIfLoggedIn(String preferredLoginType, boolean strictExplicitType) {
+    private boolean syncContextIfLoggedIn(HttpServletRequest request, String preferredLoginType, boolean strictExplicitType) {
         if (strictExplicitType && hasText(preferredLoginType)) {
             if (LoginHelper.isLogin(preferredLoginType)) {
-                applyContextForLoginType(preferredLoginType);
+                applyContextForLoginType(request, preferredLoginType);
+                return true;
             }
-            return;
+            return false;
         }
 
         String preferredType = hasText(preferredLoginType)
                 ? preferredLoginType
                 : (properties != null ? properties.getPrimaryLoginType() : null);
-        String activeType = LoginHelper.getActiveLoginType(preferredType);
+        String activeType = resolveActiveLoginTypeCandidate(preferredType);
         if (activeType != null) {
-            applyContextForLoginType(activeType);
-            return;
+            applyContextForLoginType(request, activeType);
+            return true;
         }
         // 保底兼容：当 activeType 探测未命中时使用无参 LoginHelper 登录态（兼容 Mock 静态打桩场景）
         if (LoginHelper.isLogin()) {
-            String tenantId = LoginHelper.getTenantId();
-            if (hasText(tenantId)) {
-                TenantContextHolder.setTenantId(tenantId);
+            applyResolvedContext(request, StpUtil.TYPE, LoginHelper.getUserId(), LoginHelper.getTenantId(), LoginHelper.isSuperAdmin());
+            return true;
+        }
+        return false;
+    }
+
+    private void applyContextForLoginType(HttpServletRequest request, String loginType) {
+        applyResolvedContext(
+                request,
+                loginType,
+                LoginHelper.getUserId(loginType),
+                LoginHelper.getTenantId(loginType),
+                LoginHelper.isSuperAdmin(loginType)
+        );
+    }
+
+    private void applyResolvedContext(
+            HttpServletRequest request,
+            String loginType,
+            String userId,
+            String sessionTenantId,
+            boolean superAdmin) {
+        String effectiveTenantId = resolveEffectiveTenantIdForLoggedInUser(request, sessionTenantId, loginType, superAdmin);
+        if (hasText(effectiveTenantId)) {
+            TenantContextHolder.setTenantId(effectiveTenantId);
+        }
+        if (hasText(userId)) {
+            UserContextHolder.set(userId);
+        }
+        syncDataPermissionSuperAdmin(superAdmin);
+    }
+
+    private void applyAnonymousTenantHeaderIfAllowed(HttpServletRequest request, String routeLoginType) {
+        SaTokenProperties.TenantProperties tenantProps = resolveTenantProperties();
+        if (tenantProps == null || !tenantProps.isAllowAnonymousHeader()) {
+            return;
+        }
+        String headerTenantId = extractTenantHeader(request, tenantProps);
+        if (headerTenantId == null) {
+            return;
+        }
+        // 防跨端绕过：即使目标路由对应 loginType 未登录，若请求携带了其他任意账号体系的有效 Token，
+        // 亦不得将其视为匿名请求而直接采信客户端伪造的 X-Tenant-Id
+        if (hasAnyActiveLoginSession()) {
+            log.debug("检测到请求已携带有效登录会话，拒绝按匿名规则解析租户请求头: routeLoginType={}", routeLoginType);
+            return;
+        }
+        validateTenantHeaderFormatAndSwitch(headerTenantId, null, routeLoginType, true);
+        TenantContextHolder.setTenantId(headerTenantId);
+    }
+
+    private boolean hasAnyActiveLoginSession() {
+        return resolveActiveLoginTypeCandidate(resolvePrimaryLoginType()) != null || LoginHelper.isLogin();
+    }
+
+    private String resolveEffectiveTenantIdForLoggedInUser(
+            HttpServletRequest request,
+            String sessionTenantId,
+            String loginType,
+            boolean superAdmin) {
+        if (!superAdmin) {
+            // 普通已登录用户绝对忽略请求头租户参数，强制锁定会话归属租户
+            return sessionTenantId;
+        }
+        SaTokenProperties.TenantProperties tenantProps = resolveTenantProperties();
+        if (tenantProps == null || !tenantProps.isAllowSuperAdminSwitch()) {
+            return sessionTenantId;
+        }
+        if (!isPlatformTenantAllowed(tenantProps, sessionTenantId)) {
+            return sessionTenantId;
+        }
+        String headerTenantId = extractTenantHeader(request, tenantProps);
+        if (headerTenantId == null) {
+            return sessionTenantId;
+        }
+        validateTenantHeaderFormatAndSwitch(headerTenantId, sessionTenantId, loginType, false);
+        return headerTenantId;
+    }
+
+    private SaTokenProperties.TenantProperties resolveTenantProperties() {
+        return properties != null ? properties.getTenant() : null;
+    }
+
+    private String extractTenantHeader(HttpServletRequest request, SaTokenProperties.TenantProperties tenantProps) {
+        if (request == null || tenantProps == null || !hasText(tenantProps.getHeaderName())) {
+            return null;
+        }
+        String raw = request.getHeader(tenantProps.getHeaderName().trim());
+        if (!hasText(raw)) {
+            return null;
+        }
+        return raw.trim();
+    }
+
+    private boolean isPlatformTenantAllowed(SaTokenProperties.TenantProperties tenantProps, String sessionTenantId) {
+        List<String> platformTenantIds = tenantProps.getPlatformTenantIds();
+        if (platformTenantIds == null || platformTenantIds.isEmpty()) {
+            return true;
+        }
+        boolean hasConfiguredPlatformTenant = false;
+        String normalizedSessionTenant = hasText(sessionTenantId) ? sessionTenantId.trim() : null;
+        for (String candidate : platformTenantIds) {
+            if (!hasText(candidate)) {
+                continue;
             }
-            String userId = LoginHelper.getUserId();
-            if (hasText(userId)) {
-                UserContextHolder.set(userId);
+            hasConfiguredPlatformTenant = true;
+            if (normalizedSessionTenant != null && candidate.trim().equals(normalizedSessionTenant)) {
+                return true;
             }
+        }
+        return !hasConfiguredPlatformTenant;
+    }
+
+    private void validateTenantHeaderFormatAndSwitch(
+            String targetTenantId,
+            String currentTenantId,
+            String loginType,
+            boolean anonymous) {
+        if (!isValidTenantIdFormat(targetTenantId)) {
+            log.warn("拦截非法格式的租户请求头: targetTenantId={}, loginType={}, anonymous={}",
+                    targetTenantId, loginType, anonymous);
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "非法租户标识格式");
+        }
+        TenantHeaderSwitchValidator validator = this.tenantHeaderSwitchValidator;
+        if (validator != null && !validator.validate(targetTenantId, currentTenantId, loginType, anonymous)) {
+            log.warn("租户请求头未通过切换校验 SPI: targetTenantId={}, currentTenantId={}, loginType={}, anonymous={}",
+                    targetTenantId, currentTenantId, loginType, anonymous);
+            throw new BusinessException(CommonResultCode.FORBIDDEN, "无权切换或访问目标租户");
         }
     }
 
-    private void applyContextForLoginType(String loginType) {
-        String tenantId = LoginHelper.getTenantId(loginType);
-        if (hasText(tenantId)) {
-            TenantContextHolder.setTenantId(tenantId);
+    private static boolean isValidTenantIdFormat(String tenantId) {
+        if (!hasText(tenantId)) {
+            return false;
         }
-        String userId = LoginHelper.getUserId(loginType);
-        if (hasText(userId)) {
-            UserContextHolder.set(userId);
+        if (tenantId.contains("..") || tenantId.endsWith(".")) {
+            return false;
+        }
+        return TENANT_ID_PATTERN.matcher(tenantId).matches();
+    }
+
+    private void syncDataPermissionSuperAdmin(boolean superAdmin) {
+        DataPermissionBridge bridge = this.dataPermissionBridge;
+        if (bridge != null) {
+            bridge.setSuperAdmin(superAdmin);
         }
     }
 

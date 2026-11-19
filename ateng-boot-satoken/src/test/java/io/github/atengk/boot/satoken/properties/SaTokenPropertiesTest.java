@@ -32,6 +32,9 @@ class SaTokenPropertiesTest {
         io.github.atengk.boot.core.context.TenantContextHolder.setTenantProvider(null);
         io.github.atengk.boot.core.context.UserContextHolder.clear();
         io.github.atengk.boot.core.context.TenantContextHolder.clear();
+        io.github.atengk.boot.satoken.util.LoginHelper.resetSuperAdminConfig();
+        io.github.atengk.boot.satoken.context.SaTokenRouteContextHolder.clear();
+        io.github.atengk.boot.satoken.strategy.SaTokenAnnotationAutoRouteRegistrar.restoreDefaultsIfManaged();
     }
 
     @Test
@@ -157,6 +160,124 @@ class SaTokenPropertiesTest {
                     assertThat(context).hasNotFailed();
                     assertThat(context).hasSingleBean(io.github.atengk.boot.satoken.cache.PermissionCacheService.class);
                     assertThat(context).doesNotHaveBean("saTokenClusterRedisMessageListenerContainer");
+                });
+    }
+
+    @Test
+    @DisplayName("验证 superAdminRoles 与 superAdminPermissions 默认值、空列表禁用通配符及同步 LoginHelper")
+    void testSuperAdminRolesAndPermissionsConfigSync() {
+        SaTokenProperties defaults = new SaTokenProperties();
+        assertThat(defaults.getSuperAdminRoles()).containsExactly("admin", "super_admin");
+        assertThat(defaults.getSuperAdminPermissions()).containsExactly("*", "*:*:*");
+
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.satoken.super-admin-roles[0]=super_admin",
+                        "ateng.boot.satoken.super-admin-permissions="
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    SaTokenProperties props = context.getBean(SaTokenProperties.class);
+                    assertThat(props.getSuperAdminRoles()).containsExactly("super_admin");
+                    assertThat(props.getSuperAdminPermissions()).isEmpty();
+                    assertThat(io.github.atengk.boot.satoken.util.LoginHelper.getSuperAdminRoles())
+                            .containsExactly("super_admin");
+                    assertThat(io.github.atengk.boot.satoken.util.LoginHelper.getSuperAdminPermissions())
+                            .isEmpty();
+                });
+    }
+
+    @Test
+    @DisplayName("验证未引入 ateng-boot-mybatis-plus 类路径时自动装配正常启动无 ClassNotFoundException")
+    void testAutoConfigurationWithoutMyBatisPlusOnClasspath() {
+        contextRunner
+                .withClassLoader(new org.springframework.boot.test.context.FilteredClassLoader(
+                        io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder.class
+                ))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.satoken.interceptor.AtengSaTokenInterceptor.class);
+                });
+    }
+
+    @Test
+    @DisplayName("验证 interceptor.auto-route-annotation-type 默认开启及关闭开关控制 SaAnnotationStrategy 处理器")
+    void testAutoRouteAnnotationTypePropertyToggle() {
+        SaTokenProperties defaults = new SaTokenProperties();
+        assertThat(defaults.getInterceptor().isAutoRouteAnnotationType()).isTrue();
+
+        contextRunner
+                .withPropertyValues("ateng.boot.satoken.interceptor.auto-route-annotation-type=true")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(io.github.atengk.boot.satoken.strategy.SaTokenAnnotationAutoRouteRegistrar.isRegistered()).isTrue();
+                });
+
+        contextRunner
+                .withPropertyValues("ateng.boot.satoken.interceptor.auto-route-annotation-type=false")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(io.github.atengk.boot.satoken.strategy.SaTokenAnnotationAutoRouteRegistrar.isRegistered()).isFalse();
+                });
+    }
+
+    @Test
+    @DisplayName("验证 tenant.* 请求头租户配置默认值、属性绑定与 TenantHeaderSwitchValidator 默认 SPI 装配")
+    void testTenantHeaderPropertiesAndValidatorAutoConfig() {
+        SaTokenProperties defaults = new SaTokenProperties();
+        assertThat(defaults.getTenant()).isNotNull();
+        assertThat(defaults.getTenant().getHeaderName()).isEqualTo("X-Tenant-Id");
+        assertThat(defaults.getTenant().isAllowAnonymousHeader()).isFalse();
+        assertThat(defaults.getTenant().isAllowSuperAdminSwitch()).isFalse();
+        assertThat(defaults.getTenant().getPlatformTenantIds()).isEmpty();
+
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.satoken.tenant.header-name=X-Custom-Tenant",
+                        "ateng.boot.satoken.tenant.allow-anonymous-header=true",
+                        "ateng.boot.satoken.tenant.allow-super-admin-switch=true",
+                        "ateng.boot.satoken.tenant.platform-tenant-ids[0]=0",
+                        "ateng.boot.satoken.tenant.platform-tenant-ids[1]=platform"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    SaTokenProperties props = context.getBean(SaTokenProperties.class);
+                    assertThat(props.getTenant().getHeaderName()).isEqualTo("X-Custom-Tenant");
+                    assertThat(props.getTenant().isAllowAnonymousHeader()).isTrue();
+                    assertThat(props.getTenant().isAllowSuperAdminSwitch()).isTrue();
+                    assertThat(props.getTenant().getPlatformTenantIds()).containsExactly("0", "platform");
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.satoken.spi.TenantHeaderSwitchValidator.class);
+                });
+    }
+
+    @Test
+    @DisplayName("验证 interceptor.path-permissions 与 shared-login-type-paths YAML 绑定")
+    void testPathPermissionsAndSharedLoginTypePathsBinding() {
+        SaTokenProperties defaults = new SaTokenProperties();
+        assertThat(defaults.getInterceptor().getPathPermissions()).isNotNull().isEmpty();
+        assertThat(defaults.getInterceptor().getSharedLoginTypePaths()).isNotNull().isEmpty();
+
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.satoken.interceptor.shared-login-type-paths[0]=/api/system/enums/**",
+                        "ateng.boot.satoken.interceptor.path-permissions[0].path-pattern=/api/system/enums/**",
+                        "ateng.boot.satoken.interceptor.path-permissions[0].http-method=GET",
+                        "ateng.boot.satoken.interceptor.path-permissions[0].permissions[0]=system:enum:list",
+                        "ateng.boot.satoken.interceptor.path-permissions[0].mode=AND",
+                        "ateng.boot.satoken.interceptor.path-permissions[0].login-type=admin"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    SaTokenProperties props = context.getBean(SaTokenProperties.class);
+                    assertThat(props.getInterceptor().getSharedLoginTypePaths())
+                            .containsExactly("/api/system/enums/**");
+                    assertThat(props.getInterceptor().getPathPermissions()).hasSize(1);
+                    io.github.atengk.boot.satoken.model.PathPermissionRule rule = props.getInterceptor().getPathPermissions().get(0);
+                    assertThat(rule.getPathPattern()).isEqualTo("/api/system/enums/**");
+                    assertThat(rule.getHttpMethod()).isEqualTo("GET");
+                    assertThat(rule.getPermissions()).containsExactly("system:enum:list");
+                    assertThat(rule.getMode()).isEqualTo(cn.dev33.satoken.annotation.SaMode.AND);
+                    assertThat(rule.getLoginType()).isEqualTo("admin");
                 });
     }
 }
