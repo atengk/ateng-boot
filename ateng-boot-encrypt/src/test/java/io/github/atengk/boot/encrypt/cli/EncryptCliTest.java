@@ -113,6 +113,11 @@ class EncryptCliTest {
         int missingParamCode = cli.run(new String[]{"--encrypt", "-v", "only-val"});
         assertEquals(1, missingParamCode);
         assertTrue(out.toString(StandardCharsets.UTF_8).contains("必须提供"));
+
+        out.reset();
+        int invalidDecryptAlgoCode = cli.run(new String[]{"--decrypt", "-v", "ENC(abc)", "-p", "Secret", "-a", "UNKNOWN"});
+        assertEquals(1, invalidDecryptAlgoCode);
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("[ERROR] 不支持的算法类型: UNKNOWN"));
     }
 
     @Test

@@ -69,6 +69,7 @@ public class AtengEncryptAutoConfiguration {
      * @return 优先级最高的 BeanFactoryPostProcessor
      */
     @Bean
+    @ConditionalOnMissingBean(name = "encryptContainerBridgePostProcessor")
     public static BeanFactoryPostProcessor encryptContainerBridgePostProcessor() {
         return new PriorityContainerBridgePostProcessor();
     }
@@ -80,6 +81,7 @@ public class AtengEncryptAutoConfiguration {
      * @return SmartInitializingSingleton 回调
      */
     @Bean
+    @ConditionalOnMissingBean(name = "encryptContainerBridgeInitializer")
     public SmartInitializingSingleton encryptContainerBridgeInitializer(ConfigurableListableBeanFactory beanFactory) {
         return () -> syncContainerRuntimeToEnvironment(environment, beanFactory);
     }
@@ -248,10 +250,7 @@ public class AtengEncryptAutoConfiguration {
                                                        CiphertextParser parser,
                                                        MultiKeyRegistry multiKeyRegistry,
                                                        ObjectProvider<ConfigDecryptor> decryptorsProvider) {
-        List<ConfigDecryptor> decryptors = decryptorsProvider != null
-                ? decryptorsProvider.orderedStream().toList()
-                : Collections.emptyList();
-        return new PlaintextIngressGuard(properties, parser, multiKeyRegistry, decryptors);
+        return new PlaintextIngressGuard(properties, parser, multiKeyRegistry, resolveDecryptors(decryptorsProvider));
     }
 
     @Bean
@@ -261,10 +260,14 @@ public class AtengEncryptAutoConfiguration {
                                            MultiKeyRegistry multiKeyRegistry,
                                            CiphertextParser ciphertextParser,
                                            ObjectProvider<ConfigDecryptor> decryptorsProvider) {
-        List<ConfigDecryptor> decryptors = decryptorsProvider != null
+        return new EncryptTemplate(properties, defaultEncryptAlgorithm, multiKeyRegistry,
+                ciphertextParser, resolveDecryptors(decryptorsProvider));
+    }
+
+    private List<ConfigDecryptor> resolveDecryptors(ObjectProvider<ConfigDecryptor> decryptorsProvider) {
+        return decryptorsProvider != null
                 ? decryptorsProvider.orderedStream().toList()
                 : Collections.emptyList();
-        return new EncryptTemplate(properties, defaultEncryptAlgorithm, multiKeyRegistry, ciphertextParser, decryptors);
     }
 
     @EventListener

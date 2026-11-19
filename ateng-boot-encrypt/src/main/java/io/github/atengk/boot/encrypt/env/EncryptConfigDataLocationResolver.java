@@ -142,48 +142,44 @@ public class EncryptConfigDataLocationResolver implements ConfigDataLocationReso
 
     private boolean isEncryptEnabled(ConfigDataLocationResolverContext context) {
         Binder binder = context != null ? context.getBinder() : null;
-        Optional<Boolean> bound = bindOptional(binder, EncryptEnvironmentSupport.PROPERTY_ENABLED, Boolean.class);
-        if (bound.isPresent()) {
-            return bound.get();
-        }
-        return EncryptEnvironmentSupport.resolveBooleanProperty(
-                null, EncryptEnvironmentSupport.PROPERTY_ENABLED, EncryptEnvironmentSupport.ENV_ENABLED, true);
+        return resolveBoolean(binder, EncryptEnvironmentSupport.PROPERTY_ENABLED, EncryptEnvironmentSupport.ENV_ENABLED, true);
     }
 
     private EncryptAlgorithm resolveDefaultAlgorithm(Binder binder) {
-        String algoCode = bindOptional(binder, EncryptEnvironmentSupport.PROPERTY_ALGORITHM, String.class).orElse(null);
-        if (algoCode == null || algoCode.trim().isEmpty()) {
-            algoCode = EncryptEnvironmentSupport.resolveStringProperty(
-                    null, EncryptEnvironmentSupport.PROPERTY_ALGORITHM, EncryptEnvironmentSupport.ENV_ALGORITHM);
-        }
+        String algoCode = resolveString(binder, EncryptEnvironmentSupport.PROPERTY_ALGORITHM, EncryptEnvironmentSupport.ENV_ALGORITHM);
         EncryptAlgorithm configured = EncryptAlgorithm.fromCode(algoCode);
         return configured != null ? configured : EncryptAlgorithm.AES_GCM;
     }
 
     private boolean resolveFailOnError(Binder binder) {
-        Optional<Boolean> bound = bindOptional(binder, EncryptEnvironmentSupport.PROPERTY_FAIL_ON_ERROR, Boolean.class);
-        if (bound.isPresent()) {
-            return bound.get();
-        }
-        return EncryptEnvironmentSupport.resolveBooleanProperty(
-                null, EncryptEnvironmentSupport.PROPERTY_FAIL_ON_ERROR, EncryptEnvironmentSupport.ENV_FAIL_ON_ERROR, true);
+        return resolveBoolean(binder, EncryptEnvironmentSupport.PROPERTY_FAIL_ON_ERROR, EncryptEnvironmentSupport.ENV_FAIL_ON_ERROR, true);
     }
 
     private CiphertextParser resolveParser(Binder binder) {
-        String prefix = bindOptional(binder, EncryptEnvironmentSupport.PROPERTY_PREFIX, String.class)
-                .orElseGet(() -> EncryptEnvironmentSupport.resolveStringProperty(
-                        null, EncryptEnvironmentSupport.PROPERTY_PREFIX, EncryptEnvironmentSupport.ENV_PREFIX));
-        String suffix = bindOptional(binder, EncryptEnvironmentSupport.PROPERTY_SUFFIX, String.class)
-                .orElseGet(() -> EncryptEnvironmentSupport.resolveStringProperty(
-                        null, EncryptEnvironmentSupport.PROPERTY_SUFFIX, EncryptEnvironmentSupport.ENV_SUFFIX));
-        boolean compatibleCipher = bindOptional(binder, EncryptEnvironmentSupport.PROPERTY_COMPATIBLE_CIPHER, Boolean.class)
-                .orElseGet(() -> EncryptEnvironmentSupport.resolveBooleanProperty(
-                        null, EncryptEnvironmentSupport.PROPERTY_COMPATIBLE_CIPHER,
-                        EncryptEnvironmentSupport.ENV_COMPATIBLE_CIPHER, false));
+        String prefix = resolveString(binder, EncryptEnvironmentSupport.PROPERTY_PREFIX, EncryptEnvironmentSupport.ENV_PREFIX);
+        String suffix = resolveString(binder, EncryptEnvironmentSupport.PROPERTY_SUFFIX, EncryptEnvironmentSupport.ENV_SUFFIX);
+        boolean compatibleCipher = resolveBoolean(
+                binder, EncryptEnvironmentSupport.PROPERTY_COMPATIBLE_CIPHER, EncryptEnvironmentSupport.ENV_COMPATIBLE_CIPHER, false);
         if (prefix != null || suffix != null || compatibleCipher) {
             return new CiphertextParser(prefix, suffix, compatibleCipher);
         }
         return PARSER;
+    }
+
+    private String resolveString(Binder binder, String propertyName, String envName) {
+        String value = bindOptional(binder, propertyName, String.class).orElse(null);
+        if (value != null && !value.trim().isEmpty()) {
+            return value;
+        }
+        return EncryptEnvironmentSupport.resolveStringProperty(null, propertyName, envName);
+    }
+
+    private boolean resolveBoolean(Binder binder, String propertyName, String envName, boolean defaultValue) {
+        Optional<Boolean> bound = bindOptional(binder, propertyName, Boolean.class);
+        if (bound.isPresent()) {
+            return bound.get();
+        }
+        return EncryptEnvironmentSupport.resolveBooleanProperty(null, propertyName, envName, defaultValue);
     }
 
     private void bindKeys(Binder binder, KeyDetector keyDetector) {

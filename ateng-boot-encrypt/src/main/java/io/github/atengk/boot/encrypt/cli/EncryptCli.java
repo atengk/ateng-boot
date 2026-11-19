@@ -374,8 +374,10 @@ public class EncryptCli {
             return 1;
         }
 
-        String algoStr = getParam(params, "algorithm", "a");
-        EncryptAlgorithm algo = (algoStr != null) ? EncryptAlgorithm.fromCode(algoStr) : EncryptAlgorithm.AES_GCM;
+        EncryptAlgorithm algo = parseAlgorithmOrPrintError(params);
+        if (algo == null) {
+            return 1;
+        }
 
         try {
             if (parser.hasEncrypted(value)) {

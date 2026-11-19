@@ -18,6 +18,8 @@ import io.github.atengk.boot.encrypt.template.EncryptTemplate;
 import io.github.atengk.boot.encrypt.wrapper.EncryptPropertySourceWrapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.core.env.ConfigurableEnvironment;
@@ -78,10 +80,23 @@ class AtengEncryptAutoConfigurationTest {
     @DisplayName("开发者定制接管: 用户自定义 Bean 时平滑覆盖框架默认 Bean")
     void testCustomBeanOverride() {
         CiphertextParser customParser = new CiphertextParser("MY_ENC[", "]");
-        contextRunner.withBean("customParser", CiphertextParser.class, () -> customParser)
+        BeanFactoryPostProcessor customBridgePostProcessor = beanFactory -> {
+        };
+        SmartInitializingSingleton customBridgeInitializer = () -> {
+        };
+        contextRunner
+                .withBean("customParser", CiphertextParser.class, () -> customParser)
+                .withBean("encryptContainerBridgePostProcessor", BeanFactoryPostProcessor.class,
+                        () -> customBridgePostProcessor)
+                .withBean("encryptContainerBridgeInitializer", SmartInitializingSingleton.class,
+                        () -> customBridgeInitializer)
                 .run(context -> {
                     assertThat(context).hasSingleBean(CiphertextParser.class);
                     assertThat(context.getBean(CiphertextParser.class)).isSameAs(customParser);
+                    assertThat(context.getBean("encryptContainerBridgePostProcessor"))
+                            .isSameAs(customBridgePostProcessor);
+                    assertThat(context.getBean("encryptContainerBridgeInitializer"))
+                            .isSameAs(customBridgeInitializer);
                 });
     }
 
