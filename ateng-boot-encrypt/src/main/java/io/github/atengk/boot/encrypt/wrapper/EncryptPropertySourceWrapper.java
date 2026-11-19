@@ -19,8 +19,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 /**
@@ -46,7 +48,11 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
 
     private final PropertySource<?> delegate;
     private final ReentrantLock listenerLock = new ReentrantLock();
+    private final ReentrantLock containerSyncLock = new ReentrantLock();
     private volatile RuntimeConfig runtimeConfig;
+    private volatile BooleanSupplier containerSyncHook;
+    private final AtomicBoolean containerSynced = new AtomicBoolean(false);
+    private final ThreadLocal<Boolean> syncingInCurrentThread = new ThreadLocal<>();
 
     private Consumer<String> registeredListener;
     private MultiKeyRegistry registeredRegistry;
@@ -125,18 +131,24 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
             return cached;
         }
 
+        // 首次触发密文按需解密前，确保已完成容器级 Bean（KMS 解密器 / MultiKeyRegistry / RetryPolicy）反向回填
+        syncWithContainerHookIfNeeded();
+        RuntimeConfig syncedConfig = this.runtimeConfig;
+        CiphertextParser syncedParser = syncedConfig.parser();
+        ConcurrentHashMap<String, Object> targetCache = decryptedCacheRef.get();
+
         // 按需懒解密并存入缓存
         try {
-            String decrypted = currentParser.replaceTokens(strVal, token -> {
+            String decrypted = syncedParser.replaceTokens(strVal, token -> {
                 String keyId = token.getKeyId();
-                String password = config.keyDetector().getPassword(keyId);
+                String password = syncedConfig.keyDetector().getPassword(keyId);
                 if (password == null || password.trim().isEmpty()) {
-                    throw new ConfigDecryptionException(name, keyId, config.defaultAlgorithm().getCode(),
+                    throw new ConfigDecryptionException(name, keyId, syncedConfig.defaultAlgorithm().getCode(),
                             new IllegalStateException(String.format("缺失解密主密钥 [KeyId: '%s']",
                                     keyId != null ? keyId : "default")));
                 }
-                EncryptAlgorithm algorithm = token.getAlgorithm() != null ? token.getAlgorithm() : config.defaultAlgorithm();
-                ConfigDecryptor decryptor = findDecryptor(config.decryptors(), algorithm);
+                EncryptAlgorithm algorithm = token.getAlgorithm() != null ? token.getAlgorithm() : syncedConfig.defaultAlgorithm();
+                ConfigDecryptor decryptor = findDecryptor(syncedConfig.decryptors(), algorithm);
                 if (decryptor == null) {
                     throw new UnsupportedOperationException("未找到支持算法的解密器: " + algorithm);
                 }
@@ -146,10 +158,10 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
                     throw new ConfigDecryptionException(name, keyId, algorithm.getCode(), e);
                 }
             });
-            cache.put(name, decrypted);
+            targetCache.put(name, decrypted);
             return decrypted;
         } catch (ConfigDecryptionException e) {
-            if (config.failOnError()) {
+            if (syncedConfig.failOnError()) {
                 throw e;
             }
             log.warn("[ateng-boot-encrypt] 配置项 '{}' 解密失败，由于 fail-on-error=false 已降级返回原始值: {}", name, e.getMessage());
@@ -157,7 +169,7 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
         } catch (Exception e) {
             ConfigDecryptionException ex = new ConfigDecryptionException(name,
                     e.getMessage() != null ? e.getMessage() : "未知解密异常", e);
-            if (config.failOnError()) {
+            if (syncedConfig.failOnError()) {
                 throw ex;
             }
             log.warn("[ateng-boot-encrypt] 配置项 '{}' 解密失败，由于 fail-on-error=false 已降级返回原始值: {}", name, ex.getMessage());
@@ -265,6 +277,59 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
                                     EncryptAlgorithm defaultAlgorithm,
                                     boolean failOnError) {
         applyRuntimeConfig(parser, keyDetector, decryptors, defaultAlgorithm, failOnError);
+    }
+
+    /**
+     * 挂载容器期运行时反向同步回调钩子，用于在首个懒解密读取前安全回填容器 Bean（如自定义 KMS 解密器）
+     *
+     * @param hook 幂等同步回调，返回 true 表示已完成本次同步，返回 false 表示重入跳过暂不置位
+     */
+    public void setContainerSyncHook(BooleanSupplier hook) {
+        this.containerSyncHook = hook;
+    }
+
+    /**
+     * 标记当前包装器已完成容器期运行时配置反向同步
+     */
+    public void markContainerSynced() {
+        this.containerSynced.set(true);
+    }
+
+    /**
+     * 判断当前包装器是否已完成容器期反向同步
+     *
+     * @return 若已完成容器同步则返回 true
+     */
+    public boolean isContainerSynced() {
+        return containerSynced.get();
+    }
+
+    private void syncWithContainerHookIfNeeded() {
+        if (containerSynced.get() || Boolean.TRUE.equals(syncingInCurrentThread.get())) {
+            return;
+        }
+        BooleanSupplier hook = this.containerSyncHook;
+        if (hook == null) {
+            return;
+        }
+        containerSyncLock.lock();
+        try {
+            if (containerSynced.get()) {
+                return;
+            }
+            syncingInCurrentThread.set(Boolean.TRUE);
+            try {
+                if (hook.getAsBoolean()) {
+                    containerSynced.set(true);
+                }
+            } finally {
+                syncingInCurrentThread.remove();
+            }
+        } finally {
+            if (containerSyncLock.isHeldByCurrentThread()) {
+                containerSyncLock.unlock();
+            }
+        }
     }
 
     private void applyRuntimeConfig(CiphertextParser parser,

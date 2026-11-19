@@ -1,9 +1,13 @@
 package io.github.atengk.boot.sample.encrypt;
 
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
+import io.github.atengk.boot.encrypt.decryptor.AbstractKmsConfigDecryptor;
 import io.github.atengk.boot.encrypt.decryptor.ConfigEncryptor;
+import io.github.atengk.boot.encrypt.exception.ConfigDecryptionException;
 import io.github.atengk.boot.encrypt.exception.ConfigSecurityException;
+import io.github.atengk.boot.encrypt.guard.PlaintextIngressGuard;
 import io.github.atengk.boot.encrypt.guard.SanitizingGuard;
+import io.github.atengk.boot.encrypt.key.MultiKeyRegistry;
 import io.github.atengk.boot.encrypt.template.EncryptTemplate;
 import io.github.atengk.boot.encrypt.wrapper.EncryptPropertySourceWrapper;
 import io.github.atengk.boot.sample.encrypt.config.SampleSecretProperties;
@@ -16,21 +20,30 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.actuate.endpoint.SanitizableData;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.builder.SpringApplicationBuilder;
+import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.env.PropertySource;
 
+import javax.crypto.BadPaddingException;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -389,6 +402,163 @@ class EncryptSampleApplicationTest {
             assertEquals("twoPhaseSm4DbPass", props.getDatabasePassword());
             assertEquals("twoPhaseLegacyRedisPass", props.getRedisPassword());
             assertEquals("ENC(BrokenTwoPhaseCipher)", props.getThirdPartyToken());
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @TestConfiguration
+    @EnableAutoConfiguration
+    @EnableConfigurationProperties(KmsSampleProperties.class)
+    static class KmsBridgeE2EApp {
+
+        @Bean
+        AbstractKmsConfigDecryptor sampleKmsDecryptor(KmsInvocationTracker tracker) {
+            return new AbstractKmsConfigDecryptor() {
+                @Override
+                protected String doDecrypt(String ciphertext, String password) throws Exception {
+                    if ("bad-padding".equals(ciphertext)) {
+                        tracker.badPaddingAttempts.incrementAndGet();
+                        throw new BadPaddingException("sample bad padding");
+                    }
+                    int attempt = tracker.transientAttempts.incrementAndGet();
+                    if (attempt < 4) {
+                        throw new IOException("sample transient kms failure #" + attempt);
+                    }
+                    return "e2e-kms:" + ciphertext;
+                }
+            };
+        }
+
+        @Bean
+        KmsInvocationTracker kmsInvocationTracker() {
+            return new KmsInvocationTracker();
+        }
+
+        @Bean
+        EarlyKmsConsumerService earlyKmsConsumerService(
+                @Value("${sample.kms.value-secret}") String valueSecret,
+                KmsSampleProperties kmsSampleProperties) {
+            return new EarlyKmsConsumerService(valueSecret, kmsSampleProperties);
+        }
+    }
+
+    static class KmsInvocationTracker {
+        final AtomicInteger transientAttempts = new AtomicInteger();
+        final AtomicInteger badPaddingAttempts = new AtomicInteger();
+    }
+
+    @ConfigurationProperties(prefix = "sample.kms")
+    static class KmsSampleProperties {
+        private String configSecret;
+
+        public String getConfigSecret() {
+            return configSecret;
+        }
+
+        public void setConfigSecret(String configSecret) {
+            this.configSecret = configSecret;
+        }
+    }
+
+    static class EarlyKmsConsumerService {
+        private final String valueSecret;
+        private final KmsSampleProperties kmsSampleProperties;
+
+        EarlyKmsConsumerService(String valueSecret, KmsSampleProperties kmsSampleProperties) {
+            this.valueSecret = valueSecret;
+            this.kmsSampleProperties = kmsSampleProperties;
+        }
+
+        String getValueSecret() {
+            return valueSecret;
+        }
+
+        String getConfigSecret() {
+            return kmsSampleProperties.getConfigSecret();
+        }
+    }
+
+    @Test
+    @DisplayName("端到端验证容器期 KMS Bean 反向桥接至 @Value / @ConfigurationProperties / EncryptTemplate，且不触发双重重试")
+    void testContainerKmsBridgeWithValueAndConfigurationPropertiesAndNoDoubleRetry() {
+        ConfigurableApplicationContext ctx = new SpringApplicationBuilder(KmsBridgeE2EApp.class)
+                .run(
+                        "--spring.main.web-application-type=none",
+                        "--ateng.boot.encrypt.password=SampleMasterSecretKey2026!",
+                        "--ateng.boot.encrypt.retry.max-attempts=4",
+                        "--ateng.boot.encrypt.retry.delay=5ms",
+                        "--sample.kms.value-secret=ENC(KMS@value-payload)",
+                        "--sample.kms.config-secret=ENC(KMS@config-payload)",
+                        "--sample.kms.bad-padding=ENC(KMS@bad-padding)"
+                );
+        try {
+            KmsInvocationTracker tracker = ctx.getBean(KmsInvocationTracker.class);
+            EarlyKmsConsumerService consumer = ctx.getBean(EarlyKmsConsumerService.class);
+            assertEquals("e2e-kms:value-payload", consumer.getValueSecret());
+            assertEquals("e2e-kms:config-payload", consumer.getConfigSecret());
+            // @Value(4次) + @ConfigurationProperties(每次doDecrypt到4才成功) => 4 + 1 = 5（注意 attempt>=4 时不再失败，说明首次第4次成功、第二次直接1次成功）
+            assertEquals(5, tracker.transientAttempts.get());
+
+            tracker.transientAttempts.set(0);
+            EncryptTemplate template = ctx.getBean(EncryptTemplate.class);
+            // 验证 BadPaddingException 快速失败（仅尝试 1 次，触发条件为 EncryptPropertySourceWrapper 与 EncryptTemplate）
+            PropertySource<?> commandLineSource = ctx.getEnvironment().getPropertySources().get("commandLineArgs");
+            assertInstanceOf(EncryptPropertySourceWrapper.class, commandLineSource);
+            assertThrows(ConfigDecryptionException.class,
+                    () -> commandLineSource.getProperty("sample.kms.bad-padding"));
+            assertEquals(1, tracker.badPaddingAttempts.get());
+
+            tracker.badPaddingAttempts.set(0);
+            assertThrows(ConfigDecryptionException.class,
+                    () -> template.decrypt("ENC(KMS@bad-padding)"));
+            assertEquals(1, tracker.badPaddingAttempts.get());
+            assertEquals("e2e-kms:template-payload", template.decrypt("ENC(KMS@template-payload)"));
+            assertEquals(4, tracker.transientAttempts.get());
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @Test
+    @DisplayName("端到端验证热更新与 MultiKeyRegistry 单例联动：保留运行期轮换密钥、支持 KMS 与新属性源缓存失效")
+    void testHotRefreshSharesManagedRegistryWithRotationAndKms() {
+        ConfigurableApplicationContext ctx = new SpringApplicationBuilder(KmsBridgeE2EApp.class)
+                .run(
+                        "--spring.main.web-application-type=none",
+                        "--ateng.boot.encrypt.password=SampleMasterSecretKey2026!",
+                        "--ateng.boot.encrypt.retry.max-attempts=4",
+                        "--ateng.boot.encrypt.retry.delay=5ms",
+                        "--sample.kms.value-secret=ENC(KMS@startup-ok)",
+                        "--sample.kms.config-secret=ENC(KMS@startup-config)"
+                );
+        try {
+            MultiKeyRegistry registry = ctx.getBean(MultiKeyRegistry.class);
+            PlaintextIngressGuard guard = ctx.getBean(PlaintextIngressGuard.class);
+            ConfigurableEnvironment env = ctx.getEnvironment();
+
+            String rotatedKeyV1 = "E2eHotKeyV1@2026";
+            String rotatedKeyV2 = "E2eHotKeyV2@2026";
+            registry.registerKey("hot-e2e-key", rotatedKeyV1);
+
+            Map<String, Object> hotMap = new HashMap<>();
+            hotMap.put("sample.hot.rotated", "ENC[hot-e2e-key](" + ConfigEncryptor.encrypt("hot-v1", rotatedKeyV1, EncryptAlgorithm.AES_GCM) + ")");
+            hotMap.put("sample.hot.kms", "ENC(KMS@hot-kms-payload)");
+            env.getPropertySources().addFirst(new MapPropertySource("e2eNacosHotSource", hotMap));
+
+            guard.onEnvironmentChange(Set.of("sample.hot.rotated", "sample.hot.kms"), env);
+
+            assertEquals("hot-v1", env.getProperty("sample.hot.rotated"));
+            assertEquals("e2e-kms:hot-kms-payload", env.getProperty("sample.hot.kms"));
+
+            PropertySource<?> wrapped = env.getPropertySources().get("e2eNacosHotSource");
+            assertInstanceOf(EncryptPropertySourceWrapper.class, wrapped);
+            assertSame(registry, ((EncryptPropertySourceWrapper) wrapped).getKeyRegistry());
+
+            // 再次轮换密钥验证新纳管属性源缓存同步失效
+            hotMap.put("sample.hot.rotated", "ENC[hot-e2e-key](" + ConfigEncryptor.encrypt("hot-v2", rotatedKeyV2, EncryptAlgorithm.AES_GCM) + ")");
+            registry.registerKey("hot-e2e-key", rotatedKeyV2);
+            assertEquals("hot-v2", env.getProperty("sample.hot.rotated"));
         } finally {
             ctx.close();
         }

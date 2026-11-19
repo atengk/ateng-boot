@@ -31,18 +31,21 @@ public final class ConfigDecryptorFactory {
                                                                EncryptRetryProperties retryProperties) {
         List<ConfigDecryptor> list = new ArrayList<>();
         if (customDecryptors != null) {
-            list.addAll(customDecryptors);
+            for (ConfigDecryptor custom : customDecryptors) {
+                ConfigDecryptor adapted = adaptKmsDecryptor(custom, retryProperties);
+                if (adapted != null) {
+                    list.add(adapted);
+                }
+            }
         }
 
         // 1. 通过 Java ServiceLoader 发现外部 SPI 扩展解密器（如外部云 KMS、硬件加密机扩展）
         ServiceLoader<ConfigDecryptor> serviceLoader = ServiceLoader.load(ConfigDecryptor.class);
         for (ConfigDecryptor spiDecryptor : serviceLoader) {
-            if (list.stream().noneMatch(d -> d.getClass().equals(spiDecryptor.getClass()))) {
-                if (retryProperties != null && spiDecryptor.supports(EncryptAlgorithm.KMS)
-                        && !(spiDecryptor instanceof RetryingConfigDecryptor)) {
-                    list.add(new RetryingConfigDecryptor(spiDecryptor, retryProperties));
-                } else {
-                    list.add(spiDecryptor);
+            if (list.stream().noneMatch(d -> unwrapDelegateClass(d).equals(spiDecryptor.getClass()))) {
+                ConfigDecryptor adapted = adaptKmsDecryptor(spiDecryptor, retryProperties);
+                if (adapted != null) {
+                    list.add(adapted);
                 }
             }
         }
@@ -65,6 +68,38 @@ public final class ConfigDecryptorFactory {
         }
 
         return Collections.unmodifiableList(list);
+    }
+
+    /**
+     * 统一适配 KMS 解密器与重试策略：杜绝 AbstractKmsConfigDecryptor 或 RetryingConfigDecryptor 触发双重嵌套重试
+     */
+    private static ConfigDecryptor adaptKmsDecryptor(ConfigDecryptor decryptor,
+                                                     EncryptRetryProperties retryProperties) {
+        if (decryptor == null) {
+            return null;
+        }
+        if (decryptor instanceof RetryingConfigDecryptor) {
+            return decryptor;
+        }
+        if (decryptor instanceof AbstractKmsConfigDecryptor kmsDecryptor) {
+            if (retryProperties != null && !kmsDecryptor.hasExplicitRetryConfig()) {
+                kmsDecryptor.updateRetryProperties(retryProperties);
+            }
+            return kmsDecryptor;
+        }
+        if (decryptor.supports(EncryptAlgorithm.KMS)) {
+            return retryProperties != null
+                    ? new RetryingConfigDecryptor(decryptor, retryProperties)
+                    : new RetryingConfigDecryptor(decryptor);
+        }
+        return decryptor;
+    }
+
+    private static Class<?> unwrapDelegateClass(ConfigDecryptor decryptor) {
+        if (decryptor instanceof RetryingConfigDecryptor retrying) {
+            return retrying.getDelegate().getClass();
+        }
+        return decryptor.getClass();
     }
 
     public static List<ConfigDecryptor> createDefaultDecryptors(List<ConfigDecryptor> customDecryptors) {

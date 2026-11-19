@@ -101,7 +101,7 @@ _Avoid_: 热推测试, 倒灌探针, IngressTester
 _Avoid_: 密钥查看器, KeyInfo, KeyLister
 
 **Two-Phase Wrapper Sync (两阶段包装器运行时同步)**:
-在 `ConfigData` 第一阶段预解析守卫与 `EnvironmentPostProcessor` 第二阶段全量后置处理之间，将最终解析的默认算法、密文语法解析器、密钥探测器与失败阻断策略统一对齐至已包装属性源的状态同步机制。
+在 `ConfigData` 第一阶段预解析守卫与 `EnvironmentPostProcessor` 第二阶段全量后置处理之间，以及在 Spring 容器期自动装配对自定义 `Config Decryptor`、`Encrypt Retry Policy` 与受管 `Multi-Key Registry` 的按需/就绪反向回填过程中，将最终解析的运行期组件统一对齐至已包装属性源的状态同步机制。
 _Avoid_: 包装器覆盖, 二次代理, WrapperReset, EnvSync
 
 

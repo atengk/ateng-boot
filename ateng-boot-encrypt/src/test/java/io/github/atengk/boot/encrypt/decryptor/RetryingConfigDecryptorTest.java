@@ -10,6 +10,7 @@ import javax.crypto.BadPaddingException;
 import java.io.IOException;
 import java.net.SocketTimeoutException;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -176,5 +177,50 @@ class RetryingConfigDecryptorTest {
 
         assertEquals("kms-success-with-properties", result);
         assertEquals(4, attempts.get(), "经历 4 次尝试（首次 + 3 次重试）后成功解密");
+    }
+
+    @Test
+    @DisplayName("测试 ConfigDecryptorFactory 为纯接口 KMS 实现自动装配单层 RetryingConfigDecryptor 且不重复嵌套")
+    void testFactoryWrapsPlainKmsDecryptorOnceAndRespectsExistingWrapper() throws Exception {
+        AtomicInteger attempts = new AtomicInteger(0);
+        ConfigDecryptor plainKms = new ConfigDecryptor() {
+            @Override
+            public boolean supports(EncryptAlgorithm algorithm) {
+                return algorithm == EncryptAlgorithm.KMS;
+            }
+
+            @Override
+            public String decrypt(String ciphertext, String password) throws Exception {
+                int count = attempts.incrementAndGet();
+                if (count < 4) {
+                    throw new SocketTimeoutException("plain KMS 抖动 (attempt=" + count + ")");
+                }
+                return "plain-kms-ok";
+            }
+        };
+
+        EncryptRetryProperties retryProps = new EncryptRetryProperties();
+        retryProps.setMaxAttempts(4);
+        retryProps.setDelay(Duration.ofMillis(5));
+        retryProps.setMaxDelay(Duration.ofMillis(20));
+        retryProps.setJitter(false);
+
+        ConfigDecryptor wrapped = ConfigDecryptorFactory.createDefaultDecryptors(
+                List.of(plainKms), retryProps).stream()
+                .filter(d -> d.supports(EncryptAlgorithm.KMS))
+                .findFirst()
+                .orElseThrow();
+
+        assertTrue(wrapped instanceof RetryingConfigDecryptor);
+        assertEquals("plain-kms-ok", wrapped.decrypt("cipher", "key"));
+        assertEquals(4, attempts.get());
+
+        // 若传入的已是 RetryingConfigDecryptor，绝不再次包裹
+        ConfigDecryptor doubleCheck = ConfigDecryptorFactory.createDefaultDecryptors(
+                List.of(wrapped), retryProps).stream()
+                .filter(d -> d.supports(EncryptAlgorithm.KMS))
+                .findFirst()
+                .orElseThrow();
+        assertSame(wrapped, doubleCheck);
     }
 }

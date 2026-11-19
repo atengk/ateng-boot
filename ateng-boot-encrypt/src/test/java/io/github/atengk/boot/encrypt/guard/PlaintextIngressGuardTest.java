@@ -3,17 +3,21 @@ package io.github.atengk.boot.encrypt.guard;
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
 import io.github.atengk.boot.encrypt.config.EncryptProperties;
 import io.github.atengk.boot.encrypt.decryptor.AesGcmConfigDecryptor;
+import io.github.atengk.boot.encrypt.decryptor.ConfigDecryptor;
 import io.github.atengk.boot.encrypt.decryptor.ConfigEncryptor;
 import io.github.atengk.boot.encrypt.detector.KeyDetector;
 import io.github.atengk.boot.encrypt.exception.ConfigSecurityException;
+import io.github.atengk.boot.encrypt.key.MultiKeyRegistry;
 import io.github.atengk.boot.encrypt.parser.CiphertextParser;
 import io.github.atengk.boot.encrypt.wrapper.EncryptPropertySourceWrapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.env.MapPropertySource;
+import org.springframework.core.env.PropertySource;
 import org.springframework.core.env.StandardEnvironment;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -190,5 +194,108 @@ class PlaintextIngressGuardTest {
 
         assertThat(wrapper.isFailOnError()).isFalse();
         assertThat(env.getProperty("custom.broken.password")).isEqualTo("ENC(CorruptedExistingCipher)");
+    }
+
+    @Test
+    @DisplayName("onEnvironmentChange: 复用受管 MultiKeyRegistry 单例保留运行期轮换密钥、增量合并新密钥并支持自定义 KMS 解密器")
+    void testManagedMultiKeyRegistryPreservesRotatedKeysAndInjectsKmsDecryptor() {
+        String initialDbSecret = "InitialDbSecret@2026";
+        String rotatedDbSecret = "RotatedDbSecret@2026";
+        String runtimeKeySecret = "RuntimeOnlySecret@2026";
+        String nacosNewKeySecret = "NacosNewKeySecret@2026";
+
+        EncryptProperties properties = new EncryptProperties();
+        properties.setPassword(masterPassword);
+        MultiKeyRegistry managedRegistry = MultiKeyRegistry.fromProperties(properties);
+        managedRegistry.registerKey("db-key", initialDbSecret);
+
+        String rotatedDbCipher = "ENC[db-key](" + ConfigEncryptor.encrypt("rotated-db-pass", rotatedDbSecret, EncryptAlgorithm.AES_GCM) + ")";
+        String runtimeKeyCipher = "ENC[runtime-key](" + ConfigEncryptor.encrypt("runtime-pass", runtimeKeySecret, EncryptAlgorithm.AES_GCM) + ")";
+        String nacosNewKeyCipher = "ENC[nacos-new-key](" + ConfigEncryptor.encrypt("nacos-new-pass", nacosNewKeySecret, EncryptAlgorithm.AES_GCM) + ")";
+
+        ConfigDecryptor kmsDecryptor = new ConfigDecryptor() {
+            @Override
+            public boolean supports(EncryptAlgorithm algorithm) {
+                return algorithm == EncryptAlgorithm.KMS;
+            }
+
+            @Override
+            public String decrypt(String cipherText, String password) {
+                return "kms-plain:" + cipherText;
+            }
+        };
+
+        PlaintextIngressGuard guard = new PlaintextIngressGuard(
+                properties, parser, managedRegistry, List.of(kmsDecryptor));
+
+        // 模拟运行期密钥轮换与动态新增密钥（覆盖已有 db-key 与新增 runtime-key）
+        managedRegistry.registerKey("db-key", rotatedDbSecret);
+        managedRegistry.registerKey("runtime-key", runtimeKeySecret);
+
+        StandardEnvironment env = new StandardEnvironment();
+        Map<String, Object> appProps = new HashMap<>();
+        // 环境中的旧配置仍保留 initialDbSecret，热更新时不得覆盖运行期已轮换密钥
+        appProps.put("ateng.boot.encrypt.keys.db-key", initialDbSecret);
+        appProps.put("ateng.boot.encrypt.keys.nacos-new-key", nacosNewKeySecret);
+        appProps.put("app.db.secret", rotatedDbCipher);
+        appProps.put("app.runtime.secret", runtimeKeyCipher);
+        appProps.put("app.nacos.secret", nacosNewKeyCipher);
+        appProps.put("app.kms.secret", "ENC(KMS@cipher-payload)");
+        env.getPropertySources().addFirst(new MapPropertySource("nacosHotSource", appProps));
+
+        guard.onEnvironmentChange(Set.of("app.db.secret", "app.kms.secret"), env);
+
+        assertThat(managedRegistry.getKey("db-key")).isEqualTo(rotatedDbSecret);
+        assertThat(managedRegistry.getKey("runtime-key")).isEqualTo(runtimeKeySecret);
+        assertThat(managedRegistry.getKey("nacos-new-key")).isEqualTo(nacosNewKeySecret);
+
+        PropertySource<?> wrapped = env.getPropertySources().get("nacosHotSource");
+        assertThat(wrapped).isInstanceOf(EncryptPropertySourceWrapper.class);
+        EncryptPropertySourceWrapper wrapper = (EncryptPropertySourceWrapper) wrapped;
+        assertThat(wrapper.getKeyRegistry()).isSameAs(managedRegistry);
+
+        assertThat(env.getProperty("app.db.secret")).isEqualTo("rotated-db-pass");
+        assertThat(env.getProperty("app.runtime.secret")).isEqualTo("runtime-pass");
+        assertThat(env.getProperty("app.nacos.secret")).isEqualTo("nacos-new-pass");
+        assertThat(env.getProperty("app.kms.secret")).isEqualTo("kms-plain:cipher-payload");
+    }
+
+    @Test
+    @DisplayName("onEnvironmentChange: 新纳管属性源在后续 MultiKeyRegistry 密钥轮换时缓存失效同步生效")
+    void testNewlyWrappedSourceSharesRegistryForCacheInvalidation() {
+        EncryptProperties properties = new EncryptProperties();
+        properties.setPassword(masterPassword);
+        MultiKeyRegistry managedRegistry = MultiKeyRegistry.fromProperties(properties);
+        PlaintextIngressGuard guard = new PlaintextIngressGuard(properties, parser, managedRegistry, List.of());
+
+        StandardEnvironment env = new StandardEnvironment();
+        // 注册一个监听器模拟 AtengEncryptAutoConfiguration.onKeyRotated 清理环境内 wrapper 缓存
+        managedRegistry.setEventPublisher(event -> {
+            for (PropertySource<?> ps : env.getPropertySources()) {
+                if (ps instanceof EncryptPropertySourceWrapper w) {
+                    w.clearCache();
+                }
+            }
+        });
+
+        String keyV1 = "RotateKeyV1@2026";
+        String keyV2 = "RotateKeyV2@2026";
+        managedRegistry.registerKey("rotate-key", keyV1);
+
+        String cipherV1 = "ENC[rotate-key](" + ConfigEncryptor.encrypt("val-v1", keyV1, EncryptAlgorithm.AES_GCM) + ")";
+        String cipherV2 = "ENC[rotate-key](" + ConfigEncryptor.encrypt("val-v2", keyV2, EncryptAlgorithm.AES_GCM) + ")";
+
+        Map<String, Object> hotMap = new HashMap<>();
+        hotMap.put("app.dynamic.token", cipherV1);
+        env.getPropertySources().addFirst(new MapPropertySource("nacosDynamicSource", hotMap));
+
+        guard.onEnvironmentChange(Set.of("app.dynamic.token"), env);
+        assertThat(env.getProperty("app.dynamic.token")).isEqualTo("val-v1");
+
+        // 模拟配置中心推送 V2 密文且后台同步轮换受管 MultiKeyRegistry 中的密钥
+        hotMap.put("app.dynamic.token", cipherV2);
+        managedRegistry.registerKey("rotate-key", keyV2);
+
+        assertThat(env.getProperty("app.dynamic.token")).isEqualTo("val-v2");
     }
 }
