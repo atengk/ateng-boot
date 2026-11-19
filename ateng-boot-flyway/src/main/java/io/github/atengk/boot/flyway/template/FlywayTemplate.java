@@ -11,6 +11,7 @@ import io.github.atengk.boot.flyway.exception.FlywayException;
 import io.github.atengk.boot.flyway.guard.ProductionSafetyGuard;
 import io.github.atengk.boot.flyway.listener.FlywayMigrationListener;
 import io.github.atengk.boot.flyway.model.BatchMigrationResult;
+import io.github.atengk.boot.flyway.model.BatchOperationResult;
 import io.github.atengk.boot.flyway.model.MigrationBaselineResult;
 import io.github.atengk.boot.flyway.model.MigrationCleanResult;
 import io.github.atengk.boot.flyway.model.MigrationOutcome;
@@ -57,6 +58,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -548,6 +550,67 @@ public class FlywayTemplate implements DisposableBean {
     }
 
     /**
+     * 按配置容错策略对全部受管控目标数据源执行批量待迁移脚本预检
+     *
+     * @return 泛型批量预检回执
+     */
+    public BatchOperationResult<List<MigrationScriptInfo>> pendingTargets() {
+        return pendingTargets(resolveStaticFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略对全部受管控目标数据源执行批量待迁移脚本预检
+     *
+     * @param policy 批量执行容错策略
+     * @return 泛型批量预检回执
+     */
+    public BatchOperationResult<List<MigrationScriptInfo>> pendingTargets(BatchExecutionPolicy policy) {
+        return executeGenericTargets(null, policy, FlywayResultCode.MIGRATION_FAILED, this::pending);
+    }
+
+    /**
+     * 按默认静态失败策略对指定目标数据源集合执行批量待迁移脚本预检
+     *
+     * @param targetKeys 目标数据源标识集合
+     * @return 泛型批量预检回执
+     */
+    public BatchOperationResult<List<MigrationScriptInfo>> pendingTargets(Collection<String> targetKeys) {
+        return pendingTargets(targetKeys, resolveStaticFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略对指定目标数据源集合执行批量待迁移脚本预检
+     *
+     * @param targetKeys 目标数据源标识集合
+     * @param policy     批量执行容错策略
+     * @return 泛型批量预检回执
+     */
+    public BatchOperationResult<List<MigrationScriptInfo>> pendingTargets(Collection<String> targetKeys,
+                                                                        BatchExecutionPolicy policy) {
+        Assert.notEmpty(targetKeys, "目标数据源集合 (targetKeys) 不能为空");
+        return executeGenericTargets(targetKeys, policy, FlywayResultCode.MIGRATION_FAILED, this::pending);
+    }
+
+    /**
+     * 按租户容错策略与有界并发度对全部 SaaS 物理租户库执行批量待迁移脚本预检
+     *
+     * @return 全租户批量预检回执
+     */
+    public BatchOperationResult<List<MigrationScriptInfo>> pendingAllTenants() {
+        return pendingAllTenants(resolveTenantFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略与配置有界并发度对全部 SaaS 物理租户库执行批量待迁移脚本预检
+     *
+     * @param policy 批量执行容错策略
+     * @return 全租户批量预检回执
+     */
+    public BatchOperationResult<List<MigrationScriptInfo>> pendingAllTenants(BatchExecutionPolicy policy) {
+        return executeGenericTenants(policy, FlywayResultCode.MIGRATION_FAILED, this::pending);
+    }
+
+    /**
      * 查询默认主目标数据源完整迁移历史与状态视图
      *
      * @return 目标数据源迁移信息视图对象
@@ -626,6 +689,89 @@ public class FlywayTemplate implements DisposableBean {
     }
 
     /**
+     * 按指定容错策略聚合探查全部受管控目标数据源迁移状态并输出泛型回执
+     *
+     * @param policy 批量执行容错策略
+     * @return 泛型批量状态聚合回执
+     */
+    public BatchOperationResult<MigrationTargetInfo> infoAll(BatchExecutionPolicy policy) {
+        return infoTargets(policy);
+    }
+
+    /**
+     * 按指定容错策略聚合探查指定目标数据源集合迁移状态并输出泛型回执
+     *
+     * @param targetKeys 目标数据源标识集合
+     * @param policy     批量执行容错策略
+     * @return 泛型批量状态聚合回执
+     */
+    public BatchOperationResult<MigrationTargetInfo> infoAll(Collection<String> targetKeys,
+                                                             BatchExecutionPolicy policy) {
+        return infoTargets(targetKeys, policy);
+    }
+
+    /**
+     * 按配置容错策略对全部受管控目标数据源执行历史状态聚合探查
+     *
+     * @return 泛型批量状态聚合回执
+     */
+    public BatchOperationResult<MigrationTargetInfo> infoTargets() {
+        return infoTargets(resolveStaticFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略对全部受管控目标数据源执行历史状态聚合探查
+     *
+     * @param policy 批量执行容错策略
+     * @return 泛型批量状态聚合回执
+     */
+    public BatchOperationResult<MigrationTargetInfo> infoTargets(BatchExecutionPolicy policy) {
+        return executeGenericTargets(null, policy, FlywayResultCode.MIGRATION_FAILED, this::info);
+    }
+
+    /**
+     * 按默认静态失败策略对指定目标数据源集合执行历史状态聚合探查
+     *
+     * @param targetKeys 目标数据源标识集合
+     * @return 泛型批量状态聚合回执
+     */
+    public BatchOperationResult<MigrationTargetInfo> infoTargets(Collection<String> targetKeys) {
+        return infoTargets(targetKeys, resolveStaticFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略对指定目标数据源集合执行历史状态聚合探查
+     *
+     * @param targetKeys 目标数据源标识集合
+     * @param policy     批量执行容错策略
+     * @return 泛型批量状态聚合回执
+     */
+    public BatchOperationResult<MigrationTargetInfo> infoTargets(Collection<String> targetKeys,
+                                                                 BatchExecutionPolicy policy) {
+        Assert.notEmpty(targetKeys, "目标数据源集合 (targetKeys) 不能为空");
+        return executeGenericTargets(targetKeys, policy, FlywayResultCode.MIGRATION_FAILED, this::info);
+    }
+
+    /**
+     * 按租户容错策略与有界并发度对全部 SaaS 物理租户库执行历史状态聚合探查
+     *
+     * @return 全租户批量状态聚合回执
+     */
+    public BatchOperationResult<MigrationTargetInfo> infoAllTenants() {
+        return infoAllTenants(resolveTenantFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略与配置有界并发度对全部 SaaS 物理租户库执行历史状态聚合探查
+     *
+     * @param policy 批量执行容错策略
+     * @return 全租户批量状态聚合回执
+     */
+    public BatchOperationResult<MigrationTargetInfo> infoAllTenants(BatchExecutionPolicy policy) {
+        return executeGenericTenants(policy, FlywayResultCode.MIGRATION_FAILED, this::info);
+    }
+
+    /**
      * 对默认主目标数据源执行受控基线初始化
      *
      * @return 基线初始化结果
@@ -654,6 +800,7 @@ public class FlywayTemplate implements DisposableBean {
      */
     public MigrationBaselineResult baseline(String targetKey, String version, String description) {
         String resolvedKey = requireTargetKey(targetKey);
+        Instant start = Instant.now();
         return executeOperation(resolvedKey, true, FlywayResultCode.BASELINE_FAILED,
                 "目标数据源 [" + resolvedKey + "] 基线初始化失败",
                 baseFlyway -> {
@@ -669,13 +816,160 @@ public class FlywayTemplate implements DisposableBean {
                         runner = cfg.load();
                     }
                     BaselineResult result = runner.baseline();
+                    List<String> warnings = copyList(result.warnings);
+                    recordGovernanceSummaryOutcome(resolvedKey, runner.info(), result.baselineVersion,
+                            result.database, start, 0, null, warnings);
                     return MigrationBaselineResult.builder()
                             .targetKey(resolvedKey)
                             .successfullyBaselined(result.successfullyBaselined)
                             .baselineVersion(result.baselineVersion)
-                            .warnings(copyList(result.warnings))
+                            .warnings(warnings)
                             .build();
                 });
+    }
+
+    /**
+     * 按配置容错策略对全部受管控目标数据源执行批量基线初始化
+     *
+     * @return 泛型批量基线初始化回执
+     */
+    public BatchOperationResult<MigrationBaselineResult> baselineTargets() {
+        return baselineTargets(null, null, resolveStaticFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略对全部受管控目标数据源执行批量基线初始化
+     *
+     * @param policy 批量执行容错策略
+     * @return 泛型批量基线初始化回执
+     */
+    public BatchOperationResult<MigrationBaselineResult> baselineTargets(BatchExecutionPolicy policy) {
+        return baselineTargets(null, null, policy);
+    }
+
+    /**
+     * 按默认静态失败策略对全部受管控目标数据源使用指定版本号与描述执行批量基线初始化
+     *
+     * @param version     基线版本号（为空则继承配置默认值）
+     * @param description 基线描述（为空则继承配置默认值）
+     * @return 泛型批量基线初始化回执
+     */
+    public BatchOperationResult<MigrationBaselineResult> baselineTargets(String version, String description) {
+        return baselineTargets(version, description, resolveStaticFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略对全部受管控目标数据源使用指定版本号与描述执行批量基线初始化
+     *
+     * @param version     基线版本号（为空则继承配置默认值）
+     * @param description 基线描述（为空则继承配置默认值）
+     * @param policy      批量执行容错策略
+     * @return 泛型批量基线初始化回执
+     */
+    public BatchOperationResult<MigrationBaselineResult> baselineTargets(String version,
+                                                                         String description,
+                                                                         BatchExecutionPolicy policy) {
+        return executeGenericTargets(null, policy, FlywayResultCode.BASELINE_FAILED,
+                key -> baseline(key, version, description));
+    }
+
+    /**
+     * 按默认静态失败策略对指定目标数据源集合执行批量基线初始化
+     *
+     * @param targetKeys 目标数据源标识集合
+     * @return 泛型批量基线初始化回执
+     */
+    public BatchOperationResult<MigrationBaselineResult> baselineTargets(Collection<String> targetKeys) {
+        return baselineTargets(targetKeys, null, null, resolveStaticFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略对指定目标数据源集合执行批量基线初始化
+     *
+     * @param targetKeys 目标数据源标识集合
+     * @param policy     批量执行容错策略
+     * @return 泛型批量基线初始化回执
+     */
+    public BatchOperationResult<MigrationBaselineResult> baselineTargets(Collection<String> targetKeys,
+                                                                         BatchExecutionPolicy policy) {
+        return baselineTargets(targetKeys, null, null, policy);
+    }
+
+    /**
+     * 按默认静态失败策略对指定目标数据源集合使用指定版本号与描述执行批量基线初始化
+     *
+     * @param targetKeys  目标数据源标识集合
+     * @param version     基线版本号（为空则继承配置默认值）
+     * @param description 基线描述（为空则继承配置默认值）
+     * @return 泛型批量基线初始化回执
+     */
+    public BatchOperationResult<MigrationBaselineResult> baselineTargets(Collection<String> targetKeys,
+                                                                         String version,
+                                                                         String description) {
+        return baselineTargets(targetKeys, version, description, resolveStaticFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略对指定目标数据源集合使用指定版本号与描述执行批量基线初始化
+     *
+     * @param targetKeys  目标数据源标识集合
+     * @param version     基线版本号（为空则继承配置默认值）
+     * @param description 基线描述（为空则继承配置默认值）
+     * @param policy      批量执行容错策略
+     * @return 泛型批量基线初始化回执
+     */
+    public BatchOperationResult<MigrationBaselineResult> baselineTargets(Collection<String> targetKeys,
+                                                                         String version,
+                                                                         String description,
+                                                                         BatchExecutionPolicy policy) {
+        Assert.notEmpty(targetKeys, "目标数据源集合 (targetKeys) 不能为空");
+        return executeGenericTargets(targetKeys, policy, FlywayResultCode.BASELINE_FAILED,
+                key -> baseline(key, version, description));
+    }
+
+    /**
+     * 按租户容错策略与有界并发度对全部 SaaS 物理租户库执行批量基线初始化
+     *
+     * @return 全租户批量基线初始化回执
+     */
+    public BatchOperationResult<MigrationBaselineResult> baselineAllTenants() {
+        return baselineAllTenants(null, null, resolveTenantFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略与配置有界并发度对全部 SaaS 物理租户库执行批量基线初始化
+     *
+     * @param policy 批量执行容错策略
+     * @return 全租户批量基线初始化回执
+     */
+    public BatchOperationResult<MigrationBaselineResult> baselineAllTenants(BatchExecutionPolicy policy) {
+        return baselineAllTenants(null, null, policy);
+    }
+
+    /**
+     * 按租户容错策略与有界并发度对全部 SaaS 物理租户库使用指定版本号与描述执行批量基线初始化
+     *
+     * @param version     基线版本号（为空则继承配置默认值）
+     * @param description 基线描述（为空则继承配置默认值）
+     * @return 全租户批量基线初始化回执
+     */
+    public BatchOperationResult<MigrationBaselineResult> baselineAllTenants(String version, String description) {
+        return baselineAllTenants(version, description, resolveTenantFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略与配置有界并发度对全部 SaaS 物理租户库使用指定版本号与描述执行批量基线初始化
+     *
+     * @param version     基线版本号（为空则继承配置默认值）
+     * @param description 基线描述（为空则继承配置默认值）
+     * @param policy      批量执行容错策略
+     * @return 全租户批量基线初始化回执
+     */
+    public BatchOperationResult<MigrationBaselineResult> baselineAllTenants(String version,
+                                                                            String description,
+                                                                            BatchExecutionPolicy policy) {
+        return executeGenericTenants(policy, FlywayResultCode.BASELINE_FAILED,
+                key -> baseline(key, version, description));
     }
 
     /**
@@ -695,16 +989,86 @@ public class FlywayTemplate implements DisposableBean {
      */
     public MigrationRepairResult repair(String targetKey) {
         String resolvedKey = requireTargetKey(targetKey);
+        Instant start = Instant.now();
         return executeOperation(resolvedKey, true, FlywayResultCode.REPAIR_FAILED,
                 "目标数据源 [" + resolvedKey + "] 迁移历史修复失败",
                 flyway -> {
                     RepairResult result = flyway.repair();
+                    MigrationInfoService infoService = flyway.info();
+                    int remainingFailed = countFailedMigrations(infoService.all());
+                    List<String> warnings = copyList(result.warnings);
+                    String errorMessage = remainingFailed > 0
+                            ? "修复后仍存在 " + remainingFailed + " 条失败迁移记录"
+                            : null;
+                    recordGovernanceSummaryOutcome(resolvedKey, infoService, null,
+                            result.database, start, remainingFailed, errorMessage, warnings);
                     return MigrationRepairResult.builder()
                             .targetKey(resolvedKey)
                             .repairActions(copyList(result.repairActions))
-                            .warnings(copyList(result.warnings))
+                            .warnings(warnings)
                             .build();
                 });
+    }
+
+    /**
+     * 按配置容错策略对全部受管控目标数据源执行批量历史表修复
+     *
+     * @return 泛型批量修复回执
+     */
+    public BatchOperationResult<MigrationRepairResult> repairTargets() {
+        return repairTargets(resolveStaticFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略对全部受管控目标数据源执行批量历史表修复
+     *
+     * @param policy 批量执行容错策略
+     * @return 泛型批量修复回执
+     */
+    public BatchOperationResult<MigrationRepairResult> repairTargets(BatchExecutionPolicy policy) {
+        return executeGenericTargets(null, policy, FlywayResultCode.REPAIR_FAILED, this::repair);
+    }
+
+    /**
+     * 按默认静态失败策略对指定目标数据源集合执行批量历史表修复
+     *
+     * @param targetKeys 目标数据源标识集合
+     * @return 泛型批量修复回执
+     */
+    public BatchOperationResult<MigrationRepairResult> repairTargets(Collection<String> targetKeys) {
+        return repairTargets(targetKeys, resolveStaticFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略对指定目标数据源集合执行批量历史表修复
+     *
+     * @param targetKeys 目标数据源标识集合
+     * @param policy     批量执行容错策略
+     * @return 泛型批量修复回执
+     */
+    public BatchOperationResult<MigrationRepairResult> repairTargets(Collection<String> targetKeys,
+                                                                       BatchExecutionPolicy policy) {
+        Assert.notEmpty(targetKeys, "目标数据源集合 (targetKeys) 不能为空");
+        return executeGenericTargets(targetKeys, policy, FlywayResultCode.REPAIR_FAILED, this::repair);
+    }
+
+    /**
+     * 按租户容错策略与有界并发度对全部 SaaS 物理租户库执行批量历史表修复
+     *
+     * @return 全租户批量修复回执
+     */
+    public BatchOperationResult<MigrationRepairResult> repairAllTenants() {
+        return repairAllTenants(resolveTenantFailurePolicy());
+    }
+
+    /**
+     * 按指定容错策略与配置有界并发度对全部 SaaS 物理租户库执行批量历史表修复
+     *
+     * @param policy 批量执行容错策略
+     * @return 全租户批量修复回执
+     */
+    public BatchOperationResult<MigrationRepairResult> repairAllTenants(BatchExecutionPolicy policy) {
+        return executeGenericTenants(policy, FlywayResultCode.REPAIR_FAILED, this::repair);
     }
 
     /**
@@ -730,6 +1094,7 @@ public class FlywayTemplate implements DisposableBean {
                 flyway -> {
                     safetyGuard.assertCleanAllowed(resolvedKey, flyway);
                     CleanResult result = flyway.clean();
+                    removeTargetFromSummary(resolvedKey, true);
                     return MigrationCleanResult.builder()
                             .targetKey(resolvedKey)
                             .schemasCleaned(copyList(result.schemasCleaned))
@@ -783,6 +1148,38 @@ public class FlywayTemplate implements DisposableBean {
     }
 
     /**
+     * 从全局汇总摘要快照中移除已摘除目标数据源记录并递增摘要版本号
+     *
+     * @param targetKey 目标数据源标识
+     * @return true 表示摘要中原本存在该目标并已清理，false 表示摘要中无该目标记录
+     */
+    public boolean removeTargetFromSummary(String targetKey) {
+        return removeTargetFromSummary(targetKey, false);
+    }
+
+    private boolean removeTargetFromSummary(String targetKey, boolean alwaysIncrementVersion) {
+        if (!StringUtils.hasText(targetKey)) {
+            return false;
+        }
+        String normalizedKey = targetKey.trim();
+        AtomicBoolean removed = new AtomicBoolean(false);
+        lastMigrationSummary.updateAndGet(existing -> {
+            if (existing == null || CollectionUtils.isEmpty(existing.getOutcomes())) {
+                return existing;
+            }
+            MigrationSummary updated = FlywayBatchExecutor.removeSummaryOutcome(existing, normalizedKey);
+            if (updated != existing) {
+                removed.set(true);
+            }
+            return updated;
+        });
+        if (removed.get() || alwaysIncrementVersion) {
+            summaryVersion.incrementAndGet();
+        }
+        return removed.get();
+    }
+
+    /**
      * 获取全局汇总摘要单调递增版本号（用于可观测缓存防竞态失效校验）
      *
      * @return 摘要快照版本号
@@ -828,6 +1225,44 @@ public class FlywayTemplate implements DisposableBean {
                     "当前环境未装配瞬态 Flyway 执行器，无法执行隔离凭据迁移操作");
         }
         return runner.execute(target, action);
+    }
+
+    private <T> BatchOperationResult<T> executeGenericTargets(Collection<String> explicitKeys,
+                                                               BatchExecutionPolicy policy,
+                                                               FlywayResultCode fallbackCode,
+                                                               Function<String, T> action) {
+        BatchExecutionPolicy effectivePolicy = policy != null ? policy : resolveStaticFailurePolicy();
+        List<String> targetKeys = resolveBatchKeys(explicitKeys);
+        return executeGenericList(targetKeys, effectivePolicy, 1, fallbackCode, action);
+    }
+
+    private <T> BatchOperationResult<T> executeGenericTenants(BatchExecutionPolicy policy,
+                                                               FlywayResultCode fallbackCode,
+                                                               Function<String, T> action) {
+        BatchExecutionPolicy effectivePolicy = policy != null ? policy : resolveTenantFailurePolicy();
+        List<String> tenantKeys = resolveTenantTargetKeys();
+        return executeGenericList(tenantKeys, effectivePolicy, resolveTenantConcurrency(), fallbackCode, action);
+    }
+
+    private <T> BatchOperationResult<T> executeGenericList(List<String> targetKeys,
+                                                            BatchExecutionPolicy effectivePolicy,
+                                                            int concurrency,
+                                                            FlywayResultCode fallbackCode,
+                                                            Function<String, T> action) {
+        if (CollectionUtils.isEmpty(targetKeys)) {
+            return FlywayBatchExecutor.emptyGenericResult(effectivePolicy);
+        }
+        List<String> normalizedKeys = targetKeys.stream().map(this::requireTargetKey).toList();
+        return FlywayBatchExecutor.executeGenericBatch(
+                normalizedKeys,
+                effectivePolicy,
+                concurrency,
+                resolveBatchTimeout(),
+                resolveTaskExecutor(),
+                fallbackCode,
+                action,
+                this::sanitize
+        );
     }
 
     private BatchMigrationResult executeBatchTargets(Collection<String> explicitKeys,
@@ -1206,12 +1641,54 @@ public class FlywayTemplate implements DisposableBean {
         summaryVersion.incrementAndGet();
     }
 
+    private void recordGovernanceSummaryOutcome(String resolvedKey,
+                                                MigrationInfoService infoService,
+                                                String fallbackVersion,
+                                                String database,
+                                                Instant start,
+                                                int remainingFailed,
+                                                String errorMessage,
+                                                List<String> warnings) {
+        Instant finishedAt = Instant.now();
+        MigrationInfo current = infoService != null ? infoService.current() : null;
+        String resolvedVersion = current != null && current.getVersion() != null
+                ? current.getVersion().getVersion()
+                : fallbackVersion;
+        MigrationOutcome outcome = MigrationOutcome.builder()
+                .targetKey(resolvedKey)
+                .mode(FlywayExecutionMode.MIGRATE)
+                .success(remainingFailed == 0)
+                .skipped(false)
+                .migrationsExecuted(0)
+                .targetSchemaVersion(resolvedVersion)
+                .database(database)
+                .duration(Duration.between(start, finishedAt))
+                .executedAt(finishedAt)
+                .errorMessage(errorMessage)
+                .warnings(warnings)
+                .build();
+        recordSingleSummary(FlywayExecutionMode.MIGRATE, outcome, finishedAt, outcome.getDuration());
+    }
+
+    private int countFailedMigrations(MigrationInfo[] infos) {
+        if (infos == null || infos.length == 0) {
+            return 0;
+        }
+        int failed = 0;
+        for (MigrationInfo info : infos) {
+            if (info != null && info.getState() != null && info.getState().isFailed()) {
+                failed++;
+            }
+        }
+        return failed;
+    }
+
     private void recordSingleSummary(FlywayExecutionMode mode,
                                      MigrationOutcome outcome,
                                      Instant finishedAt,
                                      Duration elapsed) {
         updateSummary(existing -> {
-            if (existing != null && existing.getTotalTargets() > 1) {
+            if (existing != null && !CollectionUtils.isEmpty(existing.getOutcomes())) {
                 return FlywayBatchExecutor.upsertSummaryOutcome(existing, mode, outcome);
             }
             return MigrationSummary.builder()

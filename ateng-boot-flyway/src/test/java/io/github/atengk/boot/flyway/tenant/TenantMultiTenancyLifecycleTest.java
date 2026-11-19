@@ -27,7 +27,11 @@ import io.github.atengk.boot.flyway.event.FlywayMigrationFailedEvent;
 import io.github.atengk.boot.flyway.exception.FlywayException;
 import io.github.atengk.boot.flyway.listener.FlywayMigrationListener;
 import io.github.atengk.boot.flyway.model.BatchMigrationResult;
+import io.github.atengk.boot.flyway.model.BatchOperationResult;
+import io.github.atengk.boot.flyway.model.MigrationBaselineResult;
 import io.github.atengk.boot.flyway.model.MigrationOutcome;
+import io.github.atengk.boot.flyway.model.MigrationRepairResult;
+import io.github.atengk.boot.flyway.model.MigrationScriptInfo;
 import io.github.atengk.boot.flyway.model.MigrationSummary;
 import io.github.atengk.boot.flyway.model.MigrationTargetInfo;
 import io.github.atengk.boot.flyway.observability.FlywayHealthIndicator;
@@ -40,6 +44,7 @@ import org.slf4j.MDC;
 import org.springframework.boot.actuate.health.Status;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration;
+import org.springframework.boot.autoconfigure.flyway.FlywayConfigurationCustomizer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.ApplicationListener;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -775,5 +780,229 @@ class TenantMultiTenancyLifecycleTest {
                     capturedFuture.complete(null);
                 });
         assertThat(capturedFuture.isDone()).isTrue();
+    }
+
+    @Test
+    @DisplayName("L3：全租户有界并发 pendingAllTenants/repairAllTenants/baselineAllTenants/infoAllTenants 应透传 AsyncContext 并支持 FAIL_SAFE 脱敏")
+    void shouldPropagateAsyncContextAndSupportTenantBatchOperations(@TempDir Path tempDir) throws Exception {
+        Path tDir = tempDir.resolve("tenant-batch");
+        Files.createDirectories(tDir);
+        Files.writeString(tDir.resolve("V1__tenant_init.sql"),
+                "CREATE TABLE tenant_ledger (id BIGINT PRIMARY KEY);", StandardCharsets.UTF_8);
+
+        HikariDataSource masterDs = newH2Pool("master_tbatch");
+        HikariDataSource t1Ds = newH2Pool("tenant_b1");
+        HikariDataSource t2Ds = newH2Pool("tenant_b2");
+        new JdbcTemplate(t1Ds).execute("CREATE TABLE tenant_ledger (id BIGINT PRIMARY KEY)");
+        new JdbcTemplate(t2Ds).execute("CREATE TABLE tenant_ledger (id BIGINT PRIMARY KEY)");
+
+        Map<String, DataSource> dsMap = new LinkedHashMap<>();
+        dsMap.put("master", masterDs);
+        dsMap.put("tenant_b1", t1Ds);
+        dsMap.put("tenant_b2", t2Ds);
+        AtengDynamicRoutingDataSource routingDs = buildRoutingDataSource(dsMap);
+
+        Map<String, String> capturedMdcTraces = new ConcurrentHashMap<>();
+        Map<String, String> capturedUsers = new ConcurrentHashMap<>();
+        FlywayConfigurationCustomizer ctxSpy = cfg -> {
+            String trace = MDC.get("traceId");
+            String user = UserContextHolder.get();
+            if (trace != null) {
+                capturedMdcTraces.put(Thread.currentThread().getName() + "-" + capturedMdcTraces.size(), trace);
+            }
+            if (user != null) {
+                capturedUsers.put(Thread.currentThread().getName() + "-" + capturedUsers.size(), user);
+            }
+        };
+
+        UserContextHolder.set("flyway-admin");
+        MDC.put("traceId", "trace-batch-1114");
+
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        AtengAsyncAutoConfiguration.class,
+                        AtengFlywayAutoConfiguration.class,
+                        FlywayAutoConfiguration.class
+                ))
+                .withBean(DataSource.class, () -> routingDs)
+                .withBean(FlywayConfigurationCustomizer.class, () -> ctxSpy)
+                .withPropertyValues(
+                        "spring.flyway.locations=classpath:db/multi/master",
+                        "ateng.boot.flyway.mode=DISABLED",
+                        "ateng.boot.flyway.tenant.enabled=true",
+                        "ateng.boot.flyway.tenant.concurrency=2",
+                        "ateng.boot.flyway.tenant.locations=filesystem:" + tDir.toAbsolutePath()
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    FlywayTemplate template = context.getBean(FlywayTemplate.class);
+
+                    BatchOperationResult<List<MigrationScriptInfo>> pendingTenants = template.pendingAllTenants();
+                    assertThat(pendingTenants.isAllSuccess()).isTrue();
+                    assertThat(pendingTenants.getResults()).containsOnlyKeys("tenant_b1", "tenant_b2");
+                    assertThat(capturedMdcTraces.values()).contains("trace-batch-1114");
+                    assertThat(capturedUsers.values()).contains("flyway-admin");
+
+                    BatchOperationResult<MigrationBaselineResult> baselineTenants =
+                            template.baselineAllTenants("1", "tenant-batch-baseline");
+                    assertThat(baselineTenants.isAllSuccess()).isTrue();
+                    assertThat(baselineTenants.getResults().get("tenant_b1").isSuccessfullyBaselined()).isTrue();
+                    assertThat(baselineTenants.getResults().get("tenant_b2").isSuccessfullyBaselined()).isTrue();
+
+                    BatchOperationResult<MigrationRepairResult> repairTenants = template.repairAllTenants();
+                    assertThat(repairTenants.isAllSuccess()).isTrue();
+
+                    BatchOperationResult<MigrationTargetInfo> infoTenants = template.infoAllTenants();
+                    assertThat(infoTenants.isAllSuccess()).isTrue();
+                    assertThat(infoTenants.getResults().get("tenant_b1").getCurrentVersion()).isEqualTo("1");
+                    assertThat(infoTenants.getResults().get("tenant_b2").getCurrentVersion()).isEqualTo("1");
+                });
+
+        // 追加全租户并发故障（FAIL_SAFE 聚合脱敏 TargetFailure vs FAIL_FAST 立即抛错）校验
+        Path brokenSqlDir = tempDir.resolve("tenant-batch-err");
+        Files.createDirectories(brokenSqlDir);
+        Files.writeString(brokenSqlDir.resolve("V1__tenant_broken.sql"),
+                "-- jdbc:mysql://admin:TenantBatchSecret99@10.0.0.10:3306/t?password=PwdLeak\nINVALID DDL;",
+                StandardCharsets.UTF_8);
+
+        HikariDataSource errMasterDs = newH2Pool("master_tberr");
+        HikariDataSource okTenantDs = newH2Pool("tenant_ok_err");
+        HikariDataSource badTenantDs = newH2Pool("tenant_bad_err");
+        new JdbcTemplate(okTenantDs).execute("CREATE TABLE tenant_ledger (id BIGINT PRIMARY KEY)");
+        Map<String, DataSource> errMap = new LinkedHashMap<>();
+        errMap.put("master", errMasterDs);
+        errMap.put("tenant_ok_err", okTenantDs);
+        errMap.put("tenant_bad_err", badTenantDs);
+        AtengDynamicRoutingDataSource errRoutingDs = buildRoutingDataSource(errMap);
+
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        AtengAsyncAutoConfiguration.class,
+                        AtengFlywayAutoConfiguration.class,
+                        FlywayAutoConfiguration.class
+                ))
+                .withBean(DataSource.class, () -> errRoutingDs)
+                .withPropertyValues(
+                        "spring.flyway.locations=classpath:db/multi/master",
+                        "ateng.boot.flyway.mode=DISABLED",
+                        "ateng.boot.flyway.tenant.enabled=true",
+                        "ateng.boot.flyway.tenant.concurrency=2",
+                        "ateng.boot.flyway.datasources.tenant_ok_err.locations=filesystem:" + tDir.toAbsolutePath(),
+                        "ateng.boot.flyway.datasources.tenant_bad_err.locations=filesystem:" + brokenSqlDir.toAbsolutePath()
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    FlywayTemplate template = context.getBean(FlywayTemplate.class);
+
+                    // 先让 tenant_ok_err 基线成功，tenant_bad_err 执行一次失败迁移或损坏连接
+                    assertThat(template.baseline("tenant_ok_err", "1", "ok-base").isSuccessfullyBaselined()).isTrue();
+                    assertThatThrownBy(() -> template.migrate("tenant_bad_err")).isInstanceOf(FlywayException.class);
+                    // 模拟 tenant_bad_err 故障不可达（关闭连接池），触发 infoAllTenants/repairAllTenants/pendingAllTenants 异常
+                    badTenantDs.close();
+
+                    BatchOperationResult<MigrationTargetInfo> infoSafe =
+                            template.infoAllTenants(BatchExecutionPolicy.FAIL_SAFE);
+                    assertThat(infoSafe.isAllSuccess()).isFalse();
+                    assertThat(infoSafe.hasFailures()).isTrue();
+                    assertThat(infoSafe.getSuccessCount()).isEqualTo(1);
+                    assertThat(infoSafe.getFailedCount()).isEqualTo(1);
+                    assertThat(infoSafe.getFailedTargets()).containsExactly("tenant_bad_err");
+                    assertThat(infoSafe.getFailures().get(0).getErrorCode())
+                            .isEqualTo(FlywayResultCode.MIGRATION_FAILED.getCode());
+
+                    assertThatThrownBy(() -> template.infoAllTenants(BatchExecutionPolicy.FAIL_FAST))
+                            .isInstanceOf(FlywayException.class);
+
+                    BatchOperationResult<List<MigrationScriptInfo>> pendingSafe =
+                            template.pendingAllTenants(BatchExecutionPolicy.FAIL_SAFE);
+                    assertThat(pendingSafe.getSuccessCount()).isEqualTo(1);
+                    assertThat(pendingSafe.getFailedTargets()).containsExactly("tenant_bad_err");
+
+                    BatchOperationResult<MigrationRepairResult> repairSafe =
+                            template.repairAllTenants(BatchExecutionPolicy.FAIL_SAFE);
+                    assertThat(repairSafe.getSuccessCount()).isEqualTo(1);
+                    assertThat(repairSafe.getFailedTargets()).containsExactly("tenant_bad_err");
+                    assertThat(repairSafe.getFailures().get(0).getErrorCode())
+                            .isEqualTo(FlywayResultCode.REPAIR_FAILED.getCode());
+
+                    assertThatThrownBy(() -> template.repairAllTenants(BatchExecutionPolicy.FAIL_FAST))
+                            .isInstanceOf(FlywayException.class);
+
+                    // 再次 baselineAllTenants：tenant_ok_err 已基线（BASELINE_FAILED），tenant_bad_err 连接失败（BASELINE_FAILED）
+                    BatchOperationResult<MigrationBaselineResult> baselineSafe =
+                            template.baselineAllTenants("2", "fail-safe-base", BatchExecutionPolicy.FAIL_SAFE);
+                    assertThat(baselineSafe.getFailedCount()).isEqualTo(2);
+                    assertThat(baselineSafe.getFailures())
+                            .allSatisfy(f -> assertThat(f.getErrorCode()).isEqualTo(FlywayResultCode.BASELINE_FAILED.getCode()));
+                    assertThatThrownBy(() -> template.baselineAllTenants("2", "fail-fast-base", BatchExecutionPolicy.FAIL_FAST))
+                            .isInstanceOf(FlywayException.class);
+                });
+    }
+
+    @Test
+    @DisplayName("L3：DynamicDatasourceTemplate 摘除故障租户库后 onDataSourceRemoved 应自动清除摘要滞留并恢复健康为 UP")
+    void shouldEvictRemovedTenantFromSummaryAndRecoverHealthOnDataSourceRemoved(@TempDir Path tempDir) throws Exception {
+        Path brokenDir = tempDir.resolve("broken-remove");
+        Files.createDirectories(brokenDir);
+        Files.writeString(brokenDir.resolve("V1__broken.sql"),
+                "-- jdbc:mysql://root:RemovedSecret@10.0.0.9:3306/t?password=LeakPwd\nBROKEN SQL;",
+                StandardCharsets.UTF_8);
+
+        HikariDataSource masterDs = newH2Pool("master_rm");
+        Map<String, DataSource> dsMap = new LinkedHashMap<>();
+        dsMap.put("master", masterDs);
+        AtengDynamicRoutingDataSource routingDs = buildRoutingDataSource(dsMap);
+
+        DatasourceProperties dsProps = new DatasourceProperties();
+        dsProps.getMultiTenancy().setEnabled(true);
+        dsProps.getReadWriteSplit().setEnabled(true);
+        TenantDataSourceProvider tenantProvider = new DefaultTenantDataSourceProvider(dsProps);
+        DefaultDataSourceCreator creator = new DefaultDataSourceCreator();
+        creator.setCreators(List.of(new HikariDataSourceCreator(new HikariCpConfig())));
+        DynamicDatasourceTemplate dsTemplate = new DynamicDatasourceTemplate(
+                routingDs, dsProps, tenantProvider, new DynamicDatasourceGuard(dsProps), creator);
+
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        AtengFlywayAutoConfiguration.class,
+                        FlywayAutoConfiguration.class
+                ))
+                .withBean(DataSource.class, () -> routingDs)
+                .withBean(DatasourceProperties.class, () -> dsProps)
+                .withBean(TenantDataSourceProvider.class, () -> tenantProvider)
+                .withBean(DynamicDatasourceTemplate.class, () -> dsTemplate)
+                .withPropertyValues(
+                        "spring.flyway.locations=classpath:db/multi/master",
+                        "ateng.boot.flyway.tenant.enabled=true",
+                        "ateng.boot.flyway.tenant.dynamic-mount-failure-policy=KEEP_AND_REPORT",
+                        "ateng.boot.flyway.datasources.tenant_removed.locations=filesystem:" + brokenDir.toAbsolutePath()
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    DynamicDatasourceTemplate dynamicTemplate = context.getBean(DynamicDatasourceTemplate.class);
+                    FlywayTemplate flywayTemplate = context.getBean(FlywayTemplate.class);
+                    FlywayHealthIndicator healthIndicator = context.getBean(FlywayHealthIndicator.class);
+
+                    // 1. 挂载故障租户（KEEP_AND_REPORT），摘要滞留失败记录且健康转为 DOWN
+                    HikariDataSource brokenDs = newH2Pool("tenant_removed");
+                    dynamicTemplate.addDataSource("tenant_removed", brokenDs, false);
+
+                    MigrationSummary failedSummary = flywayTemplate.getLastMigrationSummary();
+                    assertThat(failedSummary.getFailedCount()).isEqualTo(1);
+                    assertThat(failedSummary.getOutcomes())
+                            .anyMatch(o -> "tenant_removed".equals(o.getTargetKey()) && !o.isSuccess());
+                    assertThat(healthIndicator.health().getStatus()).isEqualTo(Status.DOWN);
+
+                    // 2. 从动态路由表摘除该故障租户库，onDataSourceRemoved 自动清理摘要并递增版本恢复健康 UP
+                    long versionBeforeRemove = flywayTemplate.getSummaryVersion();
+                    dynamicTemplate.removeDataSource("tenant_removed", true);
+
+                    assertThat(flywayTemplate.getSummaryVersion()).isGreaterThan(versionBeforeRemove);
+                    MigrationSummary healedSummary = flywayTemplate.getLastMigrationSummary();
+                    assertThat(healedSummary.getFailedCount()).isZero();
+                    assertThat(healedSummary.getOutcomes())
+                            .noneMatch(o -> "tenant_removed".equals(o.getTargetKey()));
+                    assertThat(healthIndicator.health().getStatus()).isEqualTo(Status.UP);
+                });
     }
 }

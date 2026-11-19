@@ -1,6 +1,8 @@
 package io.github.atengk.boot.sample.flyway.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.flyway.enums.BatchExecutionPolicy;
+import io.github.atengk.boot.flyway.model.BatchOperationResult;
 import io.github.atengk.boot.flyway.model.MigrationBaselineResult;
 import io.github.atengk.boot.flyway.model.MigrationCleanResult;
 import io.github.atengk.boot.flyway.model.MigrationRepairResult;
@@ -8,6 +10,8 @@ import io.github.atengk.boot.flyway.model.MigrationSummary;
 import io.github.atengk.boot.flyway.model.MigrationTargetInfo;
 import io.github.atengk.boot.flyway.template.FlywayTemplate;
 import io.github.atengk.boot.sample.flyway.dto.BaselineRequest;
+import io.github.atengk.boot.sample.flyway.dto.BatchBaselineRequest;
+import io.github.atengk.boot.sample.flyway.dto.BatchTargetsRequest;
 import io.github.atengk.boot.sample.flyway.dto.DestructiveDdlDemoRequest;
 import io.github.atengk.boot.sample.flyway.dto.IsolatedCredentialDemoRequest;
 import io.github.atengk.boot.sample.flyway.dto.TargetOperationRequest;
@@ -66,6 +70,30 @@ public class FlywayGovernanceController {
     }
 
     /**
+     * 按容错策略聚合探查全部受管控目标库迁移状态并输出泛型回执
+     *
+     * @param policy 可选批量容错策略（默认继承静态容错策略）
+     * @return 泛型批量状态聚合回执
+     */
+    @GetMapping("/info-batch")
+    public Result<BatchOperationResult<MigrationTargetInfo>> infoAllBatch(
+            @RequestParam(required = false) BatchExecutionPolicy policy) {
+        return Result.success(flywayTemplate.infoAll(policy));
+    }
+
+    /**
+     * 按容错策略聚合探查指定多目标数据源迁移历史与状态
+     *
+     * @param request 批量目标请求
+     * @return 泛型批量状态聚合回执
+     */
+    @PostMapping("/info-targets")
+    public Result<BatchOperationResult<MigrationTargetInfo>> infoTargets(
+            @Valid @RequestBody BatchTargetsRequest request) {
+        return Result.success(flywayTemplate.infoTargets(request.getTargetKeys(), request.getPolicy()));
+    }
+
+    /**
      * 查询最近一次全局迁移或校验摘要快照
      *
      * @return 迁移汇总摘要
@@ -88,6 +116,19 @@ public class FlywayGovernanceController {
     }
 
     /**
+     * 对指定多目标数据源集合执行受控批量基线初始化
+     *
+     * @param request 批量基线请求
+     * @return 泛型批量基线回执
+     */
+    @PostMapping("/baseline-targets")
+    public Result<BatchOperationResult<MigrationBaselineResult>> baselineTargets(
+            @Valid @RequestBody BatchBaselineRequest request) {
+        return Result.success(flywayTemplate.baselineTargets(
+                request.getTargetKeys(), request.getVersion(), request.getDescription(), request.getPolicy()));
+    }
+
+    /**
      * 对指定目标库执行历史表校验修复
      *
      * @param request 目标数据源请求
@@ -96,6 +137,18 @@ public class FlywayGovernanceController {
     @PostMapping("/repair")
     public Result<MigrationRepairResult> repair(@Valid @RequestBody TargetOperationRequest request) {
         return Result.success(flywayTemplate.repair(request.getTargetKey()));
+    }
+
+    /**
+     * 对指定多目标数据源集合执行批量历史表修复
+     *
+     * @param request 批量目标请求
+     * @return 泛型批量修复回执
+     */
+    @PostMapping("/repair-targets")
+    public Result<BatchOperationResult<MigrationRepairResult>> repairTargets(
+            @Valid @RequestBody BatchTargetsRequest request) {
+        return Result.success(flywayTemplate.repairTargets(request.getTargetKeys(), request.getPolicy()));
     }
 
     /**

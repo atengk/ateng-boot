@@ -2,10 +2,12 @@ package io.github.atengk.boot.sample.flyway.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.flyway.model.BatchMigrationResult;
+import io.github.atengk.boot.flyway.model.BatchOperationResult;
 import io.github.atengk.boot.flyway.model.MigrationOutcome;
 import io.github.atengk.boot.flyway.model.MigrationScriptInfo;
 import io.github.atengk.boot.flyway.model.MigrationValidationResult;
 import io.github.atengk.boot.flyway.template.FlywayTemplate;
+import io.github.atengk.boot.sample.flyway.dto.BatchTargetsRequest;
 import io.github.atengk.boot.sample.flyway.dto.TargetOperationRequest;
 import io.github.atengk.boot.sample.flyway.service.FlywayPlatformBusinessService;
 import io.github.atengk.boot.sample.flyway.vo.AuditLogResponse;
@@ -69,6 +71,18 @@ public class FlywayMigrationController {
     public Result<List<MigrationScriptInfo>> queryPendingScripts(
             @RequestParam(defaultValue = "master") @NotBlank(message = "targetKey 不能为空") String targetKey) {
         return Result.success(flywayTemplate.pending(targetKey));
+    }
+
+    /**
+     * 批量预检指定多目标数据源尚未执行的待迁移脚本清单
+     *
+     * @param request 批量目标请求
+     * @return 泛型批量预检聚合回执
+     */
+    @PostMapping("/pending-targets")
+    public Result<BatchOperationResult<List<MigrationScriptInfo>>> queryPendingTargets(
+            @Valid @RequestBody BatchTargetsRequest request) {
+        return Result.success(flywayTemplate.pendingTargets(request.getTargetKeys(), request.getPolicy()));
     }
 
     /**

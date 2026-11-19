@@ -6,11 +6,16 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
+import io.github.atengk.boot.flyway.enums.BatchExecutionPolicy;
 import io.github.atengk.boot.flyway.enums.FlywayResultCode;
 import io.github.atengk.boot.sample.flyway.dto.BaselineRequest;
+import io.github.atengk.boot.sample.flyway.dto.BatchBaselineRequest;
+import io.github.atengk.boot.sample.flyway.dto.BatchPolicyRequest;
+import io.github.atengk.boot.sample.flyway.dto.BatchTargetsRequest;
 import io.github.atengk.boot.sample.flyway.dto.DestructiveDdlDemoRequest;
 import io.github.atengk.boot.sample.flyway.dto.IsolatedCredentialDemoRequest;
 import io.github.atengk.boot.sample.flyway.dto.TargetOperationRequest;
+import io.github.atengk.boot.sample.flyway.dto.TenantBatchBaselineRequest;
 import io.github.atengk.boot.sample.flyway.dto.TenantMountRequest;
 import io.github.atengk.boot.sample.flyway.dto.TenantOrderCreateRequest;
 import io.github.atengk.boot.sample.flyway.entity.TenantRegistryEntity;
@@ -28,6 +33,8 @@ import org.springframework.test.web.servlet.MockMvc;
 import javax.sql.DataSource;
 import java.math.BigDecimal;
 import java.sql.Connection;
+import java.util.Collections;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsInAnyOrder;
@@ -171,6 +178,28 @@ class FlywaySampleControllersMockMvcTest {
                         .content(objectMapper.writeValueAsString(TargetOperationRequest.builder().targetKey(" ").build())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400));
+
+        // 批量多目标待迁移预检与 JSR-303 空列表拦截
+        BatchTargetsRequest pendingTargetsReq = BatchTargetsRequest.builder()
+                .targetKeys(List.of("master", "log_db"))
+                .policy(BatchExecutionPolicy.FAIL_SAFE)
+                .build();
+        mockMvc.perform(post("/sample/flyway/migration/pending-targets")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(pendingTargetsReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.allSuccess").value(true))
+                .andExpect(jsonPath("$.data.totalTargets").value(2))
+                .andExpect(jsonPath("$.data.results.master", hasSize(0)));
+
+        mockMvc.perform(post("/sample/flyway/migration/pending-targets")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(BatchTargetsRequest.builder()
+                                .targetKeys(Collections.emptyList())
+                                .build())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
     }
 
     @Test
@@ -186,6 +215,51 @@ class FlywaySampleControllersMockMvcTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.allSuccess").value(true));
+
+        mockMvc.perform(get("/sample/flyway/tenant/pending-all"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.allSuccess").value(true))
+                .andExpect(jsonPath("$.data.totalTargets").value(2));
+
+        mockMvc.perform(get("/sample/flyway/tenant/info-all"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.allSuccess").value(true))
+                .andExpect(jsonPath("$.data.results.tenant_1001.currentVersion").value("2"))
+                .andExpect(jsonPath("$.data.results.tenant_1002.currentVersion").value("2"));
+
+        mockMvc.perform(post("/sample/flyway/tenant/repair-all")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(BatchPolicyRequest.builder()
+                                .policy(BatchExecutionPolicy.FAIL_FAST)
+                                .build())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.allSuccess").value(true))
+                .andExpect(jsonPath("$.data.totalTargets").value(2));
+
+        // 租户已含迁移历史，FAIL_SAFE 下聚合返回失败明细 62005，FAIL_FAST 下立即抛出 62005
+        mockMvc.perform(post("/sample/flyway/tenant/baseline-all")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(TenantBatchBaselineRequest.builder()
+                                .version("1")
+                                .description("tenant-batch-baseline")
+                                .policy(BatchExecutionPolicy.FAIL_SAFE)
+                                .build())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.allSuccess").value(false))
+                .andExpect(jsonPath("$.data.failedCount").value(2))
+                .andExpect(jsonPath("$.data.failures[0].errorCode").value(FlywayResultCode.BASELINE_FAILED.getCode()));
+
+        mockMvc.perform(post("/sample/flyway/tenant/baseline-all")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(TenantBatchBaselineRequest.builder()
+                                .policy(BatchExecutionPolicy.FAIL_FAST)
+                                .build())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(FlywayResultCode.BASELINE_FAILED.getCode()));
 
         // 1. 动态挂载 tenant_1003 并触发自动建表（V1 SQL + V2 JavaMigration）
         TenantMountRequest mountReq = TenantMountRequest.builder()
@@ -254,6 +328,57 @@ class FlywaySampleControllersMockMvcTest {
                 .andExpect(jsonPath("$.data[*].targetKey", hasItem("master")))
                 .andExpect(jsonPath("$.data[*].targetKey", hasItem("log_db")))
                 .andExpect(jsonPath("$.data[*].targetKey", hasItem("tenant_1001")));
+
+        mockMvc.perform(get("/sample/flyway/governance/info-batch").param("policy", "FAIL_SAFE"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.allSuccess").value(true))
+                .andExpect(jsonPath("$.data.results.master.targetKey").value("master"))
+                .andExpect(jsonPath("$.data.results.log_db.currentVersion").value("2"));
+
+        // 指定多目标聚合探查（含不存在目标时 FAIL_SAFE 返回局部成功与脱敏失败项）
+        mockMvc.perform(post("/sample/flyway/governance/info-targets")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(BatchTargetsRequest.builder()
+                                .targetKeys(List.of("master", "unknown_nonexistent_db"))
+                                .policy(BatchExecutionPolicy.FAIL_SAFE)
+                                .build())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.allSuccess").value(false))
+                .andExpect(jsonPath("$.data.successCount").value(1))
+                .andExpect(jsonPath("$.data.failedCount").value(1))
+                .andExpect(jsonPath("$.data.failedTargets", hasItem("unknown_nonexistent_db")))
+                .andExpect(jsonPath("$.data.failures[0].errorCode").value(FlywayResultCode.TARGET_NOT_FOUND.getCode()));
+
+        mockMvc.perform(post("/sample/flyway/governance/repair-targets")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(BatchTargetsRequest.builder()
+                                .targetKeys(List.of("master", "log_db"))
+                                .build())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.allSuccess").value(true))
+                .andExpect(jsonPath("$.data.totalTargets").value(2));
+
+        mockMvc.perform(post("/sample/flyway/governance/baseline-targets")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(BatchBaselineRequest.builder()
+                                .targetKeys(List.of("log_db"))
+                                .version("1")
+                                .description("batch-baseline")
+                                .policy(BatchExecutionPolicy.FAIL_FAST)
+                                .build())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(FlywayResultCode.BASELINE_FAILED.getCode()));
+
+        mockMvc.perform(post("/sample/flyway/governance/baseline-targets")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(BatchBaselineRequest.builder()
+                                .targetKeys(Collections.emptyList())
+                                .build())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
 
         mockMvc.perform(get("/sample/flyway/governance/summary"))
                 .andExpect(status().isOk())

@@ -94,6 +94,22 @@ public class FlywayTenantLifecycleListener implements DynamicDatasourceLifecycle
         }
     }
 
+    @Override
+    public void onDataSourceRemoved(String dsKey) {
+        if (!StringUtils.hasText(dsKey) || !atengProperties.isEnabled()) {
+            return;
+        }
+        String normalizedKey = dsKey.trim();
+        FlywayTemplate flywayTemplate = flywayTemplateProvider.getIfAvailable();
+        if (flywayTemplate == null) {
+            return;
+        }
+        boolean removed = flywayTemplate.removeTargetFromSummary(normalizedKey);
+        if (removed) {
+            log.info("动态数据源 [dsKey={}] 已从路由表摘除，已同步清理全局迁移摘要滞留记录", normalizedKey);
+        }
+    }
+
     private boolean isEligibleForDynamicMigration(String dsKey) {
         if (TargetRoutingSupport.isExcludedOrSlave(dsKey, atengProperties)) {
             return false;

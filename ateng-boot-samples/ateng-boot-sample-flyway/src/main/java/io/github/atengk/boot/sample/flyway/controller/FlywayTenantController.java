@@ -1,8 +1,16 @@
 package io.github.atengk.boot.sample.flyway.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.flyway.enums.BatchExecutionPolicy;
 import io.github.atengk.boot.flyway.model.BatchMigrationResult;
+import io.github.atengk.boot.flyway.model.BatchOperationResult;
+import io.github.atengk.boot.flyway.model.MigrationBaselineResult;
+import io.github.atengk.boot.flyway.model.MigrationRepairResult;
+import io.github.atengk.boot.flyway.model.MigrationScriptInfo;
+import io.github.atengk.boot.flyway.model.MigrationTargetInfo;
 import io.github.atengk.boot.flyway.template.FlywayTemplate;
+import io.github.atengk.boot.sample.flyway.dto.BatchPolicyRequest;
+import io.github.atengk.boot.sample.flyway.dto.TenantBatchBaselineRequest;
 import io.github.atengk.boot.sample.flyway.dto.TenantMountRequest;
 import io.github.atengk.boot.sample.flyway.dto.TenantOrderCreateRequest;
 import io.github.atengk.boot.sample.flyway.service.FlywayPlatformBusinessService;
@@ -54,6 +62,58 @@ public class FlywayTenantController {
     @PostMapping("/validate-all")
     public Result<BatchMigrationResult> validateAllTenants() {
         return Result.success(flywayTemplate.validateAllTenants());
+    }
+
+    /**
+     * 批量预检全部已注册 SaaS 物理租户库待迁移脚本
+     *
+     * @param policy 可选批量容错策略
+     * @return 全租户泛型批量预检回执
+     */
+    @GetMapping("/pending-all")
+    public Result<BatchOperationResult<List<MigrationScriptInfo>>> pendingAllTenants(
+            @RequestParam(required = false) BatchExecutionPolicy policy) {
+        return Result.success(flywayTemplate.pendingAllTenants(policy));
+    }
+
+    /**
+     * 容错聚合探查全部已注册 SaaS 物理租户库迁移历史与状态
+     *
+     * @param policy 可选批量容错策略
+     * @return 全租户泛型批量状态聚合回执
+     */
+    @GetMapping("/info-all")
+    public Result<BatchOperationResult<MigrationTargetInfo>> infoAllTenants(
+            @RequestParam(required = false) BatchExecutionPolicy policy) {
+        return Result.success(flywayTemplate.infoAllTenants(policy));
+    }
+
+    /**
+     * 批量修复全部已注册 SaaS 物理租户库迁移历史表
+     *
+     * @param request 可选批量策略请求
+     * @return 全租户泛型批量修复回执
+     */
+    @PostMapping("/repair-all")
+    public Result<BatchOperationResult<MigrationRepairResult>> repairAllTenants(
+            @Valid @RequestBody(required = false) BatchPolicyRequest request) {
+        return Result.success(flywayTemplate.repairAllTenants(request != null ? request.getPolicy() : null));
+    }
+
+    /**
+     * 批量对全部已注册 SaaS 物理租户库执行受控基线初始化
+     *
+     * @param request 可选基线参数与批量策略请求
+     * @return 全租户泛型批量基线回执
+     */
+    @PostMapping("/baseline-all")
+    public Result<BatchOperationResult<MigrationBaselineResult>> baselineAllTenants(
+            @Valid @RequestBody(required = false) TenantBatchBaselineRequest request) {
+        if (request == null) {
+            return Result.success(flywayTemplate.baselineAllTenants());
+        }
+        return Result.success(flywayTemplate.baselineAllTenants(
+                request.getVersion(), request.getDescription(), request.getPolicy()));
     }
 
     /**

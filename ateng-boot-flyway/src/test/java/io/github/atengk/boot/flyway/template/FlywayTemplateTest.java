@@ -11,16 +11,21 @@ import io.github.atengk.boot.flyway.enums.FlywayExecutionMode;
 import io.github.atengk.boot.flyway.enums.FlywayResultCode;
 import io.github.atengk.boot.flyway.enums.MigrationTargetKind;
 import io.github.atengk.boot.flyway.exception.FlywayException;
+import io.github.atengk.boot.flyway.model.BatchOperationResult;
 import io.github.atengk.boot.flyway.model.MigrationBaselineResult;
+import io.github.atengk.boot.flyway.model.MigrationCleanResult;
 import io.github.atengk.boot.flyway.model.MigrationOutcome;
 import io.github.atengk.boot.flyway.model.MigrationRepairResult;
 import io.github.atengk.boot.flyway.model.MigrationScriptInfo;
+import io.github.atengk.boot.flyway.model.MigrationSummary;
 import io.github.atengk.boot.flyway.model.MigrationTargetInfo;
 import io.github.atengk.boot.flyway.model.MigrationValidationResult;
+import io.github.atengk.boot.flyway.observability.FlywayHealthIndicator;
 import io.github.atengk.boot.flyway.spi.DefaultFlywayLockProvider;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.boot.actuate.health.Status;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
@@ -32,6 +37,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -340,5 +347,134 @@ class FlywayTemplateTest {
 
         assertThat(FlywayExecutionMode.MIGRATE.toOption().getCode()).isEqualTo("MIGRATE");
         assertThat(FlywayExecutionMode.MIGRATE.toOption().getLabel()).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("单库与显式集合对称批处理门面及 BatchOperationResult 不可变性、Fail-Fast 空参拦截与 FAIL_SAFE 容错校验")
+    void shouldSupportGenericBatchOperationsImmutabilityFailFastAndFailSafe() {
+        String dbName = "flyway_s5_batch_" + UUID.randomUUID().toString().replace("-", "");
+        newContextRunner(dbName)
+                .withPropertyValues(
+                        "ateng.boot.flyway.mode=DISABLED",
+                        "spring.flyway.locations=classpath:db/slice1"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    FlywayTemplate template = context.getBean(FlywayTemplate.class);
+
+                    // 1. 合法对称批量调用与不可变契约校验
+                    BatchOperationResult<List<MigrationScriptInfo>> pendingBatch = template.pendingTargets();
+                    assertThat(pendingBatch.isAllSuccess()).isTrue();
+                    assertThat(pendingBatch.hasFailures()).isFalse();
+                    assertThat(pendingBatch.getTotalTargets()).isEqualTo(1);
+                    assertThat(pendingBatch.getSuccessCount()).isEqualTo(1);
+                    assertThat(pendingBatch.getFailedTargets()).isEmpty();
+                    assertThat(pendingBatch.getResults().get("default")).hasSize(1);
+                    assertThat(pendingBatch.getTargetDurations()).containsKey("default");
+                    assertThatThrownBy(() -> pendingBatch.getResults().put("x", Collections.emptyList()))
+                            .isInstanceOf(UnsupportedOperationException.class);
+                    assertThatThrownBy(() -> pendingBatch.getTargetDurations().put("x", Duration.ZERO))
+                            .isInstanceOf(UnsupportedOperationException.class);
+
+                    BatchOperationResult<MigrationTargetInfo> infoBatch = template.infoAll(BatchExecutionPolicy.FAIL_SAFE);
+                    assertThat(infoBatch.isAllSuccess()).isTrue();
+                    assertThat(infoBatch.getResults().get("default").getPendingCount()).isEqualTo(1);
+
+                    // 原有 infoAll() 向后兼容保留
+                    List<MigrationTargetInfo> legacyInfoAll = template.infoAll();
+                    assertThat(legacyInfoAll).hasSize(1);
+                    assertThat(legacyInfoAll.get(0).getTargetKey()).isEqualTo("default");
+
+                    // 2. 空 targetKeys 或含空白/null 元素必须前置 Fail-Fast 抛 IllegalArgumentException
+                    assertThatThrownBy(() -> template.pendingTargets(Collections.emptyList()))
+                            .isInstanceOf(IllegalArgumentException.class);
+                    assertThatThrownBy(() -> template.repairTargets(Arrays.asList("default", " ")))
+                            .isInstanceOf(IllegalArgumentException.class);
+                    assertThatThrownBy(() -> template.baselineTargets(Collections.singletonList((String) null)))
+                            .isInstanceOf(IllegalArgumentException.class);
+                    assertThatThrownBy(() -> template.infoTargets(Collections.emptyList(), BatchExecutionPolicy.FAIL_SAFE))
+                            .isInstanceOf(IllegalArgumentException.class);
+                    assertThatThrownBy(() -> template.infoAll(Arrays.asList("default", ""), BatchExecutionPolicy.FAIL_SAFE))
+                            .isInstanceOf(IllegalArgumentException.class);
+
+                    // 3. 混合未知目标：FAIL_FAST 立即抛出 TARGET_NOT_FOUND (62004)，FAIL_SAFE 收集局部成功与脱敏失败
+                    List<String> mixedKeys = List.of("default", "unknown_target");
+                    assertThatThrownBy(() -> template.infoTargets(mixedKeys, BatchExecutionPolicy.FAIL_FAST))
+                            .isInstanceOf(FlywayException.class)
+                            .satisfies(ex -> assertThat(((FlywayException) ex).getCode())
+                                    .isEqualTo(FlywayResultCode.TARGET_NOT_FOUND.getCode()));
+
+                    BatchOperationResult<MigrationTargetInfo> partialInfo =
+                            template.infoTargets(mixedKeys, BatchExecutionPolicy.FAIL_SAFE);
+                    assertThat(partialInfo.isAllSuccess()).isFalse();
+                    assertThat(partialInfo.hasFailures()).isTrue();
+                    assertThat(partialInfo.getTotalTargets()).isEqualTo(2);
+                    assertThat(partialInfo.getSuccessCount()).isEqualTo(1);
+                    assertThat(partialInfo.getFailedCount()).isEqualTo(1);
+                    assertThat(partialInfo.getResults()).containsOnlyKeys("default");
+                    assertThat(partialInfo.getFailedTargets()).containsExactly("unknown_target");
+                    assertThat(partialInfo.getFailures().get(0).getErrorCode())
+                            .isEqualTo(FlywayResultCode.TARGET_NOT_FOUND.getCode());
+                    assertThat(partialInfo.getTargetDurations()).containsKeys("default", "unknown_target");
+                });
+    }
+
+    @Test
+    @DisplayName("baseline/repair/clean 均应递增 summaryVersion，且 clean 后摘要清退不再虚报为已迁移成功")
+    void shouldSyncSummaryAndIncrementVersionAcrossBaselineRepairAndClean(@TempDir Path tempDir) throws Exception {
+        Files.writeString(tempDir.resolve("V1__legacy.sql"),
+                "CREATE TABLE legacy_tbl (id BIGINT PRIMARY KEY);",
+                StandardCharsets.UTF_8);
+
+        String dbName = "flyway_s5_clean_sync_" + UUID.randomUUID().toString().replace("-", "");
+        newContextRunner(dbName)
+                .withPropertyValues(
+                        "ateng.boot.flyway.mode=DISABLED",
+                        "spring.flyway.clean-disabled=false",
+                        "ateng.boot.flyway.guard.forbid-clean-always=false",
+                        "ateng.boot.flyway.guard.forbid-clean-in-protected-profiles=false",
+                        "spring.flyway.locations=filesystem:" + tempDir.toAbsolutePath()
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    FlywayTemplate template = context.getBean(FlywayTemplate.class);
+                    FlywayHealthIndicator healthIndicator = context.getBean(FlywayHealthIndicator.class);
+                    DataSource ds = context.getBean(DataSource.class);
+                    new JdbcTemplate(ds).execute("CREATE TABLE legacy_tbl (id BIGINT PRIMARY KEY)");
+
+                    // 1. baseline 后 summaryVersion 递增且摘要记录当前基线版本
+                    long v0 = template.getSummaryVersion();
+                    MigrationBaselineResult baselineRes = template.baseline("default", "1", "init-baseline");
+                    assertThat(baselineRes.isSuccessfullyBaselined()).isTrue();
+                    long v1 = template.getSummaryVersion();
+                    assertThat(v1).isGreaterThan(v0);
+                    MigrationSummary afterBaseline = template.getLastMigrationSummary();
+                    assertThat(afterBaseline.getSuccessCount()).isEqualTo(1);
+                    assertThat(afterBaseline.getOutcomes().get(0).getTargetSchemaVersion()).isEqualTo("1");
+
+                    // 2. repair 后 summaryVersion 递增
+                    MigrationRepairResult repairRes = template.repair("default");
+                    assertThat(repairRes.getTargetKey()).isEqualTo("default");
+                    long v2 = template.getSummaryVersion();
+                    assertThat(v2).isGreaterThan(v1);
+
+                    // 3. 先建立健康缓存 UP，再执行 clean，应递增 summaryVersion、清除已迁移虚报并立即刷新健康探针
+                    assertThat(healthIndicator.health().getStatus()).isEqualTo(Status.UP);
+                    long probesBeforeClean = healthIndicator.getDatabaseProbeCount();
+
+                    MigrationCleanResult cleanRes = template.clean("default");
+                    assertThat(cleanRes.getTargetKey()).isEqualTo("default");
+                    long v3 = template.getSummaryVersion();
+                    assertThat(v3).isGreaterThan(v2);
+
+                    MigrationSummary afterClean = template.getLastMigrationSummary();
+                    assertThat(afterClean.getTotalTargets()).isZero();
+                    assertThat(afterClean.getSuccessCount()).isZero();
+                    assertThat(afterClean.getOutcomes()).isEmpty();
+
+                    // clean 后 healthIndicator 应因 summaryVersion 变更立即触发底层探查而非命中陈旧缓存
+                    assertThat(healthIndicator.health().getDetails().get("pendingCount")).isEqualTo(1);
+                    assertThat(healthIndicator.getDatabaseProbeCount()).isGreaterThan(probesBeforeClean);
+                });
     }
 }

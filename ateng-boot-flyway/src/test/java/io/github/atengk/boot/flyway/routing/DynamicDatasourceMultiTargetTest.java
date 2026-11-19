@@ -15,6 +15,10 @@ import io.github.atengk.boot.flyway.enums.FlywayResultCode;
 import io.github.atengk.boot.flyway.enums.MigrationTargetKind;
 import io.github.atengk.boot.flyway.exception.FlywayException;
 import io.github.atengk.boot.flyway.model.BatchMigrationResult;
+import io.github.atengk.boot.flyway.model.BatchOperationResult;
+import io.github.atengk.boot.flyway.model.MigrationBaselineResult;
+import io.github.atengk.boot.flyway.model.MigrationRepairResult;
+import io.github.atengk.boot.flyway.model.MigrationScriptInfo;
 import io.github.atengk.boot.flyway.model.MigrationTarget;
 import io.github.atengk.boot.flyway.model.MigrationTargetInfo;
 import io.github.atengk.boot.flyway.properties.AtengFlywayProperties;
@@ -586,6 +590,78 @@ class DynamicDatasourceMultiTargetTest {
                                     && flyway.getConfiguration().isMixed()
                     );
                     assertThat(flagsBound).isTrue();
+                });
+    }
+
+    @Test
+    @DisplayName("L2：静态多目标库应支持 pendingTargets/repairTargets/baselineTargets/infoTargets/infoAll(policy) 对称批处理门面与向后兼容")
+    void shouldSupportSymmetricalBatchOperationsAcrossMultiStaticTargets(@TempDir Path tempDir) throws Exception {
+        Path legacyDirA = tempDir.resolve("legacy-a");
+        Path legacyDirB = tempDir.resolve("legacy-b");
+        Files.createDirectories(legacyDirA);
+        Files.createDirectories(legacyDirB);
+        Files.writeString(legacyDirA.resolve("V1__a.sql"),
+                "CREATE TABLE leg_a (id BIGINT PRIMARY KEY);", StandardCharsets.UTF_8);
+        Files.writeString(legacyDirA.resolve("V2__a_col.sql"),
+                "ALTER TABLE leg_a ADD COLUMN note VARCHAR(32);", StandardCharsets.UTF_8);
+        Files.writeString(legacyDirB.resolve("V1__b.sql"),
+                "CREATE TABLE leg_b (id BIGINT PRIMARY KEY);", StandardCharsets.UTF_8);
+
+        HikariDataSource masterDs = newH2Pool("master_sym");
+        HikariDataSource logDs = newH2Pool("log_sym");
+        new JdbcTemplate(masterDs).execute("CREATE TABLE leg_a (id BIGINT PRIMARY KEY)");
+        new JdbcTemplate(logDs).execute("CREATE TABLE leg_b (id BIGINT PRIMARY KEY)");
+
+        Map<String, DataSource> dsMap = new LinkedHashMap<>();
+        dsMap.put("master", masterDs);
+        dsMap.put("log_db", logDs);
+        AtengDynamicRoutingDataSource routingDs = buildRoutingDataSource(dsMap);
+
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        AtengFlywayAutoConfiguration.class,
+                        FlywayAutoConfiguration.class
+                ))
+                .withBean(DataSource.class, () -> routingDs)
+                .withPropertyValues(
+                        "ateng.boot.flyway.mode=DISABLED",
+                        "ateng.boot.flyway.datasources.master.locations=filesystem:" + legacyDirA.toAbsolutePath(),
+                        "ateng.boot.flyway.datasources.log_db.locations=filesystem:" + legacyDirB.toAbsolutePath()
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    FlywayTemplate template = context.getBean(FlywayTemplate.class);
+                    List<String> keys = List.of("master", "log_db");
+
+                    // 1. 批量待迁移预检：master 2 条、log_db 1 条
+                    BatchOperationResult<List<MigrationScriptInfo>> pendingRes = template.pendingTargets(keys);
+                    assertThat(pendingRes.isAllSuccess()).isTrue();
+                    assertThat(pendingRes.getResults().get("master")).hasSize(2);
+                    assertThat(pendingRes.getResults().get("log_db")).hasSize(1);
+
+                    // 2. 批量基线初始化（携带自定义 version 与 description）
+                    BatchOperationResult<MigrationBaselineResult> baseRes =
+                            template.baselineTargets(keys, "1", "static-multi-baseline");
+                    assertThat(baseRes.isAllSuccess()).isTrue();
+                    assertThat(baseRes.getResults().get("master").getBaselineVersion()).isEqualTo("1");
+                    assertThat(baseRes.getResults().get("log_db").getBaselineVersion()).isEqualTo("1");
+                    assertThat(template.getLastMigrationSummary().getTotalTargets()).isEqualTo(2);
+
+                    // 3. 批量修复 + 批量容错状态聚合
+                    BatchOperationResult<MigrationRepairResult> repairRes = template.repairTargets(keys);
+                    assertThat(repairRes.isAllSuccess()).isTrue();
+
+                    BatchOperationResult<MigrationTargetInfo> infoBatch = template.infoTargets(keys, BatchExecutionPolicy.FAIL_SAFE);
+                    assertThat(infoBatch.isAllSuccess()).isTrue();
+                    assertThat(infoBatch.getResults().get("master").getPendingCount()).isEqualTo(1);
+                    assertThat(infoBatch.getResults().get("log_db").getPendingCount()).isZero();
+
+                    // 4. FAIL_SAFE vs FAIL_FAST + 既有 List<MigrationTargetInfo> infoAll() 向后兼容
+                    BatchOperationResult<MigrationTargetInfo> partial =
+                            template.infoAll(List.of("master", "missing_db"), BatchExecutionPolicy.FAIL_SAFE);
+                    assertThat(partial.getSuccessCount()).isEqualTo(1);
+                    assertThat(partial.getFailedTargets()).containsExactly("missing_db");
+                    assertThat(template.infoAll()).hasSize(2);
                 });
     }
 
