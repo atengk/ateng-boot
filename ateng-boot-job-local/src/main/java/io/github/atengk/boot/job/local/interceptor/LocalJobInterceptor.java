@@ -21,11 +21,11 @@ public interface LocalJobInterceptor extends Ordered {
     /**
      * 获取拦截器执行优先级（数值越小越先执行）
      *
-     * @return 优先级顺序值，默认为最低优先级 {@link Ordered#LOWEST_PRECEDENCE}
+     * @return 优先级顺序值，默认为 {@code 0}
      */
     @Override
     default int getOrder() {
-        return Ordered.LOWEST_PRECEDENCE;
+        return 0;
     }
 
     /**

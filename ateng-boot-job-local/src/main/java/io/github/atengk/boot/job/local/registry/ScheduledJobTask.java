@@ -20,7 +20,6 @@ import io.github.atengk.boot.job.local.event.JobTimeoutEvent;
 import io.github.atengk.boot.job.local.exception.JobTimeoutException;
 import io.github.atengk.boot.job.local.fallback.LocalJobTimeoutFallbackHandler;
 import io.github.atengk.boot.job.local.handler.JobHandler;
-import io.github.atengk.boot.job.local.handler.MethodInvokingJobHandler;
 import io.github.atengk.boot.job.local.interceptor.LocalJobInterceptor;
 import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
 import io.github.atengk.boot.job.local.lock.JobLockHandle;
@@ -38,22 +37,15 @@ import lombok.Setter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
-import org.springframework.aop.framework.Advised;
-import org.springframework.aop.framework.AopProxyUtils;
-import org.springframework.aop.support.AopUtils;
 import org.springframework.context.ApplicationEvent;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.scheduling.Trigger;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.scheduling.support.CronExpression;
 import org.springframework.scheduling.support.CronTrigger;
 import org.springframework.scheduling.support.PeriodicTrigger;
-import org.springframework.util.ReflectionUtils;
 
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -208,7 +200,7 @@ public class ScheduledJobTask implements Runnable {
                             LocalJobTimeoutFallbackHandler timeoutFallbackHandler) {
         this(definition, handler, taskScheduler, workerExecutor, logStorageProvider, clusterLockProvider,
                 eventPublisher, tenantProvider, properties,
-                () -> normalizeInterceptors(interceptors),
+                () -> LocalJobRegistry.normalizeInterceptors(interceptors),
                 () -> timeoutFallbackHandler);
     }
 
@@ -236,15 +228,6 @@ public class ScheduledJobTask implements Runnable {
         this.status = definition.getStatus() != null ? definition.getStatus()
                 : (definition.isEnabled() ? JobStatus.RUNNING : JobStatus.PAUSED);
         this.trigger = buildTrigger(definition);
-    }
-
-    private static List<LocalJobInterceptor> normalizeInterceptors(List<LocalJobInterceptor> interceptors) {
-        if (interceptors == null || interceptors.isEmpty()) {
-            return Collections.emptyList();
-        }
-        List<LocalJobInterceptor> sorted = new ArrayList<>(interceptors);
-        AnnotationAwareOrderComparator.sort(sorted);
-        return Collections.unmodifiableList(sorted);
     }
 
     private List<LocalJobInterceptor> getEffectiveInterceptors() {
@@ -495,15 +478,18 @@ public class ScheduledJobTask implements Runnable {
                 } catch (Throwable preEx) {
                     executionThrowable = preEx;
                     long duration = Duration.between(startTime, Instant.now()).toMillis();
+                    String rejectMsg = "Skipped: interceptor [" + interceptor.getClass().getSimpleName()
+                            + "] preHandle threw exception: " + preEx.getMessage();
                     this.lastDurationMs = duration;
-                    this.lastStatus = "FAILED";
-                    this.lastResultMsg = preEx.getMessage();
+                    this.lastStatus = "DISCARDED";
+                    this.lastResultMsg = rejectMsg;
                     log.error("LocalJobInterceptor [{}] preHandle failed for job [{}]: {}",
                             interceptor.getClass().getSimpleName(), jobName, preEx.getMessage(), preEx);
-                    saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "FAILED",
-                            preEx.getMessage(), preEx.getMessage(), getStackTraceString(preEx), 0, outerContext.getLogs());
-                    publishEvent(new JobFailedEvent(this, jobName, triggerType, traceId, duration, 0, preEx, preEx.getMessage()));
-                    finalResult = JobResult.failure(preEx.getMessage());
+                    saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "DISCARDED",
+                            rejectMsg, preEx.getMessage(), getStackTraceString(preEx), 0, outerContext.getLogs());
+                    publishEvent(new JobDiscardedEvent(this, jobName, triggerType, traceId,
+                            DiscardReason.INTERCEPTOR_REJECTED, rejectMsg));
+                    finalResult = JobResult.failure(rejectMsg);
                     return finalResult;
                 }
                 if (!proceed) {
@@ -609,7 +595,8 @@ public class ScheduledJobTask implements Runnable {
             publishEvent(new JobTimeoutEvent(this, jobName, triggerType, traceId, duration, ex.getTimeout(), retryCount.get()));
 
             try {
-                JobResult fallbackResult = resolveTimeoutFallback(context, ex);
+                JobResult fallbackResult = LocalJobTimeoutFallbackSupport.resolveTimeoutFallback(
+                        definition, handler, timeoutFallbackHandlerProvider, context, ex);
                 if (fallbackResult != null) {
                     String fallbackSummary = extractResultMessage(fallbackResult);
                     context.log("Timeout fallback executed: " + fallbackSummary);
@@ -625,14 +612,17 @@ public class ScheduledJobTask implements Runnable {
                             retryCount.get(), context.getLogs());
                     throw ex;
                 }
-                // 降级补偿自身失败时仍必须保留 TIMEOUT 审计记录，且不覆盖 TIMEOUT 状态，随后保留原因果链向外传播
-                ex.addSuppressed(fallbackEx);
+                // 降级补偿自身失败时仍必须保留 TIMEOUT 审计记录，且将降级根因与原始 JobTimeoutException 完整保留在抛出异常链中
+                RuntimeException wrappedFallbackEx = (fallbackEx instanceof BusinessException be)
+                        ? be
+                        : new BusinessException("Timeout fallback execution failed for job [" + jobName + "]: " + fallbackEx.getMessage(), fallbackEx);
+                wrappedFallbackEx.addSuppressed(ex);
                 context.log("Timeout fallback execution failed: " + fallbackEx.getMessage());
                 this.lastResultMsg = ex.getMessage() + " (fallback failed: " + fallbackEx.getMessage() + ")";
                 saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "TIMEOUT",
-                        this.lastResultMsg, this.lastResultMsg, getStackTraceString(fallbackEx),
+                        this.lastResultMsg, this.lastResultMsg, getStackTraceString(wrappedFallbackEx),
                         retryCount.get(), context.getLogs());
-                throw fallbackEx;
+                throw wrappedFallbackEx;
             }
 
             saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "TIMEOUT",
@@ -664,159 +654,6 @@ public class ScheduledJobTask implements Runnable {
         }
     }
 
-    private JobResult resolveTimeoutFallback(JobContext context, JobTimeoutException timeoutEx) {
-        String declaredMethodName = definition.getFallbackMethod();
-        boolean hasDeclaredFallback = declaredMethodName != null && !declaredMethodName.isBlank();
-        if (hasDeclaredFallback) {
-            Object rawTarget = (handler instanceof MethodInvokingJobHandler mijh) ? mijh.getTargetBean() : handler;
-            if (rawTarget != null) {
-                Class<?> targetClass = AopUtils.getTargetClass(rawTarget);
-                Method fallbackMethod = findFallbackMethod(targetClass, declaredMethodName.trim(), timeoutEx);
-                if (fallbackMethod != null) {
-                    return invokeDeclaredFallbackMethod(rawTarget, fallbackMethod, declaredMethodName.trim(), context, timeoutEx);
-                }
-                log.warn("Job [{}] declared fallbackMethod [{}], but no compatible method found on [{}]",
-                        definition.getJobName(), declaredMethodName, targetClass.getName());
-            }
-        }
-        LocalJobTimeoutFallbackHandler fallbackHandler = timeoutFallbackHandlerProvider != null
-                ? timeoutFallbackHandlerProvider.get()
-                : null;
-        if (fallbackHandler != null) {
-            JobResult globalResult = fallbackHandler.onTimeout(context, timeoutEx);
-            return normalizeFallbackResult(globalResult,
-                    "Timeout fallback handled by [" + fallbackHandler.getClass().getSimpleName() + "]");
-        }
-        return null;
-    }
-
-    private JobResult invokeDeclaredFallbackMethod(Object rawTarget, Method method, String methodName,
-                                                     JobContext context, JobTimeoutException timeoutEx) {
-        Object invokeTarget = unwrapTargetBean(rawTarget);
-        ReflectionUtils.makeAccessible(method);
-        Object[] args = resolveFallbackArgs(method, context, timeoutEx);
-        try {
-            Object result = args.length == 0 ? method.invoke(invokeTarget) : method.invoke(invokeTarget, args);
-            log.info("Job [{}] executed fallbackMethod [{}] after hard timeout", definition.getJobName(), methodName);
-            return normalizeFallbackResult(result, "Timeout fallback [" + methodName + "] completed");
-        } catch (InvocationTargetException ex) {
-            Throwable cause = ex.getTargetException() != null ? ex.getTargetException() : ex;
-            throw new IllegalStateException("Fallback method [" + methodName + "] failed: " + cause.getMessage(), cause);
-        } catch (Throwable ex) {
-            throw new IllegalStateException("Failed to invoke fallback method [" + methodName + "]: " + ex.getMessage(), ex);
-        }
-    }
-
-    private Method findFallbackMethod(Class<?> targetClass, String methodName, JobTimeoutException timeoutEx) {
-        List<Method> candidates = new ArrayList<>();
-        Class<?> current = targetClass;
-        while (current != null && !Object.class.equals(current)) {
-            for (Method method : current.getDeclaredMethods()) {
-                if (method.getName().equals(methodName)) {
-                    candidates.add(method);
-                }
-            }
-            current = current.getSuperclass();
-        }
-        if (candidates.isEmpty()) {
-            return null;
-        }
-        for (int priority = 1; priority <= 4; priority++) {
-            Method bestMatch = null;
-            for (Method candidate : candidates) {
-                if (matchesFallbackPriority(candidate.getParameterTypes(), priority, timeoutEx)) {
-                    if (bestMatch == null || isMoreSpecificThrowableSignature(candidate.getParameterTypes(), bestMatch.getParameterTypes())) {
-                        bestMatch = candidate;
-                    }
-                }
-            }
-            if (bestMatch != null) {
-                return bestMatch;
-            }
-        }
-        return null;
-    }
-
-    private boolean isMoreSpecificThrowableSignature(Class<?>[] candidateTypes, Class<?>[] currentBestTypes) {
-        Class<?> candidateThrowable = extractThrowableParamType(candidateTypes);
-        Class<?> currentBestThrowable = extractThrowableParamType(currentBestTypes);
-        if (candidateThrowable == null || currentBestThrowable == null) {
-            return false;
-        }
-        return !candidateThrowable.equals(currentBestThrowable) && currentBestThrowable.isAssignableFrom(candidateThrowable);
-    }
-
-    private Class<?> extractThrowableParamType(Class<?>[] paramTypes) {
-        for (Class<?> paramType : paramTypes) {
-            if (Throwable.class.isAssignableFrom(paramType)) {
-                return paramType;
-            }
-        }
-        return null;
-    }
-
-    private boolean matchesFallbackPriority(Class<?>[] paramTypes, int priority, JobTimeoutException timeoutEx) {
-        return switch (priority) {
-            case 1 -> paramTypes.length == 2
-                    && ((JobContext.class.isAssignableFrom(paramTypes[0]) && isCompatibleThrowable(paramTypes[1], timeoutEx))
-                    || (JobContext.class.isAssignableFrom(paramTypes[1]) && isCompatibleThrowable(paramTypes[0], timeoutEx)));
-            case 2 -> paramTypes.length == 1 && JobContext.class.isAssignableFrom(paramTypes[0]);
-            case 3 -> paramTypes.length == 1 && isCompatibleThrowable(paramTypes[0], timeoutEx);
-            case 4 -> paramTypes.length == 0;
-            default -> false;
-        };
-    }
-
-    private boolean isCompatibleThrowable(Class<?> paramType, JobTimeoutException timeoutEx) {
-        return Throwable.class.isAssignableFrom(paramType) && paramType.isInstance(timeoutEx);
-    }
-
-    private Object[] resolveFallbackArgs(Method method, JobContext context, JobTimeoutException timeoutEx) {
-        Class<?>[] paramTypes = method.getParameterTypes();
-        if (paramTypes.length == 0) {
-            return new Object[0];
-        }
-        Object[] args = new Object[paramTypes.length];
-        for (int i = 0; i < paramTypes.length; i++) {
-            if (JobContext.class.isAssignableFrom(paramTypes[i])) {
-                args[i] = context;
-            } else if (Throwable.class.isAssignableFrom(paramTypes[i])) {
-                args[i] = timeoutEx;
-            }
-        }
-        return args;
-    }
-
-    private Object unwrapTargetBean(Object bean) {
-        if (AopUtils.isAopProxy(bean)) {
-            Object singleton = AopProxyUtils.getSingletonTarget(bean);
-            if (singleton != null) {
-                return singleton;
-            }
-            if (bean instanceof Advised advised) {
-                try {
-                    Object target = advised.getTargetSource().getTarget();
-                    if (target != null) {
-                        return target;
-                    }
-                } catch (Exception ignored) {
-                    // 回退使用原始代理对象
-                }
-            }
-        }
-        return bean;
-    }
-
-    private JobResult normalizeFallbackResult(Object result, String defaultMessage) {
-        if (result instanceof JobResult jobResult) {
-            return jobResult;
-        }
-        if (result instanceof String str && !str.isBlank()) {
-            return JobResult.success(str, str);
-        }
-        return JobResult.success(defaultMessage, result);
-    }
-
     private JobResult doExecuteIterate(TriggerType triggerType, Map<String, Object> params, String traceId, Instant startTime) {
         String jobName = definition.getJobName();
         TenantProvider provider = this.tenantProvider != null ? this.tenantProvider : new DefaultTenantProvider();
@@ -846,7 +683,7 @@ public class ScheduledJobTask implements Runnable {
         int concurrency = resolveTenantConcurrency();
         TenantIterationStats stats = new TenantIterationStats();
 
-        if (concurrency > 1 && (workerExecutor != null || taskScheduler != null)) {
+        if (concurrency > 1 && workerExecutor != null) {
             doExecuteIterateParallel(tenantIds, concurrency, triggerType, params, traceId, stats);
         } else {
             for (String tenantId : tenantIds) {
@@ -881,7 +718,6 @@ public class ScheduledJobTask implements Runnable {
 
     private void doExecuteIterateParallel(List<String> tenantIds, int concurrency, TriggerType triggerType,
                                           Map<String, Object> params, String traceId, TenantIterationStats stats) {
-        AsyncTaskExecutor executor = workerExecutor != null ? workerExecutor : taskScheduler;
         Semaphore semaphore = new Semaphore(concurrency);
         List<CompletableFuture<Void>> futures = new ArrayList<>(tenantIds.size());
 
@@ -909,7 +745,7 @@ public class ScheduledJobTask implements Runnable {
             };
             Runnable wrappedTenantTask = AsyncContext.wrap(rawTenantTask);
             try {
-                CompletableFuture<Void> future = CompletableFuture.runAsync(wrappedTenantTask, executor);
+                CompletableFuture<Void> future = CompletableFuture.runAsync(wrappedTenantTask, workerExecutor);
                 futures.add(future);
             } catch (Throwable submitEx) {
                 semaphore.release();

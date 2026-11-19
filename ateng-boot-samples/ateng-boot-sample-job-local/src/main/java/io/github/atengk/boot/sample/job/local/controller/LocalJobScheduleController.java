@@ -4,8 +4,6 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.job.local.model.JobResult;
 import io.github.atengk.boot.job.local.template.LocalJobTemplate;
 import io.github.atengk.boot.sample.job.local.dto.ArchivingJobParam;
-import io.github.atengk.boot.sample.job.local.handler.SampleGlobalTimeoutFallbackHandler;
-import io.github.atengk.boot.sample.job.local.job.OrderTimeoutCancelScenarioJob;
 import io.github.atengk.boot.sample.job.local.vo.JobResultVO;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -39,8 +37,6 @@ import java.util.Map;
 public class LocalJobScheduleController {
 
     private final LocalJobTemplate localJobTemplate;
-    private final OrderTimeoutCancelScenarioJob orderTimeoutCancelScenarioJob;
-    private final SampleGlobalTimeoutFallbackHandler sampleGlobalTimeoutFallbackHandler;
 
     /**
      * 手动即时触发指定受管定时任务
@@ -122,14 +118,8 @@ public class LocalJobScheduleController {
     @PostMapping("/trigger/global-timeout-fallback")
     public Result<JobResultVO> triggerGlobalTimeoutFallbackJob() {
         log.info("[LocalJobScheduleController] 触发全局 LocalJobTimeoutFallbackHandler SPI 超时降级演示");
-        orderTimeoutCancelScenarioJob.setSimulateTimeout(true);
-        sampleGlobalTimeoutFallbackHandler.setEnabled(true);
-        try {
-            JobResult result = localJobTemplate.trigger("orderTimeoutCancelJob");
-            return Result.success(JobResultVO.from(result));
-        } finally {
-            sampleGlobalTimeoutFallbackHandler.setEnabled(false);
-            orderTimeoutCancelScenarioJob.setSimulateTimeout(false);
-        }
+        JobResult result = localJobTemplate.trigger("orderTimeoutCancelJob",
+                Map.of("simulateTimeout", true, "enableGlobalFallback", true));
+        return Result.success(JobResultVO.from(result));
     }
 }

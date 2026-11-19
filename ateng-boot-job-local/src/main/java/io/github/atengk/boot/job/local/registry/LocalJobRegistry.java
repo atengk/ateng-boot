@@ -157,16 +157,18 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
             return cached;
         }
         List<LocalJobInterceptor> raw = interceptorsProvider != null ? interceptorsProvider.get() : Collections.emptyList();
-        List<LocalJobInterceptor> normalized;
-        if (raw == null || raw.isEmpty()) {
-            normalized = Collections.emptyList();
-        } else {
-            List<LocalJobInterceptor> sorted = new ArrayList<>(raw);
-            AnnotationAwareOrderComparator.sort(sorted);
-            normalized = Collections.unmodifiableList(sorted);
-        }
+        List<LocalJobInterceptor> normalized = normalizeInterceptors(raw);
         resolvedInterceptors.compareAndSet(null, normalized);
         return resolvedInterceptors.get();
+    }
+
+    static List<LocalJobInterceptor> normalizeInterceptors(List<LocalJobInterceptor> interceptors) {
+        if (interceptors == null || interceptors.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<LocalJobInterceptor> sorted = new ArrayList<>(interceptors);
+        AnnotationAwareOrderComparator.sort(sorted);
+        return Collections.unmodifiableList(sorted);
     }
 
     private LocalJobTimeoutFallbackHandler resolveTimeoutFallbackHandler() {

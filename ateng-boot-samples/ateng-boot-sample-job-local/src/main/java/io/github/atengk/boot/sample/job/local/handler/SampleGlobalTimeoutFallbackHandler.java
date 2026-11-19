@@ -28,8 +28,10 @@ public class SampleGlobalTimeoutFallbackHandler implements LocalJobTimeoutFallba
     private final AtomicBoolean enabled = new AtomicBoolean(false);
 
     @Override
-    public JobResult onTimeout(JobContext context, JobTimeoutException exception) {
-        if (!enabled.get()) {
+    public JobResult handleTimeoutFallback(JobContext context, JobTimeoutException exception) {
+        boolean paramEnabled = context != null && context.getParams() != null
+                && Boolean.parseBoolean(String.valueOf(context.getParams().get("enableGlobalFallback")));
+        if (!enabled.get() && !paramEnabled) {
             throw exception;
         }
         log.warn("SampleGlobalTimeoutFallbackHandler 捕获任务 [{}] 全局超时降级: timeout={}",

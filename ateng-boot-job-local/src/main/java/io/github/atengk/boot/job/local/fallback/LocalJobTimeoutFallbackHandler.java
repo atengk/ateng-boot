@@ -25,5 +25,5 @@ public interface LocalJobTimeoutFallbackHandler {
      * @param exception 触发熔断的硬超时异常
      * @return 降级兜底结果产物（引擎会将结果摘要写入 TIMEOUT 审计记录并平滑返回）
      */
-    JobResult onTimeout(JobContext context, JobTimeoutException exception);
+    JobResult handleTimeoutFallback(JobContext context, JobTimeoutException exception);
 }

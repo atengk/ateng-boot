@@ -59,7 +59,7 @@
 | **多租户模态** | SaaS 租户隔离枚举 | `JobTenantMode` | - | `IGNORE`（忽略租户）、`PARAM`（入参指定租户）、`ITERATE`（全租户轮询遍历） | `LocalJobMultiTenantTest`<br>`MultiTenantBillingScenarioJob` |
 | **多租户发现** | 租户发现服务 SPI | `TenantProvider` | - | `List<String> getTenantIds()`，为 `ITERATE` 模态提供活跃租户标识列表 | `LocalJobMultiTenantTest`<br>`SampleTenantProvider` |
 | **切面拦截器** | 三阶段任务拦截器 SPI | `LocalJobInterceptor` | - | 继承 `Ordered`：`preHandle` / `postHandle`（正序）、`afterCompletion`（逆序），拒绝触发 `INTERCEPTOR_REJECTED` | `LocalJobInterceptorAndFallbackTest`<br>`SampleMaintenanceInterceptor` |
-| **降级补偿** | 全局超时降级 SPI | `LocalJobTimeoutFallbackHandler` | - | `JobResult onTimeout(JobContext context, JobTimeoutException exception)`，无 `fallbackMethod` 时兜底 | `LocalJobInterceptorAndFallbackTest`<br>`SampleGlobalTimeoutFallbackHandler` |
+| **降级补偿** | 全局超时降级 SPI | `LocalJobTimeoutFallbackHandler` | - | `JobResult handleTimeoutFallback(JobContext context, JobTimeoutException exception)`，无 `fallbackMethod` 时兜底 | `LocalJobInterceptorAndFallbackTest`<br>`SampleGlobalTimeoutFallbackHandler` |
 | **丢弃枚举** | 调度丢弃原因枚举 | `DiscardReason` | - | `OVERLAPPING_DISCARD`、`CLUSTER_LOCKED`、`INTERCEPTOR_REJECTED`、`OTHER` | `LocalJobInterceptorAndFallbackTest`<br>`SampleJobLocalIntegrationTest` |
 | **集群互斥** | 集群互斥锁 SPI | `JobClusterLockProvider` | `cluster-lock.*` | `tryLock` / `unlock(handle, [minHoldTime])` / `renew` / `isLocked`，支持非阻塞租期收缩与续期 | `LocalJobClusterLockTest`<br>`ClusterDeduplicationScenarioJob` |
 | **集群互斥** | 锁持有句柄与时间戳 | `JobLockHandle` | - | 封装 `lockKey`、`lockOwner`、`leaseExpireAt`、`acquiredAt` 与 `isExpired()` | `LocalJobClusterLockTest`<br>`RedisJobClusterLockProviderTest` |
@@ -442,8 +442,10 @@ public class SampleGlobalTimeoutFallbackHandler implements LocalJobTimeoutFallba
     private final AtomicBoolean enabled = new AtomicBoolean(false);
 
     @Override
-    public JobResult onTimeout(JobContext context, JobTimeoutException exception) {
-        if (!enabled.get()) {
+    public JobResult handleTimeoutFallback(JobContext context, JobTimeoutException exception) {
+        boolean paramEnabled = context != null && context.getParams() != null
+                && Boolean.parseBoolean(String.valueOf(context.getParams().get("enableGlobalFallback")));
+        if (!enabled.get() && !paramEnabled) {
             throw exception;
         }
         log.warn("SampleGlobalTimeoutFallbackHandler 捕获任务 [{}] 全局超时降级: timeout={}",

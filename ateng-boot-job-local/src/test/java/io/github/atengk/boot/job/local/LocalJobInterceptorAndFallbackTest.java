@@ -2,6 +2,7 @@ package io.github.atengk.boot.job.local;
 
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.job.local.annotation.LocalJob;
 import io.github.atengk.boot.job.local.config.AtengJobLocalAutoConfiguration;
 import io.github.atengk.boot.job.local.enums.DiscardReason;
@@ -11,6 +12,7 @@ import io.github.atengk.boot.job.local.event.JobFailedEvent;
 import io.github.atengk.boot.job.local.event.JobTimeoutEvent;
 import io.github.atengk.boot.job.local.exception.JobTimeoutException;
 import io.github.atengk.boot.job.local.fallback.LocalJobTimeoutFallbackHandler;
+import io.github.atengk.boot.job.local.handler.JobHandler;
 import io.github.atengk.boot.job.local.interceptor.LocalJobInterceptor;
 import io.github.atengk.boot.job.local.model.JobContext;
 import io.github.atengk.boot.job.local.model.JobDefinition;
@@ -320,8 +322,11 @@ class LocalJobInterceptorAndFallbackTest {
         registerBeanJob(registry, bean, "slowWithFailingFallback", "brokenFallbackJob", "onBrokenFallback", Duration.ofMillis(60));
 
         assertThatThrownBy(() -> registry.trigger("brokenFallbackJob", null))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("fallback crashed");
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("fallback crashed")
+                .hasCauseInstanceOf(IllegalStateException.class)
+                .satisfies(thrown -> assertThat(thrown.getSuppressed())
+                        .anyMatch(JobTimeoutException.class::isInstance));
 
         assertThat(registry.getJobInfo("brokenFallbackJob").getLastStatus()).isEqualTo("TIMEOUT");
         List<JobExecutionRecord> records = logStorage.listLogs("brokenFallbackJob", 10);
@@ -330,6 +335,99 @@ class LocalJobInterceptorAndFallbackTest {
         assertThat(events.stream().filter(JobTimeoutEvent.class::isInstance).count()).isEqualTo(1);
         assertThat(events.stream().filter(JobFailedEvent.class::isInstance).count()).isEqualTo(0);
         assertThat(trace).containsExactly("I:pre", "I:after(err=true)");
+    }
+
+    @Test
+    @DisplayName("默认 getOrder 为 0，preHandle 抛异常时应记录 DISCARDED 并发布 INTERCEPTOR_REJECTED 事件")
+    void shouldDefaultOrderToZeroAndRecordDiscardedWhenPreHandleThrows() {
+        LocalJobInterceptor defaultInterceptor = new LocalJobInterceptor() {};
+        assertThat(defaultInterceptor.getOrder()).isEqualTo(0);
+
+        List<String> trace = new ArrayList<>();
+        LocalJobInterceptor first = new RecordingInterceptor("A", -10, true, false, trace);
+        LocalJobInterceptor throwingSecond = new LocalJobInterceptor() {
+            @Override
+            public boolean preHandle(JobContext context) {
+                trace.add("B:pre-throw");
+                throw new IllegalArgumentException("pre-check error");
+            }
+        };
+        LocalJobInterceptor third = new RecordingInterceptor("C", 10, true, false, trace);
+
+        List<ApplicationEvent> events = new CopyOnWriteArrayList<>();
+        InMemoryJobLogStorageProvider logStorage = new InMemoryJobLogStorageProvider(50);
+        LocalJobRegistry registry = new LocalJobRegistry(
+                createScheduler(), createWorkerExecutor(), new InMemoryJobMetadataRepository(),
+                logStorage, null, new JobLocalProperties(), new DefaultTenantProvider(),
+                List.of(third, throwingSecond, first), null);
+        registry.setApplicationEventPublisher((ApplicationEventPublisher) event -> {
+            if (event instanceof ApplicationEvent ae) {
+                events.add(ae);
+            }
+        });
+        registriesToCleanup.add(registry);
+
+        registry.register(JobDefinition.builder()
+                        .jobName("preThrowJob")
+                        .triggerType(TriggerType.MANUAL)
+                        .build(),
+                ctx -> JobResult.success("unreachable"));
+
+        JobResult result = registry.trigger("preThrowJob", null);
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(trace).containsExactly("A:pre", "B:pre-throw", "A:after(err=true)");
+        assertThat(registry.getJobInfo("preThrowJob").getLastStatus()).isEqualTo("DISCARDED");
+        assertThat(logStorage.listLogs("preThrowJob", 10).get(0).getStatus()).isEqualTo("DISCARDED");
+        assertThat(events).anySatisfy(e -> {
+            assertThat(e).isInstanceOf(JobDiscardedEvent.class);
+            assertThat(((JobDiscardedEvent) e).getDiscardReason()).isEqualTo(DiscardReason.INTERCEPTOR_REJECTED);
+        });
+        assertThat(events).noneMatch(JobFailedEvent.class::isInstance);
+    }
+
+    @Test
+    @DisplayName("非 JobResult/void 降级返回值应包装为 failure，且支持 JobHandler#executeTimeoutFallback 默认扩展")
+    void shouldWrapNonJobResultFallbackAsFailureAndSupportJobHandlerDefaultFallbackHook() {
+        InMemoryJobLogStorageProvider logStorage = new InMemoryJobLogStorageProvider(50);
+        LocalJobRegistry registry = new LocalJobRegistry(
+                createScheduler(), createWorkerExecutor(), new InMemoryJobMetadataRepository(),
+                logStorage, null, new JobLocalProperties(), new DefaultTenantProvider(),
+                Collections.emptyList(), null);
+        registriesToCleanup.add(registry);
+
+        TimeoutFallbackBean bean = new TimeoutFallbackBean();
+        registerBeanJob(registry, bean, "slowWithNoArgs", "voidFallbackJob", "onVoidFallback", Duration.ofMillis(60));
+        registerBeanJob(registry, bean, "slowWithNoArgs", "stringFallbackJob", "onStringFallback", Duration.ofMillis(60));
+
+        JobResult voidResult = registry.trigger("voidFallbackJob", null);
+        assertThat(voidResult.isSuccess()).isFalse();
+        assertThat(voidResult.getMessage()).contains("Timeout fallback executed: onVoidFallback");
+
+        JobResult stringResult = registry.trigger("stringFallbackJob", null);
+        assertThat(stringResult.isSuccess()).isFalse();
+        assertThat(stringResult.getMessage()).isEqualTo("Timeout fallback executed: degraded-msg");
+
+        registry.register(JobDefinition.builder()
+                        .jobName("handlerHookFallbackJob")
+                        .triggerType(TriggerType.MANUAL)
+                        .timeout(Duration.ofMillis(60))
+                        .build(),
+                new JobHandler() {
+                    @Override
+                    public Object execute(JobContext context) throws Exception {
+                        Thread.sleep(500);
+                        return JobResult.success("late");
+                    }
+
+                    @Override
+                    public JobResult executeTimeoutFallback(JobContext context, JobTimeoutException ex) {
+                        return JobResult.success("handler-hook:" + context.getJobName());
+                    }
+                });
+
+        JobResult hookResult = registry.trigger("handlerHookFallbackJob", null);
+        assertThat(hookResult.isSuccess()).isTrue();
+        assertThat(hookResult.getMessage()).isEqualTo("handler-hook:handlerHookFallbackJob");
     }
 
     @Test
@@ -431,6 +529,13 @@ class LocalJobInterceptorAndFallbackTest {
 
         public JobResult onBrokenFallback(JobContext ctx, Throwable ex) {
             throw new IllegalStateException("fallback crashed");
+        }
+
+        public void onVoidFallback(JobContext ctx) {
+        }
+
+        public String onStringFallback() {
+            return "degraded-msg";
         }
     }
 

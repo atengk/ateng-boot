@@ -99,17 +99,11 @@ public class LocalJobClusterLockProvider implements JobClusterLockProvider {
 
     @Override
     public boolean unlock(JobLockHandle handle, Duration minHoldTime) {
-        if (handle == null || !handle.isAcquired() || handle.getLockKey() == null || handle.getLockOwner() == null) {
+        if (ClusterLockSupport.isInvalidHandle(handle)) {
             return false;
         }
-        if (minHoldTime == null || minHoldTime.isZero() || minHoldTime.isNegative()) {
-            return unlock(handle);
-        }
-
-        Instant acquiredAt = handle.getAcquiredAt() != null ? handle.getAcquiredAt() : Instant.now();
-        Instant minHoldExpireAt = acquiredAt.plus(minHoldTime);
-        Instant now = Instant.now();
-        if (!now.isBefore(minHoldExpireAt)) {
+        ClusterLockSupport.MinHoldWindow window = ClusterLockSupport.resolveShrinkWindow(handle, minHoldTime);
+        if (window == null) {
             return unlock(handle);
         }
 
@@ -122,9 +116,10 @@ public class LocalJobClusterLockProvider implements JobClusterLockProvider {
                 log.warn("Cluster lock min-hold shrink skipped for job [{}]: owner mismatch or already expired", jobName);
                 return existing;
             }
-            Instant targetExpire = (existing.getLeaseExpireAt() != null && minHoldExpireAt.isAfter(existing.getLeaseExpireAt()))
+            Instant targetExpire = (existing.getLeaseExpireAt() != null
+                    && window.targetExpireAt().isAfter(existing.getLeaseExpireAt()))
                     ? existing.getLeaseExpireAt()
-                    : minHoldExpireAt;
+                    : window.targetExpireAt();
             updated.set(true);
             log.debug("Node [{}] non-blocking shrunk cluster lock for job [{}] until [{}]", nodeId, jobName, targetExpire);
             return new LockEntry(existing.getLockOwner(), targetExpire);

@@ -47,7 +47,9 @@ public class OrderTimeoutCancelScenarioJob {
         int attempt = attemptCount.incrementAndGet();
         context.log("开始扫描超时未支付订单，当前尝试次数: " + attempt);
 
-        if (simulateTimeout.get()) {
+        boolean paramSimulate = context != null && context.getParams() != null
+                && Boolean.parseBoolean(String.valueOf(context.getParams().get("simulateTimeout")));
+        if (simulateTimeout.get() || paramSimulate) {
             log.warn("orderTimeoutCancelJob 模拟下游支付网关响应迟钝，进入等待导致超时 (attempt={})...", attempt);
             Thread.sleep(1000);
         }

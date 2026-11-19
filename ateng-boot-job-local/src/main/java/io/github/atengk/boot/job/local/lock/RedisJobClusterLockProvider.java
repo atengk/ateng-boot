@@ -150,35 +150,21 @@ public class RedisJobClusterLockProvider implements JobClusterLockProvider {
 
     @Override
     public boolean unlock(JobLockHandle handle, Duration minHoldTime) {
-        if (handle == null || !handle.isAcquired() || handle.getLockKey() == null || handle.getLockOwner() == null) {
+        if (ClusterLockSupport.isInvalidHandle(handle)) {
             return false;
         }
-        if (minHoldTime == null || minHoldTime.isZero() || minHoldTime.isNegative()) {
+        ClusterLockSupport.MinHoldWindow window = ClusterLockSupport.resolveShrinkWindow(handle, minHoldTime);
+        if (window == null) {
             return unlock(handle);
         }
 
-        Instant acquiredAt = handle.getAcquiredAt() != null ? handle.getAcquiredAt() : Instant.now();
-        Instant minHoldExpireAt = acquiredAt.plus(minHoldTime);
-        Instant now = Instant.now();
-        if (!now.isBefore(minHoldExpireAt)) {
-            return unlock(handle);
-        }
-
-        long remainingMs = Duration.between(now, minHoldExpireAt).toMillis();
-        if (handle.getLeaseExpireAt() != null) {
-            long leaseRemainingMs = Duration.between(now, handle.getLeaseExpireAt()).toMillis();
-            remainingMs = Math.min(remainingMs, leaseRemainingMs);
-        }
-        if (remainingMs <= 0) {
-            return unlock(handle);
-        }
-
-        return executePexpireWithOwnerCheck(handle.getLockKey().trim(), handle.getLockOwner(), remainingMs, "shrink");
+        return executePexpireWithOwnerCheck(handle.getLockKey().trim(), handle.getLockOwner(),
+                window.remainingMillis(), "shrink");
     }
 
     @Override
     public boolean renew(JobLockHandle handle, Duration leaseTime) {
-        if (handle == null || !handle.isAcquired() || handle.getLockKey() == null || handle.getLockOwner() == null
+        if (ClusterLockSupport.isInvalidHandle(handle)
                 || leaseTime == null || leaseTime.isZero() || leaseTime.isNegative()) {
             return false;
         }
