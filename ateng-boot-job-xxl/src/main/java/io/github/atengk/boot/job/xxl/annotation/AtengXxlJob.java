@@ -67,4 +67,16 @@ public @interface AtengXxlJob {
      */
     int alertSuppressThreshold() default -1;
 
+    /**
+     * 方法级本地退避重试次数（大于 0 时仅对业务执行期抛出的非超时运行期异常生效）
+     *
+     * <p>参数反序列化失败、JSR-303 参数校验失败与看门狗硬超时强中断严格执行 0 次重试快速失败。</p>
+     */
+    int retryCount() default 0;
+
+    /**
+     * 方法级本地重试退避间隔（支持 100ms、1s 等标准 Duration 格式，默认为 1s）
+     */
+    String retryInterval() default "1s";
+
 }

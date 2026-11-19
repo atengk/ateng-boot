@@ -19,6 +19,7 @@ import org.springframework.context.ApplicationContextAware;
 import org.springframework.core.MethodIntrospector;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.util.Assert;
+import org.springframework.util.ReflectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Method;
@@ -322,8 +323,13 @@ public class XxlJobTestHelper implements ApplicationContextAware {
             );
 
             for (Map.Entry<Method, AtengXxlJob> entry : atengAnnotatedMethods.entrySet()) {
+                Method method = entry.getKey();
                 AtengXxlJob atengJob = entry.getValue();
-                registerJobHandler(bean, entry.getKey(), atengJob.value(), atengJob.init(), atengJob.destroy());
+                if (!AtengXxlJobAnnotationHelper.shouldRegisterAtengHandler(method, atengJob)) {
+                    continue;
+                }
+                String handlerName = AtengXxlJobAnnotationHelper.resolveHandlerName(method, atengJob);
+                registerJobHandler(bean, method, handlerName, atengJob.init(), atengJob.destroy());
             }
         }
     }
@@ -335,25 +341,11 @@ public class XxlJobTestHelper implements ApplicationContextAware {
         if (!StringUtils.hasText(name) || FALLBACK_HANDLER_REPOSITORY.containsKey(name)) {
             return;
         }
-        Method initMethod = resolveLifecycleMethod(bean.getClass(), init);
-        Method destroyMethod = resolveLifecycleMethod(bean.getClass(), destroy);
+        ReflectionUtils.makeAccessible(method);
+        Method initMethod = AtengXxlJobAnnotationHelper.resolveLifecycleMethod(bean, init, method, "init", false);
+        Method destroyMethod = AtengXxlJobAnnotationHelper.resolveLifecycleMethod(bean, destroy, method, "destroy", false);
         MethodJobHandler handler = new MethodJobHandler(bean, method, initMethod, destroyMethod);
         FALLBACK_HANDLER_REPOSITORY.putIfAbsent(name, handler);
-    }
-
-    /**
-     * 反射解析生命周期初始化与销毁方法
-     */
-    private static Method resolveLifecycleMethod(Class<?> targetClass, String methodName) {
-        if (!StringUtils.hasText(methodName)) {
-            return null;
-        }
-        try {
-            return targetClass.getDeclaredMethod(methodName.trim());
-        } catch (NoSuchMethodException ex) {
-            log.debug("目标类 [{}] 中未找到声明的生命周期方法 [{}]", targetClass.getName(), methodName, ex);
-            return null;
-        }
     }
 
     /**

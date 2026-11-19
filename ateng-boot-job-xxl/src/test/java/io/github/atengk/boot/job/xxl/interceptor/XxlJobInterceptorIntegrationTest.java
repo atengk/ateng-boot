@@ -22,11 +22,12 @@ import org.springframework.context.annotation.EnableAspectJAutoProxy;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
+import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -50,6 +51,9 @@ class XxlJobInterceptorIntegrationTest {
     private static final AtomicBoolean CANARY_BLOCK_ENABLED = new AtomicBoolean(false);
     private static final AtomicBoolean THROW_IN_AFTER_COMPLETION = new AtomicBoolean(false);
     private static final AtomicBoolean THROW_IN_PRE_HANDLE = new AtomicBoolean(false);
+    private static final AtomicReference<CapturedContextMeta> CAPTURED_PRE_META = new AtomicReference<>();
+    private static final AtomicReference<CapturedContextMeta> CAPTURED_POST_META = new AtomicReference<>();
+    private static final AtomicReference<CapturedContextMeta> CAPTURED_AFTER_META = new AtomicReference<>();
 
     @BeforeEach
     void setUp() {
@@ -57,6 +61,9 @@ class XxlJobInterceptorIntegrationTest {
         CANARY_BLOCK_ENABLED.set(false);
         THROW_IN_AFTER_COMPLETION.set(false);
         THROW_IN_PRE_HANDLE.set(false);
+        CAPTURED_PRE_META.set(null);
+        CAPTURED_POST_META.set(null);
+        CAPTURED_AFTER_META.set(null);
     }
 
     @AfterEach
@@ -69,6 +76,9 @@ class XxlJobInterceptorIntegrationTest {
         CANARY_BLOCK_ENABLED.set(false);
         THROW_IN_AFTER_COMPLETION.set(false);
         THROW_IN_PRE_HANDLE.set(false);
+        CAPTURED_PRE_META.set(null);
+        CAPTURED_POST_META.set(null);
+        CAPTURED_AFTER_META.set(null);
     }
 
     @Test
@@ -171,6 +181,42 @@ class XxlJobInterceptorIntegrationTest {
         );
     }
 
+    @Test
+    @DisplayName("测试 XxlJobExecutionContext 元数据完整性：全生命周期阶段透传 jobId、logId、jobHandler、分片、入参与目标方法")
+    void testExecutionContextMetadataCompleteness() {
+        XxlJobContext xxlContext = new XxlJobContext(777L, "meta-param", 9901L, System.currentTimeMillis(), "meta.log", 2, 5);
+        XxlJobContext.setXxlJobContext(xxlContext);
+
+        jobService.executeNormalJob("meta-param");
+
+        assertCapturedMeta(CAPTURED_PRE_META.get());
+        assertCapturedMeta(CAPTURED_POST_META.get());
+        assertCapturedMeta(CAPTURED_AFTER_META.get());
+    }
+
+    private void assertCapturedMeta(CapturedContextMeta meta) {
+        assertThat(meta).isNotNull();
+        assertThat(meta.jobId()).isEqualTo(777L);
+        assertThat(meta.logId()).isEqualTo(9901L);
+        assertThat(meta.jobHandler()).isEqualTo("normalJob");
+        assertThat(meta.shardIndex()).isEqualTo(2);
+        assertThat(meta.shardTotal()).isEqualTo(5);
+        assertThat(meta.jobParam()).isEqualTo("meta-param");
+        assertThat(meta.targetMethod()).isNotNull();
+        assertThat(meta.targetMethod().getName()).isEqualTo("executeNormalJob");
+    }
+
+    private record CapturedContextMeta(
+            long jobId,
+            long logId,
+            String jobHandler,
+            int shardIndex,
+            int shardTotal,
+            String jobParam,
+            Method targetMethod
+    ) {
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableAspectJAutoProxy
     static class TestConfig {
@@ -233,20 +279,35 @@ class XxlJobInterceptorIntegrationTest {
         public boolean preHandle(XxlJobExecutionContext context) {
             EXECUTION_EVENTS.add("FirstInterceptor:preHandle:" + context.getJobName());
             context.setAttribute("firstKey", "firstValue");
+            CAPTURED_PRE_META.set(snapshotMeta(context));
             return true;
         }
 
         @Override
         public void postHandle(XxlJobExecutionContext context, Object result) {
             assertThat(context.<String>getAttribute("firstKey")).isEqualTo("firstValue");
+            CAPTURED_POST_META.set(snapshotMeta(context));
             EXECUTION_EVENTS.add("FirstInterceptor:postHandle:result=" + result);
         }
 
         @Override
         public void afterCompletion(XxlJobExecutionContext context, Throwable throwable) {
             assertThat(context.<String>getAttribute("firstKey")).isEqualTo("firstValue");
+            CAPTURED_AFTER_META.set(snapshotMeta(context));
             String err = throwable != null ? throwable.getMessage() : "null";
             EXECUTION_EVENTS.add("FirstInterceptor:afterCompletion:throwable=" + err);
+        }
+
+        private CapturedContextMeta snapshotMeta(XxlJobExecutionContext context) {
+            return new CapturedContextMeta(
+                    context.getJobId(),
+                    context.getLogId(),
+                    context.getJobHandler(),
+                    context.getShardIndex(),
+                    context.getShardTotal(),
+                    context.getJobParam(),
+                    context.getTargetMethod()
+            );
         }
     }
 

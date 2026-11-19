@@ -18,6 +18,7 @@ import io.github.atengk.boot.job.xxl.annotation.AtengXxlJob;
 import io.github.atengk.boot.job.xxl.enums.JobTenantMode;
 import io.github.atengk.boot.job.xxl.fallback.JobTimeoutFallbackHandler;
 import io.github.atengk.boot.job.xxl.governor.JobRuntimeGovernor;
+import io.github.atengk.boot.job.xxl.helper.AtengXxlJobAnnotationHelper;
 import io.github.atengk.boot.job.xxl.interceptor.XxlJobExecutionContext;
 import io.github.atengk.boot.job.xxl.interceptor.XxlJobInterceptor;
 import io.github.atengk.boot.job.xxl.metrics.XxlJobMetricsBinder;
@@ -282,11 +283,15 @@ public class XxlJobContextAspect {
             // C. JSR-303 参数校验与 Fail-Fast 快速失败防卫
             validateParameters(pjp.getTarget(), specificMethod, specificMethod.getParameters(), resolvedArgs, jobName);
 
-            // D. 挂载执行元数据与看门狗
+            // D. 解析方法级本地退避重试策略与看门狗开关（在触发拦截器 preHandle 前完成配置校验，保证拦截器生命周期对称）
+            int retryCount = (atengXxlJob != null) ? Math.max(0, atengXxlJob.retryCount()) : 0;
+            Duration retryInterval = resolveRetryInterval(atengXxlJob);
             boolean hasWatchdog = watchdog != null && timeout != null && !timeout.isZero() && !timeout.isNegative();
 
             // E. 构建任务执行上下文并执行切面拦截器 preHandle
             XxlJobExecutionContext executionContext = new XxlJobExecutionContext(
+                    jobId,
+                    logId,
                     jobName,
                     specificMethod,
                     pjp.getTarget(),
@@ -321,18 +326,18 @@ public class XxlJobContextAspect {
                 }
             }
 
-            // F. 执行目标任务业务逻辑，并在 finally 中确定性触发 afterCompletion
+            // F. 在单一看门狗总超时约束下执行业务逻辑及本地退避重试，确保 finally 逆序触发 afterCompletion
             Object result;
             Throwable executionThrowable = null;
             try {
                 if (properties != null && properties.isManagedPoolEnabled() && taskExecutor != null) {
-                    result = executeInManagedPool(pjp, timeout, metadata, resolvedArgs, sessionRef);
+                    result = executeInManagedPool(pjp, timeout, metadata, resolvedArgs, retryCount, retryInterval, sessionRef);
                 } else {
                     if (hasWatchdog) {
                         LocalWatchdog.WatchdogSession session = watchdog.startWatch(Thread.currentThread(), timeout, metadata);
                         sessionRef.set(session);
                     }
-                    result = (resolvedArgs != null && resolvedArgs.length > 0) ? pjp.proceed(resolvedArgs) : pjp.proceed();
+                    result = executeWithRetry(pjp, resolvedArgs, retryCount, retryInterval, sessionRef, jobName);
                 }
 
                 // G. 目标任务成功执行：逆序触发 postHandle
@@ -416,8 +421,14 @@ public class XxlJobContextAspect {
         }
     }
 
-    private Object executeInManagedPool(ProceedingJoinPoint pjp, Duration timeout, JobExecutionMetadata metadata,
-                                        Object[] resolvedArgs, AtomicReference<LocalWatchdog.WatchdogSession> sessionRef) throws Throwable {
+    private Object executeInManagedPool(
+            ProceedingJoinPoint pjp,
+            Duration timeout,
+            JobExecutionMetadata metadata,
+            Object[] resolvedArgs,
+            int retryCount,
+            Duration retryInterval,
+            AtomicReference<LocalWatchdog.WatchdogSession> sessionRef) throws Throwable {
         XxlJobContext xxlJobContext = XxlJobContext.getXxlJobContext();
         CompletableFuture<Object> future = new CompletableFuture<>();
         AtomicReference<Thread> workerThreadRef = new AtomicReference<>();
@@ -434,9 +445,8 @@ public class XxlJobContextAspect {
                 XxlJobContext.setXxlJobContext(xxlJobContext);
             }
             try {
-                Object result = (resolvedArgs != null && resolvedArgs.length > 0)
-                        ? pjp.proceed(resolvedArgs)
-                        : pjp.proceed();
+                String jobName = metadata != null ? metadata.getJobName() : "";
+                Object result = executeWithRetry(pjp, resolvedArgs, retryCount, retryInterval, sessionRef, jobName);
                 future.complete(result);
             } catch (Throwable t) {
                 future.completeExceptionally(t);
@@ -478,6 +488,112 @@ public class XxlJobContextAspect {
         } catch (ExecutionException ee) {
             throw ee.getCause() != null ? ee.getCause() : ee;
         }
+    }
+
+    /**
+     * 在看门狗总超时作用域内执行业务方法及本地退避重试
+     *
+     * @param pjp          AOP 连接点
+     * @param resolvedArgs 已解析的实参列表
+     * @param retryCount   最大本地重试次数（不包含首次执行）
+     * @param retryInterval 重试退避间隔
+     * @param sessionRef   本地看门狗会话引用
+     * @param jobName      任务处理器名称
+     * @return 目标方法返回值
+     * @throws Throwable 业务或中断异常
+     */
+    private Object executeWithRetry(
+            ProceedingJoinPoint pjp,
+            Object[] resolvedArgs,
+            int retryCount,
+            Duration retryInterval,
+            AtomicReference<LocalWatchdog.WatchdogSession> sessionRef,
+            String jobName) throws Throwable {
+        int maxAttempts = Math.max(0, retryCount) + 1;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            LocalWatchdog.WatchdogSession session = sessionRef.get();
+            if ((session != null && session.isTimedOut()) || Thread.currentThread().isInterrupted()) {
+                throw new InterruptedException("XXL-Job 任务 [" + jobName + "] 已被中断，终止后续本地重试");
+            }
+            if (attempt > 1) {
+                // 重试前清理上一轮可能写入的 handleFail 状态，避免重试恢复后遗留 code=500 或旧失败消息
+                XxlJobContext xxlJobContext = XxlJobContext.getXxlJobContext();
+                if (xxlJobContext != null) {
+                    xxlJobContext.setHandleCode(XxlJobContext.HANDLE_CODE_SUCCESS);
+                    xxlJobContext.setHandleMsg(null);
+                }
+            }
+            try {
+                return (resolvedArgs != null && resolvedArgs.length > 0)
+                        ? pjp.proceed(resolvedArgs)
+                        : pjp.proceed();
+            } catch (Throwable t) {
+                session = sessionRef.get();
+                // 看门狗硬超时、线程中断、Error、TimeoutException 或重试次数已耗尽：严格禁止继续重试
+                if ((session != null && session.isTimedOut())
+                        || isNonRetryableThrowable(t)
+                        || Thread.currentThread().isInterrupted()
+                        || attempt >= maxAttempts) {
+                    throw t;
+                }
+                int remainingRetries = maxAttempts - attempt;
+                log.warn("XXL-Job 任务 [{}] 第 {}/{} 次执行失败，将在 {}ms 后进行本地退避重试 (剩余 {} 次): {}",
+                        jobName, attempt, maxAttempts, retryInterval.toMillis(), remainingRetries, t.getMessage());
+                try {
+                    XxlJobHelper.log("<font color=\"orange\">[LOCAL-RETRY] 任务 [" + jobName + "] 第 " + attempt
+                            + " 次执行失败，将在 " + retryInterval.toMillis() + "ms 后重试 (剩余 " + remainingRetries + " 次): "
+                            + t.getMessage() + "</font>");
+                } catch (Throwable logEx) {
+                    log.debug("XXL-Job 任务 [{}] 写入本地重试日志到 XxlJobHelper 失败: {}", jobName, logEx.getMessage());
+                }
+                if (!retryInterval.isZero()) {
+                    try {
+                        Thread.sleep(retryInterval.toMillis());
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw ie;
+                    }
+                }
+            }
+        }
+        throw new IllegalStateException("XXL-Job 本地重试循环异常结束");
+    }
+
+    /**
+     * 解析并校验方法级本地重试退避间隔
+     *
+     * @param atengXxlJob 增强调度注解
+     * @return 校验通过的非负退避时间间隔
+     */
+    protected Duration resolveRetryInterval(AtengXxlJob atengXxlJob) {
+        if (atengXxlJob == null) {
+            return Duration.ofSeconds(1);
+        }
+        if (!StringUtils.hasText(atengXxlJob.retryInterval())) {
+            if (atengXxlJob.retryCount() > 0) {
+                throw new IllegalArgumentException("retryInterval 不能为空");
+            }
+            return Duration.ofSeconds(1);
+        }
+        Duration interval = parseDuration(atengXxlJob.retryInterval());
+        if (interval == null || interval.isNegative()) {
+            throw new IllegalArgumentException("retryInterval 不能为负数: " + atengXxlJob.retryInterval());
+        }
+        return interval;
+    }
+
+    private boolean isNonRetryableThrowable(Throwable t) {
+        Throwable current = t;
+        int depth = 0;
+        while (current != null && depth++ < 64) {
+            if (current instanceof Error
+                    || current instanceof InterruptedException
+                    || current instanceof TimeoutException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     /**
@@ -862,17 +978,15 @@ public class XxlJobContextAspect {
     /**
      * 解析任务全局唯一标识名称
      *
-     * <p>优先取 {@link AtengXxlJob#value()}，其次取原生 {@link XxlJob#value()}，保底取方法名称。</p>
+     * <p>与执行器扫描逻辑保持一致：若同时标注了 {@link XxlJob} 与 {@link AtengXxlJob}，
+     * 优先取 {@link XxlJob#value()}，其次取 {@link AtengXxlJob#value()}，保底取方法名称。</p>
+     *
+     * @param method      目标执行方法
+     * @param atengXxlJob 增强调度注解
+     * @return 任务处理器唯一名称
      */
     protected String resolveJobName(Method method, AtengXxlJob atengXxlJob) {
-        if (atengXxlJob != null && StringUtils.hasText(atengXxlJob.value())) {
-            return atengXxlJob.value();
-        }
-        XxlJob xxlJob = AnnotatedElementUtils.findMergedAnnotation(method, XxlJob.class);
-        if (xxlJob != null && StringUtils.hasText(xxlJob.value())) {
-            return xxlJob.value();
-        }
-        return method.getName();
+        return AtengXxlJobAnnotationHelper.resolveHandlerName(method, atengXxlJob);
     }
 
     /**

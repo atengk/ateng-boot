@@ -4,28 +4,40 @@ import com.xxl.job.core.executor.XxlJobExecutor;
 import com.xxl.job.core.executor.impl.XxlJobSpringExecutor;
 import com.xxl.job.core.glue.GlueFactory;
 import com.xxl.job.core.handler.IJobHandler;
+import com.xxl.job.core.handler.impl.MethodJobHandler;
 import com.xxl.job.core.log.XxlJobFileAppender;
 import com.xxl.job.core.thread.ExecutorRegistryThreadHelper;
-import com.xxl.job.core.thread.JobLogFileCleanThreadHelper;
 import com.xxl.job.core.thread.JobThread;
 import com.xxl.job.core.thread.TriggerCallbackThreadHelper;
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.job.xxl.annotation.AtengXxlJob;
 import io.github.atengk.boot.job.xxl.cleaner.AtengJobLogFileCleanHelper;
 import io.github.atengk.boot.job.xxl.detector.ContainerIpDetector;
+import io.github.atengk.boot.job.xxl.helper.AtengXxlJobAnnotationHelper;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
 import io.github.atengk.boot.job.xxl.resolver.XxlJobPortResolver;
 import io.github.atengk.boot.job.xxl.server.AtengEmbedServer;
 import io.github.atengk.boot.job.xxl.thread.AtengJobThread;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.aop.support.AopUtils;
+import org.springframework.beans.factory.config.BeanDefinition;
+import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.SmartLifecycle;
+import org.springframework.core.MethodIntrospector;
+import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.util.ReflectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -55,6 +67,9 @@ public class AtengXxlJobSpringExecutor extends XxlJobSpringExecutor implements S
     private static final Field CALLBACK_HELPER_FIELD;
     private static final Field REGISTRY_HELPER_FIELD;
     private static final Field SINGLETON_INSTANCE_FIELD;
+    private static final Field EXCLUDED_PACKAGE_FIELD;
+    private static final Field METHOD_HANDLER_TARGET_FIELD;
+    private static final Field METHOD_HANDLER_METHOD_FIELD;
     private static final Method INIT_ADMIN_BIZ_LIST_METHOD;
     private static final Method SCAN_JOB_HANDLER_METHOD;
 
@@ -64,6 +79,9 @@ public class AtengXxlJobSpringExecutor extends XxlJobSpringExecutor implements S
         CALLBACK_HELPER_FIELD = findAndMakeAccessibleField(XxlJobExecutor.class, "triggerCallbackThreadHelper");
         REGISTRY_HELPER_FIELD = findAndMakeAccessibleField(XxlJobExecutor.class, "executorRegistryThreadHelper");
         SINGLETON_INSTANCE_FIELD = findAndMakeAccessibleField(XxlJobExecutor.class, "xxlJobExecutor");
+        EXCLUDED_PACKAGE_FIELD = findAndMakeAccessibleField(XxlJobSpringExecutor.class, "excludedPackage");
+        METHOD_HANDLER_TARGET_FIELD = findAndMakeAccessibleField(MethodJobHandler.class, "target");
+        METHOD_HANDLER_METHOD_FIELD = findAndMakeAccessibleField(MethodJobHandler.class, "method");
 
         Method initAdminMethod = ReflectionUtils.findMethod(XxlJobExecutor.class, "initAdminBizList");
         if (initAdminMethod != null) {
@@ -81,6 +99,7 @@ public class AtengXxlJobSpringExecutor extends XxlJobSpringExecutor implements S
     private final XxlJobProperties properties;
     private final AtengEmbedServer atengEmbedServer = new AtengEmbedServer();
 
+    private final AtomicBoolean handlersScanned = new AtomicBoolean(false);
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean draining = new AtomicBoolean(false);
     private final AtomicBoolean stopped = new AtomicBoolean(false);
@@ -140,13 +159,146 @@ public class AtengXxlJobSpringExecutor extends XxlJobSpringExecutor implements S
 
     @Override
     public void afterSingletonsInstantiated() {
-        // 扫描 Spring 容器中的 JobHandler 方法并注入 Glue
-        if (SCAN_JOB_HANDLER_METHOD != null && this.applicationContext != null) {
+        if (this.applicationContext == null || !handlersScanned.compareAndSet(false, true)) {
+            return;
+        }
+        // 扫描 Spring 容器中的 @XxlJob 与独立 @AtengXxlJob 方法并注入 Glue
+        if (SCAN_JOB_HANDLER_METHOD != null) {
             ReflectionUtils.invokeMethod(SCAN_JOB_HANDLER_METHOD, this, this.applicationContext);
         }
+        scanAtengXxlJobMethods(this.applicationContext);
         GlueFactory.refreshInstance(1);
         // 注意：不调用 super.afterSingletonsInstantiated() 以免重复触发未经加固的官方 start()
         // 统一由 SmartLifecycle.start() 触发受管生产级加固启动
+    }
+
+    /**
+     * 扫描 Spring 容器中单独或联合声明 {@link AtengXxlJob} 的受管任务方法并完成注册
+     *
+     * <p>支持仅使用 {@code @AtengXxlJob} 独立注册（未显式指定 value 时按切面约定回退取方法名），
+     * 并在与原生 {@code @XxlJob} 联合标注或重复刷新时执行幂等去重；若发现不同任务方法占用同一名称则快速失败抛出命名冲突。</p>
+     *
+     * @param context Spring 应用上下文
+     */
+    protected void scanAtengXxlJobMethods(ApplicationContext context) {
+        if (context == null) {
+            return;
+        }
+        List<String> excludedPackageList = resolveExcludedPackages();
+        String[] beanNames = context.getBeanNamesForType(Object.class, false, false);
+        for (String beanName : beanNames) {
+            if (isSkippedBeanDefinition(context, beanName, excludedPackageList)) {
+                continue;
+            }
+            Class<?> targetType = context.getType(beanName, false);
+            if (targetType == null) {
+                continue;
+            }
+            Map<Method, AtengXxlJob> annotatedMethods;
+            try {
+                annotatedMethods = MethodIntrospector.selectMethods(
+                        targetType,
+                        (MethodIntrospector.MetadataLookup<AtengXxlJob>) method -> AnnotatedElementUtils.findMergedAnnotation(method, AtengXxlJob.class)
+                );
+            } catch (Throwable ex) {
+                log.error("ateng-boot xxl-job @AtengXxlJob method resolve error for bean [{}]", beanName, ex);
+                continue;
+            }
+            if (annotatedMethods == null || annotatedMethods.isEmpty()) {
+                continue;
+            }
+
+            Object bean = context.getBean(beanName);
+            for (Map.Entry<Method, AtengXxlJob> entry : annotatedMethods.entrySet()) {
+                registerAtengXxlJobHandler(entry.getValue(), bean, entry.getKey());
+            }
+        }
+    }
+
+    private void registerAtengXxlJobHandler(AtengXxlJob atengXxlJob, Object bean, Method executeMethod) {
+        if (!AtengXxlJobAnnotationHelper.shouldRegisterAtengHandler(executeMethod, atengXxlJob) || bean == null) {
+            return;
+        }
+
+        String handlerName = AtengXxlJobAnnotationHelper.resolveHandlerName(executeMethod, atengXxlJob);
+        IJobHandler existingHandler = loadJobHandler(handlerName);
+        if (existingHandler != null) {
+            if (isSameMethodHandler(existingHandler, bean, executeMethod)) {
+                return;
+            }
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "xxl-job jobhandler[" + handlerName + "] naming conflicts.");
+        }
+
+        ReflectionUtils.makeAccessible(executeMethod);
+        Method initMethod = AtengXxlJobAnnotationHelper.resolveLifecycleMethod(
+                bean, atengXxlJob.init(), executeMethod, "init", true);
+        Method destroyMethod = AtengXxlJobAnnotationHelper.resolveLifecycleMethod(
+                bean, atengXxlJob.destroy(), executeMethod, "destroy", true);
+        registryJobHandler(handlerName, new MethodJobHandler(bean, executeMethod, initMethod, destroyMethod));
+    }
+
+    private boolean isSameMethodHandler(IJobHandler existingHandler, Object bean, Method executeMethod) {
+        if (!(existingHandler instanceof MethodJobHandler methodJobHandler)
+                || METHOD_HANDLER_TARGET_FIELD == null
+                || METHOD_HANDLER_METHOD_FIELD == null) {
+            return false;
+        }
+        try {
+            Object existingTarget = METHOD_HANDLER_TARGET_FIELD.get(methodJobHandler);
+            Method existingMethod = (Method) METHOD_HANDLER_METHOD_FIELD.get(methodJobHandler);
+            if (existingTarget == null || existingMethod == null) {
+                return false;
+            }
+            return Objects.equals(AopUtils.getTargetClass(existingTarget), AopUtils.getTargetClass(bean))
+                    && Objects.equals(existingMethod.getName(), executeMethod.getName())
+                    && java.util.Arrays.equals(existingMethod.getParameterTypes(), executeMethod.getParameterTypes());
+        } catch (IllegalAccessException e) {
+            log.debug("读取 MethodJobHandler 内部字段失败，视为非同一处理器: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private List<String> resolveExcludedPackages() {
+        List<String> excluded = new ArrayList<>();
+        String raw = "org.springframework.,spring.";
+        if (EXCLUDED_PACKAGE_FIELD != null) {
+            try {
+                Object val = EXCLUDED_PACKAGE_FIELD.get(this);
+                if (val instanceof String str) {
+                    raw = str;
+                }
+            } catch (IllegalAccessException e) {
+                log.debug("读取 excludedPackage 字段失败，回退默认排除包前缀: {}", e.getMessage());
+            }
+        }
+        if (StringUtils.hasText(raw)) {
+            for (String pkg : raw.split(",")) {
+                if (StringUtils.hasText(pkg)) {
+                    excluded.add(pkg.trim());
+                }
+            }
+        }
+        return excluded;
+    }
+
+    private boolean isSkippedBeanDefinition(ApplicationContext context, String beanName, List<String> excludedPackages) {
+        if (!(context instanceof BeanDefinitionRegistry registry)) {
+            return false;
+        }
+        if (!registry.containsBeanDefinition(beanName)) {
+            return true;
+        }
+        BeanDefinition bd = registry.getBeanDefinition(beanName);
+        String beanClassName = bd.getBeanClassName();
+        if (beanClassName != null) {
+            for (String prefix : excludedPackages) {
+                if (beanClassName.startsWith(prefix)) {
+                    return true;
+                }
+            }
+        }
+        return bd.isLazyInit();
     }
 
     @Override
