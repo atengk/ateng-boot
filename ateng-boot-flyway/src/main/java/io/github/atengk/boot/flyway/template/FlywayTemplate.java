@@ -7,6 +7,7 @@ import io.github.atengk.boot.flyway.enums.BatchExecutionPolicy;
 import io.github.atengk.boot.flyway.enums.FlywayExecutionMode;
 import io.github.atengk.boot.flyway.enums.FlywayResultCode;
 import io.github.atengk.boot.flyway.enums.MigrationTargetKind;
+import io.github.atengk.boot.flyway.enums.ObservabilityTargetScope;
 import io.github.atengk.boot.flyway.exception.FlywayException;
 import io.github.atengk.boot.flyway.guard.ProductionSafetyGuard;
 import io.github.atengk.boot.flyway.listener.FlywayMigrationListener;
@@ -1157,7 +1158,14 @@ public class FlywayTemplate implements DisposableBean {
         return removeTargetFromSummary(targetKey, false);
     }
 
-    private boolean removeTargetFromSummary(String targetKey, boolean alwaysIncrementVersion) {
+    /**
+     * 从全局汇总摘要快照中移除已摘除目标数据源记录，并在存在清理或显式要求时递增摘要版本号
+     *
+     * @param targetKey               目标数据源标识
+     * @param alwaysIncrementVersion  即使摘要中未记录该目标，是否仍递增版本号以即时失效观测缓存
+     * @return true 表示摘要中原本存在该目标并已清理，false 表示摘要中无该目标记录
+     */
+    public boolean removeTargetFromSummary(String targetKey, boolean alwaysIncrementVersion) {
         if (!StringUtils.hasText(targetKey)) {
             return false;
         }
@@ -1186,6 +1194,64 @@ public class FlywayTemplate implements DisposableBean {
      */
     public long getSummaryVersion() {
         return summaryVersion.get();
+    }
+
+    /**
+     * 按可观测作用域解析受管目标数据源标识列表（主库优先、有序返回）
+     *
+     * @param scope 可观测目标探测作用域（为空时默认使用 {@link ObservabilityTargetScope#PRIMARY_AND_STATIC}）
+     * @return 目标数据源标识不可变列表（永不为 null）
+     */
+    public List<String> resolveObservableTargetKeys(ObservabilityTargetScope scope) {
+        ObservabilityTargetScope effectiveScope = scope != null
+                ? scope
+                : ObservabilityTargetScope.PRIMARY_AND_STATIC;
+        if (targetResolver == null) {
+            return List.of(resolvePrimaryTargetKey());
+        }
+        List<MigrationTarget> allTargets = targetResolver.resolveTargets();
+        if (CollectionUtils.isEmpty(allTargets)) {
+            return Collections.emptyList();
+        }
+        return switch (effectiveScope) {
+            case PRIMARY -> extractTargetKeys(allTargets, target -> target.getKind() == MigrationTargetKind.PRIMARY);
+            case PRIMARY_AND_STATIC ->
+                    extractTargetKeys(allTargets, target -> target.getKind() != MigrationTargetKind.TENANT);
+            case ALL -> extractTargetKeys(allTargets, target -> true);
+        };
+    }
+
+    /**
+     * 解析指定目标数据源的归类维度（主库 / 静态业务库 / SaaS 物理租户库 / 自定义）
+     *
+     * @param targetKey 目标数据源标识
+     * @return 目标分类枚举（永不为 null）
+     */
+    public MigrationTargetKind resolveTargetKind(String targetKey) {
+        if (!StringUtils.hasText(targetKey)) {
+            return MigrationTargetKind.PRIMARY;
+        }
+        String normalized = targetKey.trim();
+        if (targetResolver != null) {
+            MigrationTarget resolved = targetResolver.resolveTarget(normalized);
+            if (resolved != null && resolved.getKind() != null) {
+                return resolved.getKind();
+            }
+        }
+        if (Objects.equals(resolvePrimaryTargetKey(), normalized)) {
+            return MigrationTargetKind.PRIMARY;
+        }
+        AtengFlywayProperties.TenantMigrationProperties tenantProps = properties.getTenant();
+        String tenantPrefix = tenantProps != null && StringUtils.hasText(tenantProps.getDataSourcePrefix())
+                ? tenantProps.getDataSourcePrefix().trim()
+                : "tenant_";
+        if (normalized.startsWith(tenantPrefix)) {
+            return MigrationTargetKind.TENANT;
+        }
+        if (properties.getDatasources() != null && properties.getDatasources().containsKey(normalized)) {
+            return MigrationTargetKind.STATIC_DATASOURCE;
+        }
+        return targetResolver == null ? MigrationTargetKind.PRIMARY : MigrationTargetKind.CUSTOM;
     }
 
     /**

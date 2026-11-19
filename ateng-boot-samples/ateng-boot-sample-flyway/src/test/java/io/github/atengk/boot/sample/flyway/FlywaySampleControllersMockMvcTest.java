@@ -425,12 +425,33 @@ class FlywaySampleControllersMockMvcTest {
         mockMvc.perform(get("/sample/flyway/governance/health"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.status").value("UP"));
+                .andExpect(jsonPath("$.data.status").value("UP"))
+                .andExpect(jsonPath("$.data.details.scope").value("PRIMARY_AND_STATIC"))
+                .andExpect(jsonPath("$.data.details.targetCount").value(2))
+                .andExpect(jsonPath("$.data.details.targets.master.status").value("UP"))
+                .andExpect(jsonPath("$.data.details.targets.log_db.status").value("UP"));
 
         mockMvc.perform(get("/actuator/health"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("UP"))
-                .andExpect(jsonPath("$.components.flyway.status").value("UP"));
+                .andExpect(jsonPath("$.components.flyway.status").value("UP"))
+                .andExpect(jsonPath("$.components.flyway.details.scope").value("PRIMARY_AND_STATIC"))
+                .andExpect(jsonPath("$.components.flyway.details.targets.master.status").value("UP"))
+                .andExpect(jsonPath("$.components.flyway.details.targets.log_db.status").value("UP"));
+
+        mockMvc.perform(get("/actuator/metrics/ateng.flyway.migrations.total"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.availableTags[?(@.tag=='target')].values[*]").value(hasItem("master")))
+                .andExpect(jsonPath("$.availableTags[?(@.tag=='target')].values[*]").value(hasItem("log_db")))
+                .andExpect(jsonPath("$.availableTags[?(@.tag=='target')].values[*]").value(hasItem("tenant")))
+                .andExpect(jsonPath("$.availableTags[?(@.tag=='target')].values[*]").value(not(hasItem("tenant_1001"))))
+                .andExpect(jsonPath("$.availableTags[?(@.tag=='kind')].values[*]").value(hasItem("PRIMARY")))
+                .andExpect(jsonPath("$.availableTags[?(@.tag=='kind')].values[*]").value(hasItem("STATIC_DATASOURCE")))
+                .andExpect(jsonPath("$.availableTags[?(@.tag=='kind')].values[*]").value(hasItem("TENANT")));
+
+        mockMvc.perform(get("/actuator/metrics/ateng.flyway.migrations.pending"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.measurements[0].value").value(0.0));
 
         // 未知目标数据源触发 TARGET_NOT_FOUND (62004)
         mockMvc.perform(get("/sample/flyway/governance/info").param("targetKey", "unknown_nonexistent_db"))

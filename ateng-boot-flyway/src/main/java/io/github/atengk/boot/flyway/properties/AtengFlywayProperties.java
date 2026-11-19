@@ -3,6 +3,7 @@ package io.github.atengk.boot.flyway.properties;
 import io.github.atengk.boot.flyway.enums.BatchExecutionPolicy;
 import io.github.atengk.boot.flyway.enums.DynamicMountFailurePolicy;
 import io.github.atengk.boot.flyway.enums.FlywayExecutionMode;
+import io.github.atengk.boot.flyway.enums.ObservabilityTargetScope;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.ToString;
@@ -219,6 +220,30 @@ public class AtengFlywayProperties {
          * 是否注册 Micrometer 迁移度量指标绑定器
          */
         private boolean metricsEnabled = true;
+
+        /**
+         * 健康探针与待执行脚本指标的多目标探测作用域（默认 PRIMARY_AND_STATIC，覆盖主库与显式纳管静态业务库）
+         */
+        private ObservabilityTargetScope targetScope = ObservabilityTargetScope.PRIMARY_AND_STATIC;
+
+        /**
+         * 当作用域内存在尚未执行的待迁移脚本（pending > 0）时是否将健康状态降级为 DOWN（默认 false 保持向后兼容）
+         */
+        private boolean failOnPending = false;
+
+        /**
+         * 上报物理租户迁移 Counter/Timer 指标时是否将 target 标签归一化为 "tenant"（默认 true 严防 TSDB 高基数爆炸）
+         */
+        private boolean aggregateTenantMetrics = true;
+
+        /**
+         * 解析当前生效的多目标可观测探测作用域（未显式配置时默认返回 PRIMARY_AND_STATIC）
+         *
+         * @return 生效的观测作用域枚举
+         */
+        public ObservabilityTargetScope resolveEffectiveTargetScope() {
+            return targetScope != null ? targetScope : ObservabilityTargetScope.PRIMARY_AND_STATIC;
+        }
     }
 
     /**

@@ -100,13 +100,18 @@ public class FlywayTenantLifecycleListener implements DynamicDatasourceLifecycle
             return;
         }
         String normalizedKey = dsKey.trim();
+        if (TargetRoutingSupport.isExcludedOrSlave(normalizedKey, atengProperties)) {
+            return;
+        }
         FlywayTemplate flywayTemplate = flywayTemplateProvider.getIfAvailable();
         if (flywayTemplate == null) {
             return;
         }
-        boolean removed = flywayTemplate.removeTargetFromSummary(normalizedKey);
+        boolean removed = flywayTemplate.removeTargetFromSummary(normalizedKey, true);
         if (removed) {
-            log.info("动态数据源 [dsKey={}] 已从路由表摘除，已同步清理全局迁移摘要滞留记录", normalizedKey);
+            log.info("动态数据源 [dsKey={}] 已从路由表摘除，已同步清理全局迁移摘要滞留记录并刷新观测缓存", normalizedKey);
+        } else {
+            log.debug("动态数据源 [dsKey={}] 已从路由表摘除，已递增加载观测摘要版本号", normalizedKey);
         }
     }
 

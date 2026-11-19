@@ -105,6 +105,9 @@ ateng:
         health-enabled: true
         health-cache-ttl: 5s
         metrics-enabled: true
+        target-scope: PRIMARY_AND_STATIC
+        fail-on-pending: false
+        aggregate-tenant-metrics: true
 
 management:
   endpoints:

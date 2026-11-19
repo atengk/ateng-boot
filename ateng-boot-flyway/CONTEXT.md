@@ -5,7 +5,7 @@
 ## Language
 
 **Flyway Template (版本化迁移统一门面)**:
-对外暴露的对称编程式迁移操作门面，提供单库与多目标库维度的迁移（`migrate`）、校验（`validate`）、待执行脚本预检（`pending`）、历史信息探查（`info`）、基线初始化（`baseline`）、修复（`repair`）、受守卫控制的清理（`clean`）及最近一次迁移状态快照查询能力，并聚合输出结构化批处理回执。
+对外暴露的对称编程式迁移操作门面，提供单库、静态多目标库与 SaaS 全租户维度的迁移（`migrate` / `migrateTargets` / `migrateAllTenants`）、校验（`validate` / `validateTargets` / `validateAllTenants`）、待执行脚本预检（`pending` / `pendingTargets` / `pendingAllTenants`）、历史信息探查（`info` / `infoAll` / `infoAllTenants`）、基线初始化（`baseline` / `baselineTargets` / `baselineAllTenants`）、历史修复（`repair` / `repairTargets` / `repairAllTenants`）、受守卫控制的清理（`clean`）及最近一次迁移状态快照查询能力，并聚合输出结构化批处理回执。
 _Avoid_: FlywayHelper, FlywayUtil, MigrationService, DbMigrator
 
 **Migration Target (迁移目标数据源)**:
@@ -17,7 +17,7 @@ _Avoid_: TargetDb, MigrationNode, DbEndpoint
 _Avoid_: TargetScanner, DbFilter, MigrationDiscovery, TargetRouter
 
 **Production Safety Guard (生产防误操作硬守卫)**:
-在受保护运行环境（如生产 Profile）下对破坏性操作（`clean`）及高危隐式清库配置（如 `clean-on-validation-error=true`）实施 Fail-Fast 物理熔断的安全防线，无视低级别开关误配置。
+在受保护运行环境（如生产 Profile）或安全策略下，对破坏性清库操作（`clean`）、高危隐式清库配置（`clean-on-validation-error=true`，含 `FlywayConfigurationCustomizer` 后置校验）以及待执行 SQL 脚本中的高危破坏性 DDL 语句（如 `DROP TABLE`、`DROP DATABASE`、`DROP SCHEMA`、`TRUNCATE`）实施 Fail-Fast 物理熔断的纵深安全防线。
 _Avoid_: CleanBlocker, SafetyFilter, DropGuard, ProductionCleanGuard
 
 **Migration Execution Mode (迁移执行模式)**:
@@ -41,11 +41,11 @@ _Avoid_: MountErrorPolicy, TenantRollbackMode, DynamicFailStrategy
 _Avoid_: TenantSqlVar, DynamicVar, ScriptMacro
 
 **Batch Migration Result (批量迁移聚合回执)**:
-承载多数据源或 SaaS 多租户批量迁移执行后的结构化汇总回执，包含成功/跳过/失败计数、各目标耗时、已脱敏的失败明细列表及失败策略执行结果。
-_Avoid_: MigrationReport, MultiMigrateRes, BatchMigrateInfo
+承载多数据源或 SaaS 多租户批量迁移与校验执行后的结构化汇总回执，包含成功/跳过/失败计数、各目标耗时、已脱敏的失败明细列表及失败策略执行结果；非迁移类批量操作（`pendingTargets` / `pendingAllTenants`、`repairTargets` / `repairAllTenants`、`baselineTargets` / `baselineAllTenants`、`infoTargets` / `infoAllTenants`）统一复用泛型不可变回执 `BatchOperationResult<T>`。
+_Avoid_: MigrationReport, MultiMigrateRes, BatchMigrateInfo, BatchResultMap
 
 **Flyway Lock Provider (分布式并发迁移锁 SPI)**:
-多实例并发启动或动态挂载迁移时的外部协调锁扩展契约，缺省委托 Flyway 原生数据库表级/咨询锁保证并发安全，按需支持接入自定义分布式互斥锁实现。
+多实例并发启动或运行期并发触发迁移/修复/基线操作时的协调锁扩展契约，缺省实现（`DefaultFlywayLockProvider`）内置按 `targetKey` 隔离的进程内 `ReentrantLock` 超时互斥锁（防虚拟线程 Pinning）并协同 Flyway 原生数据库表级/咨询锁保证并发安全，按需支持接入自定义分布式互斥锁实现。
 _Avoid_: MigrationMutex, ClusterLock, DbUpgradeLock
 
 **Database Initialization Barrier (持久层初始化顺序屏障)**:
@@ -53,9 +53,9 @@ _Avoid_: MigrationMutex, ClusterLock, DbUpgradeLock
 _Avoid_: StartupOrderHack, BeanOrderFix, InitWaiter
 
 **Migration Health Indicator (迁移健康探针)**:
-对接 Spring Boot Actuator 的轻量健康检查组件，基于最近一次迁移执行快照与可控缓存探测暴露各目标库迁移就绪状态与待执行摘要，避免高频轮询直接压垮数据库。
+对接 Spring Boot Actuator 的多目标感知健康检查组件，基于最近一次迁移执行快照、可配置探查范围（`ObservabilityTargetScope`：`PRIMARY` / `PRIMARY_AND_STATIC` / `ALL`）与可控 TTL 缓存暴露受管目标库的迁移就绪状态、失败统计与待执行脚本门禁（`fail-on-pending`），并在 Micrometer 度量层默认启用租户低基数标签聚合（`aggregate-tenant-metrics`），避免高频轮询压垮数据库与 TSDB 指标爆炸。
 _Avoid_: FlywayProbe, MigrationCheck, SchemaHealth
 
 **Flyway Exception (迁移专有业务异常)**:
-继承 `BusinessException` 并绑定 `FlywayResultCode`（`IResultCode`）的受管异常，完整保留底层 JDBC 与 Flyway 原生异常因果链（`cause`），并对连接 URL 与凭据执行脱敏处理。
+继承 `BusinessException` 并绑定 `FlywayResultCode`（`IResultCode`，含破坏性 DDL 拦截码 `DESTRUCTIVE_DDL_FORBIDDEN`）的受管异常，完整保留底层 JDBC 与 Flyway 原生异常因果链（`cause`），并对连接 URL 与凭据执行脱敏处理。
 _Avoid_: MigrationError, DbUpgradeException, FlywayRuntimeError

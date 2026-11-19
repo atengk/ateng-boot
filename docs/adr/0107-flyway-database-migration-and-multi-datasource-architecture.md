@@ -1,7 +1,7 @@
 # ADR-0107: Flyway 数据库版本化迁移与多数据源协同架构决策
 
 - **状态**：`Accepted`
-- **日期**：2026-11-17
+- **日期**：2026-11-17（2026-11-19 演进修订）
 - **作者**：Ateng
 - **归属模块**：`ateng-boot-flyway` / `ateng-boot-datasource` / `ateng-boot-mybatis-plus` / `ateng-boot-observability` / `samples`
 - **相关决策**：
@@ -105,3 +105,25 @@ flowchart TB
 2. **复用 `spring.flyway.*` vs 全量镜像配置**：避免了 50+ 原生属性重复维护与生态割裂，要求开发者在配置内核行为时沿用 `spring.flyway.*`、在配置多源/守卫/租户治理时使用 `ateng.boot.flyway.*`。
 3. **非 Bean 瞬态 DDL 连接 vs `@FlywayDataSource` Bean**：零侵入解决了与 `AtengDatasourceAutoConfiguration` 的 `@ConditionalOnMissingBean(DataSource.class)` 冲突及闭池健康探针误报，代价是需引导用户通过 `ateng.boot.flyway.*` 配置 DDL 独立凭据而非手写 `@FlywayDataSource` Bean。
 4. **监听器内部可重入回滚 vs 修改 `ateng-boot-datasource` 源码**：维持既有动态数据源模块零回归风险，且允许按需在“保留故障源重试补迁（默认）”与“摘除半残租户源（严格）”之间平滑切换。
+
+---
+
+## 4. 演进修订记录（#1111 ~ #1115 全场景硬化与低基数可观测闭环，2026-11-19）
+
+为进一步补齐大规模生产与千租户 SaaS 场景的纵深防御、对称批处理契约、运行时稳定与 Prometheus 低基数可观测闭环，本 ADR 在保持既有契约 100% 向后兼容的前提下增量收敛以下 5 项演进决策：
+
+1. **破坏性 DDL 静态预检与 `Customizer` 后置拦截闭环（#1112）**
+   - 在 `ProductionSafetyGuard` 中引入词法级 `PendingSqlScanner`，于 `migrate()` 前扫描待执行 SQL（剥离注释与字符串字面量，防止误判），阻断未授权的 `DROP TABLE` / `DROP DATABASE` / `DROP SCHEMA` / `TRUNCATE`（`FlywayResultCode.DESTRUCTIVE_DDL_FORBIDDEN` `62010`），仅当 `allow-destructive-ddl-annotation=true` 且脚本含 `-- @ateng-allow-destructive-ddl` 显式审批标注时放行；
+   - 在 `FlywayConfigurationSupport` 执行完容器 `FlywayConfigurationCustomizer` 后补充后置重验 `validateConfiguration(...)`，封堵通过定制器绕过 `clean-on-validation-error` 校验的漏洞。
+2. **进程内虚拟线程互斥锁、原子池名与停机协作式优雅取消（#1113）**
+   - `DefaultFlywayLockProvider` 从空操作桩升级为按 `targetKey` 分桶的 `ConcurrentHashMap<String, RefCountedLock>`，基于 `ReentrantLock.tryLock(timeout)`（杜绝 JDK 21+ 虚拟线程 Carrier Pinning）实现同目标串行互斥与零持有/零等待原子回收，配合数据库原生锁共同防止同实例多请求竞争；`TransientFlywayExecutor` 引入 `AtomicLong` 连接池后缀序列消除并发瞬态连接池命名竞态；
+   - `FlywayTemplate` 实现 `DisposableBean#destroy()`，依托 `FlywayBatchExecutor.AsyncBatchHandle` 向活跃异步租户工作线程精确发出 `interrupt()` 并在 `DataSource` 销毁前有界等待（2 秒）收尾，杜绝关停期的关闭池竞态异常。
+3. **通用枚举 `IBaseEnum` 统一与目标级高阶 Flyway 参数全接线（#1113）**
+   - `FlywayExecutionMode`、`BatchExecutionPolicy`、`DynamicMountFailurePolicy`、`MigrationTargetKind` 与新增 `ObservabilityTargetScope` 全面实现 Core `IBaseEnum<String>`；
+   - `DataSourceMigrationProperties` 新增 `target`、`ignoreMigrationPatterns`、`installedBy`、`executeInTransaction`、`group`、`mixed` 六项高阶参数，并打通配置合并与 `FluentConfiguration` 注入（覆盖单库 `datasources.default.*`、L2 静态库与 L3 租户组）。
+4. **泛型不可变批处理回执 `BatchOperationResult<T>` 与动态摘除自愈（#1114）**
+   - 抽出 `FlywayBatchExecutor` 共用串行/有界并发批处理引擎，在 `FlywayTemplate` 对称补齐 `pendingTargets`/`pendingAllTenants`、`repairTargets`/`repairAllTenants`、`baselineTargets`/`baselineAllTenants`、`infoTargets`/`infoAllTenants` 与容错 `infoAll(policy)` 重载，并 100% 保留原有 `List<MigrationTargetInfo> infoAll()` 签名；
+   - 联动 `baseline`、`repair`、`clean` 后刷新 `MigrationSummary` 与 `summaryVersion`（`clean` 清退对应目标，避免虚报迁移成功），并在 `FlywayTenantLifecycleListener#onDataSourceRemoved` 中自动摘除已下线故障租户的摘要滞留记录与版本号失效触发，并在 Sample 三大领域控制器全量曝光。
+5. **多目标可观测作用域、`fail-on-pending` 门禁与低基数 Prometheus 防线（#1115）**
+   - 引入 `ObservabilityTargetScope`（`PRIMARY` / `PRIMARY_AND_STATIC` 默认 / `ALL`），`FlywayHealthIndicator` 按作用域隔离汇总各目标版本与待执行数（单库查询失败独立记为 `ERROR` 而不掩盖其余库），支持显式开启 `fail-on-pending=true`（含 `DISABLED` 模式）；
+   - `FlywayMetricsBinder` 将 `ateng.flyway.migrations.pending` 扩展至作用域总量并绑定 `summaryVersion` 即时失效缓存；默认开启 `aggregate-tenant-metrics=true`，上报 `Counter`/`Timer` 时将物理租户 `target` 标签归一化为 `"tenant"` 并附加低基数 `kind` 标签，免疫千租户 TSDB 高基数指标爆炸。

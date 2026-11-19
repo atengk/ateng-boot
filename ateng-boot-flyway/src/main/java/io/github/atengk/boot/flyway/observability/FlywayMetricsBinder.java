@@ -1,8 +1,12 @@
 package io.github.atengk.boot.flyway.observability;
 
 import io.github.atengk.boot.flyway.config.FlywayConfigurationSupport;
+import io.github.atengk.boot.flyway.enums.BatchExecutionPolicy;
 import io.github.atengk.boot.flyway.enums.FlywayExecutionMode;
+import io.github.atengk.boot.flyway.enums.MigrationTargetKind;
+import io.github.atengk.boot.flyway.enums.ObservabilityTargetScope;
 import io.github.atengk.boot.flyway.listener.FlywayMigrationListener;
+import io.github.atengk.boot.flyway.model.BatchOperationResult;
 import io.github.atengk.boot.flyway.model.MigrationOutcome;
 import io.github.atengk.boot.flyway.model.MigrationScriptInfo;
 import io.github.atengk.boot.flyway.model.MigrationSummary;
@@ -15,6 +19,7 @@ import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.binder.MeterBinder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.util.StringUtils;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -35,9 +40,10 @@ import java.util.concurrent.locks.ReentrantLock;
  * Flyway Micrometer 迁移可观测指标绑定器
  * <p>
  * 暴露迁移成功/失败次数（{@value #METRIC_MIGRATIONS_TOTAL}）、实际执行脚本总数（{@value #METRIC_MIGRATIONS_EXECUTED}）、
- * 迁移耗时（{@value #METRIC_MIGRATION_DURATION}）、待执行迁移脚本数（{@value #METRIC_MIGRATIONS_PENDING}）
- * 以及最近一次成功/失败目标数 Gauge 指标；
- * 通过有界缓冲队列兼容启动迁移早于 {@link MeterRegistry} 就绪的装配时序，并对待执行脚本探查实施 TTL 缓存以防抓取风暴。
+ * 迁移耗时（{@value #METRIC_MIGRATION_DURATION}）、按 {@link ObservabilityTargetScope} 汇总的待执行迁移脚本数
+ * （{@value #METRIC_MIGRATIONS_PENDING}）以及最近一次成功/失败目标数 Gauge 指标；
+ * 遵循低基数度量防线（默认开启 {@code aggregate-tenant-metrics=true} 时将物理租户 {@code target} 标签归一化为 {@code "tenant"}
+ * 并附加 {@code kind} 标签以防 TSDB 指标爆炸），且与 {@code summaryVersion} 联动实时失效待执行缓存。
  * </p>
  *
  * @author Ateng
@@ -57,9 +63,12 @@ public class FlywayMetricsBinder implements MeterBinder, FlywayMigrationListener
     static final int MAX_PENDING_OUTCOMES = 1024;
 
     private static final String TAG_TARGET = "target";
+    private static final String TAG_KIND = "kind";
     private static final String TAG_OUTCOME = "outcome";
+    private static final String AGGREGATED_TENANT_TAG = "tenant";
 
     private final FlywayTemplate flywayTemplate;
+    private final AtengFlywayProperties properties;
     private final ObservabilityTtlCache<Integer> pendingCache;
     private final Queue<MigrationOutcome> pendingOutcomes = new ConcurrentLinkedQueue<>();
     private final Set<MeterRegistry> boundRegistries = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -68,7 +77,7 @@ public class FlywayMetricsBinder implements MeterBinder, FlywayMigrationListener
     private final AtomicLong pendingProbeCount = new AtomicLong(0);
 
     /**
-     * 构造 Flyway Micrometer 度量绑定器（使用默认缓存窗口配置）
+     * 构造 Flyway Micrometer 度量绑定器（使用默认缓存窗口与低基数配置）
      *
      * @param flywayTemplate 对称迁移门面
      */
@@ -84,7 +93,8 @@ public class FlywayMetricsBinder implements MeterBinder, FlywayMigrationListener
      */
     public FlywayMetricsBinder(FlywayTemplate flywayTemplate, AtengFlywayProperties properties) {
         this.flywayTemplate = Objects.requireNonNull(flywayTemplate, "flywayTemplate 不能为空");
-        this.pendingCache = new ObservabilityTtlCache<>(Objects.requireNonNull(properties, "properties 不能为空"));
+        this.properties = Objects.requireNonNull(properties, "properties 不能为空");
+        this.pendingCache = new ObservabilityTtlCache<>(this.properties, flywayTemplate::getSummaryVersion);
     }
 
     @Override
@@ -107,7 +117,7 @@ public class FlywayMetricsBinder implements MeterBinder, FlywayMigrationListener
             }).description("最近一次迁移摘要中成功的目标数据源数量").register(meterRegistry);
 
             Gauge.builder(METRIC_MIGRATIONS_PENDING, this, FlywayMetricsBinder::resolvePendingCount)
-                    .description("当前缓存窗口内待执行的 Flyway 迁移脚本数量")
+                    .description("当前缓存窗口内受控作用域待执行的 Flyway 迁移脚本总数")
                     .register(meterRegistry);
 
             for (MigrationOutcome buffered : snapshotBufferedOutcomes()) {
@@ -167,8 +177,28 @@ public class FlywayMetricsBinder implements MeterBinder, FlywayMigrationListener
     private int queryPendingSafely() {
         try {
             pendingProbeCount.incrementAndGet();
-            List<MigrationScriptInfo> pending = flywayTemplate.pending();
-            return pending != null ? pending.size() : 0;
+            AtengFlywayProperties.ObservabilityProperties obs = properties.getObservability();
+            ObservabilityTargetScope scope = obs != null
+                    ? obs.resolveEffectiveTargetScope()
+                    : ObservabilityTargetScope.PRIMARY_AND_STATIC;
+            List<String> keys = flywayTemplate.resolveObservableTargetKeys(scope);
+            if (keys.isEmpty()) {
+                return 0;
+            }
+            BatchOperationResult<List<MigrationScriptInfo>> batch =
+                    flywayTemplate.pendingTargets(keys, BatchExecutionPolicy.FAIL_SAFE);
+            if (batch.hasFailures()) {
+                log.debug("采集 Flyway 多目标待执行脚本指标存在局部失败 [failed={}]: {}",
+                        batch.getFailedTargets(),
+                        batch.getFailures().get(0).getErrorMessage());
+            }
+            int totalPending = 0;
+            for (List<MigrationScriptInfo> scripts : batch.getResults().values()) {
+                if (scripts != null) {
+                    totalPending += scripts.size();
+                }
+            }
+            return totalPending;
         } catch (Exception e) {
             log.debug("采集 Flyway 待执行脚本指标失败，将返回 0: {}",
                     FlywayConfigurationSupport.sanitizeSensitiveText(e.getMessage()));
@@ -214,11 +244,19 @@ public class FlywayMetricsBinder implements MeterBinder, FlywayMigrationListener
     }
 
     private void recordOutcome(MeterRegistry meterRegistry, MigrationOutcome outcome) {
-        String target = outcome.getTargetKey() != null ? outcome.getTargetKey() : "default";
+        String rawTarget = StringUtils.hasText(outcome.getTargetKey()) ? outcome.getTargetKey().trim() : "default";
+        MigrationTargetKind kind = flywayTemplate.resolveTargetKind(rawTarget);
+        AtengFlywayProperties.ObservabilityProperties obs = properties.getObservability();
+        boolean aggregateTenant = obs == null || obs.isAggregateTenantMetrics();
+        String metricTarget = (aggregateTenant && kind == MigrationTargetKind.TENANT)
+                ? AGGREGATED_TENANT_TAG
+                : rawTarget;
+        String kindTag = kind.getCode();
         String outcomeTag = outcome.isSuccess() ? "success" : "failure";
 
         Counter.builder(METRIC_MIGRATIONS_TOTAL)
-                .tag(TAG_TARGET, target)
+                .tag(TAG_TARGET, metricTarget)
+                .tag(TAG_KIND, kindTag)
                 .tag(TAG_OUTCOME, outcomeTag)
                 .description("Flyway 迁移执行总次数")
                 .register(meterRegistry)
@@ -226,7 +264,8 @@ public class FlywayMetricsBinder implements MeterBinder, FlywayMigrationListener
 
         if (outcome.getMigrationsExecuted() > 0) {
             Counter.builder(METRIC_MIGRATIONS_EXECUTED)
-                    .tag(TAG_TARGET, target)
+                    .tag(TAG_TARGET, metricTarget)
+                    .tag(TAG_KIND, kindTag)
                     .description("Flyway 累计实际执行的版本化脚本数")
                     .register(meterRegistry)
                     .increment(outcome.getMigrationsExecuted());
@@ -235,7 +274,8 @@ public class FlywayMetricsBinder implements MeterBinder, FlywayMigrationListener
         Duration duration = outcome.getDuration();
         if (duration != null && !duration.isNegative()) {
             Timer.builder(METRIC_MIGRATION_DURATION)
-                    .tag(TAG_TARGET, target)
+                    .tag(TAG_TARGET, metricTarget)
+                    .tag(TAG_KIND, kindTag)
                     .tag(TAG_OUTCOME, outcomeTag)
                     .description("Flyway 迁移执行耗时")
                     .register(meterRegistry)
