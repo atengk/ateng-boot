@@ -20,9 +20,14 @@ import java.util.List;
 public class EnumDictionaryProperties {
 
     /**
-     * 是否启用枚举字典 HTTP 暴露与自动装配（默认 false，防未配置盲目扫描）
+     * 是否启用枚举字典扫描注册表与自动装配（默认 false，防未配置盲目扫描）
      */
     private boolean enabled = false;
+
+    /**
+     * 是否自动暴露内置只读枚举字典 HTTP 控制器（默认 true；设为 false 时仅装配 EnumDictionaryRegistry 供上游自行接管路由与鉴权）
+     */
+    private boolean endpointEnabled = true;
 
     /**
      * 枚举字典 HTTP 接口访问统一路径前缀

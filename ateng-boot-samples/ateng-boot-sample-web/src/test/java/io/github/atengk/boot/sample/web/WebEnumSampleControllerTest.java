@@ -183,4 +183,14 @@ class WebEnumSampleControllerTest {
                 .andExpect(jsonPath("$.data.status", is("ACTIVE")))
                 .andExpect(jsonPath("$.data.orderType", is("NORMAL")));
     }
+
+    @Test
+    @DisplayName("GET /sample/web/contract/enums/custom-catalog 上游自定义端点复用 EnumDictionaryRegistry")
+    void shouldSupportUpstreamCustomEnumCatalogEndpoint() throws Exception {
+        mockMvc.perform(get("/sample/web/contract/enums/custom-catalog"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.data.userStatus", hasSize(3)))
+                .andExpect(jsonPath("$.data.orderType", hasSize(3)));
+    }
 }

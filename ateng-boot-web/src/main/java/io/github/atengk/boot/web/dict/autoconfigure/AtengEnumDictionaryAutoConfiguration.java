@@ -33,6 +33,7 @@ public class AtengEnumDictionaryAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.web.enum", name = "endpoint-enabled", havingValue = "true", matchIfMissing = true)
     public EnumDictionaryController enumDictionaryController(EnumDictionaryRegistry registry) {
         return new EnumDictionaryController(registry);
     }

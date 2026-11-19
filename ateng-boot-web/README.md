@@ -30,7 +30,7 @@
 | **客户端 IP 提取** | 多级反向代理穿透与 CIDR 判定 | `IpUtil` | `ateng.boot.web.trusted-proxies`, `ateng.boot.web.ip-access-control.trusted-proxies` | `IpUtil.getClientIp()`, `getClientIp(request)`, `getClientIp(trustedProxies)`, `getClientIp(request, trustedProxies)`, `getClientIpWithDefaultFallback(request, preferredTrustedProxies)`, `getDefaultTrustedProxies()`, `setDefaultTrustedProxies(trustedProxies)`, `resetDefaultTrustedProxies()`, `mergeTrustedProxies(primary, secondary)`, `configureDefaultTrustedProxies(primary, secondary)`, `normalizeIp(ip)`, `isValidIp(ip)`, `isInRange(ip, cidrOrIp)`, `isInRange(ip, Collection<String>)`, `isInRange(ip, String...)`；默认授信本地环回（`127.0.0.1`, `::1`）并在启动期同步至静态门面防 XFF 伪造，纯 JDK 原生无 DNS 依赖 CIDR 判定 | `IpUtilTest.java`, `WebRoutingAndUtilityControllerTest.java` |
 | **Servlet 上下文与下载** | 上下文安全门面与 RFC 6266 文件下载 | `ServletUtil` | - | `ServletUtil.getRequest()`, `getResponse()`, `getHeader(name)`, `getHeader(request, name)`, `getCookieValue(name)`, `getCookieValue(request, name)`, `getCookie(request, name)`, `isJsonRequest(request)`, `isAjaxRequest(request)`, `writeJson(response, json)`, `writeJson(response, status, object)`, `setDownloadHeader(response, filename[, contentType])`, `writeDownload(response, filename, bytes/stream)`, `matchesAnyPath(request, patterns)`，RFC 6266 双重编码彻底杜绝浏览器乱码 | `ServletUtilTest.java`, `WebRoutingAndUtilityControllerTest.java` |
 | **声明式 API 多版本分流** | 路径前缀与请求头双模版本控制 | `@ApiVersion`, `ApiVersionCondition`, `ApiVersionRequestMappingHandlerMapping`, `ApiVersionProperties` | `ateng.boot.web.api-version.enabled`, `default-version`, `header` (或 `header-name`), `path-prefix-enabled` | `@ApiVersion(value, number)` 支持 Controller 类或方法标注，URL 路径前缀（`/v{version}/`）与请求头（`X-API-Version`）双向自动分流，缺省默认版本回退与方法级覆盖类级 | `ApiVersionConditionTest.java`, `ApiVersionRequestMappingHandlerMappingTest.java`, `WebVersionSampleControllerTest.java` |
-| **枚举字典与反序列化** | 启动期枚举扫描注册表、三阶只读 HTTP 字典端点与 Jackson 强类型双向反序列化器 | `EnumDictionaryRegistry`, `EnumDictionaryController`, `EnumDictionaryProperties`, `EnumNamingStrategy`, `BaseEnumDeserializer`, `AtengEnumDictionaryAutoConfiguration` | `ateng.boot.web.enum.enabled`, `path-prefix`, `naming-strategy`, `scan-packages` | `EnumDictionaryRegistry.scanAndRegister/register/getOptions/getBatchOptions/getAllOptions/contains/getEnumClass/getAliases`；`GET {prefix}` 全量目录索引; `GET {prefix}/{name}` 单枚举查询; `POST/GET {prefix}/batch` 批量聚合; 别名冲突启动期 Fail-Fast; i18n 多语言透明适配 (`enum.{SimpleName}.{NAME}`) 与平滑回退; `BaseEnumDeserializer` 自动拦截数字 code、字符串 code 与常量名精准反序列化为 `IBaseEnum` 实例 | `EnumDictionaryTest.java`, `EnumDictionaryI18nTest.java`, `BaseEnumDeserializerTest.java`, `WebEnumSampleControllerTest.java` |
+| **枚举字典与反序列化** | 启动期枚举扫描注册表、三阶只读 HTTP 字典端点、自主接管开关与 Jackson 强类型双向反序列化器 | `EnumDictionaryRegistry`, `EnumDictionaryController`, `EnumDictionaryProperties`, `EnumNamingStrategy`, `BaseEnumDeserializer`, `AtengEnumDictionaryAutoConfiguration` | `ateng.boot.web.enum.enabled`, `endpoint-enabled`, `path-prefix`, `naming-strategy`, `scan-packages` | `EnumDictionaryRegistry.scanAndRegister/register/getOptions/getBatchOptions/getAllOptions/contains/getEnumClass/getAliases`；`GET {prefix}` 全量目录索引; `GET {prefix}/{name}` 单枚举查询; `POST/GET {prefix}/batch` 批量聚合; `endpoint-enabled=false` 时仅装配注册表交由上游自行接管路由与权限; 别名冲突启动期 Fail-Fast; i18n 多语言透明适配 (`enum.{SimpleName}.{NAME}`) 与平滑回退; `BaseEnumDeserializer` 自动拦截数字 code、字符串 code 与常量名精准反序列化为 `IBaseEnum` 实例 | `EnumDictionaryTest.java`, `EnumDictionaryI18nTest.java`, `BaseEnumDeserializerTest.java`, `WebEnumSampleControllerTest.java`, `WebEnumEndpointDisabledSampleTest.java` |
 | **启动一体化就绪卡片** | 启动完成规整 ASCII 欢迎卡片与在线文档直达 | `ApplicationReadyCardListener`, `ApplicationReadyEvent` | `ateng.boot.web.ready-card.enabled` | 容器启动就绪输出一体化 ASCII 卡片，自适应探测 Local/Network 访问地址、Swagger/SpringDoc 接口文档、运行环境、进程 PID、JVM 堆内存与秒级启动耗时 | `ApplicationReadyCardListenerTest.java`, `WebReadyCardSampleTest.java` |
 | **生产环境高危安全防呆** | 生产环境高危配置主动探测与启动防呆自检 | `ProductionSanityChecker`, `ApplicationReadyEvent` | `ateng.boot.web.sanity-check.enabled` | 生产环境 (`prod`/`production`/`prod-*`/`prod_*`，忽略大小写) 启动就绪安全防呆自检，前置扫描并告警 Swagger/Knife4j 文档公网暴露、HTTP Payload 全量双向采样日志与 H2 控制台暴露，输出高危安全告警日志 | `ProductionSanityCheckerTest.java`, `WebReadyCardSampleTest.java`, `WebProductionSanitySampleTest.java`, `WebCloudLifecycleControllerTest.java` |
 
@@ -592,8 +592,10 @@ ateng:
   boot:
     web:
       enum:
-        # 是否启用只读枚举字典 HTTP 端点（默认 false，按需开启）
+        # 是否启用枚举字典扫描注册表与自动装配（默认 false，按需开启）
         enabled: true
+        # 是否暴露内置只读 HTTP 控制器（默认 true；设为 false 时仅保留 EnumDictionaryRegistry 交由上游自行接管路由与权限）
+        endpoint-enabled: true
         # 枚举字典 HTTP 端点前缀（默认 /api/system/enums）
         path-prefix: /api/system/enums
         # 枚举命名策略（LOWER_CAMEL_CASE / SNAKE_CASE / ORIGINAL，默认 LOWER_CAMEL_CASE）
@@ -606,10 +608,9 @@ ateng:
 #### 核心机制与五维生产模型
 - **启动期白名单扫描与 Fail-Fast 阻断**：严格依据 `scan-packages` 白名单扫描，绝不运行时任意类反射；启动期发现同名或别名碰撞立即终止应用启动；
 - **只读不可变预热与零 GC 分配**：预编译构建为不可变 Map，运行时提供 $O(1)$ 无锁纯内存检索，零锁争用与零瞬态垃圾对象；
-- **三阶只读 HTTP 端点矩阵**：
-  - 单枚举查询：`GET /api/system/enums/{name}` $\rightarrow$ `Result<List<OptionItem<Object>>>`
-  - 批量聚合查询：`POST /api/system/enums/batch` 或 `GET /api/system/enums/batch?names=userStatus,orderType` $\rightarrow$ `Result<Map<String, List<OptionItem<Object>>>>`
-  - 全量目录检索：`GET /api/system/enums` $\rightarrow$ `Result<Map<String, List<OptionItem<Object>>>>`，供前端系统初始化时一次性拉取并持久化至 Pinia / Vuex 全局状态；
+- **三阶只读 HTTP 端点与上游自主接管开关 (`endpoint-enabled`)**：
+  - 默认（`endpoint-enabled: true`）自动注册 `EnumDictionaryController`：单枚举查询 `GET /api/system/enums/{name}`、批量聚合查询 `POST/GET /api/system/enums/batch`、全量目录检索 `GET /api/system/enums`；
+  - 当需要将接口路由、Sa-Token 细粒度权限控制（如 `@SaCheckPermission`）或按租户/角色裁剪完全交由上游工程处理时，可配置 `ateng.boot.web.enum.endpoint-enabled: false` 物理关闭内置控制器，容器仍保留 `EnumDictionaryRegistry` 供上游 Controller 注入复用；
 - **Jackson 强类型双向反序列化**：自动装配 `BaseEnumDeserializer`，Controller DTO 可直接声明强类型枚举字段（如 `private UserStatusEnum status;`），前端无论传入数字 `1`、字符串 `"1"` 还是常量名 `"ACTIVE"`（大小写不敏感），均能精准自动映射为枚举实例；
 - **多语言 (i18n) 透明适配与平滑回退**：弱依赖接入 Spring `MessageSource` 与 `LocaleContextHolder`，自动按 `enum.{SimpleName}.{NAME}` 规则提取当前请求区域设置文案；未配置国际化时平滑回退为枚举自带的 `getLabel()`。
 
@@ -703,6 +704,22 @@ public Result<WebEnumUserResponse> bindEnum(@Valid @RequestBody WebEnumUserReque
             request.getStatus(),
             request.getOrderType()
     ));
+}
+
+// 上游自定义枚举字典接口（关闭内置端点 endpoint-enabled=false 后由上游自行接管路由与权限）
+private final ObjectProvider<EnumDictionaryRegistry> enumDictionaryRegistryProvider;
+
+@GetMapping("/enums/custom-catalog")
+public Result<Map<String, List<OptionItem<Object>>>> getCustomEnumCatalog(
+        @RequestParam(value = "names", required = false) List<String> names) {
+    EnumDictionaryRegistry registry = enumDictionaryRegistryProvider.getIfAvailable();
+    if (registry == null) {
+        return Result.success(Collections.emptyMap());
+    }
+    if (names == null || names.isEmpty()) {
+        return Result.success(registry.getAllOptions());
+    }
+    return Result.success(registry.getBatchOptions(names));
 }
 ```
 
@@ -2685,8 +2702,10 @@ ateng:
         # 是否启用 URL 路径前缀版本匹配（如 /v1/...，默认 true）
         path-prefix-enabled: true
       enum:
-        # 是否启用枚举字典只读 HTTP 控制器与自动装配（默认 false，按需开启）
+        # 是否启用枚举字典扫描注册表与自动装配（默认 false，按需开启）
         enabled: false
+        # 是否自动暴露内置只读枚举字典 HTTP 控制器（默认 true；设为 false 时仅装配 EnumDictionaryRegistry 交由上游接管）
+        endpoint-enabled: true
         # 枚举字典 HTTP 端点统一路径前缀（默认 /api/system/enums）
         path-prefix: "/api/system/enums"
         # 枚举别名自动推导命名策略（默认 LOWER_CAMEL_CASE；可选 SNAKE_CASE、ORIGINAL）

@@ -201,7 +201,7 @@ XSS 无害化安全清洗引擎，依托纯 JDK 原生字符串替换与正则�
 _Avoid_: HtmlSanitizer, AntiXssUtil, XssUtil
 
 **EnumDictionaryProperties**:
-枚举字典 HTTP 运行时配置属性，以 ateng.boot.web.enum 为前缀，管控端点开关、路由路径前缀、扫描包清单与命名转换策略。
+枚举字典 HTTP 运行时配置属性，以 `ateng.boot.web.enum` 为前缀，管控总开关（`enabled`）、内置 HTTP 控制器暴露开关（`endpoint-enabled`，设为 `false` 时仅保留 `EnumDictionaryRegistry` 交由上游自行接管路由与鉴权）、路由路径前缀、扫描包清单与命名转换策略。
 _Avoid_: EnumProperties, DictProperties, EnumEndpointProperties
 
 **EnumNamingStrategy**:

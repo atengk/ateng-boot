@@ -206,11 +206,31 @@ class EnumDictionaryTest {
             assertThat(context).doesNotHaveBean(EnumDictionaryController.class);
         });
 
-        // 2. 配置 ateng.boot.web.enum.enabled=true 时自动装配
+        // 2. 配置 ateng.boot.web.enum.enabled=true 时自动装配（默认 endpoint-enabled=true）
         runner.withPropertyValues("ateng.boot.web.enum.enabled=true")
                 .run(context -> {
                     assertThat(context).hasSingleBean(EnumDictionaryRegistry.class);
                     assertThat(context).hasSingleBean(EnumDictionaryController.class);
+                    assertThat(context.getBean(EnumDictionaryProperties.class).isEndpointEnabled()).isTrue();
+                });
+
+        // 3. 配置 enabled=true 且 endpoint-enabled=false 时，仅装配注册表，关闭内置端点交由上游接管
+        runner.withPropertyValues(
+                        "ateng.boot.web.enum.enabled=true",
+                        "ateng.boot.web.enum.endpoint-enabled=false")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(EnumDictionaryRegistry.class);
+                    assertThat(context).doesNotHaveBean(EnumDictionaryController.class);
+                    assertThat(context.getBean(EnumDictionaryProperties.class).isEndpointEnabled()).isFalse();
+                });
+
+        // 4. 总开关 enabled=false 时即便 endpoint-enabled=true 也不装配控制器
+        runner.withPropertyValues(
+                        "ateng.boot.web.enum.enabled=false",
+                        "ateng.boot.web.enum.endpoint-enabled=true")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(EnumDictionaryRegistry.class);
+                    assertThat(context).doesNotHaveBean(EnumDictionaryController.class);
                 });
     }
 

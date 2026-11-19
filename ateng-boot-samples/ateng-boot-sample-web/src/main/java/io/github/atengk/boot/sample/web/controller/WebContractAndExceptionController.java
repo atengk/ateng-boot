@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.web.controller;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.model.OptionItem;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.validation.ValidList;
 import io.github.atengk.boot.core.validation.ValidationGroups;
@@ -11,8 +12,10 @@ import io.github.atengk.boot.sample.web.dto.WebEnumUserResponse;
 import io.github.atengk.boot.sample.web.exception.PaymentChannelException;
 import io.github.atengk.boot.sample.web.vo.DateTimeDemoVO;
 import io.github.atengk.boot.sample.web.vo.UserRegisterVO;
+import io.github.atengk.boot.web.dict.EnumDictionaryRegistry;
 import jakarta.validation.Valid;
 import jakarta.validation.groups.Default;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.MediaType;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -20,6 +23,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
@@ -31,7 +35,9 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -44,6 +50,12 @@ import java.util.Map;
 @RestController
 @RequestMapping("/sample/web/contract")
 public class WebContractAndExceptionController {
+
+    private final ObjectProvider<EnumDictionaryRegistry> enumDictionaryRegistryProvider;
+
+    public WebContractAndExceptionController(ObjectProvider<EnumDictionaryRegistry> enumDictionaryRegistryProvider) {
+        this.enumDictionaryRegistryProvider = enumDictionaryRegistryProvider;
+    }
 
     /**
      * 会员实名注册（语法与格式第一道防线校验）
@@ -234,5 +246,24 @@ public class WebContractAndExceptionController {
         data.put("contractVersion", "2026.1");
         data.put("verified", true);
         return Result.success(data);
+    }
+
+    /**
+     * 上游自定义枚举字典接口（复用 EnumDictionaryRegistry，可在关闭内置端点 endpoint-enabled=false 后接管路由与权限）
+     *
+     * @param names 可选筛选别名列表，为空时返回全部已注册枚举别名目录
+     * @return 受控裁剪后的枚举字典选项映射
+     */
+    @GetMapping("/enums/custom-catalog")
+    public Result<Map<String, List<OptionItem<Object>>>> getCustomEnumCatalog(
+            @RequestParam(value = "names", required = false) List<String> names) {
+        EnumDictionaryRegistry registry = enumDictionaryRegistryProvider.getIfAvailable();
+        if (registry == null) {
+            return Result.success(Collections.emptyMap());
+        }
+        if (names == null || names.isEmpty()) {
+            return Result.success(registry.getAllOptions());
+        }
+        return Result.success(registry.getBatchOptions(names));
     }
 }
