@@ -39,10 +39,9 @@ public class WarmupAndProbeJobHandler {
     }
 
     /**
-     * 超时守卫增强调度任务 (声明式本地看门狗超时监控)
+     * 超时守卫增强调度任务 (独立 @AtengSnailJob 单注解 + 声明式本地看门狗超时监控)
      */
-    @AtengSnailJob(timeout = "500ms")
-    @JobExecutor(name = "timeoutGuardedJob")
+    @AtengSnailJob(name = "timeoutGuardedJob", timeout = "500ms")
     public ExecuteResult timeoutGuardedJob() {
         log.info("[WarmupAndProbeJobHandler] 执行超时守卫增强任务, 当前租户: {}", SnailJobContextHolder.getTenantId());
         return ExecuteResult.success("Timeout guarded job succeeded");

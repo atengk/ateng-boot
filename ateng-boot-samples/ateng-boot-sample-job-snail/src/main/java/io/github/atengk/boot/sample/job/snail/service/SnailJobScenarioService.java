@@ -170,6 +170,25 @@ public class SnailJobScenarioService {
     }
 
     /**
+     * 触发独立 @AtengSnailJob 本地退避重试同步任务
+     *
+     * @param batchNo      批次号
+     * @param batchSize    单批条数
+     * @param departmentId 部门过滤标识
+     * @return 脱网测试诊断结果
+     */
+    public SnailJobTestResult executeLocalRetrySync(String batchNo, Integer batchSize, String departmentId) {
+        UserSyncParam param = UserSyncParam.builder()
+                .batchNo(batchNo)
+                .batchSize(batchSize)
+                .departmentId(departmentId)
+                .build();
+        String json = JsonUtil.toJsonString(param);
+        log.info("[SnailJobScenarioService] 触发独立注解本地退避重试场景: {}", json);
+        return SnailJobTestHelper.triggerJob("localRetrySyncJob", json);
+    }
+
+    /**
      * 节点级运行时治理：暂停任务
      *
      * @param jobName 任务名称

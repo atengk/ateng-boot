@@ -24,6 +24,7 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.job.snail.annotation.AtengSnailJob;
+import io.github.atengk.boot.job.snail.support.SnailJobInternalSupport;
 import io.github.atengk.boot.job.snail.annotation.AtengSnailRetry;
 import io.github.atengk.boot.job.snail.context.SnailJobContext;
 import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
@@ -32,6 +33,7 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.aop.support.AopUtils;
 import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.ConfigurableApplicationContext;
@@ -44,8 +46,10 @@ import org.springframework.util.StringUtils;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -66,7 +70,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * @author Ateng
  * @since 2026-10-31
  */
-public class SnailJobTestHelper implements ApplicationContextAware {
+public class SnailJobTestHelper implements ApplicationContextAware, DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(SnailJobTestHelper.class);
 
@@ -75,16 +79,54 @@ public class SnailJobTestHelper implements ApplicationContextAware {
     private static final Map<String, JobExecutorInfo> FALLBACK_JOB_REPOSITORY = new ConcurrentHashMap<>();
     private static final Map<String, RetryerInfo> FALLBACK_RETRY_REPOSITORY = new ConcurrentHashMap<>();
     private static final ReentrantLock REPOSITORY_LOCK = new ReentrantLock();
+    private static final List<ApplicationContext> CONTEXT_STACK = new ArrayList<>();
 
     private static volatile ApplicationContext applicationContext;
 
+    private ApplicationContext ownedContext;
+
     @Override
     public void setApplicationContext(ApplicationContext context) throws BeansException {
+        this.ownedContext = context;
         REPOSITORY_LOCK.lock();
         try {
+            if (context != null) {
+                CONTEXT_STACK.remove(context);
+                CONTEXT_STACK.add(context);
+            }
             applicationContext = context;
             clearRepositoriesLocked();
             scanAndRegisterSpringBeansLocked(context);
+        } finally {
+            if (REPOSITORY_LOCK.isHeldByCurrentThread()) {
+                REPOSITORY_LOCK.unlock();
+            }
+        }
+    }
+
+    @Override
+    public void destroy() {
+        REPOSITORY_LOCK.lock();
+        try {
+            if (this.ownedContext != null) {
+                CONTEXT_STACK.remove(this.ownedContext);
+            }
+            if (applicationContext == this.ownedContext || !isContextActive(applicationContext)) {
+                ApplicationContext activeFallback = null;
+                for (int i = CONTEXT_STACK.size() - 1; i >= 0; i--) {
+                    ApplicationContext candidate = CONTEXT_STACK.get(i);
+                    if (isContextActive(candidate)) {
+                        activeFallback = candidate;
+                        break;
+                    }
+                    CONTEXT_STACK.remove(i);
+                }
+                applicationContext = activeFallback;
+                clearRepositoriesLocked();
+                if (activeFallback != null) {
+                    scanAndRegisterSpringBeansLocked(activeFallback);
+                }
+            }
         } finally {
             if (REPOSITORY_LOCK.isHeldByCurrentThread()) {
                 REPOSITORY_LOCK.unlock();
@@ -601,10 +643,29 @@ public class SnailJobTestHelper implements ApplicationContextAware {
             );
             for (Map.Entry<Method, AtengSnailJob> entry : atengJobMethods.entrySet()) {
                 Method m = entry.getKey();
-                String name = StringUtils.hasText(entry.getValue().value()) ? entry.getValue().value() : m.getName();
+                AtengSnailJob atengJob = entry.getValue();
+                JobExecutor jobExec = AnnotatedElementUtils.findMergedAnnotation(m, JobExecutor.class);
+                String name = SnailJobInternalSupport.resolveStandaloneJobName(atengJob, m.getName());
+                if (jobExec != null && StringUtils.hasText(jobExec.name())
+                        && !StringUtils.hasText(SnailJobInternalSupport.resolveStandaloneJobName(atengJob, ""))) {
+                    continue;
+                }
                 if (StringUtils.hasText(name)) {
                     JobExecutorInfo info = new JobExecutorInfo(name, m, Collections.emptyMap(), null, null, bean);
                     FALLBACK_JOB_REPOSITORY.put(name, info);
+                }
+            }
+
+            // 1.1 类级独立 @AtengSnailJob 兜底扫描
+            Class<?> atengTargetClass = AopUtils.getTargetClass(bean);
+            AtengSnailJob classAtengJob = AnnotatedElementUtils.findMergedAnnotation(atengTargetClass, AtengSnailJob.class);
+            if (classAtengJob != null && AnnotatedElementUtils.findMergedAnnotation(atengTargetClass, JobExecutor.class) == null) {
+                String classJobName = StringUtils.hasText(classAtengJob.name()) ? classAtengJob.name().trim() : classAtengJob.value().trim();
+                String targetMethodName = StringUtils.hasText(classAtengJob.method()) ? classAtengJob.method().trim() : "jobExecute";
+                Method matchedMethod = findClassLevelJobMethod(atengTargetClass, targetMethodName);
+                if (StringUtils.hasText(classJobName) && matchedMethod != null) {
+                    JobExecutorInfo info = new JobExecutorInfo(classJobName, matchedMethod, Collections.emptyMap(), null, null, bean);
+                    FALLBACK_JOB_REPOSITORY.putIfAbsent(classJobName, info);
                 }
             }
 
@@ -737,6 +798,26 @@ public class SnailJobTestHelper implements ApplicationContextAware {
             }
         }
         return targetClass.getSimpleName();
+    }
+
+    private static Method findClassLevelJobMethod(Class<?> targetClass, String methodName) {
+        Method[] methods = ReflectionUtils.getAllDeclaredMethods(targetClass);
+        Method zeroArgCandidate = null;
+        Method fallbackCandidate = null;
+        for (Method m : methods) {
+            if (!methodName.equals(m.getName())) {
+                continue;
+            }
+            if (m.getParameterCount() == 1 && JobArgs.class.isAssignableFrom(m.getParameterTypes()[0])) {
+                return m;
+            }
+            if (m.getParameterCount() == 0 && zeroArgCandidate == null) {
+                zeroArgCandidate = m;
+            } else if (fallbackCandidate == null) {
+                fallbackCandidate = m;
+            }
+        }
+        return zeroArgCandidate != null ? zeroArgCandidate : fallbackCandidate;
     }
 
     private static Object getRetryerRepository() {

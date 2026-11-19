@@ -442,4 +442,60 @@ class SnailJobAdminTemplateTest {
         assertThat(result.getId()).isEqualTo(2001L);
         verify(jobClient, times(2)).getJobDetail(2001L);
     }
+
+    @Test
+    @DisplayName("测试受管线程池异步执行 OpenAPI 透传四维与 SnailJob 上下文并在完成后清理工作线程")
+    void testAsyncInvocationPropagatesContextAndRestoresWorker() {
+        org.springframework.core.task.SimpleAsyncTaskExecutor plainAsyncExecutor =
+                new org.springframework.core.task.SimpleAsyncTaskExecutor("admin-ctx-worker-");
+        try {
+            SnailJobProperties poolProps = new SnailJobProperties();
+            poolProps.setManagedPoolEnabled(true);
+            poolProps.setTimeout(java.time.Duration.ofSeconds(2));
+            SnailJobAdminTemplate asyncTemplate =
+                    new SnailJobAdminTemplate(jobClient, retryClient, poolProps, plainAsyncExecutor);
+
+            java.util.concurrent.atomic.AtomicReference<String> seenTrace = new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<String> seenTenant = new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<String> seenUser = new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<Long> seenJobId = new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<String> workerName = new java.util.concurrent.atomic.AtomicReference<>();
+
+            io.github.atengk.boot.job.snail.context.SnailJobContext jobCtx =
+                    new io.github.atengk.boot.job.snail.context.SnailJobContext();
+            jobCtx.setJobId(7788L);
+
+            org.slf4j.MDC.put("traceId", "trace-admin-999");
+            io.github.atengk.boot.core.context.TenantContextHolder.setTenantId("TENANT-ADMIN");
+            io.github.atengk.boot.core.context.UserContextHolder.set("admin-user");
+            io.github.atengk.boot.job.snail.context.SnailJobContextHolder.set(jobCtx);
+
+            JobApiResponse expected = new JobApiResponse();
+            expected.setId(3001L);
+            when(jobClient.getJobDetail(3001L)).thenAnswer(inv -> {
+                workerName.set(Thread.currentThread().getName());
+                seenTrace.set(org.slf4j.MDC.get("traceId"));
+                seenTenant.set(io.github.atengk.boot.core.context.TenantContextHolder.getTenantId());
+                seenUser.set(io.github.atengk.boot.core.context.UserContextHolder.getExplicit());
+                io.github.atengk.boot.job.snail.context.SnailJobContext currentJob =
+                        io.github.atengk.boot.job.snail.context.SnailJobContextHolder.get();
+                seenJobId.set(currentJob != null ? currentJob.getJobId() : null);
+                return new Result<>(expected);
+            });
+
+            JobApiResponse actual = asyncTemplate.getJobDetail(3001L);
+            assertThat(actual).isNotNull();
+            assertThat(workerName.get()).startsWith("admin-ctx-worker-");
+            assertThat(seenTrace.get()).isEqualTo("trace-admin-999");
+            assertThat(seenTenant.get()).isEqualTo("TENANT-ADMIN");
+            assertThat(seenUser.get()).isEqualTo("admin-user");
+            assertThat(seenJobId.get()).isEqualTo(7788L);
+        } finally {
+            io.github.atengk.boot.job.snail.context.SnailJobContextHolder.remove();
+            io.github.atengk.boot.core.context.TenantContextHolder.clear();
+            io.github.atengk.boot.core.context.UserContextHolder.clear();
+            org.slf4j.MDC.remove("traceId");
+            plainAsyncExecutor.close();
+        }
+    }
 }

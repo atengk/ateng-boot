@@ -56,6 +56,15 @@ public class SnailMyBatisStreamingTemplate extends SnailShardingBatchTemplate {
         super(taskExecutor, defaultBatchSize, defaultMaxConcurrency);
     }
 
+    public SnailMyBatisStreamingTemplate(
+            Executor taskExecutor,
+            int defaultBatchSize,
+            int defaultMaxConcurrency,
+            boolean defaultFailFast,
+            boolean managedPoolEnabled) {
+        super(taskExecutor, defaultBatchSize, defaultMaxConcurrency, defaultFailFast, managedPoolEnabled);
+    }
+
     public SnailMyBatisStreamingTemplate(Executor taskExecutor, int defaultBatchSize, int defaultMaxConcurrency, StreamingQueryTemplate streamingQueryTemplate) {
         super(taskExecutor, defaultBatchSize, defaultMaxConcurrency);
         this.streamingQueryTemplate = streamingQueryTemplate;

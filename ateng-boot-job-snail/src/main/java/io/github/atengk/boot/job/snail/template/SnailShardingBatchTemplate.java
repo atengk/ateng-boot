@@ -4,7 +4,7 @@ import com.aizuda.snailjob.common.log.SnailJobLog;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.TenantContextHolder.TenantSnapshot;
 import io.github.atengk.boot.core.context.UserContextHolder;
-import io.github.atengk.boot.core.util.SpringUtil;
+import io.github.atengk.boot.job.snail.support.SnailJobInternalSupport;
 import io.github.atengk.boot.job.snail.context.SnailJobContext;
 import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
 import io.github.atengk.boot.job.snail.model.ShardingContext;
@@ -20,7 +20,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -54,24 +53,35 @@ public class SnailShardingBatchTemplate {
     private final int defaultBatchSize;
     private final int defaultMaxConcurrency;
     private final boolean defaultFailFast;
+    private final boolean managedPoolEnabled;
 
     public SnailShardingBatchTemplate() {
-        this(null, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY, true);
+        this(null, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY, true, true);
     }
 
     public SnailShardingBatchTemplate(Executor taskExecutor) {
-        this(taskExecutor, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY, true);
+        this(taskExecutor, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY, true, true);
     }
 
     public SnailShardingBatchTemplate(Executor taskExecutor, int defaultBatchSize, int defaultMaxConcurrency) {
-        this(taskExecutor, defaultBatchSize, defaultMaxConcurrency, true);
+        this(taskExecutor, defaultBatchSize, defaultMaxConcurrency, true, true);
     }
 
     public SnailShardingBatchTemplate(Executor taskExecutor, int defaultBatchSize, int defaultMaxConcurrency, boolean defaultFailFast) {
+        this(taskExecutor, defaultBatchSize, defaultMaxConcurrency, defaultFailFast, true);
+    }
+
+    public SnailShardingBatchTemplate(
+            Executor taskExecutor,
+            int defaultBatchSize,
+            int defaultMaxConcurrency,
+            boolean defaultFailFast,
+            boolean managedPoolEnabled) {
         this.taskExecutor = taskExecutor;
         this.defaultBatchSize = defaultBatchSize > 0 ? defaultBatchSize : DEFAULT_BATCH_SIZE;
         this.defaultMaxConcurrency = defaultMaxConcurrency > 0 ? defaultMaxConcurrency : DEFAULT_MAX_CONCURRENCY;
         this.defaultFailFast = defaultFailFast;
+        this.managedPoolEnabled = managedPoolEnabled;
     }
 
     public int getDefaultBatchSize() {
@@ -86,8 +96,10 @@ public class SnailShardingBatchTemplate {
         return defaultFailFast;
     }
 
-    protected Executor getEffectiveExecutor() {
-        return this.taskExecutor != null ? this.taskExecutor : ForkJoinPool.commonPool();
+    public Executor getEffectiveExecutor() {
+        Executor resolved = SnailJobInternalSupport.resolveManagedExecutor(this.taskExecutor, this.managedPoolEnabled);
+        // 脱管单测、禁用受管线程池或未注入线程池时在调用方当前线程顺滑执行，严禁回退 ForkJoinPool.commonPool()
+        return resolved != null ? resolved : Runnable::run;
     }
 
     // ==================== 1. 基于游标/步长流式分页 (单线程顺序消费) ====================
@@ -431,7 +443,7 @@ public class SnailShardingBatchTemplate {
 
         int effectiveBatchSize = batchSize > 0 ? batchSize : this.defaultBatchSize;
         int effectiveConcurrency = maxConcurrency > 0 ? maxConcurrency : this.defaultMaxConcurrency;
-        Executor executor = (this.taskExecutor != null) ? this.taskExecutor : ForkJoinPool.commonPool();
+        Executor executor = getEffectiveExecutor();
 
         long startTime = System.nanoTime();
         ID lastId = initialId;
@@ -599,7 +611,7 @@ public class SnailShardingBatchTemplate {
 
         int effectiveBatchSize = batchSize > 0 ? batchSize : this.defaultBatchSize;
         int effectiveConcurrency = maxConcurrency > 0 ? maxConcurrency : this.defaultMaxConcurrency;
-        Executor executor = (this.taskExecutor != null) ? this.taskExecutor : ForkJoinPool.commonPool();
+        Executor executor = getEffectiveExecutor();
 
         long startTime = System.nanoTime();
         Long lastId = initialId;

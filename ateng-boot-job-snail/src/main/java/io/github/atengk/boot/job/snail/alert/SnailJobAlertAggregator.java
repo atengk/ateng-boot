@@ -18,8 +18,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * SnailJob 三阶告警防风暴聚合与自愈引擎
@@ -83,12 +82,34 @@ public class SnailJobAlertAggregator {
      * @param throwable  抛出的异常信息
      */
     public void onJobFailure(String jobName, String param, String traceId, long durationMs, Throwable throwable) {
-        if (!properties.getAlert().isEnabled()) {
+        onJobFailure(jobName, param, traceId, durationMs, throwable, true, -1);
+    }
+
+    /**
+     * 记录调度任务执行失败并触发三阶告警决策（支持方法级开关与抑制阈值覆盖）
+     *
+     * @param jobName                任务标识
+     * @param param                  执行入参
+     * @param traceId                全链路追踪 traceId
+     * @param durationMs             执行耗时 (毫秒)
+     * @param throwable              抛出的异常信息
+     * @param alertEnabled           方法级告警开关
+     * @param suppressThresholdOverride 方法级连续失败抑制阈值（{@code <= 0} 表示继承全局配置）
+     */
+    public void onJobFailure(
+            String jobName,
+            String param,
+            String traceId,
+            long durationMs,
+            Throwable throwable,
+            boolean alertEnabled,
+            int suppressThresholdOverride) {
+        if (!properties.getAlert().isEnabled() || !alertEnabled) {
             return;
         }
 
         String key = "job:" + (StringUtils.hasText(jobName) ? jobName : "defaultJob");
-        handleFailure(key, jobName, param, traceId, durationMs, throwable);
+        handleFailure(key, jobName, param, traceId, durationMs, throwable, suppressThresholdOverride);
     }
 
     /**
@@ -97,7 +118,7 @@ public class SnailJobAlertAggregator {
      * @param jobName 任务标识
      */
     public void onJobSuccess(String jobName) {
-        onJobSuccess(jobName, null, null, 0);
+        onJobSuccess(jobName, null, null, 0, true);
     }
 
     /**
@@ -109,7 +130,20 @@ public class SnailJobAlertAggregator {
      * @param durationMs 执行耗时 (毫秒)
      */
     public void onJobSuccess(String jobName, String param, String traceId, long durationMs) {
-        if (!properties.getAlert().isEnabled()) {
+        onJobSuccess(jobName, param, traceId, durationMs, true);
+    }
+
+    /**
+     * 记录调度任务成功执行并在曾经故障后触发自愈恢复通知（支持方法级告警开关）
+     *
+     * @param jobName      任务标识
+     * @param param        执行入参
+     * @param traceId      全链路追踪 traceId
+     * @param durationMs   执行耗时 (毫秒)
+     * @param alertEnabled 方法级告警开关
+     */
+    public void onJobSuccess(String jobName, String param, String traceId, long durationMs, boolean alertEnabled) {
+        if (!properties.getAlert().isEnabled() || !alertEnabled) {
             return;
         }
 
@@ -142,7 +176,7 @@ public class SnailJobAlertAggregator {
         }
 
         String key = "retry:" + (StringUtils.hasText(scene) ? scene : "defaultScene");
-        handleFailure(key, scene, param, traceId, durationMs, throwable);
+        handleFailure(key, scene, param, traceId, durationMs, throwable, -1);
     }
 
     /**
@@ -174,29 +208,30 @@ public class SnailJobAlertAggregator {
     /**
      * 处理任务/重试失败逻辑
      */
-    private void handleFailure(String stateKey, String name, String param, String traceId, long durationMs, Throwable throwable) {
+    private void handleFailure(
+            String stateKey,
+            String name,
+            String param,
+            String traceId,
+            long durationMs,
+            Throwable throwable,
+            int suppressThresholdOverride) {
         JobAlertState state = stateMap.computeIfAbsent(stateKey, k -> new JobAlertState());
 
         long now = System.currentTimeMillis();
-        boolean isFirstFailure = state.recordFailure(now);
+        Duration suppressDuration = properties.getAlert().getSuppressDuration() != null
+                ? properties.getAlert().getSuppressDuration()
+                : Duration.ofMinutes(5);
+        int globalThreshold = properties.getAlert().getSuppressThreshold() > 0 ? properties.getAlert().getSuppressThreshold() : 3;
+        int threshold = suppressThresholdOverride > 0 ? suppressThresholdOverride : globalThreshold;
 
-        if (isFirstFailure) {
-            // 阶段一：首发失败立即推送
+        FailureTransition transition = state.recordFailure(now, threshold, suppressDuration);
+        if (transition.alertType() == SnailJobAlertEvent.AlertType.INITIAL_FAILURE) {
             dispatchAlert(SnailJobAlertEvent.AlertType.INITIAL_FAILURE, name, param, traceId, durationMs, 1, Duration.ZERO, throwable);
+        } else if (transition.alertType() == SnailJobAlertEvent.AlertType.FAILURE_SUMMARY) {
+            dispatchAlert(SnailJobAlertEvent.AlertType.FAILURE_SUMMARY, name, param, traceId, durationMs, transition.totalFailures(), transition.failureDuration(), throwable);
         } else {
-            // 阶段二：检查是否达到周期摘要或数量阈值
-            Duration suppressDuration = properties.getAlert().getSuppressDuration() != null
-                    ? properties.getAlert().getSuppressDuration()
-                    : Duration.ofMinutes(5);
-            int threshold = properties.getAlert().getSuppressThreshold() > 0 ? properties.getAlert().getSuppressThreshold() : 3;
-
-            if (state.shouldTriggerSummary(now, threshold, suppressDuration)) {
-                int totalCount = state.getTotalFailures();
-                Duration totalFailureDuration = Duration.ofMillis(now - state.firstFailureTimestamp);
-                dispatchAlert(SnailJobAlertEvent.AlertType.FAILURE_SUMMARY, name, param, traceId, durationMs, totalCount, totalFailureDuration, throwable);
-            } else {
-                log.debug("SnailJob 目标 [{}] 持续失败中，已平滑抑制第 {} 次重复告警", name, state.getTotalFailures());
-            }
+            log.debug("SnailJob 目标 [{}] 持续失败中，已平滑抑制第 {} 次重复告警", name, transition.totalFailures());
         }
     }
 
@@ -205,19 +240,16 @@ public class SnailJobAlertAggregator {
      */
     private void handleSuccess(String stateKey, String name, String param, String traceId, long durationMs) {
         JobAlertState state = stateMap.get(stateKey);
-        if (state == null || !state.inFailureState.get()) {
+        if (state == null) {
             return;
         }
 
-        // 阶段三：故障自愈恢复触发
-        long now = System.currentTimeMillis();
-        int totalFailures = state.getTotalFailures();
-        Duration totalFailureDuration = Duration.ofMillis(now - state.firstFailureTimestamp);
+        RecoveryTransition recovery = state.consumeRecovery(System.currentTimeMillis());
+        if (recovery == null) {
+            return;
+        }
 
-        // 重置状态
-        state.reset();
-
-        dispatchAlert(SnailJobAlertEvent.AlertType.RECOVERY, name, param, traceId, durationMs, totalFailures, totalFailureDuration, null);
+        dispatchAlert(SnailJobAlertEvent.AlertType.RECOVERY, name, param, traceId, durationMs, recovery.totalFailures(), recovery.failureDuration(), null);
     }
 
     /**
@@ -402,70 +434,86 @@ public class SnailJobAlertAggregator {
         return fullTrace.length() > 500 ? fullTrace.substring(0, 500) + "\n... (truncated)" : fullTrace;
     }
 
+    private record FailureTransition(SnailJobAlertEvent.AlertType alertType, int totalFailures, Duration failureDuration) {
+    }
+
+    private record RecoveryTransition(int totalFailures, Duration failureDuration) {
+    }
+
     /**
-     * 单任务/场景告警状态模型
+     * 单任务/场景告警状态模型（依托 {@link ReentrantLock} 保障虚拟线程并发安全与状态转移原子性）
      */
     static class JobAlertState {
-        private final AtomicBoolean inFailureState = new AtomicBoolean(false);
-        private final AtomicInteger totalFailureCount = new AtomicInteger(0);
-        private final AtomicInteger lastAlertCount = new AtomicInteger(0);
-        private volatile long firstFailureTimestamp;
-        private volatile long lastAlertTimestamp;
+        private final ReentrantLock stateLock = new ReentrantLock();
+        private boolean inFailureState;
+        private int totalFailureCount;
+        private int lastAlertCount;
+        private long firstFailureTimestamp;
+        private long lastAlertTimestamp;
 
         /**
-         * 记录一次失败
-         *
-         * @param timestamp 发生时间戳
-         * @return 是否为首发失败
-         */
-        public boolean recordFailure(long timestamp) {
-            int current = totalFailureCount.incrementAndGet();
-            if (current == 1 || inFailureState.compareAndSet(false, true)) {
-                this.firstFailureTimestamp = timestamp;
-                this.lastAlertTimestamp = timestamp;
-                this.lastAlertCount.set(0);
-                this.inFailureState.set(true);
-                return true;
-            }
-            return false;
-        }
-
-        /**
-         * 获取故障期间累计失败总次数
-         */
-        public int getTotalFailures() {
-            return totalFailureCount.get();
-        }
-
-        /**
-         * 判定并更新阶段摘要触发决策
+         * 记录一次失败并在锁内原子计算本次告警决策（首发、阶段摘要或抑制）
          *
          * @param now              当前时间戳
          * @param threshold        连续失败步长阈值
          * @param suppressDuration 抑制周期时限
-         * @return 是否触发摘要
+         * @return 状态跃迁结果
          */
-        public synchronized boolean shouldTriggerSummary(long now, int threshold, Duration suppressDuration) {
-            int current = totalFailureCount.get();
-            int last = lastAlertCount.get();
-            int diff = current - last;
-            long elapsed = now - lastAlertTimestamp;
-            long suppressMs = suppressDuration != null ? suppressDuration.toMillis() : Duration.ofMinutes(5).toMillis();
+        public FailureTransition recordFailure(long now, int threshold, Duration suppressDuration) {
+            stateLock.lock();
+            try {
+                totalFailureCount++;
+                if (!inFailureState) {
+                    inFailureState = true;
+                    firstFailureTimestamp = now;
+                    lastAlertTimestamp = now;
+                    lastAlertCount = 0;
+                    return new FailureTransition(SnailJobAlertEvent.AlertType.INITIAL_FAILURE, totalFailureCount, Duration.ZERO);
+                }
 
-            if (diff >= threshold || elapsed >= suppressMs) {
-                this.lastAlertCount.set(current);
-                this.lastAlertTimestamp = now;
-                return true;
+                int diff = totalFailureCount - lastAlertCount;
+                long elapsed = Math.max(0L, now - lastAlertTimestamp);
+                long suppressMs = suppressDuration != null ? suppressDuration.toMillis() : Duration.ofMinutes(5).toMillis();
+
+                if (diff >= threshold || elapsed >= suppressMs) {
+                    lastAlertCount = totalFailureCount;
+                    lastAlertTimestamp = now;
+                    Duration totalDuration = Duration.ofMillis(Math.max(0L, now - firstFailureTimestamp));
+                    return new FailureTransition(SnailJobAlertEvent.AlertType.FAILURE_SUMMARY, totalFailureCount, totalDuration);
+                }
+                return new FailureTransition(null, totalFailureCount, Duration.ZERO);
+            } finally {
+                if (stateLock.isHeldByCurrentThread()) {
+                    stateLock.unlock();
+                }
             }
-            return false;
         }
 
-        public void reset() {
-            this.inFailureState.set(false);
-            this.totalFailureCount.set(0);
-            this.lastAlertCount.set(0);
-            this.firstFailureTimestamp = 0;
-            this.lastAlertTimestamp = 0;
+        /**
+         * 原子读取并在处于故障态时消费并重置自愈恢复快照；健康态调用返回 null
+         *
+         * @param now 当前时间戳
+         * @return 自愈恢复快照或 null
+         */
+        public RecoveryTransition consumeRecovery(long now) {
+            stateLock.lock();
+            try {
+                if (!inFailureState) {
+                    return null;
+                }
+                int failures = totalFailureCount;
+                Duration failureDuration = Duration.ofMillis(Math.max(0L, now - firstFailureTimestamp));
+                inFailureState = false;
+                totalFailureCount = 0;
+                lastAlertCount = 0;
+                firstFailureTimestamp = 0;
+                lastAlertTimestamp = 0;
+                return new RecoveryTransition(failures, failureDuration);
+            } finally {
+                if (stateLock.isHeldByCurrentThread()) {
+                    stateLock.unlock();
+                }
+            }
         }
     }
 }

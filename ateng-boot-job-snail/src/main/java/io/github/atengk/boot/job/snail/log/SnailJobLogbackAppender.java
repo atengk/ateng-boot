@@ -5,6 +5,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.classic.spi.IThrowableProxy;
+import ch.qos.logback.classic.spi.LoggerContextVO;
 import ch.qos.logback.classic.spi.StackTraceElementProxy;
 import ch.qos.logback.core.AppenderBase;
 import com.aizuda.snailjob.client.common.LogReport;
@@ -18,7 +19,11 @@ import com.aizuda.snailjob.common.log.dto.LogContentDTO;
 import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
 import org.slf4j.ILoggerFactory;
 import org.slf4j.LoggerFactory;
+import org.slf4j.Marker;
+import org.slf4j.event.KeyValuePair;
 
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
@@ -34,9 +39,10 @@ import java.util.function.Consumer;
  *         或 {@link JobContextManager#getJobContext()}，脱离任务线程时瞬间旁路跳过，零开销；</li>
  *     <li><b>双重防重与防递归风暴</b>：基于 {@link ThreadLocal} 递归标记以及 {@code MDC.get("remote")} 前置检查，
  *         彻底杜绝循环镜像上报与日志风暴；</li>
+ *     <li><b>载荷安全截断防线</b>：依据 {@code maxPayloadSize} 对超长单条消息执行按 UTF-8 字节安全截断并追加
+ *         {@code ...[truncated]} 尾标，保护 Netty/HTTP 缓冲而不阻断主业务流程；</li>
  *     <li><b>全真测试拦截桩</b>：支持通过 {@link #setMirrorConsumer(Consumer)} 注入测试回调，
- *         保障单测 100% 离线脱网强断言日志镜像行为；</li>
- *     <li><b>确定性生命周期治理</b>：提供标准 Logback 追加器动态挂载与解绑支持。</li>
+ *         保障单测 100% 离线脱网强断言日志镜像行为。</li>
  * </ul></p>
  *
  * @author Ateng
@@ -45,10 +51,74 @@ import java.util.function.Consumer;
 public class SnailJobLogbackAppender extends AppenderBase<ILoggingEvent> {
 
     public static final String APPENDER_NAME = "SNAIL_JOB_LOGBACK_APPENDER";
+    public static final long DEFAULT_MAX_PAYLOAD_BYTES = 1024L * 1024L;
+    public static final String TRUNCATED_SUFFIX = "...[truncated]";
 
     private static final ThreadLocal<Boolean> IN_MIRROR = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     private static volatile Consumer<ILoggingEvent> mirrorConsumer;
+    private volatile long maxPayloadBytes = DEFAULT_MAX_PAYLOAD_BYTES;
+
+    /**
+     * 设置当前追加器实例的日志单条镜像最大字节阈值
+     *
+     * @param maxBytes 最大允许字节数（{@code <= 0} 时恢复默认 1MB）
+     */
+    public void setMaxPayloadBytes(long maxBytes) {
+        this.maxPayloadBytes = maxBytes > 0 ? maxBytes : DEFAULT_MAX_PAYLOAD_BYTES;
+    }
+
+    /**
+     * 获取当前追加器实例的日志单条镜像最大字节阈值
+     *
+     * @return 最大允许字节数
+     */
+    public long getMaxPayloadBytes() {
+        return this.maxPayloadBytes;
+    }
+
+    /**
+     * 按 UTF-8 字节数安全截断超长文本并附加 {@code ...[truncated]} 标记，严禁劈裂多字节字符或代理对
+     *
+     * @param message  原始消息文本
+     * @param maxBytes 最大字节上限
+     * @return 安全截断后的文本
+     */
+    public static String truncatePayload(String message, long maxBytes) {
+        if (message == null || maxBytes <= 0) {
+            return message;
+        }
+        byte[] rawBytes = message.getBytes(StandardCharsets.UTF_8);
+        if (rawBytes.length <= maxBytes) {
+            return message;
+        }
+        byte[] suffixBytes = TRUNCATED_SUFFIX.getBytes(StandardCharsets.UTF_8);
+        if (maxBytes <= suffixBytes.length) {
+            return sliceUtf8ByBytes(TRUNCATED_SUFFIX, (int) maxBytes);
+        }
+        int allowedContentBytes = (int) (maxBytes - suffixBytes.length);
+        return sliceUtf8ByBytes(message, allowedContentBytes) + TRUNCATED_SUFFIX;
+    }
+
+    private static String sliceUtf8ByBytes(String text, int maxBytes) {
+        if (text == null || maxBytes <= 0) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        int usedBytes = 0;
+        for (int i = 0; i < text.length(); ) {
+            int codePoint = text.codePointAt(i);
+            int charCount = Character.charCount(codePoint);
+            int cpBytes = new String(Character.toChars(codePoint)).getBytes(StandardCharsets.UTF_8).length;
+            if (usedBytes + cpBytes > maxBytes) {
+                break;
+            }
+            sb.appendCodePoint(codePoint);
+            usedBytes += cpBytes;
+            i += charCount;
+        }
+        return sb.toString();
+    }
 
     /**
      * 设置测试或调试专用的日志镜像消费钩子
@@ -127,20 +197,26 @@ public class SnailJobLogbackAppender extends AppenderBase<ILoggingEvent> {
         try {
             IN_MIRROR.set(Boolean.TRUE);
 
+            String rawMessage = event.getFormattedMessage();
+            String truncatedMessage = truncatePayload(rawMessage, maxPayloadBytes);
+            ILoggingEvent effectiveEvent = Objects.equals(rawMessage, truncatedMessage)
+                    ? event
+                    : new TruncatedLoggingEvent(event, truncatedMessage);
+
             // 4. 执行测试桩消费回调（若有）
             Consumer<ILoggingEvent> consumer = mirrorConsumer;
             if (consumer != null) {
-                consumer.accept(event);
+                consumer.accept(effectiveEvent);
             }
 
             // 5. 核心镜像逻辑：若 SnailJob 异步滑动窗口批量上报器可用，直接构建 LogContentDTO 上报
             LogReport logReport = LogReportFactory.get();
             if (logReport != null) {
-                LogContentDTO logContentDTO = buildLogContentDTO(event);
+                LogContentDTO logContentDTO = buildLogContentDTO(effectiveEvent);
                 logReport.report(logContentDTO);
             } else {
                 // 降级兜底：调用 SnailJobLog.REMOTE 对称镜像打印
-                mirrorViaSnailJobLog(event);
+                mirrorViaSnailJobLog(effectiveEvent);
             }
         } catch (Throwable t) {
             addError("Failed to mirror SLF4J log to SnailJob server", t);
@@ -183,7 +259,7 @@ public class SnailJobLogbackAppender extends AppenderBase<ILoggingEvent> {
                     sb.append("\n\tat ").append(step.toString());
                 }
             }
-            return sb.toString();
+            return truncatePayload(sb.toString(), this.maxPayloadBytes);
         }
         return null;
     }
@@ -205,6 +281,111 @@ public class SnailJobLogbackAppender extends AppenderBase<ILoggingEvent> {
             }
         } finally {
             org.slf4j.MDC.remove(LogFieldConstants.MDC_REMOTE);
+        }
+    }
+
+    /**
+     * 超限截断后的日志事件只读委托视图
+     */
+    private static final class TruncatedLoggingEvent implements ILoggingEvent {
+
+        private final ILoggingEvent delegate;
+        private final String truncatedMessage;
+
+        private TruncatedLoggingEvent(ILoggingEvent delegate, String truncatedMessage) {
+            this.delegate = delegate;
+            this.truncatedMessage = truncatedMessage;
+        }
+
+        @Override
+        public String getThreadName() {
+            return delegate.getThreadName();
+        }
+
+        @Override
+        public Level getLevel() {
+            return delegate.getLevel();
+        }
+
+        @Override
+        public String getMessage() {
+            return truncatedMessage;
+        }
+
+        @Override
+        public Object[] getArgumentArray() {
+            return delegate.getArgumentArray();
+        }
+
+        @Override
+        public String getFormattedMessage() {
+            return truncatedMessage;
+        }
+
+        @Override
+        public String getLoggerName() {
+            return delegate.getLoggerName();
+        }
+
+        @Override
+        public LoggerContextVO getLoggerContextVO() {
+            return delegate.getLoggerContextVO();
+        }
+
+        @Override
+        public IThrowableProxy getThrowableProxy() {
+            return delegate.getThrowableProxy();
+        }
+
+        @Override
+        public StackTraceElement[] getCallerData() {
+            return delegate.getCallerData();
+        }
+
+        @Override
+        public boolean hasCallerData() {
+            return delegate.hasCallerData();
+        }
+
+        @Override
+        public List<Marker> getMarkerList() {
+            return delegate.getMarkerList();
+        }
+
+        @Override
+        public Map<String, String> getMDCPropertyMap() {
+            return delegate.getMDCPropertyMap();
+        }
+
+        @Override
+        @SuppressWarnings("deprecation")
+        public Map<String, String> getMdc() {
+            return delegate.getMdc();
+        }
+
+        @Override
+        public long getTimeStamp() {
+            return delegate.getTimeStamp();
+        }
+
+        @Override
+        public int getNanoseconds() {
+            return delegate.getNanoseconds();
+        }
+
+        @Override
+        public long getSequenceNumber() {
+            return delegate.getSequenceNumber();
+        }
+
+        @Override
+        public List<KeyValuePair> getKeyValuePairs() {
+            return delegate.getKeyValuePairs();
+        }
+
+        @Override
+        public void prepareForDeferredProcessing() {
+            delegate.prepareForDeferredProcessing();
         }
     }
 }

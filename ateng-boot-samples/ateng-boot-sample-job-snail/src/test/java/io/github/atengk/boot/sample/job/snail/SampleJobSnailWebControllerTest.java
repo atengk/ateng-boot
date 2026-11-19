@@ -533,4 +533,26 @@ class SampleJobSnailWebControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(true));
     }
+
+    @Test
+    @DisplayName("1.11 独立 @AtengSnailJob 本地退避重试触发与 DTO 参数校验 Fail-Fast 接口")
+    void testTriggerLocalRetrySync() throws Exception {
+        // 1. 瞬态故障经本地退避重试自愈成功
+        String validJson = "{\"batchNo\":\"WEB-RETRY-01\",\"batchSize\":10,\"departmentId\":\"TRANSIENT-FAIL-ONCE\"}";
+        mockMvc.perform(post("/sample/job-snail/trigger/local-retry")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.jobName").value("localRetrySyncJob"))
+                .andExpect(jsonPath("$.data.status").value("SUCCESS"));
+
+        // 2. 非法入参在 Controller/Handler 边界 0 重试 Fail-Fast
+        String invalidJson = "{\"batchNo\":\"\",\"batchSize\":0}";
+        mockMvc.perform(post("/sample/job-snail/trigger/local-retry")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", not(200)));
+    }
 }

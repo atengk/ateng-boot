@@ -1,7 +1,10 @@
 package io.github.atengk.boot.job.snail.aspect;
 
+import com.aizuda.snailjob.client.common.log.report.LogMeta;
+import com.aizuda.snailjob.client.common.log.support.SnailJobLogManager;
 import com.aizuda.snailjob.client.job.core.MapHandler;
 import com.aizuda.snailjob.common.core.enums.StatusEnum;
+import com.aizuda.snailjob.common.log.enums.LogTypeEnum;
 import com.aizuda.snailjob.client.job.core.annotation.JobExecutor;
 import com.aizuda.snailjob.client.job.core.annotation.MapExecutor;
 import com.aizuda.snailjob.client.job.core.annotation.MergeReduceExecutor;
@@ -14,6 +17,7 @@ import com.aizuda.snailjob.client.job.core.dto.ShardingJobArgs;
 import com.aizuda.snailjob.client.job.core.executor.JobContextManager;
 import com.aizuda.snailjob.common.core.model.JobContext;
 import com.aizuda.snailjob.model.dto.ExecuteResult;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.github.atengk.boot.core.code.CommonResultCode;
@@ -40,6 +44,7 @@ import io.github.atengk.boot.job.snail.watchdog.JobTimeoutFallbackHandler;
 import io.github.atengk.boot.job.snail.watchdog.SnailJobExecutionMetadata;
 import io.github.atengk.boot.job.snail.watchdog.SnailLocalWatchdog;
 import jakarta.validation.Constraint;
+import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.Valid;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
@@ -61,11 +66,19 @@ import java.lang.annotation.Annotation;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import org.springframework.util.unit.DataSize;
 
 /**
  * SnailJob 调度任务上下文、链路追踪、形参注入与受管超时看门狗切面
@@ -94,6 +107,29 @@ public class SnailJobContextAspect {
     public static final String TASK_NAME_KEY = "snail.taskName";
     public static final String DEFAULT_JOB_USER = "SYSTEM";
 
+    private static final Object UNHANDLED_FALLBACK = new Object();
+    private static final ThreadLocal<JobArgs> DISPATCHED_JOB_ARGS = new ThreadLocal<>();
+
+    /**
+     * 绑定由 {@link io.github.atengk.boot.job.snail.scanner.AtengSnailJobScanner.StandaloneJobDispatcher} 桥接传入的 JobArgs
+     *
+     * @param jobArgs SnailJob 调度入参
+     */
+    public static void bindDispatchedJobArgs(JobArgs jobArgs) {
+        if (jobArgs != null) {
+            DISPATCHED_JOB_ARGS.set(jobArgs);
+        } else {
+            DISPATCHED_JOB_ARGS.remove();
+        }
+    }
+
+    /**
+     * 清理桥接线程持有的 JobArgs 现场
+     */
+    public static void clearDispatchedJobArgs() {
+        DISPATCHED_JOB_ARGS.remove();
+    }
+
     private final SnailLocalWatchdog watchdog;
     private final SnailJobProperties properties;
     private final GracefulDrainStateMachine drainStateMachine;
@@ -102,13 +138,14 @@ public class SnailJobContextAspect {
     private final java.util.List<SnailJobInterceptor> interceptors;
     private final java.util.List<JobTimeoutFallbackHandler> fallbackHandlers;
     private final SnailJobRuntimeGovernor governor;
+    private final Executor taskExecutor;
 
     public SnailJobContextAspect() {
-        this(null, null, null, null, null, null, null, null);
+        this(null, null, null, null, null, null, null, null, null);
     }
 
     public SnailJobContextAspect(SnailLocalWatchdog watchdog, SnailJobProperties properties) {
-        this(watchdog, properties, null, null, null, null, null, null);
+        this(watchdog, properties, null, null, null, null, null, null, null);
     }
 
     public SnailJobContextAspect(
@@ -117,7 +154,7 @@ public class SnailJobContextAspect {
             GracefulDrainStateMachine drainStateMachine,
             SnailJobMetricsBinder metricsBinder,
             SnailJobAlertAggregator alertAggregator) {
-        this(watchdog, properties, drainStateMachine, metricsBinder, alertAggregator, null, null, null);
+        this(watchdog, properties, drainStateMachine, metricsBinder, alertAggregator, null, null, null, null);
     }
 
     public SnailJobContextAspect(
@@ -127,7 +164,7 @@ public class SnailJobContextAspect {
             SnailJobMetricsBinder metricsBinder,
             SnailJobAlertAggregator alertAggregator,
             java.util.List<SnailJobInterceptor> interceptors) {
-        this(watchdog, properties, drainStateMachine, metricsBinder, alertAggregator, interceptors, null, null);
+        this(watchdog, properties, drainStateMachine, metricsBinder, alertAggregator, interceptors, null, null, null);
     }
 
     public SnailJobContextAspect(
@@ -138,7 +175,7 @@ public class SnailJobContextAspect {
             SnailJobAlertAggregator alertAggregator,
             java.util.List<SnailJobInterceptor> interceptors,
             java.util.List<JobTimeoutFallbackHandler> fallbackHandlers) {
-        this(watchdog, properties, drainStateMachine, metricsBinder, alertAggregator, interceptors, fallbackHandlers, null);
+        this(watchdog, properties, drainStateMachine, metricsBinder, alertAggregator, interceptors, fallbackHandlers, null, null);
     }
 
     public SnailJobContextAspect(
@@ -150,6 +187,19 @@ public class SnailJobContextAspect {
             java.util.List<SnailJobInterceptor> interceptors,
             java.util.List<JobTimeoutFallbackHandler> fallbackHandlers,
             SnailJobRuntimeGovernor governor) {
+        this(watchdog, properties, drainStateMachine, metricsBinder, alertAggregator, interceptors, fallbackHandlers, governor, null);
+    }
+
+    public SnailJobContextAspect(
+            SnailLocalWatchdog watchdog,
+            SnailJobProperties properties,
+            GracefulDrainStateMachine drainStateMachine,
+            SnailJobMetricsBinder metricsBinder,
+            SnailJobAlertAggregator alertAggregator,
+            java.util.List<SnailJobInterceptor> interceptors,
+            java.util.List<JobTimeoutFallbackHandler> fallbackHandlers,
+            SnailJobRuntimeGovernor governor,
+            Executor taskExecutor) {
         this.watchdog = watchdog;
         this.properties = properties;
         this.drainStateMachine = drainStateMachine;
@@ -170,6 +220,11 @@ public class SnailJobContextAspect {
             this.fallbackHandlers = java.util.Collections.emptyList();
         }
         this.governor = governor;
+        this.taskExecutor = taskExecutor;
+    }
+
+    public Executor getTaskExecutor() {
+        return taskExecutor;
     }
 
     public java.util.List<SnailJobInterceptor> getInterceptors() {
@@ -209,8 +264,10 @@ public class SnailJobContextAspect {
             atengSnailJob = AnnotatedElementUtils.findMergedAnnotation(targetClass, AtengSnailJob.class);
         }
         JobTenantMode tenantMode = (atengSnailJob != null) ? atengSnailJob.tenantMode() : JobTenantMode.IGNORE;
+        Duration timeout = resolveTimeout(atengSnailJob);
+        Duration retryInterval = resolveRetryInterval(atengSnailJob);
 
-        // 0. 平滑停机排空拦截与在途计数
+        // 0. 平滑停机排空拦截与在途计数（注解时限参数须在递增在途计数与变更上下文前完成校验，防止异常泄漏计数）
         if (drainStateMachine != null && drainStateMachine.isDraining()) {
             throw new BusinessException(CommonResultCode.SERVICE_UNAVAILABLE, "SnailJob 执行器正处于平滑停机排空阶段，拒绝接收新调度任务");
         }
@@ -219,7 +276,7 @@ public class SnailJobContextAspect {
         }
         long startTimeNanos = System.nanoTime();
 
-        // 1. 尝试获取任务原始入参 (优先从 JobArgs/JobContext，回退至方法实参)
+        // 1. 尝试获取任务原始入参 (优先从 JobArgs/JobContext/方法实参，回退至单注解桥接 ThreadLocal)
         JobArgs jobArgs = null;
         String rawParam = null;
         if (pjp.getArgs() != null) {
@@ -241,6 +298,17 @@ public class SnailJobContextAspect {
                     if (rawParam == null) {
                         rawParam = s;
                     }
+                }
+            }
+        }
+        if (jobArgs == null) {
+            JobArgs dispatched = DISPATCHED_JOB_ARGS.get();
+            if (dispatched != null) {
+                jobArgs = dispatched;
+                if (rawParam == null && dispatched.getJobParams() != null) {
+                    rawParam = (dispatched.getJobParams() instanceof String s)
+                            ? s
+                            : JsonUtil.toJsonString(dispatched.getJobParams());
                 }
             }
         }
@@ -271,19 +339,13 @@ public class SnailJobContextAspect {
             log.debug("SnailJob 任务处于多租户遍历模式 (ITERATE)，已清空外部租户，交由 TenantJobTemplate 执行");
         }
 
-        // 5. 本地硬看门狗与执行元数据解析
+        // 5. 本地硬看门狗与告警/本地退避重试参数解析
         String jobName = resolveJobName(specificMethod, targetClass, atengSnailJob, jobArgs);
         Long jobId = (jobArgs != null && jobArgs.getJobId() != null) ? jobArgs.getJobId() : 0L;
         Long taskBatchId = (jobArgs != null && jobArgs.getTaskBatchId() != null) ? jobArgs.getTaskBatchId() : 0L;
-        Duration timeout = resolveTimeout(atengSnailJob);
-
-        SnailJobExecutionMetadata metadata = SnailJobExecutionMetadata.builder()
-                .jobId(jobId)
-                .jobName(jobName)
-                .taskBatchId(taskBatchId)
-                .traceId(MDC.get(TRACE_ID_KEY))
-                .tenantId(TenantContextHolder.getTenantId())
-                .build();
+        boolean alertEnabled = (atengSnailJob == null) || (atengSnailJob.alert() && atengSnailJob.alertEnabled());
+        int alertSuppressThreshold = (atengSnailJob != null) ? atengSnailJob.alertSuppressThreshold() : -1;
+        int retryCount = (atengSnailJob != null) ? Math.max(0, atengSnailJob.retryCount()) : 0;
 
         AtomicReference<SnailLocalWatchdog.WatchdogSession> sessionRef =
                 new AtomicReference<>(SnailLocalWatchdog.WatchdogSession.NOOP);
@@ -347,11 +409,15 @@ public class SnailJobContextAspect {
         }
         SnailJobContextHolder.set(snailJobContext);
 
+        // 构造初始元数据（参数绑定并提取租户后会在正式调度前刷新完善）
+        SnailJobExecutionMetadata metadata = buildMetadata(jobName, jobId, taskBatchId, traceId, snailJobContext);
+
         java.util.List<SnailJobInterceptor> executedInterceptors = new java.util.ArrayList<>(this.interceptors.size());
         SnailJobExecutionContext executionContext = null;
         Object[] resolvedArgs = null;
         Object executionResult = null;
         Throwable errorThrown = null;
+        AtomicBoolean timeoutOutcomeRecorded = new AtomicBoolean(false);
 
         try {
             // 0. 节点级运行时动态治理状态检查 (若已被暂停，直接跳过并向服务端反馈成功)
@@ -371,16 +437,20 @@ public class SnailJobContextAspect {
                 return skipResult;
             }
 
-            // A. 解析方法形参并完成强类型绑定 (JobArgs、JobContext、DTO、String)
+            // A. 入参载荷防击穿前置拦截 (UTF-8 字节长度超限立即 Fail-Fast)
+            enforceMaxPayloadSize(rawParam, jobName);
+
+            // B. 解析方法形参并完成强类型绑定 (JobArgs、JobContext、DTO、String)
             resolvedArgs = resolveArguments(specificMethod, pjp.getArgs(), rawParam, jobArgs, snailJobContext);
 
-            // B. 若租户模式为 PARAM 且前面未提取到租户，从反序列化后的实参中二次探测
+            // C. 若租户模式为 PARAM 且前面未提取到租户，从反序列化后的实参中二次探测，并再构造完整执行元数据
             if (tenantMode == JobTenantMode.PARAM && !StringUtils.hasText(TenantContextHolder.getTenantId())) {
                 String tenantIdFromResolved = extractTenantIdFromArgs(resolvedArgs);
                 if (StringUtils.hasText(tenantIdFromResolved)) {
                     TenantContextHolder.setTenantId(tenantIdFromResolved);
                 }
             }
+            metadata = buildMetadata(jobName, jobId, taskBatchId, traceId, snailJobContext);
 
             // 构建拦截器上下文
             executionContext = new SnailJobExecutionContext(
@@ -390,7 +460,7 @@ public class SnailJobContextAspect {
                     metadata
             );
 
-            // C. 拦截器 preHandle 前置拦截执行 (在参数校验之前执行，支持拦截器短路跳过与灰度绕过)
+            // D. 拦截器 preHandle 前置拦截执行 (在参数校验之前执行，支持拦截器短路跳过与灰度绕过)
             if (!this.interceptors.isEmpty()) {
                 for (SnailJobInterceptor interceptor : this.interceptors) {
                     boolean proceed = interceptor.preHandle(executionContext);
@@ -405,115 +475,93 @@ public class SnailJobContextAspect {
                 }
             }
 
-            // D. JSR-303 参数校验与 Fail-Fast 快速失败防卫 (仅对未被拦截短路放行的任务执行)
+            // E. JSR-303 参数校验与 Fail-Fast 快速失败防卫 (确定性错误不重试)
             validateParameters(pjp.getTarget(), specificMethod, specificMethod.getParameters(), resolvedArgs, jobName);
 
-            // E. 挂载看门狗
-            if (watchdog != null && timeout != null && !timeout.isZero() && !timeout.isNegative()) {
-                SnailLocalWatchdog.WatchdogSession session = watchdog.startWatch(Thread.currentThread(), timeout, metadata);
-                sessionRef.set(session);
+            // F. 执行调度逻辑（支持 Core 受管线程池与方法级本地退避重试，在看门狗总超时作用域内运行）
+            if (properties != null && properties.isManagedPoolEnabled() && taskExecutor != null) {
+                executionResult = executeInManagedPool(
+                        pjp, timeout, metadata, resolvedArgs, retryCount, retryInterval, sessionRef, snailJobContext, nativeJobContext);
+            } else {
+                if (watchdog != null && timeout != null && !timeout.isZero() && !timeout.isNegative()) {
+                    SnailLocalWatchdog.WatchdogSession session = watchdog.startWatch(Thread.currentThread(), timeout, metadata);
+                    sessionRef.set(session);
+                }
+                executionResult = executeWithRetry(pjp, resolvedArgs, retryCount, retryInterval, sessionRef, jobName);
             }
 
-            // F. 执行调度逻辑
-            executionResult = (resolvedArgs != null && resolvedArgs.length > 0) ? pjp.proceed(resolvedArgs) : pjp.proceed();
+            // G. 若看门狗已标记超时，即便业务线程吞咽中断正常返回，仍强制进入超时兜底与降级闭环
+            SnailLocalWatchdog.WatchdogSession postSession = sessionRef.get();
+            if (postSession != null && postSession.isTimedOut()) {
+                // 在调用降级方法与拦截器前清除当前线程残留中断位，避免误中断可执行降级逻辑
+                Thread.interrupted();
+                log.warn("SnailJob 任务 [{}] 本地硬超时 (阈值: {})，执行返回阶段强制进入超时降级判决", jobName, timeout);
+                Duration elapsed = Duration.ofNanos(System.nanoTime() - startTimeNanos);
+                TimeoutException timeoutEx = new TimeoutException("SnailJob 任务超时 (阈值: " + timeout + ")");
+                Object fallbackResult = tryInvokeLocalFallback(
+                        pjp, targetClass, specificMethod, atengSnailJob, metadata, elapsed, timeoutEx, resolvedArgs);
+                if (fallbackResult != UNHANDLED_FALLBACK) {
+                    executionResult = fallbackResult;
+                    timeoutOutcomeRecorded.set(true);
+                    triggerPostHandle(executedInterceptors, executionContext, executionResult);
+                    boolean fallbackSuccess = isResultSuccess(executionResult);
+                    recordOutcome(jobName, rawParam, traceId, elapsed.toMillis(), fallbackSuccess, timeoutEx, alertEnabled, alertSuppressThreshold);
+                    return executionResult;
+                }
+
+                timeoutOutcomeRecorded.set(true);
+                triggerGlobalFallbackHandlers(metadata, elapsed);
+                if (!isResultSuccess(executionResult)) {
+                    triggerPostHandle(executedInterceptors, executionContext, executionResult);
+                    recordOutcome(jobName, rawParam, traceId, elapsed.toMillis(), false, timeoutEx, alertEnabled, alertSuppressThreshold);
+                    return executionResult;
+                }
+                recordOutcome(jobName, rawParam, traceId, elapsed.toMillis(), false, timeoutEx, alertEnabled, alertSuppressThreshold);
+                throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                        "SnailJob 任务 [" + jobName + "] 已触发看门狗超时，拒绝按成功放行", timeoutEx);
+            }
 
             // 拦截器 postHandle 后置处理 (逆序执行)
-            if (!executedInterceptors.isEmpty()) {
-                for (int i = executedInterceptors.size() - 1; i >= 0; i--) {
-                    try {
-                        executedInterceptors.get(i).postHandle(executionContext, executionResult);
-                    } catch (Throwable it) {
-                        log.error("[SnailJob] 拦截器 [{}] postHandle 执行异常: {}",
-                                executedInterceptors.get(i).getClass().getSimpleName(), it.getMessage(), it);
-                    }
-                }
-            }
+            triggerPostHandle(executedInterceptors, executionContext, executionResult);
 
             long durationMs = Duration.ofNanos(System.nanoTime() - startTimeNanos).toMillis();
-            if (metricsBinder != null) {
-                metricsBinder.recordJobExecution(jobName, SnailJobMetricsBinder.STATUS_SUCCESS, TenantContextHolder.getTenantId(), Duration.ofMillis(durationMs));
-            }
-            if (alertAggregator != null) {
-                alertAggregator.onJobSuccess(jobName, rawParam, traceId, durationMs);
-            }
+            recordOutcome(jobName, rawParam, traceId, durationMs, isResultSuccess(executionResult), null, alertEnabled, alertSuppressThreshold);
             return executionResult;
 
         } catch (Throwable t) {
-            SnailLocalWatchdog.WatchdogSession session = sessionRef.get();
-            boolean isTimedOut = (session != null) && (session.isTimedOut() || (t instanceof InterruptedException && session.isTimedOut()));
-            if (isTimedOut) {
-                log.warn("SnailJob 任务 [{}] 本地硬超时 (阈值: {}) 并已被中断", jobName, timeout);
-                long elapsedNanos = System.nanoTime() - startTimeNanos;
-                Duration elapsed = Duration.ofNanos(elapsedNanos);
+            if (!timeoutOutcomeRecorded.get()) {
+                SnailLocalWatchdog.WatchdogSession session = sessionRef.get();
+                boolean isTimedOut = (session != null) && session.isTimedOut();
+                if (isTimedOut) {
+                    // 清理看门狗中断标记后再调度本地/全局降级与拦截器回调
+                    Thread.interrupted();
+                    log.warn("SnailJob 任务 [{}] 本地硬超时 (阈值: {}) 并已被中断", jobName, timeout);
+                    Duration elapsed = Duration.ofNanos(System.nanoTime() - startTimeNanos);
 
-                // 尝试执行方法级就地降级补偿
-                String fallbackMethodName = (atengSnailJob != null) ? atengSnailJob.fallbackMethod().trim() : "";
-                if (StringUtils.hasText(fallbackMethodName)) {
-                    try {
-                        Object fallbackResult = invokeFallbackMethod(
-                                pjp.getTarget(),
-                                targetClass,
-                                fallbackMethodName,
-                                metadata,
-                                elapsed,
-                                t,
-                                resolvedArgs,
-                                pjp.getArgs()
-                        );
-                        log.info("[SnailJob] 任务 [{}] 超时就地降级补偿方法 [{}] 执行成功", jobName, fallbackMethodName);
-                        Object finalResult = (fallbackResult != null)
-                                ? fallbackResult
-                                : createFallbackSuccessResult(specificMethod, fallbackMethodName);
-                        executionResult = finalResult;
+                    Object fallbackResult = tryInvokeLocalFallback(
+                            pjp, targetClass, specificMethod, atengSnailJob, metadata, elapsed, t, resolvedArgs);
+                    if (fallbackResult != UNHANDLED_FALLBACK) {
+                        executionResult = fallbackResult;
                         errorThrown = null;
 
-                        // 拦截器 postHandle 后置处理 (逆序执行)
-                        if (!executedInterceptors.isEmpty()) {
-                            SnailJobExecutionContext ctx = (executionContext != null)
-                                    ? executionContext
-                                    : new SnailJobExecutionContext(pjp.getTarget(), specificMethod, (resolvedArgs != null ? resolvedArgs : pjp.getArgs()), metadata);
-                            for (int i = executedInterceptors.size() - 1; i >= 0; i--) {
-                                try {
-                                    executedInterceptors.get(i).postHandle(ctx, executionResult);
-                                } catch (Throwable it) {
-                                    log.error("[SnailJob] 拦截器 [{}] postHandle 执行异常: {}",
-                                            executedInterceptors.get(i).getClass().getSimpleName(), it.getMessage(), it);
-                                }
-                            }
-                        }
+                        SnailJobExecutionContext ctx = (executionContext != null)
+                                ? executionContext
+                                : new SnailJobExecutionContext(pjp.getTarget(), specificMethod, (resolvedArgs != null ? resolvedArgs : pjp.getArgs()), metadata);
+                        triggerPostHandle(executedInterceptors, ctx, executionResult);
 
-                        long durationMs = elapsed.toMillis();
-                        boolean fallbackSuccess = isResultSuccess(finalResult);
-                        if (metricsBinder != null) {
-                            String metricStatus = fallbackSuccess ? SnailJobMetricsBinder.STATUS_SUCCESS : SnailJobMetricsBinder.STATUS_FAILURE;
-                            metricsBinder.recordJobExecution(jobName, metricStatus, TenantContextHolder.getTenantId(), elapsed);
-                        }
-                        if (alertAggregator != null) {
-                            if (fallbackSuccess) {
-                                alertAggregator.onJobSuccess(jobName, rawParam, traceId, durationMs);
-                            } else {
-                                alertAggregator.onJobFailure(jobName, rawParam, traceId, durationMs, t);
-                            }
-                        }
-                        return finalResult;
-                    } catch (Throwable fallbackEx) {
-                        log.error("[SnailJob] 任务 [{}] 就地降级补偿方法 [{}] 执行异常: {}",
-                                jobName, fallbackMethodName, fallbackEx.getMessage(), fallbackEx);
+                        boolean fallbackSuccess = isResultSuccess(executionResult);
+                        recordOutcome(jobName, rawParam, traceId, elapsed.toMillis(), fallbackSuccess, t, alertEnabled, alertSuppressThreshold);
+                        return executionResult;
                     }
+
+                    // 若未配置就地降级或就地降级执行抛出异常，触发全局超时降级 SPI
+                    triggerGlobalFallbackHandlers(metadata, elapsed);
                 }
 
-                // 若未配置就地降级或就地降级执行抛出异常，触发全局超时降级 SPI
-                triggerGlobalFallbackHandlers(metadata, elapsed);
+                long durationMs = Duration.ofNanos(System.nanoTime() - startTimeNanos).toMillis();
+                recordOutcome(jobName, rawParam, traceId, durationMs, false, t, alertEnabled, alertSuppressThreshold);
             }
-
             errorThrown = t;
-            long durationMs = Duration.ofNanos(System.nanoTime() - startTimeNanos).toMillis();
-            if (metricsBinder != null) {
-                metricsBinder.recordJobExecution(jobName, SnailJobMetricsBinder.STATUS_FAILURE, TenantContextHolder.getTenantId(), Duration.ofMillis(durationMs));
-            }
-            if (alertAggregator != null) {
-                alertAggregator.onJobFailure(jobName, rawParam, traceId, durationMs, t);
-            }
             throw t;
         } finally {
             SnailJobExecutionContext ctx = (executionContext != null)
@@ -795,6 +843,28 @@ public class SnailJobContextAspect {
     }
 
     /**
+     * 校验调度入参原始 JSON/文本是否超出 {@code maxPayloadSize} 上限
+     *
+     * @param rawParam 原始入参文本
+     * @param jobName  任务名称
+     */
+    protected void enforceMaxPayloadSize(String rawParam, String jobName) {
+        if (!StringUtils.hasLength(rawParam) || properties == null) {
+            return;
+        }
+        DataSize limit = properties.getMaxPayloadSize();
+        if (limit == null || limit.toBytes() <= 0) {
+            return;
+        }
+        int payloadBytes = rawParam.getBytes(StandardCharsets.UTF_8).length;
+        if (payloadBytes > limit.toBytes()) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
+                    "SnailJob 任务 [" + jobName + "] 入参载荷超出 maxPayloadSize 限制 ("
+                            + payloadBytes + " bytes > " + limit.toBytes() + " bytes)");
+        }
+    }
+
+    /**
      * 解析任务超时时限 (优先方法级注解，其次全局默认配置)
      */
     protected Duration resolveTimeout(AtengSnailJob atengSnailJob) {
@@ -986,6 +1056,10 @@ public class SnailJobContextAspect {
         if (jobArgs != null && StringUtils.hasText(jobArgs.getExecutorInfo())) {
             return jobArgs.getExecutorInfo().trim();
         }
+        if (AnnotatedElementUtils.findMergedAnnotation(specificMethod, AtengSnailJob.class) == null
+                && AnnotatedElementUtils.findMergedAnnotation(targetClass, AtengSnailJob.class) != null) {
+            return targetClass.getSimpleName();
+        }
         return specificMethod.getName();
     }
 
@@ -1049,30 +1123,9 @@ public class SnailJobContextAspect {
         }
         // 基本原生类型防拆箱 NullPointerException 确定性安全默认值
         if (returnType.isPrimitive()) {
-            if (returnType.equals(boolean.class)) {
-                return Boolean.TRUE;
-            }
-            if (returnType.equals(byte.class)) {
-                return (byte) 0;
-            }
-            if (returnType.equals(short.class)) {
-                return (short) 0;
-            }
-            if (returnType.equals(int.class)) {
-                return 0;
-            }
-            if (returnType.equals(long.class)) {
-                return 0L;
-            }
-            if (returnType.equals(float.class)) {
-                return 0.0f;
-            }
-            if (returnType.equals(double.class)) {
-                return 0.0d;
-            }
-            if (returnType.equals(char.class)) {
-                return '\0';
-            }
+            return returnType.equals(boolean.class)
+                    ? Boolean.TRUE
+                    : io.github.atengk.boot.job.snail.support.SnailJobInternalSupport.defaultPrimitiveValue(returnType);
         }
         return null;
     }
@@ -1250,6 +1303,327 @@ public class SnailJobContextAspect {
             } catch (Throwable t) {
                 log.error("[SnailJob] 拦截器 [{}] afterCompletion 执行异常: {}",
                         executedInterceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
+            }
+        }
+    }
+
+    private SnailJobExecutionMetadata buildMetadata(
+            String jobName,
+            Long jobId,
+            Long taskBatchId,
+            String traceId,
+            SnailJobContext snailJobContext) {
+        return SnailJobExecutionMetadata.builder()
+                .jobId(jobId)
+                .jobName(jobName)
+                .taskBatchId(taskBatchId)
+                .workflowTaskBatchId(snailJobContext != null ? snailJobContext.getWorkflowTaskBatchId() : null)
+                .workflowNodeId(snailJobContext != null ? snailJobContext.getWorkflowNodeId() : null)
+                .jobBizId(snailJobContext != null ? snailJobContext.getJobBizId() : null)
+                .traceId(traceId)
+                .tenantId(TenantContextHolder.getTenantId())
+                .build();
+    }
+
+    private Object executeInManagedPool(
+            ProceedingJoinPoint pjp,
+            Duration timeout,
+            SnailJobExecutionMetadata metadata,
+            Object[] resolvedArgs,
+            int retryCount,
+            Duration retryInterval,
+            AtomicReference<SnailLocalWatchdog.WatchdogSession> sessionRef,
+            SnailJobContext snailJobContext,
+            JobContext nativeJobContext) throws Throwable {
+        java.util.Map<String, String> capturedMdc = MDC.getCopyOfContextMap();
+        String capturedUser = UserContextHolder.getExplicit();
+        TenantSnapshot capturedTenant = TenantContextHolder.capture();
+        LogMeta capturedLogMeta = null;
+        LogTypeEnum capturedLogType = null;
+        try {
+            capturedLogMeta = SnailJobLogManager.getLogMeta();
+            capturedLogType = SnailJobLogManager.getLogType();
+        } catch (LinkageError | RuntimeException ex) {
+            log.debug("捕获 SnailJob 日志上下文元信息失败，跳过透传: {}", ex.getMessage());
+        }
+        JobArgs capturedDispatchedArgs = DISPATCHED_JOB_ARGS.get();
+
+        CompletableFuture<Object> future = new CompletableFuture<>();
+        AtomicReference<Thread> workerThreadRef = new AtomicReference<>();
+
+        final LogMeta finalLogMeta = capturedLogMeta;
+        final LogTypeEnum finalLogType = capturedLogType;
+        taskExecutor.execute(() -> {
+            Thread workerThread = Thread.currentThread();
+            workerThreadRef.set(workerThread);
+
+            java.util.Map<String, String> prevWorkerMdc = MDC.getCopyOfContextMap();
+            String prevWorkerUser = UserContextHolder.getExplicit();
+            TenantSnapshot prevWorkerTenant = TenantContextHolder.capturePrevious();
+            SnailJobContext prevWorkerSnailCtx = SnailJobContextHolder.get();
+            JobContext prevWorkerNativeCtx = JobContextManager.getJobContext();
+            LogMeta prevWorkerLogMeta = SnailJobLogManager.getLogMeta();
+            LogTypeEnum prevWorkerLogType = SnailJobLogManager.getLogType();
+            JobArgs prevWorkerDispatched = DISPATCHED_JOB_ARGS.get();
+
+            SnailLocalWatchdog.WatchdogSession session = SnailLocalWatchdog.WatchdogSession.NOOP;
+            try {
+                if (capturedMdc != null) {
+                    MDC.setContextMap(capturedMdc);
+                } else {
+                    MDC.clear();
+                }
+                if (capturedUser != null) {
+                    UserContextHolder.set(capturedUser);
+                } else {
+                    UserContextHolder.clear();
+                }
+                TenantContextHolder.restore(capturedTenant);
+                SnailJobContextHolder.set(snailJobContext);
+                if (nativeJobContext != null) {
+                    JobContextManager.setJobContext(nativeJobContext);
+                }
+                if (finalLogMeta != null) {
+                    SnailJobLogManager.setLogMeta(finalLogMeta);
+                }
+                if (finalLogType != null) {
+                    SnailJobLogManager.setLogType(finalLogType);
+                }
+                if (capturedDispatchedArgs != null) {
+                    DISPATCHED_JOB_ARGS.set(capturedDispatchedArgs);
+                }
+
+                if (watchdog != null && timeout != null && !timeout.isZero() && !timeout.isNegative()) {
+                    session = watchdog.startWatch(workerThread, timeout, metadata);
+                }
+                sessionRef.set(session);
+
+                String jobName = metadata != null ? metadata.getJobName() : "";
+                Object result = executeWithRetry(pjp, resolvedArgs, retryCount, retryInterval, sessionRef, jobName);
+                future.complete(result);
+            } catch (Throwable t) {
+                future.completeExceptionally(t);
+            } finally {
+                session.cancel();
+                if (session.isTimedOut()) {
+                    Thread.interrupted();
+                }
+                bindOrRemove(DISPATCHED_JOB_ARGS, prevWorkerDispatched);
+                if (prevWorkerLogMeta != null) {
+                    SnailJobLogManager.setLogMeta(prevWorkerLogMeta);
+                } else {
+                    SnailJobLogManager.removeLogMeta();
+                }
+                if (prevWorkerLogType != null) {
+                    SnailJobLogManager.setLogType(prevWorkerLogType);
+                } else {
+                    SnailJobLogManager.removeLogType();
+                }
+                if (prevWorkerNativeCtx != null) {
+                    JobContextManager.setJobContext(prevWorkerNativeCtx);
+                } else {
+                    JobContextManager.removeJobContext();
+                }
+                SnailJobContextHolder.set(prevWorkerSnailCtx);
+                TenantContextHolder.restore(prevWorkerTenant);
+                if (prevWorkerUser != null) {
+                    UserContextHolder.set(prevWorkerUser);
+                } else {
+                    UserContextHolder.clear();
+                }
+                if (prevWorkerMdc != null) {
+                    MDC.setContextMap(prevWorkerMdc);
+                } else {
+                    MDC.clear();
+                }
+            }
+        });
+
+        Duration waitTimeout;
+        if (timeout != null && !timeout.isZero() && !timeout.isNegative()) {
+            waitTimeout = timeout.plusSeconds(1);
+        } else if (properties != null && properties.getDefaultJobTimeout() != null) {
+            waitTimeout = properties.getDefaultJobTimeout();
+        } else {
+            waitTimeout = Duration.ofHours(1);
+        }
+
+        try {
+            return future.get(waitTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException te) {
+            future.cancel(true);
+            Thread worker = workerThreadRef.get();
+            if (worker != null) {
+                try {
+                    worker.interrupt();
+                } catch (SecurityException ex) {
+                    log.debug("受管工作线程中断被安全策略拦截: {}", ex.getMessage());
+                }
+            }
+            SnailLocalWatchdog.WatchdogSession session = sessionRef.get();
+            if (session != null && session != SnailLocalWatchdog.WatchdogSession.NOOP) {
+                session.markTimedOut();
+            }
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "SnailJob 受管线程池任务执行超时 (时限: " + waitTimeout + ")", te);
+        } catch (ExecutionException ee) {
+            throw ee.getCause() != null ? ee.getCause() : ee;
+        }
+    }
+
+    private static <T> void bindOrRemove(ThreadLocal<T> local, T value) {
+        if (value != null) {
+            local.set(value);
+        } else {
+            local.remove();
+        }
+    }
+
+    /**
+     * 在单一看门狗总超时作用域内执行业务方法及方法级本地退避重试
+     */
+    private Object executeWithRetry(
+            ProceedingJoinPoint pjp,
+            Object[] resolvedArgs,
+            int retryCount,
+            Duration retryInterval,
+            AtomicReference<SnailLocalWatchdog.WatchdogSession> sessionRef,
+            String jobName) throws Throwable {
+        int maxAttempts = Math.max(0, retryCount) + 1;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            SnailLocalWatchdog.WatchdogSession session = sessionRef.get();
+            if ((session != null && session.isTimedOut()) || Thread.currentThread().isInterrupted()) {
+                throw new InterruptedException("SnailJob 任务 [" + jobName + "] 已被中断，终止后续本地重试");
+            }
+            try {
+                return (resolvedArgs != null && resolvedArgs.length > 0)
+                        ? pjp.proceed(resolvedArgs)
+                        : pjp.proceed();
+            } catch (Throwable t) {
+                session = sessionRef.get();
+                if ((session != null && session.isTimedOut())
+                        || isNonRetryableThrowable(t)
+                        || Thread.currentThread().isInterrupted()
+                        || attempt >= maxAttempts) {
+                    throw t;
+                }
+                int remainingRetries = maxAttempts - attempt;
+                log.warn("SnailJob 任务 [{}] 第 {}/{} 次执行失败，将在 {}ms 后进行本地退避重试 (剩余 {} 次): {}",
+                        jobName, attempt, maxAttempts, retryInterval.toMillis(), remainingRetries, t.getMessage());
+                if (!retryInterval.isZero()) {
+                    try {
+                        Thread.sleep(retryInterval.toMillis());
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw ie;
+                    }
+                }
+            }
+        }
+        throw new IllegalStateException("SnailJob 本地重试循环异常结束");
+    }
+
+    protected Duration resolveRetryInterval(AtengSnailJob atengSnailJob) {
+        if (atengSnailJob == null || !StringUtils.hasText(atengSnailJob.retryInterval())) {
+            return Duration.ofSeconds(1);
+        }
+        Duration interval = parseDuration(atengSnailJob.retryInterval());
+        if (interval == null || interval.isNegative()) {
+            throw new IllegalArgumentException("retryInterval 不能为负数: " + atengSnailJob.retryInterval());
+        }
+        return interval;
+    }
+
+    private boolean isNonRetryableThrowable(Throwable t) {
+        Throwable current = t;
+        int depth = 0;
+        while (current != null && depth++ < 64) {
+            if (current instanceof Error
+                    || current instanceof InterruptedException
+                    || current instanceof TimeoutException
+                    || current instanceof ConstraintViolationException
+                    || current instanceof JsonProcessingException) {
+                return true;
+            }
+            if (current instanceof BusinessException be && be.getCode() == CommonResultCode.BAD_REQUEST.getCode()) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private Object tryInvokeLocalFallback(
+            ProceedingJoinPoint pjp,
+            Class<?> targetClass,
+            Method specificMethod,
+            AtengSnailJob atengSnailJob,
+            SnailJobExecutionMetadata metadata,
+            Duration elapsed,
+            Throwable timeoutCause,
+            Object[] resolvedArgs) {
+        String fallbackMethodName = (atengSnailJob != null) ? atengSnailJob.fallbackMethod().trim() : "";
+        if (!StringUtils.hasText(fallbackMethodName)) {
+            return UNHANDLED_FALLBACK;
+        }
+        String jobName = metadata != null ? metadata.getJobName() : specificMethod.getName();
+        try {
+            Object fallbackResult = invokeFallbackMethod(
+                    pjp.getTarget(),
+                    targetClass,
+                    fallbackMethodName,
+                    metadata,
+                    elapsed,
+                    timeoutCause,
+                    resolvedArgs,
+                    pjp.getArgs()
+            );
+            log.info("[SnailJob] 任务 [{}] 超时就地降级补偿方法 [{}] 执行成功", jobName, fallbackMethodName);
+            return (fallbackResult != null)
+                    ? fallbackResult
+                    : createFallbackSuccessResult(specificMethod, fallbackMethodName);
+        } catch (Throwable fallbackEx) {
+            log.error("[SnailJob] 任务 [{}] 就地降级补偿方法 [{}] 执行异常: {}",
+                    jobName, fallbackMethodName, fallbackEx.getMessage(), fallbackEx);
+            return UNHANDLED_FALLBACK;
+        }
+    }
+
+    private void triggerPostHandle(
+            List<SnailJobInterceptor> executedInterceptors,
+            SnailJobExecutionContext executionContext,
+            Object executionResult) {
+        if (executedInterceptors == null || executedInterceptors.isEmpty()) {
+            return;
+        }
+        for (int i = executedInterceptors.size() - 1; i >= 0; i--) {
+            try {
+                executedInterceptors.get(i).postHandle(executionContext, executionResult);
+            } catch (Throwable it) {
+                log.error("[SnailJob] 拦截器 [{}] postHandle 执行异常: {}",
+                        executedInterceptors.get(i).getClass().getSimpleName(), it.getMessage(), it);
+            }
+        }
+    }
+
+    private void recordOutcome(
+            String jobName,
+            String rawParam,
+            String traceId,
+            long durationMs,
+            boolean success,
+            Throwable throwable,
+            boolean alertEnabled,
+            int alertSuppressThreshold) {
+        if (metricsBinder != null) {
+            String status = success ? SnailJobMetricsBinder.STATUS_SUCCESS : SnailJobMetricsBinder.STATUS_FAILURE;
+            metricsBinder.recordJobExecution(jobName, status, TenantContextHolder.getTenantId(), Duration.ofMillis(Math.max(0L, durationMs)));
+        }
+        if (alertAggregator != null) {
+            if (success) {
+                alertAggregator.onJobSuccess(jobName, rawParam, traceId, durationMs, alertEnabled);
+            } else {
+                alertAggregator.onJobFailure(jobName, rawParam, traceId, durationMs, throwable, alertEnabled, alertSuppressThreshold);
             }
         }
     }

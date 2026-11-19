@@ -12,12 +12,16 @@ import com.aizuda.snailjob.common.log.constant.LogFieldConstants;
 import com.aizuda.snailjob.common.log.enums.LogTypeEnum;
 import io.github.atengk.boot.job.snail.context.SnailJobContext;
 import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
+import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.util.unit.DataSize;
+
+import java.nio.charset.StandardCharsets;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -190,5 +194,58 @@ class SnailJobLogbackAppenderTest {
         // 静态卸载
         SnailJobLogbackAppender.detachFromRootLogger();
         assertThat(rootLogger.getAppender(SnailJobLogbackAppender.APPENDER_NAME)).isNull();
+    }
+
+    @Test
+    @DisplayName("测试 maxPayloadSize 对单条超长镜像日志执行安全截断并追加 ...[truncated]")
+    void testAppenderTruncatesMessageExceedingMaxPayloadSize() {
+        registrar.destroy();
+
+        SnailJobProperties props = new SnailJobProperties();
+        props.setMaxPayloadSize(DataSize.ofBytes(64));
+        registrar = new SnailJobLogbackAppenderRegistrar(props);
+        registrar.afterSingletonsInstantiated();
+
+        SnailJobContext context = new SnailJobContext();
+        context.setJobId(1002L);
+        SnailJobContextHolder.set(context);
+
+        String longMsg = "PAYLOAD-" + "A".repeat(120);
+        log.info(longMsg);
+
+        assertThat(mirroredEvents).hasSize(1);
+        String mirrored = mirroredEvents.get(0).getFormattedMessage();
+        assertThat(mirrored).endsWith("...[truncated]");
+        assertThat(mirrored.getBytes(StandardCharsets.UTF_8).length).isLessThanOrEqualTo(64);
+    }
+
+    @Test
+    @DisplayName("测试多 Appender 实例独立阈值隔离与异常堆栈截断防线")
+    void testInstancePayloadIsolationAndThrowableTruncation() {
+        SnailJobLogbackAppender appenderSmall = new SnailJobLogbackAppender();
+        appenderSmall.setMaxPayloadBytes(48);
+        SnailJobLogbackAppender appenderLarge = new SnailJobLogbackAppender();
+        appenderLarge.setMaxPayloadBytes(4096);
+
+        assertThat(appenderSmall.getMaxPayloadBytes()).isEqualTo(48L);
+        assertThat(appenderLarge.getMaxPayloadBytes()).isEqualTo(4096L);
+
+        SnailJobContext context = new SnailJobContext();
+        context.setJobId(1003L);
+        SnailJobContextHolder.set(context);
+
+        registrar.getAppender().setMaxPayloadBytes(72);
+        RuntimeException deepEx = new RuntimeException("ROOT-FAIL-" + "X".repeat(200));
+        log.error("trigger failure", deepEx);
+
+        assertThat(mirroredEvents).hasSize(1);
+        var captured = mirroredEvents.get(0);
+        assertThat(captured.getThrowableProxy()).isNotNull();
+        String truncatedEx = SnailJobLogbackAppender.truncatePayload(
+                captured.getThrowableProxy().getClassName() + ": " + captured.getThrowableProxy().getMessage(),
+                72
+        );
+        assertThat(truncatedEx).endsWith("...[truncated]");
+        assertThat(truncatedEx.getBytes(StandardCharsets.UTF_8).length).isLessThanOrEqualTo(72);
     }
 }

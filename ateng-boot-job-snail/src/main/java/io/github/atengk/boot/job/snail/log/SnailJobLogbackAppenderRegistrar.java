@@ -2,16 +2,18 @@ package io.github.atengk.boot.job.snail.log;
 
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.LoggerContext;
+import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
 import org.slf4j.ILoggerFactory;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.util.unit.DataSize;
 
 /**
  * SnailJob Logback 镜像追加器自动注册器
  *
- * <p>在 Spring 容器单例实例化完成后，将 {@link SnailJobLogbackAppender} 动态注册至 Logback 的根记录器 (ROOT)；
- * 并在应用销毁时平滑解绑并停止 Appender，实现生命周期的确定性释放与资源清理。</p>
+ * <p>在 Spring 容器单例实例化完成后，将 {@link SnailJobLogbackAppender} 动态注册至 Logback 的根记录器 (ROOT)，
+ * 同步注入 {@code maxPayloadSize} 日志截断阈值；并在应用销毁时平滑解绑并停止 Appender，实现生命周期的确定性释放与资源清理。</p>
  *
  * @author Ateng
  * @since 2026-10-31
@@ -21,9 +23,22 @@ public class SnailJobLogbackAppenderRegistrar implements SmartInitializingSingle
     public static final String APPENDER_NAME = SnailJobLogbackAppender.APPENDER_NAME;
 
     private final SnailJobLogbackAppender appender = new SnailJobLogbackAppender();
+    private final long maxPayloadBytes;
+
+    public SnailJobLogbackAppenderRegistrar() {
+        this(null);
+    }
+
+    public SnailJobLogbackAppenderRegistrar(SnailJobProperties properties) {
+        DataSize size = (properties != null) ? properties.getMaxPayloadSize() : null;
+        this.maxPayloadBytes = (size != null && size.toBytes() > 0)
+                ? size.toBytes()
+                : SnailJobLogbackAppender.DEFAULT_MAX_PAYLOAD_BYTES;
+    }
 
     @Override
     public void afterSingletonsInstantiated() {
+        appender.setMaxPayloadBytes(this.maxPayloadBytes);
         ILoggerFactory loggerFactory = LoggerFactory.getILoggerFactory();
         if (loggerFactory instanceof LoggerContext loggerContext) {
             appender.setContext(loggerContext);

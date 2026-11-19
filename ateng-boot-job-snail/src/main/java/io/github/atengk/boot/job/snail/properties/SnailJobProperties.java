@@ -87,6 +87,16 @@ public class SnailJobProperties {
     private DataSize maxPayloadSize = DataSize.ofMegabytes(1);
 
     /**
+     * Actuator 健康探针结果缓存有效期（默认 10s，设为 0s 可禁用缓存实时探测）
+     */
+    private Duration healthCacheTtl = Duration.ofSeconds(10);
+
+    /**
+     * Actuator 健康探针单节点连接探测超时阈值（默认 800ms）
+     */
+    private Duration healthProbeTimeout = Duration.ofMillis(800);
+
+    /**
      * 分布式任务调度专属配置
      */
     @NestedConfigurationProperty
@@ -97,6 +107,12 @@ public class SnailJobProperties {
      */
     @NestedConfigurationProperty
     private RetryProperties retry = new RetryProperties();
+
+    /**
+     * 分片批处理与流式消费默认配置
+     */
+    @NestedConfigurationProperty
+    private BatchProperties batch = new BatchProperties();
 
     /**
      * SnailJob OpenAPI 编程式管理门面配置
@@ -152,6 +168,53 @@ public class SnailJobProperties {
          * 是否启用重试切面拦截（四维现场快照封包、跨时间远程重放上下文还原与死信通道）
          */
         private boolean contextAspectEnabled = true;
+
+        /**
+         * 远程重试上下文快照持久化默认 TTL（默认 24 小时，兼顾 Redis 键回收与内存 LRU 淘汰）
+         */
+        private Duration contextTtl = Duration.ofHours(24);
+
+        /**
+         * 编程式重试默认最大本地尝试次数（包含首次执行，默认 3 次）
+         */
+        private int localMaxAttempts = 3;
+
+        /**
+         * 编程式重试默认本地退避间隔（默认 200ms）
+         */
+        private Duration localBackoff = Duration.ofMillis(200);
+
+        /**
+         * 单机内存重试上下文默认最大保留条目数（默认 10000，防止内存无界膨胀）
+         */
+        private int inMemoryMaxSize = 10000;
+    }
+
+    /**
+     * 分片批处理与流式游标默认配置项
+     */
+    @Data
+    public static class BatchProperties {
+
+        /**
+         * 默认分片拉取切片大小（默认 1000 条）
+         */
+        private int defaultBatchSize = 1000;
+
+        /**
+         * 默认分片并发消费最大并发度（默认 8，高并发场景下防数据库连接池打满）
+         */
+        private int defaultMaxConcurrency = 8;
+
+        /**
+         * 批处理进度日志打卡间隔条数（默认每 5000 条打印一次进度心跳，<= 0 关闭）
+         */
+        private int progressLogInterval = 5000;
+
+        /**
+         * 单次批处理允许收集保留的最大失败分片明细条目数（默认 500 条，防海量失败风暴引起 OOM）
+         */
+        private int maxFailedItems = 500;
     }
 
     /**
@@ -164,6 +227,11 @@ public class SnailJobProperties {
          * 是否启用 OpenAPI 编程式管理门面
          */
         private boolean enabled = true;
+
+        /**
+         * SnailJob OpenAPI 服务端主机地址（留空时自动沿用 server 首节点主机）
+         */
+        private String host = "";
 
         /**
          * SnailJob 服务端 Web 端口号（官方默认 8080）

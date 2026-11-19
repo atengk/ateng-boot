@@ -334,6 +334,25 @@ class SnailShardingBatchTemplateTest {
         assertThat(cursor.isClosed()).isTrue(); // 验证确定性闭合
     }
 
+    @Test
+    @DisplayName("managedPoolEnabled=false 时禁用 Spring 回捞并在调用方线程顺滑执行")
+    void testManagedPoolDisabledExecutesOnCallerThreadWithoutSpringFallback() {
+        SnailShardingBatchTemplate callerTemplate = new SnailShardingBatchTemplate(null, 10, 2, true, false);
+        String callerThread = Thread.currentThread().getName();
+        java.util.Set<String> workerThreads = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+
+        BatchExecutionResult<Long> result = callerTemplate.executeStepParallel(
+                0L,
+                (lastId, size) -> lastId == 0L ? List.of(1L, 2L, 3L) : Collections.emptyList(),
+                id -> id,
+                chunk -> workerThreads.add(Thread.currentThread().getName())
+        );
+
+        assertThat(result.getTotalCount()).isEqualTo(3);
+        assertThat(result.getSuccessCount()).isEqualTo(3);
+        assertThat(workerThreads).containsExactly(callerThread);
+    }
+
     /**
      * 纯内存 Mock MyBatis Cursor 实现
      */

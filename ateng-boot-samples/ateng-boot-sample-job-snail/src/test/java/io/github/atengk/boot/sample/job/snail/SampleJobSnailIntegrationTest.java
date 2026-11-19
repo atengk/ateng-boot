@@ -428,4 +428,23 @@ class SampleJobSnailIntegrationTest {
         assertThat(resumeRes.get("paused")).isEqualTo(false);
         assertThat(runtimeGovernor.isPaused("systemWarmupJob")).isFalse();
     }
+
+    @Test
+    @DisplayName("15. 独立 @AtengSnailJob 本地退避重试自愈与 JSR-303 校验 Fail-Fast (0 重试) 实测")
+    void testStandaloneLocalRetryAndValidationFailFast() {
+        // 15.1 瞬态异常在本地退避重试后自愈成功 (共执行 2 次)
+        String recoverJson = "{\"batchNo\":\"RETRY-RECOVER-01\",\"batchSize\":20,\"departmentId\":\"TRANSIENT-FAIL-ONCE\"}";
+        SnailJobTestResult recoverResult = testHelper.triggerJob("localRetrySyncJob", recoverJson);
+        assertThat(recoverResult.isSuccess()).isTrue();
+        ExecuteResult recoverEr = (ExecuteResult) recoverResult.result();
+        assertThat(recoverEr.getStatus()).isEqualTo(StatusEnum.YES.getStatus());
+        assertThat(String.valueOf(recoverEr.getResult())).contains("attempts=2");
+
+        // 15.2 参数校验失败属于确定性错误，强制 0 重试直接 Fail-Fast
+        String invalidJson = "{\"batchNo\":\"\",\"batchSize\":0,\"departmentId\":\"INVALID\"}";
+        SnailJobTestResult invalidResult = testHelper.triggerJob("localRetrySyncJob", invalidJson);
+        assertThat(invalidResult.isSuccess()).isFalse();
+        assertThat(invalidResult.throwable()).isNotNull();
+        assertThat(invalidResult.throwable().getMessage()).containsAnyOf("不能为空", "大于0", "不合法");
+    }
 }

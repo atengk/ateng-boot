@@ -8,6 +8,7 @@ import io.github.atengk.boot.notification.model.CardColor;
 import io.github.atengk.boot.notification.model.CardMessage;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
@@ -16,7 +17,10 @@ import org.springframework.context.ApplicationEventPublisher;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -169,5 +173,64 @@ public class SnailJobAlertAggregatorTest {
 
         assertTrue(publishedEvents.isEmpty());
         verify(notificationTemplate, never()).sendAsync(any());
+    }
+
+    @Test
+    @DisplayName("测试方法级 alertEnabled=false 静音覆盖与 suppressThreshold 独立阈值覆盖")
+    public void testMethodLevelAlertOverride() {
+        // 1. alertEnabled=false 静音覆盖
+        aggregator.onJobFailure("noisyProbeJob", "{}", "tr-1", 10L, new RuntimeException("transient"), false, 1);
+        aggregator.onJobSuccess("noisyProbeJob", "{}", "tr-2", 5L, false);
+        assertTrue(publishedEvents.isEmpty(), "方法级 alertEnabled=false 应彻底静音不发告警");
+        verify(notificationTemplate, never()).sendAsync(any());
+
+        // 2. 方法级 suppressThreshold=2 提前触发聚合摘要
+        aggregator.onJobFailure("sensitiveJob", "{}", "tr-3", 10L, new RuntimeException("err-1"), true, 2);
+        aggregator.onJobFailure("sensitiveJob", "{}", "tr-4", 10L, new RuntimeException("err-2"), true, 2);
+        assertEquals(2, publishedEvents.size());
+        assertEquals(SnailJobAlertEvent.AlertType.INITIAL_FAILURE, ((SnailJobAlertEvent) publishedEvents.get(0)).getAlertType());
+        assertEquals(SnailJobAlertEvent.AlertType.FAILURE_SUMMARY, ((SnailJobAlertEvent) publishedEvents.get(1)).getAlertType());
+        assertEquals(2, ((SnailJobAlertEvent) publishedEvents.get(1)).getFailureCount());
+    }
+
+    @Test
+    @DisplayName("测试 ReentrantLock 状态机在高并发线程下状态一致且无异常")
+    public void testVirtualThreadConcurrencySafety() throws InterruptedException {
+        List<Object> concurrentEvents = Collections.synchronizedList(new ArrayList<>());
+        SnailJobAlertAggregator concurrentAggregator =
+                new SnailJobAlertAggregator(properties, concurrentEvents::add, notificationTemplate);
+
+        int tasks = 100;
+        CountDownLatch startGate = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(tasks);
+        org.springframework.core.task.SimpleAsyncTaskExecutor executor =
+                new org.springframework.core.task.SimpleAsyncTaskExecutor("snail-alert-test-");
+        executor.setVirtualThreads(Runtime.version().feature() >= 21);
+        executor.setTaskTerminationTimeout(2000);
+        try {
+            for (int i = 0; i < tasks; i++) {
+                final int idx = i;
+                executor.execute(() -> {
+                    try {
+                        startGate.await();
+                        String jobName = "vtJob-" + (idx % 5);
+                        if (idx % 10 == 9) {
+                            concurrentAggregator.onJobSuccess(jobName, null, "tr-" + idx, 5L, true);
+                        } else {
+                            concurrentAggregator.onJobFailure(jobName, null, "tr-" + idx, 10L, new RuntimeException("boom-" + idx), true, 3);
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } finally {
+                        doneLatch.countDown();
+                    }
+                });
+            }
+            startGate.countDown();
+            assertTrue(doneLatch.await(5, TimeUnit.SECONDS));
+        } finally {
+            executor.close();
+        }
+        assertFalse(concurrentEvents.isEmpty());
     }
 }

@@ -56,6 +56,18 @@ public class SnailJobTriggerController {
     }
 
     /**
+     * 触发独立 @AtengSnailJob 本地退避重试与快速失败演练任务
+     *
+     * @param param 用户同步强类型请求 DTO
+     * @return 任务触发结果视图
+     */
+    @PostMapping("/local-retry")
+    public Result<JobTriggerVO> triggerLocalRetrySync(@Valid @RequestBody UserSyncParam param) {
+        SnailJobTestResult result = scenarioService.executeLocalRetrySync(param.getBatchNo(), param.getBatchSize(), param.getDepartmentId());
+        return Result.success(scenarioService.toTriggerVO("localRetrySyncJob", result));
+    }
+
+    /**
      * 触发跨商户月度账单 MapReduce 切片拆分任务
      *
      * @param request 账单结算切片请求 DTO

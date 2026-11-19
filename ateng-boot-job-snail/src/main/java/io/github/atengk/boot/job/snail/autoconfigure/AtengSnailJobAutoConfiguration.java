@@ -23,6 +23,7 @@ import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextStore;
 import io.github.atengk.boot.job.snail.retry.generator.ArgsHashIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.generator.SpelIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.template.SnailRetryTemplate;
+import io.github.atengk.boot.job.snail.scanner.AtengSnailJobScanner;
 import io.github.atengk.boot.job.snail.template.SnailJobAdminTemplate;
 import io.github.atengk.boot.job.snail.template.SnailMyBatisStreamingTemplate;
 import io.github.atengk.boot.job.snail.template.SnailShardingBatchTemplate;
@@ -110,31 +111,6 @@ public class AtengSnailJobAutoConfiguration {
     }
 
     /**
-     * SnailJob 本地硬超时看门狗引擎
-     *
-     * @param eventPublisher           Spring 领域事件发布器
-     * @param properties               SnailJob 配置属性
-     * @param fallbackHandlersProvider 全局超时降级补偿处理器提供者 (可选)
-     * @param asyncExecutorProvider    受管异步线程池提供者 (可选)
-     * @return SnailLocalWatchdog 实例
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    public SnailLocalWatchdog snailLocalWatchdog(
-            ApplicationEventPublisher eventPublisher,
-            SnailJobProperties properties,
-            ObjectProvider<JobTimeoutFallbackHandler> fallbackHandlersProvider,
-            @Qualifier("taskExecutor") ObjectProvider<Executor> asyncExecutorProvider) {
-        return new SnailLocalWatchdog(
-                eventPublisher,
-                null,
-                properties.getWatchdogGracePeriod(),
-                fallbackHandlersProvider.orderedStream().toList(),
-                asyncExecutorProvider.getIfAvailable()
-        );
-    }
-
-    /**
      * SnailJob 执行器三阶平滑停机排空状态机
      *
      * @param properties SnailJob 配置属性
@@ -184,19 +160,6 @@ public class AtengSnailJobAutoConfiguration {
             ApplicationEventPublisher eventPublisher,
             ObjectProvider<NotificationTemplate> notificationTemplateProvider) {
         return new SnailJobAlertAggregator(properties, eventPublisher, notificationTemplateProvider.getIfAvailable());
-    }
-
-    /**
-     * SnailJob 分布式重试死信沉降回调处理器
-     *
-     * @param alertAggregatorProvider 告警聚合器提供者
-     * @return SnailRetryDeadLetterCallback 实例
-     */
-    @Bean
-    @ConditionalOnMissingBean(RetryCompleteCallback.class)
-    public SnailRetryDeadLetterCallback snailRetryDeadLetterCallback(
-            ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider) {
-        return new SnailRetryDeadLetterCallback(alertAggregatorProvider);
     }
 
     /**
@@ -252,168 +215,12 @@ public class AtengSnailJobAutoConfiguration {
     }
 
     /**
-     * SnailJob 调度任务上下文、链路追踪、形参注入与受管超时看门狗切面
-     *
-     * @param watchdog                   本地硬超时看门狗
-     * @param properties                 SnailJob 配置属性
-     * @param drainStateMachineProvider  平滑排空状态机提供者 (可选)
-     * @param metricsBinderProvider      度量绑定器提供者 (可选)
-     * @param alertAggregatorProvider    告警聚合器提供者 (可选)
-     * @param interceptorsProvider       生命周期拦截器提供者 (可选)
-     * @param fallbackHandlersProvider   全局超时降级补偿处理器提供者 (可选)
-     * @param governorProvider           节点级运行时治理总线提供者 (可选)
-     * @return SnailJobContextAspect 实例
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "context-aspect-enabled", havingValue = "true", matchIfMissing = true)
-    public SnailJobContextAspect snailJobContextAspect(
-            SnailLocalWatchdog watchdog,
-            SnailJobProperties properties,
-            ObjectProvider<GracefulDrainStateMachine> drainStateMachineProvider,
-            ObjectProvider<SnailJobMetricsBinder> metricsBinderProvider,
-            ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider,
-            ObjectProvider<SnailJobInterceptor> interceptorsProvider,
-            ObjectProvider<JobTimeoutFallbackHandler> fallbackHandlersProvider,
-            ObjectProvider<SnailJobRuntimeGovernor> governorProvider) {
-        return new SnailJobContextAspect(
-                watchdog,
-                properties,
-                drainStateMachineProvider.getIfAvailable(),
-                metricsBinderProvider.getIfAvailable(),
-                alertAggregatorProvider.getIfAvailable(),
-                interceptorsProvider.orderedStream().toList(),
-                fallbackHandlersProvider.orderedStream().toList(),
-                governorProvider.getIfAvailable()
-        );
-    }
-
-    /**
-     * SnailJob SpEL 业务幂等键生成器
-     *
-     * @return SpelIdempotentIdGenerator 实例
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    public SpelIdempotentIdGenerator spelIdempotentIdGenerator() {
-        return new SpelIdempotentIdGenerator();
-    }
-
-    /**
-     * SnailJob 参数哈希摘要幂等键生成器
-     *
-     * @return ArgsHashIdempotentIdGenerator 实例
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    public ArgsHashIdempotentIdGenerator argsHashIdempotentIdGenerator() {
-        return new ArgsHashIdempotentIdGenerator();
-    }
-
-    /**
-     * SnailJob 远程重试四维现场快照持久化存储策略 (默认基于内存 LRU 缓存)
-     *
-     * @return SnailRetryContextStore 实例
-     */
-    @Bean
-    @ConditionalOnMissingBean(SnailRetryContextStore.class)
-    public SnailRetryContextStore snailRetryContextStore() {
-        return new InMemorySnailRetryContextStore();
-    }
-
-    /**
-     * SnailJob 分布式重试四维现场快照与跨节点保真还原切面
-     *
-     * @param drainStateMachineProvider  平滑排空状态机提供者 (可选)
-     * @param metricsBinderProvider      度量绑定器提供者 (可选)
-     * @param alertAggregatorProvider    告警聚合器提供者 (可选)
-     * @param retryContextStoreProvider  重试上下文存储策略提供者 (可选)
-     * @return SnailRetryContextAspect 实例
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    @ConditionalOnProperty(prefix = "ateng.boot.job.snail.retry", name = "context-aspect-enabled", havingValue = "true", matchIfMissing = true)
-    public SnailRetryContextAspect snailRetryContextAspect(
-            ObjectProvider<GracefulDrainStateMachine> drainStateMachineProvider,
-            ObjectProvider<SnailJobMetricsBinder> metricsBinderProvider,
-            ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider,
-            ObjectProvider<SnailRetryContextStore> retryContextStoreProvider) {
-        return new SnailRetryContextAspect(
-                drainStateMachineProvider.getIfAvailable(),
-                metricsBinderProvider.getIfAvailable(),
-                alertAggregatorProvider.getIfAvailable(),
-                retryContextStoreProvider.getIfAvailable()
-        );
-    }
-
-    /**
-     * SnailJob 编程式分布式重试执行与对称手动上报门面
-     *
-     * @param reportProvider SnailJob 上报门面对象提供者
-     * @param properties SnailJob 配置属性
-     * @return SnailRetryTemplate 实例
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    @ConditionalOnProperty(prefix = "ateng.boot.job.snail.retry", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public SnailRetryTemplate snailRetryTemplate(
-            ObjectProvider<com.aizuda.snailjob.client.core.Report> reportProvider,
-            SnailJobProperties properties) {
-        return new SnailRetryTemplate(reportProvider, properties);
-    }
-
-    /**
-     * SnailJob 大数据游标批处理与流式分片执行门面 (MyBatis-Plus 流式游标适配配置)
-     */
-    @Configuration(proxyBeanMethods = false)
-    @ConditionalOnClass(name = {
-            "io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate",
-            "org.apache.ibatis.cursor.Cursor"
-    })
-    public static class SnailJobMyBatisConfiguration {
-
-        @Bean
-        @ConditionalOnMissingBean(SnailShardingBatchTemplate.class)
-        @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "batch-template-enabled", havingValue = "true", matchIfMissing = true)
-        public SnailShardingBatchTemplate snailMyBatisStreamingTemplate(
-                @Qualifier("atengTaskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
-            return new SnailMyBatisStreamingTemplate(taskExecutorProvider.getIfAvailable());
-        }
-    }
-
-    /**
-     * SnailJob 大数据游标批处理与流式分片执行门面 (缺省分片批处理配置)
-     */
-    @Bean
-    @ConditionalOnMissingBean(SnailShardingBatchTemplate.class)
-    @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "batch-template-enabled", havingValue = "true", matchIfMissing = true)
-    public SnailShardingBatchTemplate snailShardingBatchTemplate(
-            @Qualifier("atengTaskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
-        return new SnailShardingBatchTemplate(taskExecutorProvider.getIfAvailable());
-    }
-
-    /**
-     * SnailJob 多租户隔离遍历执行门面
-     *
-     * @param tenantListProvider         多租户列表提供者 SPI (可选)
-     * @param transactionManagerProvider 事务管理器提供者 (可选)
-     * @return TenantJobTemplate 实例
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "tenant-template-enabled", havingValue = "true", matchIfMissing = true)
-    public TenantJobTemplate tenantJobTemplate(
-            ObjectProvider<TenantListProvider> tenantListProvider,
-            ObjectProvider<PlatformTransactionManager> transactionManagerProvider) {
-        return new TenantJobTemplate(tenantListProvider.getIfAvailable(), transactionManagerProvider);
-    }
-
-    /**
      * SnailJob 官方 OpenAPI 编程式管理门面
      *
-     * @param jobClientProvider   SnailJob 任务 OpenAPI 客户端提供者 (可选)
-     * @param retryClientProvider SnailJob 重试 OpenAPI 客户端提供者 (可选)
-     * @param properties          SnailJob 全局配置属性
+     * @param jobClientProvider    SnailJob 任务 OpenAPI 客户端提供者 (可选)
+     * @param retryClientProvider  SnailJob 重试 OpenAPI 客户端提供者 (可选)
+     * @param properties           SnailJob 全局配置属性
+     * @param taskExecutorProvider Core 受管线程池提供者 (可选)
      * @return SnailJobAdminTemplate 实例
      */
     @Bean
@@ -422,10 +229,12 @@ public class AtengSnailJobAutoConfiguration {
     public SnailJobAdminTemplate snailJobAdminTemplate(
             ObjectProvider<JobOpenApiClientV2> jobClientProvider,
             ObjectProvider<RetryOpenApiClientV2> retryClientProvider,
-            SnailJobProperties properties) {
+            SnailJobProperties properties,
+            @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
         JobOpenApiClientV2 jobClient = jobClientProvider.getIfAvailable();
         RetryOpenApiClientV2 retryClient = retryClientProvider.getIfAvailable();
-        return new SnailJobAdminTemplate(jobClient, retryClient, properties);
+        Executor managedExecutor = resolveManagedExecutor(properties, taskExecutorProvider);
+        return new SnailJobAdminTemplate(jobClient, retryClient, properties, managedExecutor);
     }
 
     /**
@@ -434,10 +243,183 @@ public class AtengSnailJobAutoConfiguration {
      * @return SnailJobLogbackAppenderRegistrar 实例
      */
     @Bean
+    @ConditionalOnClass(name = "ch.qos.logback.classic.LoggerContext")
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.job.snail", name = "log-mirror-enabled", havingValue = "true", matchIfMissing = true)
-    public SnailJobLogbackAppenderRegistrar snailJobLogbackAppenderRegistrar() {
-        return new SnailJobLogbackAppenderRegistrar();
+    public SnailJobLogbackAppenderRegistrar snailJobLogbackAppenderRegistrar(SnailJobProperties properties) {
+        return new SnailJobLogbackAppenderRegistrar(properties);
+    }
+
+    /**
+     * 任务调度引擎子装配（受 {@code ateng.boot.job.snail.job.enabled} 门控）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public static class JobEngineConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean
+        public SnailLocalWatchdog snailLocalWatchdog(
+                ApplicationEventPublisher eventPublisher,
+                SnailJobProperties properties,
+                ObjectProvider<JobTimeoutFallbackHandler> fallbackHandlersProvider,
+                @Qualifier("taskExecutor") ObjectProvider<Executor> asyncExecutorProvider) {
+            return new SnailLocalWatchdog(
+                    eventPublisher,
+                    null,
+                    properties.getWatchdogGracePeriod(),
+                    fallbackHandlersProvider.orderedStream().toList(),
+                    resolveManagedExecutor(properties, asyncExecutorProvider)
+            );
+        }
+
+        @Bean
+        @ConditionalOnClass(com.aizuda.snailjob.client.job.core.Scanner.class)
+        @ConditionalOnMissingBean
+        public AtengSnailJobScanner atengSnailJobScanner() {
+            return new AtengSnailJobScanner();
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "context-aspect-enabled", havingValue = "true", matchIfMissing = true)
+        public SnailJobContextAspect snailJobContextAspect(
+                SnailLocalWatchdog watchdog,
+                SnailJobProperties properties,
+                ObjectProvider<GracefulDrainStateMachine> drainStateMachineProvider,
+                ObjectProvider<SnailJobMetricsBinder> metricsBinderProvider,
+                ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider,
+                ObjectProvider<SnailJobInterceptor> interceptorsProvider,
+                ObjectProvider<JobTimeoutFallbackHandler> fallbackHandlersProvider,
+                ObjectProvider<SnailJobRuntimeGovernor> governorProvider,
+                @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
+            return new SnailJobContextAspect(
+                    watchdog,
+                    properties,
+                    drainStateMachineProvider.getIfAvailable(),
+                    metricsBinderProvider.getIfAvailable(),
+                    alertAggregatorProvider.getIfAvailable(),
+                    interceptorsProvider.orderedStream().toList(),
+                    fallbackHandlersProvider.orderedStream().toList(),
+                    governorProvider.getIfAvailable(),
+                    resolveManagedExecutor(properties, taskExecutorProvider)
+            );
+        }
+
+        @Configuration(proxyBeanMethods = false)
+        @ConditionalOnClass(name = {
+                "io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate",
+                "org.apache.ibatis.cursor.Cursor"
+        })
+        public static class SnailJobMyBatisConfiguration {
+
+            @Bean
+            @ConditionalOnMissingBean(SnailShardingBatchTemplate.class)
+            @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "batch-template-enabled", havingValue = "true", matchIfMissing = true)
+            public SnailShardingBatchTemplate snailMyBatisStreamingTemplate(
+                    @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
+                    SnailJobProperties properties) {
+                SnailJobProperties.BatchProperties batch = properties.getBatch();
+                return new SnailMyBatisStreamingTemplate(
+                        resolveManagedExecutor(properties, taskExecutorProvider),
+                        batch.getDefaultBatchSize(),
+                        batch.getDefaultMaxConcurrency(),
+                        true,
+                        properties.isManagedPoolEnabled()
+                );
+            }
+        }
+
+        @Bean
+        @ConditionalOnMissingBean(SnailShardingBatchTemplate.class)
+        @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "batch-template-enabled", havingValue = "true", matchIfMissing = true)
+        public SnailShardingBatchTemplate snailShardingBatchTemplate(
+                @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
+                SnailJobProperties properties) {
+            SnailJobProperties.BatchProperties batch = properties.getBatch();
+            return new SnailShardingBatchTemplate(
+                    resolveManagedExecutor(properties, taskExecutorProvider),
+                    batch.getDefaultBatchSize(),
+                    batch.getDefaultMaxConcurrency(),
+                    true,
+                    properties.isManagedPoolEnabled()
+            );
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "tenant-template-enabled", havingValue = "true", matchIfMissing = true)
+        public TenantJobTemplate tenantJobTemplate(
+                ObjectProvider<TenantListProvider> tenantListProvider,
+                ObjectProvider<PlatformTransactionManager> transactionManagerProvider) {
+            return new TenantJobTemplate(tenantListProvider.getIfAvailable(), transactionManagerProvider);
+        }
+    }
+
+    /**
+     * 分布式重试引擎子装配（受 {@code ateng.boot.job.snail.retry.enabled} 门控）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnProperty(prefix = "ateng.boot.job.snail.retry", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public static class RetryEngineConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean
+        public SpelIdempotentIdGenerator spelIdempotentIdGenerator() {
+            return new SpelIdempotentIdGenerator();
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        public ArgsHashIdempotentIdGenerator argsHashIdempotentIdGenerator() {
+            return new ArgsHashIdempotentIdGenerator();
+        }
+
+        @Bean
+        @ConditionalOnMissingBean(SnailRetryContextStore.class)
+        public SnailRetryContextStore snailRetryContextStore() {
+            return new InMemorySnailRetryContextStore();
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        @ConditionalOnProperty(prefix = "ateng.boot.job.snail.retry", name = "context-aspect-enabled", havingValue = "true", matchIfMissing = true)
+        public SnailRetryContextAspect snailRetryContextAspect(
+                ObjectProvider<GracefulDrainStateMachine> drainStateMachineProvider,
+                ObjectProvider<SnailJobMetricsBinder> metricsBinderProvider,
+                ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider,
+                ObjectProvider<SnailRetryContextStore> retryContextStoreProvider) {
+            return new SnailRetryContextAspect(
+                    drainStateMachineProvider.getIfAvailable(),
+                    metricsBinderProvider.getIfAvailable(),
+                    alertAggregatorProvider.getIfAvailable(),
+                    retryContextStoreProvider.getIfAvailable()
+            );
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        public SnailRetryTemplate snailRetryTemplate(
+                ObjectProvider<com.aizuda.snailjob.client.core.Report> reportProvider,
+                SnailJobProperties properties) {
+            return new SnailRetryTemplate(reportProvider, properties);
+        }
+
+        @Bean
+        @ConditionalOnMissingBean(RetryCompleteCallback.class)
+        public SnailRetryDeadLetterCallback snailRetryDeadLetterCallback(
+                ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider) {
+            return new SnailRetryDeadLetterCallback(alertAggregatorProvider);
+        }
+    }
+
+    private static Executor resolveManagedExecutor(
+            SnailJobProperties properties,
+            ObjectProvider<Executor> taskExecutorProvider) {
+        if (properties != null && !properties.isManagedPoolEnabled()) {
+            return null;
+        }
+        return taskExecutorProvider != null ? taskExecutorProvider.getIfAvailable() : null;
     }
 
     /**
@@ -491,6 +473,27 @@ public class AtengSnailJobAutoConfiguration {
         }
         if (StringUtils.hasText(group)) {
             target.setGroup(group);
+        }
+
+        // 5. 同步 OpenAPI 连接配置 (host 留空时默认沿用主 server host)
+        if (source.getOpenapi() != null) {
+            SnailJobProperties.OpenApiProperties openApi = source.getOpenapi();
+            com.aizuda.snailjob.client.common.config.SnailJobProperties.SnailOpenApiConfig nativeOpenApi = target.getOpenapi();
+            if (nativeOpenApi == null) {
+                nativeOpenApi = new com.aizuda.snailjob.client.common.config.SnailJobProperties.SnailOpenApiConfig();
+                target.setOpenapi(nativeOpenApi);
+            }
+            String resolvedHost = StringUtils.hasText(openApi.getHost())
+                    ? openApi.getHost().trim()
+                    : (target.getServer() != null ? target.getServer().getHost() : null);
+            if (StringUtils.hasText(resolvedHost)) {
+                nativeOpenApi.setHost(resolvedHost);
+            }
+            nativeOpenApi.setPort(openApi.getPort());
+            nativeOpenApi.setHttps(openApi.isHttps());
+            if (StringUtils.hasText(openApi.getPrefix())) {
+                nativeOpenApi.setPrefix(openApi.getPrefix().trim());
+            }
         }
     }
 

@@ -14,14 +14,21 @@ import com.aizuda.snailjob.model.dto.ExecuteResult;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.util.ValidatorUtil;
 import io.github.atengk.boot.job.snail.annotation.AtengSnailJob;
 import io.github.atengk.boot.job.snail.autoconfigure.AtengSnailJobAutoConfiguration;
 import io.github.atengk.boot.job.snail.context.SnailJobContext;
+import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
 import io.github.atengk.boot.job.snail.enums.JobTenantMode;
+import io.github.atengk.boot.job.snail.event.SnailJobAlertEvent;
 import io.github.atengk.boot.job.snail.event.SnailJobTimeoutEvent;
 import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper;
 import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper.SnailJobTestResult;
+import io.github.atengk.boot.job.snail.interceptor.SnailJobExecutionContext;
+import io.github.atengk.boot.job.snail.interceptor.SnailJobInterceptor;
 import io.github.atengk.boot.job.snail.model.ShardingContext;
+import io.github.atengk.boot.job.snail.watchdog.JobTimeoutFallbackHandler;
+import io.github.atengk.boot.job.snail.watchdog.SnailJobExecutionMetadata;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -75,12 +82,20 @@ class SnailJobContextAspectTest {
     @Autowired
     private TestTimeoutEventListener timeoutEventListener;
 
+    @Autowired
+    private StandaloneGovernanceJobService governanceJobService;
+
+    @Autowired
+    private CapturingMetadataInterceptor metadataInterceptor;
+
     @AfterEach
     void tearDown() {
         TenantContextHolder.clear();
         UserContextHolder.clear();
         MDC.clear();
         timeoutEventListener.clear();
+        governanceJobService.reset();
+        metadataInterceptor.clear();
         SnailJobTestHelper.clear();
     }
 
@@ -378,6 +393,190 @@ class SnailJobContextAspectTest {
         assertThat(mergeResult.isSuccess()).isTrue();
     }
 
+    @Test
+    @DisplayName("测试超过 maxPayloadSize 限制的 jobParams 在入口立即 Fail-Fast 拒绝且不执行业务")
+    void testMaxPayloadSizeRejectsOversizedJobParamsFailFast() {
+        io.github.atengk.boot.job.snail.properties.SnailJobProperties smallLimitProps =
+                new io.github.atengk.boot.job.snail.properties.SnailJobProperties();
+        smallLimitProps.setMaxPayloadSize(org.springframework.util.unit.DataSize.ofBytes(64));
+
+        SnailJobContextAspect limitedAspect = new SnailJobContextAspect(null, smallLimitProps);
+        org.springframework.aop.aspectj.annotation.AspectJProxyFactory proxyFactory =
+                new org.springframework.aop.aspectj.annotation.AspectJProxyFactory(new MockJobService());
+        proxyFactory.setProxyTargetClass(true);
+        proxyFactory.addAspect(limitedAspect);
+        MockJobService proxy = proxyFactory.getProxy();
+
+        JobArgs oversized = new JobArgs();
+        oversized.setJobParams("{\"name\":\"" + "X".repeat(128) + "\",\"count\":1}");
+
+        assertThatThrownBy(() -> proxy.executeWithDto(oversized, null))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("maxPayloadSize");
+    }
+
+    @Test
+    @DisplayName("测试 @AtengSnailJob 本地退避重试瞬态故障自愈后成功，且不发布告警")
+    void testLocalRetryRecoversOnTransientFailureWithoutAlert() {
+        JobArgs args = new JobArgs();
+        args.setJobParams("{\"traceId\":\"tr-retry-ok\"}");
+
+        ExecuteResult result = governanceJobService.retryableRecoverJob(args);
+        assertThat(result).isNotNull();
+        assertThat(result.getStatus()).isEqualTo(1);
+        assertThat(governanceJobService.getAttemptCount()).isEqualTo(2);
+        assertThat(timeoutEventListener.getAlertEvents()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("测试 @AtengSnailJob 本地重试耗尽后抛出异常并仅发布一次首发告警")
+    void testLocalRetryExhaustedPublishesSingleAlert() {
+        JobArgs args = new JobArgs();
+        args.setJobParams("{\"traceId\":\"tr-retry-fail\"}");
+
+        assertThatThrownBy(() -> governanceJobService.retryableExhaustJob(args))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("persistent downstream glitch");
+
+        assertThat(governanceJobService.getAttemptCount()).isEqualTo(3);
+        assertThat(timeoutEventListener.getAlertEvents()).hasSize(1);
+        assertThat(timeoutEventListener.getAlertEvents().get(0).getAlertType())
+                .isEqualTo(SnailJobAlertEvent.AlertType.INITIAL_FAILURE);
+    }
+
+    @Test
+    @DisplayName("测试校验失败、JSON 解析错误、方法内校验失败及看门狗硬超时均强制 0 次重试 Fail-Fast")
+    void testDeterministicErrorsSkipLocalRetry() {
+        // 1. DTO JSR-303 校验失败 -> 0 次进入目标方法
+        JobArgs invalidDtoArgs = new JobArgs();
+        invalidDtoArgs.setJobParams("{\"name\":\"\",\"count\":0}");
+        assertThatThrownBy(() -> governanceJobService.retryableValidatedDtoJob(invalidDtoArgs, null))
+                .isInstanceOf(BusinessException.class);
+        assertThat(governanceJobService.getAttemptCount()).isZero();
+
+        // 2. JSON 反序列化失败 -> 0 次进入目标方法
+        JobArgs brokenJsonArgs = new JobArgs();
+        brokenJsonArgs.setJobParams("{broken-json");
+        assertThatThrownBy(() -> governanceJobService.retryableValidatedDtoJob(brokenJsonArgs, null))
+                .isInstanceOf(BusinessException.class);
+        assertThat(governanceJobService.getAttemptCount()).isZero();
+
+        // 3. 方法体内 ValidatorUtil 抛出 BAD_REQUEST BusinessException -> 仅执行 1 次不重试
+        assertThatThrownBy(() -> governanceJobService.retryableProgrammaticValidationJob(new JobArgs()))
+                .isInstanceOf(BusinessException.class);
+        assertThat(governanceJobService.getAttemptCount()).isEqualTo(1);
+
+        // 4. 看门狗硬超时 -> 仅执行 1 次不重试
+        governanceJobService.reset();
+        assertThatThrownBy(() -> governanceJobService.retryableTimeoutJob(new JobArgs()))
+                .isInstanceOf(InterruptedException.class);
+        assertThat(governanceJobService.getAttemptCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("测试工作线程吞咽中断正常返回时看门狗仍强制判超时并触发 fallbackMethod / 全局降级与事件")
+    void testSwallowedInterruptNormalReturnStillTriggersFallbackAndEvent() throws InterruptedException {
+        timeoutEventListener.resetLatch(1);
+        JobArgs args = new JobArgs();
+        args.setJobId(9101L);
+        args.setTaskBatchId(9102L);
+
+        ExecuteResult result = governanceJobService.swallowInterruptWithFallback(args);
+        assertThat(result).isNotNull();
+        assertThat(result.getResult()).isEqualTo("forced-fallback-after-swallow");
+        assertThat(timeoutEventListener.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(timeoutEventListener.getEvents()).hasSize(1);
+
+        // 无 fallbackMethod 且吞咽中断返回虚假成功时：强制拒绝放行，触发全局降级并抛出超时异常
+        assertThatThrownBy(() -> governanceJobService.swallowInterruptWithoutFallback(new JobArgs()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("超时");
+        assertThat(governanceJobService.getGlobalFallbackCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("测试 @AtengSnailJob alertEnabled=false 静音覆写及 alertSuppressThreshold 独立阈值覆写")
+    void testAnnotationAlertEnabledAndSuppressThresholdOverride() {
+        assertThatThrownBy(() -> governanceJobService.mutedJob(new JobArgs()))
+                .isInstanceOf(RuntimeException.class);
+        assertThat(timeoutEventListener.getAlertEvents()).isEmpty();
+
+        for (int i = 0; i < 2; i++) {
+            assertThatThrownBy(() -> governanceJobService.thresholdOverrideJob(new JobArgs()))
+                    .isInstanceOf(RuntimeException.class);
+        }
+        assertThat(timeoutEventListener.getAlertEvents()).hasSize(2);
+        assertThat(timeoutEventListener.getAlertEvents().get(1).getAlertType())
+                .isEqualTo(SnailJobAlertEvent.AlertType.FAILURE_SUMMARY);
+    }
+
+    @Test
+    @DisplayName("测试执行元数据在 DTO 租户提取后完整构建，且支持受管线程池 Core taskExecutor 调度")
+    void testCompleteMetadataAfterArgResolutionAndManagedPool() {
+        JobArgs args = new JobArgs();
+        args.setJobId(7001L);
+        args.setTaskBatchId(7002L);
+        args.setWorkflowTaskBatchId(7003L);
+        args.setWorkflowNodeId(7004L);
+        args.setJobBizId("BIZ-7005");
+        args.setJobParams("{\"name\":\"meta-order\",\"count\":2,\"tenantId\":\"tenant-meta\"}");
+
+        ExecuteResult result = governanceJobService.metadataCheckJob(args, null);
+        assertThat(result.getStatus()).isEqualTo(1);
+
+        SnailJobExecutionMetadata meta = metadataInterceptor.getCapturedMetadata();
+        assertThat(meta).isNotNull();
+        assertThat(meta.getTenantId()).isEqualTo("tenant-meta");
+        assertThat(meta.getWorkflowTaskBatchId()).isEqualTo(7003L);
+        assertThat(meta.getWorkflowNodeId()).isEqualTo(7004L);
+        assertThat(meta.getJobBizId()).isEqualTo("BIZ-7005");
+
+        // 验证注入 Core 受管线程池时切面提交至受管工作线程并透传 SnailJobContext
+        new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+                .withConfiguration(org.springframework.boot.autoconfigure.AutoConfigurations.of(
+                        org.springframework.boot.autoconfigure.aop.AopAutoConfiguration.class,
+                        io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration.class,
+                        AtengSnailJobAutoConfiguration.class
+                ))
+                .withBean(StandaloneGovernanceJobService.class)
+                .run(ctx -> {
+                    StandaloneGovernanceJobService proxyService = ctx.getBean(StandaloneGovernanceJobService.class);
+                    ExecuteResult poolRes = proxyService.managedPoolJob(new JobArgs());
+                    assertThat(poolRes.getStatus()).isEqualTo(1);
+                    assertThat(proxyService.getLastWorkerThreadName()).doesNotContain("ForkJoinPool.commonPool");
+                    assertThat(proxyService.isContextPropagatedInWorker()).isTrue();
+                });
+    }
+
+    @Test
+    @DisplayName("测试非法负 retryInterval 不泄漏在途计数且超时后先清中断再调度降级方法")
+    void testNegativeRetryIntervalDoesNotLeakInFlightAndTimeoutClearsInterruptBeforeFallback() {
+        new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+                .withConfiguration(org.springframework.boot.autoconfigure.AutoConfigurations.of(
+                        org.springframework.boot.autoconfigure.aop.AopAutoConfiguration.class,
+                        AtengSnailJobAutoConfiguration.class
+                ))
+                .withBean(StandaloneGovernanceJobService.class)
+                .run(ctx -> {
+                    io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine drain =
+                            ctx.getBean(io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine.class);
+                    StandaloneGovernanceJobService proxyService = ctx.getBean(StandaloneGovernanceJobService.class);
+
+                    assertThatThrownBy(() -> proxyService.negativeRetryIntervalJob(new JobArgs()))
+                            .isInstanceOf(IllegalArgumentException.class)
+                            .hasMessageContaining("retryInterval");
+                    assertThat(drain.getInFlightJobCount()).isZero();
+                    assertThat(MDC.get(SnailJobContextAspect.TRACE_ID_KEY)).isNull();
+                    assertThat(TenantContextHolder.getTenantId()).isNull();
+                    assertThat(UserContextHolder.getExplicit()).isNull();
+                });
+
+        ExecuteResult fallbackResult = governanceJobService.interruptFlagFallbackJob(new JobArgs());
+        assertThat(fallbackResult.getStatus()).isEqualTo(1);
+        assertThat(fallbackResult.getResult()).isEqualTo("fallback-interrupt-cleared");
+        assertThat(Thread.currentThread().isInterrupted()).isFalse();
+    }
+
     @TestConfiguration
     @EnableAspectJAutoProxy
     static class TestJobConfig {
@@ -398,8 +597,23 @@ class SnailJobContextAspectTest {
         }
 
         @Bean
-        public TestTimeoutEventListener testTimeoutEventListener() {
-            return new TestTimeoutEventListener();
+        public StandaloneGovernanceJobService standaloneGovernanceJobService() {
+            return new StandaloneGovernanceJobService();
+        }
+
+        @Bean
+        public CapturingMetadataInterceptor capturingMetadataInterceptor() {
+            return new CapturingMetadataInterceptor();
+        }
+
+        @Bean
+        public TestTimeoutEventListener testTimeoutEventListener(StandaloneGovernanceJobService govService) {
+            return new TestTimeoutEventListener(govService);
+        }
+
+        @Bean
+        public JobTimeoutFallbackHandler globalCountingFallbackHandler(StandaloneGovernanceJobService govService) {
+            return (metadata, elapsed) -> govService.incrementGlobalFallback();
         }
     }
 
@@ -534,10 +748,177 @@ class SnailJobContextAspectTest {
         }
     }
 
+    @Service
+    public static class StandaloneGovernanceJobService {
+
+        private final java.util.concurrent.atomic.AtomicInteger attemptCount = new java.util.concurrent.atomic.AtomicInteger();
+        private final java.util.concurrent.atomic.AtomicInteger globalFallbackCount = new java.util.concurrent.atomic.AtomicInteger();
+        private volatile String lastWorkerThreadName;
+        private volatile boolean contextPropagatedInWorker;
+
+        public void reset() {
+            attemptCount.set(0);
+            globalFallbackCount.set(0);
+            lastWorkerThreadName = null;
+            contextPropagatedInWorker = false;
+        }
+
+        public int getAttemptCount() {
+            return attemptCount.get();
+        }
+
+        public int getGlobalFallbackCount() {
+            return globalFallbackCount.get();
+        }
+
+        public void incrementGlobalFallback() {
+            globalFallbackCount.incrementAndGet();
+        }
+
+        public String getLastWorkerThreadName() {
+            return lastWorkerThreadName;
+        }
+
+        public boolean isContextPropagatedInWorker() {
+            return contextPropagatedInWorker;
+        }
+
+        @AtengSnailJob(name = "localRetryRecoverJob", retryCount = 2, retryInterval = "10ms")
+        public ExecuteResult retryableRecoverJob(JobArgs args) {
+            int attempt = attemptCount.incrementAndGet();
+            if (attempt == 1) {
+                throw new IllegalStateException("transient network glitch");
+            }
+            return ExecuteResult.success("recovered");
+        }
+
+        @AtengSnailJob(name = "localRetryExhaustJob", retryCount = 2, retryInterval = "10ms")
+        public ExecuteResult retryableExhaustJob(JobArgs args) {
+            attemptCount.incrementAndGet();
+            throw new IllegalStateException("persistent downstream glitch");
+        }
+
+        @AtengSnailJob(name = "retryValidatedDtoJob", retryCount = 3, retryInterval = "10ms")
+        public ExecuteResult retryableValidatedDtoJob(JobArgs args, @Valid OrderTaskDto dto) {
+            attemptCount.incrementAndGet();
+            return ExecuteResult.success(dto.getName());
+        }
+
+        @AtengSnailJob(name = "retryProgValidationJob", retryCount = 3, retryInterval = "10ms")
+        public ExecuteResult retryableProgrammaticValidationJob(JobArgs args) {
+            attemptCount.incrementAndGet();
+            OrderTaskDto invalid = new OrderTaskDto();
+            ValidatorUtil.validate(invalid);
+            return ExecuteResult.success();
+        }
+
+        @AtengSnailJob(name = "retryTimeoutJob", timeout = "50ms", retryCount = 3, retryInterval = "10ms")
+        public ExecuteResult retryableTimeoutJob(JobArgs args) throws InterruptedException {
+            attemptCount.incrementAndGet();
+            Thread.sleep(300);
+            return ExecuteResult.success();
+        }
+
+        @AtengSnailJob(name = "swallowInterruptFallbackJob", timeout = "60ms", fallbackMethod = "onSwallowTimeout")
+        public ExecuteResult swallowInterruptWithFallback(JobArgs args) {
+            try {
+                Thread.sleep(300);
+            } catch (InterruptedException ignored) {
+                // 模拟业务代码吞咽中断并试图正常返回
+            }
+            return ExecuteResult.success("fake-ok");
+        }
+
+        public ExecuteResult onSwallowTimeout() {
+            return ExecuteResult.success("forced-fallback-after-swallow");
+        }
+
+        @AtengSnailJob(name = "interruptFlagFallbackJob", timeout = "50ms", fallbackMethod = "onInterruptFlagFallback")
+        public ExecuteResult interruptFlagFallbackJob(JobArgs args) {
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(400);
+            while (!Thread.currentThread().isInterrupted() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            // 不主动清除中断标志，直接带中断状态返回，验证切面调用降级前已清理中断位
+            return ExecuteResult.success("fake-ok");
+        }
+
+        public ExecuteResult onInterruptFlagFallback() {
+            assertThat(Thread.currentThread().isInterrupted()).isFalse();
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException ex) {
+                throw new IllegalStateException("fallback interrupted unexpectedly", ex);
+            }
+            return ExecuteResult.success("fallback-interrupt-cleared");
+        }
+
+        @AtengSnailJob(name = "negativeRetryIntervalJob", retryCount = 1, retryInterval = "-10ms")
+        public ExecuteResult negativeRetryIntervalJob(JobArgs args) {
+            return ExecuteResult.success();
+        }
+
+        @AtengSnailJob(name = "swallowInterruptNoFallbackJob", timeout = "60ms")
+        public ExecuteResult swallowInterruptWithoutFallback(JobArgs args) {
+            try {
+                Thread.sleep(300);
+            } catch (InterruptedException ignored) {
+                // 吞咽中断返回成功
+            }
+            return ExecuteResult.success("fake-ok");
+        }
+
+        @AtengSnailJob(name = "mutedProbeJob", alertEnabled = false)
+        public ExecuteResult mutedJob(JobArgs args) {
+            throw new RuntimeException("noisy failure");
+        }
+
+        @AtengSnailJob(name = "thresholdOverrideJob", alertEnabled = true, alertSuppressThreshold = 2)
+        public ExecuteResult thresholdOverrideJob(JobArgs args) {
+            throw new RuntimeException("threshold failure");
+        }
+
+        @AtengSnailJob(name = "metadataCheckJob", tenantMode = JobTenantMode.PARAM)
+        public ExecuteResult metadataCheckJob(JobArgs args, @Valid OrderTaskDto dto) {
+            return ExecuteResult.success(dto.getTenantId());
+        }
+
+        @AtengSnailJob(name = "managedPoolJob")
+        public ExecuteResult managedPoolJob(JobArgs args) {
+            this.lastWorkerThreadName = Thread.currentThread().getName();
+            this.contextPropagatedInWorker = SnailJobContextHolder.get() != null
+                    && org.springframework.util.StringUtils.hasText(MDC.get(SnailJobContextAspect.TRACE_ID_KEY));
+            return ExecuteResult.success("pool-ok");
+        }
+    }
+
+    public static class CapturingMetadataInterceptor implements SnailJobInterceptor {
+
+        private volatile SnailJobExecutionMetadata capturedMetadata;
+
+        @Override
+        public boolean preHandle(SnailJobExecutionContext context) {
+            this.capturedMetadata = context.getMetadata();
+            return true;
+        }
+
+        public SnailJobExecutionMetadata getCapturedMetadata() {
+            return capturedMetadata;
+        }
+
+        public void clear() {
+            this.capturedMetadata = null;
+        }
+    }
+
     public static class TestTimeoutEventListener {
 
         private final List<SnailJobTimeoutEvent> events = Collections.synchronizedList(new ArrayList<>());
+        private final List<SnailJobAlertEvent> alertEvents = Collections.synchronizedList(new ArrayList<>());
         private volatile CountDownLatch latch = new CountDownLatch(1);
+
+        public TestTimeoutEventListener(StandaloneGovernanceJobService govService) {
+        }
 
         public void resetLatch(int count) {
             this.latch = new CountDownLatch(count);
@@ -553,12 +934,22 @@ class SnailJobContextAspectTest {
             latch.countDown();
         }
 
+        @EventListener
+        public void onAlert(SnailJobAlertEvent event) {
+            alertEvents.add(event);
+        }
+
         public List<SnailJobTimeoutEvent> getEvents() {
             return new ArrayList<>(events);
         }
 
+        public List<SnailJobAlertEvent> getAlertEvents() {
+            return new ArrayList<>(alertEvents);
+        }
+
         public void clear() {
             events.clear();
+            alertEvents.clear();
         }
     }
 }

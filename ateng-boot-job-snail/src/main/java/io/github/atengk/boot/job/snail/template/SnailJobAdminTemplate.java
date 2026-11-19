@@ -15,6 +15,7 @@ import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
+import io.github.atengk.boot.job.snail.support.SnailJobInternalSupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.util.Assert;
@@ -25,6 +26,7 @@ import java.util.Collections;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
@@ -51,12 +53,13 @@ public class SnailJobAdminTemplate {
     private final JobOpenApiClientV2 jobClient;
     private final RetryOpenApiClientV2 retryClient;
     private final SnailJobProperties properties;
+    private final Executor taskExecutor;
 
     /**
      * 默认无参构造器：基于 SnailJob 默认 OpenAPI 客户端构建
      */
     public SnailJobAdminTemplate() {
-        this(null, null, null);
+        this(null, null, null, null);
     }
 
     /**
@@ -65,7 +68,7 @@ public class SnailJobAdminTemplate {
      * @param jobClient SnailJob 任务 OpenAPI 客户端
      */
     public SnailJobAdminTemplate(JobOpenApiClientV2 jobClient) {
-        this(jobClient, null, null);
+        this(jobClient, null, null, null);
     }
 
     /**
@@ -75,7 +78,7 @@ public class SnailJobAdminTemplate {
      * @param retryClient SnailJob 重试 OpenAPI 客户端
      */
     public SnailJobAdminTemplate(JobOpenApiClientV2 jobClient, RetryOpenApiClientV2 retryClient) {
-        this(jobClient, retryClient, null);
+        this(jobClient, retryClient, null, null);
     }
 
     /**
@@ -86,9 +89,26 @@ public class SnailJobAdminTemplate {
      * @param properties  SnailJob 全局配置属性
      */
     public SnailJobAdminTemplate(JobOpenApiClientV2 jobClient, RetryOpenApiClientV2 retryClient, SnailJobProperties properties) {
+        this(jobClient, retryClient, properties, null);
+    }
+
+    /**
+     * 完整受管参数注入构造器（支持接入 Core 受管线程池执行超时保护异步调用）
+     *
+     * @param jobClient    SnailJob 任务 OpenAPI 客户端
+     * @param retryClient  SnailJob 重试 OpenAPI 客户端
+     * @param properties   SnailJob 全局配置属性
+     * @param taskExecutor Core 受管异步线程池（可为 null）
+     */
+    public SnailJobAdminTemplate(
+            JobOpenApiClientV2 jobClient,
+            RetryOpenApiClientV2 retryClient,
+            SnailJobProperties properties,
+            Executor taskExecutor) {
         this.jobClient = (jobClient != null) ? jobClient : createDefaultJobClient();
         this.retryClient = (retryClient != null) ? retryClient : createDefaultRetryClient();
         this.properties = (properties != null) ? properties : new SnailJobProperties();
+        this.taskExecutor = taskExecutor;
     }
 
     // =========================================================================
@@ -839,7 +859,12 @@ public class SnailJobAdminTemplate {
         if (timeout == null || timeout.isZero() || timeout.isNegative()) {
             return action.get();
         }
-        CompletableFuture<Result<T>> future = CompletableFuture.supplyAsync(action::get);
+        Executor effectiveExecutor = resolveEffectiveExecutor();
+        if (effectiveExecutor == null) {
+            return action.get();
+        }
+        Supplier<Result<T>> contextAwareAction = SnailJobInternalSupport.wrapWithContext(action);
+        CompletableFuture<Result<T>> future = CompletableFuture.supplyAsync(contextAwareAction, effectiveExecutor);
         try {
             return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException te) {
@@ -855,6 +880,14 @@ public class SnailJobAdminTemplate {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("SnailJob OpenAPI 操作 [" + operationName + "] 请求被中断", ie);
         }
+    }
+
+    private Executor resolveEffectiveExecutor() {
+        return SnailJobInternalSupport.resolveManagedExecutor(this.taskExecutor, properties.isManagedPoolEnabled());
+    }
+
+    public Executor getTaskExecutor() {
+        return taskExecutor;
     }
 
     private JobOpenApiClientV2 requireJobClient() {
