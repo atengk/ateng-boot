@@ -108,8 +108,11 @@ public class OrderLifecycleScenarioService {
                 this.orderCasUpdater
         );
 
-        order.setVersion(order.getVersion() + 1);
-        return TransitionResult.success(sourceState, targetState, OrderEvent.PAY);
+        if (sourceState != targetState) {
+            order.setVersion(order.getVersion() + 1);
+            return TransitionResult.success(sourceState, targetState, OrderEvent.PAY);
+        }
+        return TransitionResult.idempotent(targetState, OrderEvent.PAY);
     }
 
     /**

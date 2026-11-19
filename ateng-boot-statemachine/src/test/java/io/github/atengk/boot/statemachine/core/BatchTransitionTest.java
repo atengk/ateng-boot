@@ -2,6 +2,7 @@ package io.github.atengk.boot.statemachine.core;
 
 import io.github.atengk.boot.statemachine.builder.StateMachineBuilder;
 import io.github.atengk.boot.statemachine.builder.StateMachineBuilderFactory;
+import io.github.atengk.boot.statemachine.cas.StateMachineCasTemplate;
 import io.github.atengk.boot.statemachine.enums.StateMachineResultCode;
 import io.github.atengk.boot.statemachine.exception.StateMachineException;
 import io.github.atengk.boot.statemachine.model.BatchOptions;
@@ -322,5 +323,183 @@ class BatchTransitionTest {
         assertThat(emptyResult.getTotalCount()).isEqualTo(0);
         assertThat(emptyResult.hasFailures()).isFalse();
         assertThat(emptyResult.isAllSuccess()).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 fireEventBatchWithCas 严格遵循 CAS-First 时序，冲突实体零生命周期与零动作副作用")
+    void testBatchWithCasZeroSideEffectsOnConflictFailSafe() {
+        List<String> executionTrace = new ArrayList<>();
+
+        StateMachineBuilder<OrderState, OrderEvent, String> builder = StateMachineBuilderFactory.create();
+        builder.state(OrderState.WAIT_PAY)
+                .onExit((from, to, event, ctx) -> executionTrace.add("EXIT:WAIT_PAY:" + ctx));
+        builder.state(OrderState.PAID)
+                .onEntry((from, to, event, ctx) -> executionTrace.add("ENTRY:PAID:" + ctx));
+        builder.externalTransition()
+                .from(OrderState.WAIT_PAY)
+                .to(OrderState.PAID)
+                .on(OrderEvent.PAY)
+                .perform((from, to, event, ctx) -> executionTrace.add("ACTION:" + ctx))
+                .performAfterCommit((from, to, event, ctx) -> executionTrace.add("POST_COMMIT:" + ctx));
+
+        StateMachine<OrderState, OrderEvent, String> machine = builder.build("BATCH_CAS_FAIL_SAFE_MACHINE");
+
+        Order o1 = new Order(1L, OrderState.WAIT_PAY);
+        Order o2Conflict = new Order(2L, OrderState.WAIT_PAY);
+        Order o3 = new Order(3L, OrderState.WAIT_PAY);
+        List<Order> orders = List.of(o1, o2Conflict, o3);
+
+        BatchTransitionResult<OrderState, Order> result = machine.fireEventBatchWithCas(
+                orders,
+                Order::getState,
+                Order::setState,
+                OrderEvent.PAY,
+                "BATCH_CTX",
+                (ent, from, to) -> {
+                    executionTrace.add("CAS:" + ent.getId());
+                    return ent.getId() == 2L ? 0 : 1;
+                },
+                BatchOptions.of(2, false)
+        );
+
+        assertThat(result.getTotalCount()).isEqualTo(3);
+        assertThat(result.getSuccessCount()).isEqualTo(2);
+        assertThat(result.getFailureCount()).isEqualTo(1);
+        assertThat(result.getSuccessEntities()).containsExactly(o1, o3);
+        assertThat(o1.getState()).isEqualTo(OrderState.PAID);
+        assertThat(o2Conflict.getState()).isEqualTo(OrderState.WAIT_PAY);
+        assertThat(o3.getState()).isEqualTo(OrderState.PAID);
+
+        StateMachineException conflictEx = result.getFailures().get(o2Conflict);
+        assertThat(conflictEx).isNotNull();
+        assertThat(conflictEx.getCode()).isEqualTo(StateMachineResultCode.CONCURRENT_CAS_CONFLICT.getCode());
+
+        // 严格验证 CAS-First 时序：CAS:1 先于 EXIT/ACTION/ENTRY/POST_COMMIT；CAS:2 冲突后零副作用
+        assertThat(executionTrace).containsExactly(
+                "CAS:1", "EXIT:WAIT_PAY:BATCH_CTX", "ACTION:BATCH_CTX", "ENTRY:PAID:BATCH_CTX", "POST_COMMIT:BATCH_CTX",
+                "CAS:2",
+                "CAS:3", "EXIT:WAIT_PAY:BATCH_CTX", "ACTION:BATCH_CTX", "ENTRY:PAID:BATCH_CTX", "POST_COMMIT:BATCH_CTX"
+        );
+    }
+
+    @Test
+    @DisplayName("测试 fireEventBatchWithCas 与 StateMachineCasTemplate.executeBatch 在 Fail-Fast 模式下遇到 CAS 冲突立即熔断")
+    void testBatchWithCasFailFastAndTemplateSymmetry() {
+        AtomicInteger actionCounter = new AtomicInteger(0);
+        AtomicInteger casCounter = new AtomicInteger(0);
+
+        StateMachineBuilder<OrderState, OrderEvent, Void> builder = StateMachineBuilderFactory.create();
+        builder.externalTransition()
+                .from(OrderState.WAIT_PAY)
+                .to(OrderState.CANCELLED)
+                .on(OrderEvent.CANCEL)
+                .perform((from, to, event, ctx) -> actionCounter.incrementAndGet());
+
+        StateMachine<OrderState, OrderEvent, Void> machine = builder.build("BATCH_CAS_FAIL_FAST_MACHINE");
+
+        Order o1 = new Order(10L, OrderState.WAIT_PAY);
+        Order o2Conflict = new Order(20L, OrderState.WAIT_PAY);
+        Order o3Untouched = new Order(30L, OrderState.WAIT_PAY);
+
+        assertThatThrownBy(() -> StateMachineCasTemplate.executeBatch(
+                machine,
+                List.of(o1, o2Conflict, o3Untouched),
+                Order::getState,
+                Order::setState,
+                OrderEvent.CANCEL,
+                null,
+                (ent, from, to) -> {
+                    casCounter.incrementAndGet();
+                    return ent.getId() == 20L ? 0 : 1;
+                },
+                BatchOptions.failFast(2)
+        ))
+                .isInstanceOf(StateMachineException.class)
+                .satisfies(ex -> {
+                    StateMachineException smEx = (StateMachineException) ex;
+                    assertThat(smEx.getCode()).isEqualTo(StateMachineResultCode.BATCH_TRANSITION_FAILED.getCode());
+                    assertThat(smEx.getCause()).isInstanceOf(StateMachineException.class);
+                    assertThat(((StateMachineException) smEx.getCause()).getCode())
+                            .isEqualTo(StateMachineResultCode.CONCURRENT_CAS_CONFLICT.getCode());
+                });
+
+        assertThat(o1.getState()).isEqualTo(OrderState.CANCELLED);
+        assertThat(o2Conflict.getState()).isEqualTo(OrderState.WAIT_PAY);
+        assertThat(o3Untouched.getState()).isEqualTo(OrderState.WAIT_PAY);
+        assertThat(casCounter.get()).isEqualTo(2);
+        assertThat(actionCounter.get()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("测试 fireEventBatchWithCas 协同幂等策略：已处于目标态的实体平滑跳过 CAS 更新并计入成功")
+    void testBatchWithCasIdempotentSkip() {
+        AtomicInteger casCounter = new AtomicInteger(0);
+        AtomicInteger actionCounter = new AtomicInteger(0);
+
+        StateMachineBuilder<OrderState, OrderEvent, Void> builder = StateMachineBuilderFactory.create();
+        builder.externalTransition()
+                .from(OrderState.WAIT_PAY)
+                .to(OrderState.PAID)
+                .on(OrderEvent.PAY)
+                .idempotent(true)
+                .perform((from, to, event, ctx) -> actionCounter.incrementAndGet());
+
+        StateMachine<OrderState, OrderEvent, Void> machine = builder.build("BATCH_CAS_IDEMP_MACHINE");
+
+        Order waiting = new Order(101L, OrderState.WAIT_PAY);
+        Order alreadyPaid = new Order(102L, OrderState.PAID);
+
+        BatchTransitionResult<OrderState, Order> result = StateMachineCasTemplate.executeBatch(
+                machine,
+                List.of(waiting, alreadyPaid),
+                Order::getState,
+                Order::setState,
+                OrderEvent.PAY,
+                null,
+                (ent, from, to) -> {
+                    casCounter.incrementAndGet();
+                    return 1;
+                }
+        );
+
+        assertThat(result.isAllSuccess()).isTrue();
+        assertThat(result.getTotalCount()).isEqualTo(2);
+        assertThat(result.getSuccessCount()).isEqualTo(2);
+        assertThat(result.getSuccessEntities()).containsExactly(waiting, alreadyPaid);
+        assertThat(casCounter.get()).isEqualTo(1); // 仅 waiting 执行了 CAS
+        assertThat(actionCounter.get()).isEqualTo(1); // 仅 waiting 执行了 Action
+    }
+
+    @Test
+    @DisplayName("测试 fireEventBatchWithCas 与 executeBatch 参数防卫与免上下文重载")
+    void testBatchWithCasDefensiveAndOverloads() {
+        StateMachine<OrderState, OrderEvent, Void> machine = createOrderStateMachine(null);
+        Order o1 = new Order(1L, OrderState.WAIT_PAY);
+
+        assertThatThrownBy(() -> StateMachineCasTemplate.executeBatch(
+                null, List.of(o1), Order::getState, Order::setState, OrderEvent.PAY, null, (e, f, t) -> 1
+        )).isInstanceOf(IllegalArgumentException.class);
+
+        assertThatThrownBy(() -> machine.fireEventBatchWithCas(
+                List.of(o1), Order::getState, Order::setState, OrderEvent.PAY, null
+        )).isInstanceOf(IllegalArgumentException.class);
+
+        BatchTransitionResult<OrderState, Order> empty = machine.fireEventBatchWithCas(
+                Collections.emptyList(), Order::getState, Order::setState, OrderEvent.PAY, (e, f, t) -> 1
+        );
+        assertThat(empty.getTotalCount()).isZero();
+
+        BatchTransitionResult<OrderState, Order> overloadOk = machine.fireEventBatchWithCas(
+                List.of(o1), Order::getState, Order::setState, OrderEvent.PAY, (e, f, t) -> 1, BatchOptions.of(10)
+        );
+        assertThat(overloadOk.isAllSuccess()).isTrue();
+        assertThat(o1.getState()).isEqualTo(OrderState.PAID);
+
+        Order o2 = new Order(2L, OrderState.WAIT_PAY);
+        BatchTransitionResult<OrderState, Order> templateOverloadOk = StateMachineCasTemplate.executeBatch(
+                machine, List.of(o2), Order::getState, Order::setState, OrderEvent.PAY, (e, f, t) -> 1, BatchOptions.of(10)
+        );
+        assertThat(templateOverloadOk.isAllSuccess()).isTrue();
+        assertThat(o2.getState()).isEqualTo(OrderState.PAID);
     }
 }

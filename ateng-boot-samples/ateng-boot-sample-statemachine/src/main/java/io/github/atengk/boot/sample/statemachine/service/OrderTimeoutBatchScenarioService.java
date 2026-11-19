@@ -7,8 +7,6 @@ import io.github.atengk.boot.sample.statemachine.context.OrderContext;
 import io.github.atengk.boot.sample.statemachine.entity.OrderDO;
 import io.github.atengk.boot.sample.statemachine.mapper.OrderMapper;
 import io.github.atengk.boot.statemachine.core.StateMachine;
-import io.github.atengk.boot.statemachine.enums.StateMachineResultCode;
-import io.github.atengk.boot.statemachine.exception.StateMachineException;
 import io.github.atengk.boot.statemachine.model.BatchOptions;
 import io.github.atengk.boot.statemachine.model.BatchTransitionResult;
 import org.slf4j.Logger;
@@ -100,32 +98,21 @@ public class OrderTimeoutBatchScenarioService {
 
         log.info("[BatchCancel] 开始切片批量取消超时订单: 待处理总数={}, 批次大小={}", orders.size(), options.getBatchSize());
 
-        BatchTransitionResult<OrderState, OrderDO> result = orderStateMachine.fireEventBatch(
+        BatchTransitionResult<OrderState, OrderDO> result = orderStateMachine.fireEventBatchWithCas(
                 orders,
                 OrderDO::getStatus,
                 (order, targetState) -> {
-                    OrderState currentSource = order.getStatus();
-                    int updated = orderMapper.updateStatusWithCas(
-                            order.getId(),
-                            currentSource.name(),
-                            targetState.name(),
-                            order.getVersion()
-                    );
-                    if (updated == 0) {
-                        throw new StateMachineException(
-                                StateMachineResultCode.CONCURRENT_CAS_CONFLICT,
-                                currentSource,
-                                targetState,
-                                OrderEvent.CANCEL,
-                                String.format("批量关单 CAS 冲突，更新失败 [orderId=%d, source=%s, version=%d]",
-                                        order.getId(), currentSource, order.getVersion())
-                        );
-                    }
                     order.setStatus(targetState);
                     order.setVersion(order.getVersion() + 1);
                 },
                 OrderEvent.CANCEL,
                 context,
+                (order, currentSource, targetState) -> orderMapper.updateStatusWithCas(
+                        order.getId(),
+                        currentSource.name(),
+                        targetState.name(),
+                        order.getVersion()
+                ),
                 options
         );
 

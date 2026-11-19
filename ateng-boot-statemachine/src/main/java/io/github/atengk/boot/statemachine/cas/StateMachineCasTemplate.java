@@ -2,8 +2,11 @@ package io.github.atengk.boot.statemachine.cas;
 
 import io.github.atengk.boot.statemachine.core.StateMachine;
 import io.github.atengk.boot.statemachine.exception.StateMachineException;
+import io.github.atengk.boot.statemachine.model.BatchOptions;
+import io.github.atengk.boot.statemachine.model.BatchTransitionResult;
 import io.github.atengk.boot.statemachine.model.TransitionResult;
 
+import java.util.List;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 
@@ -135,5 +138,120 @@ public final class StateMachineCasTemplate {
             CasUpdater<T, S> casUpdater) {
 
         return executeQuietly(stateMachine, entity, getter, setter, event, null, casUpdater);
+    }
+
+    /**
+     * 大批量切片执行带 CAS 乐观锁防重的状态跃迁
+     *
+     * @param stateMachine 状态机实例
+     * @param entities     业务实体集合
+     * @param getter       源状态提取器
+     * @param setter       新状态回写器
+     * @param event        触发事件
+     * @param context      业务上下文
+     * @param casUpdater   CAS 持久化更新器
+     * @param options      分批配置选项
+     * @param <S>          状态类型
+     * @param <E>          事件类型
+     * @param <C>          上下文类型
+     * @param <T>          实体类型
+     * @return 批量流转聚合结果
+     */
+    public static <S, E, C, T> BatchTransitionResult<S, T> executeBatch(
+            StateMachine<S, E, C> stateMachine,
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            C context,
+            CasUpdater<T, S> casUpdater,
+            BatchOptions options) {
+
+        if (stateMachine == null) {
+            throw new IllegalArgumentException("StateMachine must not be null");
+        }
+        return stateMachine.fireEventBatchWithCas(entities, getter, setter, event, context, casUpdater, options);
+    }
+
+    /**
+     * 大批量切片执行带 CAS 乐观锁防重的状态跃迁（默认分批配置：批次 200，Fail-Safe 模式）
+     *
+     * @param stateMachine 状态机实例
+     * @param entities     业务实体集合
+     * @param getter       源状态提取器
+     * @param setter       新状态回写器
+     * @param event        触发事件
+     * @param context      业务上下文
+     * @param casUpdater   CAS 持久化更新器
+     * @param <S>          状态类型
+     * @param <E>          事件类型
+     * @param <C>          上下文类型
+     * @param <T>          实体类型
+     * @return 批量流转聚合结果
+     */
+    public static <S, E, C, T> BatchTransitionResult<S, T> executeBatch(
+            StateMachine<S, E, C> stateMachine,
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            C context,
+            CasUpdater<T, S> casUpdater) {
+
+        return executeBatch(stateMachine, entities, getter, setter, event, context, casUpdater, BatchOptions.defaults());
+    }
+
+    /**
+     * 大批量切片执行带 CAS 乐观锁防重的状态跃迁（免上下文默认分批配置重载）
+     *
+     * @param stateMachine 状态机实例
+     * @param entities     业务实体集合
+     * @param getter       源状态提取器
+     * @param setter       新状态回写器
+     * @param event        触发事件
+     * @param casUpdater   CAS 持久化更新器
+     * @param <S>          状态类型
+     * @param <E>          事件类型
+     * @param <C>          上下文类型
+     * @param <T>          实体类型
+     * @return 批量流转聚合结果
+     */
+    public static <S, E, C, T> BatchTransitionResult<S, T> executeBatch(
+            StateMachine<S, E, C> stateMachine,
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            CasUpdater<T, S> casUpdater) {
+
+        return executeBatch(stateMachine, entities, getter, setter, event, null, casUpdater, BatchOptions.defaults());
+    }
+
+    /**
+     * 大批量切片执行带 CAS 乐观锁防重的状态跃迁（免上下文自定义分批配置重载）
+     *
+     * @param stateMachine 状态机实例
+     * @param entities     业务实体集合
+     * @param getter       源状态提取器
+     * @param setter       新状态回写器
+     * @param event        触发事件
+     * @param casUpdater   CAS 持久化更新器
+     * @param options      分批配置选项
+     * @param <S>          状态类型
+     * @param <E>          事件类型
+     * @param <C>          上下文类型
+     * @param <T>          实体类型
+     * @return 批量流转聚合结果
+     */
+    public static <S, E, C, T> BatchTransitionResult<S, T> executeBatch(
+            StateMachine<S, E, C> stateMachine,
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            CasUpdater<T, S> casUpdater,
+            BatchOptions options) {
+
+        return executeBatch(stateMachine, entities, getter, setter, event, null, casUpdater, options);
     }
 }

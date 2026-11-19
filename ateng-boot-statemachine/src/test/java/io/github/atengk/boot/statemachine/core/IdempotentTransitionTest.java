@@ -285,4 +285,78 @@ class IdempotentTransitionTest {
                     assertThat(smEx.getCode()).isEqualTo(StateMachineResultCode.TRANSITION_NOT_FOUND.getCode());
                 });
     }
+
+    @Test
+    @DisplayName("测试 Choice 分支开启幂等时跨分支上下文不匹配坚决不误命中幂等")
+    void testChoiceTransitionIdempotentCrossBranchMismatchFails() {
+        AtomicInteger actionCount = new AtomicInteger(0);
+
+        StateMachineBuilder<OrderState, OrderEvent, Integer> builder = StateMachineBuilderFactory.create();
+        builder.choiceTransition()
+                .from(OrderState.WAIT_PAY)
+                .on(OrderEvent.CANCEL)
+                .when(ctx -> ctx != null && ctx > 0).to(OrderState.CLOSED)
+                .defaultTo(OrderState.DELIVERED)
+                .idempotent(true)
+                .perform((from, to, event, ctx) -> actionCount.incrementAndGet());
+
+        StateMachine<OrderState, OrderEvent, Integer> machine = builder.build("CHOICE_CROSS_BRANCH_IDEMP_MACHINE");
+
+        // 1. 处于分支 A 目标态 CLOSED，携带分支 A 上下文 (ctx = 10 > 0) -> 幂等命中
+        assertThat(machine.canFire(OrderState.CLOSED, OrderEvent.CANCEL, 10)).isTrue();
+        assertThat(machine.getAvailableEvents(OrderState.CLOSED, 10)).contains(OrderEvent.CANCEL);
+        TransitionResult<OrderState> matchRes = machine.fireEventQuietly(OrderState.CLOSED, OrderEvent.CANCEL, 10);
+        assertThat(matchRes.isAccepted()).isTrue();
+        assertThat(matchRes.isIdempotent()).isTrue();
+        assertThat(actionCount.get()).isZero();
+
+        // 2. 处于分支 A 目标态 CLOSED，但携带命中分支 B (DELIVERED) 的上下文 (ctx = -1) -> 坚决不可误判幂等放行
+        assertThat(machine.canFire(OrderState.CLOSED, OrderEvent.CANCEL, -1)).isFalse();
+        assertThat(machine.getAvailableEvents(OrderState.CLOSED, -1)).doesNotContain(OrderEvent.CANCEL);
+        TransitionResult<OrderState> mismatchVerify = machine.verifyTransition(OrderState.CLOSED, OrderEvent.CANCEL, -1);
+        assertThat(mismatchVerify.isAccepted()).isFalse();
+        assertThat(mismatchVerify.getResultCode()).isEqualTo(StateMachineResultCode.TRANSITION_NOT_FOUND);
+        assertThatThrownBy(() -> machine.fireEvent(OrderState.CLOSED, OrderEvent.CANCEL, -1))
+                .isInstanceOf(StateMachineException.class)
+                .satisfies(ex -> assertThat(((StateMachineException) ex).getCode())
+                        .isEqualTo(StateMachineResultCode.TRANSITION_NOT_FOUND.getCode()));
+
+        // 3. 无上下文静态探测 (context == null) 仍保留终态可达兼容
+        assertThat(machine.canFire(OrderState.CLOSED, OrderEvent.CANCEL)).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试开启幂等的 InternalTransition 首次通过 fireEventWithCasQuietly 触发时不误判为 idempotent")
+    void testInternalTransitionFirstCasQuietlyNotMarkedIdempotent() {
+        AtomicInteger casCount = new AtomicInteger(0);
+        AtomicInteger actionCount = new AtomicInteger(0);
+
+        StateMachineBuilder<OrderState, OrderEvent, String> builder = StateMachineBuilderFactory.create();
+        builder.internalTransition()
+                .from(OrderState.PAID)
+                .on(OrderEvent.PAY)
+                .idempotent(true)
+                .perform((from, to, event, ctx) -> actionCount.incrementAndGet());
+
+        StateMachine<OrderState, OrderEvent, String> machine = builder.build("INTERNAL_IDEMP_CAS_MACHINE");
+
+        class OrderEntity {
+            OrderState state = OrderState.PAID;
+        }
+        OrderEntity entity = new OrderEntity();
+
+        TransitionResult<OrderState> res = machine.fireEventWithCasQuietly(
+                entity,
+                e -> e.state,
+                (e, s) -> e.state = s,
+                OrderEvent.PAY,
+                "RETRY_REMARK",
+                (ent, from, to) -> casCount.incrementAndGet()
+        );
+
+        assertThat(res.isAccepted()).isTrue();
+        assertThat(res.isIdempotent()).isFalse();
+        assertThat(casCount.get()).isEqualTo(1);
+        assertThat(actionCount.get()).isEqualTo(1);
+    }
 }

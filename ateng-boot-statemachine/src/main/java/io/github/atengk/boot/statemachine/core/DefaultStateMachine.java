@@ -39,7 +39,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
     private final String machineId;
     private final Map<S, Map<E, List<Transition<S, E, C>>>> transitionMap;
     private final List<StateMachineInterceptor<? super S, ? super E, ? super C>> interceptors;
-    private final Map<S, Set<E>> idempotentTargets;
+    private final Map<E, List<Transition<S, E, C>>> idempotentTransitionsByEvent;
     private final Map<S, StateLifecycle<S, E, C>> stateLifecycleMap;
     private final List<StateTransitionAuditListener<? super S, ? super E, ? super C>> auditListeners;
 
@@ -71,23 +71,21 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
         this.transitionMap = Collections.unmodifiableMap(deepImmutableMap);
         this.interceptors = new CopyOnWriteArrayList<>(interceptors != null ? interceptors : Collections.emptyList());
 
-        Map<S, Set<E>> idempMap = new LinkedHashMap<>();
+        Map<E, List<Transition<S, E, C>>> idempMap = new LinkedHashMap<>();
         for (Map<E, List<Transition<S, E, C>>> eventMap : deepImmutableMap.values()) {
             for (List<Transition<S, E, C>> transitions : eventMap.values()) {
                 for (Transition<S, E, C> transition : transitions) {
                     if (transition.isIdempotent()) {
-                        for (S target : transition.getPossibleTargetStates()) {
-                            idempMap.computeIfAbsent(target, k -> new LinkedHashSet<>()).add(transition.getEvent());
-                        }
+                        idempMap.computeIfAbsent(transition.getEvent(), k -> new ArrayList<>()).add(transition);
                     }
                 }
             }
         }
-        Map<S, Set<E>> immutableIdempMap = new LinkedHashMap<>();
-        for (Map.Entry<S, Set<E>> entry : idempMap.entrySet()) {
-            immutableIdempMap.put(entry.getKey(), Collections.unmodifiableSet(entry.getValue()));
+        Map<E, List<Transition<S, E, C>>> immutableIdempMap = new LinkedHashMap<>();
+        for (Map.Entry<E, List<Transition<S, E, C>>> entry : idempMap.entrySet()) {
+            immutableIdempMap.put(entry.getKey(), Collections.unmodifiableList(entry.getValue()));
         }
-        this.idempotentTargets = Collections.unmodifiableMap(immutableIdempMap);
+        this.idempotentTransitionsByEvent = Collections.unmodifiableMap(immutableIdempMap);
         this.stateLifecycleMap = stateLifecycleMap != null
                 ? Collections.unmodifiableMap(new LinkedHashMap<>(stateLifecycleMap))
                 : Collections.emptyMap();
@@ -176,12 +174,8 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             List<Transition<S, E, C>> candidates = eventMap != null ? eventMap.get(event) : null;
 
             if (candidates == null || candidates.isEmpty()) {
-                if (isIdempotentHit(sourceState, event)) {
-                    log.info("状态机 [{}] 幂等命中 [IDEMPOTENT_HIT]: 当前已处于目标状态 [{}], 重复事件 [{}] 放行，跳过动作执行",
-                            machineId, sourceState, event);
-                    Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
-                    notifyInterceptorsAfter(sourceState, sourceState, event, context, elapsed);
-                    notifyAuditListeners(sourceState, sourceState, event, context, elapsed, true, null);
+                if (isIdempotentHit(sourceState, event, context)) {
+                    recordIdempotentHit(sourceState, event, context, startTime, false);
                     return sourceState;
                 }
                 throw new StateMachineException(
@@ -192,46 +186,8 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                 );
             }
 
-            Transition<S, E, C> matched = null;
-            for (Transition<S, E, C> candidate : candidates) {
-                boolean satisfied;
-                try {
-                    satisfied = candidate.isSatisfied(context);
-                } catch (Exception ex) {
-                    throw new StateMachineException(
-                            StateMachineResultCode.CONDITION_FAILED,
-                            sourceState,
-                            event,
-                            String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 的前置条件卫语句执行异常: %s", machineId, sourceState, event, ex.getMessage()),
-                            ex
-                    );
-                }
-                if (satisfied) {
-                    matched = candidate;
-                    break;
-                }
-            }
-
-            if (matched == null) {
-                throw new StateMachineException(
-                        StateMachineResultCode.CONDITION_FAILED,
-                        sourceState,
-                        event,
-                        String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 的前置条件卫语句校验不通过", machineId, sourceState, event)
-                );
-            }
-
-            try {
-                targetState = matched.resolveTargetState(context);
-            } catch (Exception ex) {
-                throw new StateMachineException(
-                        StateMachineResultCode.CONDITION_FAILED,
-                        sourceState,
-                        event,
-                        String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 确定目标状态时异常: %s", machineId, sourceState, event, ex.getMessage()),
-                        ex
-                );
-            }
+            Transition<S, E, C> matched = resolveMatchedTransition(sourceState, event, context, candidates);
+            targetState = resolveTargetState(sourceState, event, context, matched);
 
             executeTransitionPipeline(matched, sourceState, targetState, event, context);
 
@@ -266,7 +222,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
         Map<E, List<Transition<S, E, C>>> eventMap = transitionMap.get(sourceState);
         List<Transition<S, E, C>> candidates = eventMap != null ? eventMap.get(event) : null;
         if (candidates == null || candidates.isEmpty()) {
-            return isIdempotentHit(sourceState, event);
+            return isIdempotentHit(sourceState, event, context);
         }
         for (Transition<S, E, C> candidate : candidates) {
             try {
@@ -292,7 +248,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
         Map<E, List<Transition<S, E, C>>> eventMap = transitionMap.get(sourceState);
         List<Transition<S, E, C>> candidates = eventMap != null ? eventMap.get(event) : null;
         if (candidates == null || candidates.isEmpty()) {
-            if (isIdempotentHit(sourceState, event)) {
+            if (isIdempotentHit(sourceState, event, context)) {
                 return TransitionResult.idempotent(sourceState, event);
             }
             return TransitionResult.failure(
@@ -379,9 +335,10 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                 }
             }
         }
-        Set<E> idempEvents = idempotentTargets.get(sourceState);
-        if (idempEvents != null) {
-            availableEvents.addAll(idempEvents);
+        for (E event : idempotentTransitionsByEvent.keySet()) {
+            if (!availableEvents.contains(event) && isIdempotentHit(sourceState, event, context)) {
+                availableEvents.add(event);
+            }
         }
         return Collections.unmodifiableSet(availableEvents);
     }
@@ -426,6 +383,17 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             C context,
             CasUpdater<T, S> casUpdater
     ) {
+        return doFireEventWithCas(entity, getter, setter, event, context, casUpdater).targetState();
+    }
+
+    private <T> CasExecutionResult<S> doFireEventWithCas(
+            T entity,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            C context,
+            CasUpdater<T, S> casUpdater
+    ) {
         if (entity == null) {
             throw new IllegalArgumentException("Target entity must not be null");
         }
@@ -449,13 +417,9 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             Map<E, List<Transition<S, E, C>>> eventMap = transitionMap.get(sourceState);
             List<Transition<S, E, C>> candidates = eventMap != null ? eventMap.get(event) : null;
             if (candidates == null || candidates.isEmpty()) {
-                if (isIdempotentHit(sourceState, event)) {
-                    log.info("状态机 [{}] CAS 幂等命中 [IDEMPOTENT_HIT]: 当前已处于目标状态 [{}], 重复事件 [{}] 放行，跳过 CAS 与动作执行",
-                            machineId, sourceState, event);
-                    Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
-                    notifyInterceptorsAfter(sourceState, sourceState, event, context, elapsed);
-                    notifyAuditListeners(sourceState, sourceState, event, context, elapsed, true, null);
-                    return sourceState;
+                if (isIdempotentHit(sourceState, event, context)) {
+                    recordIdempotentHit(sourceState, event, context, startTime, true);
+                    return new CasExecutionResult<>(sourceState, true);
                 }
                 throw new StateMachineException(
                         StateMachineResultCode.TRANSITION_NOT_FOUND,
@@ -465,46 +429,8 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                 );
             }
 
-            Transition<S, E, C> matched = null;
-            for (Transition<S, E, C> candidate : candidates) {
-                boolean satisfied;
-                try {
-                    satisfied = candidate.isSatisfied(context);
-                } catch (Exception ex) {
-                    throw new StateMachineException(
-                            StateMachineResultCode.CONDITION_FAILED,
-                            sourceState,
-                            event,
-                            String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 的前置条件卫语句执行异常: %s", machineId, sourceState, event, ex.getMessage()),
-                            ex
-                    );
-                }
-                if (satisfied) {
-                    matched = candidate;
-                    break;
-                }
-            }
-
-            if (matched == null) {
-                throw new StateMachineException(
-                        StateMachineResultCode.CONDITION_FAILED,
-                        sourceState,
-                        event,
-                        String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 的前置条件卫语句校验不通过", machineId, sourceState, event)
-                );
-            }
-
-            try {
-                targetState = matched.resolveTargetState(context);
-            } catch (Exception ex) {
-                throw new StateMachineException(
-                        StateMachineResultCode.CONDITION_FAILED,
-                        sourceState,
-                        event,
-                        String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 确定目标状态时异常: %s", machineId, sourceState, event, ex.getMessage()),
-                        ex
-                );
-            }
+            Transition<S, E, C> matched = resolveMatchedTransition(sourceState, event, context, candidates);
+            targetState = resolveTargetState(sourceState, event, context, matched);
 
             // 执行数据库 CAS 乐观锁条件更新
             int rowsAffected = casUpdater.updateWithCas(entity, sourceState, targetState);
@@ -529,7 +455,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             notifyInterceptorsAfter(sourceState, targetState, event, context, elapsed);
             notifyAuditListeners(sourceState, targetState, event, context, elapsed, true, null);
 
-            return targetState;
+            return new CasExecutionResult<>(targetState, false);
         } catch (Exception ex) {
             Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
             notifyInterceptorsException(sourceState, event, context, ex);
@@ -558,21 +484,14 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
         }
         S sourceState = getter.apply(entity);
         try {
-            S targetState = fireEventWithCas(entity, getter, setter, event, context, casUpdater);
-            if (isIdempotentHit(sourceState, event)) {
+            CasExecutionResult<S> outcome = doFireEventWithCas(entity, getter, setter, event, context, casUpdater);
+            if (outcome.idempotent()) {
                 return TransitionResult.idempotent(sourceState, event);
             }
-            return TransitionResult.success(sourceState, targetState, event);
+            return TransitionResult.success(sourceState, outcome.targetState(), event);
         } catch (StateMachineException smEx) {
-            StateMachineResultCode resultCode = smEx.getCode() == StateMachineResultCode.CONCURRENT_CAS_CONFLICT.getCode()
-                    ? StateMachineResultCode.CONCURRENT_CAS_CONFLICT
-                    : (smEx.getCode() == StateMachineResultCode.TRANSITION_NOT_FOUND.getCode()
-                    ? StateMachineResultCode.TRANSITION_NOT_FOUND
-                    : (smEx.getCode() == StateMachineResultCode.ACTION_EXECUTION_FAILED.getCode()
-                    ? StateMachineResultCode.ACTION_EXECUTION_FAILED
-                    : StateMachineResultCode.CONDITION_FAILED));
             return TransitionResult.failure(
-                    resultCode,
+                    resolveResultCode(smEx),
                     sourceState,
                     event,
                     smEx.getMessage(),
@@ -605,12 +524,8 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
         List<Transition<S, E, C>> candidates = eventMap != null ? eventMap.get(event) : null;
 
         if (candidates == null || candidates.isEmpty()) {
-            if (isIdempotentHit(sourceState, event)) {
-                log.info("状态机 [{}] 幂等命中 [IDEMPOTENT_HIT]: 当前已处于目标状态 [{}], 重复事件 [{}] 放行，跳过动作执行",
-                        machineId, sourceState, event);
-                Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
-                notifyInterceptorsAfter(sourceState, sourceState, event, context, elapsed);
-                notifyAuditListeners(sourceState, sourceState, event, context, elapsed, true, null);
+            if (isIdempotentHit(sourceState, event, context)) {
+                recordIdempotentHit(sourceState, event, context, startTime, false);
                 return TransitionResult.idempotent(sourceState, event);
             }
             StateMachineException ex = new StateMachineException(
@@ -622,52 +537,11 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             return handleQuietFailure(sourceState, event, context, startTime, ex);
         }
 
-        Transition<S, E, C> matched = null;
-        for (Transition<S, E, C> candidate : candidates) {
-            boolean satisfied;
-            try {
-                satisfied = candidate.isSatisfied(context);
-            } catch (Exception ex) {
-                StateMachineException smEx = new StateMachineException(
-                        StateMachineResultCode.CONDITION_FAILED,
-                        sourceState,
-                        event,
-                        String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 的前置条件卫语句执行异常: %s", machineId, sourceState, event, ex.getMessage()),
-                        ex
-                );
-                return handleQuietFailure(sourceState, event, context, startTime, smEx);
-            }
-            if (satisfied) {
-                matched = candidate;
-                break;
-            }
-        }
-
-        if (matched == null) {
-            StateMachineException ex = new StateMachineException(
-                    StateMachineResultCode.CONDITION_FAILED,
-                    sourceState,
-                    event,
-                    String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 的前置条件卫语句校验不通过", machineId, sourceState, event)
-            );
-            return handleQuietFailure(sourceState, event, context, startTime, ex);
-        }
-
-        S targetState;
+        Transition<S, E, C> matched;
+        S targetState = null;
         try {
-            targetState = matched.resolveTargetState(context);
-        } catch (Exception ex) {
-            StateMachineException smEx = new StateMachineException(
-                    StateMachineResultCode.CONDITION_FAILED,
-                    sourceState,
-                    event,
-                    String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 确定目标状态时异常: %s", machineId, sourceState, event, ex.getMessage()),
-                    ex
-            );
-            return handleQuietFailure(sourceState, event, context, startTime, smEx);
-        }
-
-        try {
+            matched = resolveMatchedTransition(sourceState, event, context, candidates);
+            targetState = resolveTargetState(sourceState, event, context, matched);
             executeTransitionPipeline(matched, sourceState, targetState, event, context);
         } catch (StateMachineException smEx) {
             return handleQuietFailure(sourceState, event, context, startTime, smEx);
@@ -696,24 +570,117 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
         notifyInterceptorsException(sourceState, event, context, ex);
         S targetState = ex.getTargetState() != null ? (S) ex.getTargetState() : null;
         notifyAuditListeners(sourceState, targetState, event, context, elapsed, false, ex);
-        StateMachineResultCode resultCode = ex.getCode() == StateMachineResultCode.CONCURRENT_CAS_CONFLICT.getCode()
-                ? StateMachineResultCode.CONCURRENT_CAS_CONFLICT
-                : (ex.getCode() == StateMachineResultCode.TRANSITION_NOT_FOUND.getCode()
-                ? StateMachineResultCode.TRANSITION_NOT_FOUND
-                : (ex.getCode() == StateMachineResultCode.STATE_LIFECYCLE_FAILED.getCode()
-                ? StateMachineResultCode.STATE_LIFECYCLE_FAILED
-                : (ex.getCode() == StateMachineResultCode.ACTION_EXECUTION_FAILED.getCode()
-                ? StateMachineResultCode.ACTION_EXECUTION_FAILED
-                : StateMachineResultCode.CONDITION_FAILED)));
-        return TransitionResult.failure(resultCode, sourceState, event, ex.getMessage(), ex.getCause());
+        return TransitionResult.failure(resolveResultCode(ex), sourceState, event, ex.getMessage(), ex.getCause());
     }
 
-    private boolean isIdempotentHit(S sourceState, E event) {
-        if (sourceState == null || event == null) {
+    private Transition<S, E, C> resolveMatchedTransition(S sourceState, E event, C context, List<Transition<S, E, C>> candidates) {
+        for (Transition<S, E, C> candidate : candidates) {
+            boolean satisfied;
+            try {
+                satisfied = candidate.isSatisfied(context);
+            } catch (Exception ex) {
+                throw new StateMachineException(
+                        StateMachineResultCode.CONDITION_FAILED,
+                        sourceState,
+                        event,
+                        String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 的前置条件卫语句执行异常: %s", machineId, sourceState, event, ex.getMessage()),
+                        ex
+                );
+            }
+            if (satisfied) {
+                return candidate;
+            }
+        }
+        throw new StateMachineException(
+                StateMachineResultCode.CONDITION_FAILED,
+                sourceState,
+                event,
+                String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 的前置条件卫语句校验不通过", machineId, sourceState, event)
+        );
+    }
+
+    private S resolveTargetState(S sourceState, E event, C context, Transition<S, E, C> matched) {
+        try {
+            return matched.resolveTargetState(context);
+        } catch (Exception ex) {
+            throw new StateMachineException(
+                    StateMachineResultCode.CONDITION_FAILED,
+                    sourceState,
+                    event,
+                    String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 确定目标状态时异常: %s", machineId, sourceState, event, ex.getMessage()),
+                    ex
+            );
+        }
+    }
+
+    private StateMachineResultCode resolveResultCode(StateMachineException ex) {
+        if (ex.getResultCode() instanceof StateMachineResultCode resultCode) {
+            return resultCode;
+        }
+        if (ex.getCode() != null) {
+            for (StateMachineResultCode value : StateMachineResultCode.values()) {
+                if (Objects.equals(value.getCode(), ex.getCode())) {
+                    return value;
+                }
+            }
+        }
+        return StateMachineResultCode.CONDITION_FAILED;
+    }
+
+    private boolean isIdempotentHit(S currentState, E event, C context) {
+        if (currentState == null || event == null) {
             return false;
         }
-        Set<E> events = idempotentTargets.get(sourceState);
-        return events != null && events.contains(event);
+        List<Transition<S, E, C>> candidates = idempotentTransitionsByEvent.get(event);
+        if (candidates == null || candidates.isEmpty()) {
+            return false;
+        }
+        for (Transition<S, E, C> transition : candidates) {
+            if (transition instanceof ChoiceTransition) {
+                if (context != null) {
+                    try {
+                        S resolved = transition.resolveTargetState(context);
+                        if (Objects.equals(resolved, currentState)) {
+                            return true;
+                        }
+                    } catch (Exception ex) {
+                        log.debug("状态机 [{}] Choice 幂等目标态求值异常 [state={}, event={}]: {}",
+                                machineId, currentState, event, ex.getMessage());
+                    }
+                } else if (transition.getPossibleTargetStates().contains(currentState)) {
+                    return true;
+                }
+            } else if (Objects.equals(transition.resolveTargetState(context), currentState)) {
+                if (context == null) {
+                    return true;
+                }
+                try {
+                    if (transition.isSatisfied(context)) {
+                        return true;
+                    }
+                } catch (Exception ex) {
+                    log.debug("状态机 [{}] 幂等卫语句求值异常 [state={}, event={}]: {}",
+                            machineId, currentState, event, ex.getMessage());
+                }
+            }
+        }
+        return false;
+    }
+
+    private void recordIdempotentHit(S state, E event, C context, long startTime, boolean casMode) {
+        if (casMode) {
+            log.info("状态机 [{}] CAS 幂等命中 [IDEMPOTENT_HIT]: 当前已处于目标状态 [{}], 重复事件 [{}] 放行，跳过 CAS 与动作执行",
+                    machineId, state, event);
+        } else {
+            log.info("状态机 [{}] 幂等命中 [IDEMPOTENT_HIT]: 当前已处于目标状态 [{}], 重复事件 [{}] 放行，跳过动作执行",
+                    machineId, state, event);
+        }
+        Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
+        notifyInterceptorsAfter(state, state, event, context, elapsed);
+        notifyAuditListeners(state, state, event, context, elapsed, true, null);
+    }
+
+    private record CasExecutionResult<S>(S targetState, boolean idempotent) {
     }
 
     private void notifyInterceptorsBefore(S sourceState, E event, C context) {

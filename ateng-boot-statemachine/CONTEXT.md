@@ -1,6 +1,6 @@
 # StateMachine 高性能无状态业务状态机底座
 
-面向复杂业务生命周期治理与订单履约的高性能无状态业务状态机底座，坚持纯原生无重依赖哲学，提供强类型 Fluent DSL 规则编排（支持外部主干跃迁、内部自跃迁、多源汇聚跃迁与 Choice 动态条件分支路由）、实体状态零侵入 Lambda 访问门面、纯只读预检探测、状态节点进出生命周期、CAS 乐观锁防重执行模板、声明式幂等策略、事务提交后动作同步、大批量切片流转、三阶段切面拦截器 SPI、流转轨迹审计监听器与动态 Mermaid/PlantUML 状态拓扑图导出。
+面向复杂业务生命周期治理与订单履约的高性能无状态业务状态机底座，坚持纯原生无重依赖哲学，提供强类型 Fluent DSL 规则编排（支持外部主干跃迁、内部自跃迁、多源汇聚跃迁、Choice 动态条件分支路由与构建期无条件冲突路由防卫）、实体状态零侵入 Lambda 访问门面、纯只读预检探测与拓扑元数据内省、状态节点进出生命周期、单笔及大批量切片 CAS-First 乐观锁防重执行模板、声明式精确幂等策略、事务提交后动作同步、四维上下文（含 `tenantId`）对齐的流转轨迹审计监听器 SPI、机台感知的三阶段切面拦截器 SPI（含 `Duration` 慢跃迁阈值告警）及动态 Mermaid/PlantUML 状态拓扑图导出。
 
 ## Language
 
@@ -95,3 +95,15 @@ _Avoid_: 事务模板, 锁模板, CasManager
 **Button Action Permissions (动态按钮操作权限)**:
 基于 `getAvailableEvents` 纯只读推演计算得到的当前实体可用业务事件与前端按钮高亮/置灰视图，强保证 0 次副作用。
 _Avoid_: 静态按钮配置, 按钮硬编码, ButtonConfig
+
+**Batch CAS Transition (批量 CAS 安全流转)**:
+协同 `BatchSliceUtil` 分批切片与 `CasUpdater` 条件更新的高吞吐批量流转范式（`fireEventBatchWithCas`），保证批处理内每笔实体同样严格遵循“只读预检 -> 持久层 CAS 更新 -> 内存回写 -> 触发 Action”的 CAS-First 安全时序。
+_Avoid_: 批量后置更新, Setter 内嵌 SQL, BatchPostUpdate
+
+**Topology Introspection (状态机拓扑内省)**:
+在不触发任何流转与副作用的前提下，对状态机只读规则树进行状态全集（`getAllStates`）、事件全集（`getAllEvents`）与候选目标状态集合（`getPossibleTargetStates`）的编程式元数据探查能力。
+_Avoid_: 规则树反射, 内部 Map 暴露, RuleMapDump
+
+**Slow Transition Threshold (慢跃迁告警阈值)**:
+基于 `java.time.Duration` 配置的单次状态跃迁（含生命周期与同步 Action 链）耗时监控水位线，超过阈值时自动触发慢跃迁 `WARN` 审计日志。
+_Avoid_: 硬编码超时, 毫秒魔法值, TimeoutMillis

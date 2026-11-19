@@ -448,6 +448,68 @@ class OrderLifecycleIntegrationTest {
         assertThat(batchResult.getFailures().get(failedEntity).getCode()).isEqualTo(StateMachineResultCode.TRANSITION_NOT_FOUND.getCode());
     }
 
+    @Test
+    @DisplayName("场景一：买家付款幂等放行时不误增内存版本号且返回 idempotent=true")
+    void testBuyerPayIdempotentKeepsVersionConsistent() {
+        String sn = "ORD-PAY-IDEMP-" + UUID.randomUUID().toString().substring(0, 8);
+        OrderDO order = lifecycleService.createOrder(sn, new BigDecimal("199.00"));
+        Long id = order.getId();
+
+        TransitionResult<OrderState> firstPay = lifecycleService.pay(id);
+        assertThat(firstPay.isAccepted()).isTrue();
+        assertThat(firstPay.isIdempotent()).isFalse();
+        assertThat(lifecycleService.getOrder(id).getVersion()).isEqualTo(1);
+
+        TransitionResult<OrderState> repeatPay = lifecycleService.pay(id);
+        assertThat(repeatPay.isAccepted()).isTrue();
+        assertThat(repeatPay.isIdempotent()).isTrue();
+        assertThat(repeatPay.getTargetState()).isEqualTo(OrderState.PAID);
+        assertThat(lifecycleService.getOrder(id).getVersion()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("场景四：批量切片 CAS 冲突时严格阻断 CLOSED.onEntry 生命周期与 Action 副作用")
+    void testBatchCasConflictPreventsLifecycleSideEffects() {
+        String okSn = "ORD-BCAS-OK-" + UUID.randomUUID().toString().substring(0, 6);
+        String staleSn = "ORD-BCAS-STALE-" + UUID.randomUUID().toString().substring(0, 6);
+        OrderDO okOrder = lifecycleService.createOrder(okSn, new BigDecimal("50.00"));
+        OrderDO staleOrderSnapshot = lifecycleService.createOrder(staleSn, new BigDecimal("60.00"));
+
+        // 模拟另一并发线程已将 staleOrder 推进到 PAID (version 从 0 变为 1)，但批处理持有旧快照 (status=WAIT_PAY, version=0)
+        lifecycleService.pay(staleOrderSnapshot.getId());
+        machineConfig.clearRecords();
+
+        OrderContext ctx = OrderContext.builder()
+                .orderSn("BATCH_STALE_CHECK")
+                .trackingRemark("并发冲突测试")
+                .build();
+
+        BatchTransitionResult<OrderState, OrderDO> result = orderStateMachine.fireEventBatchWithCas(
+                List.of(okOrder, staleOrderSnapshot),
+                OrderDO::getStatus,
+                (o, target) -> {
+                    o.setStatus(target);
+                    o.setVersion(o.getVersion() + 1);
+                },
+                OrderEvent.CANCEL,
+                ctx,
+                (o, from, to) -> orderMapper.updateStatusWithCas(o.getId(), from.name(), to.name(), o.getVersion())
+        );
+
+        assertThat(result.getTotalCount()).isEqualTo(2);
+        assertThat(result.getSuccessCount()).isEqualTo(1);
+        assertThat(result.getFailureCount()).isEqualTo(1);
+        assertThat(result.getFailures().get(staleOrderSnapshot).getCode())
+                .isEqualTo(StateMachineResultCode.CONCURRENT_CAS_CONFLICT.getCode());
+
+        // 验证数据库：okOrder 已关闭，staleOrderSnapshot 仍为 PAID
+        assertThat(lifecycleService.getOrder(okOrder.getId()).getStatus()).isEqualTo(OrderState.CLOSED);
+        assertThat(lifecycleService.getOrder(staleOrderSnapshot.getId()).getStatus()).isEqualTo(OrderState.PAID);
+
+        // 关键验证：仅执行了一次 CLOSED.onEntry（BATCH_STALE_CHECK 仅记录了 okOrder 的成功关闭），冲突实体的 onEntry 被 CAS-First 彻底阻断
+        assertThat(machineConfig.getLifecycleRecords()).containsExactly("ENTRY:CLOSED:BATCH_STALE_CHECK");
+    }
+
     // ==========================================
     // 轨迹审计与图例导出验证
     // ==========================================

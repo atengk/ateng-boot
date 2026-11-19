@@ -12,6 +12,7 @@ import io.github.atengk.boot.statemachine.model.TransitionResult;
 
 import java.util.*;
 import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 
 /**
@@ -93,6 +94,121 @@ public interface StateMachine<S, E, C> {
         if (getter == null || setter == null) {
             throw new IllegalArgumentException("Getter and setter must not be null");
         }
+        return executeBatchSlice(entities, getter, event, options, (entity, sourceState) -> {
+            S targetState = fireEvent(sourceState, event, context);
+            setter.accept(entity, targetState);
+            return targetState;
+        });
+    }
+
+    /**
+     * 大批量切片 CAS 乐观锁防重流转门面
+     * <p>依托 Core {@link BatchSliceUtil} 分批切片，针对每笔实体严格执行 CAS-First 安全时序：
+     * 只读试算目标状态与卫语句 -> 执行持久层 CAS 条件更新 -> 回写实体状态 -> 触发动作链，杜绝并发冲突下的虚假副作用</p>
+     *
+     * @param entities   实体集合
+     * @param getter     源状态提取函数
+     * @param setter     新状态回写消费器
+     * @param event      触发事件
+     * @param context    业务上下文
+     * @param casUpdater 数据库 CAS 乐观锁持久化更新函数
+     * @param options    分批配置选项
+     * @param <T>        实体类型
+     * @return 批量流转聚合结果
+     */
+    default <T> BatchTransitionResult<S, T> fireEventBatchWithCas(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            C context,
+            CasUpdater<T, S> casUpdater,
+            BatchOptions options
+    ) {
+        if (getter == null || setter == null) {
+            throw new IllegalArgumentException("Getter and setter must not be null");
+        }
+        if (casUpdater == null) {
+            throw new IllegalArgumentException("CasUpdater must not be null");
+        }
+        return executeBatchSlice(entities, getter, event, options,
+                (entity, sourceState) -> fireEventWithCas(entity, getter, setter, event, context, casUpdater));
+    }
+
+    /**
+     * 大批量切片 CAS 乐观锁防重流转门面（默认分批配置：批次 200，Fail-Safe 模式）
+     *
+     * @param entities   实体集合
+     * @param getter     源状态提取函数
+     * @param setter     新状态回写消费器
+     * @param event      触发事件
+     * @param context    业务上下文
+     * @param casUpdater 数据库 CAS 乐观锁持久化更新函数
+     * @param <T>        实体类型
+     * @return 批量流转聚合结果
+     */
+    default <T> BatchTransitionResult<S, T> fireEventBatchWithCas(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            C context,
+            CasUpdater<T, S> casUpdater
+    ) {
+        return fireEventBatchWithCas(entities, getter, setter, event, context, casUpdater, BatchOptions.defaults());
+    }
+
+    /**
+     * 大批量切片 CAS 乐观锁防重流转门面（免上下文重载）
+     *
+     * @param entities   实体集合
+     * @param getter     源状态提取函数
+     * @param setter     新状态回写消费器
+     * @param event      触发事件
+     * @param casUpdater 数据库 CAS 乐观锁持久化更新函数
+     * @param <T>        实体类型
+     * @return 批量流转聚合结果
+     */
+    default <T> BatchTransitionResult<S, T> fireEventBatchWithCas(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            CasUpdater<T, S> casUpdater
+    ) {
+        return fireEventBatchWithCas(entities, getter, setter, event, (C) null, casUpdater, BatchOptions.defaults());
+    }
+
+    /**
+     * 大批量切片 CAS 乐观锁防重流转门面（带分批配置免上下文重载）
+     *
+     * @param entities   实体集合
+     * @param getter     源状态提取函数
+     * @param setter     新状态回写消费器
+     * @param event      触发事件
+     * @param casUpdater 数据库 CAS 乐观锁持久化更新函数
+     * @param options    分批配置选项
+     * @param <T>        实体类型
+     * @return 批量流转聚合结果
+     */
+    default <T> BatchTransitionResult<S, T> fireEventBatchWithCas(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            CasUpdater<T, S> casUpdater,
+            BatchOptions options
+    ) {
+        return fireEventBatchWithCas(entities, getter, setter, event, (C) null, casUpdater, options);
+    }
+
+    private <T> BatchTransitionResult<S, T> executeBatchSlice(
+            List<T> entities,
+            Function<T, S> getter,
+            E event,
+            BatchOptions options,
+            BiFunction<T, S, S> stepExecutor
+    ) {
         if (event == null) {
             throw new IllegalArgumentException("Event must not be null");
         }
@@ -114,8 +230,7 @@ public interface StateMachine<S, E, C> {
             for (T entity : slice) {
                 S sourceState = getter.apply(entity);
                 try {
-                    S targetState = fireEvent(sourceState, event, context);
-                    setter.accept(entity, targetState);
+                    stepExecutor.apply(entity, sourceState);
                     successEntities.add(entity);
                 } catch (StateMachineException smEx) {
                     if (opts.isFailFast()) {
