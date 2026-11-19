@@ -125,6 +125,16 @@ public class JobInfo {
     private boolean executing;
 
     /**
+     * 超时熔断降级补偿方法名
+     */
+    private String fallbackMethod;
+
+    /**
+     * SaaS 多租户并发遍历度
+     */
+    private int tenantConcurrency;
+
+    /**
      * SaaS 多租户调度模态
      */
     private JobTenantMode tenantMode;

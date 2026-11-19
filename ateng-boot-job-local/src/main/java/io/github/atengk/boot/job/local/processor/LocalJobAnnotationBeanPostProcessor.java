@@ -73,6 +73,8 @@ public class LocalJobAnnotationBeanPostProcessor implements BeanPostProcessor, S
                 .clusterLock(annotation.clusterLock())
                 .clusterLockLeaseTime(DurationParser.parse(annotation.clusterLockLeaseTime(), Duration.ofMinutes(5)))
                 .clusterLockMinHoldTime(DurationParser.parse(annotation.clusterLockMinHoldTime()))
+                .fallbackMethod(StringUtils.hasText(annotation.fallbackMethod()) ? annotation.fallbackMethod().trim() : null)
+                .tenantConcurrency(annotation.tenantConcurrency() > 0 ? annotation.tenantConcurrency() : 1)
                 .description(annotation.description())
                 .enabled(annotation.enabled())
                 .tenantMode(annotation.tenantMode())

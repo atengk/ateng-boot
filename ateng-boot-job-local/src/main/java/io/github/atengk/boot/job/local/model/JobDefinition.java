@@ -103,6 +103,17 @@ public class JobDefinition {
     private boolean enabled = true;
 
     /**
+     * 超时熔断降级补偿方法名
+     */
+    private String fallbackMethod;
+
+    /**
+     * SaaS 多租户并发遍历度（<=0 归一化为 1）
+     */
+    @Builder.Default
+    private int tenantConcurrency = 1;
+
+    /**
      * SaaS 多租户调度模态
      */
     @Builder.Default

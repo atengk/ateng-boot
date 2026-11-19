@@ -18,7 +18,10 @@ import io.github.atengk.boot.job.local.event.JobStartingEvent;
 import io.github.atengk.boot.job.local.event.JobSuccessEvent;
 import io.github.atengk.boot.job.local.event.JobTimeoutEvent;
 import io.github.atengk.boot.job.local.exception.JobTimeoutException;
+import io.github.atengk.boot.job.local.fallback.LocalJobTimeoutFallbackHandler;
 import io.github.atengk.boot.job.local.handler.JobHandler;
+import io.github.atengk.boot.job.local.handler.MethodInvokingJobHandler;
+import io.github.atengk.boot.job.local.interceptor.LocalJobInterceptor;
 import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
 import io.github.atengk.boot.job.local.lock.JobLockHandle;
 import io.github.atengk.boot.job.local.model.JobContext;
@@ -35,15 +38,22 @@ import lombok.Setter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.aop.framework.Advised;
+import org.springframework.aop.framework.AopProxyUtils;
+import org.springframework.aop.support.AopUtils;
 import org.springframework.context.ApplicationEvent;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.scheduling.Trigger;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.scheduling.support.CronExpression;
 import org.springframework.scheduling.support.CronTrigger;
 import org.springframework.scheduling.support.PeriodicTrigger;
+import org.springframework.util.ReflectionUtils;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -52,14 +62,17 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
@@ -91,6 +104,8 @@ public class ScheduledJobTask implements Runnable {
     private final ApplicationEventPublisher eventPublisher;
     private final TenantProvider tenantProvider;
     private final JobLocalProperties properties;
+    private final Supplier<List<LocalJobInterceptor>> interceptorsProvider;
+    private final Supplier<LocalJobTimeoutFallbackHandler> timeoutFallbackHandlerProvider;
     private final AtomicInteger activeExecutions = new AtomicInteger(0);
 
     @Getter
@@ -177,6 +192,36 @@ public class ScheduledJobTask implements Runnable {
                             ApplicationEventPublisher eventPublisher,
                             TenantProvider tenantProvider,
                             JobLocalProperties properties) {
+        this(definition, handler, taskScheduler, workerExecutor, logStorageProvider, clusterLockProvider,
+                eventPublisher, tenantProvider, properties, Collections.emptyList(), null);
+    }
+
+    public ScheduledJobTask(JobDefinition definition, JobHandler handler,
+                            ThreadPoolTaskScheduler taskScheduler,
+                            AsyncTaskExecutor workerExecutor,
+                            JobLogStorageProvider logStorageProvider,
+                            JobClusterLockProvider clusterLockProvider,
+                            ApplicationEventPublisher eventPublisher,
+                            TenantProvider tenantProvider,
+                            JobLocalProperties properties,
+                            List<LocalJobInterceptor> interceptors,
+                            LocalJobTimeoutFallbackHandler timeoutFallbackHandler) {
+        this(definition, handler, taskScheduler, workerExecutor, logStorageProvider, clusterLockProvider,
+                eventPublisher, tenantProvider, properties,
+                () -> normalizeInterceptors(interceptors),
+                () -> timeoutFallbackHandler);
+    }
+
+    public ScheduledJobTask(JobDefinition definition, JobHandler handler,
+                            ThreadPoolTaskScheduler taskScheduler,
+                            AsyncTaskExecutor workerExecutor,
+                            JobLogStorageProvider logStorageProvider,
+                            JobClusterLockProvider clusterLockProvider,
+                            ApplicationEventPublisher eventPublisher,
+                            TenantProvider tenantProvider,
+                            JobLocalProperties properties,
+                            Supplier<List<LocalJobInterceptor>> interceptorsProvider,
+                            Supplier<LocalJobTimeoutFallbackHandler> timeoutFallbackHandlerProvider) {
         this.definition = definition;
         this.handler = handler;
         this.taskScheduler = taskScheduler;
@@ -186,9 +231,25 @@ public class ScheduledJobTask implements Runnable {
         this.eventPublisher = eventPublisher;
         this.tenantProvider = tenantProvider != null ? tenantProvider : new DefaultTenantProvider();
         this.properties = properties;
+        this.interceptorsProvider = interceptorsProvider;
+        this.timeoutFallbackHandlerProvider = timeoutFallbackHandlerProvider;
         this.status = definition.getStatus() != null ? definition.getStatus()
                 : (definition.isEnabled() ? JobStatus.RUNNING : JobStatus.PAUSED);
         this.trigger = buildTrigger(definition);
+    }
+
+    private static List<LocalJobInterceptor> normalizeInterceptors(List<LocalJobInterceptor> interceptors) {
+        if (interceptors == null || interceptors.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<LocalJobInterceptor> sorted = new ArrayList<>(interceptors);
+        AnnotationAwareOrderComparator.sort(sorted);
+        return Collections.unmodifiableList(sorted);
+    }
+
+    private List<LocalJobInterceptor> getEffectiveInterceptors() {
+        List<LocalJobInterceptor> resolved = interceptorsProvider != null ? interceptorsProvider.get() : Collections.emptyList();
+        return resolved != null ? resolved : Collections.emptyList();
     }
 
     /**
@@ -407,7 +468,7 @@ public class ScheduledJobTask implements Runnable {
     }
 
     /**
-     * 实际调用处理器执行任务并计算统计指标（集成超时中断与退避重试）
+     * 实际调用处理器执行任务并计算统计指标（外层挂载三阶段拦截器，内层支持两级超时降级与信号量多租户并发遍历）
      */
     protected JobResult doExecute(TriggerType triggerType, Map<String, Object> params, String traceId) {
         Instant startTime = Instant.now();
@@ -415,32 +476,97 @@ public class ScheduledJobTask implements Runnable {
         this.lastTraceId = traceId;
         String jobName = definition.getJobName();
 
+        JobContext outerContext = buildExecutionContext(triggerType, params, traceId, startTime, resolveInitialTenantId(params));
+        List<LocalJobInterceptor> activeInterceptors = getEffectiveInterceptors();
+        if (activeInterceptors.isEmpty()) {
+            return executeDispatchedBody(triggerType, params, traceId, startTime, outerContext).result();
+        }
+
+        int passedIndex = -1;
+        JobResult finalResult = null;
+        Throwable executionThrowable = null;
+        try {
+            // 1. 前置拦截正序判定
+            for (int i = 0; i < activeInterceptors.size(); i++) {
+                LocalJobInterceptor interceptor = activeInterceptors.get(i);
+                boolean proceed;
+                try {
+                    proceed = interceptor.preHandle(outerContext);
+                } catch (Throwable preEx) {
+                    executionThrowable = preEx;
+                    long duration = Duration.between(startTime, Instant.now()).toMillis();
+                    this.lastDurationMs = duration;
+                    this.lastStatus = "FAILED";
+                    this.lastResultMsg = preEx.getMessage();
+                    log.error("LocalJobInterceptor [{}] preHandle failed for job [{}]: {}",
+                            interceptor.getClass().getSimpleName(), jobName, preEx.getMessage(), preEx);
+                    saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "FAILED",
+                            preEx.getMessage(), preEx.getMessage(), getStackTraceString(preEx), 0, outerContext.getLogs());
+                    publishEvent(new JobFailedEvent(this, jobName, triggerType, traceId, duration, 0, preEx, preEx.getMessage()));
+                    finalResult = JobResult.failure(preEx.getMessage());
+                    return finalResult;
+                }
+                if (!proceed) {
+                    long duration = Duration.between(startTime, Instant.now()).toMillis();
+                    String rejectMsg = "Skipped: rejected by interceptor [" + interceptor.getClass().getSimpleName() + "]";
+                    this.lastDurationMs = duration;
+                    this.lastStatus = "DISCARDED";
+                    this.lastResultMsg = rejectMsg;
+                    saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "DISCARDED",
+                            rejectMsg, null, null, 0, outerContext.getLogs());
+                    publishEvent(new JobDiscardedEvent(this, jobName, triggerType, traceId,
+                            DiscardReason.INTERCEPTOR_REJECTED, rejectMsg));
+                    finalResult = JobResult.builder().success(false).message(rejectMsg).build();
+                    return finalResult;
+                }
+                passedIndex = i;
+            }
+
+            // 2. 分派单次或全租户遍历执行（内部已完成状态记录与事件发布）
+            ExecutionOutcome outcome = executeDispatchedBody(triggerType, params, traceId, startTime, outerContext);
+            finalResult = outcome.result();
+            executionThrowable = outcome.exception();
+
+            // 3. 正常或降级完成后正序执行 postHandle（隔离后置处理异常，防止重复落盘终态事件冲突）
+            if (executionThrowable == null) {
+                for (LocalJobInterceptor interceptor : activeInterceptors) {
+                    try {
+                        interceptor.postHandle(outerContext, finalResult);
+                    } catch (Throwable postEx) {
+                        if (executionThrowable == null) {
+                            executionThrowable = postEx;
+                        }
+                        log.warn("LocalJobInterceptor [{}] postHandle threw exception for job [{}]: {}",
+                                interceptor.getClass().getSimpleName(), jobName, postEx.getMessage(), postEx);
+                    }
+                }
+            }
+            return finalResult;
+        } catch (Throwable ex) {
+            executionThrowable = ex;
+            throw ex;
+        } finally {
+            // 4. 终态对已通过 preHandle 的拦截器严格逆序执行 afterCompletion
+            triggerAfterCompletion(activeInterceptors, passedIndex, outerContext, finalResult, executionThrowable);
+        }
+    }
+
+    private ExecutionOutcome executeDispatchedBody(TriggerType triggerType, Map<String, Object> params, String traceId,
+                                                   Instant startTime, JobContext outerContext) {
         if (definition.getTenantMode() == JobTenantMode.ITERATE) {
-            return doExecuteIterate(triggerType, params, traceId, startTime);
+            return new ExecutionOutcome(doExecuteIterate(triggerType, params, traceId, startTime), null);
         }
+        return doExecuteSingle(triggerType, outerContext, startTime);
+    }
 
-        String currentTenant = null;
-        if (definition.getTenantMode() == JobTenantMode.PARAM && params != null && params.containsKey("tenantId")) {
-            currentTenant = String.valueOf(params.get("tenantId"));
-        } else if (definition.getTenantMode() != JobTenantMode.IGNORE) {
-            currentTenant = TenantContextHolder.getTenantId();
-        }
-
-        JobContext context = JobContext.builder()
-                .jobName(jobName)
-                .triggerType(triggerType)
-                .fireTime(startTime)
-                .tenantId(currentTenant)
-                .params(params != null ? params : Collections.emptyMap())
-                .traceId(traceId)
-                .maxLogLines(resolveMaxLogLines())
-                .build();
-
+    private ExecutionOutcome doExecuteSingle(TriggerType triggerType, JobContext context, Instant startTime) {
+        String jobName = definition.getJobName();
+        String traceId = context.getTraceId();
         AtomicInteger retryCount = new AtomicInteger(0);
 
         try {
             log.debug("Executing job [{}] triggered by [{}] with traceId [{}]", jobName, triggerType, traceId);
-            Object result = executeWithRetryAndTimeout(context, retryCount);
+            Object result = executeWithRetryAndTimeout(context, retryCount, true);
 
             long duration = Duration.between(startTime, Instant.now()).toMillis();
             this.lastDurationMs = duration;
@@ -452,7 +578,7 @@ public class ScheduledJobTask implements Runnable {
                 saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "FAILED",
                         resultMsg, jobResult.getMessage(), null, retryCount.get(), context.getLogs());
                 publishEvent(new JobFailedEvent(this, jobName, triggerType, traceId, duration, retryCount.get(), null, resultMsg));
-                return jobResult;
+                return new ExecutionOutcome(jobResult, null);
             }
 
             this.lastStatus = "SUCCESS";
@@ -461,12 +587,9 @@ public class ScheduledJobTask implements Runnable {
             saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "SUCCESS",
                     resultMsg, null, null, retryCount.get(), context.getLogs());
             publishEvent(new JobSuccessEvent(this, jobName, triggerType, traceId, duration, result));
-            if (result instanceof JobResult jobResult) {
-                return jobResult;
-            }
-            return JobResult.success(resultMsg, result);
+            JobResult finalResult = (result instanceof JobResult jobResult) ? jobResult : JobResult.success(resultMsg, result);
+            return new ExecutionOutcome(finalResult, null);
         } catch (JobExecutionFailureException ex) {
-            // 重试耗尽后仍返回失败的 JobResult，记录终态并发布领域失败事件
             long duration = Duration.between(startTime, Instant.now()).toMillis();
             this.lastDurationMs = duration;
             this.lastStatus = "FAILED";
@@ -476,16 +599,38 @@ public class ScheduledJobTask implements Runnable {
             saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "FAILED",
                     resultMsg, jobResult.getMessage(), null, retryCount.get(), context.getLogs());
             publishEvent(new JobFailedEvent(this, jobName, triggerType, traceId, duration, retryCount.get(), null, resultMsg));
-            return jobResult;
+            return new ExecutionOutcome(jobResult, null);
         } catch (JobTimeoutException ex) {
-            // 防御 Log-and-Throw 异常双重污染：直接记录现场与发布事件后向外抛出，不在内部打印 log.error
+            // 始终先记录 TIMEOUT 状态并广播 JobTimeoutEvent，保障指标与防风暴告警不漏报
             long duration = Duration.between(startTime, Instant.now()).toMillis();
             this.lastDurationMs = duration;
             this.lastStatus = "TIMEOUT";
             this.lastResultMsg = ex.getMessage();
+            publishEvent(new JobTimeoutEvent(this, jobName, triggerType, traceId, duration, ex.getTimeout(), retryCount.get()));
+
+            try {
+                JobResult fallbackResult = resolveTimeoutFallback(context, ex);
+                if (fallbackResult != null) {
+                    String fallbackSummary = extractResultMessage(fallbackResult);
+                    context.log("Timeout fallback executed: " + fallbackSummary);
+                    this.lastResultMsg = fallbackSummary;
+                    saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "TIMEOUT",
+                            fallbackSummary, ex.getMessage(), getStackTraceString(ex), retryCount.get(), context.getLogs());
+                    return new ExecutionOutcome(fallbackResult, null);
+                }
+            } catch (Throwable fallbackEx) {
+                // 降级补偿自身失败时仍必须保留 TIMEOUT 审计记录，且不覆盖 TIMEOUT 状态，随后保留原因果链向外传播
+                ex.addSuppressed(fallbackEx);
+                context.log("Timeout fallback execution failed: " + fallbackEx.getMessage());
+                this.lastResultMsg = ex.getMessage() + " (fallback failed: " + fallbackEx.getMessage() + ")";
+                saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "TIMEOUT",
+                        this.lastResultMsg, this.lastResultMsg, getStackTraceString(fallbackEx),
+                        retryCount.get(), context.getLogs());
+                throw fallbackEx;
+            }
+
             saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "TIMEOUT",
                     ex.getMessage(), ex.getMessage(), getStackTraceString(ex), retryCount.get(), context.getLogs());
-            publishEvent(new JobTimeoutEvent(this, jobName, triggerType, traceId, duration, ex.getTimeout(), retryCount.get()));
             throw ex;
         } catch (Throwable ex) {
             long duration = Duration.between(startTime, Instant.now()).toMillis();
@@ -496,15 +641,189 @@ public class ScheduledJobTask implements Runnable {
             saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "FAILED",
                     ex.getMessage(), ex.getMessage(), getStackTraceString(ex), retryCount.get(), context.getLogs());
             publishEvent(new JobFailedEvent(this, jobName, triggerType, traceId, duration, retryCount.get(), ex, ex.getMessage()));
-            return JobResult.failure(ex.getMessage());
+            return new ExecutionOutcome(JobResult.failure(ex.getMessage()), ex);
         }
+    }
+
+    private void triggerAfterCompletion(List<LocalJobInterceptor> activeInterceptors, int passedIndex,
+                                        JobContext context, JobResult result, Throwable ex) {
+        for (int i = passedIndex; i >= 0; i--) {
+            LocalJobInterceptor interceptor = activeInterceptors.get(i);
+            try {
+                interceptor.afterCompletion(context, result, ex);
+            } catch (Throwable cleanupEx) {
+                log.warn("LocalJobInterceptor [{}] afterCompletion threw exception for job [{}]: {}",
+                        interceptor.getClass().getSimpleName(), definition.getJobName(), cleanupEx.getMessage(), cleanupEx);
+            }
+        }
+    }
+
+    private JobResult resolveTimeoutFallback(JobContext context, JobTimeoutException timeoutEx) {
+        String declaredMethodName = definition.getFallbackMethod();
+        boolean hasDeclaredFallback = declaredMethodName != null && !declaredMethodName.isBlank();
+        if (hasDeclaredFallback) {
+            Object rawTarget = (handler instanceof MethodInvokingJobHandler mijh) ? mijh.getTargetBean() : handler;
+            if (rawTarget != null) {
+                Class<?> targetClass = AopUtils.getTargetClass(rawTarget);
+                Method fallbackMethod = findFallbackMethod(targetClass, declaredMethodName.trim(), timeoutEx);
+                if (fallbackMethod != null) {
+                    return invokeDeclaredFallbackMethod(rawTarget, fallbackMethod, declaredMethodName.trim(), context, timeoutEx);
+                }
+                log.warn("Job [{}] declared fallbackMethod [{}], but no compatible method found on [{}]",
+                        definition.getJobName(), declaredMethodName, targetClass.getName());
+            }
+        }
+        LocalJobTimeoutFallbackHandler fallbackHandler = timeoutFallbackHandlerProvider != null
+                ? timeoutFallbackHandlerProvider.get()
+                : null;
+        if (fallbackHandler != null) {
+            JobResult globalResult = fallbackHandler.onTimeout(context, timeoutEx);
+            return normalizeFallbackResult(globalResult,
+                    "Timeout fallback handled by [" + fallbackHandler.getClass().getSimpleName() + "]");
+        }
+        return null;
+    }
+
+    private JobResult invokeDeclaredFallbackMethod(Object rawTarget, Method method, String methodName,
+                                                     JobContext context, JobTimeoutException timeoutEx) {
+        Object invokeTarget = unwrapTargetBean(rawTarget);
+        ReflectionUtils.makeAccessible(method);
+        Object[] args = resolveFallbackArgs(method, context, timeoutEx);
+        try {
+            Object result = args.length == 0 ? method.invoke(invokeTarget) : method.invoke(invokeTarget, args);
+            log.info("Job [{}] executed fallbackMethod [{}] after hard timeout", definition.getJobName(), methodName);
+            return normalizeFallbackResult(result, "Timeout fallback [" + methodName + "] completed");
+        } catch (InvocationTargetException ex) {
+            Throwable cause = ex.getTargetException() != null ? ex.getTargetException() : ex;
+            throw new IllegalStateException("Fallback method [" + methodName + "] failed: " + cause.getMessage(), cause);
+        } catch (Throwable ex) {
+            throw new IllegalStateException("Failed to invoke fallback method [" + methodName + "]: " + ex.getMessage(), ex);
+        }
+    }
+
+    private Method findFallbackMethod(Class<?> targetClass, String methodName, JobTimeoutException timeoutEx) {
+        List<Method> candidates = new ArrayList<>();
+        Class<?> current = targetClass;
+        while (current != null && !Object.class.equals(current)) {
+            for (Method method : current.getDeclaredMethods()) {
+                if (method.getName().equals(methodName)) {
+                    candidates.add(method);
+                }
+            }
+            current = current.getSuperclass();
+        }
+        if (candidates.isEmpty()) {
+            return null;
+        }
+        for (int priority = 1; priority <= 4; priority++) {
+            Method bestMatch = null;
+            for (Method candidate : candidates) {
+                if (matchesFallbackPriority(candidate.getParameterTypes(), priority, timeoutEx)) {
+                    if (bestMatch == null || isMoreSpecificThrowableSignature(candidate.getParameterTypes(), bestMatch.getParameterTypes())) {
+                        bestMatch = candidate;
+                    }
+                }
+            }
+            if (bestMatch != null) {
+                return bestMatch;
+            }
+        }
+        return null;
+    }
+
+    private boolean isMoreSpecificThrowableSignature(Class<?>[] candidateTypes, Class<?>[] currentBestTypes) {
+        Class<?> candidateThrowable = extractThrowableParamType(candidateTypes);
+        Class<?> currentBestThrowable = extractThrowableParamType(currentBestTypes);
+        if (candidateThrowable == null || currentBestThrowable == null) {
+            return false;
+        }
+        return !candidateThrowable.equals(currentBestThrowable) && currentBestThrowable.isAssignableFrom(candidateThrowable);
+    }
+
+    private Class<?> extractThrowableParamType(Class<?>[] paramTypes) {
+        for (Class<?> paramType : paramTypes) {
+            if (Throwable.class.isAssignableFrom(paramType)) {
+                return paramType;
+            }
+        }
+        return null;
+    }
+
+    private boolean matchesFallbackPriority(Class<?>[] paramTypes, int priority, JobTimeoutException timeoutEx) {
+        return switch (priority) {
+            case 1 -> paramTypes.length == 2
+                    && ((JobContext.class.isAssignableFrom(paramTypes[0]) && isCompatibleThrowable(paramTypes[1], timeoutEx))
+                    || (JobContext.class.isAssignableFrom(paramTypes[1]) && isCompatibleThrowable(paramTypes[0], timeoutEx)));
+            case 2 -> paramTypes.length == 1 && JobContext.class.isAssignableFrom(paramTypes[0]);
+            case 3 -> paramTypes.length == 1 && isCompatibleThrowable(paramTypes[0], timeoutEx);
+            case 4 -> paramTypes.length == 0;
+            default -> false;
+        };
+    }
+
+    private boolean isCompatibleThrowable(Class<?> paramType, JobTimeoutException timeoutEx) {
+        return Throwable.class.isAssignableFrom(paramType) && paramType.isInstance(timeoutEx);
+    }
+
+    private Object[] resolveFallbackArgs(Method method, JobContext context, JobTimeoutException timeoutEx) {
+        Class<?>[] paramTypes = method.getParameterTypes();
+        if (paramTypes.length == 0) {
+            return new Object[0];
+        }
+        Object[] args = new Object[paramTypes.length];
+        for (int i = 0; i < paramTypes.length; i++) {
+            if (JobContext.class.isAssignableFrom(paramTypes[i])) {
+                args[i] = context;
+            } else if (Throwable.class.isAssignableFrom(paramTypes[i])) {
+                args[i] = timeoutEx;
+            }
+        }
+        return args;
+    }
+
+    private Object unwrapTargetBean(Object bean) {
+        if (AopUtils.isAopProxy(bean)) {
+            Object singleton = AopProxyUtils.getSingletonTarget(bean);
+            if (singleton != null) {
+                return singleton;
+            }
+            if (bean instanceof Advised advised) {
+                try {
+                    Object target = advised.getTargetSource().getTarget();
+                    if (target != null) {
+                        return target;
+                    }
+                } catch (Exception ignored) {
+                    // 回退使用原始代理对象
+                }
+            }
+        }
+        return bean;
+    }
+
+    private JobResult normalizeFallbackResult(Object result, String defaultMessage) {
+        if (result instanceof JobResult jobResult) {
+            return jobResult;
+        }
+        if (result instanceof String str && !str.isBlank()) {
+            return JobResult.success(str, str);
+        }
+        return JobResult.success(defaultMessage, result);
     }
 
     private JobResult doExecuteIterate(TriggerType triggerType, Map<String, Object> params, String traceId, Instant startTime) {
         String jobName = definition.getJobName();
         TenantProvider provider = this.tenantProvider != null ? this.tenantProvider : new DefaultTenantProvider();
-        List<String> tenantIds = provider.getTenantIds();
-        if (tenantIds == null || tenantIds.isEmpty()) {
+        List<String> rawTenantIds = provider.getTenantIds();
+        List<String> tenantIds = new ArrayList<>();
+        if (rawTenantIds != null) {
+            for (String tid : rawTenantIds) {
+                if (tid != null && !tid.isBlank()) {
+                    tenantIds.add(tid.trim());
+                }
+            }
+        }
+        if (tenantIds.isEmpty()) {
             log.warn("Job [{}] in ITERATE tenant mode found no active tenants from TenantProvider, skipping execution", jobName);
             String msg = "无有效租户，跳过全租户轮询调度";
             long duration = Duration.between(startTime, Instant.now()).toMillis();
@@ -518,81 +837,165 @@ public class ScheduledJobTask implements Runnable {
         }
 
         int total = tenantIds.size();
-        int successCount = 0;
-        int failureCount = 0;
-        List<String> errorMessages = new ArrayList<>();
-        List<String> aggregatedLogs = new CopyOnWriteArrayList<>();
-        AtomicInteger totalRetryCount = new AtomicInteger(0);
+        int concurrency = resolveTenantConcurrency();
+        TenantIterationStats stats = new TenantIterationStats();
 
-        for (String tenantId : tenantIds) {
-            TenantContextHolder.TenantSnapshot tenantSnapshot = TenantContextHolder.capturePrevious();
-            try {
-                TenantContextHolder.setTenantId(tenantId);
-                JobContext tenantContext = JobContext.builder()
-                        .jobName(jobName)
-                        .triggerType(triggerType)
-                        .fireTime(Instant.now())
-                        .tenantId(tenantId)
-                        .params(params != null ? params : Collections.emptyMap())
-                        .traceId(traceId)
-                        .maxLogLines(resolveMaxLogLines())
-                        .build();
-
-                tenantContext.log("Starting execution for tenant [" + tenantId + "]");
-                AtomicInteger retryCount = new AtomicInteger(0);
-                Object result = executeWithRetryAndTimeout(tenantContext, retryCount);
-                totalRetryCount.addAndGet(retryCount.get());
-                aggregatedLogs.addAll(tenantContext.getLogs());
-
-                if (result instanceof JobResult jr && !jr.isSuccess()) {
-                    failureCount++;
-                    String err = "租户 [" + tenantId + "] 失败: " + jr.getMessage();
-                    errorMessages.add(err);
-                    log.warn("Job [{}] failed for tenant [{}]: {}", jobName, tenantId, jr.getMessage());
-                } else {
-                    successCount++;
-                    log.debug("Job [{}] succeeded for tenant [{}]", jobName, tenantId);
-                }
-            } catch (Throwable t) {
-                failureCount++;
-                String err = "租户 [" + tenantId + "] 异常: " + t.getMessage();
-                errorMessages.add(err);
-                log.error("Job [{}] threw exception for tenant [{}]: {}", jobName, tenantId, t.getMessage(), t);
-            } finally {
-                TenantContextHolder.restore(tenantSnapshot);
+        if (concurrency > 1 && (workerExecutor != null || taskScheduler != null)) {
+            doExecuteIterateParallel(tenantIds, concurrency, triggerType, params, traceId, stats);
+        } else {
+            for (String tenantId : tenantIds) {
+                executeForSingleTenant(tenantId, triggerType, params, traceId, true, stats);
             }
         }
 
+        int successCount = stats.successCount.get();
+        int failureCount = stats.failureCount.get();
         long duration = Duration.between(startTime, Instant.now()).toMillis();
         this.lastDurationMs = duration;
         boolean allSuccess = (failureCount == 0);
         String summary = String.format("完成 %d/%d 租户调度，成功 %d，失败 %d%s",
                 total, total, successCount, failureCount,
-                errorMessages.isEmpty() ? "" : "，详情: " + String.join("; ", errorMessages));
+                stats.errorMessages.isEmpty() ? "" : "，详情: " + String.join("; ", stats.errorMessages));
 
         this.lastStatus = allSuccess ? "SUCCESS" : (successCount > 0 ? "PARTIAL_SUCCESS" : "FAILED");
         this.lastResultMsg = summary;
 
+        List<String> logs = new ArrayList<>(stats.aggregatedLogs);
         saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, this.lastStatus,
-                summary, allSuccess ? null : summary, null, totalRetryCount.get(), aggregatedLogs);
+                summary, allSuccess ? null : summary, null, stats.totalRetryCount.get(), logs);
 
         if (allSuccess) {
             publishEvent(new JobSuccessEvent(this, jobName, triggerType, traceId, duration, summary));
             return JobResult.success(summary);
         } else {
-            publishEvent(new JobFailedEvent(this, jobName, triggerType, traceId, duration, totalRetryCount.get(), null, summary));
+            publishEvent(new JobFailedEvent(this, jobName, triggerType, traceId, duration, stats.totalRetryCount.get(), null, summary));
             return JobResult.failure(summary);
         }
     }
 
-    private Object executeWithRetryAndTimeout(JobContext context, AtomicInteger retryCount) {
+    private void doExecuteIterateParallel(List<String> tenantIds, int concurrency, TriggerType triggerType,
+                                          Map<String, Object> params, String traceId, TenantIterationStats stats) {
+        AsyncTaskExecutor executor = workerExecutor != null ? workerExecutor : taskScheduler;
+        Semaphore semaphore = new Semaphore(concurrency);
+        List<CompletableFuture<Void>> futures = new ArrayList<>(tenantIds.size());
+
+        for (int i = 0; i < tenantIds.size(); i++) {
+            String tenantId = tenantIds.get(i);
+            try {
+                semaphore.acquire();
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                for (int j = i; j < tenantIds.size(); j++) {
+                    String skippedTenant = tenantIds.get(j);
+                    stats.failureCount.incrementAndGet();
+                    stats.errorMessages.add("租户 [" + skippedTenant + "] 因并发调度被中断而未执行");
+                }
+                break;
+            }
+
+            // 外层已由当前并发分发投入受管 Worker 池执行；超时通过独立调度器延时中断当前 Worker 线程实现，彻底杜绝同池嵌套饥饿死锁
+            Runnable rawTenantTask = () -> {
+                try {
+                    executeForSingleTenant(tenantId, triggerType, params, traceId, false, stats);
+                } finally {
+                    semaphore.release();
+                }
+            };
+            Runnable wrappedTenantTask = AsyncContext.wrap(rawTenantTask);
+            try {
+                CompletableFuture<Void> future = CompletableFuture.runAsync(wrappedTenantTask, executor);
+                futures.add(future);
+            } catch (Throwable submitEx) {
+                semaphore.release();
+                stats.failureCount.incrementAndGet();
+                stats.errorMessages.add("租户 [" + tenantId + "] 提交执行失败: " + submitEx.getMessage());
+                log.error("Failed to submit concurrent tenant task for job [{}], tenant [{}]: {}",
+                        definition.getJobName(), tenantId, submitEx.getMessage(), submitEx);
+            }
+        }
+
+        if (!futures.isEmpty()) {
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        }
+    }
+
+    private void executeForSingleTenant(String tenantId, TriggerType triggerType, Map<String, Object> params,
+                                        String traceId, boolean allowNestedWorker, TenantIterationStats stats) {
+        String jobName = definition.getJobName();
+        TenantContextHolder.TenantSnapshot tenantSnapshot = TenantContextHolder.capturePrevious();
+        try {
+            TenantContextHolder.setTenantId(tenantId);
+            JobContext tenantContext = buildExecutionContext(triggerType, params, traceId, Instant.now(), tenantId);
+            tenantContext.log("Starting execution for tenant [" + tenantId + "]");
+            AtomicInteger retryCount = new AtomicInteger(0);
+            Object result = executeWithRetryAndTimeout(tenantContext, retryCount, allowNestedWorker);
+            stats.totalRetryCount.addAndGet(retryCount.get());
+            stats.aggregatedLogs.addAll(tenantContext.getLogs());
+
+            if (result instanceof JobResult jr && !jr.isSuccess()) {
+                stats.failureCount.incrementAndGet();
+                stats.errorMessages.add("租户 [" + tenantId + "] 失败: " + jr.getMessage());
+                log.warn("Job [{}] failed for tenant [{}]: {}", jobName, tenantId, jr.getMessage());
+            } else {
+                stats.successCount.incrementAndGet();
+                log.debug("Job [{}] succeeded for tenant [{}]", jobName, tenantId);
+            }
+        } catch (Throwable t) {
+            stats.failureCount.incrementAndGet();
+            stats.errorMessages.add("租户 [" + tenantId + "] 异常: " + t.getMessage());
+            log.error("Job [{}] threw exception for tenant [{}]: {}", jobName, tenantId, t.getMessage(), t);
+        } finally {
+            TenantContextHolder.restore(tenantSnapshot);
+        }
+    }
+
+    private JobContext buildExecutionContext(TriggerType triggerType, Map<String, Object> params,
+                                             String traceId, Instant fireTime, String tenantId) {
+        return JobContext.builder()
+                .jobName(definition.getJobName())
+                .triggerType(triggerType)
+                .fireTime(fireTime)
+                .tenantId(tenantId)
+                .params(params != null ? params : Collections.emptyMap())
+                .traceId(traceId)
+                .maxLogLines(resolveMaxLogLines())
+                .build();
+    }
+
+    private String resolveInitialTenantId(Map<String, Object> params) {
+        if (definition.getTenantMode() == JobTenantMode.ITERATE || definition.getTenantMode() == JobTenantMode.IGNORE) {
+            return null;
+        }
+        if (definition.getTenantMode() == JobTenantMode.PARAM && params != null && params.containsKey("tenantId")
+                && params.get("tenantId") != null) {
+            return String.valueOf(params.get("tenantId"));
+        }
+        return TenantContextHolder.getTenantId();
+    }
+
+    private int resolveTenantConcurrency() {
+        return definition.getTenantConcurrency() > 0 ? definition.getTenantConcurrency() : 1;
+    }
+
+    private record ExecutionOutcome(JobResult result, Throwable exception) {
+    }
+
+    private static final class TenantIterationStats {
+        private final AtomicInteger successCount = new AtomicInteger(0);
+        private final AtomicInteger failureCount = new AtomicInteger(0);
+        private final AtomicInteger totalRetryCount = new AtomicInteger(0);
+        private final Queue<String> errorMessages = new ConcurrentLinkedQueue<>();
+        private final Queue<String> aggregatedLogs = new ConcurrentLinkedQueue<>();
+    }
+
+    private Object executeWithRetryAndTimeout(JobContext context, AtomicInteger retryCount, boolean allowNestedWorker) {
         int maxRetries = definition.getMaxRetries();
         Duration retryInterval = definition.getRetryInterval() != null ? definition.getRetryInterval() : Duration.ofSeconds(1);
         String jobName = definition.getJobName();
 
         Supplier<Object> supplier = () -> {
             try {
-                Object res = executeSingleAttempt(context);
+                Object res = executeSingleAttempt(context, allowNestedWorker);
                 if (res instanceof JobResult jr && !jr.isSuccess() && maxRetries > 0) {
                     throw new JobExecutionFailureException(jr);
                 }
@@ -623,13 +1026,57 @@ public class ScheduledJobTask implements Runnable {
         }
     }
 
-    private Object executeSingleAttempt(JobContext context) throws Throwable {
+    private Object executeSingleAttempt(JobContext context, boolean allowNestedWorker) throws Throwable {
         Duration timeout = definition.getTimeout();
-        // 调度池与执行池物理隔离：只要配置了 workerExecutor 或有 timeout，均委托至独立 Worker 执行池
-        if (workerExecutor != null || (taskScheduler != null && timeout != null && !timeout.isZero())) {
+        boolean hasTimeout = timeout != null && !timeout.isZero() && !timeout.isNegative();
+        // 调度池与执行池物理隔离：允许切入 Worker 且配置了 workerExecutor 或超时控制时委托至 Worker 池
+        if (allowNestedWorker && (workerExecutor != null || (taskScheduler != null && hasTimeout))) {
             return executeInWorker(context, timeout);
-        } else {
-            return executeDirectly(context);
+        }
+        // 已运行在受管并发 Worker 线程且要求超时控制时：通过调度器延时中断看门狗或时间截止校验实现无同池嵌套阻塞的硬超时
+        if (hasTimeout) {
+            return executeDirectlyWithWatchdog(context, timeout);
+        }
+        return executeDirectly(context);
+    }
+
+    private Object executeDirectlyWithWatchdog(JobContext context, Duration timeout) throws Throwable {
+        String jobName = definition.getJobName();
+        Thread workerThread = Thread.currentThread();
+        AtomicBoolean timedOut = new AtomicBoolean(false);
+        Instant start = Instant.now();
+        ScheduledFuture<?> timeoutTrigger = null;
+        if (taskScheduler != null) {
+            timeoutTrigger = taskScheduler.schedule(() -> {
+                if (timedOut.compareAndSet(false, true)) {
+                    workerThread.interrupt();
+                }
+            }, start.plus(timeout));
+        }
+
+        executingThread.set(workerThread);
+        try {
+            Object result = handler.execute(context);
+            if (timedOut.get() || Duration.between(start, Instant.now()).compareTo(timeout) > 0) {
+                throw new JobTimeoutException("Job [" + jobName + "] execution timed out after " + timeout, jobName, timeout, null);
+            }
+            return result;
+        } catch (JobTimeoutException ex) {
+            throw ex;
+        } catch (Throwable ex) {
+            if (timedOut.get() || (ex instanceof InterruptedException && Duration.between(start, Instant.now()).compareTo(timeout) >= 0)) {
+                throw new JobTimeoutException("Job [" + jobName + "] execution timed out after " + timeout, jobName, timeout, ex);
+            }
+            throw ex;
+        } finally {
+            if (timeoutTrigger != null) {
+                timeoutTrigger.cancel(false);
+            }
+            executingThread.compareAndSet(workerThread, null);
+            if (timedOut.get()) {
+                // 清除仅由看门狗超时中断置位的中断状态，避免污染池化 Worker 线程后续执行或上下文清理
+                Thread.interrupted();
+            }
         }
     }
 
@@ -764,6 +1211,8 @@ public class ScheduledJobTask implements Runnable {
                 .maxRetries(definition.getMaxRetries())
                 .clusterLock(definition.isClusterLock())
                 .clusterLockMinHoldTime(definition.getClusterLockMinHoldTime())
+                .fallbackMethod(definition.getFallbackMethod())
+                .tenantConcurrency(resolveTenantConcurrency())
                 .description(definition.getDescription())
                 .tenantMode(definition.getTenantMode())
                 .nextExecutionTime(resolveNextExecutionTime())

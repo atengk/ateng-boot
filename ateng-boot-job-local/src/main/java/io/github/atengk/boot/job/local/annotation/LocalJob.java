@@ -138,6 +138,28 @@ public @interface LocalJob {
     boolean enabled() default true;
 
     /**
+     * 任务触发硬超时强中断后的同 Bean 降级补偿方法名（默认空，代表未声明方法级降级）
+     * <p>
+     * 支持以下任一参数签名（按优先级匹配）：
+     * {@code (JobContext, Throwable)}、{@code (JobContext)}、{@code (Throwable)} 或无参 {@code ()}。
+     * </p>
+     *
+     * @return 降级补偿方法名
+     */
+    String fallbackMethod() default "";
+
+    /**
+     * SaaS 多租户 {@code ITERATE} 全租户轮询模态下的受管并发度（默认 1 表示串行遍历）
+     * <p>
+     * 值 {@code <= 0} 时自动归一化为 {@code 1}；当大于 {@code 1} 时，通过受管 Worker 线程池与
+     * {@code Semaphore(tenantConcurrency)} 背压并发遍历各有效租户。
+     * </p>
+     *
+     * @return 多租户并发度
+     */
+    int tenantConcurrency() default 1;
+
+    /**
      * SaaS 多租户调度模态（默认 {@link io.github.atengk.boot.job.local.enums.JobTenantMode#IGNORE} 忽略租户）
      * <ul>
      *   <li>{@link io.github.atengk.boot.job.local.enums.JobTenantMode#IGNORE}：系统级全局忽略租户执行</li>

@@ -22,6 +22,11 @@ public enum DiscardReason {
     CLUSTER_LOCKED("集群互斥锁被其他节点持有"),
 
     /**
+     * 被任务切面责任链拦截器前置拦截拒绝
+     */
+    INTERCEPTOR_REJECTED("被任务切面拦截器拦截跳过"),
+
+    /**
      * 其他自定义或未知原因
      */
     OTHER("其他原因");

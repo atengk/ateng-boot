@@ -2,7 +2,9 @@ package io.github.atengk.boot.job.local.registry;
 
 import io.github.atengk.boot.job.local.enums.JobStatus;
 import io.github.atengk.boot.job.local.enums.TriggerType;
+import io.github.atengk.boot.job.local.fallback.LocalJobTimeoutFallbackHandler;
 import io.github.atengk.boot.job.local.handler.JobHandler;
+import io.github.atengk.boot.job.local.interceptor.LocalJobInterceptor;
 import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
 import io.github.atengk.boot.job.local.model.JobDefinition;
 import io.github.atengk.boot.job.local.model.JobExecutionRecord;
@@ -16,8 +18,10 @@ import io.github.atengk.boot.job.local.tenant.TenantProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.ApplicationEventPublisherAware;
+import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.scheduling.Trigger;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
@@ -35,8 +39,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * 单机定时任务注册中心与调度运行时持有者
@@ -47,7 +53,7 @@ import java.util.function.Consumer;
  * @author Ateng
  * @since 2026-10-25
  */
-public class LocalJobRegistry implements DisposableBean, ApplicationEventPublisherAware {
+public class LocalJobRegistry implements DisposableBean, ApplicationEventPublisherAware, SmartInitializingSingleton {
 
     private static final Logger log = LoggerFactory.getLogger(LocalJobRegistry.class);
 
@@ -59,15 +65,19 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
     private final JobClusterLockProvider clusterLockProvider;
     private final JobLocalProperties properties;
     private final TenantProvider tenantProvider;
+    private final Supplier<List<LocalJobInterceptor>> interceptorsProvider;
+    private final Supplier<LocalJobTimeoutFallbackHandler> timeoutFallbackHandlerProvider;
+    private final AtomicReference<List<LocalJobInterceptor>> resolvedInterceptors = new AtomicReference<>();
+    private final AtomicReference<Optional<LocalJobTimeoutFallbackHandler>> resolvedFallbackHandler = new AtomicReference<>();
     private final AtomicBoolean started = new AtomicBoolean(false);
     private ApplicationEventPublisher eventPublisher;
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler) {
-        this(taskScheduler, null, null, null, null, null, null);
+        this(taskScheduler, null, null, null, null, null, null, Collections.emptyList(), null);
     }
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler, AsyncTaskExecutor workerExecutor) {
-        this(taskScheduler, workerExecutor, null, null, null, null, null);
+        this(taskScheduler, workerExecutor, null, null, null, null, null, Collections.emptyList(), null);
     }
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler,
@@ -75,7 +85,8 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
                             JobMetadataRepository metadataRepository,
                             JobLogStorageProvider logStorageProvider,
                             JobLocalProperties properties) {
-        this(taskScheduler, workerExecutor, metadataRepository, logStorageProvider, null, properties, null);
+        this(taskScheduler, workerExecutor, metadataRepository, logStorageProvider, null, properties, null,
+                Collections.emptyList(), null);
     }
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler,
@@ -84,7 +95,8 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
                             JobLogStorageProvider logStorageProvider,
                             JobClusterLockProvider clusterLockProvider,
                             JobLocalProperties properties) {
-        this(taskScheduler, workerExecutor, metadataRepository, logStorageProvider, clusterLockProvider, properties, null);
+        this(taskScheduler, workerExecutor, metadataRepository, logStorageProvider, clusterLockProvider, properties, null,
+                Collections.emptyList(), null);
     }
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler,
@@ -94,6 +106,34 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
                             JobClusterLockProvider clusterLockProvider,
                             JobLocalProperties properties,
                             TenantProvider tenantProvider) {
+        this(taskScheduler, workerExecutor, metadataRepository, logStorageProvider, clusterLockProvider, properties,
+                tenantProvider, Collections.emptyList(), null);
+    }
+
+    public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler,
+                            AsyncTaskExecutor workerExecutor,
+                            JobMetadataRepository metadataRepository,
+                            JobLogStorageProvider logStorageProvider,
+                            JobClusterLockProvider clusterLockProvider,
+                            JobLocalProperties properties,
+                            TenantProvider tenantProvider,
+                            List<LocalJobInterceptor> interceptors,
+                            LocalJobTimeoutFallbackHandler timeoutFallbackHandler) {
+        this(taskScheduler, workerExecutor, metadataRepository, logStorageProvider, clusterLockProvider, properties,
+                tenantProvider, () -> interceptors, () -> timeoutFallbackHandler);
+        resolveInterceptors();
+        resolveTimeoutFallbackHandler();
+    }
+
+    public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler,
+                            AsyncTaskExecutor workerExecutor,
+                            JobMetadataRepository metadataRepository,
+                            JobLogStorageProvider logStorageProvider,
+                            JobClusterLockProvider clusterLockProvider,
+                            JobLocalProperties properties,
+                            TenantProvider tenantProvider,
+                            Supplier<List<LocalJobInterceptor>> interceptorsProvider,
+                            Supplier<LocalJobTimeoutFallbackHandler> timeoutFallbackHandlerProvider) {
         this.taskScheduler = taskScheduler;
         this.workerExecutor = workerExecutor;
         this.metadataRepository = metadataRepository;
@@ -101,6 +141,44 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
         this.clusterLockProvider = clusterLockProvider;
         this.properties = properties;
         this.tenantProvider = tenantProvider != null ? tenantProvider : new DefaultTenantProvider();
+        this.interceptorsProvider = interceptorsProvider;
+        this.timeoutFallbackHandlerProvider = timeoutFallbackHandlerProvider;
+    }
+
+    @Override
+    public void afterSingletonsInstantiated() {
+        resolveInterceptors();
+        resolveTimeoutFallbackHandler();
+    }
+
+    private List<LocalJobInterceptor> resolveInterceptors() {
+        List<LocalJobInterceptor> cached = resolvedInterceptors.get();
+        if (cached != null) {
+            return cached;
+        }
+        List<LocalJobInterceptor> raw = interceptorsProvider != null ? interceptorsProvider.get() : Collections.emptyList();
+        List<LocalJobInterceptor> normalized;
+        if (raw == null || raw.isEmpty()) {
+            normalized = Collections.emptyList();
+        } else {
+            List<LocalJobInterceptor> sorted = new ArrayList<>(raw);
+            AnnotationAwareOrderComparator.sort(sorted);
+            normalized = Collections.unmodifiableList(sorted);
+        }
+        resolvedInterceptors.compareAndSet(null, normalized);
+        return resolvedInterceptors.get();
+    }
+
+    private LocalJobTimeoutFallbackHandler resolveTimeoutFallbackHandler() {
+        Optional<LocalJobTimeoutFallbackHandler> cached = resolvedFallbackHandler.get();
+        if (cached != null) {
+            return cached.orElse(null);
+        }
+        LocalJobTimeoutFallbackHandler handler = timeoutFallbackHandlerProvider != null
+                ? timeoutFallbackHandlerProvider.get()
+                : null;
+        resolvedFallbackHandler.compareAndSet(null, Optional.ofNullable(handler));
+        return resolvedFallbackHandler.get().orElse(null);
     }
 
     /**
@@ -150,7 +228,8 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
         }
 
         ScheduledJobTask task = new ScheduledJobTask(definition, handler, taskScheduler, workerExecutor,
-                logStorageProvider, clusterLockProvider, eventPublisher, tenantProvider, properties);
+                logStorageProvider, clusterLockProvider, eventPublisher, tenantProvider, properties,
+                this::resolveInterceptors, this::resolveTimeoutFallbackHandler);
         ScheduledJobTask existing = taskMap.putIfAbsent(jobName, task);
         if (existing != null) {
             throw new IllegalArgumentException("Duplicate job registration detected for job name: " + jobName);

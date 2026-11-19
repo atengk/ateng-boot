@@ -8,6 +8,8 @@ import io.github.atengk.boot.job.local.alert.JobAlertHandler;
 import io.github.atengk.boot.job.local.alert.LocalJobAlertListener;
 import io.github.atengk.boot.job.local.alert.LoggingJobAlertHandler;
 import io.github.atengk.boot.job.local.alert.NotificationJobAlertHandler;
+import io.github.atengk.boot.job.local.fallback.LocalJobTimeoutFallbackHandler;
+import io.github.atengk.boot.job.local.interceptor.LocalJobInterceptor;
 import io.github.atengk.boot.job.local.lifecycle.LocalJobLifecycleManager;
 import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
 import io.github.atengk.boot.job.local.lock.LocalJobClusterLockProvider;
@@ -43,6 +45,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
+
+import java.util.Collections;
 
 /**
  * 单机定时任务核心防御性自动装配
@@ -187,8 +191,10 @@ public class AtengJobLocalAutoConfiguration {
      * @param metadataRepository     元数据存储仓储
      * @param logStorageProvider     历史日志存储提供者
      * @param clusterLockProvider    集群互斥锁提供者
-     * @param properties             配置属性
-     * @param tenantProviderProvider 多租户发现服务提供者
+     * @param properties                     配置属性
+     * @param tenantProviderProvider         多租户发现服务提供者
+     * @param interceptorsProvider           任务切面责任链拦截器提供者
+     * @param timeoutFallbackHandlerProvider 全局硬超时降级补偿处理器提供者
      * @return LocalJobRegistry
      */
     @Bean
@@ -200,14 +206,20 @@ public class AtengJobLocalAutoConfiguration {
             JobLogStorageProvider logStorageProvider,
             JobClusterLockProvider clusterLockProvider,
             JobLocalProperties properties,
-            ObjectProvider<TenantProvider> tenantProviderProvider) {
+            ObjectProvider<TenantProvider> tenantProviderProvider,
+            ObjectProvider<LocalJobInterceptor> interceptorsProvider,
+            ObjectProvider<LocalJobTimeoutFallbackHandler> timeoutFallbackHandlerProvider) {
         TenantProvider tenantProvider = tenantProviderProvider.orderedStream()
                 .filter(tp -> !(tp instanceof DefaultTenantProvider))
                 .findFirst()
                 .orElseGet(() -> tenantProviderProvider.getIfAvailable(DefaultTenantProvider::new));
         return new LocalJobRegistry(localJobTaskScheduler, workerExecutorProvider.getIfAvailable(),
                 metadataRepository, logStorageProvider, clusterLockProvider, properties,
-                tenantProvider);
+                tenantProvider,
+                () -> interceptorsProvider != null ? interceptorsProvider.orderedStream().toList() : Collections.emptyList(),
+                () -> timeoutFallbackHandlerProvider != null
+                        ? timeoutFallbackHandlerProvider.orderedStream().findFirst().orElse(null)
+                        : null);
     }
 
     /**
