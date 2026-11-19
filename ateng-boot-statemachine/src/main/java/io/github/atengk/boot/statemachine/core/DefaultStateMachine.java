@@ -42,6 +42,8 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
     private final List<StateMachineInterceptor<? super S, ? super E, ? super C>> interceptors;
     private final Map<E, List<Transition<S, E, C>>> idempotentTransitionsByEvent;
     private final Map<S, StateLifecycle<S, E, C>> stateLifecycleMap;
+    private final Set<S> allStates;
+    private final Set<E> allEvents;
     private final List<StateTransitionAuditListener<? super S, ? super E, ? super C>> auditListeners;
 
     public DefaultStateMachine(String machineId,
@@ -81,9 +83,14 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
         this.interceptors = new CopyOnWriteArrayList<>(supportedInterceptors);
 
         Map<E, List<Transition<S, E, C>>> idempMap = new LinkedHashMap<>();
-        for (Map<E, List<Transition<S, E, C>>> eventMap : deepImmutableMap.values()) {
-            for (List<Transition<S, E, C>> transitions : eventMap.values()) {
-                for (Transition<S, E, C> transition : transitions) {
+        Set<S> collectedStates = new LinkedHashSet<>();
+        Set<E> collectedEvents = new LinkedHashSet<>();
+        for (Map.Entry<S, Map<E, List<Transition<S, E, C>>>> sourceEntry : deepImmutableMap.entrySet()) {
+            collectedStates.add(sourceEntry.getKey());
+            for (Map.Entry<E, List<Transition<S, E, C>>> eventEntry : sourceEntry.getValue().entrySet()) {
+                collectedEvents.add(eventEntry.getKey());
+                for (Transition<S, E, C> transition : eventEntry.getValue()) {
+                    collectedStates.addAll(transition.getPossibleTargetStates());
                     if (transition.isIdempotent()) {
                         idempMap.computeIfAbsent(transition.getEvent(), k -> new ArrayList<>()).add(transition);
                     }
@@ -98,6 +105,11 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
         this.stateLifecycleMap = stateLifecycleMap != null
                 ? Collections.unmodifiableMap(new LinkedHashMap<>(stateLifecycleMap))
                 : Collections.emptyMap();
+
+        collectedStates.addAll(this.stateLifecycleMap.keySet());
+        this.allStates = Collections.unmodifiableSet(collectedStates);
+        this.allEvents = Collections.unmodifiableSet(collectedEvents);
+
         this.auditListeners = new CopyOnWriteArrayList<>(auditListeners != null ? auditListeners : Collections.emptyList());
     }
 
@@ -879,6 +891,33 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             }
         }
         return renderedLines;
+    }
+
+    @Override
+    public Set<S> getAllStates() {
+        return allStates;
+    }
+
+    @Override
+    public Set<E> getAllEvents() {
+        return allEvents;
+    }
+
+    @Override
+    public Set<S> getPossibleTargetStates(S sourceState, E event) {
+        if (sourceState == null || event == null) {
+            return Collections.emptySet();
+        }
+        Map<E, List<Transition<S, E, C>>> eventMap = transitionMap.get(sourceState);
+        List<Transition<S, E, C>> candidates = eventMap != null ? eventMap.get(event) : null;
+        if (candidates == null || candidates.isEmpty()) {
+            return Collections.emptySet();
+        }
+        Set<S> targets = new LinkedHashSet<>();
+        for (Transition<S, E, C> candidate : candidates) {
+            targets.addAll(candidate.getPossibleTargetStates());
+        }
+        return Collections.unmodifiableSet(targets);
     }
 
     @Override

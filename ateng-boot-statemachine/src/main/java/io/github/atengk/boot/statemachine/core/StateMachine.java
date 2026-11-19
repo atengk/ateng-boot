@@ -592,6 +592,35 @@ public interface StateMachine<S, E, C> {
     }
 
     /**
+     * 获取状态机已声明的全部状态节点集合（包含源状态、目标状态与生命周期状态节点的不可变并集）
+     *
+     * @return 状态全集（保底返回不可变空集合）
+     */
+    default Set<S> getAllStates() {
+        return Collections.emptySet();
+    }
+
+    /**
+     * 获取状态机已声明的全部触发事件集合
+     *
+     * @return 事件全集（保底返回不可变空集合）
+     */
+    default Set<E> getAllEvents() {
+        return Collections.emptySet();
+    }
+
+    /**
+     * 查询指定源状态与触发事件下所有可能抵达的目标状态集合
+     *
+     * @param sourceState 源状态
+     * @param event       触发事件
+     * @return 候选目标状态集合（涵盖外部、内部与 Choice 全分支；无匹配或空输入保底返回不可变空集合）
+     */
+    default Set<S> getPossibleTargetStates(S sourceState, E event) {
+        return Collections.emptySet();
+    }
+
+    /**
      * 动态导出 Mermaid 状态图格式文本（stateDiagram-v2）
      *
      * @return Mermaid 状态机图例定义文本

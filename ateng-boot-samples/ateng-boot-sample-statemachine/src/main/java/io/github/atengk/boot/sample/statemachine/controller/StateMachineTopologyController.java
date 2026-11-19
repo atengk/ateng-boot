@@ -4,6 +4,8 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.statemachine.constant.OrderEvent;
 import io.github.atengk.boot.sample.statemachine.constant.OrderState;
 import io.github.atengk.boot.sample.statemachine.context.OrderContext;
+import io.github.atengk.boot.sample.statemachine.service.OrderLifecycleScenarioService;
+import io.github.atengk.boot.sample.statemachine.vo.OrderTopologyMetadataVO;
 import io.github.atengk.boot.statemachine.core.StateMachine;
 import io.github.atengk.boot.statemachine.core.StateMachineFactory;
 import lombok.RequiredArgsConstructor;
@@ -30,6 +32,7 @@ import java.util.Set;
 public class StateMachineTopologyController {
 
     private final StateMachine<OrderState, OrderEvent, OrderContext> orderStateMachine;
+    private final OrderLifecycleScenarioService lifecycleService;
 
     /**
      * 1. 导出动态 Mermaid 状态拓扑图语法文本
@@ -65,5 +68,16 @@ public class StateMachineTopologyController {
         log.info("[TopologyController] 探查全局机台单例注册表");
         Set<String> machineIds = StateMachineFactory.getAllMachineIds();
         return Result.success(machineIds);
+    }
+
+    /**
+     * 4. 只读内省订单状态机的拓扑元数据（状态全集、事件全集与各状态可达目标态映射）
+     *
+     * @return 状态机拓扑元数据视图对象
+     */
+    @GetMapping("/metadata")
+    public Result<OrderTopologyMetadataVO> getTopologyMetadata() {
+        log.info("[TopologyController] 只读内省订单状态机拓扑元数据: machineId={}", orderStateMachine.getMachineId());
+        return Result.success(lifecycleService.getTopologyMetadata());
     }
 }

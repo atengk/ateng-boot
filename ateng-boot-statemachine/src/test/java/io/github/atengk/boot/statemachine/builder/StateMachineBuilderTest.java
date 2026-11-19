@@ -149,4 +149,86 @@ class StateMachineBuilderTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Incomplete external transition configuration");
     }
+
+    @Test
+    @DisplayName("测试只读拓扑元数据内省: getAllStates / getAllEvents / getPossibleTargetStates")
+    void testTopologyIntrospection() {
+        StateMachineBuilder<State, Event, Integer> builder = StateMachineBuilderFactory.create();
+
+        builder.externalTransition().from(State.DRAFT).to(State.SUBMITTED).on(Event.SUBMIT);
+        builder.internalTransition().from(State.SUBMITTED).on(Event.ADD_COMMENT);
+        builder.choiceTransition()
+                .from(State.SUBMITTED)
+                .on(Event.RISK_CHECK)
+                .when(score -> score != null && score >= 80).to(State.APPROVED)
+                .defaultTo(State.REJECTED);
+        builder.state(State.CLOSED).onEntry((f, t, e, c) -> {});
+
+        StateMachine<State, Event, Integer> machine = builder.build("TOPOLOGY_INTROSPECT_MACHINE");
+
+        assertThat(machine.getAllStates()).containsExactlyInAnyOrder(
+                State.DRAFT, State.SUBMITTED, State.APPROVED, State.REJECTED, State.CLOSED
+        );
+        assertThat(machine.getAllEvents()).containsExactlyInAnyOrder(
+                Event.SUBMIT, Event.ADD_COMMENT, Event.RISK_CHECK
+        );
+        assertThat(machine.getPossibleTargetStates(State.DRAFT, Event.SUBMIT))
+                .containsExactly(State.SUBMITTED);
+        assertThat(machine.getPossibleTargetStates(State.SUBMITTED, Event.ADD_COMMENT))
+                .containsExactly(State.SUBMITTED);
+        assertThat(machine.getPossibleTargetStates(State.SUBMITTED, Event.RISK_CHECK))
+                .containsExactlyInAnyOrder(State.APPROVED, State.REJECTED);
+
+        // 无匹配或空入参保底返回不可变空集合
+        assertThat(machine.getPossibleTargetStates(State.CLOSED, Event.SUBMIT)).isNotNull().isEmpty();
+        assertThat(machine.getPossibleTargetStates(null, Event.SUBMIT)).isNotNull().isEmpty();
+        assertThat(machine.getPossibleTargetStates(State.DRAFT, null)).isNotNull().isEmpty();
+        assertThatThrownBy(() -> machine.getAllStates().add(State.DRAFT))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    @DisplayName("测试构建期无条件冲突死路由与 Choice 混用拦截 (Fail-Fast)")
+    void testBuildTimeDeadRouteAndChoiceConflictDetection() {
+        // 1. 同一 (source, event) 下重复声明两条无条件跃迁
+        StateMachineBuilder<State, Event, Integer> duplicateUnconditional = StateMachineBuilderFactory.create();
+        duplicateUnconditional.externalTransition().from(State.DRAFT).to(State.SUBMITTED).on(Event.SUBMIT);
+        duplicateUnconditional.externalTransition().from(State.DRAFT).to(State.APPROVED).on(Event.SUBMIT);
+
+        assertThatThrownBy(() -> duplicateUnconditional.build("DUP_UNCONDITIONAL_MACHINE"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("死路由");
+
+        // 2. Choice 跃迁与同源同事件其他跃迁混用
+        StateMachineBuilder<State, Event, Integer> choiceMix = StateMachineBuilderFactory.create();
+        choiceMix.choiceTransition()
+                .from(State.SUBMITTED).on(Event.RISK_CHECK)
+                .when(s -> s >= 80).to(State.APPROVED)
+                .defaultTo(State.REJECTED);
+        choiceMix.externalTransition()
+                .from(State.SUBMITTED).to(State.CLOSED).on(Event.RISK_CHECK)
+                .when(s -> s < 0);
+
+        assertThatThrownBy(() -> choiceMix.build("CHOICE_MIX_MACHINE"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Choice");
+
+        // 3. 多条带条件跃迁 + 末尾一条无条件兜底跃迁应合法放行并按顺序短路求值
+        StateMachineBuilder<State, Event, Integer> guardedWithFallback = StateMachineBuilderFactory.create();
+        guardedWithFallback.externalTransition()
+                .from(State.SUBMITTED).to(State.APPROVED).on(Event.RISK_CHECK)
+                .when(s -> s != null && s >= 80);
+        guardedWithFallback.externalTransition()
+                .from(State.SUBMITTED).to(State.REJECTED).on(Event.RISK_CHECK)
+                .when(s -> s != null && s < 50);
+        guardedWithFallback.externalTransition()
+                .from(State.SUBMITTED).to(State.CLOSED).on(Event.RISK_CHECK);
+
+        StateMachine<State, Event, Integer> validMachine = guardedWithFallback.build("GUARDED_FALLBACK_MACHINE");
+        assertThat(validMachine.fireEvent(State.SUBMITTED, Event.RISK_CHECK, 90)).isEqualTo(State.APPROVED);
+        assertThat(validMachine.fireEvent(State.SUBMITTED, Event.RISK_CHECK, 10)).isEqualTo(State.REJECTED);
+        assertThat(validMachine.fireEvent(State.SUBMITTED, Event.RISK_CHECK, 60)).isEqualTo(State.CLOSED);
+        assertThat(validMachine.getPossibleTargetStates(State.SUBMITTED, Event.RISK_CHECK))
+                .containsExactlyInAnyOrder(State.APPROVED, State.REJECTED, State.CLOSED);
+    }
 }

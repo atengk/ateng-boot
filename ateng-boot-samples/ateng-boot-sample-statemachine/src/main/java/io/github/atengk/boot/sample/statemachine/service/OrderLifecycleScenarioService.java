@@ -8,6 +8,7 @@ import io.github.atengk.boot.sample.statemachine.constant.OrderState;
 import io.github.atengk.boot.sample.statemachine.context.OrderContext;
 import io.github.atengk.boot.sample.statemachine.entity.OrderDO;
 import io.github.atengk.boot.sample.statemachine.mapper.OrderMapper;
+import io.github.atengk.boot.sample.statemachine.vo.OrderTopologyMetadataVO;
 import io.github.atengk.boot.statemachine.cas.CasUpdater;
 import io.github.atengk.boot.statemachine.core.StateMachine;
 import io.github.atengk.boot.statemachine.model.TransitionResult;
@@ -18,6 +19,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * 订单生命周期场景服务
@@ -361,6 +365,35 @@ public class OrderLifecycleScenarioService {
      */
     public String exportPlantUmlDiagram() {
         return orderStateMachine.generatePlantUML();
+    }
+
+    /**
+     * 只读内省订单状态机拓扑元数据（状态全集、事件全集与各状态可达目标态映射）
+     *
+     * @return 状态机拓扑元数据视图对象
+     */
+    public OrderTopologyMetadataVO getTopologyMetadata() {
+        Set<OrderState> allStates = orderStateMachine.getAllStates();
+        Set<OrderEvent> allEvents = orderStateMachine.getAllEvents();
+        Map<OrderState, Map<OrderEvent, Set<OrderState>>> reachable = new LinkedHashMap<>();
+        for (OrderState state : allStates) {
+            Map<OrderEvent, Set<OrderState>> eventTargets = new LinkedHashMap<>();
+            for (OrderEvent event : allEvents) {
+                Set<OrderState> targets = orderStateMachine.getPossibleTargetStates(state, event);
+                if (!targets.isEmpty()) {
+                    eventTargets.put(event, targets);
+                }
+            }
+            if (!eventTargets.isEmpty()) {
+                reachable.put(state, eventTargets);
+            }
+        }
+        return OrderTopologyMetadataVO.builder()
+                .machineId(orderStateMachine.getMachineId())
+                .allStates(allStates)
+                .allEvents(allEvents)
+                .reachableTransitions(reachable)
+                .build();
     }
 
     private OrderDO getOrderOrThrow(Long orderId) {

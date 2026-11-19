@@ -105,12 +105,42 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
             }
         }
 
+        for (Map.Entry<S, Map<E, List<Transition<S, E, C>>>> sourceEntry : transitionMap.entrySet()) {
+            S source = sourceEntry.getKey();
+            for (Map.Entry<E, List<Transition<S, E, C>>> eventEntry : sourceEntry.getValue().entrySet()) {
+                validateTransitionRoutes(machineId, source, eventEntry.getKey(), eventEntry.getValue());
+            }
+        }
+
         Map<S, StateLifecycle<S, E, C>> stateLifecycleMap = new LinkedHashMap<>();
         for (Map.Entry<S, StateLifecycleHolder<S, E, C>> entry : stateLifecycleHolders.entrySet()) {
             stateLifecycleMap.put(entry.getKey(), entry.getValue().buildStateLifecycle());
         }
 
         return new DefaultStateMachine<>(machineId, transitionMap, interceptors, stateLifecycleMap, auditListeners);
+    }
+
+    private void validateTransitionRoutes(String machineId, S source, E event, List<Transition<S, E, C>> routes) {
+        if (routes == null || routes.size() <= 1) {
+            return;
+        }
+        boolean hasChoice = routes.stream().anyMatch(ChoiceTransition.class::isInstance);
+        if (hasChoice) {
+            throw new IllegalStateException(String.format(
+                    "状态机 [%s] 构建期冲突: 状态 [%s] 响应事件 [%s] 下 Choice 分支跃迁不能与其他跃迁混用",
+                    machineId, source, event));
+        }
+        boolean seenUnconditional = false;
+        for (Transition<S, E, C> route : routes) {
+            if (seenUnconditional) {
+                throw new IllegalStateException(String.format(
+                        "状态机 [%s] 构建期检测到不可达死路由: 状态 [%s] 响应事件 [%s] 在无条件默认跃迁之后又声明了其他跃迁",
+                        machineId, source, event));
+            }
+            if (route.getConditions().isEmpty()) {
+                seenUnconditional = true;
+            }
+        }
     }
 
     private interface TransitionHolder<S, E, C> {

@@ -445,5 +445,17 @@ class SampleStateMachineWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data", hasItem(OrderStateMachineConfig.MACHINE_ID)));
+
+        // 4. 只读拓扑元数据内省
+        mockMvc.perform(get("/sample/statemachine/topology/metadata"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.machineId").value(OrderStateMachineConfig.MACHINE_ID))
+                .andExpect(jsonPath("$.data.allStates", hasItem("WAIT_PAY")))
+                .andExpect(jsonPath("$.data.allStates", hasItem("FINISHED")))
+                .andExpect(jsonPath("$.data.allEvents", hasItem("PAY")))
+                .andExpect(jsonPath("$.data.allEvents", hasItem("RISK_AUDIT")))
+                .andExpect(jsonPath("$.data.reachableTransitions.PAID.RISK_AUDIT", hasItem("REFUNDING")))
+                .andExpect(jsonPath("$.data.reachableTransitions.PAID.RISK_AUDIT", hasItem("WAIT_DELIVER")));
     }
 }
