@@ -179,6 +179,14 @@ public class DefaultLocalJobTemplate implements LocalJobTemplate {
     }
 
     @Override
+    public boolean isClusterLocked(String jobName) {
+        if (jobName == null || jobName.isBlank()) {
+            return false;
+        }
+        return registry.isClusterLocked(jobName.trim());
+    }
+
+    @Override
     public boolean isValidCron(String cronExpression) {
         if (cronExpression == null || cronExpression.isBlank()) {
             return false;

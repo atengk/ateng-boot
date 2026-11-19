@@ -39,11 +39,13 @@ class RedisJobClusterLockProviderTest {
     private StringRedisTemplate redisTemplate;
     private ValueOperations<String, String> valueOperations;
     private Map<String, String> simulatedRedisStore;
+    private Map<String, Instant> simulatedRedisExpiry;
 
     @BeforeEach
     @SuppressWarnings("unchecked")
     void setUp() {
         simulatedRedisStore = new ConcurrentHashMap<>();
+        simulatedRedisExpiry = new ConcurrentHashMap<>();
         redisTemplate = mock(StringRedisTemplate.class);
         valueOperations = mock(ValueOperations.class);
 
@@ -54,26 +56,58 @@ class RedisJobClusterLockProviderTest {
                 .thenAnswer((Answer<Boolean>) invocation -> {
                     String key = invocation.getArgument(0);
                     String value = invocation.getArgument(1);
-                    return simulatedRedisStore.putIfAbsent(key, value) == null;
+                    Duration ttl = invocation.getArgument(2);
+                    evictIfExpired(key);
+                    boolean absent = simulatedRedisStore.putIfAbsent(key, value) == null;
+                    if (absent && ttl != null) {
+                        simulatedRedisExpiry.put(key, Instant.now().plus(ttl));
+                    }
+                    return absent;
                 });
 
-        // 模拟原子防误删 Lua 脚本执行
-        when(redisTemplate.execute(any(RedisScript.class), anyList(), any()))
-                .thenAnswer((Answer<Long>) invocation -> {
-                    List<String> keys = invocation.getArgument(1);
-                    Object[] args = invocation.getArguments();
-                    String expectedOwner = args[2] != null ? args[2].toString() : null;
-                    if (keys == null || keys.isEmpty() || expectedOwner == null) {
-                        return 0L;
-                    }
-                    String key = keys.get(0);
-                    String currentOwner = simulatedRedisStore.get(key);
-                    if (expectedOwner.equals(currentOwner)) {
-                        simulatedRedisStore.remove(key);
-                        return 1L;
-                    }
-                    return 0L;
-                });
+        when(redisTemplate.hasKey(anyString())).thenAnswer((Answer<Boolean>) invocation -> {
+            String key = invocation.getArgument(0);
+            evictIfExpired(key);
+            return simulatedRedisStore.containsKey(key);
+        });
+
+        // 模拟原子 Lua 脚本执行（支持 DEL 与 PEXPIRE 双脚本）
+        when(redisTemplate.execute(any(RedisScript.class), anyList(), any(Object[].class)))
+                .thenAnswer((Answer<Long>) invocation -> handleLuaScript(invocation.getArgument(0),
+                        invocation.getArgument(1), invocation.getArguments()));
+    }
+
+    private void evictIfExpired(String key) {
+        Instant expireAt = simulatedRedisExpiry.get(key);
+        if (expireAt != null && !Instant.now().isBefore(expireAt)) {
+            simulatedRedisStore.remove(key);
+            simulatedRedisExpiry.remove(key);
+        }
+    }
+
+    private Long handleLuaScript(RedisScript<?> script, List<String> keys, Object[] invocationArgs) {
+        if (keys == null || keys.isEmpty() || invocationArgs.length < 3 || invocationArgs[2] == null) {
+            return 0L;
+        }
+        String key = keys.get(0);
+        evictIfExpired(key);
+        String expectedOwner = invocationArgs[2].toString();
+        String currentOwner = simulatedRedisStore.get(key);
+        if (!expectedOwner.equals(currentOwner)) {
+            return 0L;
+        }
+        String lua = script != null ? script.getScriptAsString() : "";
+        if (lua.contains("pexpire")) {
+            if (invocationArgs.length < 4 || invocationArgs[3] == null) {
+                return 0L;
+            }
+            long ms = Long.parseLong(invocationArgs[3].toString());
+            simulatedRedisExpiry.put(key, Instant.now().plusMillis(ms));
+            return 1L;
+        }
+        simulatedRedisStore.remove(key);
+        simulatedRedisExpiry.remove(key);
+        return 1L;
     }
 
     @Test
@@ -205,6 +239,77 @@ class RedisJobClusterLockProviderTest {
         JobLockHandle validHandle = JobLockHandle.success("failingRedisJob", "node-A@thread:uuid", Instant.now().plusSeconds(60));
         boolean unlocked = lockProvider.unlock(validHandle);
         assertThat(unlocked).isFalse();
+
+        // renew 与 isLocked 遇到 Redis 异常时同样安全返回 false
+        when(redisTemplate.execute(any(RedisScript.class), anyList(), any(Object[].class)))
+                .thenThrow(new RuntimeException("Redis network timeout"));
+        when(redisTemplate.hasKey(anyString())).thenThrow(new RuntimeException("Redis connection refused"));
+        assertThat(lockProvider.renew(validHandle, Duration.ofSeconds(30))).isFalse();
+        assertThat(lockProvider.unlock(validHandle, Duration.ofSeconds(5))).isFalse();
+        assertThat(lockProvider.isLocked("failingRedisJob")).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 Redis 非阻塞最小持有时间释放 (PEXPIRE) 与 isLocked 状态探测")
+    void testRedisNonBlockingMinHoldUnlockAndIsLocked() throws Exception {
+        RedisJobClusterLockProvider nodeA = new RedisJobClusterLockProvider(
+                redisTemplate, "ateng:job:lock:", "node-A", Duration.ofMinutes(5));
+        RedisJobClusterLockProvider nodeB = new RedisJobClusterLockProvider(
+                redisTemplate, "ateng:job:lock:", "node-B", Duration.ofMinutes(5));
+
+        JobLockHandle handleA = nodeA.tryLock("fastJob", Duration.ofSeconds(30));
+        assertThat(handleA.isAcquired()).isTrue();
+        assertThat(handleA.getAcquiredAt()).isNotNull();
+        assertThat(nodeA.isLocked("fastJob")).isTrue();
+
+        long unlockStart = System.currentTimeMillis();
+        boolean shrunk = nodeA.unlock(handleA, Duration.ofMillis(250));
+        long unlockElapsed = System.currentTimeMillis() - unlockStart;
+
+        assertThat(shrunk).isTrue();
+        assertThat(unlockElapsed).isLessThan(100);
+        // 最小持有窗口内仍保持锁定，节点 B 无法抢锁
+        assertThat(nodeA.isLocked("fastJob")).isTrue();
+        assertThat(nodeB.tryLock("fastJob", Duration.ofSeconds(10)).isAcquired()).isFalse();
+
+        // 超过 250ms 后自动过期释放，节点 B 可正常抢锁
+        Thread.sleep(300);
+        assertThat(nodeA.isLocked("fastJob")).isFalse();
+        JobLockHandle handleB = nodeB.tryLock("fastJob", Duration.ofSeconds(10));
+        assertThat(handleB.isAcquired()).isTrue();
+        nodeB.unlock(handleB);
+    }
+
+    @Test
+    @DisplayName("测试 Redis 对称租约续期 (renew)：属主匹配时原子 PEXPIRE 续期，属主不匹配或非法入参返回 false")
+    void testRedisRenewAndOwnerValidation() throws Exception {
+        RedisJobClusterLockProvider nodeA = new RedisJobClusterLockProvider(
+                redisTemplate, "ateng:job:lock:", "node-A", Duration.ofMinutes(5));
+
+        JobLockHandle handleA = nodeA.tryLock("longJob", Duration.ofMillis(250));
+        assertThat(handleA.isAcquired()).isTrue();
+
+        // 150ms 后原子续期 600ms
+        Thread.sleep(150);
+        assertThat(nodeA.renew(handleA, Duration.ofMillis(600))).isTrue();
+
+        // 累计 330ms > 250ms 依然处于锁定状态
+        Thread.sleep(180);
+        assertThat(nodeA.isLocked("longJob")).isTrue();
+
+        // 属主不匹配的句柄续期失败
+        JobLockHandle fakeHandle = JobLockHandle.success("longJob", "node-B@other:uuid", Instant.now().plusSeconds(10));
+        assertThat(nodeA.renew(fakeHandle, Duration.ofSeconds(10))).isFalse();
+
+        // 非法入参 Fail-Fast
+        assertThat(nodeA.renew(null, Duration.ofSeconds(5))).isFalse();
+        assertThat(nodeA.renew(handleA, null)).isFalse();
+        assertThat(nodeA.renew(handleA, Duration.ZERO)).isFalse();
+        assertThat(nodeA.renew(handleA, Duration.ofSeconds(-1))).isFalse();
+        assertThat(nodeA.isLocked(null)).isFalse();
+        assertThat(nodeA.isLocked("   ")).isFalse();
+
+        nodeA.unlock(handleA);
     }
 
     @Test

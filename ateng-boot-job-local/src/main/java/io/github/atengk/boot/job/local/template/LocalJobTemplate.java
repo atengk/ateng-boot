@@ -183,6 +183,14 @@ public interface LocalJobTemplate {
     boolean isExecuting(String jobName);
 
     /**
+     * 判断指定任务当前是否正处于集群互斥锁有效持有状态
+     *
+     * @param jobName 任务名称
+     * @return 是否正被集群锁锁定
+     */
+    boolean isClusterLocked(String jobName);
+
+    /**
      * 校验 Cron 表达式语法是否合法（标准 Spring 6 位 Cron 格式）
      *
      * @param cronExpression Cron 表达式文本

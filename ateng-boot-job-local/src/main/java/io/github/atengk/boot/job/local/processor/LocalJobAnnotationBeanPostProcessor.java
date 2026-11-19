@@ -72,6 +72,7 @@ public class LocalJobAnnotationBeanPostProcessor implements BeanPostProcessor, S
                 .retryInterval(DurationParser.parse(annotation.retryInterval(), Duration.ofSeconds(1)))
                 .clusterLock(annotation.clusterLock())
                 .clusterLockLeaseTime(DurationParser.parse(annotation.clusterLockLeaseTime(), Duration.ofMinutes(5)))
+                .clusterLockMinHoldTime(DurationParser.parse(annotation.clusterLockMinHoldTime()))
                 .description(annotation.description())
                 .enabled(annotation.enabled())
                 .tenantMode(annotation.tenantMode())

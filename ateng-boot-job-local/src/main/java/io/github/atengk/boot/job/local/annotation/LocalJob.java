@@ -113,6 +113,17 @@ public @interface LocalJob {
     String clusterLockLeaseTime() default "5m";
 
     /**
+     * 集群互斥锁的最小持有时长（支持强类型时间字符串，如 {@code 5s}，默认空表示不启用最小持有窗口）
+     * <p>
+     * 防止极短耗时任务立即释放锁后，因多节点毫秒级 NTP 时钟偏移引发同一周期重复调度；
+     * 采用非阻塞剩余租期收缩策略，不占用 Worker 线程睡眠等待。
+     * </p>
+     *
+     * @return 最小锁持有时长
+     */
+    String clusterLockMinHoldTime() default "";
+
+    /**
      * 任务的人读业务描述（用于 Actuator 运维端点与管理后台展示）
      *
      * @return 任务描述

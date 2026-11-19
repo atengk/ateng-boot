@@ -87,6 +87,11 @@ public class JobDefinition {
     private Duration clusterLockLeaseTime;
 
     /**
+     * 集群互斥锁最小持有时长（防时钟漂移重复执行）
+     */
+    private Duration clusterLockMinHoldTime;
+
+    /**
      * 任务业务描述
      */
     private String description;

@@ -2,8 +2,10 @@ package io.github.atengk.boot.job.local;
 
 import io.github.atengk.boot.job.local.annotation.LocalJob;
 import io.github.atengk.boot.job.local.config.AtengJobLocalAutoConfiguration;
+import io.github.atengk.boot.job.local.enums.DiscardReason;
 import io.github.atengk.boot.job.local.enums.OverlappingStrategy;
 import io.github.atengk.boot.job.local.enums.TriggerType;
+import io.github.atengk.boot.job.local.event.JobDiscardedEvent;
 import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
 import io.github.atengk.boot.job.local.lock.JobLockHandle;
 import io.github.atengk.boot.job.local.lock.LocalJobClusterLockProvider;
@@ -24,13 +26,16 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -262,7 +267,143 @@ class LocalJobClusterLockTest {
 
         // 状态查询空安全
         assertThat(provider.isLocked(null)).isFalse();
+        assertThat(provider.isLocked("   ")).isFalse();
         assertThat(provider.getLockOwner(null)).isNull();
+
+        // renew 非法入参 Fail-Fast
+        assertThat(provider.renew(null, Duration.ofSeconds(5))).isFalse();
+        assertThat(provider.renew(JobLockHandle.failed("edgeJob1"), Duration.ofSeconds(5))).isFalse();
+        JobLockHandle validForRenew = provider.tryLock("edgeRenewJob", Duration.ofSeconds(5));
+        assertThat(provider.renew(validForRenew, null)).isFalse();
+        assertThat(provider.renew(validForRenew, Duration.ZERO)).isFalse();
+        assertThat(provider.renew(validForRenew, Duration.ofSeconds(-5))).isFalse();
+        provider.unlock(validForRenew);
+    }
+
+    @Test
+    @DisplayName("对称租约续期 (renew)：属主匹配时成功延长租约，属主不匹配或过期后续期失败")
+    void testLocalLockRenewAndOwnerCheck() throws Exception {
+        ConcurrentMap<String, LockEntry> sharedLockStore = new ConcurrentHashMap<>();
+        LocalJobClusterLockProvider nodeA = new LocalJobClusterLockProvider("node-A", sharedLockStore);
+        LocalJobClusterLockProvider nodeB = new LocalJobClusterLockProvider("node-B", sharedLockStore);
+
+        String jobName = "renewJob";
+        JobLockHandle handleA = nodeA.tryLock(jobName, Duration.ofMillis(250));
+        assertThat(handleA.isAcquired()).isTrue();
+        assertThat(handleA.getAcquiredAt()).isNotNull();
+
+        // 150ms 后续期 600ms，总持有应超过最初 250ms 仍有效
+        Thread.sleep(150);
+        assertThat(nodeA.renew(handleA, Duration.ofMillis(600))).isTrue();
+
+        // 此时再过 180ms（累计 330ms > 250ms），因已续期，节点 B 仍不可抢占
+        Thread.sleep(180);
+        assertThat(nodeA.isLocked(jobName)).isTrue();
+        assertThat(nodeB.tryLock(jobName, Duration.ofSeconds(5)).isAcquired()).isFalse();
+
+        // 节点 B 使用伪造句柄无法续期
+        JobLockHandle fakeHandle = JobLockHandle.success(jobName, "node-B@fake:123", java.time.Instant.now().plusSeconds(10));
+        assertThat(nodeB.renew(fakeHandle, Duration.ofSeconds(10))).isFalse();
+
+        // 释放后无法再续期
+        assertThat(nodeA.unlock(handleA)).isTrue();
+        assertThat(nodeA.renew(handleA, Duration.ofSeconds(10))).isFalse();
+    }
+
+    @Test
+    @DisplayName("非阻塞最小持有时间释放：耗时不足 minHoldTime 时立即返回且在窗口期内阻挡其他节点，窗口期后自动可抢占")
+    void testNonBlockingMinHoldUnlockInLocalProvider() throws Exception {
+        ConcurrentMap<String, LockEntry> sharedLockStore = new ConcurrentHashMap<>();
+        LocalJobClusterLockProvider nodeA = new LocalJobClusterLockProvider("node-A", sharedLockStore);
+        LocalJobClusterLockProvider nodeB = new LocalJobClusterLockProvider("node-B", sharedLockStore);
+
+        String jobName = "minHoldLocalJob";
+        JobLockHandle handleA = nodeA.tryLock(jobName, Duration.ofSeconds(10));
+        assertThat(handleA.isAcquired()).isTrue();
+
+        long unlockStart = System.currentTimeMillis();
+        // 最小持有 250ms，几乎立即调用释放
+        boolean shrunk = nodeA.unlock(handleA, Duration.ofMillis(250));
+        long unlockElapsed = System.currentTimeMillis() - unlockStart;
+
+        assertThat(shrunk).isTrue();
+        // 严禁阻塞 Worker 线程（释放耗时远小于 minHoldTime）
+        assertThat(unlockElapsed).isLessThan(100);
+        // 锁依然处于有效持有状态，节点 B 在窗口期内抢锁失败
+        assertThat(nodeA.isLocked(jobName)).isTrue();
+        assertThat(nodeB.tryLock(jobName, Duration.ofSeconds(5)).isAcquired()).isFalse();
+
+        // 等待超过 250ms 最小持有窗口期后，锁自动失效，节点 B 可正常抢占
+        Thread.sleep(300);
+        assertThat(nodeA.isLocked(jobName)).isFalse();
+        JobLockHandle handleB = nodeB.tryLock(jobName, Duration.ofSeconds(5));
+        assertThat(handleB.isAcquired()).isTrue();
+        nodeB.unlock(handleB);
+    }
+
+    @Test
+    @DisplayName("端到端防时钟漂移最小持有窗口：声明式 @LocalJob(clusterLockMinHoldTime) 短任务释放不阻塞且窗口期内触发 SKIPPED_CLUSTER_LOCKED")
+    void testEndToEndMinHoldTimeAndIsClusterLockedFacade() throws Exception {
+        String jobName = "minHoldClusterJob";
+        tasks.minHoldCount.set(0);
+
+        assertThat(jobTemplate.isClusterLocked(jobName)).isFalse();
+        assertThat(jobTemplate.isClusterLocked(null)).isFalse();
+        assertThat(jobTemplate.isClusterLocked("  ")).isFalse();
+        assertThat(jobTemplate.isClusterLocked("nonExistentJob")).isFalse();
+
+        JobInfo initialInfo = jobTemplate.getJob(jobName);
+        assertThat(initialInfo.getClusterLockMinHoldTime()).isEqualTo(Duration.ofMillis(250));
+
+        // 1. 首次触发极短耗时任务（~5ms），应立即返回不阻塞 Worker 线程
+        long start = System.currentTimeMillis();
+        JobResult firstResult = jobTemplate.trigger(jobName);
+        long firstElapsed = System.currentTimeMillis() - start;
+
+        assertThat(firstResult.isSuccess()).isTrue();
+        assertThat(firstElapsed).isLessThan(150);
+        assertThat(tasks.minHoldCount.get()).isEqualTo(1);
+
+        // 2. 窗口期内 LocalJobTemplate.isClusterLocked 仍返回 true，多节点尝试抢锁触发 SKIPPED_CLUSTER_LOCKED 并广播 JobDiscardedEvent
+        assertThat(jobTemplate.isClusterLocked(jobName)).isTrue();
+        List<JobDiscardedEvent> discardedEvents = new CopyOnWriteArrayList<>();
+        ConcurrentMap<String, LockEntry> sharedStore = new ConcurrentHashMap<>();
+        LocalJobClusterLockProvider nodeA = new LocalJobClusterLockProvider("node-A", sharedStore);
+        LocalJobClusterLockProvider nodeB = new LocalJobClusterLockProvider("node-B", sharedStore);
+        LocalJobRegistry regA = new LocalJobRegistry(null, null, new InMemoryJobMetadataRepository(),
+                new InMemoryJobLogStorageProvider(), nodeA, null);
+        LocalJobRegistry regB = new LocalJobRegistry(null, null, new InMemoryJobMetadataRepository(),
+                new InMemoryJobLogStorageProvider(), nodeB, null);
+        regA.setApplicationEventPublisher(event -> {});
+        regB.setApplicationEventPublisher(event -> {
+            if (event instanceof JobDiscardedEvent discarded) {
+                discardedEvents.add(discarded);
+            }
+        });
+        JobDefinition minHoldDef = JobDefinition.builder()
+                .jobName("multiNodeMinHoldJob")
+                .triggerType(TriggerType.MANUAL)
+                .clusterLock(true)
+                .clusterLockLeaseTime(Duration.ofSeconds(10))
+                .clusterLockMinHoldTime(Duration.ofMillis(250))
+                .build();
+        regA.register(minHoldDef, ctx -> JobResult.success("node-A done"));
+        regB.register(minHoldDef, ctx -> JobResult.success("node-B done"));
+
+        assertThat(regA.trigger("multiNodeMinHoldJob", Collections.emptyMap()).isSuccess()).isTrue();
+        assertThat(regB.isClusterLocked("multiNodeMinHoldJob")).isTrue();
+        JobResult skippedOnB = regB.trigger("multiNodeMinHoldJob", Collections.emptyMap());
+        assertThat(skippedOnB.getMessage()).contains("cluster lock held by another node");
+        assertThat(regB.getJobInfo("multiNodeMinHoldJob").getLastStatus()).isEqualTo("SKIPPED_CLUSTER_LOCKED");
+        assertThat(discardedEvents).singleElement()
+                .satisfies(ev -> assertThat(ev.getDiscardReason()).isEqualTo(DiscardReason.CLUSTER_LOCKED));
+
+        // 3. 等待超过 250ms 最小持有窗口期后，锁自动释放，再次触发恢复执行
+        Thread.sleep(300);
+        assertThat(jobTemplate.isClusterLocked(jobName)).isFalse();
+        assertThat(regB.isClusterLocked("multiNodeMinHoldJob")).isFalse();
+        assertThat(jobTemplate.trigger(jobName).isSuccess()).isTrue();
+        assertThat(tasks.minHoldCount.get()).isEqualTo(2);
     }
 
     @Configuration
@@ -279,12 +420,20 @@ class LocalJobClusterLockTest {
     static class DeclarativeClusterTasks {
 
         final AtomicInteger clusterJobCount = new AtomicInteger(0);
+        final AtomicInteger minHoldCount = new AtomicInteger(0);
 
         @LocalJob(name = "declarativeClusterJob", clusterLock = true, clusterLockLeaseTime = "10s",
                 fixedDelay = "1h", initialDelay = "1h")
         public JobResult executeClusterJob() {
             clusterJobCount.incrementAndGet();
             return JobResult.success("Cluster job executed successfully");
+        }
+
+        @LocalJob(name = "minHoldClusterJob", clusterLock = true, clusterLockLeaseTime = "10s",
+                clusterLockMinHoldTime = "250ms", fixedDelay = "1h", initialDelay = "1h")
+        public JobResult executeMinHoldJob() {
+            minHoldCount.incrementAndGet();
+            return JobResult.success("Fast min-hold job executed");
         }
     }
 }

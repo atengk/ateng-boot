@@ -450,6 +450,19 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
     }
 
     /**
+     * 判断指定任务当前是否正持有集群互斥锁
+     *
+     * @param jobName 任务名称
+     * @return 是否正持有集群互斥锁
+     */
+    public boolean isClusterLocked(String jobName) {
+        if (jobName == null || jobName.isBlank() || clusterLockProvider == null) {
+            return false;
+        }
+        return clusterLockProvider.isLocked(jobName.trim());
+    }
+
+    /**
      * 获取全局所有本地任务正在运行中的活跃并发执行总数
      *
      * @return 活跃并发执行总数

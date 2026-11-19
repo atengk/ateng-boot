@@ -68,7 +68,7 @@ public class LocalJobClusterLockProvider implements JobClusterLockProvider {
 
         if (acquired.get()) {
             log.debug("Node [{}] acquired cluster lock for job [{}] with lease [{}]", nodeId, jobName, effectiveLease);
-            return JobLockHandle.success(jobName.trim(), owner, expireAt);
+            return JobLockHandle.success(jobName.trim(), owner, expireAt, now);
         }
         return JobLockHandle.failed(jobName.trim());
     }
@@ -97,14 +97,75 @@ public class LocalJobClusterLockProvider implements JobClusterLockProvider {
         return released.get();
     }
 
+    @Override
+    public boolean unlock(JobLockHandle handle, Duration minHoldTime) {
+        if (handle == null || !handle.isAcquired() || handle.getLockKey() == null || handle.getLockOwner() == null) {
+            return false;
+        }
+        if (minHoldTime == null || minHoldTime.isZero() || minHoldTime.isNegative()) {
+            return unlock(handle);
+        }
+
+        Instant acquiredAt = handle.getAcquiredAt() != null ? handle.getAcquiredAt() : Instant.now();
+        Instant minHoldExpireAt = acquiredAt.plus(minHoldTime);
+        Instant now = Instant.now();
+        if (!now.isBefore(minHoldExpireAt)) {
+            return unlock(handle);
+        }
+
+        String jobName = handle.getLockKey().trim();
+        String expectedOwner = handle.getLockOwner();
+        AtomicBoolean updated = new AtomicBoolean(false);
+
+        lockStore.computeIfPresent(jobName, (key, existing) -> {
+            if (!expectedOwner.equals(existing.getLockOwner()) || existing.isExpired()) {
+                log.warn("Cluster lock min-hold shrink skipped for job [{}]: owner mismatch or already expired", jobName);
+                return existing;
+            }
+            Instant targetExpire = (existing.getLeaseExpireAt() != null && minHoldExpireAt.isAfter(existing.getLeaseExpireAt()))
+                    ? existing.getLeaseExpireAt()
+                    : minHoldExpireAt;
+            updated.set(true);
+            log.debug("Node [{}] non-blocking shrunk cluster lock for job [{}] until [{}]", nodeId, jobName, targetExpire);
+            return new LockEntry(existing.getLockOwner(), targetExpire);
+        });
+
+        return updated.get();
+    }
+
+    @Override
+    public boolean renew(JobLockHandle handle, Duration leaseTime) {
+        if (handle == null || !handle.isAcquired() || handle.getLockKey() == null || handle.getLockOwner() == null
+                || leaseTime == null || leaseTime.isZero() || leaseTime.isNegative()) {
+            return false;
+        }
+
+        String jobName = handle.getLockKey().trim();
+        String expectedOwner = handle.getLockOwner();
+        Instant newExpireAt = Instant.now().plus(leaseTime);
+        AtomicBoolean renewed = new AtomicBoolean(false);
+
+        lockStore.computeIfPresent(jobName, (key, existing) -> {
+            if (!existing.isExpired() && expectedOwner.equals(existing.getLockOwner())) {
+                renewed.set(true);
+                log.debug("Node [{}] renewed cluster lock for job [{}] until [{}]", nodeId, jobName, newExpireAt);
+                return new LockEntry(existing.getLockOwner(), newExpireAt);
+            }
+            return existing;
+        });
+
+        return renewed.get();
+    }
+
     /**
      * 判断指定任务的集群互斥锁当前是否被有效持有（未过期）
      *
      * @param jobName 任务名称
      * @return true 表示锁正处于锁定状态
      */
+    @Override
     public boolean isLocked(String jobName) {
-        if (jobName == null) {
+        if (jobName == null || jobName.isBlank()) {
             return false;
         }
         LockEntry entry = lockStore.get(jobName.trim());

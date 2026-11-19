@@ -357,9 +357,8 @@ public class ScheduledJobTask implements Runnable {
      */
     protected JobResult executeWithClusterLock(TriggerType triggerType, Map<String, Object> params, String traceId) {
         if (definition.isClusterLock() && clusterLockProvider != null) {
-            Duration leaseTime = definition.getClusterLockLeaseTime() != null
-                    ? definition.getClusterLockLeaseTime()
-                    : Duration.ofMinutes(5);
+            Duration leaseTime = resolveClusterLockLeaseTime();
+            Duration minHoldTime = resolveClusterLockMinHoldTime();
             String jobName = definition.getJobName();
             JobLockHandle lockHandle = clusterLockProvider.tryLock(jobName, leaseTime);
             if (lockHandle == null || !lockHandle.isAcquired()) {
@@ -375,10 +374,36 @@ public class ScheduledJobTask implements Runnable {
             try {
                 return doExecute(triggerType, params, traceId);
             } finally {
-                clusterLockProvider.unlock(lockHandle);
+                if (minHoldTime != null && !minHoldTime.isZero() && !minHoldTime.isNegative()) {
+                    clusterLockProvider.unlock(lockHandle, minHoldTime);
+                } else {
+                    clusterLockProvider.unlock(lockHandle);
+                }
             }
         }
         return doExecute(triggerType, params, traceId);
+    }
+
+    private Duration resolveClusterLockLeaseTime() {
+        if (definition.getClusterLockLeaseTime() != null) {
+            return definition.getClusterLockLeaseTime();
+        }
+        if (properties != null && properties.getClusterLock() != null
+                && properties.getClusterLock().getDefaultLeaseTime() != null) {
+            return properties.getClusterLock().getDefaultLeaseTime();
+        }
+        return Duration.ofMinutes(5);
+    }
+
+    private Duration resolveClusterLockMinHoldTime() {
+        if (definition.getClusterLockMinHoldTime() != null) {
+            return definition.getClusterLockMinHoldTime();
+        }
+        if (properties != null && properties.getClusterLock() != null
+                && properties.getClusterLock().getDefaultMinHoldTime() != null) {
+            return properties.getClusterLock().getDefaultMinHoldTime();
+        }
+        return Duration.ZERO;
     }
 
     /**
@@ -738,6 +763,7 @@ public class ScheduledJobTask implements Runnable {
                 .timeout(definition.getTimeout())
                 .maxRetries(definition.getMaxRetries())
                 .clusterLock(definition.isClusterLock())
+                .clusterLockMinHoldTime(definition.getClusterLockMinHoldTime())
                 .description(definition.getDescription())
                 .tenantMode(definition.getTenantMode())
                 .nextExecutionTime(resolveNextExecutionTime())

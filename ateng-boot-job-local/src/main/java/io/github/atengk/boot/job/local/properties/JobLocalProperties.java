@@ -237,6 +237,11 @@ public class JobLocalProperties {
          * 默认互斥锁防死锁租约超时时长（默认 5m，当任务未显式指定或指定 0 时生效）
          */
         private Duration defaultLeaseTime = Duration.ofMinutes(5);
+
+        /**
+         * 默认集群互斥锁最小持有时长（默认 0s，用于防御多节点毫秒级时钟漂移引发的重复调度）
+         */
+        private Duration defaultMinHoldTime = Duration.ZERO;
     }
 
     /**

@@ -44,6 +44,18 @@ public class RedisJobClusterLockProvider implements JobClusterLockProvider {
 
     private static final RedisScript<Long> UNLOCK_SCRIPT = RedisScript.of(UNLOCK_LUA_SCRIPT, Long.class);
 
+    /**
+     * 原子比对持有者后更新过期时间 Lua 脚本（用于非阻塞最小持有期收缩与对称续期）
+     */
+    private static final String PEXPIRE_LUA_SCRIPT =
+            "if redis.call('get', KEYS[1]) == ARGV[1] then\n" +
+            "    return redis.call('pexpire', KEYS[1], tonumber(ARGV[2]))\n" +
+            "else\n" +
+            "    return 0\n" +
+            "end";
+
+    private static final RedisScript<Long> PEXPIRE_SCRIPT = RedisScript.of(PEXPIRE_LUA_SCRIPT, Long.class);
+
     private final StringRedisTemplate redisTemplate;
     private final String keyPrefix;
     private final String nodeId;
@@ -88,7 +100,7 @@ public class RedisJobClusterLockProvider implements JobClusterLockProvider {
             if (Boolean.TRUE.equals(acquired)) {
                 log.debug("Node [{}] successfully acquired Redis cluster lock for job [{}] with lease [{}] (key: [{}], owner: [{}])",
                         nodeId, rawJobName, effectiveLease, redisKey, lockOwner);
-                return JobLockHandle.success(rawJobName, lockOwner, expireAt);
+                return JobLockHandle.success(rawJobName, lockOwner, expireAt, now);
             } else {
                 log.debug("Redis cluster lock for job [{}] (key: [{}]) is currently held by another node", rawJobName, redisKey);
                 return JobLockHandle.failed(rawJobName);
@@ -132,6 +144,92 @@ public class RedisJobClusterLockProvider implements JobClusterLockProvider {
             return released;
         } catch (Exception ex) {
             log.error("Failed to release Redis cluster lock for job [{}] (key: [{}]): {}", rawJobName, redisKey, ex.getMessage(), ex);
+            return false;
+        }
+    }
+
+    @Override
+    public boolean unlock(JobLockHandle handle, Duration minHoldTime) {
+        if (handle == null || !handle.isAcquired() || handle.getLockKey() == null || handle.getLockOwner() == null) {
+            return false;
+        }
+        if (minHoldTime == null || minHoldTime.isZero() || minHoldTime.isNegative()) {
+            return unlock(handle);
+        }
+
+        Instant acquiredAt = handle.getAcquiredAt() != null ? handle.getAcquiredAt() : Instant.now();
+        Instant minHoldExpireAt = acquiredAt.plus(minHoldTime);
+        Instant now = Instant.now();
+        if (!now.isBefore(minHoldExpireAt)) {
+            return unlock(handle);
+        }
+
+        long remainingMs = Duration.between(now, minHoldExpireAt).toMillis();
+        if (handle.getLeaseExpireAt() != null) {
+            long leaseRemainingMs = Duration.between(now, handle.getLeaseExpireAt()).toMillis();
+            remainingMs = Math.min(remainingMs, leaseRemainingMs);
+        }
+        if (remainingMs <= 0) {
+            return unlock(handle);
+        }
+
+        return executePexpireWithOwnerCheck(handle.getLockKey().trim(), handle.getLockOwner(), remainingMs, "shrink");
+    }
+
+    @Override
+    public boolean renew(JobLockHandle handle, Duration leaseTime) {
+        if (handle == null || !handle.isAcquired() || handle.getLockKey() == null || handle.getLockOwner() == null
+                || leaseTime == null || leaseTime.isZero() || leaseTime.isNegative()) {
+            return false;
+        }
+        long leaseMs = leaseTime.toMillis();
+        if (leaseMs <= 0) {
+            return false;
+        }
+        return executePexpireWithOwnerCheck(handle.getLockKey().trim(), handle.getLockOwner(), leaseMs, "renew");
+    }
+
+    @Override
+    public boolean isLocked(String jobName) {
+        if (jobName == null || jobName.isBlank() || redisTemplate == null) {
+            return false;
+        }
+        String rawJobName = jobName.trim();
+        String redisKey = buildRedisKey(rawJobName);
+        try {
+            return Boolean.TRUE.equals(redisTemplate.hasKey(redisKey));
+        } catch (Exception ex) {
+            log.error("Failed to check Redis cluster lock state for job [{}] (key: [{}]): {}",
+                    rawJobName, redisKey, ex.getMessage(), ex);
+            return false;
+        }
+    }
+
+    private boolean executePexpireWithOwnerCheck(String rawJobName, String expectedOwner, long ttlMillis, String actionLabel) {
+        if (redisTemplate == null) {
+            log.warn("StringRedisTemplate is null, cannot {} Redis cluster lock for job [{}]", actionLabel, rawJobName);
+            return false;
+        }
+        String redisKey = buildRedisKey(rawJobName);
+        try {
+            Long result = redisTemplate.execute(
+                    PEXPIRE_SCRIPT,
+                    Collections.singletonList(redisKey),
+                    expectedOwner,
+                    String.valueOf(ttlMillis)
+            );
+            boolean succeeded = result != null && result > 0;
+            if (succeeded) {
+                log.debug("Node [{}] successfully executed Redis lock {} for job [{}] (key: [{}], ttlMs: {})",
+                        nodeId, actionLabel, rawJobName, redisKey, ttlMillis);
+            } else {
+                log.warn("Redis cluster lock {} ignored for job [{}] (key: [{}]): owner mismatch or key expired",
+                        actionLabel, rawJobName, redisKey);
+            }
+            return succeeded;
+        } catch (Exception ex) {
+            log.error("Failed to {} Redis cluster lock for job [{}] (key: [{}]): {}",
+                    actionLabel, rawJobName, redisKey, ex.getMessage(), ex);
             return false;
         }
     }
