@@ -12,7 +12,6 @@ import io.github.atengk.boot.statemachine.model.TransitionResult;
 
 import java.util.*;
 import java.util.function.BiConsumer;
-import java.util.function.BiFunction;
 import java.util.function.Function;
 
 /**
@@ -94,7 +93,8 @@ public interface StateMachine<S, E, C> {
         if (getter == null || setter == null) {
             throw new IllegalArgumentException("Getter and setter must not be null");
         }
-        return executeBatchSlice(entities, getter, event, options, (entity, sourceState) -> {
+        return executeBatchSlice(entities, getter, event, options, entity -> {
+            S sourceState = getter.apply(entity);
             S targetState = fireEvent(sourceState, event, context);
             setter.accept(entity, targetState);
             return targetState;
@@ -132,7 +132,7 @@ public interface StateMachine<S, E, C> {
             throw new IllegalArgumentException("CasUpdater must not be null");
         }
         return executeBatchSlice(entities, getter, event, options,
-                (entity, sourceState) -> fireEventWithCas(entity, getter, setter, event, context, casUpdater));
+                entity -> fireEventWithCas(entity, getter, setter, event, context, casUpdater));
     }
 
     /**
@@ -207,7 +207,7 @@ public interface StateMachine<S, E, C> {
             Function<T, S> getter,
             E event,
             BatchOptions options,
-            BiFunction<T, S, S> stepExecutor
+            Function<T, S> stepExecutor
     ) {
         if (event == null) {
             throw new IllegalArgumentException("Event must not be null");
@@ -228,15 +228,14 @@ public interface StateMachine<S, E, C> {
 
         for (List<T> slice : slices) {
             for (T entity : slice) {
-                S sourceState = getter.apply(entity);
                 try {
-                    stepExecutor.apply(entity, sourceState);
+                    stepExecutor.apply(entity);
                     successEntities.add(entity);
                 } catch (StateMachineException smEx) {
                     if (opts.isFailFast()) {
                         throw new StateMachineException(
                                 StateMachineResultCode.BATCH_TRANSITION_FAILED,
-                                sourceState,
+                                smEx.getSourceState(),
                                 smEx.getTargetState(),
                                 event,
                                 String.format("状态机 [%s] 大批量流转触发 Fail-Fast 熔断中断 [entity=%s]: %s",
@@ -246,6 +245,12 @@ public interface StateMachine<S, E, C> {
                     }
                     failures.put(entity, smEx);
                 } catch (Exception ex) {
+                    S sourceState = null;
+                    try {
+                        sourceState = getter.apply(entity);
+                    } catch (Exception ignored) {
+                        // 忽略二次提取状态异常，保留原始异常因果链
+                    }
                     StateMachineException smEx = new StateMachineException(
                             StateMachineResultCode.ACTION_EXECUTION_FAILED,
                             sourceState,

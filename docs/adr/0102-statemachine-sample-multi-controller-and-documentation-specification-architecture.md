@@ -28,17 +28,17 @@ flowchart TD
         ProbeCtrl["StateMachineProbeController (/sample/statemachine/probe/*)\n- 零副作用事件可行性只读探测 (can-fire)\n- 只读推演目标状态与卫语句 (verify)\n- 反查订单当前可用事件列表 ({orderId}/available-events)\n- 评估前端动态按钮操作权限 ({orderId}/button-actions)"]
         CallbackCtrl["StateMachineCallbackController (/sample/statemachine/callback/*)\n- 第三方支付异步回调 (payment)\n- 模拟高并发重复支付回调冲击 (simulate-concurrent)"]
         BatchCtrl["StateMachineBatchController (/sample/statemachine/batch/*)\n- 大批量超时订单切片批量关单 (cancel-expired)\n- 模拟大批量切片部分失败容错 (simulate-partial-failure)"]
-        TopologyCtrl["StateMachineTopologyController (/sample/statemachine/topology/*)\n- 导出动态 Mermaid 拓扑图源码 (mermaid)\n- 导出动态 PlantUML 拓扑图源码 (plantuml)\n- 探查全局已注册机台标识集合 (machines)"]
+        TopologyCtrl["StateMachineTopologyController (/sample/statemachine/topology/*)\n- 导出动态 Mermaid 拓扑图源码 (mermaid)\n- 导出动态 PlantUML 拓扑图源码 (plantuml)\n- 探查全局已注册机台标识集合 (machines)\n- 导出只读拓扑元数据内省视图 (metadata)"]
     end
 
     subgraph DocSpec["2. 1:1 逆向交付五维生产就绪文档与四段式极简体验卡"]
-        SampleReadme["Sample 极简体验卡 (ateng-boot-sample-statemachine/README.md)\n- 1. 快速启动与服务端口 (8080)\n- 2. 运行环境与双模切换 (H2 内存离线自洽 vs local 真实环境)\n- 3. 核心 Controller 接口与一键体验 (5 大 Controller 21 组完整 cURL 体验表)\n- 4. 全真自动化回归命令 (mvn test ...)"]
+        SampleReadme["Sample 极简体验卡 (ateng-boot-sample-statemachine/README.md)\n- 1. 快速启动与服务端口 (8080)\n- 2. 运行环境与双模切换 (H2 内存离线自洽 vs local 真实环境)\n- 3. 核心 Controller 接口与一键体验 (5 大 Controller 22 组完整 cURL 体验表)\n- 4. 全真自动化回归命令 (mvn test ...)"]
         StarterReadme["Starter 5D 交付文档 (ateng-boot-statemachine/README.md)\n- 第 0 章：特性与公共 API 全景速查矩阵 (100% 覆盖门面/构建器/配置/SPI/异常)\n- 第 1-2 章：定位起步与无状态拓扑架构 (Mermaid 状态图 + CAS-First 时序图)\n- 第 3-6 章：4 大业务能力领域大章 (三要素同屏就近闭环)\n- 第 7-8 章：生产扩展接管 + 核心生产边界 + 全量 YAML 配置字典 + 样例 Controller 索引"]
     end
 
     subgraph TestHarness["3. 双轨自动化回归测试守护"]
         WebMockMvcTests["SampleStateMachineWebControllerTest: 15 项 MockMvc 测试\n- 100% 覆盖 5 大 Controller 全部 HTTP 端点\n- 断言 HTTP 状态码、JSR-303 快速失败拦截与 Result<T> 强类型契约"]
-        E2eOfflineTests["OrderLifecycleIntegrationTest: 13 项场景集成测试\n- 验证 4 大专职场景服务实测\n- 验证 Choice 路由、内部自跃迁、生命周期、CAS 防重、批量关单与审计监听器"]
+        E2eOfflineTests["OrderLifecycleIntegrationTest: 16 项场景集成测试\n- 验证 4 大专职场景服务实测\n- 验证 Choice 路由、内部自跃迁、生命周期、CAS 防重、批量关单与审计监听器"]
     end
 
     SampleMatrix --> DocSpec
@@ -73,7 +73,7 @@ flowchart TD
 
 ### 正向收益
 1. **端到端一键可交互体验**：开发者启动 Sample 即可通过标准 HTTP/cURL 端点直观体验状态机全部流转特性、只读探测与拓扑导出，极大降低上手门槛。
-2. **传输契约与持久层绝对解耦**：7 个强类型 Request DTO 与 4 个业务 VO 彻底阻断 `OrderDO` 泄漏，严格遵守分层双防校验体系。
+2. **传输契约与持久层绝对解耦**：7 个强类型 Request DTO 与 6 个领域 VO 彻底阻断 `OrderDO` 泄漏，严格遵守分层双防校验体系。
 3. **文档与代码 100% 真实对齐**：所有文档示例与配置 100% 逆向提取自实测全绿的 Sample 源码，彻底消除文档欺骗。
 
 ### 妥协成本

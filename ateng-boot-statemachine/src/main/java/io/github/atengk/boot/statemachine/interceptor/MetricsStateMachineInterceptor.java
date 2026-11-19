@@ -30,7 +30,7 @@ public class MetricsStateMachineInterceptor implements StateMachineInterceptor<O
         if (meterRegistry == null) {
             return;
         }
-        String resolvedMachineId = resolveMachineId(machineId);
+        String resolvedMachineId = StateMachineInterceptor.resolveMachineId(machineId);
         recordCounter(resolvedMachineId, from, to, event, "success");
 
         if (elapsed != null) {
@@ -55,7 +55,7 @@ public class MetricsStateMachineInterceptor implements StateMachineInterceptor<O
         if (meterRegistry == null) {
             return;
         }
-        recordCounter(resolveMachineId(machineId), from, "ERROR", event, "failure");
+        recordCounter(StateMachineInterceptor.resolveMachineId(machineId), from, "ERROR", event, "failure");
     }
 
     @Override
@@ -73,9 +73,5 @@ public class MetricsStateMachineInterceptor implements StateMachineInterceptor<O
                 .tag("status", status)
                 .register(meterRegistry)
                 .increment();
-    }
-
-    private String resolveMachineId(String machineId) {
-        return (machineId != null && !machineId.isBlank()) ? machineId : "unknown";
     }
 }

@@ -671,16 +671,14 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                 } else if (transition.getPossibleTargetStates().contains(currentState)) {
                     return true;
                 }
-            } else if (Objects.equals(transition.resolveTargetState(context), currentState)) {
-                if (context == null) {
-                    return true;
-                }
+            } else {
                 try {
-                    if (transition.isSatisfied(context)) {
+                    if (Objects.equals(transition.resolveTargetState(context), currentState)
+                            && (context == null || transition.isSatisfied(context))) {
                         return true;
                     }
                 } catch (Exception ex) {
-                    log.debug("状态机 [{}] 幂等卫语句求值异常 [state={}, event={}]: {}",
+                    log.debug("状态机 [{}] 幂等目标态或卫语句求值异常 [state={}, event={}]: {}",
                             machineId, currentState, event, ex.getMessage());
                 }
             }

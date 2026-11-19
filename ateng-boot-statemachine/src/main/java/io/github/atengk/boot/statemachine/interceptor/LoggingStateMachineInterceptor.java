@@ -38,7 +38,7 @@ public class LoggingStateMachineInterceptor implements StateMachineInterceptor<O
         if (!loggingProperties.isEnabled()) {
             return;
         }
-        String resolvedId = resolveMachineId(machineId);
+        String resolvedId = StateMachineInterceptor.resolveMachineId(machineId);
         if (loggingProperties.isLogContext() && context != null) {
             log.info("[StateMachine] [{}] 开始执行状态跃迁: from={}, event={}, context={}",
                     resolvedId, from, event, formatContext(context));
@@ -57,7 +57,7 @@ public class LoggingStateMachineInterceptor implements StateMachineInterceptor<O
         if (!loggingProperties.isEnabled()) {
             return;
         }
-        String resolvedId = resolveMachineId(machineId);
+        String resolvedId = StateMachineInterceptor.resolveMachineId(machineId);
         long millis = elapsed != null ? elapsed.toMillis() : 0;
         Duration threshold = loggingProperties.getSlowTransitionThreshold();
         if (threshold != null && !threshold.isNegative() && !threshold.isZero()
@@ -80,7 +80,7 @@ public class LoggingStateMachineInterceptor implements StateMachineInterceptor<O
         if (!loggingProperties.isEnabled()) {
             return;
         }
-        String resolvedId = resolveMachineId(machineId);
+        String resolvedId = StateMachineInterceptor.resolveMachineId(machineId);
         String errorMsg = ex != null ? ex.getMessage() : "未知异常";
         log.warn("[StateMachine] [{}] 状态跃迁执行失败: from={}, event={}, 异常={}",
                 resolvedId, from, event, errorMsg);
@@ -137,9 +137,5 @@ public class LoggingStateMachineInterceptor implements StateMachineInterceptor<O
         }
         matcher.appendTail(sb);
         return sb.toString();
-    }
-
-    private String resolveMachineId(String machineId) {
-        return (machineId != null && !machineId.isBlank()) ? machineId : "UNKNOWN";
     }
 }

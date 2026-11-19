@@ -95,4 +95,14 @@ public interface StateMachineInterceptor<S, E, C> {
      */
     default void onException(S from, E event, C context, Exception ex) {
     }
+
+    /**
+     * 规范化解析状态机标识（空或空白时统一兜底为 "unknown"）
+     *
+     * @param machineId 原始状态机标识
+     * @return 非空白状态机标识
+     */
+    static String resolveMachineId(String machineId) {
+        return (machineId != null && !machineId.isBlank()) ? machineId : "unknown";
+    }
 }
