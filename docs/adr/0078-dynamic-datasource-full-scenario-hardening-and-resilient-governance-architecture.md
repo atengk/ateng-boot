@@ -57,8 +57,8 @@ flowchart TD
 - 探活成功即刻安全恢复上线；连续失败自动退避（降频至 30s），杜绝高频打扰彻底故障的物理节点。
 
 ### 3. 连接池预热与冷启动防抖动引擎 (Pre-Warming)
-- 在 `DatasourceProperties.DynamicLoadProperties` 提供 `preWarm`（默认 false）与 `preWarmConnections`（默认按 minimumIdle）；
-- 在 `DynamicDatasourceTemplate` 增加 `addDataSource(dsKey, property, boolean preWarm)` 与 `preWarmDataSource(dsKey, int count)`；
+- 在 `DatasourceProperties.DynamicLoadProperties` 提供 `preWarm`（默认 `false`）与 `preWarmConnections`（默认 `5`）；
+- 在 `DynamicDatasourceTemplate` 增加 `addDataSource(dsKey, property, boolean preWarm)`、`preWarmDataSource(dsKey, int count)` 与支持指定预热连接数的 `reloadDataSource(dsKey, newProperty, preWarm, preWarmConnections, graceful)`；
 - 预热失败遵循 Fail-Safe 宽容降级原则，记录警告日志但放行挂载，保障系统可用性。
 
 ### 4. 动态多数据源度量监控透视 (Metrics & Observability)
@@ -67,5 +67,6 @@ flowchart TD
 
 ### 5. 外部数据源动态加载器与差量生命周期对齐 (DynamicDataSourceLoader)
 - 抽象标准 `DynamicDataSourceLoader` SPI，提供可选的定时自动同步机制（`autoSync` 开关）；
-- 引入智能三向差量比对（Smart Diff）：新增项自动探活预热挂载，缺失项超时优雅排空注销，配置变更项热重载替换；
+- 引入智能三向差量比对（Smart Diff）：新增项自动探活预热挂载，缺失项超时优雅排空注销并联动清理分组引用与熔断黑名单，配置变更项热重载替换并立即解封旧熔断状态；
+- `SyncResult` 完整记录 `addedKeys`、`removedKeys`、`reloadedKeys`、`skippedKeys` 与 `failedKeys`（含失败计数），保障差量同步结果 100% 可观测；
 - 静态配置核心库（`master`/`slave`）受绝对白名单防护，严禁被外部同步误删。

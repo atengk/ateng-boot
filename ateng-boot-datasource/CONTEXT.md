@@ -21,8 +21,8 @@ _Avoid_: 租户拦截器, 租户解析器, TenantSwitch
 _Avoid_: 主备分流, 读写路由, MasterSlaveRouter
 
 **Read-After-Write Consistency (写后即读一致性防延迟)**:
-当某个会话或线程发生写操作后，在设定的时间窗口或请求周期内，强制其后续读请求回退路由至主库，以避免主从复制延迟引发的脏读与数据不一致。
-_Avoid_: 强制主库读, 主库透传, 同步等待, ForceMaster
+当某个会话、租户或线程发生写操作后，在设定的滑动时间窗口（`WINDOW`）或单请求周期（`REQUEST`）内，强制其后续只读查询自适应回退路由至主库，以避免主从复制延迟引发的脏读与数据不一致。
+_Avoid_: 强制主库读, 主库透传, 同步等待, ForceMaster, Write-After-Read, 读后写, 主库兜底, 读从延迟重定向
 
 **False DataSource Switch (事务内假切源)**:
 在基于单物理连接的本地事务（如 Spring `DataSourceTransactionManager`）内部尝试切换数据源时，由于事务已锁定初次获取的连接，导致后续切源注解或指令被静默忽略而实际上依然操作旧连接的隐性数据串库缺陷。
@@ -72,6 +72,10 @@ _Avoid_: 动态同步, 数据源差量刷新, AutoRefreshDs
 注销或下线动态数据源时，优先从路由表中摘除流量入口，并设置超时窗口等待在途事务连接归还，超时后再安全物理销毁连接池的资源治理机制。
 _Avoid_: 强制关闭, 暴力注销, 延迟销毁, ForceClose
 
-**Write-After-Read Consistency Guard (写后即读一致性防卫)**:
-将单请求上下文与滑动时间窗口结合，确保主从读写分离架构下强一致性读请求能够精确自适应回退主库读取的防御组件。
-_Avoid_: 主库兜底, 读从延迟重定向, 读写强制主库
+**Hot Reload DataSource (数据源无损热重载)**:
+当已挂载动态数据源的连接配置发生变更时，先创建新连接池并完成连通性预检与并发预热，随后原子切换路由流量、清理旧熔断状态，并对旧连接池执行优雅排空后物理关闭的零停机更新机制。
+_Avoid_: 重启数据源, 暴力重连, 配置重刷, ForceReload
+
+**Batch Result Aggregation (全库批处理结果聚合)**:
+在跨物理数据源或跨全量租户执行批量巡检与统计计算时，统一执行沙箱容错隔离（`FAIL_SAFE` / `FAIL_FAST`），并将各目标库的业务返回值映射表（`results`）与异常失败详情（`failures`）结构化汇聚的批处理模型。
+_Avoid_: 循环查库, 手工遍历汇总, MultiDbMapReduce

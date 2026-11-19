@@ -1,71 +1,73 @@
 # ateng-boot-datasource 动态多数据源与物理隔离底座
 
-> 面向 SaaS 物理多租户分库、多从库读写分离自适应路由、写后即读防从库延迟、后台主动探活退避自愈、连接池并发预热、Micrometer 指标透视、智能三向差量同步 SPI、编程式对称门面 DynamicDatasourceTemplate、事务假切源刚性守卫 DynamicDatasourceGuard 与零明文国密凭据解密的生产就绪多数据源基础设施 Starter。
+> 面向 SaaS 物理多租户分库、多从库读写分离自适应路由、写后即读一致性防延迟、后台受管主动探活退避自愈、连接池并发预热与无损热重载、Micrometer 指标透视、外部数据源智能三向差量同步 SPI、编程式对称门面 `DynamicDatasourceTemplate`、事务假切源双保险守卫 `DynamicDatasourceGuard` 与零明文国密凭据瞬态解密的生产就绪多数据源基础设施 Starter。
 
 ---
 
 ## 0. 特性与公共 API 全景速查矩阵 (Feature & API Panorama Matrix)
 
-| 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.datasource.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
+### 0.1 核心门面、引擎、SPI 与数据契约
+
+| 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.datasource.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (`*Test` / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **租户分库** | SaaS 物理多租户透明切源 | `AtengDynamicRoutingDataSource` | `ateng.boot.datasource.multi-tenancy.enabled`<br>`ateng.boot.datasource.multi-tenancy.mode`<br>`ateng.boot.datasource.multi-tenancy.data-source-prefix`<br>`ateng.boot.datasource.multi-tenancy.default-data-source` | 自动感知 `TenantContextHolder.getTenantId()` 映射目标物理库或从库分组；支持 `STRICT`（严格分库，未映射抛 `TenantDataSourceNotFoundException`）、`FALLBACK_MASTER`（回退主库）与 `IGNORE`（免租户路由主库）三级模式及 `setIgnoreTenant(true)` 免租户穿透 | `MultiTenantRoutingIntegrationTest` / `DatasourceTenantController` |
-| **租户分库** | 租户数据源解析扩展 SPI | `TenantDataSourceProvider` | `ateng.boot.datasource.multi-tenancy.custom-provider-enabled` | `String resolveDataSourceKey(String tenantId)` 与 `Map<String, String> getTenantDataSourceMap()`，支持自定义外部租户库映射字典或外部元数据注册中心动态解析 | `CustomTenantDataSourceProvider` / `MultiTenantRoutingIntegrationTest` |
-| **租户分库** | 多租户隔离模式枚举 | `MultiTenancyMode` | `ateng.boot.datasource.multi-tenancy.mode` | `STRICT`（严格分库，找不到即抛异常）、`FALLBACK_MASTER`（找不到平滑回退主库）、`IGNORE`（强制主库忽略租户） | `MultiTenantRoutingIntegrationTest` |
-| **读写分离** | 主从读写分离自适应路由 | `AtengDynamicRoutingDataSource` | `ateng.boot.datasource.read-write-split.enabled`<br>`ateng.boot.datasource.read-write-split.master-data-source`<br>`ateng.boot.datasource.read-write-split.slave-data-source` | 默认写操作绑定主库（`master`）；标记 `@DS("slave")` 或处于只读事务 `@Transactional(readOnly = true)` 时，自动负载均衡路由至从库集群（`slave` 或租户专属 `GroupDataSource`） | `ReadWriteSplittingIntegrationTest` / `DatasourceReadWriteController` |
-| **读写分离** | 租户级读写从库集群识别 | `AtengDynamicRoutingDataSource` | `ateng.boot.datasource.read-write-split.enabled` | 识别租户映射键为 `GroupDataSource`（如 `tenant_1001_slave`），只读事务下自动分发至该租户专属从库群，受写后读主防延迟机制保护 | `DatasourceHardenedScenariosIntegrationTest` / `DatasourceReadWriteController` |
-| **读写分离** | 写后即读防延迟引擎 | `ReadAfterWriteManager` | `ateng.boot.datasource.read-write-split.read-after-write.enabled`<br>`ateng.boot.datasource.read-write-split.read-after-write.scope`<br>`ateng.boot.datasource.read-write-split.read-after-write.window-ttl` | `markWriteOccurred()` 记录写操作；`isWriteOccurred()` 判定防延迟；支持单请求（`REQUEST`）与时间窗口（`WINDOW`，默认 3s）模式，窗口期内强制回退主库读取 | `ReadWriteSplittingIntegrationTest` / `DatasourceReadWriteController` |
-| **读写分离** | 请求作用域防延迟上下文 | `ReadAfterWriteContextHolder` | - | `markWriteOccurred()` / `isWriteOccurred()` / `clear()`，线程级单请求防延迟上下文持有者 | `DatasourceControllersMockMvcTest` |
-| **读写分离** | 请求结束上下文清理过滤器 | `ReadAfterWriteFilter` | - | 实现 Servlet `Filter`，在 HTTP 请求生命周期结束时于 `finally` 块确定性执行 `ReadAfterWriteContextHolder.clear()` 防线程现场污染 | `DatasourceControllersMockMvcTest` |
-| **读写分离** | 时间窗口写操作感知 SPI | `WriteOccurredResolver` | - | `markWrite(Duration)` / `isWriteOccurred(Duration)` / `clear()`，支持本地内存（`DefaultWriteOccurredResolver`）或分布式集中缓存扩展 | `ReadWriteSplittingIntegrationTest` / `DefaultWriteOccurredResolver` |
-| **读写分离** | 防延迟作用域枚举 | `ReadAfterWriteScope` | `ateng.boot.datasource.read-write-split.read-after-write.scope` | `REQUEST`（单次 HTTP 请求内防延迟）、`WINDOW`（滑动时间窗口跨请求防延迟） | `ReadWriteSplittingIntegrationTest` / `DatasourceControllersMockMvcTest` |
-| **自愈熔断** | 从库故障熔断与主动探活自愈 | `HealthAwareDynamicDataSourceStrategy` | `ateng.boot.datasource.read-write-split.failover.enabled`<br>`ateng.boot.datasource.read-write-split.failover.cooldown-window`<br>`ateng.boot.datasource.read-write-split.failover.fallback-to-master`<br>`ateng.boot.datasource.read-write-split.failover.active-probe-enabled`<br>`ateng.boot.datasource.read-write-split.failover.probe-initial-interval`<br>`ateng.boot.datasource.read-write-split.failover.probe-max-interval`<br>`ateng.boot.datasource.read-write-split.failover.probe-timeout` | 感知从库异常并熔断隔离（黑名单）；后台异步以轻量 `isValid(1)` 主动探活；验证成功立即解封放行，探测失败指数退避（5s ~ 30s）；全从库故障保底降级回退主库；对外提供 `probeAndRecover()` / `getBlacklistedDataSources()` / `isBlacklisted()` / `recordFailure()` / `unblacklist()` | `HealthAwareDynamicDataSourceActiveProbeTest` / `DatasourceReadWriteController` |
-| **连接预热** | 连接池并发预热防冷抖动引擎 | `DynamicDatasourceTemplate` | `ateng.boot.datasource.dynamic-load.pre-warm`<br>`ateng.boot.datasource.dynamic-load.pre-warm-connections` | `int preWarmDataSource(String dsKey)` 与 `int preWarmDataSource(String dsKey, int count)`，动态挂载后并发建立物理连接并放回池中，平滑应对首批突发流量；提供 `addDataSource(dsKey, property, boolean preWarm)` 显式开启；遵循 Fail-Safe 容错不阻断挂载；自动安全解包 `ItemDataSource`（对外开放 `DataSource unwrapDataSource(DataSource)`） | `DynamicDatasourcePreWarmTest` / `DatasourceBatchController` |
-| **度量观测** | Micrometer 指标透视与自动绑定 | `DynamicDatasourceMetricsBinder` | `ateng.boot.datasource.metrics.enabled` | 自动感知动态数据源注册与注销，实时将 HikariPool 连接池指标绑定至 Micrometer（`datasource.connections.active`, `idle`, `total`, `threads_awaiting`），注销时自动清理 Gauges；提供 `bindMetrics(dsKey, ds)` 与 `unbindMetrics(dsKey)` | `DynamicDatasourceMetricsTest` / `DatasourceOpsController` |
-| **度量观测** | 连接池运行指标快照契约 | `DataSourcePoolStats` | - | 强类型承载 `dsKey`, `poolName`, `activeConnections`, `idleConnections`, `totalConnections`, `threadsAwaitingConnection`, `maximumPoolSize`, `minimumIdle`，具备零外部依赖与 NPE 防御 | `DynamicDatasourceMetricsTest` / `DatasourceOpsController` |
-| **度量观测** | 编程式指标快照查询门面 | `DynamicDatasourceTemplate` | `ateng.boot.datasource.metrics.enabled` | `DataSourcePoolStats getPoolStats(String dsKey)` 与 `Map<String, DataSourcePoolStats> getAllPoolStats()`，支持单个或遍历全部分组物理库实时快照查询 | `DynamicDatasourceMetricsTest` / `DatasourceOpsController` |
-| **生命周期** | 数据源生命周期监听扩展 SPI | `DynamicDatasourceLifecycleListener` | - | `onDataSourceAdded(String dsKey, DataSource ds)` 与 `onDataSourceRemoved(String dsKey)`，监听动态挂载与安全销毁事件，支持指标注册与资源清理扩展 | `DynamicDatasourceTemplateLifecycleTest` |
-| **生命周期** | 生命周期监听器注册管理 | `DynamicDatasourceTemplate` | - | `addLifecycleListener(DynamicDatasourceLifecycleListener)` 与 `removeLifecycleListener(...)`，线程安全维护生命周期监听器链表 | `DynamicDatasourceTemplateLifecycleTest` |
-| **差量同步** | 外部数据源动态加载 SPI | `DynamicDataSourceLoader` | `ateng.boot.datasource.dynamic-load.enabled` | `Map<String, DataSourceProperty> loadDataSources()`，从外部数据库表、Nacos/Apollo 配置中心加载最新数据源字典 | `DynamicDataSourceSyncManagerTest` / `DatasourceOpsController` |
-| **差量同步** | 智能三向差量比对同步管理器 | `DynamicDataSourceSyncManager` | `ateng.boot.datasource.dynamic-load.enabled`<br>`ateng.boot.datasource.dynamic-load.core-whitelist`<br>`ateng.boot.datasource.dynamic-load.auto-sync.enabled`<br>`ateng.boot.datasource.dynamic-load.auto-sync.interval` | `SyncResult sync()` 触发智能三向差量同步（新增、热重载、优雅排空注销）；具备核心库绝对白名单防护（`isProtectedCoreKey` 默认锁死 `master`, `slave` 防误删）；支持定时后台轮询自动同步与 `unregisterTrackedProperty(String)` 重置追踪 | `DynamicDataSourceSyncManagerTest` / `DatasourceOpsController` |
-| **事务守卫** | 假切源刚性拦截防卫 | `DynamicDatasourceGuard` | `ateng.boot.datasource.guard.enabled`<br>`ateng.boot.datasource.guard.fail-on-false-switch` | `validateSwitch(String, Method, Class<?>)`，在 Spring 单连接事务中拦截跨物理连接切源，杜绝静默串库（抛出 `DataSourceSwitchException`） | `DatasourceAsyncAndTransactionGuardIntegrationTest` / `DatasourceGuardController` |
-| **事务守卫** | 声明式切源 AOP 拦截守卫 | `AtengDynamicDataSourceAnnotationInterceptor` | `ateng.boot.datasource.guard.enabled` | 拦截 `@DS` 切源注解，在入栈前委托 `DynamicDatasourceGuard` 执行安全前置校验 | `DatasourceAsyncAndTransactionGuardIntegrationTest` |
-| **对称门面** | 编程式切源执行门面 | `DynamicDatasourceTemplate` | `ateng.boot.datasource.enabled` | `callInDataSource(String, Supplier<T>)` / `runInDataSource(String, Runnable)`，基于显式数据源 Key 切换执行并保证栈现场安全清理 | `DatasourceBatchAndLifecycleIntegrationTest` / `DatasourceLifecycleController` |
-| **对称门面** | 租户级编程式切源门面 | `DynamicDatasourceTemplate` | `ateng.boot.datasource.multi-tenancy.enabled` | `callInTenantDataSource(String, Supplier<T>)` / `runInTenantDataSource(String, Runnable)`，根据租户标识自动映射并切换租户库 | `DatasourceBatchAndLifecycleIntegrationTest` / `DatasourceBatchController` |
-| **对称门面** | 全库批量巡检容错沙箱 | `DynamicDatasourceTemplate` | - | `forEachDataSource(Consumer<String>)` / `forEachDataSource(BatchExecutionPolicy, ...)`，支持全物理库安全遍历，自动汇总 `BatchExecutionResult` | `DatasourceBatchAndLifecycleIntegrationTest` / `DatasourceBatchController` |
-| **对称门面** | 全租户批量巡检容错沙箱 | `DynamicDatasourceTemplate` | - | `forEachTenant(BiConsumer<String, String>)` / `forEachTenant(BatchExecutionPolicy, ...)`，支持跨所有已注册租户执行统计与数据巡检 | `DatasourceBatchAndLifecycleIntegrationTest` / `DatasourceBatchController` |
-| **对称门面** | 数据源元数据与键集查询 | `DynamicDatasourceTemplate` | - | `getDataSourceKeys()` / `getGroupKeys()` / `getDataSource(String)` / `containsDataSource(String)` / `getCurrentDataSourceKey()` / `resolveActiveTenants()` | `DatasourceBatchAndLifecycleIntegrationTest` / `DatasourceBatchController` |
-| **分组路由** | 分组数据源管理与集群挂载门面 | `DynamicDatasourceTemplate` | - | `registerGroupDataSource(String, GroupDataSource)` / `removeGroupDataSource(String)` / `addGroupMember(String, String)`，编程式安全注册、注销从库分组及动态追加物理成员节点 | `DatasourceHardenedScenariosIntegrationTest` / `DatasourceReadWriteController` |
-| **对称门面** | 批处理容错策略枚举 | `BatchExecutionPolicy` | - | `FAIL_SAFE`（单库异常隔离并汇总，继续遍历其余库）、`FAIL_FAST`（遇首个异常立即熔断中断） | `DatasourceBatchAndLifecycleIntegrationTest` / `DatasourceBatchController` |
-| **对称门面** | 批处理执行结果契约 | `BatchExecutionResult` / `BatchFailure` | - | `isAllSuccess()` / `getTotalCount()` / `getSuccessCount()` / `getFailureCount()` / `getFailures()` / `getFailedTargets()`，承载批量巡检结构化统计结果 | `DatasourceBatchAndLifecycleIntegrationTest` / `DatasourceBatchController` |
-| **生命周期** | 运行时动态挂载数据源 | `DynamicDatasourceTemplate` | `ateng.boot.datasource.dynamic-load.enabled`<br>`ateng.boot.datasource.dynamic-load.probe-timeout` | `addDataSource(String, DataSourceProperty)` 与 `addDataSource(String, DataSource)`，前置网络探活校验后动态挂载新物理连接池 | `DatasourceBatchAndLifecycleIntegrationTest` / `DatasourceLifecycleController` |
-| **生命周期** | 运行时优雅排空注销数据源 | `DynamicDatasourceTemplate` | `ateng.boot.datasource.dynamic-load.drain-timeout` | `removeDataSource(String, boolean)`，支持等待在途事务连接归还的优雅排空（默认 5s），避免连接悬挂与暴力销毁报错 | `DatasourceBatchAndLifecycleIntegrationTest` / `DatasourceLifecycleController` |
-| **密码安全** | 国密/国际算法零明文解密 | `DataSourcePasswordDecryptor` | `ateng.boot.datasource.security.password-decryption-enabled`<br>`ateng.boot.datasource.security.secret-key`<br>`ateng.boot.datasource.security.iv` | `supports(String)` 与 `decrypt(String)`，自动识别国密 SM4（`enc:sm4:`）与国际 AES（`enc:aes:`）密文密码并瞬态解密，杜绝配置中心明文凭据 | `DatasourceAsyncAndTransactionGuardIntegrationTest` / `DatasourcePasswordSecurityScenarioService` |
-| **密码安全** | 凭据解密事件驱动还原 | `AtengDataSourceInitEvent` | - | 在连接池物理创建前瞬态注入明文密码，连接池创建完成后立即还原为原始密文，防止内存堆转储泄露 | `DatasourceBatchAndLifecycleIntegrationTest` |
-| **异步传播** | 五维上下文全链路跨线程透传 | `DataSourceAsyncContextSnapshotProvider` | - | 自动集成至 Core 模块 `AsyncContext` 基础设施，全自动透传 `MDC TraceId`、`User`、`TenantId`、`IgnoreTenant` 与 `DataSourceKey` | `DatasourceAsyncAndTransactionGuardIntegrationTest` / `DatasourceAsyncContextScenarioService` |
-| **声明切源** | Baomidou 核心声明式注解 | `@DS` | `spring.datasource.dynamic.datasource.*` | 标于类或方法声明目标数据源 Key 或 SpEL 表达式（如 `@DS("master")`、`@DS("slave")`、`@DS("#header.tenant")`） | `OrderService` / `DatasourceReadWriteController` |
-| **多源事务** | 本地多源协调事务注解 | `@DSTransactional` | - | Baomidou 原生多源本地事务协调注解，支持多数据源按序提交与回滚，自动被 `DynamicDatasourceGuard` 放行 | `DatasourceAsyncAndTransactionGuardIntegrationTest` / `DatasourceGuardController` |
-| **多源事务** | Seata 分布式事务集成开关 | 自动装配扩展 | `ateng.boot.datasource.seata.enabled` | 开启后适配 Seata 分布式事务协调器，自动对齐假切源守卫放行逻辑 | `AtengDatasourceAutoConfiguration` |
-| **异常契约** | 统一数据源业务错误码 | `DatasourceResultCode` | - | 规范化声明数据源切换失败 (`59002`)、租户库不存在 (`59001`)、动态加载失败 (`59003`)、优雅排空超时 (`59004`) 与密码解密异常 (`59005`) 错误码 | `DatasourceResultCode` / `DatasourceGuardController` |
+| **租户分库** | SaaS 物理多租户透明切源 | `AtengDynamicRoutingDataSource` | `multi-tenancy.enabled`<br>`multi-tenancy.mode`<br>`multi-tenancy.data-source-prefix`<br>`multi-tenancy.default-data-source` | 感知 `TenantContextHolder.getTenantId()` 自动路由至租户主库或从库分组；支持 `resolveTenantMasterKey(String)`、`resolveTenantSlaveKey(String, String)`、`containsDataSource(String)`、`findDataSource(String)`、`getPrimary()`、`getHealthAwareStrategy()`、`getReadAfterWriteManager()` | `MultiTenantRoutingIntegrationTest` / `DatasourceTenantController` |
+| **租户分库** | 租户数据源映射扩展 SPI | `TenantDataSourceProvider` | -（注入自定义 Spring Bean 接管） | `resolveDataSourceKey(String)`、`resolveMasterDataSourceKey(String)`、`resolveSlaveDataSourceKey(String)`、`getTenantDataSourceMap()`；默认实现 `DefaultTenantDataSourceProvider` | `CustomTenantDataSourceProvider` / `MultiTenantRoutingIntegrationTest` |
+| **读写分离** | 主从与租户集群读写分离路由 | `AtengDynamicRoutingDataSource` | `read-write-split.enabled`<br>`read-write-split.master-data-source`<br>`read-write-split.slave-data-source` | 写事务与非只读操作路由主库；`@DS("slave")` 与 `@Transactional(readOnly = true)` 路由从库或租户 `GroupDataSource`；`resolveWithFailover(String)` / `resolveWithFailover(String, String)` | `ReadWriteSplittingIntegrationTest` / `DatasourceReadWriteController` |
+| **读写分离** | 写后即读防延迟管理器 | `ReadAfterWriteManager` | `read-write-split.read-after-write.enabled`<br>`read-write-split.read-after-write.scope`<br>`read-write-split.read-after-write.window-ttl` | `markWriteOccurred()` / `isWriteOccurred()` / `clear()`；写事务（含显式 `@DS("master")` 或租户写事务）自动激活写标记，窗口期内只读查询强制回退主库 | `ReadAfterWriteTest` / `ReadWriteSplittingIntegrationTest` / `DatasourceReadWriteController` |
+| **读写分离** | 单请求防延迟上下文与清理过滤器 | `ReadAfterWriteContextHolder` / `ReadAfterWriteFilter` | `read-write-split.read-after-write.enabled` | `markWriteOccurred()` / `isWriteOccurred()` / `clear()`；`ReadAfterWriteFilter` 在 Servlet 请求结束 `finally` 中确定性清理线程上下文 | `ReadAfterWriteFilterTest` / `DatasourceControllersMockMvcTest` |
+| **读写分离** | 滑动窗口写感知解析器 SPI | `WriteOccurredResolver` | `read-write-split.read-after-write.window-ttl` | `markWrite(Duration)` / `isWriteOccurred(Duration)` / `clear()`；默认 `DefaultWriteOccurredResolver` 按 `TENANT:<tenantId>:` / `GLOBAL:` 复合键隔离多租户写窗口，并提供 `clearAll()` | `ReadAfterWriteTest` / `DatasourceHardenedScenariosIntegrationTest` |
+| **自愈熔断** | 从库熔断与主动探活自愈策略 | `HealthAwareDynamicDataSourceStrategy` | `read-write-split.failover.enabled`<br>`read-write-split.failover.cooldown-window`<br>`read-write-split.failover.fallback-to-master`<br>`read-write-split.failover.active-probe-enabled`<br>`read-write-split.failover.probe-initial-interval`<br>`read-write-split.failover.probe-max-interval`<br>`read-write-split.failover.probe-timeout` | `determineKey(List<String>)`、`filterHealthyNodes(List<String>)`、`recordFailure(String)`、`isBlacklisted(String)`、`unblacklist(String)`、`getBlacklistedDataSources()`、`clearBlacklist()`、`isProbing(String)`、`getProbeFailureCount(String)`、`getProbeCurrentInterval(String)`、`setDataSourceLocator(Function<String, DataSource>)`、`getDataSourceLocator()`、`destroy()` / `close()` | `HealthAwareDynamicDataSourceActiveProbeTest` / `HealthAwareDynamicDataSourceStrategyTest` / `DatasourceReadWriteController` |
+| **对称门面** | 编程式数据源/主从/租户切库 | `DynamicDatasourceTemplate` | `enabled` | `callInDataSource(String, Supplier<T>)` / `runInDataSource(String, Runnable)`、`callInMaster(Supplier<T>)` / `runInMaster(Runnable)`、`callInSlave(Supplier<T>)` / `runInSlave(Runnable)`、`callInTenantDataSource(String, Supplier<T>)` / `runInTenantDataSource(String, Runnable)` | `DynamicDatasourceTemplateTest` / `DatasourceLifecycleController` |
+| **分组治理** | 从库分组节点对称增删管理 | `DynamicDatasourceTemplate` / `AtengDynamicRoutingDataSource` | - | `addGroupDataSource(String, GroupDataSource)`、`registerGroupDataSource(String, GroupDataSource)`、`removeGroupDataSource(String)`、`addGroupMember(String, String)`、`removeGroupMember(String, String)` | `DynamicDatasourceTemplateTest` / `DatasourceReadWriteController` |
+| **批量聚合** | 全库/全租户容错遍历与结果聚合 | `DynamicDatasourceTemplate` | - | `forEachDataSource`（4 重载）、`forEachDataSourceWithResult`（4 重载）、`forEachTenant`（4 重载）、`forEachTenantWithResult`（4 重载）；支持指定集合与 `BatchExecutionPolicy` | `DynamicDatasourceTemplateTest` / `DatasourceBatchController` |
+| **批量契约** | 泛型批处理聚合结果与失败明细 | `AbstractBatchExecutionResult` / `BatchExecutionResult<T>` / `BatchFailure` | - | 结果：`getSuccessCount()`、`getFailureCount()`、`getTotalCount()`、`isAllSuccess()`、`hasFailures()`、`getFailures()`、`getFailedTargets()`、`getResults()`、`getResult(String)`；失败项字段：`target`、`errorMessage`、`cause` | `DynamicDatasourceTemplateTest` / `DatasourceBatchController` |
+| **生命周期** | 运行时动态挂载与并发预热 | `DynamicDatasourceTemplate` | `dynamic-load.enabled`<br>`dynamic-load.probe-timeout`<br>`dynamic-load.pre-warm`<br>`dynamic-load.pre-warm-connections` | `addDataSource(String, DataSourceProperty)` / `(..., boolean preWarm)`、`addDataSource(String, DataSource)` / `(..., boolean preWarm)`、`preWarmDataSource(String)` / `(String, int)`、`unwrapDataSource(DataSource)` | `DynamicDatasourcePreWarmTest` / `DatasourceLifecycleController` / `DatasourceBatchController` |
+| **生命周期** | 无损热重载与超时优雅排空注销 | `DynamicDatasourceTemplate` | `dynamic-load.drain-timeout`<br>`dynamic-load.core-whitelist` | `reloadDataSource(String, DataSourceProperty)` / `(..., boolean preWarm, boolean graceful)` / `(..., boolean preWarm, int preWarmConnections, boolean graceful)`、`removeDataSource(String)` / `removeDataSource(String, boolean)`、`isProtectedCoreKey(String)`；联动清理分组残余与熔断黑名单 | `DynamicDatasourceTemplateLifecycleTest` / `DatasourceLifecycleController` |
+| **生命周期** | 元数据查询与生命周期监听管理 | `DynamicDatasourceTemplate` / `DynamicDatasourceLifecycleListener` | - | `getDataSourceKeys()`、`getGroupKeys()`、`containsDataSource(String)`、`getCurrentDataSourceKey()`、`getDataSource(String)`、`getPrimaryDataSourceKey()`、`resolveActiveTenants()`；`addLifecycleListener` / `registerLifecycleListener` / `removeLifecycleListener`；SPI：`onDataSourceAdded` / `onDataSourceRemoved` | `DynamicDatasourceTemplateLifecycleTest` / `DatasourceOpsController` |
+| **度量观测** | Micrometer 连接池指标绑定与快照 | `DynamicDatasourceMetricsBinder` / `DataSourcePoolStats` | `metrics.enabled` | `getPoolStats(String)` / `getAllPoolStats()`；快照字段（8 项）：`dsKey`、`poolName`、`activeConnections`、`idleConnections`、`totalConnections`、`threadsAwaitingConnection`、`maximumPoolSize`、`minimumIdle`；Binder：`bindTo(MeterRegistry)`、`bindDataSource(String, DataSource)`、`unbind(String)`、`isBound(String)`、`getMonitoredKeys()`、`destroy()`；指标：`datasource.connections.active` / `idle` / `total` / `pending_threads` | `DynamicDatasourceMetricsTest` / `DatasourceOpsController` |
+| **差量同步** | 外部配置动态加载与三向差量同步 | `DynamicDataSourceLoader` / `DynamicDataSourceSyncManager` / `SyncResult` | `dynamic-load.enabled`<br>`dynamic-load.core-whitelist`<br>`dynamic-load.auto-sync.enabled`<br>`dynamic-load.auto-sync.interval` | SPI：`Map<String, DataSourceProperty> loadDataSources()`；管理器：`sync()`、`syncSafe()`、`isProtectedCoreKey(String)`、`getLoadedProperties()`、`unregisterTrackedProperty(String)`；结果：`addedKeys`、`removedKeys`、`reloadedKeys`、`skippedKeys`、`failedKeys` 及计数、`hasChanges()`、`empty()` | `DynamicDataSourceSyncManagerTest` / `DatasourceOpsController` |
+| **事务守卫** | 事务假切源双保险守卫与启动感知 | `DynamicDatasourceGuard` / `AtengDynamicDataSourceAnnotationInterceptor` / `AtengTransactionExecutionListener` / `TransactionRoutingContext` | `guard.enabled`<br>`guard.fail-on-false-switch` | `validateContextIsolated(String)`、`validateSwitch`（3 重载）、`isDSTransactionActive()`、`isSpringTransactionActive()`、`getCurrentTransactionDataSourceKey()`、`bindTransactionDataSourceKeyIfAbsent(String)`、`isRequiresNewTransaction(Method, Class<?>)`；启动上下文：`pushStartingTransaction(boolean, boolean)`、`isStartingActualTransaction()`、`isStartingReadOnly()`、`recordResolvedDataSourceKey(String)`、`popStartingTransaction()` | `DynamicDatasourceGuardTest` / `AtengTransactionExecutionListenerTest` / `DatasourceGuardController` |
+| **密码安全** | 国密 SM4 / AES 零明文瞬态解密 | `DataSourcePasswordDecryptor` / `CryptoUtilPasswordDecryptor` / `AtengDataSourceInitEvent` | `security.password-decryption-enabled`<br>`security.secret-key`<br>`security.iv` | `supports(String)` / `decrypt(String)` 识别 `enc:sm4:` 与 `enc:aes:`；`AtengDataSourceInitEvent` 在建连前瞬态解密、建连后立即还原为原始密文 | `CryptoUtilPasswordDecryptorTest` / `AtengDataSourceInitEventTest` / `DatasourceOpsController` |
+| **异步传播** | 五维上下文全链路跨线程透传 | `DataSourceAsyncContextSnapshotProvider` | - | 自动注册至 Core `AsyncContext`，透传 `MDC TraceId` / `UserId` / `TenantId` / `IgnoreTenant` / `DataSourceKey` 并在 `finally` 还原线程现场 | `DataSourceAsyncContextTest` / `DatasourceOpsController` |
+| **声明切源** | Baomidou 声明式切源与多源事务 | `@DS` / `@DSTransactional` / Seata 开关 | `seata.enabled` | `@DS` 声明目标库或 SpEL（如 `@DS("#tenantDsKey")`）；`@DSTransactional` 本地多源事务与 `seata.enabled=true` 自动被守卫放行 | `OrderService` / `DatasourceGuardController` |
+| **异常体系** | 受管数据源业务异常类 | `DataSourceSwitchException` / `TenantDataSourceNotFoundException` | `guard.fail-on-false-switch`<br>`multi-tenancy.mode` | 继承 `BusinessException`；`DataSourceSwitchException` 携带 `currentDataSourceKey`、`targetDataSourceKey` 与 `59002`~`59007`；`TenantDataSourceNotFoundException` 携带 `tenantId`、`expectedDataSourceKey` 与 `59001` | `DynamicDatasourceGuardTest` / `DatasourceGuardController` |
+
+### 0.2 核心强类型枚举与状态码字典
+
+#### 核心业务枚举
+
+| 枚举类型 | 真实枚举值 | 语义与关键说明 |
+| :--- | :--- | :--- |
+| `MultiTenancyMode` | `STRICT`、`FALLBACK_MASTER`、`IGNORE` | 物理多租户隔离模式（严格独立库 / 混合回退主库 / 强制主库忽略租户） |
+| `ReadAfterWriteScope` | `REQUEST`、`WINDOW` | 写后即读防延迟作用域（`REQUEST`：单请求周期；`WINDOW`：滑动时间窗口） |
+| `BatchExecutionPolicy` | `FAIL_SAFE`、`FAIL_FAST` | 批处理容错策略（`FAIL_SAFE`：单库异常隔离收集继续遍历；`FAIL_FAST`：遇首个异常即熔断） |
+
+#### 数据源模块业务错误码字典 (`DatasourceResultCode`：`59001 ~ 59007`)
+
+| 状态码 | 枚举常量 | 默认提示文案 | 典型触发场景 |
+| :---: | :--- | :--- | :--- |
+| `59001` | `TENANT_DATASOURCE_NOT_FOUND` | 未找到租户对应的物理数据源 | `STRICT` 严格模式下请求租户未匹配到已注册物理库（`TenantDataSourceNotFoundException`） |
+| `59002` | `DATASOURCE_SWITCH_ERROR` | 数据源切换异常 | Spring 单连接事务内触发假切源阻断、核心受保护库禁止热重载/注销或切源参数异常（`DataSourceSwitchException`） |
+| `59003` | `DATASOURCE_CONNECTION_ERROR` | 数据源连接异常 | 底层物理连接不可用或故障转移异常 |
+| `59004` | `UNSUPPORTED_DIALECT_FEATURE` | 当前数据源方言不支持该特化操作 | 当前目标数据库方言不支持指定特化能力 |
+| `59005` | `DATASOURCE_NOT_FOUND` | 数据源不存在 | 目标动态数据源键未注册或已被注销 |
+| `59006` | `DATASOURCE_INIT_ERROR` | 数据源初始化或凭据解密异常 | 动态建池失败、连通性预检异常、外部加载失败或 SM4/AES 密文密码解密失败 |
+| `59007` | `DATASOURCE_LIFECYCLE_ERROR` | 数据源受管生命周期操作异常 | 动态数据源受管生命周期治理阶段发生异常 |
 
 ---
 
 ## 1. 模块定位与快速起步 (Quick Start)
 
-`ateng-boot-datasource` 是面向高并发、微服务与多租户云原生架构的工业级多数据源基础设施 Starter：
-- **纯原生零臃肿底座**：100% 依托 Spring 6、HikariCP 与 Baomidou Dynamic-Datasource 官方核心扩展，坚决杜绝引入重型第三方全量工具包；
-- **全自动多租户物理分库与从库集群**：深度整合 Core 模块 `TenantContextHolder`，开箱支持 `STRICT`（严格分库）、`FALLBACK_MASTER`（回退主库）与 `IGNORE` 三级隔离策略，且支持租户分发至独立的 `GroupDataSource` 从库集群；
-- **从库故障后台主动探活自愈**：摒弃传统“让线上用户流量当探活小白鼠”的被动重试方案，采用后台受管定时探活与指数退避（5s ~ 30s），自愈后瞬时解封放行；
-- **写后即读防从库延迟 (Read-After-Write Consistency)**：原生解决主从复制物理毫秒级延迟导致的脏读痛点，支持单请求（`REQUEST`）与时间窗口（`WINDOW`）模式，写后自动平滑回退主库；
-- **连接池并发预热防冷抖动**：支持动态挂载后并发预热建立物理连接，穿透解包 `ItemDataSource`，消除首批突发流量连接排队毛刺；
-- **Actuator & Micrometer 指标透视**：自动将动态挂载/注销的数据源连接池状态（Active, Idle, Total, Awaiting）绑定至度量注册表，注销时自动清理；
-- **外部数据源动态加载与差量同步 (Smart Diff)**：提供 `DynamicDataSourceLoader` SPI 与 `DynamicDataSourceSyncManager`，支持从配置中心/数据库三向差量同步，严密保护核心库白名单；
-- **Spring 事务假切源刚性拦截防卫 (Zero False Switch)**：通过 `DynamicDatasourceGuard` 探针拦截事务内非法切源，杜绝因本地事务物理连接固定引发的静默数据串库资损事故；
-- **完备对称的高阶操作门面 (`DynamicDatasourceTemplate`)**：提供全库巡检、全租户遍历、异常受控收集与动态加库/优雅排空注销功能；
-- **零明文凭据安全与全链路追踪**：支持国密 SM4 / 国际 AES 数据库密码瞬态安全解密，异步线程池自动透传五维上下文。
+`ateng-boot-datasource` 是面向高并发微服务与 SaaS 云原生架构的生产就绪多数据源基础设施 Starter：
+- **纯原生零臃肿底座**：100% 依托 JDK 17、Spring 6、HikariCP 与 Baomidou `dynamic-datasource` 扩展构建，严禁引入重型第三方全量工具包；
+- **全自动多租户物理分库与租户集群读写分离**：无缝衔接 Core 模块 `TenantContextHolder`，支持 `STRICT` / `FALLBACK_MASTER` / `IGNORE` 三级策略及租户级从库分组（`GroupDataSource`）；
+- **写后即读强一致性与事务启动精准感知**：通过 `AtengTransactionExecutionListener` + `TransactionRoutingContext` 解决 Spring `DataSourceTransactionManager.doBegin()` 先取连接后激活同步的路由盲区，确保 `@Transactional(readOnly = true)` 与显式 `@DS("master")` 写事务 100% 精准识别，且 `WINDOW` 模式按租户维度复合隔离；
+- **高可用熔断自愈、并发预热与无损热重载**：后台受管任务以 `isValid(timeout)` 指数退避（5s ~ 30s）主动探活恢复，动态挂载支持并发预热，`reloadDataSource` / `removeDataSource` 联动自净分组引用与熔断黑名单；
+- **零明文凭据安全与五维异步上下文透传**：支持国密 SM4 / 国际 AES 瞬态解密还原及 `<TraceId, UserId, TenantId, IgnoreTenant, DataSourceKey>` 全链路跨线程透传。
 
 ### 1.1 Maven 坐标引入
 
-在已导入 `ateng-boot-bom` 的工程中，无需声明版本号即可直接引入：
+#### 方式一：已导入 `ateng-boot-bom` 统管（推荐，免声明版本号）
 
 ```xml
 <dependency>
@@ -74,9 +76,19 @@
 </dependency>
 ```
 
-### 1.2 生产标准配置范式 (`application.yml`)
+#### 方式二：未引入 BOM 时独立显式指定版本号引入
 
-以下配置逐字对齐 `DatasourceProperties` 字段，内置生产级高可用默认值：
+```xml
+<dependency>
+    <groupId>io.github.atengk</groupId>
+    <artifactId>ateng-boot-datasource</artifactId>
+    <version>1.2.0</version>
+</dependency>
+```
+
+### 1.2 最小可用配置与极简实战 (`application.yml` + Controller / Service)
+
+#### ① 最小可用 YAML 配置（逆向提取自 Sample 工程）
 
 ```yaml
 spring:
@@ -105,50 +117,23 @@ ateng:
   boot:
     datasource:
       enabled: true
-      # SaaS 物理多租户透明切库配置
       multi-tenancy:
         enabled: true
         mode: FALLBACK_MASTER
         default-data-source: master
         data-source-prefix: "tenant_"
-      # 主从读写分离与写后读主防延迟配置
       read-write-split:
         enabled: true
         master-data-source: master
         slave-data-source: slave
-        read-after-write:
-          enabled: true
-          scope: WINDOW
-          window-ttl: 3s
-        failover:
-          enabled: true
-          cooldown-window: 30s
-          fallback-to-master: true
-          active-probe-enabled: true
-          probe-initial-interval: 5s
-          probe-max-interval: 30s
-          probe-timeout: 1s
-      # 事务切源刚性守卫
       guard:
         enabled: true
         fail-on-false-switch: true
 ```
 
-### 1.3 极简开箱即用代码示例
-
-通过 Controller 接收请求并直接调度服务，框架自动完成多租户物理分库路由：
+#### ② 极简开箱代码示例（逆向提取自 `DatasourceTenantController` & `OrderService`）
 
 ```java
-package io.github.atengk.boot.sample.datasource.controller;
-
-import io.github.atengk.boot.core.model.Result;
-import io.github.atengk.boot.sample.datasource.dto.OrderCreateRequest;
-import io.github.atengk.boot.sample.datasource.service.OrderService;
-import io.github.atengk.boot.sample.datasource.vo.OrderResponse;
-import jakarta.validation.Valid;
-import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.*;
-
 @RestController
 @RequestMapping("/sample/datasource/tenant")
 @RequiredArgsConstructor
@@ -161,21 +146,16 @@ public class DatasourceTenantController {
         OrderResponse response = orderService.createTenantOrder(request);
         return Result.success(response);
     }
+
+    @GetMapping("/order/{orderNo}")
+    public Result<OrderResponse> getTenantOrder(@PathVariable String orderNo) {
+        OrderResponse response = orderService.getTenantOrder(orderNo);
+        return Result.success(response);
+    }
 }
 ```
 
 ```java
-package io.github.atengk.boot.sample.datasource.service;
-
-import io.github.atengk.boot.core.context.TenantContextHolder;
-import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
-import io.github.atengk.boot.sample.datasource.dto.OrderCreateRequest;
-import io.github.atengk.boot.sample.datasource.entity.OrderEntity;
-import io.github.atengk.boot.sample.datasource.mapper.OrderMapper;
-import io.github.atengk.boot.sample.datasource.vo.OrderResponse;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Service;
-
 @Service
 @RequiredArgsConstructor
 public class OrderService {
@@ -196,18 +176,6 @@ public class OrderService {
         orderMapper.insert(entity);
         return convertToVo(entity, dynamicDatasourceTemplate.getCurrentDataSourceKey());
     }
-
-    private OrderResponse convertToVo(OrderEntity entity, String routedDs) {
-        return OrderResponse.builder()
-                .id(entity.getId())
-                .orderNo(entity.getOrderNo())
-                .tenantId(entity.getTenantId())
-                .productName(entity.getProductName())
-                .amount(entity.getAmount())
-                .status(entity.getStatus())
-                .routedDataSource(routedDs)
-                .build();
-    }
 }
 ```
 
@@ -215,73 +183,58 @@ public class OrderService {
 
 ## 2. 核心架构与设计不变量 (Core Architecture & Design Invariants)
 
-### 2.1 动态路由与防延迟协同执行流
+### 2.1 动态路由、事务启动感知与双保险守卫执行流
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Client as 客户端 (HTTP / RPC)
     participant Filter as TenantWebFilter / ReadAfterWriteFilter
-    participant Controller as 领域 Controller
-    participant Service as 业务 Service
+    participant Service as 业务 Service (@Transactional / @DS)
+    participant TxListener as AtengTransactionExecutionListener
     participant Guard as DynamicDatasourceGuard
     participant Router as AtengDynamicRoutingDataSource
     participant RAW as ReadAfterWriteManager
-    participant HA as HealthAwareStrategy
     participant DB as 物理连接池 (Master / Slaves / Tenants)
 
-    Client->>Filter: 发起业务请求 (携带 X-Tenant-Id)
+    Client->>Filter: 发起请求 (携带 X-Tenant-Id)
     Filter->>Filter: 注入 TenantContextHolder 与 MDC
-    Filter->>Controller: 进入 Controller 调度
-    Controller->>Service: 调用业务方法 (@Transactional / @DS)
-    Service->>Guard: 执行切源前置校验 (validateSwitch)
-    alt 检测到本地事务且跨物理库切源
-        Guard-->>Service: 抛出 DataSourceSwitchException (刚性阻断)
-    else 安全切源或非事务
-        Guard-->>Service: 校验通过放行
-    end
-    Service->>Router: 获取底层物理 Connection
-    alt 存在租户标识 (TenantContextHolder)
-        Router->>Router: 解析目标租户库或租户从库分组
-    else 主从只读操作
-        Router->>RAW: 检查是否处于写后即读保护期 (isWriteOccurred)
-        alt 处于写后即读窗口期
-            RAW-->>Router: 返回 true (强制切回 Master 读)
-        else 正常只读
-            Router->>HA: 从库集群负载均衡路由
-            HA->>HA: 过滤熔断黑名单从库 (指数退避探活中)
-            HA-->>Router: 选取健康从库 (全挂则降级 Master)
+    Filter->>Service: 调用业务方法
+    Service->>TxListener: beforeBegin() 压入事务启动态与 readOnly 标志
+    Service->>Router: doBegin() 首次获取物理 Connection
+    Router->>Router: 解析租户库 / 读写分离 / 写后即读回退
+    Router->>RAW: 若为写事务（含显式 @DS("master")），自动触发 markWriteOccurred()
+    Router->>TxListener: 记录首次解析出的真实数据源 Key
+    TxListener->>Guard: afterBegin() 完成同步后绑定 TX_BOUND_DATASOURCE_RESOURCE_KEY
+    opt 事务内再次触发 @DS 或编程式切源
+        Service->>Guard: validateSwitch() 比对已绑定数据源 Key
+        alt 跨物理库且非 REQUIRES_NEW / @DSTransactional
+            Guard-->>Service: 抛出 DataSourceSwitchException (59002)
+        else 同物理库重入或独立事务
+            Guard-->>Service: 安全放行
         end
     end
-    Router->>DB: 绑定物理连接执行 SQL
-    DB-->>Service: 返回数据实体
-    Service-->>Controller: 组装强类型 VO
-    Controller-->>Client: 统一返回 Result<VO>
-    Filter->>Filter: finally: 清理 TenantContextHolder 与 ReadAfterWrite 上下文
+    Router->>DB: 执行 SQL
+    Filter->>Filter: finally: 确定性清理上下文与防延迟状态
 ```
 
 ### 2.2 核心设计不变量
 
-1. **100% 物理级存储隔离 (Physical Multi-Tenancy Invariant)**：
-   业务层无需感知分库 SQL，框架透明提取租户凭据并路由独立物理库实例。租户与租户间数据在存储介质上物理隔离，杜绝行级多租户遗漏 `WHERE tenant_id = ?` 引发的越权串数据资损。
-2. **零明文凭据安全与瞬态还原 (Zero-Secret Decryption Invariant)**：
-   配置文件与配置中心严禁出现明文数据库密码。密码统一采用国密 SM4 或国际 AES 加密，在连接池建连瞬态解密，建连完成立即还原为原始密文，防止内存堆转储（Heap Dump）或日志审计泄露敏感机密。
-3. **事务内物理连接锁定与假切源刚性拦截 (Zero False Switch Invariant)**：
-   Spring 原生 `DataSourceTransactionManager` 在事务开启时锁定单一物理连接。若在事务内尝试切换物理数据源，该切源指令会被事务静默忽略，造成隐性串库。框架通过 `DynamicDatasourceGuard` 实行一票否决式刚性拦截，杜绝脏写。
-4. **写后即读强一致性兜底 (Read-After-Write Consistency Guard Invariant)**：
-   解决 MySQL 等数据库主从复制物理毫秒级延迟痛点。在单次请求或滑动时间窗口内发生写操作后，读请求自动重定向回主库，防止用户“刚发帖/刚下单却查不到”的脏读体验。
-5. **后台受管主动探活与指数退避 (Active Probing Invariant)**：
-   从库故障熔断后，严禁让线上真实用户流量充当网络连通性探活的“小白鼠”。探活完全由后台受管调度任务以轻量 `isValid(1)` 主动执行，探测失败指数退避，探测成功立即无感解封放行。
-6. **优雅排空与核心白名单防护 (Graceful Draining & Whitelist Invariant)**：
-   注销动态数据源时先摘除流量入口，等待在途事务连接超时归还后再物理关闭；配置中心差量同步时，核心主从库由白名单绝对锁死，杜绝误删导致系统瘫痪。
+1. **100% 物理级存储隔离 (`Physical Multi-Tenancy`)**：依托 `TenantContextHolder` 透明路由物理库实例，租户数据存储物理隔离，彻底规避行级条件漏写风险。
+2. **事务启动盲区消除与假切源双保险 (`False DataSource Switch Guard`)**：`AtengTransactionExecutionListener` + `TransactionRoutingContext` 打通 `doBegin()` 与 `prepareSynchronization()` 时序断点，使无 `@DS` 租户事务、只读事务与显式切主写事务均在首次路由即绑定真实物理数据源 Key。
+3. **写后即读与多租户时间窗口隔离 (`Read-After-Write Consistency`)**：`DefaultWriteOccurredResolver` 在 `WINDOW` 模式下以 `TENANT:<tenantId>:` / `GLOBAL:` 复合键隔离写窗口，防止租户间读主误伤。
+4. **后台受管主动探活与指数退避 (`Active Probing Strategy`)**：从库熔断后绝不以线上用户流量试错，由后台调度任务以轻量 `isValid()` 主动探活并按 5s ~ 30s 指数退避，自愈即刻放行，全灭自动降级主库。
+5. **对称门面与联动自净生命周期 (`Graceful Draining & Hot Reload`)**：`reloadDataSource` 先建新池预检预热再原子切流与排空旧池；注销与热重载同步摘除分组残余引用、清理空分组并解除旧熔断黑名单。
+6. **零明文凭据安全不变量 (`Zero-Secret Decryption`)**：SM4/AES 密文仅在连接池创建瞬态内存解密并在 `afterCreate` 立即还原为原始密文，Web 校验接口严禁回传明文。
 
 ---
 
 ## 3. SaaS 物理多租户分库套件 (Physical Multi-Tenancy Suite)
 
-### 3.1 租户上下文透明切库
+### 3.1 租户上下文透明切库与物理隔离
 
 #### 专属 YAML 配置
+
 ```yaml
 ateng:
   boot:
@@ -293,115 +246,91 @@ ateng:
         data-source-prefix: "tenant_"
 ```
 
-#### 实战 Java 代码 (逆向提取自 Sample 工程)
+#### 实战 Java 代码 (逆向提取自 `DatasourceTenantController` & `OrderService`)
+
 ```java
-package io.github.atengk.boot.sample.datasource.controller;
+public OrderResponse getTenantOrder(String orderNo) {
+    String currentTenant = TenantContextHolder.getTenantId();
+    log.info("[OrderService] 查询租户 [{}] 订单: {}", currentTenant, orderNo);
 
-import io.github.atengk.boot.core.model.Result;
-import io.github.atengk.boot.sample.datasource.dto.OrderCreateRequest;
-import io.github.atengk.boot.sample.datasource.service.OrderService;
-import io.github.atengk.boot.sample.datasource.vo.OrderResponse;
-import jakarta.validation.Valid;
-import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.*;
+    OrderEntity entity = orderMapper.selectOne(
+            new LambdaQueryWrapper<OrderEntity>()
+                    .eq(OrderEntity::getOrderNo, orderNo)
+    );
 
-@RestController
-@RequestMapping("/sample/datasource/tenant")
-@RequiredArgsConstructor
-public class DatasourceTenantController {
-
-    private final OrderService orderService;
-
-    /**
-     * 租户透明切库下单：自动感知请求头 X-Tenant-Id 并路由至对应租户独立数据库
-     */
-    @PostMapping("/order")
-    public Result<OrderResponse> createTenantOrder(@Valid @RequestBody OrderCreateRequest request) {
-        OrderResponse response = orderService.createTenantOrder(request);
-        return Result.success(response);
+    if (entity == null) {
+        return null;
     }
-
-    /**
-     * 租户透明查询订单：依据当前请求租户读取；跨租户查询返回空数据
-     */
-    @GetMapping("/order/{orderNo}")
-    public Result<OrderResponse> getTenantOrder(@PathVariable String orderNo) {
-        OrderResponse response = orderService.getTenantOrder(orderNo);
-        return Result.success(response);
-    }
+    return convertToVo(entity, dynamicDatasourceTemplate.getCurrentDataSourceKey());
 }
 ```
 
 #### 核心机制与边界防御
-- **切源机制**：HTTP 请求经由 `TenantWebFilter` 提取请求头 `X-Tenant-Id` 并存入 `TenantContextHolder`。`AtengDynamicRoutingDataSource` 在路由时自动拼接 `data-source-prefix + tenantId`（例如 `tenant_1001`）获取物理连接池。
-- **线程确定性清理**：`TenantWebFilter` 在 Servlet `finally` 块中无条件执行 `TenantContextHolder.clear()`，彻底杜绝 Tomcat/Undertow 线程池工作线程复用引发的租户上下文穿透污染。
+
+- **路由拼接**：`TenantWebFilter` 从 `X-Tenant-Id` 提取租户并注入 `TenantContextHolder`，`AtengDynamicRoutingDataSource` 按 `data-source-prefix + tenantId` 映射至 `tenant_1001` 等物理库，并在请求出口 `finally` 中无条件执行 `TenantContextHolder.clear()` 防池化线程污染。
+- **跨库无穿透**：租户 `1002` 查询租户 `1001` 创建的订单时，物理库隔离直接返回 `null`（Controller 返回 `Result.success(null)`）。
 
 ---
 
-### 3.2 严格隔离与平滑回退模式
+### 3.2 严格隔离、平滑回退与免租户穿透模式
 
 #### 专属 YAML 配置
+
 ```yaml
 ateng:
   boot:
     datasource:
       multi-tenancy:
         enabled: true
-        # STRICT: 严格物理独立库，未配置租户直接抛出异常阻断
-        # FALLBACK_MASTER: 混合模式，未配置独立库的租户自动降级回退主库
-        # IGNORE: 免租户路由，所有租户统一走主库
+        # STRICT: 严格独立库（未匹配抛 59001）; FALLBACK_MASTER: 回退主库; IGNORE: 强制主库
         mode: STRICT
         default-data-source: master
 ```
 
-#### 实战 Java 代码 (逆向提取自 MultiTenantRoutingIntegrationTest)
-```java
-// 演示在 STRICT 模式下，未配置的租户发起请求将触发刚性阻断
-TenantContextHolder.setTenantId("non_existent_tenant");
-try {
-    orderService.createTenantOrder(request);
-    fail("STRICT 模式下未找到租户库应抛出 TenantDataSourceNotFoundException");
-} catch (TenantDataSourceNotFoundException ex) {
-    assertEquals(DatasourceResultCode.TENANT_DATA_SOURCE_NOT_FOUND, ex.getResultCode());
-}
+#### 实战 Java 代码 (逆向提取自 `MultiTenantRoutingIntegrationTest`)
 
-// 演示免租户路由穿透模式
+```java
+// 1. STRICT 模式下未分配独立物理库的租户触发 59001 异常阻断
+datasourceProperties.getMultiTenancy().setMode(MultiTenancyMode.STRICT);
+TenantContextHolder.setTenantId("9999");
+
+assertThatThrownBy(() -> orderService.getTenantOrder("NON-EXISTENT"))
+        .hasRootCauseInstanceOf(TenantDataSourceNotFoundException.class)
+        .hasMessageContaining("未找到租户 [9999]");
+
+// 2. 免租户穿透机制：setIgnoreTenant(true) 时即使设置了租户标识也直接穿透至 master 主库
+TenantContextHolder.setTenantId("1001");
 TenantContextHolder.setIgnoreTenant(true);
-OrderResponse masterResponse = orderService.createTenantOrder(request);
-assertEquals("master", masterResponse.getRoutedDataSource());
+
+OrderResponse response = orderService.getTenantOrder("ORD-IGNORE-TENANT-TEST");
+assertThat(response).isNull();
 ```
 
 #### 核心机制与边界防御
-- **`STRICT` 模式**：SaaS 核心高密商业场景标配。若请求携带的租户未在数据源注册表中注册，直接抛出 `TenantDataSourceNotFoundException` (错误码 `59001`)，坚决阻断请求，防止由于漏配数据源意外把大租户数据写入默认主库。
-- **`FALLBACK_MASTER` 模式**：面向中小客户共用主库（行级隔离）、头部 VIP 独享物理库的混合架构。未独立分库的租户平滑使用主库。
-- **`setIgnoreTenant(true)` 穿透机制**：用于平台运维管理员跨租户管理、数据大屏统计等系统级全局调用。
+
+- **`STRICT` 阻断**：防止遗漏配置租户数据源时静默落入主库造成数据污染，直接抛出 `TenantDataSourceNotFoundException`（`59001`）。
+- **免租户穿透与清理**：`TenantContextHolder.setIgnoreTenant(true)`（或 `TenantContextHolder.runWithoutTenant(...)`）支持跨过租户路由直达 `master` 默认库，使用后须在 `finally` 或 `@AfterEach` 中执行 `TenantContextHolder.clear()` 清理上下文。
 
 ---
 
-### 3.3 租户库映射解析 SPI (`TenantDataSourceProvider`)
+### 3.3 租户库映射解析扩展 SPI (`TenantDataSourceProvider`)
 
 #### 专属 YAML 配置
+
 ```yaml
 ateng:
   boot:
     datasource:
       multi-tenancy:
         enabled: true
-        custom-provider-enabled: true
+        default-data-source: master
+        data-source-prefix: "tenant_"
 ```
 
-#### 实战 Java 代码 (逆向提取自 CustomTenantDataSourceProvider)
+#### 实战 Java 代码 (逆向提取并适配自 `CustomTenantDataSourceProvider`)
+
 ```java
-package io.github.atengk.boot.sample.datasource.config;
-
-import io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Component;
-
-import java.util.Map;
-
 @Component
-@ConditionalOnProperty(prefix = "ateng.boot.datasource.multi-tenancy", name = "custom-provider-enabled", havingValue = "true")
 public class CustomTenantDataSourceProvider implements TenantDataSourceProvider {
 
     private final Map<String, String> tenantMapping = Map.of(
@@ -422,16 +351,17 @@ public class CustomTenantDataSourceProvider implements TenantDataSourceProvider 
 ```
 
 #### 核心机制与边界防御
-- **SPI 接管**：当租户与物理数据库的映射并非简单的固定前缀拼接，而是来源于外部元数据配置中心（如 Nacos / Consul）或运营管理平台数据库时，声明注入 `TenantDataSourceProvider` 即可完全替换默认解析规则。
-- **空安全与保底**：`resolveDataSourceKey` 返回 `null` 时，路由层遵循已配置的 `MultiTenancyMode` 策略进行阻断或回退，防御无效空指针。
+
+- **SPI 覆盖**：在业务工程中注入任意 `TenantDataSourceProvider` Bean（`AtengDatasourceAutoConfiguration` 使用 `@ConditionalOnMissingBean(TenantDataSourceProvider.class)` 退让），即可覆盖默认前缀映射，并支持 `resolveMasterDataSourceKey` 与 `resolveSlaveDataSourceKey` 分别指定租户主库与从库集群（Sample 工程中另通过本地开关按需激活该示例 Bean，以免干扰默认前缀路由演示）。
 
 ---
 
-## 4. 读写分离与自适应探活自愈套件 (Read-Write Splitting & Active Probing Suite)
+## 4. 主从读写分离与自愈熔断套件 (Read-Write Splitting & Active Probing Suite)
 
-### 4.1 主从自适应读写分流
+### 4.1 主从路由与从库分组节点对称增删
 
 #### 专属 YAML 配置
+
 ```yaml
 ateng:
   boot:
@@ -442,94 +372,120 @@ ateng:
         slave-data-source: slave
 ```
 
-#### 实战 Java 代码 (逆向提取自 DatasourceReadWriteController & OrderService)
+#### 实战 Java 代码 (逆向提取自 `DatasourceReadWriteController` & `DatasourceTenantReadWriteScenarioService`)
+
 ```java
-package io.github.atengk.boot.sample.datasource.service;
+@PostMapping("/group/member/add")
+public Result<GroupMemberResponse> addGroupMember(@Valid @RequestBody GroupMemberRequest request) {
+    GroupMemberResponse response = tenantReadWriteScenarioService.addGroupMember(
+            request.getGroupKey(), request.getMemberKey());
+    return Result.success(response);
+}
 
-import com.baomidou.dynamic.datasource.annotation.DS;
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
-import io.github.atengk.boot.sample.datasource.entity.OrderEntity;
-import io.github.atengk.boot.sample.datasource.mapper.OrderMapper;
-import io.github.atengk.boot.sample.datasource.vo.OrderResponse;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Service;
+@PostMapping("/group/member/remove")
+public Result<GroupMemberResponse> removeGroupMember(@Valid @RequestBody GroupMemberRequest request) {
+    GroupMemberResponse response = tenantReadWriteScenarioService.removeGroupMember(
+            request.getGroupKey(), request.getMemberKey());
+    return Result.success(response);
+}
+```
 
-@Service
-@RequiredArgsConstructor
-public class OrderService {
+```java
+public GroupMemberResponse addGroupMember(String groupKey, String memberKey) {
+    dynamicDatasourceTemplate.addGroupMember(groupKey, memberKey);
+    return GroupMemberResponse.builder()
+            .groupKey(groupKey)
+            .memberKey(memberKey)
+            .operation("ADDED")
+            .operated(true)
+            .activeGroupKeys(dynamicDatasourceTemplate.getGroupKeys())
+            .build();
+}
 
-    private final OrderMapper orderMapper;
-    private final DynamicDatasourceTemplate dynamicDatasourceTemplate;
-
-    /**
-     * 读从库订单：标有 @DS("slave")，默认路由至 slave 读从库集群
-     */
-    @DS("slave")
-    public OrderResponse getOrderReadWrite(String orderNo) {
-        OrderEntity entity = orderMapper.selectOne(
-                new LambdaQueryWrapper<OrderEntity>().eq(OrderEntity::getOrderNo, orderNo)
-        );
-        if (entity == null) {
-            return null;
-        }
-        return convertToVo(entity, dynamicDatasourceTemplate.getCurrentDataSourceKey());
-    }
+public GroupMemberResponse removeGroupMember(String groupKey, String memberKey) {
+    boolean removed = dynamicDatasourceTemplate.removeGroupMember(groupKey, memberKey);
+    return GroupMemberResponse.builder()
+            .groupKey(groupKey)
+            .memberKey(memberKey)
+            .operation("REMOVED")
+            .operated(removed)
+            .activeGroupKeys(dynamicDatasourceTemplate.getGroupKeys())
+            .build();
 }
 ```
 
 #### 核心机制与边界防御
-- **路由规则**：写操作或包含 `@Transactional`（非只读）的方法自动绑定 `masterDataSource`；标记 `@DS("slave")` 或开启 `@Transactional(readOnly = true)` 的方法自动负载均衡路由至从库集群。
-- **分组多从库集群**：当从库配置为从库分组（`GroupDataSource`）时，框架自动调用负载均衡策略在多个物理从库节点间轮询分流。
+
+- **对称分组治理**：`addGroupMember` 不存在目标物理节点时立即抛出 `DataSourceSwitchException` 快速失败；`removeGroupMember` 对称摘除成员，分组或成员不存在时安全返回 `false`。
+- **租户从库分流**：当租户配置专属从库集群（如 `tenant_1001_slave`）且处于只读上下文时，自动分流至该分组并在组内健康节点间轮询负载均衡。
 
 ---
 
-### 4.2 写后即读防延迟引擎
+### 4.2 写后即读防延迟与显式 `@DS("master")` 写事务
 
 #### 专属 YAML 配置
+
 ```yaml
 ateng:
   boot:
     datasource:
       read-write-split:
+        enabled: true
+        master-data-source: master
+        slave-data-source: slave
         read-after-write:
           enabled: true
-          # REQUEST: 单次 HTTP 请求内写后读主; WINDOW: 滑动时间窗口跨请求写后读主
+          # REQUEST: 单请求作用域; WINDOW: 按租户/用户复合隔离的滑动时间窗口
           scope: WINDOW
           window-ttl: 3s
 ```
 
-#### 实战 Java 代码 (逆向提取自 OrderService & ReadWriteSplittingIntegrationTest)
+#### 实战 Java 代码 (逆向提取自 `OrderService` & `DatasourceReadWriteController`)
+
 ```java
 /**
- * 主库写入订单并激活写后读主防延迟
+ * 显式 @DS("master") 写事务创建订单（框架自动触发写后即读保护）
  */
+@DS("master")
 @Transactional(rollbackFor = Exception.class)
-public OrderResponse createMasterOrderWithPostWrite(OrderCreateRequest request) {
-    // 激活写发生标记 (在 3 秒窗口期内，当前用户的所有读请求自动重定向主库)
-    readAfterWriteManager.markWriteOccurred();
-
+public OrderResponse createMasterOrderExplicitDs(OrderCreateRequest request) {
     OrderEntity entity = new OrderEntity();
     entity.setOrderNo(request.getOrderNo());
     entity.setProductName(request.getProductName());
     entity.setAmount(request.getAmount());
+    entity.setTenantId(TenantContextHolder.getTenantId());
     entity.setStatus("PAID");
 
     orderMapper.insert(entity);
     return convertToVo(entity, dynamicDatasourceTemplate.getCurrentDataSourceKey());
 }
+
+/**
+ * 读从库订单（处于写后即读保护期内自动回退至 master 读取）
+ */
+@DS("slave")
+public OrderResponse getOrderReadWrite(String orderNo) {
+    OrderEntity entity = orderMapper.selectOne(
+            new LambdaQueryWrapper<OrderEntity>().eq(OrderEntity::getOrderNo, orderNo)
+    );
+    if (entity == null) {
+        return null;
+    }
+    return convertToVo(entity, dynamicDatasourceTemplate.getCurrentDataSourceKey());
+}
 ```
 
 #### 核心机制与边界防御
-- **`REQUEST` 模式**：基于 `ReadAfterWriteContextHolder`，在单次 HTTP 请求执行链路上（如“创建订单后立即在同一请求内查询详情返回”）生效，请求结束由 `ReadAfterWriteFilter` 彻底释放。
-- **`WINDOW` 模式**：基于 `WriteOccurredResolver`，默认通过 `UserContextHolder.getUserId()` 绑定用户标识，在设定的 `window-ttl`（如 3s）内，该用户发起的任何 `@DS("slave")` 读请求自动透明回退至 `master` 读取，消除用户前端页面刷新时因主从同步毫秒级延迟导致的脏读。
-- **窗口过期无感恢复**：3 秒窗口期满后，后续读请求自动平滑恢复分发至从库集群，兼顾强一致性与数据库集群负载均衡。
+
+- **启动感知自动触发**：即使业务代码显式标注 `@DS("master")` 且未手动调用 `readAfterWriteManager.markWriteOccurred()`，`AtengTransactionExecutionListener` 配合 `AtengDynamicRoutingDataSource` 在事务非只读启动时自动激活写后即读标记。
+- **多租户窗口隔离**：`DefaultWriteOccurredResolver` 在 `WINDOW` 模式下通过 `TENANT:<tenantId>:USER:<userId>`（或 `GLOBAL:` / 线程降级键）存储 TTL，租户 `1001` 写操作不会污染租户 `1002` 的从库读流量；`REQUEST` 模式下由 `ReadAfterWriteFilter` 在请求结束时无条件清理。
 
 ---
 
 ### 4.3 从库故障熔断与后台主动探活自愈
 
 #### 专属 YAML 配置
+
 ```yaml
 ateng:
   boot:
@@ -545,137 +501,125 @@ ateng:
           probe-timeout: 1s
 ```
 
-#### 实战 Java 代码 (逆向提取自 DatasourceActiveProbingScenarioService & DatasourceReadWriteController)
+#### 实战 Java 代码 (逆向提取自 `DatasourceReadWriteController` & `DatasourceActiveProbingScenarioService`)
+
 ```java
-package io.github.atengk.boot.sample.datasource.controller;
+@PostMapping("/failover/simulate-failure")
+public Result<Boolean> simulateReplicaFailure(@RequestParam(defaultValue = "slave") String replicaKey) {
+    activeProbingScenarioService.simulateReplicaFailure(replicaKey);
+    return Result.success(true);
+}
 
-import io.github.atengk.boot.core.model.Result;
-import io.github.atengk.boot.sample.datasource.service.DatasourceActiveProbingScenarioService;
-import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.*;
+@GetMapping("/failover/blacklisted")
+public Result<Set<String>> getBlacklistedReplicas() {
+    Set<String> blacklisted = activeProbingScenarioService.getBlacklistedDataSources();
+    return Result.success(blacklisted);
+}
 
-import java.util.Set;
-
-@RestController
-@RequestMapping("/sample/datasource/read-write")
-@RequiredArgsConstructor
-public class DatasourceReadWriteController {
-
-    private final DatasourceActiveProbingScenarioService activeProbingScenarioService;
-
-    /**
-     * 模拟从库物理节点网络异常并触发熔断隔离 (加入黑名单)
-     */
-    @PostMapping("/failover/simulate-failure")
-    public Result<Boolean> simulateReplicaFailure(@RequestParam(defaultValue = "slave") String replicaKey) {
-        activeProbingScenarioService.simulateReplicaFailure(replicaKey);
-        return Result.success(true);
-    }
-
-    /**
-     * 查询当前处于熔断黑名单中的从库物理节点
-     */
-    @GetMapping("/failover/blacklisted")
-    public Result<Set<String>> getBlacklistedReplicas() {
-        Set<String> blacklisted = activeProbingScenarioService.getBlacklistedDataSources();
-        return Result.success(blacklisted);
-    }
+@PostMapping("/failover/recover")
+public Result<Boolean> recoverReplica(@RequestParam(defaultValue = "slave") String replicaKey) {
+    activeProbingScenarioService.recoverReplica(replicaKey);
+    return Result.success(true);
 }
 ```
 
 #### 核心机制与边界防御
-- **禁用户流量当探活小白鼠**：传统主从在从库宕机冷却期满后，会用下一笔用户真实请求去尝试连接从库，导致用户请求承受网络超时或报错。
-- **后台主动探活闭环**：
-  1. `HealthAwareDynamicDataSourceStrategy` 捕获从库物理网络异常后，自动将其加入黑名单；
-  2. 调度受管后台探活任务（基于虚拟线程或核心调度线程池），周期性调用轻量 `Connection.isValid(1)` 检测故障物理库；
-  3. 一旦探活成功，**立即从黑名单解封并恢复流量放行**；
-  4. 若持续探活失败，探活周期自适应指数退避（从 5s 退避至最大 30s），防止对宕机实例造成网络与连接风暴；
-  5. 全从库集群宕机时，根据 `fallback-to-master=true` 策略，自动将读请求安全回退至主库，保障应用对外服务零中断。
+
+- **主动探活闭环**：`HealthAwareDynamicDataSourceStrategy` 将异常从库置入黑名单后，由后台受管调度任务周期性以 `Connection.isValid(timeoutSeconds)` 主动探活；探活成功立即调用 `unblacklist(dsKey)` 放行流量，连续失败按 5s $\rightarrow$ 10s $\rightarrow$ 20s $\rightarrow$ 30s 指数退避。
+- **全从库故障保底**：若组内健康从库集合为空且 `fallback-to-master=true`，自动路由回主库确保服务高可用。
 
 ---
 
-## 5. 编程式对称操作与全库批量巡检套件 (Programmatic Facade & Batch Inspection Suite)
+## 5. 编程式对称门面与全库批处理聚合套件 (Programmatic Facade & Batch Aggregation Suite)
 
-### 5.1 编程式显式切库与租户切库
+### 5.1 对称编程式切库与上下文隔离
 
-#### 实战 Java 代码 (逆向提取自 DatasourceLifecycleController & DatasourceBatchScenarioService)
+#### 专属 YAML 配置
+
+```yaml
+ateng:
+  boot:
+    datasource:
+      enabled: true
+      read-write-split:
+        master-data-source: master
+        slave-data-source: slave
+```
+
+#### 实战 Java 代码 (逆向提取自 `DatasourceLifecycleScenarioService` & `DatasourceBatchScenarioService`)
+
 ```java
-// 1. 显式切换指定物理数据源执行并自动恢复现场
-dynamicDatasourceTemplate.runInDataSource("dynamic_user_db", () -> {
+// 1. 指定物理库执行（无返回值 / 带返回值对称）
+dynamicDatasourceTemplate.runInDataSource(dsKey, () -> {
     OrderEntity entity = new OrderEntity();
-    entity.setOrderNo("DYN-001");
+    entity.setOrderNo(orderNo);
     entity.setProductName("Dynamic Product");
     entity.setAmount(new BigDecimal("99.99"));
-    entity.setStatus("PAID");
+    entity.setStatus("DYNAMIC_CREATED");
     orderMapper.insert(entity);
 });
 
-// 2. 显式在指定租户数据源执行业务计算并返回结果
-Long totalOrders = dynamicDatasourceTemplate.callInTenantDataSource("1001", () ->
+// 2. 指定租户物理库执行并返回值
+Long count = dynamicDatasourceTemplate.callInTenantDataSource(tenantId, () ->
         orderMapper.selectCount(new LambdaQueryWrapper<>())
 );
 ```
 
 #### 核心机制与边界防御
-- **栈式现场确定性清理**：`callInDataSource` 与 `callInTenantDataSource` 采用内部栈维护切源层级。在底层 `finally` 块中严格执行上下文出栈（`pollDataSource`）。即使业务逻辑抛出未捕获的运行时异常，也能 100% 恢复上层数据源上下文，杜绝线程数据源污染。
+
+- **栈式绝对对称**：`callInDataSource` / `runInDataSource`、`callInMaster` / `runInMaster`、`callInSlave` / `runInSlave`、`callInTenantDataSource` / `runInTenantDataSource` 均先经 `DynamicDatasourceGuard.validateContextIsolated` 校验，再于 `try-finally` 中严格执行入栈与 `poll()` 出栈，异常场景 100% 恢复上层上下文。
 
 ---
 
-### 5.2 全物理库容错批量巡检
+### 5.2 全库与全租户带返回值容错批处理聚合 (`forEach*WithResult`)
 
-#### 实战 Java 代码 (逆向提取自 DatasourceBatchController)
+#### 专属 YAML 配置
+
+```yaml
+ateng:
+  boot:
+    datasource:
+      multi-tenancy:
+        enabled: true
+        data-source-prefix: "tenant_"
+```
+
+#### 实战 Java 代码 (逆向提取自 `DatasourceBatchController` & `DatasourceBatchScenarioService`)
+
 ```java
-package io.github.atengk.boot.sample.datasource.controller;
+@PostMapping("/inspect-all-with-result")
+public Result<BatchExecutionResult<Long>> inspectAllDataSourcesWithResult(
+        @RequestParam(defaultValue = "FAIL_SAFE") BatchExecutionPolicy policy) {
+    return Result.success(batchScenarioService.inspectAllDataSourcesWithResult(policy));
+}
 
-import io.github.atengk.boot.core.model.Result;
-import io.github.atengk.boot.datasource.enums.BatchExecutionPolicy;
-import io.github.atengk.boot.sample.datasource.service.DatasourceBatchScenarioService;
-import io.github.atengk.boot.sample.datasource.vo.BatchInspectionResponse;
-import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.*;
+@PostMapping("/inspect-tenants-with-result")
+public Result<BatchExecutionResult<Long>> inspectAllTenantsWithResult(
+        @RequestParam(defaultValue = "FAIL_SAFE") BatchExecutionPolicy policy) {
+    return Result.success(batchScenarioService.inspectAllTenantsWithResult(policy));
+}
+```
 
-@RestController
-@RequestMapping("/sample/datasource/batch")
-@RequiredArgsConstructor
-public class DatasourceBatchController {
+```java
+public BatchExecutionResult<Long> inspectAllDataSourcesWithResult(BatchExecutionPolicy policy) {
+    return dynamicDatasourceTemplate.forEachDataSourceWithResult(policy, dsKey -> {
+        Long count = orderMapper.selectCount(new LambdaQueryWrapper<>());
+        return count != null ? count : 0L;
+    });
+}
 
-    private final DatasourceBatchScenarioService batchScenarioService;
-
-    /**
-     * 全物理数据源容错批量巡检与订单统计
-     */
-    @PostMapping("/inspect-all")
-    public Result<BatchInspectionResponse> inspectAllDataSources(
-            @RequestParam(defaultValue = "FAIL_SAFE") BatchExecutionPolicy policy) {
-        BatchInspectionResponse response = batchScenarioService.inspectAllDataSources(policy);
-        return Result.success(response);
-    }
+public BatchExecutionResult<Long> inspectAllTenantsWithResult(BatchExecutionPolicy policy) {
+    return dynamicDatasourceTemplate.forEachTenantWithResult(policy, (tenantId, dsKey) -> {
+        Long count = orderMapper.selectCount(new LambdaQueryWrapper<>());
+        return count != null ? count : 0L;
+    });
 }
 ```
 
 #### 核心机制与边界防御
-- **`FAIL_SAFE` 沙箱隔离**：当全库批量巡检（如全库 DDL 同步、定期对账扫描）过程中某个物理库发生网络中断或宕机时，框架自动隔离捕获异常，记录至 `BatchExecutionResult.getFailures()`，并继续遍历剩余健康数据库，绝不因单点故障中断全盘任务。
-- **`FAIL_FAST` 熔断机制**：面向强原子性场景，遇首个数据库异常立即抛出终止后续遍历。
 
----
-
-### 5.3 全租户数据遍历统计
-
-#### 实战 Java 代码 (逆向提取自 DatasourceBatchController)
-```java
-/**
- * 全租户数据遍历巡检与订单统计
- */
-@PostMapping("/inspect-tenants")
-public Result<BatchInspectionResponse> inspectAllTenants() {
-    BatchInspectionResponse response = batchScenarioService.inspectAllTenants();
-    return Result.success(response);
-}
-```
-
-#### 核心机制与边界防御
-- **活跃租户自动解析**：调用 `resolveActiveTenants()` 动态匹配已挂载的所有租户标识与库名，无需手动维护租户列表；
-- **环境安全**：遍历过程中自动为每个执行闭包设置对应租户的上下文，并在切换至下一租户前自动清理，杜绝租户数据跨域混乱。
+- **泛型结构化结果聚合**：`BatchExecutionResult<T>` 继承非泛型基类 `AbstractBatchExecutionResult`（保障原始类型引用向后兼容），通过 `results` 保留每个成功目标的遍历顺序返回值映射（支持合法 `null` 值），通过 `failures`、`failedTargets`、`getFailureCount()` 记录失败明细。
+- **双策略容错**：`FAIL_SAFE` 隔离单库异常并继续遍历其余健康库；`FAIL_FAST` 遇首个异常立即熔断抛出。
 
 ---
 
@@ -684,6 +628,7 @@ public Result<BatchInspectionResponse> inspectAllTenants() {
 ### 6.1 运行时动态挂载与连接池并发预热
 
 #### 专属 YAML 配置
+
 ```yaml
 ateng:
   boot:
@@ -695,93 +640,133 @@ ateng:
         pre-warm-connections: 5
 ```
 
-#### 实战 Java 代码 (逆向提取自 DatasourceLifecycleController & DatasourceBatchController)
+#### 实战 Java 代码 (逆向提取自 `DatasourceLifecycleController` & `DatasourceBatchController`)
+
 ```java
-package io.github.atengk.boot.sample.datasource.controller;
+@PostMapping("/add")
+public Result<String> addDynamicDataSource(@Valid @RequestBody DataSourceCreateRequest request) {
+    DataSourceProperty property = new DataSourceProperty();
+    property.setPoolName(request.getDsKey());
+    property.setUrl(request.getUrl());
+    property.setUsername(request.getUsername());
+    property.setPassword(request.getPassword());
+    property.setDriverClassName(request.getDriverClassName());
 
-import com.baomidou.dynamic.datasource.creator.DataSourceProperty;
-import io.github.atengk.boot.core.model.Result;
-import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
-import io.github.atengk.boot.sample.datasource.dto.DataSourceCreateRequest;
-import jakarta.validation.Valid;
-import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.*;
+    dynamicDatasourceTemplate.addDataSource(request.getDsKey(), property, request.isPreWarm());
+    datasourceSampleInitConfig.initTableForDataSource(request.getDsKey());
 
-@RestController
-@RequestMapping("/sample/datasource/lifecycle")
-@RequiredArgsConstructor
-public class DatasourceLifecycleController {
-
-    private final DynamicDatasourceTemplate dynamicDatasourceTemplate;
-
-    /**
-     * 运行时动态注册新数据源并并发预热物理连接池
-     */
-    @PostMapping("/add")
-    public Result<String> addDynamicDataSource(@Valid @RequestBody DataSourceCreateRequest request) {
-        DataSourceProperty property = new DataSourceProperty();
-        property.setPoolName(request.getDsKey());
-        property.setUrl(request.getUrl());
-        property.setUsername(request.getUsername());
-        property.setPassword(request.getPassword());
-        property.setDriverClassName(request.getDriverClassName());
-
-        // 挂载数据源并在之后执行并发预热
-        dynamicDatasourceTemplate.addDataSource(request.getDsKey(), property, request.isPreWarm());
-
-        if (request.isPreWarm()) {
-            int target = request.getPreWarmConnections() != null ? request.getPreWarmConnections() : 5;
-            dynamicDatasourceTemplate.preWarmDataSource(request.getDsKey(), target);
-        }
-
-        return Result.success("Dynamic datasource [" + request.getDsKey() + "] registered successfully");
+    if (request.isPreWarm()) {
+        int target = request.getPreWarmConnections() != null ? request.getPreWarmConnections() : 5;
+        int actual = dynamicDatasourceTemplate.preWarmDataSource(request.getDsKey(), target);
+        log.info("[LifecycleController] 数据源 [{}] 成功预热 {} 个连接", request.getDsKey(), actual);
     }
+    return Result.success("Dynamic datasource [" + request.getDsKey() + "] registered and initialized successfully");
 }
 ```
 
 #### 核心机制与边界防御
-- **前置探活校验**：挂载前先通过 `probe-timeout`（默认 2s）进行轻量探活，探活失败不予挂载，防止垃圾连接池堆积；
-- **消除冷启动排队毛刺**：HikariCP 默认惰性创建连接。开启并发预热后，后台线程池并发建立目标数量的物理连接并归还连接池，从容应对新数据源上线后的首波洪峰流量；
-- **Fail-Safe 容错**：预热建连过程若遇部分连接超时，遵循容错机制释放已建连接并不阻断数据源上线。
+
+- **前置探活 Fail-Fast**：建池后立即在 `probe-timeout`（默认 2s）内执行 `Connection.isValid`，校验失败立即关闭连接池并抛出 `DataSourceSwitchException`，绝不把坏库放入路由表。
+- **并发预热防抖**：通过 Core 受管 `TaskExecutor` 并发建连校验（受 Hikari `maximumPoolSize` 上限保护），并在 `finally` 中确定性归还全部连接；预热过程遵循 Fail-Safe 容错降级。
 
 ---
 
-### 6.2 超时优雅排空注销与生命周期监听 SPI
+### 6.2 数据源无损热重载 (`Hot Reload DataSource`)
 
 #### 专属 YAML 配置
+
+```yaml
+ateng:
+  boot:
+    datasource:
+      dynamic-load:
+        enabled: true
+        probe-timeout: 2s
+        drain-timeout: 5s
+        pre-warm: true
+        pre-warm-connections: 5
+```
+
+#### 实战 Java 代码 (逆向提取自 `DatasourceLifecycleController` & `DatasourceLifecycleScenarioService`)
+
+```java
+@PostMapping("/reload")
+public Result<DataSourceReloadResponse> reloadDynamicDataSource(@Valid @RequestBody DataSourceReloadRequest request) {
+    DataSourceReloadResponse response = lifecycleScenarioService.reloadDynamicDataSource(request);
+    return Result.success(response);
+}
+```
+
+```java
+public DataSourceReloadResponse reloadDynamicDataSource(DataSourceReloadRequest request) {
+    DataSourceProperty property = new DataSourceProperty();
+    property.setPoolName(request.getDsKey());
+    property.setUrl(request.getUrl());
+    property.setUsername(request.getUsername());
+    property.setPassword(request.getPassword());
+    property.setDriverClassName(request.getDriverClassName());
+
+    // 先建新池、连通性预检并按指定连接数并发预热，再原子切流与按需优雅排空旧池
+    int targetWarmCount = request.getPreWarmConnections();
+    dynamicDatasourceTemplate.reloadDataSource(
+            request.getDsKey(), property, request.isPreWarm(), targetWarmCount, request.isGraceful());
+    datasourceSampleInitConfig.initTableForDataSource(request.getDsKey());
+
+    boolean active = dynamicDatasourceTemplate.containsDataSource(request.getDsKey());
+    return DataSourceReloadResponse.builder()
+            .dsKey(request.getDsKey())
+            .preWarmed(request.isPreWarm())
+            .warmedConnections(request.isPreWarm() ? targetWarmCount : 0)
+            .gracefulDrained(request.isGraceful())
+            .active(active)
+            .message("Datasource [" + request.getDsKey() + "] hot-reloaded successfully")
+            .build();
+}
+```
+
+#### 核心机制与边界防御
+
+- **零停机切流时序**：`reloadDataSource` 先创建并预检/预热新池（新配置不可用时立即快速失败，旧池零受影响）；随后持有 `ReentrantLock` 刷新所有包含该节点的 `GroupDataSource` 引用并原子切换单库路由表，联动解除旧池熔断黑名单及在途探活任务、重新绑定 Micrometer 指标，最后对旧池执行超时优雅排空并关闭。
+- **核心库锁定**：`master`、`slave`、`primary` 及 `core-whitelist` 命中时直接抛出 `DataSourceSwitchException`（`59002`）拒绝热重载。
+
+---
+
+### 6.3 超时优雅排空注销 (`Graceful Draining`)
+
+#### 专属 YAML 配置
+
 ```yaml
 ateng:
   boot:
     datasource:
       dynamic-load:
         drain-timeout: 5s
+        core-whitelist:
+          - master
+          - slave
 ```
 
-#### 实战 Java 代码 (逆向提取自 DatasourceLifecycleController)
+#### 实战 Java 代码 (逆向提取自 `DatasourceLifecycleController`)
+
 ```java
-/**
- * 超时优雅排空在途事务并安全注销数据源
- */
 @DeleteMapping("/remove/{dsKey}")
 public Result<String> removeDynamicDataSource(@PathVariable String dsKey,
                                               @RequestParam(defaultValue = "true") boolean drain) {
-    // 优雅排空注销数据源
     dynamicDatasourceTemplate.removeDataSource(dsKey, drain);
     return Result.success("Datasource [" + dsKey + "] unregistered successfully (drain=" + drain + ")");
 }
 ```
 
 #### 核心机制与边界防御
-- **流量两阶段平滑下线**：
-  1. **第一阶段（摘除入口）**：立即从 `AtengDynamicRoutingDataSource` 动态路由表中移除该数据源，后续所有新请求不再进入该数据源；
-  2. **第二阶段（优雅排空）**：若 `drain=true`，进入最长 `drain-timeout`（默认 5s）的等待窗口，等待在途正在执行的事务与查询将物理连接安全归还池中；超时后或全部归还后，物理调用 `close()` 关闭连接池；
-- **事件驱动解绑**：自动触发 `DynamicDatasourceLifecycleListener.onDataSourceRemoved`，清理对应 Micrometer 度量监控，防止内存泄漏。
+
+- **联动自净链**：`removeDataSource`（单参重载默认 `graceful=true`）依次执行：从全部分组数据源摘除节点并清理空分组 $\rightarrow$ 从动态路由表摘除流量 $\rightarrow$ 清理熔断黑名单与在途探活任务 $\rightarrow$ 若启用优雅排空则轮询 `HikariPoolMXBean.getActiveConnections()` 等待在途连接归还（最长 `drain-timeout`）$\rightarrow$ 物理关闭连接池并通知 `DynamicDatasourceLifecycleListener` 注销指标。
 
 ---
 
-### 6.3 外部配置中心智能三向差量同步与核心白名单
+### 6.4 外部数据源动态加载与智能三向差量同步 (`Smart Diff Sync`)
 
 #### 专属 YAML 配置
+
 ```yaml
 ateng:
   boot:
@@ -796,86 +781,34 @@ ateng:
           interval: 1m
 ```
 
-#### 实战 Java 代码 (逆向提取自 NacosDynamicDataSourceLoader & DatasourceOpsController)
+#### 实战 Java 代码 (逆向提取自 `DatasourceOpsController` & `DatasourceDynamicLoaderScenarioService`)
+
 ```java
-package io.github.atengk.boot.sample.datasource.config;
-
-import com.baomidou.dynamic.datasource.creator.DataSourceProperty;
-import io.github.atengk.boot.datasource.loader.DynamicDataSourceLoader;
-import org.springframework.stereotype.Component;
-
-import java.util.HashMap;
-import java.util.Map;
-
-@Component
-public class NacosDynamicDataSourceLoader implements DynamicDataSourceLoader {
-
-    @Override
-    public Map<String, DataSourceProperty> loadDataSources() {
-        Map<String, DataSourceProperty> configs = new HashMap<>();
-        // 从分布式配置中心或数据库表加载最新租户数据源列表
-        DataSourceProperty prop = new DataSourceProperty();
-        prop.setPoolName("tenant_dynamic");
-        prop.setUrl("jdbc:h2:mem:tenant_dynamic_db;DB_CLOSE_DELAY=-1");
-        prop.setUsername("sa");
-        prop.setPassword("");
-        prop.setDriverClassName("org.h2.Driver");
-        configs.put("tenant_dynamic", prop);
-        return configs;
-    }
+@PostMapping("/sync-external")
+public Result<SyncResult> triggerExternalSync() {
+    SyncResult result = dynamicLoaderScenarioService.triggerSync();
+    return Result.success(result);
 }
-```
 
-```java
-package io.github.atengk.boot.sample.datasource.controller;
-
-import io.github.atengk.boot.core.model.Result;
-import io.github.atengk.boot.datasource.loader.SyncResult;
-import io.github.atengk.boot.sample.datasource.service.DatasourceDynamicLoaderScenarioService;
-import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.*;
-
-@RestController
-@RequestMapping("/sample/datasource/ops")
-@RequiredArgsConstructor
-public class DatasourceOpsController {
-
-    private final DatasourceDynamicLoaderScenarioService dynamicLoaderScenarioService;
-
-    /**
-     * 手动触发外部动态数据源智能三向差量同步 (Smart Diff)
-     */
-    @PostMapping("/sync-external")
-    public Result<SyncResult> triggerExternalSync() {
-        SyncResult result = dynamicLoaderScenarioService.triggerSync();
-        return Result.success(result);
-    }
-
-    /**
-     * 校验指定数据源是否受核心白名单保护 (防误删防排空)
-     */
-    @GetMapping("/core-whitelist/check")
-    public Result<Boolean> checkCoreWhitelist(@RequestParam String dsKey) {
-        boolean protectedKey = dynamicLoaderScenarioService.isCoreProtected(dsKey);
-        return Result.success(protectedKey);
-    }
+@GetMapping("/core-whitelist/check")
+public Result<Boolean> checkCoreWhitelist(@RequestParam String dsKey) {
+    boolean protectedKey = dynamicLoaderScenarioService.isCoreProtected(dsKey);
+    return Result.success(protectedKey);
 }
 ```
 
 #### 核心机制与边界防御
-- **Smart Diff 三向比对算法**：`DynamicDataSourceSyncManager` 对比外部数据源集合与内存中已注册数据源：
-  1. 外部存在、内存不存在 $\rightarrow$ **新增挂载**；
-  2. 外部存在、内存存在但配置属性（URL、账号、连接参数）发生哈希变化 $\rightarrow$ **热重载**（安全替换物理连接池）；
-  3. 内存存在、外部已移除 $\rightarrow$ **优雅注销排空**。
-- **核心库白名单铁律**：`core-whitelist` 默认锁死核心库（`master`, `slave` 及主库 `primary`）。无论外部配置中心配置被清空还是格式损坏，核心主从库绝对禁止被删除，坚决守卫生产运行底线。
+
+- **三向差量与部分失败隔离**：`DynamicDataSourceSyncManager.sync()` 对比 `DynamicDataSourceLoader` 最新快照与运行态：外部新增 $\rightarrow$ `addDataSource`；属性变更 $\rightarrow$ `reloadDataSource`；外部移除 $\rightarrow$ `removeDataSource(key, true)`；核心库白名单 $\rightarrow$ `skippedKeys`。单库同步失败记录至 `SyncResult.failedKeys` 并继续其余库同步，不因单库故障阻断全局差量对齐。
 
 ---
 
-## 7. 事务假切源守卫与凭据安全套件 (Transaction Guard & Credential Security Suite)
+## 7. 事务假切源守卫与零明文凭据安全套件 (Transaction Guard & Zero-Secret Suite)
 
-### 7.1 本地事务假切源刚性拦截防卫
+### 7.1 本地单连接事务与租户透明事务假切源阻断
 
 #### 专属 YAML 配置
+
 ```yaml
 ateng:
   boot:
@@ -885,230 +818,245 @@ ateng:
         fail-on-false-switch: true
 ```
 
-#### 实战 Java 代码 (逆向提取自 DatasourceGuardController & DatasourceTransactionGuardScenarioService)
+#### 实战 Java 代码 (逆向提取自 `DatasourceGuardController` & `DatasourceTransactionGuardScenarioService`)
+
 ```java
-package io.github.atengk.boot.sample.datasource.service;
+@PostMapping("/tenant-tx-false-switch")
+public Result<GuardTransactionResponse> tenantTxFalseSwitch(@Valid @RequestBody GuardTransactionRequest request) {
+    String effectiveTenant = resolveEffectiveTenantId();
+    TenantContextHolder.runWithTenant(effectiveTenant, () ->
+            guardScenarioService.tenantTransactionWithIllegalSwitch(
+                    request.getPrimaryOrderNo(), request.getTargetOrderNo()));
+    return Result.success(GuardTransactionResponse.builder()
+            .mode("TENANT_TX_FALSE_SWITCH")
+            .primaryOrderNo(request.getPrimaryOrderNo())
+            .targetOrderNo(request.getTargetOrderNo())
+            .tenantId(effectiveTenant)
+            .message("Unexpected execution without guard interception")
+            .build());
+}
+```
 
-import com.baomidou.dynamic.datasource.annotation.DS;
-import io.github.atengk.boot.sample.datasource.entity.OrderEntity;
-import io.github.atengk.boot.sample.datasource.mapper.OrderMapper;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.annotation.Lazy;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+```java
+/**
+ * 无 @DS 注解的租户透明本地事务内尝试跨库切源至 master（触发 59002 刚性阻断）
+ */
+@Transactional(rollbackFor = Exception.class)
+public void tenantTransactionWithIllegalSwitch(String tenantOrderNo, String masterOrderNo) {
+    String tenantId = TenantContextHolder.getTenantId();
+    orderMapper.insert(buildOrderEntity(tenantOrderNo, tenantId, "多租户 SaaS 订单服务", "120.00", "TENANT_TX"));
 
-import java.math.BigDecimal;
-
-@Slf4j
-@Service
-public class DatasourceTransactionGuardScenarioService {
-
-    private final OrderMapper orderMapper;
-    private final DatasourceTransactionGuardScenarioService self;
-
-    public DatasourceTransactionGuardScenarioService(OrderMapper orderMapper,
-                                                     @Lazy DatasourceTransactionGuardScenarioService self) {
-        this.orderMapper = orderMapper;
-        this.self = self;
-    }
-
-    /**
-     * 在单物理连接事务内违规切源 (将被 DynamicDatasourceGuard 刚性拦截抛出异常)
-     */
-    @Transactional(rollbackFor = Exception.class)
-    @DS("master")
-    public void transactionWithIllegalSwitch(String masterOrderNo, String tenantOrderNo) {
-        OrderEntity masterOrder = new OrderEntity();
-        masterOrder.setOrderNo(masterOrderNo);
-        masterOrder.setProductName("Master Tx Product");
-        masterOrder.setAmount(new BigDecimal("100.00"));
-        masterOrder.setStatus("TX_PENDING");
-        orderMapper.insert(masterOrder);
-
-        // 此时处于 master 事务中，切换到 tenant_1001 将被拦截阻断
-        self.insertInTenantDs(tenantOrderNo);
-    }
-
-    @DS("tenant_1001")
-    public void insertInTenantDs(String orderNo) {
-        OrderEntity tenantOrder = new OrderEntity();
-        tenantOrder.setOrderNo(orderNo);
-        tenantOrder.setProductName("Tenant Tx Product");
-        tenantOrder.setAmount(new BigDecimal("50.00"));
-        tenantOrder.setStatus("TENANT_TX");
-        orderMapper.insert(tenantOrder);
-    }
+    // 当前 Spring 事务已绑定 tenant_<id>，尝试切源至 master 将被 DynamicDatasourceGuard 拦截
+    self.insertInMasterDs(masterOrderNo);
 }
 ```
 
 #### 核心机制与边界防御
-- **致命假切源缺陷**：Spring `DataSourceTransactionManager` 本地事务管理器在事务方法启动时，从当前数据源获取物理连接并与线程绑定。事务内部若再次通过 `@DS` 切换到其他物理库，由于底层事务连接已固化，切源指令会被 Spring 静默忽略，导致后续 SQL 依然在旧数据源执行，产生灾难性的跨库脏写与数据混乱。
-- **刚性阻断防卫**：`DynamicDatasourceGuard` 在 AOP 拦截处检测当前是否存在活动事务；若尝试切源且目标数据源与当前事务物理数据源不一致，立即抛出 `DataSourceSwitchException`（错误码 `59002`），使事务快速失败回滚，避免资损。
+
+- **路由与守卫双保险**：即使外层 `@Transactional` 未显式声明 `@DS`，`AtengDynamicRoutingDataSource` 与 `AtengTransactionExecutionListener` 也会将该事务实际绑定的物理数据源 Key（如 `tenant_1001`）写入 `TransactionSynchronizationManager` 资源表并在事务完成时自动解绑；当内部调用试图切往不同物理库（含 `NESTED` 嵌套共享连接事务）且 `fail-on-false-switch=true` 时，立即抛出 `DataSourceSwitchException`（`59002`）。
 
 ---
 
-### 7.2 多源本地事务与 Seata 集成
+### 7.2 同物理库重入、`REQUIRES_NEW`、`@DSTransactional` 与 Seata 协同
 
 #### 专属 YAML 配置
+
 ```yaml
 ateng:
   boot:
     datasource:
+      guard:
+        enabled: true
+        fail-on-false-switch: true
       seata:
         enabled: false
 ```
 
-#### 实战 Java 代码 (逆向提取自 DatasourceTransactionGuardScenarioService)
-```java
-/**
- * 通过 REQUIRES_NEW 挂起主事务安全切换数据源
- */
-@Transactional(rollbackFor = Exception.class)
-@DS("master")
-public void transactionWithSafeRequiresNew(String masterOrderNo, String tenantOrderNo) {
-    OrderEntity masterOrder = new OrderEntity();
-    masterOrder.setOrderNo(masterOrderNo);
-    masterOrder.setProductName("Master Outer Tx");
-    masterOrder.setAmount(new BigDecimal("200.00"));
-    masterOrder.setStatus("OUTER_TX");
-    orderMapper.insert(masterOrder);
+#### 实战 Java 代码 (逆向提取自 `DatasourceGuardController` & `DatasourceTransactionGuardScenarioService`)
 
-    // 挂起外层事务并在新事务中切换到 tenant_1001
-    self.insertInTenantWithRequiresNew(tenantOrderNo);
+```java
+@PostMapping("/ds-transactional")
+public Result<GuardTransactionResponse> dsTransactional(@Valid @RequestBody GuardTransactionRequest request) {
+    guardScenarioService.transactionWithDsTransactional(request.getPrimaryOrderNo(), request.getTargetOrderNo());
+    return Result.success(GuardTransactionResponse.builder()
+            .mode("DS_TRANSACTIONAL")
+            .primaryOrderNo(request.getPrimaryOrderNo())
+            .targetOrderNo(request.getTargetOrderNo())
+            .tenantId(TenantContextHolder.getTenantId())
+            .message("@DSTransactional local multi-datasource transaction committed safely")
+            .build());
 }
 
-@Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
-@DS("tenant_1001")
-public void insertInTenantWithRequiresNew(String orderNo) {
-    OrderEntity tenantOrder = new OrderEntity();
-    tenantOrder.setOrderNo(orderNo);
-    tenantOrder.setProductName("Tenant Tx Product");
-    tenantOrder.setAmount(new BigDecimal("50.00"));
-    tenantOrder.setStatus("TENANT_TX");
-    orderMapper.insert(tenantOrder);
+@PostMapping("/tenant-tx-reentrant")
+public Result<GuardTransactionResponse> tenantTxReentrant(@Valid @RequestBody GuardTransactionRequest request) {
+    String effectiveTenant = resolveEffectiveTenantId();
+    TenantContextHolder.runWithTenant(effectiveTenant, () ->
+            guardScenarioService.tenantTransactionWithSameTenantReentrant(
+                    request.getPrimaryOrderNo(), request.getTargetOrderNo()));
+    return Result.success(GuardTransactionResponse.builder()
+            .mode("TENANT_TX_REENTRANT")
+            .primaryOrderNo(request.getPrimaryOrderNo())
+            .targetOrderNo(request.getTargetOrderNo())
+            .tenantId(effectiveTenant)
+            .message("Same-tenant physical datasource reentrant transaction completed safely")
+            .build());
+}
+```
+
+```java
+/**
+ * 无 @DS 注解的租户透明本地事务内同租户物理库重入切源（SpEL 动态匹配，安全放行）
+ */
+@Transactional(rollbackFor = Exception.class)
+public void tenantTransactionWithSameTenantReentrant(String primaryOrderNo, String reentrantOrderNo) {
+    String tenantId = TenantContextHolder.getTenantId();
+    orderMapper.insert(buildOrderEntity(primaryOrderNo, tenantId, "多租户 SaaS 订单服务", "180.00", "TENANT_OUTER"));
+
+    String tenantDsKey = StringUtils.hasText(tenantId)
+            ? routingDataSource.resolveTenantMasterKey(tenantId)
+            : "master";
+    self.insertInDynamicTenantDs(tenantDsKey, reentrantOrderNo);
 }
 ```
 
 #### 核心机制与边界防御
-- **`Propagation.REQUIRES_NEW`**：挂起当前主事务的物理连接，为目标数据源开启全新的独立物理事务，保证两个数据源各自拥有独立的事务上下文。
-- **`@DSTransactional` 本地多源事务**：Baomidou 原生多源事务协调器，支持多个物理库按顺序提交与回滚，自动被 `DynamicDatasourceGuard` 识别并放行。
-- **Seata 桥接**：当 `seata.enabled=true` 时，适配 Seata 全局分布式事务代理，自动对齐守卫拦截规则。
+
+- **四大安全放行路径**：① 同物理库重入（含动态租户物理库重入）；② 显式标注 `@Transactional(propagation = Propagation.REQUIRES_NEW)` 挂起外层事务开启新连接；③ `@DSTransactional` 本地多源协调事务；④ `seata.enabled=true` 全局分布式事务代理。
 
 ---
 
-### 7.3 国密 SM4/AES 零明文密码瞬态解密
+### 7.3 国密 SM4 / AES 零明文密码瞬态解密与安全校验
 
 #### 专属 YAML 配置
+
 ```yaml
 ateng:
   boot:
     datasource:
       security:
         password-decryption-enabled: true
-        secret-key: "0123456789abcdeffedcba9876543210"
+        secret-key: "YOUR_16_OR_24_OR_32_BYTE_KEY"
         iv: ""
 ```
 
-#### 实战 Java 代码 (逆向提取自 DatasourcePasswordSecurityScenarioService)
+#### 实战 Java 代码 (逆向提取自 `DatasourceOpsController` & `DatasourcePasswordSecurityScenarioService`)
+
 ```java
-// 密文密码格式声明
-// 1. 国密 SM4 (使用全局密钥): enc:sm4:<CipherHex>
-// 2. 国密 SM4 (自包含密钥):   enc:sm4:<Base64Key>:<CipherHex>
-// 3. 国际 AES (自包含密钥):   enc:aes:<Base64Key>:<Base64Iv>:<CipherHex>
+@PostMapping("/security/verify-cipher")
+public Result<PasswordCipherVerifyResponse> verifyCipherPassword(
+        @Valid @RequestBody PasswordCipherVerifyRequest request) {
+    PasswordCipherVerifyResponse response = passwordSecurityScenarioService.verifyCipherPassword(
+            request.getEncryptedPassword());
+    return Result.success(response);
+}
+```
 
-DataSourceProperty property = new DataSourceProperty();
-property.setPoolName("tenant_secure");
-property.setUrl("jdbc:h2:mem:secure_db;DB_CLOSE_DELAY=-1");
-property.setUsername("sa");
-// 密文存储，禁止明文入库
-property.setPassword("enc:sm4:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+```java
+// 支持密文格式（Base64 编码密文载荷）：
+// 1. SM4 全局密钥:   enc:sm4:<base64Ciphertext>
+// 2. SM4 内嵌 ECB:   enc:sm4:<base64Key>:<base64Ciphertext>
+// 3. SM4 内嵌 CBC:   enc:sm4:<base64Key>:<base64Iv>:<base64Ciphertext>
+// 4. AES 全局密钥:   enc:aes:<base64Ciphertext>
+// 5. AES 内嵌 CBC:   enc:aes:<base64Key>:<base64Iv>:<base64Ciphertext>
+public PasswordCipherVerifyResponse verifyCipherPassword(String encryptedPassword) {
+    boolean supported = dataSourcePasswordDecryptor.supports(encryptedPassword);
+    String algorithm = resolveAlgorithm(encryptedPassword);
+    String masked = DesensitizeUtil.password(encryptedPassword);
 
-dynamicDatasourceTemplate.addDataSource("tenant_secure", property);
+    if (!supported) {
+        return PasswordCipherVerifyResponse.builder()
+                .supported(false).verified(false).algorithm(algorithm)
+                .maskedDigest(masked)
+                .message("非受管密文格式（建议使用 enc:sm4: 或 enc:aes: 密文前缀）")
+                .build();
+    }
+    try {
+        String transientPlaintext = dataSourcePasswordDecryptor.decrypt(encryptedPassword);
+        String verifiedMask = transientPlaintext != null && !transientPlaintext.isEmpty()
+                ? DesensitizeUtil.password(transientPlaintext) : "******";
+        return PasswordCipherVerifyResponse.builder()
+                .supported(true).verified(true).algorithm(algorithm)
+                .maskedDigest(verifiedMask)
+                .message("密文格式受支持且瞬态解密校验成功（零明文透出）")
+                .build();
+    } catch (Exception e) {
+        return PasswordCipherVerifyResponse.builder()
+                .supported(true).verified(false).algorithm(algorithm)
+                .maskedDigest(masked)
+                .message("密文格式受支持，但瞬态解密校验失败")
+                .build();
+    }
+}
 ```
 
 #### 核心机制与边界防御
-- **零明文不变量**：无论是静态 `application.yml` 还是动态从配置中心加载的连接参数，密码均强制密文存储。
-- **瞬态还原与防 Dump 泄密**：解密动作仅在物理连接池建连瞬态触发，建连完成后通过 `AtengDataSourceInitEvent` 立即将 `DataSourceProperty` 内存中的密码覆盖还原为原始密文，防止生产环境中通过 JVM 内存堆转储（Heap Dump）或日志输出泄露明文凭据。
+
+- **瞬态生命周期防泄漏**：`AtengDataSourceInitEvent.beforeCreate` 解密并暂存原始密文于线程局部上下文，`afterCreate` 立即将 `DataSourceProperty.password` 还原为原始密文并 `remove()` ThreadLocal；Web 校验端点仅返回脱敏摘要 `******`，绝不在响应体或异常日志中泄露明文密码。
 
 ---
 
-## 8. 生产扩展接管与核心非功能边界 (Production Boundary & Customization)
+## 8. 生产扩展接管与核心非功能边界 (Customization & Production Boundaries)
 
-### 8.1 Micrometer 运行指标透视 (`DynamicDatasourceMetricsBinder`)
+### 8.1 Micrometer 连接池实时指标透视 (`DynamicDatasourceMetricsBinder`)
 
-框架自动为所有已挂载数据源向 Micrometer 注册实时度量（配合 Actuator `/actuator/metrics` 或 `/actuator/prometheus` 无缝接入 Grafana 看板）：
-- `datasource.connections.active`：活跃在途事务连接数
-- `datasource.connections.idle`：空闲就绪物理连接数
-- `datasource.connections.total`：连接池当前总物理连接数
-- `datasource.connections.threads_awaiting`：正在排队等待获取连接的线程数
+当应用引入 `MeterRegistry` 且 `ateng.boot.datasource.metrics.enabled=true`（默认）时，自动注册并随数据源动态增删同步绑定/解绑以下 Gauge 指标（标签 `name=<dsKey>`）：
 
-通过 Controller 或业务服务直接查询强类型连接池快照：
+- `datasource.connections.active`：当前活跃连接数
+- `datasource.connections.idle`：当前空闲就绪连接数
+- `datasource.connections.total`：当前连接池总连接数
+- `datasource.connections.pending_threads`：当前排队等待连接的线程数
+
+通过 `DatasourceOpsController` 查询强类型快照（逆向提取自 `DatasourceOpsController`）：
+
 ```java
 @GetMapping("/pool-stats")
 public Result<Map<String, DataSourcePoolStats>> getAllPoolStats() {
-    Map<String, DataSourcePoolStats> statsMap = dynamicDatasourceTemplate.getAllPoolStats();
+    Map<String, DataSourcePoolStats> statsMap = metricsScenarioService.getAllPoolStats();
     return Result.success(statsMap);
 }
-```
 
----
+@GetMapping("/pool-stats/{dsKey}")
+public Result<DataSourcePoolStats> getPoolStats(@PathVariable String dsKey) {
+    DataSourcePoolStats stats = metricsScenarioService.getPoolStats(dsKey);
+    return Result.success(stats);
+}
+```
 
 ### 8.2 五维异步上下文跨线程透传 (`DataSourceAsyncContextSnapshotProvider`)
 
-`ateng-boot-datasource` 自动注册 `DataSourceAsyncContextSnapshotProvider` 并深度整合 Core 模块的 `AsyncContext` 基础设施。无论通过 `@Async` 注解调度，还是提交至受管线程池（`ThreadPoolTaskExecutor`），自动完成以下五维快照的完整透传与安全清理：
-$$\langle\text{MDC TraceId}, \text{CurrentUser}, \text{TenantId}, \text{IgnoreTenant}, \text{DataSourceKey}\rangle$$
+`AtengDatasourceAutoConfiguration` 初始化时自动将 `DataSourceAsyncContextSnapshotProvider` 注册到 Core 模块 `AsyncContext`，在受管线程池执行异步任务时透明捕获并还原五维上下文，任务结束后于 `finally` 中确定性还原工作线程现场：
 
-在异步任务执行完毕后，`finally` 块自动重置线程现场，杜绝数据源与租户上下文逃逸。
+$$\langle\text{MDC TraceId}, \text{UserId}, \text{TenantId}, \text{IgnoreTenant}, \text{DataSourceKey}\rangle$$
 
----
-
-### 8.3 自定义写操作感知解析器 (`WriteOccurredResolver` SPI)
-
-框架默认提供基于本地滑动过期的 `DefaultWriteOccurredResolver`：
-1. 优先提取 Core 模块 `UserContextHolder.getUserId()` 绑定当前客户端标识；若未登录则保底回退至当前工作线程 ID；
-2. 在本地 `ConcurrentHashMap` 记录窗口过期时间戳，具备自动防无界内存泄漏能力；
-3. **分布式微服务扩展**：若需在分布式集群跨多个应用实例实现防延迟，声明实现 `WriteOccurredResolver` SPI 接入 Redis 集中缓存即可：
+逆向提取自 `DatasourceAsyncContextScenarioService`：
 
 ```java
-@Component
-public class RedisWriteOccurredResolver implements WriteOccurredResolver {
-    @Override
-    public void markWrite(Duration windowTtl) {
-        // 向 Redis 写入带有 TTL 的写标记
-    }
-
-    @Override
-    public boolean isWriteOccurred(Duration windowTtl) {
-        // 查询 Redis 是否存在有效写标记
-        return false;
-    }
-
-    @Override
-    public void clear() {
-        // 清理当前上下文写标记
-    }
-}
+CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> {
+    String workerThreadName = Thread.currentThread().getName();
+    return AsyncContextPropagateResponse.builder()
+            .callerThreadName(callerThreadName)
+            .workerThreadName(workerThreadName)
+            .traceId(MDC.get("traceId"))
+            .userId(UserContextHolder.getUserId())
+            .tenantId(TenantContextHolder.getTenantId())
+            .ignoreTenant(TenantContextHolder.isIgnoreTenant())
+            .dsKey(DynamicDataSourceContextHolder.peek())
+            .crossThreadVerified(!callerThreadName.equals(workerThreadName))
+            .build();
+}), taskExecutor);
 ```
 
----
+### 8.3 生产 SPI 与 `@ConditionalOnMissingBean` 接管清单
 
-### 8.4 生命周期监听 SPI 定制覆盖 (`DynamicDatasourceLifecycleListener` SPI)
+- **分布式写后即读解析器 (`WriteOccurredResolver`)**：默认装配本地内存滑动窗口 `DefaultWriteOccurredResolver`。多实例集群部署时，声明自定义 `WriteOccurredResolver` Bean（例如基于 Redis `SETEX`）即可直接接管 `ReadAfterWriteManager`。
+- **外部数据源加载器 (`DynamicDataSourceLoader`)**：实现 `loadDataSources()` 并注册为 Spring Bean，即可接入配置中心或数据库元数据表驱动 `DynamicDataSourceSyncManager`。
+- **生命周期监听器 (`DynamicDatasourceLifecycleListener`)**：注入 `DynamicDatasourceLifecycleListener` Bean（由 `SmartInitializingSingleton` 自动探测注册）或调用 `dynamicDatasourceTemplate.addLifecycleListener(...)`，用于在动态挂载/注销后执行租户建表迁移、缓存清理等扩展动作。
+- **自定义密码解密器 (`DataSourcePasswordDecryptor`)**：注入自定义 Bean 即可覆盖默认 `CryptoUtilPasswordDecryptor`（例如对接 KMS / HSM 硬件密钥服务）。
 
-当应用需要在物理数据源动态挂载（初始化完成）或注销后执行自定义动作（如租户库自动化 Liquibase/Flyway DDL 迁移、注册特定中间件），直接注册生命周期监听器：
+### 8.4 核心非功能与并发安全边界
 
-```java
-dynamicDatasourceTemplate.addLifecycleListener(new DynamicDatasourceLifecycleListener() {
-    @Override
-    public void onDataSourceAdded(String dsKey, DataSource ds) {
-        log.info("监听到新数据源已挂载完成，准备执行租户初始化建表: {}", dsKey);
-    }
-
-    @Override
-    public void onDataSourceRemoved(String dsKey) {
-        log.info("监听到数据源已安全注销释放，清理租户临时缓存: {}", dsKey);
-    }
-});
-```
+- **无界防内存泄漏**：`DefaultWriteOccurredResolver` 在缓存条目超过 2000 时自动触发惰性过期清理；`ReadAfterWriteFilter` 与 `TransactionRoutingContext` 严格保证异常时清理 ThreadLocal。
+- **受管并发与防 Carrier Pinning**：动态增删与热重载采用 `ReentrantLock` 互斥保护；预热并发与后台探活/差量同步均使用受管调度器/线程池，禁止创建野线程；所有外部网络探活与连接池排空均受 `Duration` 有界超时控制。
 
 ---
 
@@ -1116,39 +1064,39 @@ dynamicDatasourceTemplate.addLifecycleListener(new DynamicDatasourceLifecycleLis
 
 | 配置属性键名 | 类型 | 默认值 | 详细说明 |
 | :--- | :--- | :--- | :--- |
-| `ateng.boot.datasource.enabled` | `boolean` | `true` | 是否启用 ateng-boot-datasource 增强底座 |
+| `ateng.boot.datasource.enabled` | `boolean` | `true` | 是否启用 `ateng-boot-datasource` 增强底座 |
 | `ateng.boot.datasource.multi-tenancy.enabled` | `boolean` | `true` | 是否启用物理多租户透明切库 |
-| `ateng.boot.datasource.multi-tenancy.mode` | `MultiTenancyMode` | `FALLBACK_MASTER` | 多租户隔离模式（`STRICT`: 严格分库; `FALLBACK_MASTER`: 回退主库; `IGNORE`: 强制主库） |
+| `ateng.boot.datasource.multi-tenancy.mode` | `MultiTenancyMode` | `FALLBACK_MASTER` | 多租户隔离模式（`STRICT` / `FALLBACK_MASTER` / `IGNORE`） |
 | `ateng.boot.datasource.multi-tenancy.default-data-source` | `String` | `"master"` | 默认主数据源标识 |
-| `ateng.boot.datasource.multi-tenancy.data-source-prefix` | `String` | `"tenant_"` | 租户数据源前缀（租户 1001 对应 `tenant_1001`） |
-| `ateng.boot.datasource.read-write-split.enabled` | `boolean` | `true` | 是否启用读写分离自动路由（联动只读事务） |
-| `ateng.boot.datasource.read-write-split.master-data-source` | `String` | `"master"` | 主库数据源标识（写库） |
-| `ateng.boot.datasource.read-write-split.slave-data-source` | `String` | `"slave"` | 从库数据源或从库分组标识（读库） |
+| `ateng.boot.datasource.multi-tenancy.data-source-prefix` | `String` | `"tenant_"` | 租户数据源标识前缀 |
+| `ateng.boot.datasource.read-write-split.enabled` | `boolean` | `true` | 是否启用主从读写分离自动路由 |
+| `ateng.boot.datasource.read-write-split.master-data-source` | `String` | `"master"` | 主库数据源标识 |
+| `ateng.boot.datasource.read-write-split.slave-data-source` | `String` | `"slave"` | 从库数据源或从库分组标识 |
 | `ateng.boot.datasource.read-write-split.read-after-write.enabled` | `boolean` | `true` | 是否启用写后即读防延迟机制 |
-| `ateng.boot.datasource.read-write-split.read-after-write.scope` | `ReadAfterWriteScope` | `REQUEST` | 防延迟生效作用域（`REQUEST`: 单请求内; `WINDOW`: 时间窗口） |
+| `ateng.boot.datasource.read-write-split.read-after-write.scope` | `ReadAfterWriteScope` | `REQUEST` | 防延迟作用域（`REQUEST`: 单请求；`WINDOW`: 时间窗口） |
 | `ateng.boot.datasource.read-write-split.read-after-write.window-ttl` | `Duration` | `3s` | 时间窗口模式下的 TTL 保持时间 |
-| `ateng.boot.datasource.read-write-split.failover.enabled` | `boolean` | `true` | 是否启用从库故障感知与黑名单熔断 |
-| `ateng.boot.datasource.read-write-split.failover.cooldown-window` | `Duration` | `30s` | 故障从库熔断冷却隔离时间 |
-| `ateng.boot.datasource.read-write-split.failover.fallback-to-master` | `boolean` | `true` | 当所有从库均不可用时，是否保底降级回退主库 |
-| `ateng.boot.datasource.read-write-split.failover.active-probe-enabled` | `boolean` | `true` | 是否启用后台受管主动探活自愈机制 |
+| `ateng.boot.datasource.read-write-split.failover.enabled` | `boolean` | `true` | 是否启用从库故障感知与熔断隔离 |
+| `ateng.boot.datasource.read-write-split.failover.cooldown-window` | `Duration` | `30s` | 被动模式下故障从库冷却隔离时间 |
+| `ateng.boot.datasource.read-write-split.failover.fallback-to-master` | `boolean` | `true` | 全从库不可用时是否自动降级回退主库 |
+| `ateng.boot.datasource.read-write-split.failover.active-probe-enabled` | `boolean` | `true` | 是否启用后台受管主动探活自愈 |
 | `ateng.boot.datasource.read-write-split.failover.probe-initial-interval` | `Duration` | `5s` | 主动探活初始检测周期 |
 | `ateng.boot.datasource.read-write-split.failover.probe-max-interval` | `Duration` | `30s` | 主动探活最大退避周期 |
 | `ateng.boot.datasource.read-write-split.failover.probe-timeout` | `Duration` | `1s` | 主动探活单次物理连接校验超时时间 |
-| `ateng.boot.datasource.guard.enabled` | `boolean` | `true` | 是否启用数据源协同守卫 |
-| `ateng.boot.datasource.guard.fail-on-false-switch` | `boolean` | `true` | Spring 本地单连接事务内检测到假切源时是否抛出异常阻断 |
-| `ateng.boot.datasource.dynamic-load.enabled` | `boolean` | `true` | 是否启用动态加载与受管生命周期 |
-| `ateng.boot.datasource.dynamic-load.probe-timeout` | `Duration` | `2s` | 新增数据源时的前置连通性探活超时时间 |
-| `ateng.boot.datasource.dynamic-load.drain-timeout` | `Duration` | `5s` | 注销数据源时等待在途事务连接归还的优雅排空超时时间 |
-| `ateng.boot.datasource.dynamic-load.pre-warm` | `boolean` | `false` | 是否在动态挂载数据源时自动并发预热物理连接池 |
-| `ateng.boot.datasource.dynamic-load.pre-warm-connections` | `int` | `5` | 动态挂载数据源时预热的物理连接数量 |
-| `ateng.boot.datasource.dynamic-load.core-whitelist` | `Set<String>` | `[master, slave]` | 核心受保护不可删除数据源白名单 |
-| `ateng.boot.datasource.dynamic-load.auto-sync.enabled` | `boolean` | `false` | 是否启用外部数据源定时自动差量同步 (Smart Diff) |
-| `ateng.boot.datasource.dynamic-load.auto-sync.interval` | `Duration` | `1m` | 自动差量同步轮询执行间隔 |
-| `ateng.boot.datasource.security.password-decryption-enabled` | `boolean` | `true` | 是否启用密码密文自动解密（SM4/AES） |
-| `ateng.boot.datasource.security.secret-key` | `String` | - | 密文密码解密全局对称密钥 |
-| `ateng.boot.datasource.security.iv` | `String` | - | 密文密码解密全局初始向量 |
+| `ateng.boot.datasource.guard.enabled` | `boolean` | `true` | 是否启用事务假切源协同守卫 |
+| `ateng.boot.datasource.guard.fail-on-false-switch` | `boolean` | `true` | 单物理连接事务内检测到假切源时是否抛出异常刚性阻断 |
+| `ateng.boot.datasource.dynamic-load.enabled` | `boolean` | `true` | 是否启用动态数据源加载与受管生命周期 |
+| `ateng.boot.datasource.dynamic-load.probe-timeout` | `Duration` | `2s` | 新增或热重载数据源时的前置连通性探活超时时间 |
+| `ateng.boot.datasource.dynamic-load.drain-timeout` | `Duration` | `5s` | 注销或热重载旧池等待在途事务归还的优雅排空超时时间 |
+| `ateng.boot.datasource.dynamic-load.pre-warm` | `boolean` | `false` | 动态挂载或热重载时是否自动并发预热连接池 |
+| `ateng.boot.datasource.dynamic-load.pre-warm-connections` | `int` | `5` | 并发预热目标物理连接数量 |
+| `ateng.boot.datasource.dynamic-load.core-whitelist` | `Set<String>` | `[master, slave]` | 受保护不可删除或擅自热重载的核心数据源白名单 |
+| `ateng.boot.datasource.dynamic-load.auto-sync.enabled` | `boolean` | `false` | 是否启用外部数据源定时自动差量同步 |
+| `ateng.boot.datasource.dynamic-load.auto-sync.interval` | `Duration` | `1m` | 自动差量同步轮询间隔 |
+| `ateng.boot.datasource.security.password-decryption-enabled` | `boolean` | `true` | 是否启用 SM4/AES 密码密文瞬态解密 |
+| `ateng.boot.datasource.security.secret-key` | `String` | `null` | 单段密文全局对称解密密钥 |
+| `ateng.boot.datasource.security.iv` | `String` | `null` | CBC 模式全局初始向量 |
 | `ateng.boot.datasource.seata.enabled` | `boolean` | `false` | 是否启用 Seata 分布式事务透明代理包裹 |
-| `ateng.boot.datasource.metrics.enabled` | `boolean` | `true` | 是否启用动态数据源 Micrometer 连接池指标自动绑定透视 |
+| `ateng.boot.datasource.metrics.enabled` | `boolean` | `true` | 是否启用 Micrometer 连接池指标自动绑定透视 |
 
 ---
 
@@ -1156,58 +1104,36 @@ dynamicDatasourceTemplate.addLifecycleListener(new DynamicDatasourceLifecycleLis
 
 ### 10.1 验证源头全真逆向提取
 
-本模块所有文档示例、YAML 配置及 API 行为均 100% 逆向提取自已全绿跑通的场景样例工程：
-- **场景工程路径**：[`ateng-boot-samples/ateng-boot-sample-datasource`](../ateng-boot-samples/ateng-boot-sample-datasource)
-- **多领域 Controller**：
-  - [`DatasourceTenantController.java`](../ateng-boot-samples/ateng-boot-sample-datasource/src/main/java/io/github/atengk/boot/sample/datasource/controller/DatasourceTenantController.java)：`/sample/datasource/tenant/*`（租户分库透明下单与隔离查询）；
-  - [`DatasourceReadWriteController.java`](../ateng-boot-samples/ateng-boot-sample-datasource/src/main/java/io/github/atengk/boot/sample/datasource/controller/DatasourceReadWriteController.java)：`/sample/datasource/read-write/*`（主写从读、写后读主防延迟、从库故障熔断与主动自愈）；
-  - [`DatasourceLifecycleController.java`](../ateng-boot-samples/ateng-boot-sample-datasource/src/main/java/io/github/atengk/boot/sample/datasource/controller/DatasourceLifecycleController.java)：`/sample/datasource/lifecycle/*`（动态挂载建表、业务写入与优雅排空注销）；
-  - [`DatasourceBatchController.java`](../ateng-boot-samples/ateng-boot-sample-datasource/src/main/java/io/github/atengk/boot/sample/datasource/controller/DatasourceBatchController.java)：`/sample/datasource/batch/*`（全库容错巡检、全租户遍历统计与连接池并发预热）；
-  - [`DatasourceOpsController.java`](../ateng-boot-samples/ateng-boot-sample-datasource/src/main/java/io/github/atengk/boot/sample/datasource/controller/DatasourceOpsController.java)：`/sample/datasource/ops/*`（连接池指标快照与外部数据源智能三向差量同步）；
-  - [`DatasourceGuardController.java`](../ateng-boot-samples/ateng-boot-sample-datasource/src/main/java/io/github/atengk/boot/sample/datasource/controller/DatasourceGuardController.java)：`/sample/datasource/guard/*`（事务内假切源刚性拦截与 `REQUIRES_NEW` 安全切源）。
-- **端到端集成测试**：
-  - [`DatasourceControllersMockMvcTest.java`](../ateng-boot-samples/ateng-boot-sample-datasource/src/test/java/io/github/atengk/boot/sample/datasource/DatasourceControllersMockMvcTest.java)：覆盖 6 大 Controller 全部路由的 Web 边界 HTTP 端到端契约与上下文清理测试；
-  - [`DatasourceHardenedScenariosIntegrationTest.java`](../ateng-boot-samples/ateng-boot-sample-datasource/src/test/java/io/github/atengk/boot/sample/datasource/DatasourceHardenedScenariosIntegrationTest.java)：覆盖租户多从库分组路由与写后读主、从库故障熔断与主动自愈、连接池并发预热、Micrometer 监控采样与外部数据源差量同步；
-  - [`MultiTenantRoutingIntegrationTest.java`](../ateng-boot-samples/ateng-boot-sample-datasource/src/test/java/io/github/atengk/boot/sample/datasource/MultiTenantRoutingIntegrationTest.java)：多租户物理分库、`STRICT` 刚性拦截、`IGNORE` 强制主库、`setIgnoreTenant(true)` 免租户穿透及 SPI 行为测试；
-  - [`ReadWriteSplittingIntegrationTest.java`](../ateng-boot-samples/ateng-boot-sample-datasource/src/test/java/io/github/atengk/boot/sample/datasource/ReadWriteSplittingIntegrationTest.java)：读写分离、写后读主防延迟与从库宕机自愈熔断测试；
-  - [`DatasourceBatchAndLifecycleIntegrationTest.java`](../ateng-boot-samples/ateng-boot-sample-datasource/src/test/java/io/github/atengk/boot/sample/datasource/DatasourceBatchAndLifecycleIntegrationTest.java)：批量巡检容错隔离（`FAIL_SAFE` 与 `FAIL_FAST`）、动态挂载排空与零明文 SM4 密文密码真实连接池初始化测试；
-  - [`DatasourceAsyncAndTransactionGuardIntegrationTest.java`](../ateng-boot-samples/ateng-boot-sample-datasource/src/test/java/io/github/atengk/boot/sample/datasource/DatasourceAsyncAndTransactionGuardIntegrationTest.java)：事务守卫刚性拦截、`@DSTransactional` 放行、`NESTED` 拦截、五维异步快照透传与凭据解密测试。
+本模块全部示例、配置键与 API 行为均 100% 逆向提取自已编译并通过测试的样例工程与单元测试：
+- **样例工程**：[ateng-boot-sample-datasource](../ateng-boot-samples/ateng-boot-sample-datasource/README.md)
+- **6 大领域 Controller**：
+  - [DatasourceTenantController.java](../ateng-boot-samples/ateng-boot-sample-datasource/src/main/java/io/github/atengk/boot/sample/datasource/controller/DatasourceTenantController.java)
+  - [DatasourceReadWriteController.java](../ateng-boot-samples/ateng-boot-sample-datasource/src/main/java/io/github/atengk/boot/sample/datasource/controller/DatasourceReadWriteController.java)
+  - [DatasourceLifecycleController.java](../ateng-boot-samples/ateng-boot-sample-datasource/src/main/java/io/github/atengk/boot/sample/datasource/controller/DatasourceLifecycleController.java)
+  - [DatasourceBatchController.java](../ateng-boot-samples/ateng-boot-sample-datasource/src/main/java/io/github/atengk/boot/sample/datasource/controller/DatasourceBatchController.java)
+  - [DatasourceOpsController.java](../ateng-boot-samples/ateng-boot-sample-datasource/src/main/java/io/github/atengk/boot/sample/datasource/controller/DatasourceOpsController.java)
+  - [DatasourceGuardController.java](../ateng-boot-samples/ateng-boot-sample-datasource/src/main/java/io/github/atengk/boot/sample/datasource/controller/DatasourceGuardController.java)
+- **核心端到端与对抗性测试套件**：
+  - [DatasourceControllersMockMvcTest.java](../ateng-boot-samples/ateng-boot-sample-datasource/src/test/java/io/github/atengk/boot/sample/datasource/DatasourceControllersMockMvcTest.java)
+  - [AtengTransactionExecutionListenerTest.java](./src/test/java/io/github/atengk/boot/datasource/guard/AtengTransactionExecutionListenerTest.java)
+  - [DynamicDatasourceGuardTest.java](./src/test/java/io/github/atengk/boot/datasource/guard/DynamicDatasourceGuardTest.java)
+  - [DynamicDatasourceTemplateTest.java](./src/test/java/io/github/atengk/boot/datasource/template/DynamicDatasourceTemplateTest.java)
 
 ### 10.2 自动化回归验证记录
 
-以下控制台输出截取自本地实际执行 `mvn test` 的真实控制台输出记录：
+执行 `mvn test -pl ateng-boot-datasource,ateng-boot-samples/ateng-boot-sample-datasource -am -T 1C -nsu -B` 的实测结果：
 
 ```log
-[INFO] Scanning for projects...
-[INFO] ------------------------------------------------------------------------
-[INFO] Reactor Build Order:
-[INFO]   ateng-boot-core                                                  [jar]
-[INFO]   ateng-boot-datasource                                            [jar]
-[INFO]   ateng-boot-sample-datasource                                     [jar]
-[INFO] 
-[INFO] -------------------------------------------------------
-[INFO]  T E S T S
-[INFO] -------------------------------------------------------
-[INFO] Running io.github.atengk.boot.sample.datasource.DatasourceControllersMockMvcTest
-[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 18.23 s -- in io.github.atengk.boot.sample.datasource.DatasourceControllersMockMvcTest
-[INFO] Running io.github.atengk.boot.sample.datasource.DatasourceHardenedScenariosIntegrationTest
-[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 31.90 s -- in io.github.atengk.boot.sample.datasource.DatasourceHardenedScenariosIntegrationTest
-[INFO] Running io.github.atengk.boot.sample.datasource.DatasourceBatchAndLifecycleIntegrationTest
-[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 8.52 s -- in io.github.atengk.boot.sample.datasource.DatasourceBatchAndLifecycleIntegrationTest
-[INFO] Running io.github.atengk.boot.sample.datasource.DatasourceAsyncAndTransactionGuardIntegrationTest
-[INFO] Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 12.14 s -- in io.github.atengk.boot.sample.datasource.DatasourceAsyncAndTransactionGuardIntegrationTest
-[INFO] Running io.github.atengk.boot.sample.datasource.MultiTenantRoutingIntegrationTest
-[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 9.61 s -- in io.github.atengk.boot.sample.datasource.MultiTenantRoutingIntegrationTest
-[INFO] Running io.github.atengk.boot.sample.datasource.ReadWriteSplittingIntegrationTest
-[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 7.30 s -- in io.github.atengk.boot.sample.datasource.ReadWriteSplittingIntegrationTest
-[INFO] Running io.github.atengk.boot.sample.datasource.SampleDatasourceApplicationTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 3.12 s -- in io.github.atengk.boot.sample.datasource.SampleDatasourceApplicationTest
-[INFO] 
+[INFO] Tests run: 127, Failures: 0, Errors: 0, Skipped: 0 -- ateng-boot-datasource
+
+[INFO] Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 19.79 s -- in io.github.atengk.boot.sample.datasource.DatasourceAsyncAndTransactionGuardIntegrationTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.741 s -- in io.github.atengk.boot.sample.datasource.DatasourceBatchAndLifecycleIntegrationTest
+[INFO] Tests run: 11, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 8.865 s -- in io.github.atengk.boot.sample.datasource.DatasourceControllersMockMvcTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 3.026 s -- in 动态数据源全场景生产加固端到端集成测试
+[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.299 s -- in io.github.atengk.boot.sample.datasource.MultiTenantRoutingIntegrationTest
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.170 s -- in io.github.atengk.boot.sample.datasource.ReadWriteSplittingIntegrationTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.010 s -- in io.github.atengk.boot.sample.datasource.SampleDatasourceApplicationTest
 [INFO] Results:
-[INFO] 
-[INFO] Tests run: 32, Failures: 0, Errors: 0, Skipped: 0
-[INFO] 
-[INFO] ------------------------------------------------------------------------
+[INFO] Tests run: 37, Failures: 0, Errors: 0, Skipped: 0 -- ateng-boot-sample-datasource
 [INFO] BUILD SUCCESS
-[INFO] ------------------------------------------------------------------------
 ```
