@@ -320,29 +320,38 @@ public class DynamicDatasourceTemplate {
     public void addGroupMember(String groupKey, String memberKey) {
         Assert.hasText(groupKey, "groupKey 不能为空");
         Assert.hasText(memberKey, "memberKey 不能为空");
-        DataSource memberDs = getDataSource(memberKey);
-        if (memberDs == null && dataSource instanceof AtengDynamicRoutingDataSource atengDs) {
-            memberDs = atengDs.findDataSource(memberKey);
-        }
-        if (memberDs == null) {
-            throw new DataSourceSwitchException("物理数据源节点不存在: " + memberKey);
-        }
+        lifecycleLock.lock();
+        try {
+            DataSource memberDs = getDataSource(memberKey);
+            if (memberDs == null && dataSource instanceof AtengDynamicRoutingDataSource atengDs) {
+                memberDs = atengDs.findDataSource(memberKey);
+            }
+            if (memberDs == null) {
+                throw new DataSourceSwitchException("物理数据源节点不存在: " + memberKey);
+            }
 
-        GroupDataSource groupDataSource = dataSource.getGroupDataSources().get(groupKey);
-        if (groupDataSource == null) {
-            if (dataSource instanceof AtengDynamicRoutingDataSource atengDs) {
-                groupDataSource = new GroupDataSource(groupKey, atengDs.getHealthAwareStrategy());
-                registerGroupDataSource(groupKey, groupDataSource);
-            } else {
-                throw new IllegalStateException("当前底层数据源不支持自动创建 GroupDataSource，请使用 registerGroupDataSource 显式注入");
+            GroupDataSource groupDataSource = dataSource.getGroupDataSources().get(groupKey);
+            if (groupDataSource == null) {
+                if (dataSource instanceof AtengDynamicRoutingDataSource atengDs) {
+                    groupDataSource = new GroupDataSource(groupKey, atengDs.getHealthAwareStrategy());
+                    registerGroupDataSource(groupKey, groupDataSource);
+                } else {
+                    throw new IllegalStateException("当前底层数据源不支持自动创建 GroupDataSource，请使用 registerGroupDataSource 显式注入");
+                }
+            }
+            groupDataSource.addDatasource(memberKey, memberDs);
+            log.info("ateng-boot-datasource: 分组 [{}] 成功挂载节点 [{}]", groupKey, memberKey);
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
             }
         }
-        groupDataSource.addDatasource(memberKey, memberDs);
-        log.info("ateng-boot-datasource: 分组 [{}] 成功挂载节点 [{}]", groupKey, memberKey);
     }
 
     /**
      * 快捷从指定分组中摘除物理数据源节点（与 {@link #addGroupMember(String, String)} 保持对称）
+     * <p>
+     * 若摘除后该分组已无任何有效成员，同步清理空分组路由以防止 {@link #containsDataSource(String)} 误判。
      *
      * @param groupKey  分组标识
      * @param memberKey 物理成员数据源标识
@@ -351,16 +360,28 @@ public class DynamicDatasourceTemplate {
     public boolean removeGroupMember(String groupKey, String memberKey) {
         Assert.hasText(groupKey, "groupKey 不能为空");
         Assert.hasText(memberKey, "memberKey 不能为空");
-        GroupDataSource groupDataSource = dataSource.getGroupDataSources().get(groupKey);
-        if (groupDataSource == null) {
+        lifecycleLock.lock();
+        try {
+            Map<String, GroupDataSource> groupMap = dataSource.getGroupDataSources();
+            GroupDataSource groupDataSource = groupMap.get(groupKey);
+            if (groupDataSource == null) {
+                return false;
+            }
+            DataSource removed = groupDataSource.removeDatasource(memberKey);
+            if (removed != null) {
+                log.info("ateng-boot-datasource: 分组 [{}] 成功摘除节点 [{}]", groupKey, memberKey);
+                if (groupDataSource.size() == 0) {
+                    groupMap.remove(groupKey, groupDataSource);
+                    log.info("ateng-boot-datasource: 分组 [{}] 已无有效节点，同步清理空分组路由", groupKey);
+                }
+                return true;
+            }
             return false;
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
+            }
         }
-        DataSource removed = groupDataSource.removeDatasource(memberKey);
-        if (removed != null) {
-            log.info("ateng-boot-datasource: 分组 [{}] 成功摘除节点 [{}]", groupKey, memberKey);
-            return true;
-        }
-        return false;
     }
 
     /**

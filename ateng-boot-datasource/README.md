@@ -588,31 +588,33 @@ ateng:
 
 ```java
 @PostMapping("/inspect-all-with-result")
-public Result<BatchExecutionResult<Long>> inspectAllDataSourcesWithResult(
+public Result<BatchResultAggregationResponse> inspectAllDataSourcesWithResult(
         @RequestParam(defaultValue = "FAIL_SAFE") BatchExecutionPolicy policy) {
     return Result.success(batchScenarioService.inspectAllDataSourcesWithResult(policy));
 }
 
 @PostMapping("/inspect-tenants-with-result")
-public Result<BatchExecutionResult<Long>> inspectAllTenantsWithResult(
+public Result<BatchResultAggregationResponse> inspectAllTenantsWithResult(
         @RequestParam(defaultValue = "FAIL_SAFE") BatchExecutionPolicy policy) {
     return Result.success(batchScenarioService.inspectAllTenantsWithResult(policy));
 }
 ```
 
 ```java
-public BatchExecutionResult<Long> inspectAllDataSourcesWithResult(BatchExecutionPolicy policy) {
-    return dynamicDatasourceTemplate.forEachDataSourceWithResult(policy, dsKey -> {
+public BatchResultAggregationResponse inspectAllDataSourcesWithResult(BatchExecutionPolicy policy) {
+    BatchExecutionResult<Long> result = dynamicDatasourceTemplate.forEachDataSourceWithResult(policy, dsKey -> {
         Long count = orderMapper.selectCount(new LambdaQueryWrapper<>());
         return count != null ? count : 0L;
     });
+    return BatchResultAggregationResponse.from(result);
 }
 
-public BatchExecutionResult<Long> inspectAllTenantsWithResult(BatchExecutionPolicy policy) {
-    return dynamicDatasourceTemplate.forEachTenantWithResult(policy, (tenantId, dsKey) -> {
+public BatchResultAggregationResponse inspectAllTenantsWithResult(BatchExecutionPolicy policy) {
+    BatchExecutionResult<Long> result = dynamicDatasourceTemplate.forEachTenantWithResult(policy, (tenantId, dsKey) -> {
         Long count = orderMapper.selectCount(new LambdaQueryWrapper<>());
         return count != null ? count : 0L;
     });
+    return BatchResultAggregationResponse.from(result);
 }
 ```
 

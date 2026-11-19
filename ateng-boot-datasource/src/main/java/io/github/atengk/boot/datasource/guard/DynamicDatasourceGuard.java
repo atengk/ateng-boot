@@ -251,9 +251,14 @@ public class DynamicDatasourceGuard {
     }
 
     /**
-     * 解析当前事务默认数据源 Key（同步对齐 SaaS 多租户、读写分离与写后即读状态）
+     * 解析当前事务默认数据源 Key（优先复用 AtengDynamicRoutingDataSource 统一路由推导）
      */
     private String resolveDefaultDataSourceKey() {
+        DynamicRoutingDataSource routingDs = routingDataSourceSupplier != null ? routingDataSourceSupplier.get() : null;
+        if (routingDs instanceof AtengDynamicRoutingDataSource atengRouting) {
+            return atengRouting.resolveDefaultRoutingKey();
+        }
+
         DatasourceProperties.ReadWriteSplitProperties readWrite = datasourceProperties.getReadWriteSplit();
         DatasourceProperties.MultiTenancyProperties multiTenancy = datasourceProperties.getMultiTenancy();
 
@@ -265,20 +270,20 @@ public class DynamicDatasourceGuard {
                 : "slave";
 
         boolean readWriteEnabled = readWrite != null && readWrite.isEnabled();
-        boolean readOnly = TransactionSynchronizationManager.isCurrentTransactionReadOnly();
+        boolean readOnly = TransactionSynchronizationManager.isCurrentTransactionReadOnly()
+                || TransactionRoutingContext.isStartingReadOnly();
         ReadAfterWriteManager rawManager = readAfterWriteManagerSupplier != null ? readAfterWriteManagerSupplier.get() : null;
         boolean writeOccurred = readWriteEnabled && rawManager != null && rawManager.isWriteOccurred();
-        DynamicRoutingDataSource routingDs = routingDataSourceSupplier != null ? routingDataSourceSupplier.get() : null;
 
-        // 1. 物理多租户透明路由优先级（与 AtengDynamicRoutingDataSource 对齐）
+        // 1. 物理多租户透明路由降级推导（用于未挂载 AtengDynamicRoutingDataSource 的纯单测/自定义路由场景）
         String currentTenantId = TenantContextHolder.getTenantId();
         boolean hasTenant = StringUtils.hasText(currentTenantId) && !TenantContextHolder.isIgnoreTenant();
         if (multiTenancy != null && multiTenancy.isEnabled() && hasTenant && multiTenancy.getMode() != MultiTenancyMode.IGNORE) {
-            String tenantMasterKey = resolveTenantMasterKey(currentTenantId, multiTenancy, routingDs);
+            String tenantMasterKey = resolveFallbackTenantMasterKey(currentTenantId, multiTenancy, routingDs);
             boolean tenantMasterExists = StringUtils.hasText(tenantMasterKey) && (routingDs == null || containsDataSource(routingDs, tenantMasterKey));
             if (tenantMasterExists) {
                 if (readWriteEnabled && readOnly && !writeOccurred) {
-                    String tenantSlaveKey = resolveTenantSlaveKey(currentTenantId, tenantMasterKey, multiTenancy, routingDs);
+                    String tenantSlaveKey = resolveFallbackTenantSlaveKey(currentTenantId, tenantMasterKey, multiTenancy, routingDs);
                     if (StringUtils.hasText(tenantSlaveKey) && containsDataSource(routingDs, tenantSlaveKey)) {
                         return tenantSlaveKey;
                     }
@@ -308,12 +313,9 @@ public class DynamicDatasourceGuard {
         return "master";
     }
 
-    private String resolveTenantMasterKey(String tenantId,
-                                          DatasourceProperties.MultiTenancyProperties multiTenancy,
-                                          DynamicRoutingDataSource routingDs) {
-        if (routingDs instanceof AtengDynamicRoutingDataSource atengRouting) {
-            return atengRouting.resolveTenantMasterKey(tenantId);
-        }
+    private String resolveFallbackTenantMasterKey(String tenantId,
+                                                  DatasourceProperties.MultiTenancyProperties multiTenancy,
+                                                  DynamicRoutingDataSource routingDs) {
         TenantDataSourceProvider provider = resolveProvider();
         String key = provider.resolveMasterDataSourceKey(tenantId);
         if (!StringUtils.hasText(key)) {
@@ -329,13 +331,10 @@ public class DynamicDatasourceGuard {
         return key;
     }
 
-    private String resolveTenantSlaveKey(String tenantId,
-                                         String tenantMasterKey,
-                                         DatasourceProperties.MultiTenancyProperties multiTenancy,
-                                         DynamicRoutingDataSource routingDs) {
-        if (routingDs instanceof AtengDynamicRoutingDataSource atengRouting) {
-            return atengRouting.resolveTenantSlaveKey(tenantId, tenantMasterKey);
-        }
+    private String resolveFallbackTenantSlaveKey(String tenantId,
+                                                 String tenantMasterKey,
+                                                 DatasourceProperties.MultiTenancyProperties multiTenancy,
+                                                 DynamicRoutingDataSource routingDs) {
         TenantDataSourceProvider provider = resolveProvider();
         String slaveKey = provider.resolveSlaveDataSourceKey(tenantId);
         if (StringUtils.hasText(slaveKey) && (routingDs == null || containsDataSource(routingDs, slaveKey))) {
@@ -366,9 +365,6 @@ public class DynamicDatasourceGuard {
     private boolean containsDataSource(DynamicRoutingDataSource routingDs, String dsKey) {
         if (routingDs == null || !StringUtils.hasText(dsKey)) {
             return false;
-        }
-        if (routingDs instanceof AtengDynamicRoutingDataSource atengRouting) {
-            return atengRouting.containsDataSource(dsKey);
         }
         return routingDs.getDataSources().containsKey(dsKey) || routingDs.getGroupDataSources().containsKey(dsKey);
     }

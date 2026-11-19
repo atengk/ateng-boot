@@ -457,6 +457,7 @@ class DatasourceControllersMockMvcTest {
                 .andExpect(jsonPath("$.data.failureCount").value(1))
                 .andExpect(jsonPath("$.data.failedTargets[0]").value("dynamic_fault_batch_db"))
                 .andExpect(jsonPath("$.data.failures[0].target").value("dynamic_fault_batch_db"))
+                .andExpect(jsonPath("$.data.failures[0].cause").doesNotExist())
                 .andExpect(jsonPath("$.data.results.tenant_1001").value(org.hamcrest.Matchers.matchesRegex("[1-9]\\d*")));
     }
 

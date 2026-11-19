@@ -2,9 +2,9 @@ package io.github.atengk.boot.sample.datasource.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.datasource.enums.BatchExecutionPolicy;
-import io.github.atengk.boot.datasource.template.BatchExecutionResult;
 import io.github.atengk.boot.sample.datasource.service.DatasourceBatchScenarioService;
 import io.github.atengk.boot.sample.datasource.vo.BatchInspectionResponse;
+import io.github.atengk.boot.sample.datasource.vo.BatchResultAggregationResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
@@ -55,10 +55,10 @@ public class DatasourceBatchController {
      * 3. 全物理数据源带返回值批处理结果聚合
      *
      * @param policy 批处理容错策略 (默认 FAIL_SAFE)
-     * @return 原生强类型批处理结果聚合对象
+     * @return 强类型批处理结果聚合展示视图对象
      */
     @PostMapping("/inspect-all-with-result")
-    public Result<BatchExecutionResult<Long>> inspectAllDataSourcesWithResult(
+    public Result<BatchResultAggregationResponse> inspectAllDataSourcesWithResult(
             @RequestParam(defaultValue = "FAIL_SAFE") BatchExecutionPolicy policy) {
         log.info("[BatchController] 触发全库带返回值批处理聚合: policy={}", policy);
         return Result.success(batchScenarioService.inspectAllDataSourcesWithResult(policy));
@@ -68,10 +68,10 @@ public class DatasourceBatchController {
      * 4. 全租户带返回值批处理结果聚合
      *
      * @param policy 批处理容错策略 (默认 FAIL_SAFE)
-     * @return 原生强类型批处理结果聚合对象
+     * @return 强类型批处理结果聚合展示视图对象
      */
     @PostMapping("/inspect-tenants-with-result")
-    public Result<BatchExecutionResult<Long>> inspectAllTenantsWithResult(
+    public Result<BatchResultAggregationResponse> inspectAllTenantsWithResult(
             @RequestParam(defaultValue = "FAIL_SAFE") BatchExecutionPolicy policy) {
         log.info("[BatchController] 触发全租户带返回值批处理聚合: policy={}", policy);
         return Result.success(batchScenarioService.inspectAllTenantsWithResult(policy));

@@ -382,6 +382,66 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
     private record ResolvedDataSource(String effectiveKey, DataSource dataSource) {}
 
     /**
+     * 无副作用推导当前上下文的默认目标数据源 Key（对齐多租户透明切源、读写分离与写后即读回退规则）
+     * <p>
+     * 供事务假切源防卫等只读探测场景直接复用，不触发写后即读标记与事务连接绑定。
+     *
+     * @return 当前上下文生效的默认目标数据源 Key
+     */
+    public String resolveDefaultRoutingKey() {
+        DatasourceProperties.ReadWriteSplitProperties readWrite = datasourceProperties.getReadWriteSplit();
+        DatasourceProperties.MultiTenancyProperties multiTenancy = datasourceProperties.getMultiTenancy();
+
+        String masterKey = (readWrite != null && StringUtils.hasText(readWrite.getMasterDataSource()))
+                ? readWrite.getMasterDataSource()
+                : (multiTenancy != null && StringUtils.hasText(multiTenancy.getDefaultDataSource()) ? multiTenancy.getDefaultDataSource() : "master");
+        String slaveKey = (readWrite != null && StringUtils.hasText(readWrite.getSlaveDataSource()))
+                ? readWrite.getSlaveDataSource()
+                : "slave";
+
+        boolean readWriteEnabled = readWrite != null && readWrite.isEnabled();
+        boolean readOnly = isTransactionReadOnly();
+        boolean writeOccurred = readWriteEnabled && readAfterWriteManager != null && readAfterWriteManager.isWriteOccurred();
+
+        // 1. 物理多租户透明路由优先级
+        String currentTenantId = TenantContextHolder.getTenantId();
+        boolean hasTenant = StringUtils.hasText(currentTenantId) && !TenantContextHolder.isIgnoreTenant();
+        if (multiTenancy != null && multiTenancy.isEnabled() && hasTenant && multiTenancy.getMode() != MultiTenancyMode.IGNORE) {
+            String tenantMasterKey = resolveTenantMasterKey(currentTenantId);
+            if (StringUtils.hasText(tenantMasterKey) && containsDataSource(tenantMasterKey)) {
+                if (readWriteEnabled && readOnly && !writeOccurred) {
+                    String tenantSlaveKey = resolveTenantSlaveKey(currentTenantId, tenantMasterKey);
+                    if (StringUtils.hasText(tenantSlaveKey) && containsDataSource(tenantSlaveKey)) {
+                        return tenantSlaveKey;
+                    }
+                }
+                return tenantMasterKey;
+            }
+            if (multiTenancy.getMode() == MultiTenancyMode.STRICT && StringUtils.hasText(tenantMasterKey)) {
+                return tenantMasterKey;
+            }
+        }
+
+        // 2. 全局读写分离路由（含写后即读回退主库）
+        if (readWriteEnabled) {
+            if (readOnly && !writeOccurred && StringUtils.hasText(slaveKey) && containsDataSource(slaveKey)) {
+                return slaveKey;
+            }
+            if (StringUtils.hasText(masterKey)) {
+                return masterKey;
+            }
+        }
+
+        if (StringUtils.hasText(getPrimary())) {
+            return getPrimary();
+        }
+        if (multiTenancy != null && StringUtils.hasText(multiTenancy.getDefaultDataSource())) {
+            return multiTenancy.getDefaultDataSource();
+        }
+        return "master";
+    }
+
+    /**
      * 解析租户的主数据源 Key
      *
      * @param tenantId 租户标识

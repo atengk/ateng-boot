@@ -413,10 +413,16 @@ class DynamicDatasourceTemplateTest {
         assertThat(routingDataSource.getGroupDataSources().get("slave").getDataSourceMap())
                 .containsKeys("slave_1", "slave_2");
 
-        // 成功摘除节点
+        // 成功摘除节点（保留其余节点）
         assertThat(template.removeGroupMember("slave", "slave_1")).isTrue();
         assertThat(routingDataSource.getGroupDataSources().get("slave").getDataSourceMap())
                 .containsOnlyKeys("slave_2");
+        assertThat(template.containsDataSource("slave")).isTrue();
+
+        // 摘除最后一个节点后同步清理空分组，避免 containsDataSource 误判
+        assertThat(template.removeGroupMember("slave", "slave_2")).isTrue();
+        assertThat(routingDataSource.getGroupDataSources()).doesNotContainKey("slave");
+        assertThat(template.containsDataSource("slave")).isFalse();
 
         // 重复移除或移除不存在成员/分组安全返回 false
         assertThat(template.removeGroupMember("slave", "slave_1")).isFalse();
@@ -510,5 +516,21 @@ class DynamicDatasourceTemplateTest {
                 .hasMessage("租户 FAIL_FAST 阻断");
         assertThat(TenantContextHolder.getTenantId()).isNull();
         assertThat(template.getCurrentDataSourceKey()).isNull();
+    }
+
+    @Test
+    @DisplayName("测试 BatchFailure.cause 标注 @JsonIgnore，Jackson 序列化绝不泄露原始异常堆栈")
+    void testBatchFailureCauseJsonIgnored() throws Exception {
+        java.lang.reflect.Field causeField = BatchFailure.class.getDeclaredField("cause");
+        assertThat(causeField.getAnnotation(com.fasterxml.jackson.annotation.JsonIgnore.class)).isNotNull();
+
+        BatchFailure failure = new BatchFailure(
+                "tenant_9999",
+                "查询失败",
+                new IllegalStateException("SECRET_SQL_INTERNAL_DETAIL")
+        );
+        String json = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(failure);
+        assertThat(json).contains("tenant_9999").contains("查询失败");
+        assertThat(json).doesNotContain("cause").doesNotContain("SECRET_SQL_INTERNAL_DETAIL").doesNotContain("stackTrace");
     }
 }

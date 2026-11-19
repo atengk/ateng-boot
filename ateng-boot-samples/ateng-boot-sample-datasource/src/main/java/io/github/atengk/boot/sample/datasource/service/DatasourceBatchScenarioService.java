@@ -7,6 +7,7 @@ import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.sample.datasource.entity.OrderEntity;
 import io.github.atengk.boot.sample.datasource.mapper.OrderMapper;
 import io.github.atengk.boot.sample.datasource.vo.BatchInspectionResponse;
+import io.github.atengk.boot.sample.datasource.vo.BatchResultAggregationResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -80,31 +81,33 @@ public class DatasourceBatchScenarioService {
     }
 
     /**
-     * 全物理数据源带返回值批处理结果聚合（直接返回 BatchExecutionResult）
+     * 全物理数据源带返回值批处理结果聚合
      *
      * @param policy 批处理容错策略
-     * @return 包含各数据源订单总数映射与容错状态的批处理结果
+     * @return 包含各数据源订单总数映射与脱敏容错状态的视图响应对象
      */
-    public BatchExecutionResult<Long> inspectAllDataSourcesWithResult(BatchExecutionPolicy policy) {
+    public BatchResultAggregationResponse inspectAllDataSourcesWithResult(BatchExecutionPolicy policy) {
         log.info("[BatchScenario] 触发全库带返回值批处理结果聚合 (策略: {})", policy);
-        return dynamicDatasourceTemplate.forEachDataSourceWithResult(policy, dsKey -> {
+        BatchExecutionResult<Long> result = dynamicDatasourceTemplate.forEachDataSourceWithResult(policy, dsKey -> {
             Long count = orderMapper.selectCount(new LambdaQueryWrapper<>());
             return count != null ? count : 0L;
         });
+        return BatchResultAggregationResponse.from(result);
     }
 
     /**
-     * 全租户带返回值批处理结果聚合（直接返回 BatchExecutionResult）
+     * 全租户带返回值批处理结果聚合
      *
      * @param policy 批处理容错策略
-     * @return 包含各租户订单总数映射与容错状态的批处理结果
+     * @return 包含各租户订单总数映射与脱敏容错状态的视图响应对象
      */
-    public BatchExecutionResult<Long> inspectAllTenantsWithResult(BatchExecutionPolicy policy) {
+    public BatchResultAggregationResponse inspectAllTenantsWithResult(BatchExecutionPolicy policy) {
         log.info("[BatchScenario] 触发全租户带返回值批处理结果聚合 (策略: {})", policy);
-        return dynamicDatasourceTemplate.forEachTenantWithResult(policy, (tenantId, dsKey) -> {
+        BatchExecutionResult<Long> result = dynamicDatasourceTemplate.forEachTenantWithResult(policy, (tenantId, dsKey) -> {
             Long count = orderMapper.selectCount(new LambdaQueryWrapper<>());
             return count != null ? count : 0L;
         });
+        return BatchResultAggregationResponse.from(result);
     }
 
     /**

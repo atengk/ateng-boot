@@ -1,5 +1,6 @@
 package io.github.atengk.boot.datasource.template;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.ToString;
@@ -30,7 +31,8 @@ public class BatchFailure implements Serializable {
     private final String errorMessage;
 
     /**
-     * 原始异常对象
+     * 原始异常对象（标配 @JsonIgnore，防止经 HTTP 响应序列化时泄露异常堆栈与底层细节）
      */
+    @JsonIgnore
     private final Throwable cause;
 }
