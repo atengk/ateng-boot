@@ -262,4 +262,87 @@ class CiphertextParserTest {
         });
         assertEquals("cleaned_multiline_plain", replaced);
     }
+
+    @Test
+    @DisplayName("测试自定义开括号结尾前缀支持可选 [keyId] 与算法声明解析 (CIPHER(/MY_ENC[/SEC{)")
+    void testCustomBracketPrefixWithKeyIdAndAlgorithm() {
+        CiphertextParser parenParser = new CiphertextParser("CIPHER(", ")");
+        String parenToken = "CIPHER[redis-cluster](SM4-CBC@paren_cipher)";
+        assertTrue(parenParser.hasEncrypted(parenToken));
+        String parenPlain = parenParser.replaceTokens(parenToken, token -> {
+            assertEquals("redis-cluster", token.getKeyId());
+            assertEquals(EncryptAlgorithm.SM4_CBC, token.getAlgorithm());
+            assertEquals("paren_cipher", token.getCiphertext());
+            return "ok-paren";
+        });
+        assertEquals("ok-paren", parenPlain);
+
+        CiphertextParser squareParser = new CiphertextParser("MY_ENC[", "]");
+        String squareToken = "a=MY_ENC[plain_no_key], b=MY_ENC[redis-cluster][SM4-CBC@square_cipher]";
+        assertTrue(squareParser.hasEncrypted(squareToken));
+        List<String> capturedKeys = new ArrayList<>();
+        String squarePlain = squareParser.replaceTokens(squareToken, token -> {
+            capturedKeys.add(token.getKeyId());
+            return token.getKeyId() == null ? "p1" : "p2";
+        });
+        assertEquals(List.of("p1", "p2").size(), capturedKeys.size());
+        assertNull(capturedKeys.get(0));
+        assertEquals("redis-cluster", capturedKeys.get(1));
+        assertEquals("a=p1, b=p2", squarePlain);
+
+        CiphertextParser braceParser = new CiphertextParser("SEC{", "}");
+        String braceToken = "SEC[finance]{RSA@brace_cipher}";
+        assertTrue(braceParser.hasEncrypted(braceToken));
+        String bracePlain = braceParser.replaceTokens(braceToken, token -> {
+            assertEquals("finance", token.getKeyId());
+            assertEquals(EncryptAlgorithm.RSA, token.getAlgorithm());
+            assertEquals("brace_cipher", token.getCiphertext());
+            return "ok-brace";
+        });
+        assertEquals("ok-brace", bracePlain);
+    }
+
+    @Test
+    @DisplayName("测试自定义非括号前缀支持可选 [keyId] 与实例级 formatToken 双向往返")
+    void testCustomNonBracketPrefixAndInstanceFormatToken() {
+        CiphertextParser colonParser = new CiphertextParser("CIPHER:", ";");
+        String formattedDefault = colonParser.formatToken("cipher_val");
+        assertEquals("CIPHER:cipher_val;", formattedDefault);
+        assertTrue(colonParser.hasEncrypted(formattedDefault));
+
+        String formattedRouted = colonParser.formatToken(
+                EncryptAlgorithm.AES_GCM, "redis-cluster", EncryptAlgorithm.SM4_CBC, "routed_cipher");
+        assertEquals("CIPHER:[redis-cluster]SM4-CBC@routed_cipher;", formattedRouted);
+        assertTrue(colonParser.hasEncrypted(formattedRouted));
+
+        String decrypted = colonParser.replaceTokens(formattedRouted, token -> {
+            assertEquals("redis-cluster", token.getKeyId());
+            assertEquals(EncryptAlgorithm.SM4_CBC, token.getAlgorithm());
+            assertEquals("routed_cipher", token.getCiphertext());
+            return "restored";
+        });
+        assertEquals("restored", decrypted);
+    }
+
+    @Test
+    @DisplayName("测试实例级 formatToken 在默认及各类自定义前后缀下的输出规范")
+    void testInstanceFormatToken() {
+        assertEquals("ENC(c1)", parser.formatToken("c1"));
+        assertEquals("ENC[db](c2)", parser.formatToken("db", "c2"));
+        assertEquals("ENC[db](SM4-CBC@c3)",
+                parser.formatToken(EncryptAlgorithm.AES_GCM, "db", EncryptAlgorithm.SM4_CBC, "c3"));
+
+        CiphertextParser cipherParen = new CiphertextParser("CIPHER(", ")");
+        assertEquals("CIPHER(c1)", cipherParen.formatToken("c1"));
+        assertEquals("CIPHER[redis-cluster](c2)", cipherParen.formatToken("redis-cluster", "c2"));
+        assertEquals("CIPHER[redis-cluster](SM4-CBC@c3)",
+                cipherParen.formatToken(EncryptAlgorithm.AES_GCM, "redis-cluster", EncryptAlgorithm.SM4_CBC, "c3"));
+        assertEquals("CIPHER(c4)",
+                cipherParen.formatToken(EncryptAlgorithm.SM4_CBC, "default", EncryptAlgorithm.SM4_CBC, "c4"));
+
+        CiphertextParser myEncBracket = new CiphertextParser("MY_ENC[", "]");
+        assertEquals("MY_ENC[c1]", myEncBracket.formatToken("c1"));
+        assertEquals("MY_ENC[redis-cluster][SM4-CBC@c3]",
+                myEncBracket.formatToken(EncryptAlgorithm.AES_GCM, "redis-cluster", EncryptAlgorithm.SM4_CBC, "c3"));
+    }
 }

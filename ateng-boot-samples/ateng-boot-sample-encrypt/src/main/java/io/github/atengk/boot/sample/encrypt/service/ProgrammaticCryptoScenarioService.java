@@ -40,6 +40,48 @@ public class ProgrammaticCryptoScenarioService {
     }
 
     /**
+     * 使用指定命名密钥与环境默认算法加密明文并包装为密文标记
+     *
+     * @param plaintext 明文字符串
+     * @param keyId     密钥别名标识
+     * @return 格式化后的密文标记，如 ENC[keyId](...)
+     */
+    public String encryptWithKey(String plaintext, String keyId) {
+        return encryptTemplate.encrypt(plaintext, keyId);
+    }
+
+    /**
+     * 使用指定命名密钥与环境默认算法加密明文并返回裸 Base64 密文
+     *
+     * @param plaintext 明文字符串
+     * @param keyId     密钥别名标识
+     * @return 纯 Base64 密文字符串
+     */
+    public String encryptRawWithKey(String plaintext, String keyId) {
+        return encryptTemplate.encryptRaw(plaintext, keyId);
+    }
+
+    /**
+     * 使用指定命名密钥与环境默认算法解密密文字符串（支持密文标记及裸密文）
+     *
+     * @param ciphertext 密文字符串
+     * @param keyId      密钥别名标识
+     * @return 解密还原后的真实明文
+     */
+    public String decryptWithKey(String ciphertext, String keyId) {
+        return encryptTemplate.decrypt(ciphertext, keyId);
+    }
+
+    /**
+     * 获取当前受管编程式加解密门面生效的默认算法编码
+     *
+     * @return 默认算法编码（如 AES-GCM）
+     */
+    public String getDefaultAlgorithmCode() {
+        return encryptTemplate.getDefaultAlgorithm().getCode();
+    }
+
+    /**
      * 指定密钥别名与加密算法加密明文并包装为 ENC[keyId](algo@...)
      *
      * @param plaintext 明文字符串

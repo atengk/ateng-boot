@@ -221,6 +221,87 @@ class SampleEncryptWebControllerTest {
                 .andExpect(jsonPath("$.data").value("safeFallbackDefaultValue"));
     }
 
+    @Test
+    @DisplayName("CryptoController: POST /encrypt-key 与 /decrypt-key 按命名密钥沿用默认算法快捷加解密闭环")
+    void testEncryptAndDecryptWithNamedKeyDefaultAlgorithm() throws Exception {
+        CryptoKeyEncryptRequest encryptRequest = CryptoKeyEncryptRequest.builder()
+                .plaintext("NamedKeyDefaultAlgoSecret2026!")
+                .keyId("redis-cluster")
+                .build();
+
+        String encResponse = mockMvc.perform(post("/sample/encrypt/crypto/encrypt-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(encryptRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.keyId").value("redis-cluster"))
+                .andExpect(jsonPath("$.data.algorithm").value("AES-GCM"))
+                .andExpect(jsonPath("$.data.token").value(startsWith("ENC[redis-cluster](")))
+                .andReturn().getResponse().getContentAsString();
+
+        String token = objectMapper.readTree(encResponse).path("data").path("token").asText();
+
+        CryptoKeyDecryptRequest tokenDecryptRequest = CryptoKeyDecryptRequest.builder()
+                .ciphertext(token)
+                .keyId("redis-cluster")
+                .build();
+
+        mockMvc.perform(post("/sample/encrypt/crypto/decrypt-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(tokenDecryptRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("NamedKeyDefaultAlgoSecret2026!"));
+
+        String rawResponse = mockMvc.perform(post("/sample/encrypt/crypto/encrypt-raw-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(encryptRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(not(startsWith("ENC("))))
+                .andExpect(jsonPath("$.data").value(not(emptyString())))
+                .andReturn().getResponse().getContentAsString();
+
+        String rawCipher = objectMapper.readTree(rawResponse).path("data").asText();
+        CryptoKeyDecryptRequest rawDecryptRequest = CryptoKeyDecryptRequest.builder()
+                .ciphertext(rawCipher)
+                .keyId("redis-cluster")
+                .build();
+
+        mockMvc.perform(post("/sample/encrypt/crypto/decrypt-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(rawDecryptRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("NamedKeyDefaultAlgoSecret2026!"));
+    }
+
+    @Test
+    @DisplayName("CryptoController: POST /encrypt-key 与 /decrypt-key 空参数触发 JSR-303 快速失败")
+    void testEncryptDecryptWithNamedKey_ValidationFailure() throws Exception {
+        CryptoKeyEncryptRequest invalidEncrypt = CryptoKeyEncryptRequest.builder()
+                .plaintext("Plain")
+                .keyId("")
+                .build();
+        mockMvc.perform(post("/sample/encrypt/crypto/encrypt-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidEncrypt)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false));
+
+        CryptoKeyDecryptRequest invalidDecrypt = CryptoKeyDecryptRequest.builder()
+                .ciphertext("")
+                .keyId("redis-cluster")
+                .build();
+        mockMvc.perform(post("/sample/encrypt/crypto/decrypt-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidDecrypt)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false));
+    }
+
     // =========================================================================
     // 3. EncryptMultiKeyController 实测 (多 Key 别名路由与动态轮换)
     // =========================================================================

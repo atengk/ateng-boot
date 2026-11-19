@@ -104,4 +104,49 @@ public class EncryptCryptoController {
         String safeValue = cryptoScenarioService.decryptOrDefault(request.getCiphertext(), request.getDefaultValue());
         return Result.success(safeValue);
     }
+
+    /**
+     * 6. 指定命名密钥并沿用环境默认算法执行加密，返回密文标记与裸密文预览
+     *
+     * @param request 命名密钥加密入参
+     * @return 编程式加密结果展示对象
+     */
+    @PostMapping("/encrypt-key")
+    public Result<CryptoResultVO> encryptWithKey(@Valid @RequestBody CryptoKeyEncryptRequest request) {
+        log.info("[EncryptCryptoController] 指定 KeyId [{}] 沿用默认算法执行加密", request.getKeyId());
+        String token = cryptoScenarioService.encryptWithKey(request.getPlaintext(), request.getKeyId());
+        CryptoResultVO vo = CryptoResultVO.builder()
+                .plaintext(request.getPlaintext())
+                .token(token)
+                .keyId(request.getKeyId())
+                .algorithm(cryptoScenarioService.getDefaultAlgorithmCode())
+                .build();
+        return Result.success(vo);
+    }
+
+    /**
+     * 7. 指定命名密钥并沿用环境默认算法生成纯 Base64 裸密文
+     *
+     * @param request 命名密钥加密入参
+     * @return 纯 Base64 裸密文字符串
+     */
+    @PostMapping("/encrypt-raw-key")
+    public Result<String> encryptRawWithKey(@Valid @RequestBody CryptoKeyEncryptRequest request) {
+        log.info("[EncryptCryptoController] 指定 KeyId [{}] 沿用默认算法生成裸密文", request.getKeyId());
+        String raw = cryptoScenarioService.encryptRawWithKey(request.getPlaintext(), request.getKeyId());
+        return Result.success(raw);
+    }
+
+    /**
+     * 8. 指定命名密钥并沿用环境默认算法解密密文标记或裸密文
+     *
+     * @param request 命名密钥解密入参
+     * @return 解密还原后的真实明文字符串
+     */
+    @PostMapping("/decrypt-key")
+    public Result<String> decryptWithKey(@Valid @RequestBody CryptoKeyDecryptRequest request) {
+        log.info("[EncryptCryptoController] 指定 KeyId [{}] 执行解密", request.getKeyId());
+        String plain = cryptoScenarioService.decryptWithKey(request.getCiphertext(), request.getKeyId());
+        return Result.success(plain);
+    }
 }

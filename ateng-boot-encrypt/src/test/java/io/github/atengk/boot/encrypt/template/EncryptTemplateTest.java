@@ -164,4 +164,121 @@ class EncryptTemplateTest {
         String tokenCustom = template.formatToken("db", EncryptAlgorithm.SM4_CBC, "myCipher");
         assertEquals("ENC[db](SM4-CBC@myCipher)", tokenCustom);
     }
+
+    @Test
+    @DisplayName("验证命名密钥缺省算法对称重载：encrypt(plain, keyId)、encryptRaw(plain, keyId) 与 decrypt(cipher, keyId)")
+    void testNamedKeyDefaultAlgorithmOverloads() {
+        // 1. Token 加解密闭环
+        String token = template.encrypt(PLAINTEXT, "dbKey");
+        assertNotNull(token);
+        assertTrue(token.startsWith("ENC[dbKey]("));
+        assertFalse(token.contains("AES-GCM@"));
+        assertEquals(PLAINTEXT, template.decrypt(token));
+        assertEquals(PLAINTEXT, template.decrypt(token, "dbKey"));
+
+        // 2. 裸密文加解密闭环
+        String rawCipher = template.encryptRaw(PLAINTEXT, "dbKey");
+        assertNotNull(rawCipher);
+        assertFalse(template.isEncrypted(rawCipher));
+        assertEquals(PLAINTEXT, template.decrypt(rawCipher, "dbKey"));
+        assertThrows(ConfigDecryptionException.class, () -> template.decrypt(rawCipher));
+
+        // 3. 无 [keyId] 标签的 ENC(...) 密文显式指定 keyId 解密
+        String tokenWithoutKeyId = template.formatToken(null, EncryptAlgorithm.AES_GCM, rawCipher);
+        assertEquals(PLAINTEXT, template.decrypt(tokenWithoutKeyId, "dbKey"));
+
+        // 4. Null / Blank 安全性
+        assertNull(template.encrypt(null, "dbKey"));
+        assertNull(template.encryptRaw(null, "dbKey"));
+        assertNull(template.decrypt(null, "dbKey"));
+        assertEquals("", template.decrypt("", "dbKey"));
+        assertEquals("   ", template.decrypt("   ", "dbKey"));
+
+        // 5. 缺失密钥（无默认回退密钥）与损坏密文 Fail-Fast 保留因果链
+        EncryptProperties noDefaultProps = new EncryptProperties();
+        noDefaultProps.setKeys(Map.of("dbKey", DB_PASSWORD));
+        EncryptTemplate noDefaultTemplate = new EncryptTemplate(
+                noDefaultProps, MultiKeyRegistry.fromProperties(noDefaultProps), parser);
+        ConfigDecryptionException missingKeyEx = assertThrows(ConfigDecryptionException.class,
+                () -> noDefaultTemplate.encrypt(PLAINTEXT, "missingKey"));
+        assertNotNull(missingKeyEx.getCause());
+        ConfigDecryptionException decryptMissingKeyEx = assertThrows(ConfigDecryptionException.class,
+                () -> noDefaultTemplate.decrypt(rawCipher, "missingKey"));
+        assertNotNull(decryptMissingKeyEx.getCause());
+        ConfigDecryptionException corruptedEx = assertThrows(ConfigDecryptionException.class,
+                () -> template.decrypt("ENC[dbKey](CorruptedCiphertext123456==)", "dbKey"));
+        assertNotNull(corruptedEx.getCause());
+    }
+
+    @Test
+    @DisplayName("验证自定义前后缀下 EncryptTemplate 的 formatToken、encrypt、isEncrypted 与 decrypt 100% 对称往返闭环")
+    void testCustomPrefixAndSuffixRoundTrip() {
+        // 1. 开圆括号结尾自定义前缀：CIPHER( ... )
+        EncryptProperties parenProps = new EncryptProperties();
+        parenProps.setPassword(DEFAULT_PASSWORD);
+        parenProps.setAlgorithm(EncryptAlgorithm.AES_GCM);
+        parenProps.setPrefix("CIPHER(");
+        parenProps.setSuffix(")");
+        parenProps.setKeys(Map.of("dbKey", DB_PASSWORD));
+        EncryptTemplate parenTemplate = new EncryptTemplate(
+                parenProps, MultiKeyRegistry.fromProperties(parenProps),
+                new CiphertextParser(parenProps.getPrefix(), parenProps.getSuffix()));
+
+        String defaultToken = parenTemplate.encrypt(PLAINTEXT);
+        assertTrue(defaultToken.startsWith("CIPHER(") && defaultToken.endsWith(")"));
+        assertTrue(parenTemplate.isEncrypted(defaultToken));
+        assertEquals(PLAINTEXT, parenTemplate.decrypt(defaultToken));
+
+        String keyToken = parenTemplate.encrypt(PLAINTEXT, "dbKey");
+        assertTrue(keyToken.startsWith("CIPHER[dbKey](") && keyToken.endsWith(")"));
+        assertTrue(parenTemplate.isEncrypted(keyToken));
+        assertEquals(PLAINTEXT, parenTemplate.decrypt(keyToken));
+        assertEquals(PLAINTEXT, parenTemplate.decrypt(keyToken, "dbKey"));
+
+        String algoKeyToken = parenTemplate.encrypt(PLAINTEXT, "dbKey", EncryptAlgorithm.SM4_CBC);
+        assertTrue(algoKeyToken.startsWith("CIPHER[dbKey](SM4-CBC@") && algoKeyToken.endsWith(")"));
+        assertTrue(parenTemplate.isEncrypted(algoKeyToken));
+        assertEquals(PLAINTEXT, parenTemplate.decrypt(algoKeyToken));
+        assertEquals("CIPHER[dbKey](SM4-CBC@xyz)", parenTemplate.formatToken("dbKey", EncryptAlgorithm.SM4_CBC, "xyz"));
+
+        // 2. 开方括号结尾自定义前缀：MY_ENC[ ... ]
+        EncryptProperties squareProps = new EncryptProperties();
+        squareProps.setPassword(DEFAULT_PASSWORD);
+        squareProps.setAlgorithm(EncryptAlgorithm.AES_GCM);
+        squareProps.setPrefix("MY_ENC[");
+        squareProps.setSuffix("]");
+        squareProps.setKeys(Map.of("dbKey", DB_PASSWORD));
+        EncryptTemplate squareTemplate = new EncryptTemplate(
+                squareProps, MultiKeyRegistry.fromProperties(squareProps),
+                new CiphertextParser(squareProps.getPrefix(), squareProps.getSuffix()));
+
+        String squareToken = squareTemplate.encrypt(PLAINTEXT, "dbKey", EncryptAlgorithm.SM4_CBC);
+        assertTrue(squareToken.startsWith("MY_ENC[dbKey][SM4-CBC@") && squareToken.endsWith("]"));
+        assertTrue(squareTemplate.isEncrypted(squareToken));
+        assertEquals(PLAINTEXT, squareTemplate.decrypt(squareToken));
+
+        // 3. 非括号结尾自定义前缀：CIPHER: ... ;
+        EncryptProperties colonProps = new EncryptProperties();
+        colonProps.setPassword(DEFAULT_PASSWORD);
+        colonProps.setAlgorithm(EncryptAlgorithm.AES_GCM);
+        colonProps.setPrefix("CIPHER:");
+        colonProps.setSuffix(";");
+        colonProps.setKeys(Map.of("dbKey", DB_PASSWORD));
+        EncryptTemplate colonTemplate = new EncryptTemplate(
+                colonProps, MultiKeyRegistry.fromProperties(colonProps),
+                new CiphertextParser(colonProps.getPrefix(), colonProps.getSuffix()));
+
+        String colonToken = colonTemplate.encrypt(PLAINTEXT, "dbKey", EncryptAlgorithm.SM4_CBC);
+        assertTrue(colonToken.startsWith("CIPHER:[dbKey]SM4-CBC@") && colonToken.endsWith(";"));
+        assertTrue(colonTemplate.isEncrypted(colonToken));
+        assertEquals(PLAINTEXT, colonTemplate.decrypt(colonToken));
+
+        // 4. 构造期显式传入 defaultAlgorithm=SM4_CBC 时，缺省算法重载自动沿用 SM4_CBC
+        EncryptTemplate sm4DefaultTemplate = new EncryptTemplate(
+                properties, EncryptAlgorithm.SM4_CBC, keyRegistry, parser, null);
+        String sm4Token = sm4DefaultTemplate.encrypt(PLAINTEXT, "dbKey");
+        assertTrue(sm4Token.startsWith("ENC[dbKey]("));
+        assertFalse(sm4Token.contains("SM4-CBC@"));
+        assertEquals(PLAINTEXT, sm4DefaultTemplate.decrypt(sm4Token, "dbKey"));
+    }
 }

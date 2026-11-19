@@ -72,18 +72,24 @@ public class EncryptTemplate {
     }
 
     /**
-     * 使用全局默认密钥与默认算法对明文进行加密，并包装为标准 ENC(...) 密文标记
+     * 使用全局默认密钥与默认算法对明文进行加密，并包装为当前解析器配置的密文标记
      *
      * @param plaintext 明文字符串
      * @return 格式化后的密文标记，如 ENC(...)；入参为 null 时返回 null
      */
     public String encrypt(String plaintext) {
-        if (plaintext == null) {
-            return null;
-        }
-        String rawCipher = encryptRaw(plaintext);
-        EncryptAlgorithm algo = properties.getAlgorithm() != null ? properties.getAlgorithm() : EncryptAlgorithm.AES_GCM;
-        return formatToken(null, algo, rawCipher);
+        return encrypt(plaintext, null, null);
+    }
+
+    /**
+     * 使用指定命名密钥与环境默认算法对明文进行加密，并包装为当前解析器配置的密文标记
+     *
+     * @param plaintext 明文字符串
+     * @param keyId     密钥别名（null 或 "default" 对应默认全局密钥）
+     * @return 格式化后的密文标记，如 ENC[keyId](...)；入参为 null 时返回 null
+     */
+    public String encrypt(String plaintext, String keyId) {
+        return encrypt(plaintext, keyId, null);
     }
 
     /**
@@ -93,16 +99,22 @@ public class EncryptTemplate {
      * @return 包含 IV 的 Base64 密文；入参为 null 时返回 null
      */
     public String encryptRaw(String plaintext) {
-        if (plaintext == null) {
-            return null;
-        }
-        String password = resolvePassword(null);
-        EncryptAlgorithm algo = properties.getAlgorithm() != null ? properties.getAlgorithm() : EncryptAlgorithm.AES_GCM;
-        return ConfigEncryptor.encrypt(plaintext, password, algo);
+        return encryptRaw(plaintext, null, null);
     }
 
     /**
-     * 指定密钥别名与加密算法对明文进行加密，并包装为标准 ENC[keyId](algo@...) 密文标记
+     * 使用指定命名密钥与环境默认算法加密，返回裸 Base64 密文字符串（不带 ENC 前后缀）
+     *
+     * @param plaintext 明文字符串
+     * @param keyId     密钥别名（null 或 "default" 对应默认全局密钥）
+     * @return 包含 IV 的 Base64 密文；入参为 null 时返回 null
+     */
+    public String encryptRaw(String plaintext, String keyId) {
+        return encryptRaw(plaintext, keyId, null);
+    }
+
+    /**
+     * 指定密钥别名与加密算法对明文进行加密，并包装为当前解析器配置的密文标记
      *
      * @param plaintext 明文字符串
      * @param keyId     密钥别名（null 或 "default" 对应默认全局密钥）
@@ -113,8 +125,8 @@ public class EncryptTemplate {
         if (plaintext == null) {
             return null;
         }
-        String rawCipher = encryptRaw(plaintext, keyId, algorithm);
-        EncryptAlgorithm effectiveAlgo = algorithm != null ? algorithm : properties.getAlgorithm();
+        EncryptAlgorithm effectiveAlgo = algorithm != null ? algorithm : resolveDefaultAlgorithm();
+        String rawCipher = encryptRaw(plaintext, keyId, effectiveAlgo);
         return formatToken(keyId, effectiveAlgo, rawCipher);
     }
 
@@ -131,12 +143,12 @@ public class EncryptTemplate {
             return null;
         }
         String password = resolvePassword(keyId);
-        EncryptAlgorithm effectiveAlgo = algorithm != null ? algorithm : properties.getAlgorithm();
+        EncryptAlgorithm effectiveAlgo = algorithm != null ? algorithm : resolveDefaultAlgorithm();
         return ConfigEncryptor.encrypt(plaintext, password, effectiveAlgo);
     }
 
     /**
-     * 自动解密密文字符串（支持标准 ENC(...) 标记串、内嵌密文复合串及纯 Base64 裸密文）
+     * 自动解密密文字符串（支持标准 ENC(...) 标记串、自定义前后缀标记串、内嵌密文复合串及纯 Base64 裸密文）
      * 遵循 Fail-Fast 铁律：解密失败时抛出受管业务异常，绝不吞咽异常掩盖凭据错误
      *
      * @param ciphertext 密文字符串
@@ -144,50 +156,20 @@ public class EncryptTemplate {
      * @throws ConfigDecryptionException 解密失败时抛出语义化异常并保留原始异常因果链
      */
     public String decrypt(String ciphertext) {
-        if (ciphertext == null) {
-            return null;
-        }
-        if (ciphertext.trim().isEmpty()) {
-            return ciphertext;
-        }
+        return decrypt(ciphertext, null, null);
+    }
 
-        // 1. 若文本中包含 ENC(...) 密文标记，使用 parser 进行令牌提取并流式替换
-        if (parser.hasEncrypted(ciphertext)) {
-            return parser.replaceTokens(ciphertext, token -> {
-                String keyId = token.getKeyId();
-                String password = resolvePassword(keyId);
-                EncryptAlgorithm algo = token.getAlgorithm() != null ? token.getAlgorithm() : properties.getAlgorithm();
-                if (algo == null) {
-                    algo = EncryptAlgorithm.AES_GCM;
-                }
-                ConfigDecryptor decryptor = findDecryptor(algo);
-                if (decryptor == null) {
-                    throw new UnsupportedOperationException("未找到支持算法的解密器: " + algo);
-                }
-                try {
-                    return decryptor.decrypt(token.getCiphertext(), password);
-                } catch (ConfigDecryptionException e) {
-                    throw e;
-                } catch (Exception e) {
-                    throw new ConfigDecryptionException("token", keyId, algo.getCode(), e);
-                }
-            });
-        }
-
-        // 2. 若文本不带 ENC 标记，作为纯 Base64 裸密文按环境默认算法与主密钥执行解密
-        EncryptAlgorithm defaultAlgo = properties.getAlgorithm() != null ? properties.getAlgorithm() : EncryptAlgorithm.AES_GCM;
-        String password = resolvePassword(null);
-        ConfigDecryptor decryptor = findDecryptor(defaultAlgo);
-        if (decryptor == null) {
-            throw new UnsupportedOperationException("未找到支持默认算法的解密器: " + defaultAlgo);
-        }
-        try {
-            return decryptor.decrypt(ciphertext.trim(), password);
-        } catch (ConfigDecryptionException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new ConfigDecryptionException("raw", null, defaultAlgo.getCode(), e);
-        }
+    /**
+     * 使用指定命名密钥与环境默认算法解密密文字符串（支持密文标记串与纯 Base64 裸密文）
+     * 遵循 Fail-Fast 铁律：解密失败或缺失密钥时抛出保留因果链的 ConfigDecryptionException
+     *
+     * @param ciphertext 密文字符串
+     * @param keyId      密钥别名（当密文标记内未携带 [keyId] 或入参为裸密文时生效）
+     * @return 解密还原后的真实明文字符串；入参为 null 时返回 null
+     * @throws ConfigDecryptionException 解密失败时抛出语义化异常并保留原始异常因果链
+     */
+    public String decrypt(String ciphertext, String keyId) {
+        return decrypt(ciphertext, keyId, null);
     }
 
     /**
@@ -223,11 +205,11 @@ public class EncryptTemplate {
     }
 
     /**
-     * 显式指定密钥别名与算法解密裸密文字符串
+     * 显式指定密钥别名与算法解密密文字符串（支持密文标记串与纯 Base64 裸密文）
      *
      * @param ciphertext 密文字符串
-     * @param keyId     密钥别名
-     * @param algorithm 解密算法
+     * @param keyId      密钥别名
+     * @param algorithm  解密算法
      * @return 还原后的真实明文字符串
      * @throws ConfigDecryptionException 解密失败时抛出异常
      */
@@ -235,25 +217,13 @@ public class EncryptTemplate {
         if (ciphertext == null) {
             return null;
         }
+        if (ciphertext.trim().isEmpty()) {
+            return ciphertext;
+        }
         if (parser.hasEncrypted(ciphertext)) {
-            return decrypt(ciphertext);
+            return decryptTokens(ciphertext, keyId, algorithm);
         }
-        EncryptAlgorithm effectiveAlgo = algorithm != null ? algorithm : properties.getAlgorithm();
-        if (effectiveAlgo == null) {
-            effectiveAlgo = EncryptAlgorithm.AES_GCM;
-        }
-        String password = resolvePassword(keyId);
-        ConfigDecryptor decryptor = findDecryptor(effectiveAlgo);
-        if (decryptor == null) {
-            throw new UnsupportedOperationException("未找到支持算法的解密器: " + effectiveAlgo);
-        }
-        try {
-            return decryptor.decrypt(ciphertext.trim(), password);
-        } catch (ConfigDecryptionException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new ConfigDecryptionException("raw", keyId, effectiveAlgo.getCode(), e);
-        }
+        return decryptPayload("raw", ciphertext.trim(), keyId, algorithm);
     }
 
     /**
@@ -267,16 +237,16 @@ public class EncryptTemplate {
     }
 
     /**
-     * 将密文内容格式化为符合当前环境规范的标准 ENC[...] 标记
+     * 将密文内容格式化为符合当前解析器前后缀与默认算法规范的标准密文标记
      *
      * @param keyId      密钥别名
      * @param algorithm  实际加密算法
      * @param ciphertext 密文内容
-     * @return 格式化后的 Token，如 ENC(CZA...) 或 ENC[db](SM4-CBC@...)
+     * @return 格式化后的 Token，如 ENC(CZA...)、ENC[db](SM4-CBC@...) 或自定义前后缀标记
      */
     public String formatToken(String keyId, EncryptAlgorithm algorithm, String ciphertext) {
-        EncryptAlgorithm baseAlgo = properties.getAlgorithm() != null ? properties.getAlgorithm() : EncryptAlgorithm.AES_GCM;
-        return CiphertextParser.formatToken(keyId, algorithm, baseAlgo, ciphertext);
+        EncryptAlgorithm baseAlgo = resolveDefaultAlgorithm();
+        return parser.formatToken(baseAlgo, keyId, algorithm, ciphertext);
     }
 
     /**
@@ -294,11 +264,46 @@ public class EncryptTemplate {
         return null;
     }
 
+    private String decryptTokens(String ciphertext, String fallbackKeyId, EncryptAlgorithm fallbackAlgorithm) {
+        return parser.replaceTokens(ciphertext, token -> {
+            String effectiveKeyId = (token.getKeyId() != null && !token.getKeyId().trim().isEmpty())
+                    ? token.getKeyId()
+                    : fallbackKeyId;
+            EncryptAlgorithm effectiveAlgo = token.getAlgorithm() != null
+                    ? token.getAlgorithm()
+                    : fallbackAlgorithm;
+            return decryptPayload("token", token.getCiphertext(), effectiveKeyId, effectiveAlgo);
+        });
+    }
+
+    private String decryptPayload(String mode, String payload, String keyId, EncryptAlgorithm algorithm) {
+        String password = resolvePassword(keyId);
+        EncryptAlgorithm effectiveAlgo = algorithm != null ? algorithm : resolveDefaultAlgorithm();
+        ConfigDecryptor decryptor = findDecryptor(effectiveAlgo);
+        if (decryptor == null) {
+            throw new UnsupportedOperationException("未找到支持算法的解密器: " + effectiveAlgo);
+        }
+        try {
+            return decryptor.decrypt(payload, password);
+        } catch (ConfigDecryptionException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ConfigDecryptionException(mode, keyId, effectiveAlgo.getCode(), e);
+        }
+    }
+
+    private EncryptAlgorithm resolveDefaultAlgorithm() {
+        if (defaultAlgorithm != null) {
+            return defaultAlgorithm;
+        }
+        return properties.getAlgorithm() != null ? properties.getAlgorithm() : EncryptAlgorithm.AES_GCM;
+    }
+
     private String resolvePassword(String keyId) {
         String password = keyRegistry.getKeyOrDefault(keyId);
         if (password == null || password.trim().isEmpty()) {
             throw new ConfigDecryptionException("raw", keyId,
-                    properties.getAlgorithm() != null ? properties.getAlgorithm().getCode() : "unknown",
+                    resolveDefaultAlgorithm().getCode(),
                     new IllegalStateException(String.format("缺失解密主密钥 [KeyId: '%s']，请通过环境变量或启动参数注入",
                             keyId != null ? keyId : "default")));
         }

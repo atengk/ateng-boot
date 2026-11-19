@@ -332,4 +332,34 @@ class EncryptPropertySourceWrapperTest {
             executor.shutdown();
         }
     }
+
+    @Test
+    @DisplayName("测试自定义前后缀与 [keyId] 及算法声明在属性源包装器中的透明解密")
+    void testCustomPrefixWithKeyIdInWrapper() {
+        String dbKey = "CustomPrefixDbSecret2026!";
+        String cipherGcm = ConfigEncryptor.encrypt("db-plain-gcm", dbKey, EncryptAlgorithm.AES_GCM);
+        String cipherSm4 = ConfigEncryptor.encrypt("db-plain-sm4", dbKey, EncryptAlgorithm.SM4_CBC);
+
+        CiphertextParser parenParser = new CiphertextParser("CIPHER(", ")");
+        MapPropertySource parenSource = new MapPropertySource("customParenSource", Map.of(
+                "db.pass", parenParser.formatToken(EncryptAlgorithm.AES_GCM, "dbKey", EncryptAlgorithm.AES_GCM, cipherGcm),
+                "db.sm4", parenParser.formatToken(EncryptAlgorithm.AES_GCM, "dbKey", EncryptAlgorithm.SM4_CBC, cipherSm4)
+        ));
+        KeyDetector detector = new KeyDetector(masterPassword, Map.of("dbKey", dbKey));
+        EncryptPropertySourceWrapper parenWrapper = new EncryptPropertySourceWrapper(
+                parenSource, parenParser, detector, null, EncryptAlgorithm.AES_GCM, true);
+
+        assertEquals("db-plain-gcm", parenWrapper.getProperty("db.pass"));
+        assertEquals("db-plain-sm4", parenWrapper.getProperty("db.sm4"));
+        assertTrue(parenWrapper.isEncryptedProperty("db.pass"));
+
+        CiphertextParser bracketParser = new CiphertextParser("MY_ENC[", "]");
+        MapPropertySource bracketSource = new MapPropertySource("customBracketSource", Map.of(
+                "db.bracket", bracketParser.formatToken(EncryptAlgorithm.AES_GCM, "dbKey", EncryptAlgorithm.SM4_CBC, cipherSm4)
+        ));
+        EncryptPropertySourceWrapper bracketWrapper = new EncryptPropertySourceWrapper(
+                bracketSource, bracketParser, detector, null, EncryptAlgorithm.AES_GCM, true);
+        assertEquals("db-plain-sm4", bracketWrapper.getProperty("db.bracket"));
+        assertTrue(bracketWrapper.isEncryptedProperty("db.bracket"));
+    }
 }

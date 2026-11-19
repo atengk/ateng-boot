@@ -20,7 +20,9 @@ public class CiphertextParser {
 
     private static final Pattern CIPHER_TOKEN_PATTERN = Pattern.compile("\\{cipher\\}([^\"',;&\\s]+)");
 
+    @Getter
     private final String prefix;
+    @Getter
     private final String suffix;
     private final boolean compatibleCipherPrefix;
     private final Pattern defaultPattern;
@@ -35,7 +37,16 @@ public class CiphertextParser {
         if ("ENC(".equals(this.prefix) && ")".equals(this.suffix)) {
             this.customPattern = null;
         } else {
-            this.customPattern = Pattern.compile(Pattern.quote(this.prefix) + "(.*?)" + Pattern.quote(this.suffix), Pattern.DOTALL);
+            String[] split = splitBracketPrefix(this.prefix);
+            if (split != null) {
+                this.customPattern = Pattern.compile(
+                        Pattern.quote(split[0]) + "(?:\\[([^\\]]+)\\])?" + Pattern.quote(split[1]) + "(.*?)" + Pattern.quote(this.suffix),
+                        Pattern.DOTALL);
+            } else {
+                this.customPattern = Pattern.compile(
+                        Pattern.quote(this.prefix) + "(?:\\[([^\\]]+)\\])?(.*?)" + Pattern.quote(this.suffix),
+                        Pattern.DOTALL);
+            }
         }
     }
 
@@ -87,7 +98,7 @@ public class CiphertextParser {
         // 1. 处理自定义前后缀模式（若配置了非默认前后缀）
         if (customPattern != null) {
             result = applyRegexReplacement(result, customPattern,
-                    m -> parseContent(m.group(0), null, m.group(1)), decryptorTokenFunction);
+                    m -> parseContent(m.group(0), m.group(1), m.group(2)), decryptorTokenFunction);
         }
 
         // 2. 处理标准 ENC 模式
@@ -166,6 +177,54 @@ public class CiphertextParser {
     }
 
     /**
+     * 按当前解析器配置的前后缀格式化生成密文标记（无 keyId、采用默认算法）
+     *
+     * @param ciphertext 密文内容
+     * @return 格式化后的密文标记
+     */
+    public String formatToken(String ciphertext) {
+        return formatTokenInternal(this.prefix, this.suffix, null, null, EncryptAlgorithm.AES_GCM, ciphertext);
+    }
+
+    /**
+     * 按当前解析器配置的前后缀与指定密钥别名格式化生成密文标记（采用默认算法）
+     *
+     * @param keyId      密钥别名标识（为 null、空串或 "default" 时省略 [keyId] 标签）
+     * @param ciphertext 密文内容
+     * @return 格式化后的密文标记
+     */
+    public String formatToken(String keyId, String ciphertext) {
+        return formatTokenInternal(this.prefix, this.suffix, keyId, null, EncryptAlgorithm.AES_GCM, ciphertext);
+    }
+
+    /**
+     * 按当前解析器配置的前后缀与指定算法格式化生成密文标记
+     *
+     * @param algorithm  实际加密算法
+     * @param ciphertext 密文内容
+     * @return 格式化后的密文标记
+     */
+    public String formatToken(EncryptAlgorithm algorithm, String ciphertext) {
+        return formatTokenInternal(this.prefix, this.suffix, null, algorithm, EncryptAlgorithm.AES_GCM, ciphertext);
+    }
+
+    /**
+     * 按当前解析器配置的前后缀、默认算法基准及密钥别名格式化生成密文标记
+     *
+     * @param defaultAlgorithm 当前环境的默认加密算法
+     * @param keyId            密钥别名标识（为 null、空串或 "default" 时省略 [keyId] 标签）
+     * @param algorithm        实际加密算法
+     * @param ciphertext       密文内容
+     * @return 格式化后的密文标记
+     */
+    public String formatToken(EncryptAlgorithm defaultAlgorithm,
+                              String keyId,
+                              EncryptAlgorithm algorithm,
+                              String ciphertext) {
+        return formatTokenInternal(this.prefix, this.suffix, keyId, algorithm, defaultAlgorithm, ciphertext);
+    }
+
+    /**
      * 格式化生成标准的 ENC[keyId](algo@ciphertext) 或 ENC(ciphertext) 密文标记
      *
      * @param keyId 密钥别名标识（为 null、空串或 "default" 时省略 [keyId] 标签）
@@ -187,20 +246,55 @@ public class CiphertextParser {
      * @return 格式化后的密文标记
      */
     public static String formatToken(String keyId, EncryptAlgorithm algorithm, EncryptAlgorithm defaultAlgorithm, String ciphertext) {
+        return formatTokenInternal("ENC(", ")", keyId, algorithm, defaultAlgorithm, ciphertext);
+    }
+
+    private static String formatTokenInternal(String prefix,
+                                              String suffix,
+                                              String keyId,
+                                              EncryptAlgorithm algorithm,
+                                              EncryptAlgorithm defaultAlgorithm,
+                                              String ciphertext) {
         if (ciphertext == null) {
             throw new IllegalArgumentException("ciphertext 不能为空");
         }
-        StringBuilder sb = new StringBuilder("ENC");
-        if (keyId != null && !keyId.trim().isEmpty() && !"default".equalsIgnoreCase(keyId.trim())) {
-            sb.append("[").append(keyId.trim()).append("]");
+        String effectivePrefix = (prefix != null && !prefix.trim().isEmpty()) ? prefix.trim() : "ENC(";
+        String effectiveSuffix = (suffix != null && !suffix.trim().isEmpty()) ? suffix.trim() : ")";
+        String normalizedKeyId = (keyId != null && !keyId.trim().isEmpty() && !"default".equalsIgnoreCase(keyId.trim()))
+                ? keyId.trim()
+                : null;
+
+        StringBuilder sb = new StringBuilder();
+        String[] split = splitBracketPrefix(effectivePrefix);
+        if (split != null) {
+            sb.append(split[0]);
+            if (normalizedKeyId != null) {
+                sb.append("[").append(normalizedKeyId).append("]");
+            }
+            sb.append(split[1]);
+        } else {
+            sb.append(effectivePrefix);
+            if (normalizedKeyId != null) {
+                sb.append("[").append(normalizedKeyId).append("]");
+            }
         }
-        sb.append("(");
         EncryptAlgorithm baseAlgo = defaultAlgorithm != null ? defaultAlgorithm : EncryptAlgorithm.AES_GCM;
         if (algorithm != null && algorithm != baseAlgo) {
             sb.append(algorithm.getCode()).append("@");
         }
-        sb.append(ciphertext).append(")");
+        sb.append(ciphertext).append(effectiveSuffix);
         return sb.toString();
+    }
+
+    private static String[] splitBracketPrefix(String value) {
+        if (value == null || value.isEmpty()) {
+            return null;
+        }
+        char last = value.charAt(value.length() - 1);
+        if (last == '(' || last == '[' || last == '{') {
+            return new String[]{value.substring(0, value.length() - 1), String.valueOf(last)};
+        }
+        return null;
     }
 
     @Getter

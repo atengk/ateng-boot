@@ -154,7 +154,16 @@ class EncryptSampleApplicationTest {
         assertFalse(rawCipher.startsWith("ENC("));
         assertEquals("RawSecretValue", programmaticCryptoScenarioService.decrypt(rawCipher));
 
-        // 4. 容错逃生舱解密
+        // 4. 按命名密钥沿用环境默认算法快捷加解密
+        String keyToken = programmaticCryptoScenarioService.encryptWithKey("NamedKeySecret", "redis-cluster");
+        assertTrue(keyToken.startsWith("ENC[redis-cluster]("));
+        assertEquals("NamedKeySecret", programmaticCryptoScenarioService.decryptWithKey(keyToken, "redis-cluster"));
+
+        String rawKeyCipher = programmaticCryptoScenarioService.encryptRawWithKey("NamedKeyRawSecret", "redis-cluster");
+        assertFalse(rawKeyCipher.startsWith("ENC("));
+        assertEquals("NamedKeyRawSecret", programmaticCryptoScenarioService.decryptWithKey(rawKeyCipher, "redis-cluster"));
+
+        // 5. 容错逃生舱解密
         assertEquals("plainTextOriginal", programmaticCryptoScenarioService.decryptOrOriginal("plainTextOriginal"));
         assertEquals("fallbackDefaultValue", programmaticCryptoScenarioService.decryptOrDefault("not_a_valid_cipher", "fallbackDefaultValue"));
 
@@ -642,5 +651,63 @@ class EncryptSampleApplicationTest {
         }
         assertTrue(foundConfigSecurityException,
                 "application-test.yml 中声明主密钥时必须触发 ConfigSecurityException 阻断启动");
+    }
+
+    @Test
+    @DisplayName("端到端验证自定义前后缀 (CIPHER(...)) 在属性源包装器与 EncryptTemplate 中的对称往返闭环")
+    void testCustomPrefixAndSuffixEndToEndWithNamedKeyAndWrapper(@TempDir Path tempDir) throws Exception {
+        String masterPass = "CustomPrefixMaster2026!";
+        String redisKey = "CustomPrefixRedis2026!";
+        String dbCipher = ConfigEncryptor.encrypt("custom-db-pass", masterPass, EncryptAlgorithm.AES_GCM);
+        String redisCipher = ConfigEncryptor.encrypt("custom-redis-pass", redisKey, EncryptAlgorithm.SM4_CBC);
+        String thirdCipher = ConfigEncryptor.encrypt("custom-third-pass", masterPass, EncryptAlgorithm.AES_GCM);
+
+        Path customYaml = tempDir.resolve("custom-prefix.yml");
+        Files.writeString(customYaml, String.format("""
+                ateng:
+                  boot:
+                    encrypt:
+                      prefix: "CIPHER("
+                      suffix: ")"
+                      keys:
+                        redis-cluster: %s
+                sample:
+                  secret:
+                    database-password: CIPHER(%s)
+                    redis-password: CIPHER[redis-cluster](SM4-CBC@%s)
+                    third-party-token: CIPHER(%s)
+                """, redisKey, dbCipher, redisCipher, thirdCipher), StandardCharsets.UTF_8);
+
+        ConfigurableApplicationContext ctx = new SpringApplicationBuilder(MinimalEncryptBootApp.class)
+                .run(
+                        "--spring.main.web-application-type=none",
+                        "--ateng.boot.encrypt.password=" + masterPass,
+                        "--spring.config.location=" + customYaml.toUri()
+                );
+        try {
+            SampleSecretProperties props = ctx.getBean(SampleSecretProperties.class);
+            assertEquals("custom-db-pass", props.getDatabasePassword());
+            assertEquals("custom-redis-pass", props.getRedisPassword());
+            assertEquals("custom-third-pass", props.getThirdPartyToken());
+
+            EncryptTemplate template = ctx.getBean(EncryptTemplate.class);
+            String defaultToken = template.encrypt("round-trip-default");
+            assertTrue(defaultToken.startsWith("CIPHER(") && defaultToken.endsWith(")"));
+            assertTrue(template.isEncrypted(defaultToken));
+            assertEquals("round-trip-default", template.decrypt(defaultToken));
+
+            String routedToken = template.encrypt("round-trip-routed", "redis-cluster");
+            assertTrue(routedToken.startsWith("CIPHER[redis-cluster](") && routedToken.endsWith(")"));
+            assertTrue(template.isEncrypted(routedToken));
+            assertEquals("round-trip-routed", template.decrypt(routedToken));
+            assertEquals("round-trip-routed", template.decrypt(routedToken, "redis-cluster"));
+
+            String sm4RoutedToken = template.encrypt("round-trip-sm4", "redis-cluster", EncryptAlgorithm.SM4_CBC);
+            assertTrue(sm4RoutedToken.startsWith("CIPHER[redis-cluster](SM4-CBC@") && sm4RoutedToken.endsWith(")"));
+            assertTrue(template.isEncrypted(sm4RoutedToken));
+            assertEquals("round-trip-sm4", template.decrypt(sm4RoutedToken));
+        } finally {
+            ctx.close();
+        }
     }
 }
