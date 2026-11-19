@@ -37,7 +37,7 @@ _Avoid_: 密钥分离, 双私钥, 权限划分
 _Avoid_: 密钥池, 密钥管理器, KeyMap
 
 **In-Place Rewriter (整文件就地加解密回写器)**:
-在保持 YAML 注释、缩进与多行结构完全不变的前提下，自动扫描并批量就地替换敏感明文为密文并生成 `.bak` 备份的离线运维工具。
+在保持 YAML/Properties 注释、缩进与多行结构完全不变的前提下，自动扫描并批量就地替换敏感明文为密文并生成 `.bak` 备份的离线运维引擎（支持脱机 CLI 批处理与交互式调用）。
 _Avoid_: 批量修改脚本, 文件替换器, YamlFormatter
 
 **Lazy Decryption (按需懒解密)**:
@@ -103,6 +103,10 @@ _Avoid_: 密钥查看器, KeyInfo, KeyLister
 **Two-Phase Wrapper Sync (两阶段包装器运行时同步)**:
 在 `ConfigData` 第一阶段预解析守卫与 `EnvironmentPostProcessor` 第二阶段全量后置处理之间，以及在 Spring 容器期自动装配对自定义 `Config Decryptor`、`Encrypt Retry Policy` 与受管 `Multi-Key Registry` 的按需/就绪反向回填过程中，将最终解析的运行期组件统一对齐至已包装属性源的状态同步机制。
 _Avoid_: 包装器覆盖, 二次代理, WrapperReset, EnvSync
+
+**Block Scalar Round-Trip Rewrite (多行块标量无损往返回写)**:
+在 `In-Place Rewriter` 逆向就地解密 YAML 键值行时，若解密明文包含多行换行符（如 PEM 证书或私钥），自动将密文行重构为 `<indent><key><separator>|<inlineComment>` 后接逐行缩进 `<indent>  ` 的合法 YAML 块标量，并严格沿用源文件 `LF` / `CRLF` 换行规范的双向无损回写机制。
+_Avoid_: 换行硬拼, YamlBlockHack, LineSplitHack, BlockReconstructor
 
 
 

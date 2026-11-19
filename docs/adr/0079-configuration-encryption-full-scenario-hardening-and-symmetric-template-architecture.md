@@ -184,4 +184,29 @@ private EncryptRetryProperties retry = new EncryptRetryProperties();
 1. **Sample 升级对存量集成测试的调整**：移除 Controller 会导致原 `MockMvc` 测试下线，转为以 `@SpringBootTest` 注入 `ScenarioService` 开展更底层的全真断言；
 2. **Properties 行解析性能防线**：正则双模引擎预编译常量 `Pattern`，对每一行执行轻量级前缀短路判断（如非敏感字段与无指令行快速跳过），确保大文件就地回写微秒级完成。
 
+---
+
+## 后续增量演进注记 (2026-11-19 全生命周期加固与工具链对称收口)
+
+经对照工业级代码成熟度九道防线及全生命周期契约深度体检，在保持既有一切公共 API、静态签名与密文编码格式 100% 向后兼容的前提下，对本架构完成以下五项增量加固：
+
+1. **早阶生命周期开关与两阶段包装器运行时同步 (`Two-Phase Wrapper Sync`)**：
+   - 抽取共享解析辅助类 `EncryptEnvironmentSupport`，统一在 `ConfigData` 第一阶段预解析（`EncryptConfigDataLocationResolver` / `EncryptConfigDataEnvironmentUpdateListener`）与第二阶段全量后置（`EncryptEnvironmentPostProcessor`）执行 `ateng.boot.encrypt.enabled=false` 早阶短路退出并按需拆封还原（Unwrap）；
+   - 将 `ateng.boot.encrypt.fail-on-error`（默认 `true`）、`algorithm`、`prefix`、`suffix` 与 `compatible-cipher-prefix` 贯通至全生命周期全部包装入口，并通过 `EncryptPropertySourceWrapper.updateRuntimeConfig(...)` 在两阶段与容器期同步对齐并原子清空缓存。
+2. **容器期 KMS 解密桥接、消除双重重试与统一热更新注册表**：
+   - `AtengEncryptAutoConfiguration` 通过高优先级 `BeanFactoryPostProcessor` 与 `SmartInitializingSingleton` 在容器期将自定义 `ConfigDecryptor` Bean、`EncryptRetryProperties` 及受管 `MultiKeyRegistry` 反向桥接至环境属性源包装器（锁外解析容器 Bean，规避 AB-BA 死锁）；
+   - `ConfigDecryptorFactory.adaptKmsDecryptor` 对已继承 `AbstractKmsConfigDecryptor` 或已为 `RetryingConfigDecryptor` 的实现直接更新或保留重试策略，彻底消除 KMS 双重嵌套重试；
+   - `PlaintextIngressGuard` 复用容器受管 `MultiKeyRegistry` 单例并在配置中心热更新时增量合并新推密钥，防止注册表脑裂导致运行期轮换密钥丢失。
+3. **运行时安全防线与虚拟线程 `ReentrantLock` 合规**：
+   - `SanitizingGuard` 增设前置硬规则，对 `ateng.boot.encrypt.password`、`ATENG_BOOT_ENCRYPT_PASSWORD` 及 `ateng.boot.encrypt.keys.*` 在 `/actuator/env` 无条件物理掩码为 `******`；
+   - 收紧 `KeyDetector.isExternalTrustedSource` 授信边界，移除宽泛 `test` 子串匹配，确保 `application-test.yml` 等本地配置文件受自加密门禁刚性保护；
+   - `EncryptPropertySourceWrapper` 监听器注册与容器同步锁全部使用 `ReentrantLock`（遵循 `finally` 中 `isHeldByCurrentThread()` 校验释放范式），消除 JDK 21+ 虚拟线程 Carrier Pinning。
+4. **`EncryptTemplate` 命名密钥对称重载与自定义前后缀闭环**：
+   - `EncryptTemplate` 新增 `encrypt(plaintext, keyId)`、`encryptRaw(plaintext, keyId)` 与 `decrypt(ciphertext, keyId)` 缺省算法对称重载；
+   - `CiphertextParser` 升级自定义 `prefix` / `suffix` 解析与实例级 `formatToken`（保留静态 `formatToken` 向后兼容），支持以 `(` / `[` / `{` 结尾前缀在开括号前及常规自定义前缀下解析/组装 `[keyId]` 路由标签，实现 `encrypt -> isEncrypted -> decrypt` 100% 往返对称。
+5. **YAML `Block Scalar Round-Trip Rewrite` 与脱机 CLI 整文件回写**：
+   - `InPlaceRewriter` 逆向解密非 `.properties` 的 YAML 键值行时，若明文含换行符则自动重构为 `<indent><key><separator>|<inlineComment>` 后接 `<indent>  ` 缩进的合法 YAML 块标量，并严格保持 `LF` / `CRLF` 原始换行符；
+   - `EncryptCli` 新增批处理选项 `--encrypt-file`（`-ef`）、`--decrypt-file`（`-df`）、`--file`（`-f`）及交互式菜单 `[5]`/`[6]`，打通脱机整文件就地加解密。
+
+
 

@@ -76,3 +76,18 @@ flowchart TD
 
 ### 权衡 (Trade-offs)
 - 样例工程增加了 `ateng-boot-web` 传递依赖，构建与启动耗时增加毫秒级，但换取了完全标准化的 HTTP 交互与端到端自动化测试验证能力，ROI 极高。
+
+---
+
+## 后续增量演进注记 (2026-11-19 Sample 真实状态联动与五维文档 1:1 纠偏)
+
+基于全生命周期加固实践与 Sample-First 逆向核验要求，对样例工程及双端文档完成以下增量收口：
+
+1. **防误伤规则探查端点真实状态联动**：`EncryptGuardController.getIngressRules()` 改为注入真实 `EncryptProperties` 动态输出 `enforceEncrypted`、`sensitivePattern` 与 `ignoredKeys`，消除硬编码演示假数据，并配套隔离启动 MockMvc 端到端集成测试。
+2. **命名密钥快捷加解密与多行 PEM 沙箱往返体验补齐**：
+   - `EncryptCryptoController` 与 `ProgrammaticCryptoScenarioService` 新增 `POST /sample/encrypt/crypto/encrypt-key`、`POST /encrypt-raw-key` 与 `POST /decrypt-key` 体验端点及 JSR-303 强类型入参 DTO；
+   - `SampleEncryptWebControllerTest` 与 `EncryptSampleApplicationTest` 补齐 YAML 多行 PEM `|` 块标量沙箱加密/还原往返断言及 `finally` 临时沙箱清理无残留验证，并新增 `enabled=false`、`fail-on-error=false`、`Two-Phase Wrapper Sync`、容器 KMS 桥接（无双重重试）、热更新密钥单例联动及自定义 `CIPHER(...)` 前后缀端到端启动测试。
+3. **Starter 五维 `README.md` 与 Sample 体验卡 1:1 纠偏**：
+   - 彻底清除 Starter `README.md` 第 0 节全景速查矩阵中的虚构方法名（`MultilineSecretFormatter` 修正为 `cleanCiphertext`、`isPem`、`formatPem`、`formatAsPem`），100% 收录全部对外公开类、方法、SPI、配置项与异常类；
+   - 修正 `ateng.boot.encrypt.retry.delay` 真实默认值 `300ms` 并补齐 `ateng.boot.encrypt.retry.max-attempts`（默认 `3`），同步补充 BOM 与独立显式版本号坐标、三要素就近闭环及 Sample 四段式体验卡新增端点 cURL 命令。
+
