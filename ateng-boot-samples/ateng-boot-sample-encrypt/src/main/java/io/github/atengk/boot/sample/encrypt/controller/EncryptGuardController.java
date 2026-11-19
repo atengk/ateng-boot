@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.encrypt.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.encrypt.config.EncryptProperties;
 import io.github.atengk.boot.encrypt.exception.ConfigSecurityException;
 import io.github.atengk.boot.encrypt.guard.EnforceEncryptionPolicy;
 import io.github.atengk.boot.sample.encrypt.dto.IngressSimulateRequest;
@@ -12,8 +13,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -32,6 +33,7 @@ import java.util.Set;
 public class EncryptGuardController {
 
     private final IngressGuardScenarioService ingressGuardScenarioService;
+    private final EncryptProperties encryptProperties;
 
     /**
      * 1. 模拟配置中心热更新刷新（原子置换并清空解密缓存）
@@ -77,10 +79,18 @@ public class EncryptGuardController {
     @GetMapping("/rules")
     public Result<IngressRuleVO> getIngressRules() {
         log.info("[EncryptGuardController] 探查防误伤过滤链规则与免疫特征");
+        String configuredPattern = encryptProperties.getSensitiveKeyPattern();
+        String effectivePattern = (configuredPattern != null && !configuredPattern.trim().isEmpty())
+                ? configuredPattern.trim()
+                : EnforceEncryptionPolicy.DEFAULT_SENSITIVE_KEY_PATTERN;
+        Set<String> effectiveIgnoredKeys = encryptProperties.getIgnoredKeys() != null
+                ? Collections.unmodifiableSet(new LinkedHashSet<>(encryptProperties.getIgnoredKeys()))
+                : Collections.emptySet();
+
         IngressRuleVO vo = IngressRuleVO.builder()
-                .enforceEncrypted(false) // 样例默认自洽运行，生产配置可开启
-                .sensitivePattern(EnforceEncryptionPolicy.DEFAULT_SENSITIVE_KEY_PATTERN)
-                .ignoredKeys(Set.of("sample.secret.whitelist-key"))
+                .enforceEncrypted(encryptProperties.isEnforceEncrypted())
+                .sensitivePattern(effectivePattern)
+                .ignoredKeys(effectiveIgnoredKeys)
                 .protocolImmunities(List.of("http://", "https://", "classpath:", "file:", "ws://", "wss://"))
                 .logLevelImmunities(List.of("DEBUG", "INFO", "WARN", "ERROR", "TRACE"))
                 .build();

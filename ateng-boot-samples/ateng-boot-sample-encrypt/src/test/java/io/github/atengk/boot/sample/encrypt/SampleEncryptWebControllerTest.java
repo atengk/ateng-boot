@@ -334,13 +334,26 @@ class SampleEncryptWebControllerTest {
     }
 
     @Test
-    @DisplayName("GuardController: GET /rules 探查防误伤过滤链规则与免疫特征")
+    @DisplayName("GuardController: GET /rules 探查防误伤过滤链规则与免疫特征（联动真实 EncryptProperties 配置）")
     void testGetRules() throws Exception {
         mockMvc.perform(get("/sample/encrypt/guard/rules"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.enforceEncrypted").value(false))
+                .andExpect(jsonPath("$.data.sensitivePattern").value(".*password.*|.*secret.*|.*token.*|.*private-key.*"))
+                .andExpect(jsonPath("$.data.ignoredKeys", hasSize(0)))
                 .andExpect(jsonPath("$.data.protocolImmunities", hasItem("http://")))
                 .andExpect(jsonPath("$.data.logLevelImmunities", hasItem("DEBUG")));
+    }
+
+    @Test
+    @DisplayName("Actuator: GET /actuator/env 中主密钥与多密钥映射项均物理掩码为 ******")
+    void testActuatorEnvSanitizesMasterAndNamedKeys() throws Exception {
+        mockMvc.perform(get("/actuator/env"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.propertySources[*].properties['ateng.boot.encrypt.password'].value", everyItem(is("******"))))
+                .andExpect(jsonPath("$.propertySources[*].properties['ateng.boot.encrypt.keys.redis-cluster'].value", everyItem(is("******"))))
+                .andExpect(jsonPath("$.propertySources[*].properties['server.port'].value", hasItem(8080)));
     }
 
     // =========================================================================

@@ -64,4 +64,40 @@ class SanitizingGuardTest {
         SanitizableData result = guard.apply(data);
         assertThat(result.getValue()).isEqualTo(8080);
     }
+
+    @Test
+    @DisplayName("apply: 主密钥与任意命名多密钥键前缀（忽略大小写且不依赖敏感词正则）必须无条件物理掩码为 ******")
+    void testSanitizesMasterPasswordAndAllNamedKeysUnconditionally() {
+        EncryptProperties customProps = new EncryptProperties();
+        // 即便业务侧覆盖敏感词正则为仅匹配自定义关键词，主密钥与多密钥前缀也必须无条件脱敏
+        customProps.setSensitiveKeyPattern(".*only-this-custom-keyword.*");
+        SanitizingGuard strictGuard = new SanitizingGuard(customProps, parser);
+
+        MapPropertySource source = new MapPropertySource("applicationConfig", Map.of());
+
+        SanitizableData masterData = new SanitizableData(source, "ateng.boot.encrypt.password", "MasterPlain@2026");
+        assertThat(strictGuard.apply(masterData).getValue()).isEqualTo(SanitizableData.SANITIZED_VALUE);
+
+        SanitizableData upperMasterData = new SanitizableData(source, "ATENG.BOOT.ENCRYPT.PASSWORD", "MasterUpper@2026");
+        assertThat(strictGuard.apply(upperMasterData).getValue()).isEqualTo(SanitizableData.SANITIZED_VALUE);
+
+        SanitizableData envMasterData = new SanitizableData(source, "ATENG_BOOT_ENCRYPT_PASSWORD", "MasterEnv@2026");
+        assertThat(strictGuard.apply(envMasterData).getValue()).isEqualTo(SanitizableData.SANITIZED_VALUE);
+
+        SanitizableData bracketNamedKeyData = new SanitizableData(source, "ateng.boot.encrypt.keys[alpha]", "BracketShardKey@2026");
+        assertThat(strictGuard.apply(bracketNamedKeyData).getValue()).isEqualTo(SanitizableData.SANITIZED_VALUE);
+
+        SanitizableData namedKeyData = new SanitizableData(source, "ateng.boot.encrypt.keys.redis-cluster", "ClusterShardKey@2026");
+        assertThat(strictGuard.apply(namedKeyData).getValue()).isEqualTo(SanitizableData.SANITIZED_VALUE);
+
+        SanitizableData upperNamedKeyData = new SanitizableData(source, "ATENG.BOOT.ENCRYPT.KEYS.PAYMENT_SHARD", "PaymentShardKey@2026");
+        assertThat(strictGuard.apply(upperNamedKeyData).getValue()).isEqualTo(SanitizableData.SANITIZED_VALUE);
+
+        SanitizableData nonSensitiveNamedKeyData = new SanitizableData(source, "ateng.boot.encrypt.keys.alpha", "AlphaKeyWithoutSensitiveWord");
+        assertThat(strictGuard.apply(nonSensitiveNamedKeyData).getValue()).isEqualTo(SanitizableData.SANITIZED_VALUE);
+
+        // 非密钥元配置（如算法枚举）与普通业务配置应继续原样放行
+        SanitizableData algoData = new SanitizableData(source, "ateng.boot.encrypt.algorithm", "AES-GCM");
+        assertThat(strictGuard.apply(algoData).getValue()).isEqualTo("AES-GCM");
+    }
 }

@@ -34,6 +34,14 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.env.PropertySource;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.context.WebApplicationContext;
+
+import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import javax.crypto.BadPaddingException;
 import java.io.IOException;
@@ -246,7 +254,20 @@ class EncryptSampleApplicationTest {
         SanitizableData sanitizedEnc = sanitizingGuard.apply(encData);
         assertEquals("******", sanitizedEnc.getValue(), "带有密文标记的字段在 Actuator 端点必须物理脱敏为 ******");
 
-        // 3. 非敏感普通属性保真放行
+        // 3. 主密钥与任意命名多密钥键前缀在 Actuator 端点必须无条件物理脱敏为 ******
+        SanitizableData masterPasswordData = new SanitizableData(null, "ateng.boot.encrypt.password", "SampleMasterSecretKey2026!");
+        assertEquals("******", sanitizingGuard.apply(masterPasswordData).getValue(),
+                "主密钥配置在 Actuator 端点必须物理脱敏为 ******");
+
+        SanitizableData redisKeyData = new SanitizableData(null, "ateng.boot.encrypt.keys.redis-cluster", "RedisSpecialClusterKey2026!");
+        assertEquals("******", sanitizingGuard.apply(redisKeyData).getValue(),
+                "命名多密钥配置在 Actuator 端点必须物理脱敏为 ******");
+
+        SanitizableData plainNameKeyData = new SanitizableData(null, "ateng.boot.encrypt.keys.alpha", "PlainShardSecret2026!");
+        assertEquals("******", sanitizingGuard.apply(plainNameKeyData).getValue(),
+                "不含敏感词的命名多密钥在 Actuator 端点也必须无条件物理脱敏为 ******");
+
+        // 4. 非敏感普通属性保真放行
         SanitizableData normalData = new SanitizableData(null, "server.port", 8080);
         SanitizableData passthrough = sanitizingGuard.apply(normalData);
         assertEquals(8080, passthrough.getValue(), "普通非敏感配置在 Actuator 端点必须原样保真输出");
@@ -562,5 +583,64 @@ class EncryptSampleApplicationTest {
         } finally {
             ctx.close();
         }
+    }
+
+    @Test
+    @DisplayName("端到端验证 GET /sample/encrypt/guard/rules 与自定义 EncryptProperties 动态配置 100% 一致")
+    void testGuardRulesEndpointReflectsBoundEncryptProperties() throws Exception {
+        ConfigurableApplicationContext ctx = new SpringApplicationBuilder(EncryptSampleApplication.class)
+                .run(
+                        "--server.port=0",
+                        "--ateng.boot.encrypt.password=SampleMasterSecretKey2026!",
+                        "--ateng.boot.encrypt.enforce-encrypted=true",
+                        "--ateng.boot.encrypt.sensitive-key-pattern=.*custom-credential.*|.*password.*",
+                        "--ateng.boot.encrypt.ignored-keys[0]=sample.secret.custom-whitelist",
+                        "--ateng.boot.encrypt.ignored-keys[1]=sample.secret.secondary-whitelist"
+                );
+        try {
+            MockMvc mockMvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) ctx).build();
+            mockMvc.perform(get("/sample/encrypt/guard/rules"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.enforceEncrypted").value(true))
+                    .andExpect(jsonPath("$.data.sensitivePattern").value(".*custom-credential.*|.*password.*"))
+                    .andExpect(jsonPath("$.data.ignoredKeys",
+                            containsInAnyOrder("sample.secret.custom-whitelist", "sample.secret.secondary-whitelist")));
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @Test
+    @DisplayName("端到端验证 application-test.yml 本地文件声明主密钥无法绕过自加密防卫阻断")
+    void testApplicationTestYamlCannotBypassSelfEncryptionGuard(@TempDir Path tempDir) throws Exception {
+        Path testProfileYaml = tempDir.resolve("application-test.yml");
+        Files.writeString(testProfileYaml, """
+                ateng:
+                  boot:
+                    encrypt:
+                      password: LeakedPasswordInApplicationTestYaml
+                """, StandardCharsets.UTF_8);
+
+        Throwable thrown = assertThrows(Throwable.class, () -> {
+            ConfigurableApplicationContext ctx = new SpringApplicationBuilder(MinimalEncryptBootApp.class)
+                    .run(
+                            "--spring.main.web-application-type=none",
+                            "--spring.profiles.active=test",
+                            "--spring.config.additional-location=" + testProfileYaml.toUri()
+                    );
+            ctx.close();
+        });
+        Throwable cursor = thrown;
+        boolean foundConfigSecurityException = false;
+        while (cursor != null) {
+            if (cursor instanceof ConfigSecurityException) {
+                foundConfigSecurityException = true;
+                break;
+            }
+            cursor = cursor.getCause();
+        }
+        assertTrue(foundConfigSecurityException,
+                "application-test.yml 中声明主密钥时必须触发 ConfigSecurityException 阻断启动");
     }
 }
