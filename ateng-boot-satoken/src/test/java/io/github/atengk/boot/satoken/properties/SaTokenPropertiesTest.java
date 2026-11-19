@@ -280,4 +280,19 @@ class SaTokenPropertiesTest {
                     assertThat(rule.getLoginType()).isEqualTo("admin");
                 });
     }
+
+    @Test
+    @DisplayName("验证 permission-cache.tenant-scoped 默认关闭及显式开启绑定")
+    void testPermissionCacheTenantScopedBinding() {
+        SaTokenProperties defaults = new SaTokenProperties();
+        assertThat(defaults.getPermissionCache().isTenantScoped()).isFalse();
+
+        contextRunner
+                .withPropertyValues("ateng.boot.satoken.permission-cache.tenant-scoped=true")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    SaTokenProperties props = context.getBean(SaTokenProperties.class);
+                    assertThat(props.getPermissionCache().isTenantScoped()).isTrue();
+                });
+    }
 }

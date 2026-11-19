@@ -38,4 +38,23 @@ public class DefenseLoginRequestDTO implements Serializable {
      * 客户端 IP（可选，留空时自动嗅探上下文）
      */
     private String clientIp;
+
+    /**
+     * 所属租户标识（可选，非空时启用多租户作用域隔离防爆破）
+     */
+    private String tenantId;
+
+    /**
+     * 账号体系标识（可选，如 admin、member；为空时默认 login）
+     */
+    private String loginType;
+
+    /**
+     * 兼容保留原有三参构造器
+     */
+    public DefenseLoginRequestDTO(String account, String password, String clientIp) {
+        this.account = account;
+        this.password = password;
+        this.clientIp = clientIp;
+    }
 }

@@ -47,13 +47,22 @@ public class LoginDefenseController {
     public Result<String> login(@Valid @RequestBody DefenseLoginRequestDTO request) {
         String account = request.getAccount();
         String clientIp = lockService.resolveClientIp(request.getClientIp());
+        String tenantId = request.getTenantId();
+        String loginType = request.getLoginType();
+        boolean scoped = hasText(tenantId) || hasText(loginType);
 
         // 1. 前置快速失败防卫：若账号已被锁定或客户端 IP 已被熔断直接 Fail-Fast 403 阻断
-        lockService.checkLocked(account, clientIp);
+        if (scoped) {
+            lockService.checkLocked(tenantId, loginType, account, clientIp);
+        } else {
+            lockService.checkLocked(account, clientIp);
+        }
 
         // 2. 模拟密码校验逻辑 (约定正确密码为 123456)
         if (!"123456".equals(request.getPassword())) {
-            int remain = lockService.recordFailure(account, clientIp);
+            int remain = scoped
+                    ? lockService.recordFailure(tenantId, loginType, account, clientIp)
+                    : lockService.recordFailure(account, clientIp);
             if (remain == 0) {
                 throw new BusinessException(CommonResultCode.FORBIDDEN, "登录失败次数过多，已被锁定，请稍后再试");
             }
@@ -61,32 +70,48 @@ public class LoginDefenseController {
         }
 
         // 3. 登录成功，对称清空账号与客户端 IP 失败计数器
-        lockService.clearAllFailure(account, clientIp);
+        if (scoped) {
+            lockService.clearAllFailure(tenantId, loginType, account, clientIp);
+        } else {
+            lockService.clearAllFailure(account, clientIp);
+        }
 
         // 4. 签发登录凭据
         LoginUser loginUser = LoginUser.builder()
                 .userId("user-" + account)
                 .userAccount(account)
                 .userName(account)
+                .tenantId(hasText(tenantId) ? tenantId.trim() : null)
                 .build();
+        if (hasText(loginType)) {
+            String targetType = loginType.trim();
+            LoginHelper.login(targetType, loginUser);
+            return Result.success(LoginHelper.getTokenValue(targetType));
+        }
         LoginHelper.login(loginUser);
         return Result.success(LoginHelper.getTokenValue());
     }
 
     /**
-     * 查询指定账号的防爆破锁定状态与剩余失败机会
+     * 查询指定账号的防爆破锁定状态与剩余失败机会（支持可选租户与账号体系隔离维度）
      *
-     * @param account 目标账号
+     * @param account   目标账号
+     * @param tenantId  租户标识（可选）
+     * @param loginType 账号体系标识（可选）
      * @return 账号防爆破状态
      */
     @GetMapping("/account-status")
-    public Result<AccountDefenseStatusVO> getAccountStatus(@RequestParam("account") String account) {
+    public Result<AccountDefenseStatusVO> getAccountStatus(
+            @RequestParam("account") String account,
+            @RequestParam(value = "tenantId", required = false) String tenantId,
+            @RequestParam(value = "loginType", required = false) String loginType) {
+        boolean scoped = hasText(tenantId) || hasText(loginType);
         AccountDefenseStatusVO vo = AccountDefenseStatusVO.builder()
                 .account(account)
-                .locked(lockService.isLocked(account))
-                .failureCount(lockService.getFailureCount(account))
-                .remainRetryCount(lockService.getRemainRetryCount(account))
-                .lockTime(lockService.getLockTime(account))
+                .locked(scoped ? lockService.isLocked(tenantId, loginType, account) : lockService.isLocked(account))
+                .failureCount(scoped ? lockService.getFailureCount(tenantId, loginType, account) : lockService.getFailureCount(account))
+                .remainRetryCount(scoped ? lockService.getRemainRetryCount(tenantId, loginType, account) : lockService.getRemainRetryCount(account))
+                .lockTime(scoped ? lockService.getLockTime(tenantId, loginType, account) : lockService.getLockTime(account))
                 .build();
         return Result.success(vo);
     }
@@ -112,15 +137,29 @@ public class LoginDefenseController {
     }
 
     /**
-     * 管理员人工紧急解锁账号
+     * 管理员人工紧急解锁账号（支持可选租户与账号体系隔离维度）
      *
-     * @param account 目标账号
+     * @param account   目标账号
+     * @param tenantId  租户标识（可选）
+     * @param loginType 账号体系标识（可选）
      * @return 业务结果
      */
     @PostMapping("/unlock-account")
-    public Result<String> unlockAccount(@RequestParam("account") String account) {
-        lockService.clearFailure(account);
-        LoginHelper.untieDisable(account);
+    public Result<String> unlockAccount(
+            @RequestParam("account") String account,
+            @RequestParam(value = "tenantId", required = false) String tenantId,
+            @RequestParam(value = "loginType", required = false) String loginType) {
+        if (hasText(tenantId) || hasText(loginType)) {
+            lockService.clearFailure(tenantId, loginType, account);
+            String scopedSubject = lockService.buildScopedAccountKey(tenantId, loginType, account);
+            String targetType = hasText(loginType) ? loginType.trim() : "login";
+            if (scopedSubject != null) {
+                LoginHelper.untieDisableByLoginType(targetType, scopedSubject);
+            }
+        } else {
+            lockService.clearFailure(account);
+            LoginHelper.untieDisable(account);
+        }
         return Result.success("账号已解锁: " + account);
     }
 
@@ -135,5 +174,9 @@ public class LoginDefenseController {
         lockService.unlockIp(clientIp);
         lockService.clearIpFailure(clientIp);
         return Result.success("客户端 IP 已解除熔断: " + clientIp);
+    }
+
+    private static boolean hasText(String text) {
+        return text != null && !text.isBlank();
     }
 }

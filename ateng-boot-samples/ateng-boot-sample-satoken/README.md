@@ -25,7 +25,7 @@
 
 ## 3. 核心 Controller 接口与一键体验
 
-应用启动后，可通过以下 cURL 命令体验全部 9 个领域 Controller 暴露的核心接口（所有接口统一返回 `Result<T>` 显式契约）：
+应用启动后，可通过以下 cURL 命令体验全部 10 个领域 Controller 暴露的核心接口（所有接口统一返回 `Result<T>` 显式契约）：
 
 | 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
 | :--- | :--- | :--- | :--- |
@@ -60,13 +60,13 @@
 | **编程式租户归属断言** | `AccessControlController` | `POST /sample/satoken/access/assert-tenant` | `curl -X POST "http://localhost:8080/sample/satoken/access/assert-tenant?tenantId=tenant_sz" -H "satoken: <TOKEN>"` |
 | **两级缓存解析角色列表** | `PermissionCacheController` | `GET /sample/satoken/permission-cache/roles` | `curl "http://localhost:8080/sample/satoken/permission-cache/roles?loginType=admin" -H "satoken-admin: <ADMIN_TOKEN>"` |
 | **两级缓存解析权限码集** | `PermissionCacheController` | `GET /sample/satoken/permission-cache/permissions` | `curl "http://localhost:8080/sample/satoken/permission-cache/permissions?loginType=member" -H "satoken-member: <MEMBER_TOKEN>"` |
-| **精准刷新单角色缓存** | `PermissionCacheController` | `POST /sample/satoken/permission-cache/refresh-role` | `curl -X POST "http://localhost:8080/sample/satoken/permission-cache/refresh-role?roleCode=audit_manager" -H "satoken: <TOKEN>"` |
+| **精准刷新单角色缓存(含租户)** | `PermissionCacheController` | `POST /sample/satoken/permission-cache/refresh-role` | `curl -X POST "http://localhost:8080/sample/satoken/permission-cache/refresh-role?roleCode=audit_manager&loginType=admin&tenantId=tenant-a" -H "satoken-admin: <ADMIN_TOKEN>"` |
 | **精准刷新单用户缓存** | `PermissionCacheController` | `POST /sample/satoken/permission-cache/refresh-user` | `curl -X POST "http://localhost:8080/sample/satoken/permission-cache/refresh-user?userId=10086" -H "satoken: <TOKEN>"` |
 | **全量清空两级权限缓存** | `PermissionCacheController` | `POST /sample/satoken/permission-cache/clear-all` | `curl -X POST "http://localhost:8080/sample/satoken/permission-cache/clear-all" -H "satoken: <TOKEN>"` |
-| **防爆破安全登录** | `LoginDefenseController` | `POST /sample/satoken/defense/login` | `curl -X POST "http://localhost:8080/sample/satoken/defense/login" -H "Content-Type: application/json" -d '{"account":"audit_operator_01","password":"InvalidPass#2026","clientIp":"198.51.100.66"}'` |
-| **查询账号防爆破锁定状态** | `LoginDefenseController` | `GET /sample/satoken/defense/account-status` | `curl "http://localhost:8080/sample/satoken/defense/account-status?account=audit_operator_01"` |
+| **防爆破安全登录(含多租户)** | `LoginDefenseController` | `POST /sample/satoken/defense/login` | `curl -X POST "http://localhost:8080/sample/satoken/defense/login" -H "Content-Type: application/json" -d '{"account":"audit_operator_01","password":"InvalidPass#2026","clientIp":"198.51.100.66","tenantId":"tenant-a","loginType":"admin"}'` |
+| **查询账号防爆破锁定状态** | `LoginDefenseController` | `GET /sample/satoken/defense/account-status` | `curl "http://localhost:8080/sample/satoken/defense/account-status?account=audit_operator_01&tenantId=tenant-a&loginType=admin"` |
 | **查询IP防爆破熔断状态** | `LoginDefenseController` | `GET /sample/satoken/defense/ip-status` | `curl "http://localhost:8080/sample/satoken/defense/ip-status?clientIp=198.51.100.66"` |
-| **管理员紧急解锁账号** | `LoginDefenseController` | `POST /sample/satoken/defense/unlock-account` | `curl -X POST "http://localhost:8080/sample/satoken/defense/unlock-account?account=audit_operator_01"` |
+| **管理员紧急解锁账号** | `LoginDefenseController` | `POST /sample/satoken/defense/unlock-account` | `curl -X POST "http://localhost:8080/sample/satoken/defense/unlock-account?account=audit_operator_01&tenantId=tenant-a&loginType=admin"` |
 | **管理员解除客户端IP熔断** | `LoginDefenseController` | `POST /sample/satoken/defense/unlock-ip` | `curl -X POST "http://localhost:8080/sample/satoken/defense/unlock-ip?clientIp=198.51.100.66"` |
 | **在线会话总数统计(含loginType)** | `OnlineSessionController` | `GET /sample/satoken/online/count` | `curl "http://localhost:8080/sample/satoken/online/count?loginType=login"` |
 | **增量游标分页检索在线会话** | `OnlineSessionController` | `GET /sample/satoken/online/page` | `curl "http://localhost:8080/sample/satoken/online/page?loginType=login&keyword=admin&page=1&size=10"` |
@@ -111,6 +111,11 @@
 | **广播指定用户权限缓存全网失效** | `InternalClusterController` | `POST /sample/satoken/cluster/refresh-user` | `curl -X POST "http://localhost:8080/sample/satoken/cluster/refresh-user?userId=10086"` |
 | **广播指定角色权限缓存全网失效** | `InternalClusterController` | `POST /sample/satoken/cluster/refresh-role` | `curl -X POST "http://localhost:8080/sample/satoken/cluster/refresh-role?roleCode=admin"` |
 | **广播全网清空两级权限缓存** | `InternalClusterController` | `POST /sample/satoken/cluster/clear-all` | `curl -X POST "http://localhost:8080/sample/satoken/cluster/clear-all"` |
+| **匿名租户配置读取(X-Tenant-Id)** | `TenantAndRouteGovernanceController` | `GET /sample/satoken/governance/public/tenant-config` | `curl "http://localhost:8080/sample/satoken/governance/public/tenant-config" -H "X-Tenant-Id: tenant-init"` |
+| **管理端自动路由导出(超管桥接/切租户)** | `TenantAndRouteGovernanceController` | `GET /sample/satoken/governance/admin/users/export` | `curl "http://localhost:8080/sample/satoken/governance/admin/users/export" -H "satoken-admin: <ADMIN_TOKEN>" -H "X-Tenant-Id: tenant-b"` |
+| **会员端自动路由导出(无type注解)** | `TenantAndRouteGovernanceController` | `GET /sample/satoken/governance/member/orders/export` | `curl "http://localhost:8080/sample/satoken/governance/member/orders/export" -H "satoken-member: <MEMBER_TOKEN>"` |
+| **会员端路由对齐防越权(@CheckDataOwner)** | `TenantAndRouteGovernanceController` | `GET /sample/satoken/governance/member/profile/{userId}` | `curl "http://localhost:8080/sample/satoken/governance/member/profile/mem-1" -H "satoken-member: <MEMBER_TOKEN>"` |
+| **跨端共享枚举(path-permissions)** | `TenantAndRouteGovernanceController` | `GET /sample/satoken/governance/shared/enums/{dictCode}` | `curl "http://localhost:8080/sample/satoken/governance/shared/enums/OrderStatus" -H "satoken-member: <MEMBER_TOKEN>"` |
 
 ---
 

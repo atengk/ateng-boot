@@ -237,6 +237,12 @@ public class SaTokenProperties {
         private Duration emptyTtl = Duration.ofSeconds(60);
 
         /**
+         * 是否开启租户维度的角色权限缓存键隔离（默认 false）。
+         * 开启后仅针对 {@code role-perms} 缓存键叠加当前租户标识隔离，防止跨租户同名角色权限缓存串味。
+         */
+        private boolean tenantScoped = false;
+
+        /**
          * 获取权限与角色缓存有效期秒数（向后兼容）
          *
          * @return 缓存秒数

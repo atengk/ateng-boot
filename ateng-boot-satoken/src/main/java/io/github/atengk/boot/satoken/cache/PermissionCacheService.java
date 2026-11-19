@@ -171,6 +171,25 @@ public class PermissionCacheService {
     }
 
     /**
+     * 构建租户隔离维度的角色权限列表缓存键
+     * <p>
+     * 当 {@code tenantId} 为空或空白时安全回退至既有键格式；
+     * 非空时生成 {@code ateng:satoken:cache:[<loginType>:]role-perms:<tenantId>:<roleCode>}。
+     * </p>
+     *
+     * @param roleCode  角色编码
+     * @param loginType 账号体系类型标识
+     * @param tenantId  租户唯一标识
+     * @return 权限缓存键
+     */
+    public static String buildRolePermsKey(String roleCode, String loginType, String tenantId) {
+        if (tenantId == null || tenantId.isBlank()) {
+            return buildRolePermsKey(roleCode, loginType);
+        }
+        return buildScopedKey(loginType, "role-perms:", tenantId.trim() + ":" + roleCode);
+    }
+
+    /**
      * 构建用户直属权限列表缓存键（默认体系保持兼容格式，非默认体系按 loginType 物理隔离）
      *
      * @param userId    用户唯一标识
@@ -235,24 +254,43 @@ public class PermissionCacheService {
      * @param roleCode  角色编码
      */
     public void refreshRolePermissions(String loginType, String roleCode) {
+        refreshRolePermissions(loginType, null, roleCode);
+    }
+
+    /**
+     * 即时刷新指定账号体系与租户下角色关联的权限码集合缓存
+     *
+     * @param loginType 账号体系类型标识
+     * @param tenantId  租户唯一标识（为空时按非租户隔离键刷新）
+     * @param roleCode  角色编码
+     */
+    public void refreshRolePermissions(String loginType, String tenantId, String roleCode) {
         if (roleCode == null || roleCode.isBlank()) {
             return;
         }
-        String rolePermsKey = buildRolePermsKey(roleCode, loginType);
+        String normalizedTenant = (tenantId != null && !tenantId.isBlank()) ? tenantId.trim() : null;
+        String rolePermsKey = buildRolePermsKey(roleCode, loginType, normalizedTenant);
         delete(rolePermsKey);
-        clearLocalRoleCache(loginType, roleCode);
-        log.info("即时清理角色权限缓存完成: loginType={}, roleCode={}",
-                isDefaultLoginType(loginType) ? StpUtil.TYPE : loginType.trim(), roleCode);
+        clearLocalRoleCache(loginType, normalizedTenant, roleCode);
+        log.info("即时清理角色权限缓存完成: loginType={}, tenantId={}, roleCode={}",
+                isDefaultLoginType(loginType) ? StpUtil.TYPE : loginType.trim(), normalizedTenant, roleCode);
 
-        broadcastRefresh(SaTokenClusterEventType.ROLE_PERMISSION_REFRESH, loginType, roleCode);
+        broadcastRefresh(SaTokenClusterEventType.ROLE_PERMISSION_REFRESH, loginType, normalizedTenant, roleCode);
     }
 
     private void broadcastRefresh(SaTokenClusterEventType eventType, String loginType, String targetKey) {
+        broadcastRefresh(eventType, loginType, null, targetKey);
+    }
+
+    private void broadcastRefresh(SaTokenClusterEventType eventType, String loginType, String tenantId, String targetKey) {
         if (broadcasterProvider == null) {
             return;
         }
         broadcasterProvider.ifAvailable(b -> {
-            if (isDefaultLoginType(loginType)) {
+            if (tenantId != null && !tenantId.isBlank()) {
+                String normalizedLoginType = isDefaultLoginType(loginType) ? null : loginType.trim();
+                b.broadcast(eventType, normalizedLoginType, tenantId.trim(), targetKey, null);
+            } else if (isDefaultLoginType(loginType)) {
                 b.broadcast(eventType, targetKey);
             } else {
                 b.broadcast(eventType, loginType.trim(), targetKey);
@@ -311,10 +349,21 @@ public class PermissionCacheService {
      * @param roleCode  角色编码
      */
     public void clearLocalRoleCache(String loginType, String roleCode) {
+        clearLocalRoleCache(loginType, null, roleCode);
+    }
+
+    /**
+     * 精准清理指定账号体系与租户下角色的本地内存权限缓存（异地节点协同）
+     *
+     * @param loginType 账号体系类型标识
+     * @param tenantId  租户唯一标识
+     * @param roleCode  角色编码
+     */
+    public void clearLocalRoleCache(String loginType, String tenantId, String roleCode) {
         if (roleCode == null || roleCode.isBlank()) {
             return;
         }
-        getAdapter().evictLocal(buildRolePermsKey(roleCode, loginType));
+        getAdapter().evictLocal(buildRolePermsKey(roleCode, loginType, tenantId));
     }
 
     /**
@@ -383,6 +432,17 @@ public class PermissionCacheService {
      */
     public void clearRoleCache(String loginType, String roleCode) {
         refreshRolePermissions(loginType, roleCode);
+    }
+
+    /**
+     * 清理指定账号体系与租户下角色的权限码集合缓存（别名方法）
+     *
+     * @param loginType 账号体系类型标识
+     * @param tenantId  租户唯一标识
+     * @param roleCode  角色编码
+     */
+    public void clearRoleCache(String loginType, String tenantId, String roleCode) {
+        refreshRolePermissions(loginType, tenantId, roleCode);
     }
 
     /**

@@ -1,8 +1,10 @@
 package io.github.atengk.boot.satoken.cache;
 
 import cn.dev33.satoken.stp.StpInterface;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
+import io.github.atengk.boot.satoken.util.LoginHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -93,11 +95,39 @@ public class CachedStpInterface implements StpInterface {
         if (roleCode == null || roleCode.isBlank()) {
             return Collections.emptyList();
         }
+        if (isTenantScopedEnabled()) {
+            String tenantId = resolveCurrentTenantId(loginType);
+            if (tenantId != null) {
+                String cacheKey = PermissionCacheService.buildRolePermsKey(roleCode, loginType, tenantId);
+                return getOrLoadCachedList(cacheKey, () -> loader.loadPermissionsByRole(roleCode, loginType, tenantId));
+            }
+        }
         String cacheKey = PermissionCacheService.buildRolePermsKey(roleCode, loginType);
         return getOrLoadCachedList(cacheKey, () ->
                 (loginType == null || loginType.isBlank())
                         ? loader.loadPermissionsByRole(roleCode)
                         : loader.loadPermissionsByRole(roleCode, loginType));
+    }
+
+    private boolean isTenantScopedEnabled() {
+        return properties != null
+                && properties.getPermissionCache() != null
+                && properties.getPermissionCache().isTenantScoped();
+    }
+
+    private String resolveCurrentTenantId(String loginType) {
+        try {
+            String sessionTenantId = (loginType == null || loginType.isBlank())
+                    ? LoginHelper.getTenantId()
+                    : LoginHelper.getTenantId(loginType);
+            if (sessionTenantId != null && !sessionTenantId.isBlank()) {
+                return sessionTenantId.trim();
+            }
+        } catch (Exception ex) {
+            log.debug("读取会话租户标识失败，回退至上下文租户: loginType={}, error={}", loginType, ex.toString());
+        }
+        String contextTenantId = TenantContextHolder.getTenantId();
+        return (contextTenantId != null && !contextTenantId.isBlank()) ? contextTenantId.trim() : null;
     }
 
     /**

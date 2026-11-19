@@ -87,6 +87,19 @@ public class SaTokenClusterBroadcaster {
      * @param extra     扩展参数字典
      */
     public void broadcast(SaTokenClusterEventType eventType, String loginType, String targetKey, Map<String, Object> extra) {
+        broadcast(eventType, loginType, null, targetKey, extra);
+    }
+
+    /**
+     * 广播带账号体系与租户维度的集群同步事件
+     *
+     * @param eventType 事件类型
+     * @param loginType 账号体系类型标识
+     * @param tenantId  租户唯一标识（可选）
+     * @param targetKey 目标业务键
+     * @param extra     扩展参数字典
+     */
+    public void broadcast(SaTokenClusterEventType eventType, String loginType, String tenantId, String targetKey, Map<String, Object> extra) {
         if (eventType == null) {
             return;
         }
@@ -96,25 +109,28 @@ public class SaTokenClusterBroadcaster {
         StringRedisTemplate redisTemplate = redisTemplateProvider != null ? redisTemplateProvider.getIfAvailable() : null;
         if (redisTemplate == null) {
             // 无 Redis 环境下自动静默降级为单机模式
-            log.trace("未检测到有效 Redis 基础设施，集群广播自动静默降级: eventType={}, loginType={}, targetKey={}",
-                    eventType, loginType, targetKey);
+            log.trace("未检测到有效 Redis 基础设施，集群广播自动静默降级: eventType={}, loginType={}, tenantId={}, targetKey={}",
+                    eventType, loginType, tenantId, targetKey);
             return;
         }
 
         try {
             SaTokenClusterMessage message = SaTokenClusterMessage.of(this.instanceId, eventType, loginType, targetKey);
+            if (tenantId != null && !tenantId.isBlank()) {
+                message.setTenantId(tenantId.trim());
+            }
             if (extra != null && !extra.isEmpty()) {
                 message.getExtra().putAll(extra);
             }
             String channel = properties.getClusterSync().getChannel();
             String payload = JsonUtil.toJsonString(message);
             redisTemplate.convertAndSend(channel, payload);
-            log.debug("成功发送 Sa-Token 集群同步广播: channel={}, eventType={}, loginType={}, targetKey={}",
-                    channel, eventType, loginType, targetKey);
+            log.debug("成功发送 Sa-Token 集群同步广播: channel={}, eventType={}, loginType={}, tenantId={}, targetKey={}",
+                    channel, eventType, loginType, tenantId, targetKey);
         } catch (Throwable ex) {
             // 异常隔离防卫，严禁广播异常阻断核心业务主链路
-            log.warn("Sa-Token 集群广播消息发送异常（降级忽略）: eventType={}, loginType={}, targetKey={}, error={}",
-                    eventType, loginType, targetKey, ex.toString());
+            log.warn("Sa-Token 集群广播消息发送异常（降级忽略）: eventType={}, loginType={}, tenantId={}, targetKey={}, error={}",
+                    eventType, loginType, tenantId, targetKey, ex.toString());
         }
     }
 }

@@ -60,14 +60,23 @@ public class PermissionCacheController {
     }
 
     /**
-     * 精准刷新指定角色关联的权限缓存（秒级淘汰两级缓存并广播异地节点）
+     * 精准刷新指定角色关联的权限缓存（秒级淘汰两级缓存并广播异地节点，支持按账号体系与租户精准清理）
      *
-     * @param roleCode 目标角色编码
+     * @param roleCode  目标角色编码
+     * @param loginType 账号体系标识（可选）
+     * @param tenantId  租户唯一标识（可选）
      * @return 业务结果
      */
     @PostMapping("/refresh-role")
-    public Result<String> refreshRole(@RequestParam("roleCode") String roleCode) {
-        permissionCacheService.refreshRolePermissions(roleCode);
+    public Result<String> refreshRole(
+            @RequestParam("roleCode") String roleCode,
+            @RequestParam(value = "loginType", required = false) String loginType,
+            @RequestParam(value = "tenantId", required = false) String tenantId) {
+        if ((tenantId != null && !tenantId.isBlank()) || (loginType != null && !loginType.isBlank())) {
+            permissionCacheService.refreshRolePermissions(loginType, tenantId, roleCode);
+        } else {
+            permissionCacheService.refreshRolePermissions(roleCode);
+        }
         return Result.success("角色权限缓存已刷新: " + roleCode);
     }
 

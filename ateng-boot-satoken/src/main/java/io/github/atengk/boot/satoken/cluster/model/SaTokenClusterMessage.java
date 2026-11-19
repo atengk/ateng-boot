@@ -45,6 +45,11 @@ public class SaTokenClusterMessage implements Serializable {
     private String loginType;
 
     /**
+     * 可选租户唯一标识（开启角色权限缓存租户隔离时，用于异地精准失效目标租户角色缓存）
+     */
+    private String tenantId;
+
+    /**
      * 消息产生的时间戳（毫秒）
      */
     private Long timestamp;

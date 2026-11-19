@@ -51,6 +51,20 @@ public interface UserRolePermissionLoader {
     }
 
     /**
+     * 根据角色编码、账号体系标识与租户标识加载该角色关联的权限码列表（多租户角色缓存隔离扩展）
+     *
+     * @param roleCode  角色编码
+     * @param loginType 账号体系类型标识（如 admin / member）
+     * @param tenantId  租户唯一标识（可能为 null）
+     * @return 权限码列表
+     */
+    default List<String> loadPermissionsByRole(String roleCode, String loginType, String tenantId) {
+        return (loginType == null || loginType.isBlank())
+                ? loadPermissionsByRole(roleCode)
+                : loadPermissionsByRole(roleCode, loginType);
+    }
+
+    /**
      * 根据用户 ID 加载用户个人特有的额外直属权限码列表（可选）
      *
      * @param userId 用户唯一标识

@@ -3,6 +3,7 @@ package io.github.atengk.boot.satoken.defense;
 import cn.dev33.satoken.SaManager;
 import cn.dev33.satoken.context.SaHolder;
 import cn.dev33.satoken.context.model.SaRequest;
+import cn.dev33.satoken.stp.StpUtil;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.util.ValidatorUtil;
@@ -350,6 +351,31 @@ public class LoginFailureLockService {
     // ==========================================
 
     /**
+     * 构造带多租户与多账号体系作用域的防碰撞定界账号键（长度前缀定界编码）
+     * <p>
+     * 对 {@code tenantId}、{@code loginType} 与 {@code account} 均附加十进制长度前缀与定界符，
+     * 彻底杜绝参数内含 {@code :}、{@code |} 或空租户引起的缓存键/封禁主体碰撞。
+     * </p>
+     *
+     * @param tenantId  租户标识（可为 null 或空串）
+     * @param loginType 账号体系标识（为空时默认回退 {@code "login"}）
+     * @param account   登录账号/用户名/标识
+     * @return 防碰撞作用域键；当 {@code account} 为空或空白时返回 null
+     */
+    public String buildScopedAccountKey(String tenantId, String loginType, String account) {
+        if (account == null || account.isBlank()) {
+            return null;
+        }
+        String normTenant = (tenantId == null || tenantId.isBlank()) ? "" : tenantId.trim();
+        String normType = normalizeLoginType(loginType);
+        String normAccount = account.trim();
+        return "scoped:"
+                + normTenant.length() + ":" + normTenant
+                + "|" + normType.length() + ":" + normType
+                + "|" + normAccount.length() + ":" + normAccount;
+    }
+
+    /**
      * 记录一次登录密码错误，原子累计账号与客户端 IP 失败次数（自动嗅探客户端 IP）
      *
      * @param account 登录账号/用户名/标识
@@ -367,6 +393,35 @@ public class LoginFailureLockService {
      * @return 剩余可重试次数（若账号或 IP 达到阈值触发锁定则返回 0）
      */
     public int recordFailure(String account, String clientIp) {
+        return recordFailureInternal(legacyTarget(account), clientIp);
+    }
+
+    /**
+     * 记录指定租户与账号体系下的一次登录密码错误（自动嗅探客户端 IP）
+     *
+     * @param tenantId  租户标识
+     * @param loginType 账号体系标识（为空时默认 {@code "login"}）
+     * @param account   登录账号/用户名/标识
+     * @return 剩余可重试次数（若账号或 IP 达到阈值触发锁定则返回 0）
+     */
+    public int recordFailure(String tenantId, String loginType, String account) {
+        return recordFailure(tenantId, loginType, account, null);
+    }
+
+    /**
+     * 记录指定租户、账号体系与客户端 IP 的一次登录密码错误并在超限时触发隔离锁定
+     *
+     * @param tenantId  租户标识
+     * @param loginType 账号体系标识（为空时默认 {@code "login"}）
+     * @param account   登录账号/用户名/标识
+     * @param clientIp  显式指定的客户端 IP（为 null 时自动嗅探当前 HTTP 请求）
+     * @return 剩余可重试次数（若账号或 IP 达到阈值触发锁定则返回 0）
+     */
+    public int recordFailure(String tenantId, String loginType, String account, String clientIp) {
+        return recordFailureInternal(scopedTarget(tenantId, loginType, account), clientIp);
+    }
+
+    private int recordFailureInternal(AccountTarget target, String clientIp) {
         String ip = resolveClientIp(clientIp);
 
         // 1. IP 维度连续输错累计与熔断判定
@@ -377,16 +432,16 @@ public class LoginFailureLockService {
 
         // 2. 账号维度连续输错累计与封禁判定
         int accountRemain = -1;
-        if (account != null && !account.isBlank()) {
-            if (!isLocked(account)) {
-                accountRemain = recordAccountFailure(account);
+        if (target != null) {
+            if (!isAccountDisabled(target)) {
+                accountRemain = recordAccountFailure(target);
             } else {
                 accountRemain = 0;
             }
         }
 
         // 3. 若 IP 或账号任一维度已被锁定，则返回 0
-        if ((ip != null && !ip.isBlank() && isIpLocked(ip)) || (account != null && !account.isBlank() && isLocked(account))) {
+        if ((ip != null && !ip.isBlank() && isIpLocked(ip)) || (target != null && isAccountDisabled(target))) {
             return 0;
         }
 
@@ -399,14 +454,14 @@ public class LoginFailureLockService {
     /**
      * 记录账号维度的登录失败并执行阈值封禁判定
      */
-    private int recordAccountFailure(String account) {
+    private int recordAccountFailure(AccountTarget target) {
         int maxRetry = getMaxRetryCount();
         Duration lockDuration = getLockTime();
         Duration windowDuration = getWindowTime();
 
         StringRedisTemplate redisTemplate = getRedisTemplate();
         if (redisTemplate != null) {
-            String key = KEY_PREFIX + account;
+            String key = KEY_PREFIX + target.cacheKey();
             try {
                 Long count = redisTemplate.opsForValue().increment(key);
                 if (count != null && count == 1) {
@@ -419,37 +474,38 @@ public class LoginFailureLockService {
                 }
 
                 if (count != null && count >= maxRetry) {
-                    LoginHelper.disable(account, lockDuration);
+                    disableAccount(target, lockDuration);
                     redisTemplate.delete(key);
-                    log.warn("【防暴力破解】账号连续密码错误达到上限，已触发账号锁定: account={}, count={}, lockDuration={}",
-                            account, count, lockDuration);
+                    log.warn("【防暴力破解】账号连续密码错误达到上限，已触发账号锁定: target={}, count={}, lockDuration={}",
+                            target.cacheKey(), count, lockDuration);
                     return 0;
                 }
                 int current = count != null ? count.intValue() : 0;
                 return Math.max(0, maxRetry - current);
             } catch (Exception ex) {
-                log.warn("Redis 记录登录失败次数异常，降级回退至本地内存模式: account={}, error={}", account, ex.toString());
+                log.warn("Redis 记录登录失败次数异常，降级回退至本地内存模式: target={}, error={}", target.cacheKey(), ex.toString());
             }
         }
 
-        return recordFailureLocal(account, maxRetry, lockDuration, windowDuration);
+        return recordFailureLocal(target, maxRetry, lockDuration, windowDuration);
     }
 
     /**
      * 本地单机内存模式账号原子递增与封禁判定
      */
-    private int recordFailureLocal(String account, int maxRetry, Duration lockDuration, Duration windowDuration) {
+    private int recordFailureLocal(AccountTarget target, int maxRetry, Duration lockDuration, Duration windowDuration) {
+        String cacheKey = target.cacheKey();
         if (localFailMap.size() >= MAX_LOCAL_FAIL_ENTRIES) {
             cleanupExpiredLocalEntries();
-            if (localFailMap.size() >= MAX_LOCAL_FAIL_ENTRIES && !localFailMap.containsKey(account)) {
-                log.warn("【防暴力破解/内存保护】单机内存失败计数容器已达到上限阈值 {}，拒绝录入新账号: account={}",
-                        MAX_LOCAL_FAIL_ENTRIES, account);
+            if (localFailMap.size() >= MAX_LOCAL_FAIL_ENTRIES && !localFailMap.containsKey(cacheKey)) {
+                log.warn("【防暴力破解/内存保护】单机内存失败计数容器已达到上限阈值 {}，拒绝录入新账号: target={}",
+                        MAX_LOCAL_FAIL_ENTRIES, cacheKey);
                 return maxRetry;
             }
         }
 
         long expireAt = System.currentTimeMillis() + windowDuration.toMillis();
-        FailItem item = localFailMap.compute(account, (k, old) -> {
+        FailItem item = localFailMap.compute(cacheKey, (k, old) -> {
             if (old == null || old.isExpired()) {
                 return new FailItem(1, expireAt);
             }
@@ -459,10 +515,10 @@ public class LoginFailureLockService {
 
         int current = item.getCount().get();
         if (current >= maxRetry) {
-            LoginHelper.disable(account, lockDuration);
-            localFailMap.remove(account);
-            log.warn("【防暴力破解/内存模式】账号连续密码错误达到上限，已触发账号锁定: account={}, count={}, lockDuration={}",
-                    account, current, lockDuration);
+            disableAccount(target, lockDuration);
+            localFailMap.remove(cacheKey);
+            log.warn("【防暴力破解/内存模式】账号连续密码错误达到上限，已触发账号锁定: target={}, count={}, lockDuration={}",
+                    cacheKey, current, lockDuration);
             return 0;
         }
         return Math.max(0, maxRetry - current);
@@ -576,20 +632,35 @@ public class LoginFailureLockService {
      * @param account 登录账号/用户名/标识
      */
     public void clearFailure(String account) {
-        if (account == null || account.isBlank()) {
+        clearFailureInternal(legacyTarget(account));
+    }
+
+    /**
+     * 登录成功时原子清空指定租户与账号体系下目标账号的失败计数器
+     *
+     * @param tenantId  租户标识
+     * @param loginType 账号体系标识（为空时默认 {@code "login"}）
+     * @param account   登录账号/用户名/标识
+     */
+    public void clearFailure(String tenantId, String loginType, String account) {
+        clearFailureInternal(scopedTarget(tenantId, loginType, account));
+    }
+
+    private void clearFailureInternal(AccountTarget target) {
+        if (target == null) {
             return;
         }
-
+        String cacheKey = target.cacheKey();
         StringRedisTemplate redisTemplate = getRedisTemplate();
         if (redisTemplate != null) {
             try {
-                redisTemplate.delete(KEY_PREFIX + account);
+                redisTemplate.delete(KEY_PREFIX + cacheKey);
             } catch (Exception ex) {
-                log.warn("Redis 清除登录失败计数异常: account={}, error={}", account, ex.toString());
+                log.warn("Redis 清除登录失败计数异常: target={}, error={}", cacheKey, ex.toString());
             }
         }
-        localFailMap.remove(account);
-        log.debug("已清空账号登录失败计数器: account={}", account);
+        localFailMap.remove(cacheKey);
+        log.debug("已清空账号登录失败计数器: target={}", cacheKey);
     }
 
     /**
@@ -638,6 +709,19 @@ public class LoginFailureLockService {
         clearIpFailure(clientIp);
     }
 
+    /**
+     * 同时清空指定租户与账号体系下的账号失败计数及客户端 IP 失败/锁定状态
+     *
+     * @param tenantId  租户标识
+     * @param loginType 账号体系标识（为空时默认 {@code "login"}）
+     * @param account   登录账号
+     * @param clientIp  客户端 IP
+     */
+    public void clearAllFailure(String tenantId, String loginType, String account, String clientIp) {
+        clearFailure(tenantId, loginType, account);
+        clearIpFailure(clientIp);
+    }
+
     // ==========================================
     // 4. 状态与剩余机会实时查询
     // ==========================================
@@ -649,14 +733,30 @@ public class LoginFailureLockService {
      * @return 剩余可尝试次数（下限为 0；若已被锁定则直接返回 0）
      */
     public int getRemainRetryCount(String account) {
-        if (account == null || account.isBlank()) {
+        return getRemainRetryCountInternal(legacyTarget(account));
+    }
+
+    /**
+     * 查询指定租户与账号体系下目标账号的剩余可重试次数
+     *
+     * @param tenantId  租户标识
+     * @param loginType 账号体系标识（为空时默认 {@code "login"}）
+     * @param account   登录账号/用户名/标识
+     * @return 剩余可尝试次数（下限为 0；若已被锁定则直接返回 0）
+     */
+    public int getRemainRetryCount(String tenantId, String loginType, String account) {
+        return getRemainRetryCountInternal(scopedTarget(tenantId, loginType, account));
+    }
+
+    private int getRemainRetryCountInternal(AccountTarget target) {
+        if (target == null) {
             return 0;
         }
-        if (isLocked(account)) {
+        if (isAccountDisabled(target)) {
             return 0;
         }
         int maxRetry = getMaxRetryCount();
-        int current = getFailureCount(account);
+        int current = getFailureCountInternal(target);
         return Math.max(0, maxRetry - current);
     }
 
@@ -667,32 +767,48 @@ public class LoginFailureLockService {
      * @return 当前失败次数（不存在或过期时返回 0）
      */
     public int getFailureCount(String account) {
-        if (account == null || account.isBlank()) {
+        return getFailureCountInternal(legacyTarget(account));
+    }
+
+    /**
+     * 获取指定租户与账号体系下目标账号当前已累计的失败次数
+     *
+     * @param tenantId  租户标识
+     * @param loginType 账号体系标识（为空时默认 {@code "login"}）
+     * @param account   登录账号/用户名/标识
+     * @return 当前失败次数（不存在或过期时返回 0）
+     */
+    public int getFailureCount(String tenantId, String loginType, String account) {
+        return getFailureCountInternal(scopedTarget(tenantId, loginType, account));
+    }
+
+    private int getFailureCountInternal(AccountTarget target) {
+        if (target == null) {
             return 0;
         }
-        if (isLocked(account)) {
+        if (isAccountDisabled(target)) {
             return getMaxRetryCount();
         }
-
+        String cacheKey = target.cacheKey();
         StringRedisTemplate redisTemplate = getRedisTemplate();
         if (redisTemplate != null) {
             try {
-                String val = redisTemplate.opsForValue().get(KEY_PREFIX + account);
+                String val = redisTemplate.opsForValue().get(KEY_PREFIX + cacheKey);
                 if (val != null && !val.isBlank()) {
                     return Integer.parseInt(val);
                 }
                 return 0;
             } catch (Exception ex) {
-                log.warn("Redis 读取登录失败次数异常，降级读取内存: account={}, error={}", account, ex.toString());
+                log.warn("Redis 读取登录失败次数异常，降级读取内存: target={}, error={}", cacheKey, ex.toString());
             }
         }
 
-        FailItem item = localFailMap.get(account);
+        FailItem item = localFailMap.get(cacheKey);
         if (item != null) {
             if (!item.isExpired()) {
                 return item.getCount().get();
             }
-            localFailMap.remove(account);
+            localFailMap.remove(cacheKey);
         }
         return 0;
     }
@@ -761,10 +877,7 @@ public class LoginFailureLockService {
      * @return true 表示已被封禁锁定，false 表示正常未锁定
      */
     public boolean isLocked(String account) {
-        if (account == null || account.isBlank()) {
-            return false;
-        }
-        return LoginHelper.isDisable(account);
+        return isLockedInternal(legacyTarget(account));
     }
 
     /**
@@ -775,11 +888,44 @@ public class LoginFailureLockService {
      * @return true 表示账号或客户端 IP 处于锁定状态
      */
     public boolean isLocked(String account, String clientIp) {
+        return isLockedInternal(legacyTarget(account), clientIp);
+    }
+
+    /**
+     * 校验指定租户与账号体系下目标账号是否处于锁定/封禁状态
+     *
+     * @param tenantId  租户标识
+     * @param loginType 账号体系标识（为空时默认 {@code "login"}）
+     * @param account   登录账号/用户名/标识
+     * @return true 表示已被封禁锁定，false 表示正常未锁定
+     */
+    public boolean isLocked(String tenantId, String loginType, String account) {
+        return isLockedInternal(scopedTarget(tenantId, loginType, account));
+    }
+
+    /**
+     * 校验指定租户与账号体系下目标账号或客户端 IP 是否处于锁定状态（任一维度锁定即返回 true）
+     *
+     * @param tenantId  租户标识
+     * @param loginType 账号体系标识（为空时默认 {@code "login"}）
+     * @param account   登录账号/用户名/标识
+     * @param clientIp  客户端 IP
+     * @return true 表示账号或客户端 IP 处于锁定状态
+     */
+    public boolean isLocked(String tenantId, String loginType, String account, String clientIp) {
+        return isLockedInternal(scopedTarget(tenantId, loginType, account), clientIp);
+    }
+
+    private boolean isLockedInternal(AccountTarget target) {
+        return target != null && isAccountDisabled(target);
+    }
+
+    private boolean isLockedInternal(AccountTarget target, String clientIp) {
         String ip = resolveClientIp(clientIp);
         if (ip != null && !ip.isBlank() && isIpLocked(ip)) {
             return true;
         }
-        return isLocked(account);
+        return isLockedInternal(target);
     }
 
     /**
@@ -859,13 +1005,29 @@ public class LoginFailureLockService {
      * 获取账号剩余封禁时间（秒）
      *
      * @param account 登录账号/用户名/标识
-     * @return 剩余封禁秒数，未被封禁时返回 0，永久封禁返回 -1
+     * @return 剩余封禁秒数，未被封禁时返回 0
      */
     public long getDisableTime(String account) {
-        if (account == null || account.isBlank()) {
+        return getDisableTimeInternal(legacyTarget(account));
+    }
+
+    /**
+     * 获取指定租户与账号体系下目标账号的剩余封禁时间（秒）
+     *
+     * @param tenantId  租户标识
+     * @param loginType 账号体系标识（为空时默认 {@code "login"}）
+     * @param account   登录账号/用户名/标识
+     * @return 剩余封禁秒数，未被封禁时返回 0
+     */
+    public long getDisableTime(String tenantId, String loginType, String account) {
+        return getDisableTimeInternal(scopedTarget(tenantId, loginType, account));
+    }
+
+    private long getDisableTimeInternal(AccountTarget target) {
+        if (target == null) {
             return 0L;
         }
-        long disableTime = LoginHelper.getDisableTime(account);
+        long disableTime = getAccountDisableTime(target);
         return Math.max(0L, disableTime);
     }
 
@@ -873,11 +1035,24 @@ public class LoginFailureLockService {
      * 获取账号剩余锁定时间（秒）
      *
      * @param account 登录账号/用户名/标识
-     * @return 剩余封禁秒数，未被封禁时返回 0，永久封禁返回 -1
+     * @return 剩余封禁秒数，未被封禁时返回 0
      * @see #getDisableTime(String)
      */
     public long getLockTime(String account) {
         return getDisableTime(account);
+    }
+
+    /**
+     * 获取指定租户与账号体系下目标账号的剩余锁定时间（秒）
+     *
+     * @param tenantId  租户标识
+     * @param loginType 账号体系标识（为空时默认 {@code "login"}）
+     * @param account   登录账号/用户名/标识
+     * @return 剩余封禁秒数，未被封禁时返回 0
+     * @see #getDisableTime(String, String, String)
+     */
+    public long getLockTime(String tenantId, String loginType, String account) {
+        return getDisableTime(tenantId, loginType, account);
     }
 
     // ==========================================
@@ -900,12 +1075,39 @@ public class LoginFailureLockService {
      * @param clientIp 客户端真实 IP（为 null 时自动嗅探当前 HTTP 请求）
      */
     public void checkLocked(String account, String clientIp) {
+        checkLockedInternal(legacyTarget(account), clientIp);
+    }
+
+    /**
+     * 校验指定租户与账号体系下目标账号与当前请求客户端 IP 是否已被锁定，若被锁定则 Fail-Fast 阻断
+     *
+     * @param tenantId  租户标识
+     * @param loginType 账号体系标识（为空时默认 {@code "login"}）
+     * @param account   登录账号/用户名/标识（可为 null）
+     */
+    public void checkLocked(String tenantId, String loginType, String account) {
+        checkLocked(tenantId, loginType, account, null);
+    }
+
+    /**
+     * 校验指定租户与账号体系下目标账号与客户端 IP 是否已被锁定，若被锁定则 Fail-Fast 阻断
+     *
+     * @param tenantId  租户标识
+     * @param loginType 账号体系标识（为空时默认 {@code "login"}）
+     * @param account   登录账号/用户名/标识（可为 null）
+     * @param clientIp  客户端真实 IP（为 null 时自动嗅探当前 HTTP 请求）
+     */
+    public void checkLocked(String tenantId, String loginType, String account, String clientIp) {
+        checkLockedInternal(scopedTarget(tenantId, loginType, account), clientIp);
+    }
+
+    private void checkLockedInternal(AccountTarget target, String clientIp) {
         // 优先防卫客户端 IP 熔断
         checkIpLocked(clientIp);
 
         // 防卫账号封禁
-        if (account != null && !account.isBlank()) {
-            LoginHelper.checkDisable(account);
+        if (target != null) {
+            checkAccountDisabled(target);
         }
     }
 
@@ -1015,5 +1217,57 @@ public class LoginFailureLockService {
         public boolean isExpired() {
             return expireAt > 0 && System.currentTimeMillis() > expireAt;
         }
+    }
+
+    private AccountTarget legacyTarget(String account) {
+        if (account == null || account.isBlank()) {
+            return null;
+        }
+        return new AccountTarget(account, account, null, false);
+    }
+
+    private AccountTarget scopedTarget(String tenantId, String loginType, String account) {
+        String scopedKey = buildScopedAccountKey(tenantId, loginType, account);
+        if (scopedKey == null) {
+            return null;
+        }
+        return new AccountTarget(scopedKey, scopedKey, normalizeLoginType(loginType), true);
+    }
+
+    private static String normalizeLoginType(String loginType) {
+        return (loginType == null || loginType.isBlank()) ? StpUtil.TYPE : loginType.trim();
+    }
+
+    private void disableAccount(AccountTarget target, Duration lockDuration) {
+        if (target.scoped()) {
+            LoginHelper.disableByLoginType(target.loginType(), target.disableSubject(), lockDuration);
+        } else {
+            LoginHelper.disable(target.disableSubject(), lockDuration);
+        }
+    }
+
+    private boolean isAccountDisabled(AccountTarget target) {
+        if (target.scoped()) {
+            return LoginHelper.isDisableByLoginType(target.loginType(), target.disableSubject());
+        }
+        return LoginHelper.isDisable(target.disableSubject());
+    }
+
+    private void checkAccountDisabled(AccountTarget target) {
+        if (target.scoped()) {
+            LoginHelper.checkDisableByLoginType(target.loginType(), target.disableSubject());
+        } else {
+            LoginHelper.checkDisable(target.disableSubject());
+        }
+    }
+
+    private long getAccountDisableTime(AccountTarget target) {
+        if (target.scoped()) {
+            return LoginHelper.getDisableTimeByLoginType(target.loginType(), target.disableSubject());
+        }
+        return LoginHelper.getDisableTime(target.disableSubject());
+    }
+
+    private record AccountTarget(String cacheKey, String disableSubject, String loginType, boolean scoped) {
     }
 }

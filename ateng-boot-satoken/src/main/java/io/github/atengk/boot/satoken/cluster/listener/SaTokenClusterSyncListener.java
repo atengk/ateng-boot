@@ -125,7 +125,10 @@ public class SaTokenClusterSyncListener {
             }
             case ROLE_PERMISSION_REFRESH -> {
                 if (targetKey != null && !targetKey.isBlank()) {
-                    if (defaultType) {
+                    String tenantId = clusterMessage.getTenantId();
+                    if (tenantId != null && !tenantId.isBlank()) {
+                        cacheService.clearLocalRoleCache(defaultType ? null : loginType.trim(), tenantId.trim(), targetKey);
+                    } else if (defaultType) {
                         cacheService.clearLocalRoleCache(targetKey);
                     } else {
                         cacheService.clearLocalRoleCache(loginType.trim(), targetKey);

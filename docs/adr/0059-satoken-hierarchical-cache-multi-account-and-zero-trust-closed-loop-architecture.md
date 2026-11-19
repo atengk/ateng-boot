@@ -127,6 +127,22 @@ flowchart TD
 - **严格校验与正交开关**：`check-login=false` 时 `login-type-routes` 不强制触发 401 拦截，仅作为动态规则与上下文同步的 `loginType` 路由提示；`check-login=true` 未命中任何映射时严格校验 `primary-login-type`，严禁“任意账号体系已登录即放行”的越权降级；
 - **四维上下文对齐**：`syncContextIfLoggedIn` 优先绑定当前请求路由鉴权命中的 `loginType`，避免同一请求携带多端 Token 时 `UserContextHolder` 与 `TenantContextHolder` 串号。
 
+### 10. 请求链路超管收敛、多账号注解路由、受控租户切换与多租户键值隔离闭环 (2026-11 演进)
+- **超管判定收敛与数据权限弱依赖桥接 (#1077)**：
+  - `SaTokenProperties` 新增 `superAdminRoles`（默认 `["admin", "super_admin"]` 向后兼容）与 `superAdminPermissions`（默认 `["*", "*:*:*"]`，显式置空列表 `[]` 禁用通配符判定）并同步至 `LoginHelper`，彻底解决普通租户管理员持有 `"admin"` 角色被误判为全平台超管的越权隐患；
+  - 新增 `DataPermissionBridge` SPI 与类路径隔离的 `MyBatisPlusDataPermissionBridge`，在 `preHandle` 先重置 `setSuperAdmin(false)` 再注入 `LoginHelper.isSuperAdmin(loginType)`，并在 `afterCompletion` 与异常中止分支确定性 `clear()`，严守 `ateng-boot-satoken` 对 `ateng-boot-mybatis-plus` 零强制依赖。
+- **Sa-Token 注解多账号自动路由 (#1076)**：
+  - 新增 `interceptor.auto-route-annotation-type`（默认 `true`）与 `SaTokenRouteContextHolder`，`AtengSaTokenInterceptor.preHandle`（含 `isWhitelisted` 白名单分支）写入命中路由 `loginType`；
+  - `SaTokenAnnotationAutoRouteRegistrar` 替换 `SaAnnotationStrategy.instance` 中 5 个注解处理器（天然覆盖 `@SaCheckOr`），未显式声明 `type()` 时按 `路由命中 loginType > primary-login-type > "login"` 解析并通过 `LoginHelper.getStpLogic(resolvedType)` 懒加载；`SaCheckDataOwnerAspect` 同步优先感知 `SaTokenRouteContextHolder`。
+- **白名单闭环与 `X-Tenant-Id` 受控切换 (#1078)**：
+  - 移除 `SaTokenWebMvcConfigurer` 的 `.excludePathPatterns(finalExcludes)`，让全部静态/声明白名单统一经过 `AtengSaTokenInterceptor.isWhitelisted` 短路放行并纳入 `afterCompletion` 清理闭环；
+  - 新增 `tenant.*` 配置（默认关闭匿名解析与超管切换）与 `TenantHeaderSwitchValidator` SPI；普通已登录用户与白名单带有效 Token（含跨端活跃会话）请求绝对忽略 `X-Tenant-Id` 防绕过，超管与匿名合法开关下携带非法格式或未通过 SPI 校验均 Fail-Fast 抛出 `BusinessException`。
+- **YAML 静态路径权限与共享路径多账号探测 (#1095)**：
+  - 严守 `ateng-boot-web` 对 `ateng-boot-satoken` 零反向依赖；在 `InterceptorProperties` 新增 YAML `path-permissions`（复用 `PathPermissionRule`，作为 `DynamicPathPermissionProvider` 未命中时的静态回退）与 `shared-login-type-paths`（允许共享公共端点在 `check-login=true` 下按请求实际活跃体系探测放行，显式路由维持严格隔离）。
+- **多租户防爆破隔离键与角色权限缓存键隔离 (#1079 / #1093)**：
+  - `LoginFailureLockService` 全量补齐 9 组 `(tenantId, loginType, account, ...)` 对称重载，采用十进制长度前缀定界编码 `scoped:{len}:{tenantId}|{len}:{loginType}|{len}:{account}` 防止冒号/空串键碰撞；
+  - `PermissionCacheProperties` 新增 `tenantScoped`（默认 `false`），开启时严格聚焦隔离 `role-perms` 缓存键（`tenantId` 优先取会话所属租户 `LoginHelper.getTenantId(loginType)` 防超管切租户串缓存，回退 `TenantContextHolder.getTenantId()`），同步扩展 `UserRolePermissionLoader` 三参方法与 `SaTokenClusterMessage.tenantId` 集群精准驱逐。
+
 ---
 
 ## 后果与权衡 (Consequences & Trade-offs)
