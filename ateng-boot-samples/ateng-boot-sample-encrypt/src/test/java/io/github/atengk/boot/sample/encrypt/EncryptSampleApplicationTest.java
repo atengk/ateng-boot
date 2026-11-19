@@ -1,8 +1,12 @@
 package io.github.atengk.boot.sample.encrypt;
 
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
+import io.github.atengk.boot.encrypt.decryptor.ConfigEncryptor;
 import io.github.atengk.boot.encrypt.exception.ConfigSecurityException;
 import io.github.atengk.boot.encrypt.guard.SanitizingGuard;
+import io.github.atengk.boot.encrypt.template.EncryptTemplate;
+import io.github.atengk.boot.encrypt.wrapper.EncryptPropertySourceWrapper;
+import io.github.atengk.boot.sample.encrypt.config.SampleSecretProperties;
 import io.github.atengk.boot.sample.encrypt.service.ConfigDecryptionScenarioService;
 import io.github.atengk.boot.sample.encrypt.service.IngressGuardScenarioService;
 import io.github.atengk.boot.sample.encrypt.service.InPlaceRewriteScenarioService;
@@ -13,11 +17,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.endpoint.SanitizableData;
+import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.builder.SpringApplicationBuilder;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.MapPropertySource;
+import org.springframework.core.env.PropertySource;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -34,7 +41,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * @author Ateng
  * @since 2026-10-25
  */
-@SpringBootTest(properties = {
+@SpringBootTest(classes = EncryptSampleApplication.class, properties = {
         "ateng.boot.encrypt.password=SampleMasterSecretKey2026!"
 })
 class EncryptSampleApplicationTest {
@@ -274,6 +281,114 @@ class EncryptSampleApplicationTest {
             assertThrows(ConfigSecurityException.class, () -> {
                 service.simulatePlaintextIngress("spring.redis.password", 123456);
             }, "热推送未加引号纯数字密码必须被 PlaintextIngressGuard 刚性拦截");
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @EnableAutoConfiguration
+    @EnableConfigurationProperties(SampleSecretProperties.class)
+    static class MinimalEncryptBootApp {
+    }
+
+    @Test
+    @DisplayName("端到端验证全局开关 enabled=false 时全生命周期短路退出且保持属性源未包装")
+    void testDisabledModeShortCircuitsEarlyLifecycleAndSkipsWrapping(@TempDir Path tempDir) throws Exception {
+        Path disabledYaml = tempDir.resolve("disabled-app.yml");
+        Files.writeString(disabledYaml, """
+                ateng:
+                  boot:
+                    encrypt:
+                      enabled: false
+                      password: ignoredLocalPasswordWhenDisabled
+                      enforce-encrypted: true
+                sample:
+                  secret:
+                    database-password: plainDbPassword
+                    redis-password: plainRedisPassword
+                    third-party-token: plainThirdPartyToken
+                """, StandardCharsets.UTF_8);
+
+        ConfigurableApplicationContext ctx = new SpringApplicationBuilder(MinimalEncryptBootApp.class)
+                .run(
+                        "--spring.main.web-application-type=none",
+                        "--spring.config.location=" + disabledYaml.toUri()
+                );
+        try {
+            boolean hasWrapper = false;
+            for (PropertySource<?> ps : ctx.getEnvironment().getPropertySources()) {
+                if (ps instanceof EncryptPropertySourceWrapper) {
+                    hasWrapper = true;
+                    break;
+                }
+            }
+            assertFalse(hasWrapper, "enabled=false 时不应装配任何 EncryptPropertySourceWrapper");
+            assertTrue(ctx.getBeansOfType(EncryptTemplate.class).isEmpty(), "enabled=false 时不应装配 EncryptTemplate");
+            assertEquals("plainDbPassword", ctx.getBean(SampleSecretProperties.class).getDatabasePassword());
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @Test
+    @DisplayName("端到端验证 fail-on-error=false 时密文解密失败不阻断启动并保底返回原值")
+    void testFailOnErrorFalseAllowsStartupAndPreservesRawCiphertext() {
+        ConfigurableApplicationContext ctx = new SpringApplicationBuilder(EncryptSampleApplication.class)
+                .run(
+                        "--spring.main.web-application-type=none",
+                        "--ateng.boot.encrypt.password=SampleMasterSecretKey2026!",
+                        "--ateng.boot.encrypt.fail-on-error=false",
+                        "--sample.secret.database-password=ENC(CorruptedNonDecryptableValue)"
+                );
+        try {
+            SampleSecretProperties props = ctx.getBean(SampleSecretProperties.class);
+            assertEquals("ENC(CorruptedNonDecryptableValue)", props.getDatabasePassword());
+            assertEquals("redisAuthPass2026!", props.getRedisPassword());
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @Test
+    @DisplayName("端到端验证 Two-Phase Wrapper Sync：ConfigData 导入后置覆盖算法、兼容开关与 fail-on-error")
+    void testTwoPhaseConfigDataImportAndPostProcessorSync(@TempDir Path tempDir) throws Exception {
+        String masterPass = "TwoPhaseSampleMaster2026!";
+        String sm4Cipher = ConfigEncryptor.encrypt("twoPhaseSm4DbPass", masterPass, EncryptAlgorithm.SM4_CBC);
+        String legacyCipher = ConfigEncryptor.encrypt("twoPhaseLegacyRedisPass", masterPass, EncryptAlgorithm.SM4_CBC);
+
+        Path overrideYaml = tempDir.resolve("override.yml");
+        Files.writeString(overrideYaml, """
+                ateng:
+                  boot:
+                    encrypt:
+                      algorithm: SM4-CBC
+                      compatible-cipher-prefix: true
+                      fail-on-error: false
+                """, StandardCharsets.UTF_8);
+
+        Path baseYaml = tempDir.resolve("base.yml");
+        Files.writeString(baseYaml, String.format("""
+                spring:
+                  config:
+                    import: "optional:%s"
+                sample:
+                  secret:
+                    database-password: ENC(%s)
+                    redis-password: "{cipher}%s"
+                    third-party-token: ENC(BrokenTwoPhaseCipher)
+                """, overrideYaml.toUri(), sm4Cipher, legacyCipher), StandardCharsets.UTF_8);
+
+        ConfigurableApplicationContext ctx = new SpringApplicationBuilder(MinimalEncryptBootApp.class)
+                .run(
+                        "--spring.main.web-application-type=none",
+                        "--ateng.boot.encrypt.password=" + masterPass,
+                        "--spring.config.location=" + baseYaml.toUri()
+                );
+        try {
+            SampleSecretProperties props = ctx.getBean(SampleSecretProperties.class);
+            assertEquals("twoPhaseSm4DbPass", props.getDatabasePassword());
+            assertEquals("twoPhaseLegacyRedisPass", props.getRedisPassword());
+            assertEquals("ENC(BrokenTwoPhaseCipher)", props.getThirdPartyToken());
         } finally {
             ctx.close();
         }

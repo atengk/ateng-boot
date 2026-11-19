@@ -11,6 +11,8 @@ import org.springframework.boot.context.config.ConfigDataLocationResolver;
 import org.springframework.boot.context.config.ConfigDataLocationResolverContext;
 import org.springframework.boot.context.config.ConfigDataResource;
 import org.springframework.boot.context.config.Profiles;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.boot.context.properties.source.ConfigurationPropertySource;
 import org.springframework.boot.context.properties.source.ConfigurationPropertySources;
 import org.springframework.core.Ordered;
@@ -21,6 +23,7 @@ import java.lang.reflect.Field;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -81,6 +84,14 @@ public class EncryptConfigDataLocationResolver implements ConfigDataLocationReso
         }
 
         try {
+            // 0. 全局开关短路：显式配置 ateng.boot.encrypt.enabled=false 时跳过一切探测与包装
+            if (!isEncryptEnabled(context)) {
+                processedContextHashes.add(contextHash);
+                log.debug("[ateng-boot-encrypt] 已配置 {}=false，跳过 ConfigData 预解析穿透",
+                        EncryptEnvironmentSupport.PROPERTY_ENABLED);
+                return;
+            }
+
             // 1. 尝试从 context 反射获取 contributors (Spring Boot 3.3+ 真实字段为 "contributors"，Mock 为 "this$0")
             Class<?> ctxClass = context.getClass();
             Field outerField = findField(ctxClass, "contributors");
@@ -106,31 +117,20 @@ public class EncryptConfigDataLocationResolver implements ConfigDataLocationReso
             }
 
             KeyDetector keyDetector = KeyDetector.detect(null);
+            Binder binder = context.getBinder();
 
-            // 动态读取可能由早阶已加载配置声明的密码以及自定义 prefix / suffix
-            CiphertextParser parser = PARSER;
-            if (context.getBinder() != null) {
-                try {
-                    String binderPass = context.getBinder().bind(KeyDetector.PROPERTY_PASSWORD, String.class).orElse(null);
-                    if (binderPass != null && !binderPass.trim().isEmpty()) {
-                        keyDetector.setDefaultPassword(binderPass.trim());
-                    }
-                    String prefix = context.getBinder().bind("ateng.boot.encrypt.prefix", String.class).orElse(null);
-                    String suffix = context.getBinder().bind("ateng.boot.encrypt.suffix", String.class).orElse(null);
-                    boolean compatibleCipher = context.getBinder().bind("ateng.boot.encrypt.compatible-cipher-prefix", Boolean.class).orElse(false);
-                    if (prefix != null || suffix != null || compatibleCipher) {
-                        parser = new CiphertextParser(prefix, suffix, compatibleCipher);
-                    }
-                } catch (Exception ignored) {
-                }
-            }
+            // 动态读取可能由早阶已加载配置声明的主密钥、命名密钥、默认算法、容错策略及前后缀
+            EncryptAlgorithm defaultAlgorithm = resolveDefaultAlgorithm(binder);
+            boolean failOnError = resolveFailOnError(binder);
+            CiphertextParser parser = resolveParser(binder);
+            bindKeys(binder, keyDetector);
 
             // 2. 遍历所有 contributor，寻找包含密文的未装饰 PropertySource
             for (Object item : iterable) {
                 if (item == null) {
                     continue;
                 }
-                decorateContributorIfNecessary(item, keyDetector, parser);
+                decorateContributorIfNecessary(item, keyDetector, parser, defaultAlgorithm, failOnError);
             }
 
             processedContextHashes.add(contextHash);
@@ -140,7 +140,90 @@ public class EncryptConfigDataLocationResolver implements ConfigDataLocationReso
         }
     }
 
-    private void decorateContributorIfNecessary(Object contributor, KeyDetector keyDetector, CiphertextParser parser) {
+    private boolean isEncryptEnabled(ConfigDataLocationResolverContext context) {
+        Binder binder = context != null ? context.getBinder() : null;
+        Optional<Boolean> bound = bindOptional(binder, EncryptEnvironmentSupport.PROPERTY_ENABLED, Boolean.class);
+        if (bound.isPresent()) {
+            return bound.get();
+        }
+        return EncryptEnvironmentSupport.resolveBooleanProperty(
+                null, EncryptEnvironmentSupport.PROPERTY_ENABLED, EncryptEnvironmentSupport.ENV_ENABLED, true);
+    }
+
+    private EncryptAlgorithm resolveDefaultAlgorithm(Binder binder) {
+        String algoCode = bindOptional(binder, EncryptEnvironmentSupport.PROPERTY_ALGORITHM, String.class).orElse(null);
+        if (algoCode == null || algoCode.trim().isEmpty()) {
+            algoCode = EncryptEnvironmentSupport.resolveStringProperty(
+                    null, EncryptEnvironmentSupport.PROPERTY_ALGORITHM, EncryptEnvironmentSupport.ENV_ALGORITHM);
+        }
+        EncryptAlgorithm configured = EncryptAlgorithm.fromCode(algoCode);
+        return configured != null ? configured : EncryptAlgorithm.AES_GCM;
+    }
+
+    private boolean resolveFailOnError(Binder binder) {
+        Optional<Boolean> bound = bindOptional(binder, EncryptEnvironmentSupport.PROPERTY_FAIL_ON_ERROR, Boolean.class);
+        if (bound.isPresent()) {
+            return bound.get();
+        }
+        return EncryptEnvironmentSupport.resolveBooleanProperty(
+                null, EncryptEnvironmentSupport.PROPERTY_FAIL_ON_ERROR, EncryptEnvironmentSupport.ENV_FAIL_ON_ERROR, true);
+    }
+
+    private CiphertextParser resolveParser(Binder binder) {
+        String prefix = bindOptional(binder, EncryptEnvironmentSupport.PROPERTY_PREFIX, String.class)
+                .orElseGet(() -> EncryptEnvironmentSupport.resolveStringProperty(
+                        null, EncryptEnvironmentSupport.PROPERTY_PREFIX, EncryptEnvironmentSupport.ENV_PREFIX));
+        String suffix = bindOptional(binder, EncryptEnvironmentSupport.PROPERTY_SUFFIX, String.class)
+                .orElseGet(() -> EncryptEnvironmentSupport.resolveStringProperty(
+                        null, EncryptEnvironmentSupport.PROPERTY_SUFFIX, EncryptEnvironmentSupport.ENV_SUFFIX));
+        boolean compatibleCipher = bindOptional(binder, EncryptEnvironmentSupport.PROPERTY_COMPATIBLE_CIPHER, Boolean.class)
+                .orElseGet(() -> EncryptEnvironmentSupport.resolveBooleanProperty(
+                        null, EncryptEnvironmentSupport.PROPERTY_COMPATIBLE_CIPHER,
+                        EncryptEnvironmentSupport.ENV_COMPATIBLE_CIPHER, false));
+        if (prefix != null || suffix != null || compatibleCipher) {
+            return new CiphertextParser(prefix, suffix, compatibleCipher);
+        }
+        return PARSER;
+    }
+
+    private void bindKeys(Binder binder, KeyDetector keyDetector) {
+        String binderPass = bindOptional(binder, KeyDetector.PROPERTY_PASSWORD, String.class).orElse(null);
+        if (binderPass != null && !binderPass.trim().isEmpty()) {
+            keyDetector.setDefaultPassword(binderPass.trim());
+        }
+        if (binder == null) {
+            return;
+        }
+        try {
+            Map<String, String> keys = binder.bind("ateng.boot.encrypt.keys", Bindable.mapOf(String.class, String.class))
+                    .orElse(Collections.emptyMap());
+            keys.forEach((keyId, secret) -> {
+                if (keyId != null && !keyId.trim().isEmpty() && secret != null && !secret.trim().isEmpty()) {
+                    keyDetector.registerKey(keyId.trim(), secret.trim());
+                }
+            });
+        } catch (Exception e) {
+            log.trace("[ateng-boot-encrypt] 早阶预解析读取命名密钥映射跳过: {}", e.getMessage());
+        }
+    }
+
+    private <T> Optional<T> bindOptional(Binder binder, String name, Class<T> target) {
+        if (binder == null) {
+            return Optional.empty();
+        }
+        try {
+            return binder.bind(name, target).map(Optional::of).orElse(Optional.empty());
+        } catch (Exception e) {
+            log.trace("[ateng-boot-encrypt] 早阶预解析绑定配置 '{}' 跳过: {}", name, e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    private void decorateContributorIfNecessary(Object contributor,
+                                                KeyDetector keyDetector,
+                                                CiphertextParser parser,
+                                                EncryptAlgorithm defaultAlgorithm,
+                                                boolean failOnError) {
         try {
             Field propSourceField = findField(contributor.getClass(), "propertySource");
             if (propSourceField == null) {
@@ -163,7 +246,7 @@ public class EncryptConfigDataLocationResolver implements ConfigDataLocationReso
 
             // 执行装饰
             EncryptPropertySourceWrapper wrapper = new EncryptPropertySourceWrapper(
-                    propertySource, parser, keyDetector, null, EncryptAlgorithm.AES_GCM, true);
+                    propertySource, parser, keyDetector, null, defaultAlgorithm, failOnError);
             propSourceField.set(contributor, wrapper);
 
             // 同时刷新对应 contributor 内部绑定的 configurationPropertySource

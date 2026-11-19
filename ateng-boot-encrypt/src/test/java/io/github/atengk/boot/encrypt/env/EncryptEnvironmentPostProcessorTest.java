@@ -1,8 +1,11 @@
 package io.github.atengk.boot.encrypt.env;
 
+import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
 import io.github.atengk.boot.encrypt.decryptor.AesGcmConfigDecryptor;
+import io.github.atengk.boot.encrypt.decryptor.Sm4ConfigDecryptor;
 import io.github.atengk.boot.encrypt.detector.KeyDetector;
 import io.github.atengk.boot.encrypt.exception.ConfigSecurityException;
+import io.github.atengk.boot.encrypt.parser.CiphertextParser;
 import io.github.atengk.boot.encrypt.wrapper.EncryptPropertySourceWrapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -195,5 +198,87 @@ class EncryptEnvironmentPostProcessorTest {
         postProcessor.postProcessEnvironment(environment, new SpringApplication());
 
         assertThat(environment.getProperty("spring.datasource.password")).isEqualTo("custom-prefix-secret");
+    }
+
+    @Test
+    @DisplayName("测试全局开关 ateng.boot.encrypt.enabled=false 时完整短路并跳过密钥探测与强制门禁")
+    void testDisabledSkipsWrappingKeyDetectionAndEnforcePolicy() {
+        System.clearProperty(KeyDetector.PROPERTY_PASSWORD);
+        StandardEnvironment environment = new StandardEnvironment();
+
+        Map<String, Object> localMap = new HashMap<>();
+        localMap.put("ateng.boot.encrypt.enabled", "false");
+        localMap.put(KeyDetector.PROPERTY_PASSWORD, "hardcoded-in-yaml-ignored-when-disabled");
+        localMap.put("ateng.boot.encrypt.enforce-encrypted", "true");
+        localMap.put("spring.datasource.password", "naked_plaintext_pass");
+        MapPropertySource localSource = new MapPropertySource("application.yml", localMap);
+        environment.getPropertySources().addLast(localSource);
+
+        // 模拟阶段一意外提前包裹的属性源，禁用开关生效时也应解包还原
+        MapPropertySource earlySource = new MapPropertySource("earlySource", Map.of("extra.secret", "ENC(abc)"));
+        environment.getPropertySources().addLast(new EncryptPropertySourceWrapper(earlySource, new KeyDetector()));
+
+        postProcessor.postProcessEnvironment(environment, new SpringApplication());
+
+        assertThat(environment.getPropertySources().get("application.yml")).isNotInstanceOf(EncryptPropertySourceWrapper.class);
+        assertThat(environment.getPropertySources().get("earlySource")).isNotInstanceOf(EncryptPropertySourceWrapper.class);
+        assertThat(environment.getProperty("spring.datasource.password")).isEqualTo("naked_plaintext_pass");
+        assertThat(environment.getProperty("extra.secret")).isEqualTo("ENC(abc)");
+    }
+
+    @Test
+    @DisplayName("测试 ateng.boot.encrypt.fail-on-error=false 时解密失败安全返回原始值")
+    void testFailOnErrorFalseReturnsRawCiphertext() {
+        StandardEnvironment environment = new StandardEnvironment();
+
+        Map<String, Object> map = new HashMap<>();
+        map.put("ateng.boot.encrypt.fail-on-error", "false");
+        map.put("spring.datasource.password", "ENC(CorruptedCipherValue123)");
+        environment.getPropertySources().addLast(new MapPropertySource("application.yml", map));
+
+        postProcessor.postProcessEnvironment(environment, new SpringApplication());
+
+        assertThat(environment.getProperty("spring.datasource.password")).isEqualTo("ENC(CorruptedCipherValue123)");
+    }
+
+    @Test
+    @DisplayName("测试 Two-Phase Wrapper Sync：阶段二同步更新阶段一已包装属性源的算法、解析器与容错策略")
+    void testTwoPhaseSyncUpdatesExistingStageOneWrapper() {
+        StandardEnvironment environment = new StandardEnvironment();
+
+        String sm4Plain = "sm4-stage1-wrapped-secret";
+        String sm4Cipher = Sm4ConfigDecryptor.encryptCbc(sm4Plain, PASSWORD);
+        String legacyPlain = "legacy-stage1-wrapped-secret";
+        String legacyCipher = Sm4ConfigDecryptor.encryptCbc(legacyPlain, PASSWORD);
+
+        Map<String, Object> stageOneMap = new HashMap<>();
+        stageOneMap.put("sample.sm4.secret", "ENC(" + sm4Cipher + ")");
+        stageOneMap.put("sample.legacy.secret", "{cipher}" + legacyCipher);
+        stageOneMap.put("sample.broken.secret", "ENC(InvalidBrokenToken)");
+        MapPropertySource rawStageOneSource = new MapPropertySource("applicationConfig: [classpath:/application.yml]", stageOneMap);
+
+        // 模拟阶段一使用默认配置 (AES-GCM / compatible=false / failOnError=true) 提前包裹
+        EncryptPropertySourceWrapper stageOneWrapper = new EncryptPropertySourceWrapper(
+                rawStageOneSource,
+                new CiphertextParser(false),
+                new KeyDetector(PASSWORD, Map.of()),
+                null,
+                EncryptAlgorithm.AES_GCM,
+                true
+        );
+        environment.getPropertySources().addLast(stageOneWrapper);
+
+        // 模拟阶段二后置合并进来的环境配置
+        Map<String, Object> overrideMap = new HashMap<>();
+        overrideMap.put("ateng.boot.encrypt.algorithm", "SM4-CBC");
+        overrideMap.put("ateng.boot.encrypt.compatible-cipher-prefix", "true");
+        overrideMap.put("ateng.boot.encrypt.fail-on-error", "false");
+        environment.getPropertySources().addFirst(new MapPropertySource("overrideConfig", overrideMap));
+
+        postProcessor.postProcessEnvironment(environment, new SpringApplication());
+
+        assertThat(environment.getProperty("sample.sm4.secret")).isEqualTo(sm4Plain);
+        assertThat(environment.getProperty("sample.legacy.secret")).isEqualTo(legacyPlain);
+        assertThat(environment.getProperty("sample.broken.secret")).isEqualTo("ENC(InvalidBrokenToken)");
     }
 }

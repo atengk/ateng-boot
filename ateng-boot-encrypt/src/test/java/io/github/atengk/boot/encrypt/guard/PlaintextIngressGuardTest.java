@@ -143,4 +143,52 @@ class PlaintextIngressGuardTest {
             System.clearProperty(KeyDetector.PROPERTY_PASSWORD);
         }
     }
+
+    @Test
+    @DisplayName("onEnvironmentChange: failOnError=false 时热更新包裹的新属性源解密失败返回原始值")
+    void testNewPropertySourceHonorsFailOnErrorFalse() {
+        EncryptProperties properties = new EncryptProperties();
+        properties.setPassword(masterPassword);
+        properties.setFailOnError(false);
+        PlaintextIngressGuard guard = new PlaintextIngressGuard(properties, parser);
+
+        StandardEnvironment env = new StandardEnvironment();
+        System.setProperty(KeyDetector.PROPERTY_PASSWORD, masterPassword);
+        try {
+            Map<String, Object> map = new HashMap<>();
+            map.put("spring.data.redis.password", "ENC(InvalidHotPushedCipher)");
+            MapPropertySource remoteSource = new MapPropertySource("nacosBrokenSource", map);
+            env.getPropertySources().addFirst(remoteSource);
+
+            guard.onEnvironmentChange(Set.of("spring.data.redis.password"), env);
+
+            assertThat(env.getProperty("spring.data.redis.password")).isEqualTo("ENC(InvalidHotPushedCipher)");
+        } finally {
+            System.clearProperty(KeyDetector.PROPERTY_PASSWORD);
+        }
+    }
+
+    @Test
+    @DisplayName("onEnvironmentChange: 热更新将 fail-on-error=false 同步至存量已包装属性源")
+    void testExistingWrapperSyncsFailOnErrorFalseOnRefresh() {
+        EncryptProperties properties = new EncryptProperties();
+        properties.setPassword(masterPassword);
+        properties.setFailOnError(true);
+        PlaintextIngressGuard guard = new PlaintextIngressGuard(properties, parser);
+
+        Map<String, Object> map = new HashMap<>();
+        map.put("ateng.boot.encrypt.fail-on-error", "false");
+        map.put("custom.broken.password", "ENC(CorruptedExistingCipher)");
+        MapPropertySource rawSource = new MapPropertySource("nacosExistingSource", map);
+
+        StandardEnvironment env = new StandardEnvironment();
+        EncryptPropertySourceWrapper wrapper = new EncryptPropertySourceWrapper(
+                rawSource, parser, new KeyDetector(masterPassword, Map.of()), null, EncryptAlgorithm.AES_GCM, true);
+        env.getPropertySources().addFirst(wrapper);
+
+        guard.onEnvironmentChange(Set.of("ateng.boot.encrypt.fail-on-error"), env);
+
+        assertThat(wrapper.isFailOnError()).isFalse();
+        assertThat(env.getProperty("custom.broken.password")).isEqualTo("ENC(CorruptedExistingCipher)");
+    }
 }

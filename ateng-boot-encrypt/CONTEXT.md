@@ -100,5 +100,10 @@ _Avoid_: 热推测试, 倒灌探针, IngressTester
 动态探查命名密钥映射表状态、多 Key 别名列表，并自验携带 `ENC[keyId](...)` 标签的密文精准路由解密与密钥轮换缓存原子置换的运维机制。
 _Avoid_: 密钥查看器, KeyInfo, KeyLister
 
+**Two-Phase Wrapper Sync (两阶段包装器运行时同步)**:
+在 `ConfigData` 第一阶段预解析守卫与 `EnvironmentPostProcessor` 第二阶段全量后置处理之间，将最终解析的默认算法、密文语法解析器、密钥探测器与失败阻断策略统一对齐至已包装属性源的状态同步机制。
+_Avoid_: 包装器覆盖, 二次代理, WrapperReset, EnvSync
+
+
 
 

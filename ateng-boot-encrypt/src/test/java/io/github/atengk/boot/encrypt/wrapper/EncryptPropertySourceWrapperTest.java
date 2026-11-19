@@ -14,6 +14,10 @@ import org.springframework.core.env.MapPropertySource;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -207,5 +211,125 @@ class EncryptPropertySourceWrapperTest {
         assertEquals(secretPlain, compatibleWrapper.getProperty("legacy.cloud.secret"));
         assertEquals("jdbc:mysql://host:3306/db?password=" + secretPlain + "&ssl=false",
                 compatibleWrapper.getProperty("legacy.cloud.url"));
+    }
+
+    @Test
+    @DisplayName("测试 failOnError=false 时解密失败保底返回原始值且不污染缓存")
+    void testFailOnErrorFalseReturnsRawValueWithoutPoisoningCache() {
+        String plain = "recoverable_secret_2026";
+        String cipher = ConfigEncryptor.encrypt(plain, masterPassword, EncryptAlgorithm.AES_GCM);
+        String rawToken = "ENC(" + cipher + ")";
+
+        MapPropertySource rawSource = new MapPropertySource("failSafeSource", Map.of(
+                "app.recoverable.secret", rawToken
+        ));
+        // 初始使用错误密钥且 failOnError = false
+        KeyDetector wrongDetector = new KeyDetector("WrongPassword", Map.of());
+        EncryptPropertySourceWrapper wrapper = new EncryptPropertySourceWrapper(
+                rawSource,
+                new CiphertextParser(),
+                wrongDetector,
+                null,
+                EncryptAlgorithm.AES_GCM,
+                false
+        );
+
+        // 解密失败时不抛出异常，降级返回原始密文串
+        assertEquals(rawToken, wrapper.getProperty("app.recoverable.secret"));
+
+        // 修复密钥后再次读取，由于失败结果未污染缓存，应成功解密
+        wrongDetector.setDefaultPassword(masterPassword);
+        assertEquals(plain, wrapper.getProperty("app.recoverable.secret"));
+    }
+
+    @Test
+    @DisplayName("测试 updateRuntimeConfig 运行时配置同步：对齐默认算法、解析器与容错策略并清空缓存")
+    void testUpdateRuntimeConfigSynchronizesAllSettings() {
+        String sm4Plain = "sm4_two_phase_secret";
+        String sm4Cipher = ConfigEncryptor.encrypt(sm4Plain, masterPassword, EncryptAlgorithm.SM4_CBC);
+        String legacyPlain = "legacy_cipher_secret";
+        String legacyCipher = ConfigEncryptor.encrypt(legacyPlain, masterPassword, EncryptAlgorithm.SM4_CBC);
+
+        MapPropertySource rawSource = new MapPropertySource("twoPhaseSource", Map.of(
+                "app.sm4.secret", "ENC(" + sm4Cipher + ")",
+                "app.legacy.secret", "{cipher}" + legacyCipher,
+                "app.broken.secret", "ENC(CorruptedCipherValue)"
+        ));
+
+        // 模拟阶段一默认配置：AES_GCM、不兼容 {cipher}、failOnError=true
+        KeyDetector detector = new KeyDetector(masterPassword, Map.of());
+        EncryptPropertySourceWrapper wrapper = new EncryptPropertySourceWrapper(
+                rawSource,
+                new CiphertextParser(false),
+                detector,
+                null,
+                EncryptAlgorithm.AES_GCM,
+                true
+        );
+
+        // 同步阶段二最终配置：SM4_CBC、兼容 {cipher}、failOnError=false
+        wrapper.updateRuntimeConfig(
+                new CiphertextParser(true),
+                detector,
+                null,
+                EncryptAlgorithm.SM4_CBC,
+                false
+        );
+
+        assertEquals(sm4Plain, wrapper.getProperty("app.sm4.secret"));
+        assertEquals(legacyPlain, wrapper.getProperty("app.legacy.secret"));
+        assertEquals("ENC(CorruptedCipherValue)", wrapper.getProperty("app.broken.secret"));
+    }
+
+    @Test
+    @DisplayName("测试多线程并发更新运行配置与密钥轮换时无死锁且状态一致")
+    void testConcurrentUpdateRuntimeConfigAndRead() throws Exception {
+        String plain = "concurrent_secret_value";
+        String cipher = ConfigEncryptor.encrypt(plain, masterPassword, EncryptAlgorithm.AES_GCM);
+        MapPropertySource rawSource = new MapPropertySource("concurrentSource", Map.of(
+                "app.concurrent.secret", "ENC(" + cipher + ")"
+        ));
+        KeyDetector detector = new KeyDetector(masterPassword, Map.of());
+        EncryptPropertySourceWrapper wrapper = new EncryptPropertySourceWrapper(rawSource, detector);
+
+        int threadCount = 8;
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(threadCount);
+        executor.setMaxPoolSize(threadCount);
+        executor.setThreadNamePrefix("wrapper-sync-test-");
+        executor.initialize();
+
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(threadCount);
+        List<Throwable> errors = new CopyOnWriteArrayList<>();
+
+        try {
+            for (int i = 0; i < threadCount; i++) {
+                final int idx = i;
+                executor.execute(() -> {
+                    try {
+                        startLatch.await();
+                        for (int j = 0; j < 20; j++) {
+                            if (idx % 2 == 0) {
+                                KeyDetector nextDetector = new KeyDetector(masterPassword, Map.of());
+                                wrapper.updateRuntimeConfig(new CiphertextParser(), nextDetector, null,
+                                        EncryptAlgorithm.AES_GCM, true);
+                            } else {
+                                assertEquals(plain, wrapper.getProperty("app.concurrent.secret"));
+                            }
+                        }
+                    } catch (Throwable ex) {
+                        errors.add(ex);
+                    } finally {
+                        doneLatch.countDown();
+                    }
+                });
+            }
+            startLatch.countDown();
+            assertTrue(doneLatch.await(10, TimeUnit.SECONDS), "并发读写应在限定时间内完成");
+            assertTrue(errors.isEmpty(), "并发同步与读取不应抛出异常: " + errors);
+        } finally {
+            executor.shutdown();
+        }
     }
 }

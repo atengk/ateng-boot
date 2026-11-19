@@ -3,6 +3,7 @@ package io.github.atengk.boot.encrypt.guard;
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
 import io.github.atengk.boot.encrypt.config.EncryptProperties;
 import io.github.atengk.boot.encrypt.detector.KeyDetector;
+import io.github.atengk.boot.encrypt.env.EncryptEnvironmentSupport;
 import io.github.atengk.boot.encrypt.exception.ConfigSecurityException;
 import io.github.atengk.boot.encrypt.parser.CiphertextParser;
 import io.github.atengk.boot.encrypt.wrapper.EncryptPropertySourceWrapper;
@@ -92,17 +93,19 @@ public class PlaintextIngressGuard implements ApplicationListener<ApplicationEve
             return;
         }
 
-        // 1. 重新包装外部配置中心新推入的未包装属性源，并原子置换清空存量解密缓存
+        // 1. 重新包装外部配置中心新推入的未包装属性源，同步存量包装器配置并原子置换清空解密缓存
         KeyDetector keyDetector = KeyDetector.detect(env);
-        String algoCode = env.getProperty("ateng.boot.encrypt.algorithm");
-        EncryptAlgorithm configuredAlgorithm = EncryptAlgorithm.fromCode(algoCode);
-        EncryptAlgorithm defaultAlgorithm = configuredAlgorithm != null ? configuredAlgorithm : EncryptAlgorithm.AES_GCM;
+        EncryptAlgorithm fallbackAlgorithm = properties.getAlgorithm() != null ? properties.getAlgorithm() : EncryptAlgorithm.AES_GCM;
+        EncryptAlgorithm defaultAlgorithm = EncryptEnvironmentSupport.resolveDefaultAlgorithm(env, null, fallbackAlgorithm);
+        boolean failOnError = EncryptEnvironmentSupport.resolveBooleanProperty(
+                env, EncryptEnvironmentSupport.PROPERTY_FAIL_ON_ERROR,
+                EncryptEnvironmentSupport.ENV_FAIL_ON_ERROR, properties.isFailOnError());
 
         int wrapperCount = 0;
         List<PropertySource<?>> toWrap = new ArrayList<>();
         for (PropertySource<?> source : env.getPropertySources()) {
             if (source instanceof EncryptPropertySourceWrapper wrapper) {
-                wrapper.clearCache();
+                wrapper.updateRuntimeConfig(parser, null, null, defaultAlgorithm, failOnError);
                 wrapperCount++;
             } else if (source != null && !EnforceEncryptionPolicy.shouldSkipPropertySource(source)) {
                 toWrap.add(source);
@@ -110,7 +113,7 @@ public class PlaintextIngressGuard implements ApplicationListener<ApplicationEve
         }
         for (PropertySource<?> source : toWrap) {
             EncryptPropertySourceWrapper wrapper = new EncryptPropertySourceWrapper(
-                    source, parser, keyDetector, null, defaultAlgorithm, true);
+                    source, parser, keyDetector, null, defaultAlgorithm, failOnError);
             env.getPropertySources().replace(source.getName(), wrapper);
             wrapperCount++;
         }
