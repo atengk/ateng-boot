@@ -55,16 +55,22 @@ public class DeadLetterBatchVO implements Serializable {
      * @param failedBatch 失败切片对象
      * @return 转换后的 VO
      */
-    public static DeadLetterBatchVO from(FailedBatch<MockOrder> failedBatch) {
+    public static DeadLetterBatchVO from(FailedBatch<?> failedBatch) {
         if (failedBatch == null) {
             return null;
         }
+        List<MockOrder> orders = failedBatch.getItems() == null
+                ? List.of()
+                : failedBatch.getItems().stream()
+                .filter(MockOrder.class::isInstance)
+                .map(MockOrder.class::cast)
+                .toList();
         return DeadLetterBatchVO.builder()
                 .batchIndex(failedBatch.getBatchIndex())
                 .itemCount(failedBatch.getItems() != null ? failedBatch.getItems().size() : 0)
                 .cursorId(failedBatch.getCursorId())
                 .errorMessage(failedBatch.getCause() != null ? failedBatch.getCause().getMessage() : null)
-                .items(failedBatch.getItems())
+                .items(orders)
                 .build();
     }
 }

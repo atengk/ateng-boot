@@ -60,15 +60,6 @@ public class HistoryDataArchiveJobHandler {
         fallbackLatch.countDown();
     }
 
-    /**
-     * 兼容别名任务：超时降级任务
-     */
-    @XxlJob("timeoutFallbackDemoJob")
-    @AtengXxlJob(value = "timeoutFallbackDemoJob", timeout = "200ms", fallback = "onArchiveTimeoutFallback")
-    public void executeSlowJob() {
-        executeHistoryDataArchive();
-    }
-
     public boolean isFallbackInvoked() {
         return fallbackInvoked.get();
     }

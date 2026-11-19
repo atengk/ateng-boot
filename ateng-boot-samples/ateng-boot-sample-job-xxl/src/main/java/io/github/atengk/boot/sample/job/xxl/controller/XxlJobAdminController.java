@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.job.xxl.controller;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.job.xxl.template.XxlJobAdminTemplate;
 import io.github.atengk.boot.sample.job.xxl.dto.AdminJobAddRequestDTO;
+import io.github.atengk.boot.sample.job.xxl.dto.AdminJobUpdateRequestDTO;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
@@ -11,6 +12,7 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -46,6 +48,20 @@ public class XxlJobAdminController {
                 requestDTO.getName(), requestDTO.getExecutorHandler());
         int jobId = adminTemplate.addJobAndGetId(requestDTO.toJobAddRequest());
         return Result.success(jobId);
+    }
+
+    /**
+     * 编程式更新调度中心已有任务配置
+     *
+     * @param requestDTO 任务更新请求 DTO
+     * @return 操作是否成功
+     */
+    @PutMapping("/jobs")
+    public Result<Boolean> updateJob(@Valid @RequestBody AdminJobUpdateRequestDTO requestDTO) {
+        log.info("[XxlJobAdminController] 编程式更新调度中心任务: id={}, name={}, handler={}",
+                requestDTO.getId(), requestDTO.getName(), requestDTO.getExecutorHandler());
+        adminTemplate.updateJob(requestDTO.toJobUpdateRequest());
+        return Result.success(true);
     }
 
     /**

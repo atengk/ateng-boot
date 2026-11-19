@@ -1,10 +1,7 @@
 package io.github.atengk.boot.sample.job.xxl;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
-import com.sun.net.httpserver.HttpServer;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
+import io.github.atengk.boot.sample.job.xxl.interceptor.CanaryAuditJobInterceptor;
+import io.github.atengk.boot.sample.job.xxl.mock.EmbeddedMockXxlJobAdmin;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,63 +10,50 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
-import java.io.IOException;
-import java.io.OutputStream;
-import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
-
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.hasItem;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * XXL-Job 样例工程 Web 领域控制器自动化契约测试套件
  *
- * <p>依托 {@link MockMvc} 对样例工程暴露的 4 大高内聚领域 Controller 进行全真契约测试，
- * 验证 HTTP 状态码 200、强类型 {@code Result<T>} 返回、JSR-303 Fail-Fast 校验拦截与各项交互端点。</p>
+ * <p>依托 {@link MockMvc} 与容器受管的 {@code @Profile("!local")} {@link EmbeddedMockXxlJobAdmin}
+ * 对样例工程暴露的 4 大高内聚领域 Controller 进行全真契约测试，
+ * 验证 HTTP 状态码 200、强类型 {@code Result<T>} 返回、JSR-303 Fail-Fast 校验拦截与全特性交互端点。</p>
  *
  * @author Ateng
  * @since 2026-11-11
  */
-@SpringBootTest(classes = SampleJobXxlApplication.class, webEnvironment = SpringBootTest.WebEnvironment.MOCK)
+@SpringBootTest(
+        classes = SampleJobXxlApplication.class,
+        webEnvironment = SpringBootTest.WebEnvironment.MOCK,
+        properties = "ateng.boot.job.xxl.port=0"
+)
 @AutoConfigureMockMvc
 class SampleJobXxlWebControllerTest {
-
-    private static HttpServer mockAdminServer;
-    private static int mockAdminPort;
 
     @Autowired
     private MockMvc mockMvc;
 
-    @BeforeAll
-    static void startMockAdmin() throws Exception {
-        String activeProfile = System.getProperty("spring.profiles.active", "");
-        if (!activeProfile.contains("local")) {
-            mockAdminServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-            mockAdminPort = mockAdminServer.getAddress().getPort();
-            mockAdminServer.createContext("/api", new MockAdminDispatcher());
-            mockAdminServer.setExecutor(null);
-            mockAdminServer.start();
+    @Autowired
+    private EmbeddedMockXxlJobAdmin embeddedMockAdmin;
 
-            System.setProperty("ateng.boot.job.xxl.admin-addresses", "http://127.0.0.1:" + mockAdminPort);
-            System.setProperty("ateng.boot.job.xxl.port", "0");
-        }
-    }
-
-    @AfterAll
-    static void stopMockAdmin() {
-        if (mockAdminServer != null) {
-            mockAdminServer.stop(0);
-        }
-    }
+    @Autowired
+    private CanaryAuditJobInterceptor canaryInterceptor;
 
     @Test
-    @DisplayName("控制器测试 1：XxlJobTriggerController 任务手动触发与参数校验")
+    @DisplayName("控制器测试 1：XxlJobTriggerController 全场景触发、重试、灰度与并发分片端点")
     void testTriggerControllerEndpoints() throws Exception {
+        assertThat(embeddedMockAdmin.isRunning()).isTrue();
+        assertThat(embeddedMockAdmin.getPort()).isPositive();
+
         // 1. POST /sample/job-xxl/trigger/warmup 系统预热
         mockMvc.perform(post("/sample/job-xxl/trigger/warmup"))
                 .andExpect(status().isOk())
@@ -102,14 +86,28 @@ class SampleJobXxlWebControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.success").value(true));
 
-        // 5. POST /sample/job-xxl/trigger/reconciliation 订单对账正常平账
+        // 5. POST /sample/job-xxl/trigger/sharding-parallel 并发分片批处理（派生视图 + 全局 BatchFailureHandler SPI）
+        mockMvc.perform(delete("/sample/job-xxl/dead-letter/clear"))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/sample/job-xxl/trigger/sharding-parallel")
+                        .param("shardIndex", "0")
+                        .param("shardTotal", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.handleMsg").value(containsString("并发分片批处理完成")));
+        mockMvc.perform(get("/sample/job-xxl/dead-letter/list"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(greaterThanOrEqualTo(1)));
+
+        // 6. POST /sample/job-xxl/trigger/reconciliation 订单对账正常平账
         mockMvc.perform(post("/sample/job-xxl/trigger/reconciliation")
                         .param("hasDiff", "false"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.success").value(true));
 
-        // 6. POST /sample/job-xxl/trigger/reconciliation 订单对账模拟差错告警
+        // 7. POST /sample/job-xxl/trigger/reconciliation 订单对账模拟差错告警
         mockMvc.perform(post("/sample/job-xxl/trigger/reconciliation")
                         .param("hasDiff", "true"))
                 .andExpect(status().isOk())
@@ -117,26 +115,57 @@ class SampleJobXxlWebControllerTest {
                 .andExpect(jsonPath("$.data.success").value(false))
                 .andExpect(jsonPath("$.data.errorMessage").value(containsString("差错调账告警")));
 
-        // 7. POST /sample/job-xxl/trigger/timeout-archive 历史归档超时降级
+        // 8. POST /sample/job-xxl/trigger/timeout-archive 历史归档超时降级
         mockMvc.perform(post("/sample/job-xxl/trigger/timeout-archive"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.success").value(true));
 
-        // 8. POST /sample/job-xxl/trigger/tenant/global 租户全局归档
+        // 9. POST /sample/job-xxl/trigger/canary 灰度拦截跳过与准入放行（消费 jobId / logId 元数据）
+        canaryInterceptor.clear();
+        mockMvc.perform(post("/sample/job-xxl/trigger/canary")
+                        .param("skip", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.handleMsg").value(containsString("[INTERCEPTED]")));
+        mockMvc.perform(post("/sample/job-xxl/trigger/canary")
+                        .param("skip", "false"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
+        assertThat(canaryInterceptor.getLastCapturedMeta()).isNotNull();
+        assertThat(canaryInterceptor.getLastCapturedMeta().jobHandler()).isEqualTo("canaryNormalJob");
+        assertThat(canaryInterceptor.getLastCapturedMeta().logId()).isPositive();
+
+        // 10. POST /sample/job-xxl/trigger/retry 独立单注解 @AtengXxlJob 本地退避重试自愈与耗尽路径
+        mockMvc.perform(post("/sample/job-xxl/trigger/retry")
+                        .param("exhaust", "false"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.handleMsg").value(containsString("自愈成功")));
+        mockMvc.perform(post("/sample/job-xxl/trigger/retry")
+                        .param("exhaust", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(false))
+                .andExpect(jsonPath("$.data.errorMessage").value(containsString("持续不可用")));
+
+        // 11. POST /sample/job-xxl/trigger/tenant/global 租户全局归档
         mockMvc.perform(post("/sample/job-xxl/trigger/tenant/global"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.success").value(true));
 
-        // 9. POST /sample/job-xxl/trigger/tenant/scoped 单租户隔离账单
+        // 12. POST /sample/job-xxl/trigger/tenant/scoped 单租户隔离账单
         mockMvc.perform(post("/sample/job-xxl/trigger/tenant/scoped")
                         .param("tenantId", "TENANT-999"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.success").value(true));
 
-        // 10. POST /sample/job-xxl/trigger/tenant/parallel 多租户并发遍历
+        // 13. POST /sample/job-xxl/trigger/tenant/parallel 多租户并发遍历
         mockMvc.perform(post("/sample/job-xxl/trigger/tenant/parallel"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
@@ -184,6 +213,23 @@ class SampleJobXxlWebControllerTest {
         mockMvc.perform(post("/sample/job-xxl/admin/jobs")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(invalidAddJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false));
+
+        // 2.5 PUT /sample/job-xxl/admin/jobs 更新已有任务配置 (合规与 JSR-303 校验拦截)
+        String updateJson = "{\"id\":101,\"name\":\"动态报表任务-已更新\",\"executorHandler\":\"reportJob\",\"scheduleType\":\"CRON\",\"scheduleConf\":\"0 0 4 * * ?\"}";
+        mockMvc.perform(put("/sample/job-xxl/admin/jobs")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(updateJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        String invalidUpdateJson = "{\"id\":0,\"name\":\"\",\"executorHandler\":\"\"}";
+        mockMvc.perform(put("/sample/job-xxl/admin/jobs")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidUpdateJson))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400))
                 .andExpect(jsonPath("$.success").value(false));

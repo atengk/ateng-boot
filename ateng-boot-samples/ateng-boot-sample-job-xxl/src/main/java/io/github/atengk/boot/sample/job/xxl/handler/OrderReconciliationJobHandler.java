@@ -49,13 +49,4 @@ public class OrderReconciliationJobHandler {
         log.info(">>>>>> [OrderReconciliationJobHandler] 订单每日对账完成，借贷平衡。");
         XxlJobHelper.handleSuccess("订单每日对账完成，平账成功");
     }
-
-    /**
-     * 兼容别名任务：模拟告警演练任务
-     */
-    @XxlJob("alertDemoJob")
-    @AtengXxlJob(value = "alertDemoJob")
-    public void executeAlertDemo() {
-        executeOrderReconciliation();
-    }
 }

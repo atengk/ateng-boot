@@ -37,15 +37,6 @@ public class SystemWarmupJobHandler {
     }
 
     /**
-     * 兼容别名任务：基础问候任务
-     */
-    @XxlJob("simpleGreetingJob")
-    @AtengXxlJob(value = "simpleGreetingJob", timeout = "5s")
-    public void executeGreeting() {
-        executeSystemWarmup();
-    }
-
-    /**
      * 灰度拦截跳过任务：演示被拦截器 preHandle 返回 false 优雅拦截并上报 200 SUCCESS
      */
     @XxlJob("canarySkipJob")

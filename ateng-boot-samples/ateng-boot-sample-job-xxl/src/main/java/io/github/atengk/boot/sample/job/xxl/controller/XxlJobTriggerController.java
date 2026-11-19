@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.job.xxl.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper;
 import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper.XxlJobTestResult;
 import io.github.atengk.boot.sample.job.xxl.dto.UserSyncParam;
@@ -131,6 +132,50 @@ public class XxlJobTriggerController {
     public Result<JobTriggerVO> triggerTenantParallel() {
         log.info("[XxlJobTriggerController] 手动触发多租户并发遍历任务: parallelTenantJob");
         XxlJobTestResult result = XxlJobTestHelper.trigger("parallelTenantJob");
+        return Result.success(JobTriggerVO.from(result));
+    }
+
+    /**
+     * 触发灰度拦截与元数据审计任务：演示 XxlJobInterceptor 灰度拦截与 XxlJobExecutionContext 元数据消费
+     *
+     * @param skip true 触发 canarySkipJob 命中拦截返回 200 [INTERCEPTED]；false 触发 canaryNormalJob 准入放行审计
+     * @return 任务执行诊断结果
+     */
+    @PostMapping("/canary")
+    public Result<JobTriggerVO> triggerCanary(@RequestParam(defaultValue = "true") boolean skip) {
+        String handler = skip ? "canarySkipJob" : "canaryNormalJob";
+        log.info("[XxlJobTriggerController] 手动触发灰度拦截演练任务: handler={}, skip={}", handler, skip);
+        XxlJobTestResult result = XxlJobTestHelper.trigger(handler, "skip=" + skip);
+        return Result.success(JobTriggerVO.from(result));
+    }
+
+    /**
+     * 触发支付回调补偿重试任务：演示独立单注解 @AtengXxlJob(retryCount=2, retryInterval="100ms") 本地退避重试闭环
+     *
+     * @param exhaust false 模拟前 2 次瞬态失败第 3 次自愈；true 模拟持续故障耗尽重试并保留 cause 链
+     * @return 任务执行诊断结果
+     */
+    @PostMapping("/retry")
+    public Result<JobTriggerVO> triggerRetry(@RequestParam(defaultValue = "false") boolean exhaust) {
+        String param = "runId=" + IdUtil.fastSimpleUUID() + ",exhaust=" + exhaust;
+        log.info("[XxlJobTriggerController] 手动触发支付回调本地退避重试任务: paymentCallbackRetryJob, exhaust={}", exhaust);
+        XxlJobTestResult result = XxlJobTestHelper.trigger("paymentCallbackRetryJob", param);
+        return Result.success(JobTriggerVO.from(result));
+    }
+
+    /**
+     * 触发并发分片流式批处理任务：演示 withFailFast/withProgressLogInterval 无状态派生视图与全局 BatchFailureHandler SPI 兜底
+     *
+     * @param shardIndex 当前节点分片序号 (默认 0)
+     * @param shardTotal 集群总分片数 (默认 2)
+     * @return 任务执行诊断结果
+     */
+    @PostMapping("/sharding-parallel")
+    public Result<JobTriggerVO> triggerShardingParallel(
+            @RequestParam(defaultValue = "0") int shardIndex,
+            @RequestParam(defaultValue = "2") int shardTotal) {
+        log.info("[XxlJobTriggerController] 手动触发并发分片批处理任务: shardingParallelBatchJob, shard={}/{}", shardIndex, shardTotal);
+        XxlJobTestResult result = XxlJobTestHelper.trigger("shardingParallelBatchJob", null, shardIndex, shardTotal, null);
         return Result.success(JobTriggerVO.from(result));
     }
 }

@@ -19,8 +19,8 @@
 
 ## 2. 运行环境与双模切换
 
-- **默认 / CI 模式**：内置默认自洽配置与轻量 Mock Admin 服务桩，无需启动外部 XXL-Job 调度中心集群即可一键启动并 100% 离线跑通全部集成测试；
-- **Local 真实模式**：若需连接真实 XXL-Job 调度中心集群，复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml` 并填入真实调度中心地址与 Token（已被 `.gitignore` 忽略，CI 零污染风险），激活 `local` Profile 启动即可直连真实环境联调。
+- **默认 / CI 模式**：内置 `@Profile("!local")` 轻量级内嵌调度中心 [`EmbeddedMockXxlJobAdmin`](src/main/java/io/github/atengk/boot/sample/job/xxl/mock/EmbeddedMockXxlJobAdmin.java)，随 Spring Boot 启动自动绑定随机空闲回环端口并抢先回写 `ateng.boot.job.xxl.admin-addresses`，响应执行器注册、注销、结果回调与调度中心 OpenAPI 全系操作；直接执行 `mvn spring-boot:run` 或运行单测均 100% 离线自洽，无 8080 自环心跳 404 问题；
+- **Local 真实模式**：若需连接真实 XXL-Job 调度中心集群，复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml` 并填入真实调度中心地址与 Token（已被 `.gitignore` 忽略，CI 零污染风险），激活 `local` Profile 启动时内嵌 Mock Admin 自动退避不装配，直连真实环境联调。
 
 ---
 
@@ -34,9 +34,12 @@
 | **用户同步 (合规参数)** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/user-sync` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/user-sync" -H "Content-Type: application/json" -d '{"batchNo":"BATCH-20261111-001","batchSize":300,"tenantId":"TENANT-1001"}'` |
 | **用户同步 (JSR-303 快速失败)** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/user-sync` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/user-sync" -H "Content-Type: application/json" -d '{"batchNo":"","batchSize":9999}'` |
 | **大数据分片广播批处理** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/sharding-batch` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/sharding-batch?shardIndex=0&shardTotal=2"` |
+| **并发分片与全局死信 SPI** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/sharding-parallel` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/sharding-parallel?shardIndex=0&shardTotal=2"` |
 | **订单对账正常平账** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/reconciliation` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/reconciliation?hasDiff=false"` |
 | **订单对账模拟差错告警自愈** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/reconciliation` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/reconciliation?hasDiff=true"` |
 | **历史冷数据归档超时降级** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/timeout-archive` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/timeout-archive"` |
+| **灰度切面拦截与元数据审计** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/canary` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/canary?skip=true"` |
+| **单注解退避重试自愈/耗尽** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/retry` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/retry?exhaust=false"` |
 | **租户全局归档 (IGNORE 模态)** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/tenant/global` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/tenant/global"` |
 | **单租户隔离账单 (PARAM 模态)** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/tenant/scoped` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/tenant/scoped?tenantId=TENANT-888"` |
 | **多租户并发遍历 (ITERATE 模态)** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/tenant/parallel` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/tenant/parallel"` |
@@ -44,6 +47,7 @@
 | **恢复单节点任务执行** | `XxlJobGovernorController` | `POST /sample/job-xxl/governor/resume/{handler}` | `curl -X POST "http://localhost:8080/sample/job-xxl/governor/resume/pausableTaskJob"` |
 | **巡检单节点静默任务清单** | `XxlJobGovernorController` | `GET /sample/job-xxl/governor/paused-handlers` | `curl -X GET "http://localhost:8080/sample/job-xxl/governor/paused-handlers"` |
 | **编程式向 Admin 注册任务** | `XxlJobAdminController` | `POST /sample/job-xxl/admin/jobs` | `curl -X POST "http://localhost:8080/sample/job-xxl/admin/jobs" -H "Content-Type: application/json" -d '{"jobGroup":1,"name":"动态报表任务","executorHandler":"reportJob","scheduleType":"CRON","scheduleConf":"0 0 3 * * ?"}'` |
+| **编程式更新 Admin 任务配置** | `XxlJobAdminController` | `PUT /sample/job-xxl/admin/jobs` | `curl -X PUT "http://localhost:8080/sample/job-xxl/admin/jobs" -H "Content-Type: application/json" -d '{"id":101,"name":"动态报表任务-已更新","executorHandler":"reportJob","scheduleType":"CRON","scheduleConf":"0 0 4 * * ?"}'` |
 | **编程式启动调度任务** | `XxlJobAdminController` | `POST /sample/job-xxl/admin/jobs/{jobId}/start` | `curl -X POST "http://localhost:8080/sample/job-xxl/admin/jobs/101/start"` |
 | **编程式停止调度任务** | `XxlJobAdminController` | `POST /sample/job-xxl/admin/jobs/{jobId}/stop` | `curl -X POST "http://localhost:8080/sample/job-xxl/admin/jobs/101/stop"` |
 | **编程式即时触发调度任务** | `XxlJobAdminController` | `POST /sample/job-xxl/admin/jobs/{jobId}/trigger` | `curl -X POST "http://localhost:8080/sample/job-xxl/admin/jobs/101/trigger?param=manual-test"` |

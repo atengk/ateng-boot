@@ -137,5 +137,49 @@ public class ShardingBatchJobHandler {
                 summary.getSuccessCount(), summary.getFailCount(), deadLetters.size()));
     }
 
+    /**
+     * 并发分片流式批处理任务：基于无状态派生视图（withFailFast / withProgressLogInterval）执行并发切片消费，
+     * 并由全局 Spring BatchFailureHandler SPI 自动兜底接收失败死信切片
+     *
+     * @param shardingContext 分片上下文
+     */
+    @AtengXxlJob(value = "shardingParallelBatchJob", timeout = "30s")
+    public void executeShardingParallelWithGlobalFailureSpi(ShardingContext shardingContext) {
+        log.info(">>>>>> [ShardingBatchJobHandler] 开始执行并发分片批处理任务 (无状态派生视图 + 全局 BatchFailureHandler SPI)...");
+        BatchExecutionResult summary = batchTemplate
+                .withFailFast(false)
+                .withProgressLogInterval(5)
+                .executeShardedStepParallel(
+                        shardingContext,
+                        0L,
+                        5,
+                        4,
+                        (lastId, limit) -> {
+                            long currentId = lastId != null ? lastId : 0L;
+                            if (currentId >= 20) {
+                                return List.of();
+                            }
+                            List<MockOrder> batch = new ArrayList<>();
+                            for (int i = 1; i <= limit; i++) {
+                                long id = currentId + i;
+                                batch.add(new MockOrder(id, "PARALLEL-ORDER-" + id, (int) (id % 100)));
+                            }
+                            return batch;
+                        },
+                        MockOrder::id,
+                        batch -> {
+                            for (MockOrder order : batch) {
+                                // 模拟 ID 为 8 与 16 的订单处理抛出业务异常
+                                if (order.id() == 8L || order.id() == 16L) {
+                                    throw new IllegalStateException("并发分片订单 [ID=" + order.id() + "] 消费异常");
+                                }
+                            }
+                        }
+                );
+
+        XxlJobHelper.handleSuccess(String.format("并发分片批处理完成: 成功 %d 条, 失败 %d 条, 耗时 %dms",
+                summary.getSuccessCount(), summary.getFailCount(), summary.getDuration().toMillis()));
+    }
+
     public record MockOrder(Long id, String orderNo, Integer amount) {}
 }

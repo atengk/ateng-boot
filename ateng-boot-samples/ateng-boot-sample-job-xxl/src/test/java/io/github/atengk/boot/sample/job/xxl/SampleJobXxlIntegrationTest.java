@@ -1,37 +1,33 @@
 package io.github.atengk.boot.sample.job.xxl;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
-import com.sun.net.httpserver.HttpServer;
 import com.xxl.job.core.context.XxlJobContext;
 import io.github.atengk.boot.job.xxl.actuator.XxlJobEndpoint;
 import io.github.atengk.boot.job.xxl.event.XxlJobAlertEvent;
 import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper;
 import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper.XxlJobTestResult;
+import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
 import io.github.atengk.boot.job.xxl.template.FailedBatch;
 import io.github.atengk.boot.job.xxl.template.XxlJobAdminTemplate;
 import io.github.atengk.boot.sample.job.xxl.dto.UserSyncParam;
+import io.github.atengk.boot.sample.job.xxl.handler.DeadLetterBatchFailureHandler;
 import io.github.atengk.boot.sample.job.xxl.handler.HistoryDataArchiveJobHandler;
 import io.github.atengk.boot.sample.job.xxl.handler.OrderReconciliationJobHandler;
+import io.github.atengk.boot.sample.job.xxl.handler.PaymentCallbackRetryJobHandler;
 import io.github.atengk.boot.sample.job.xxl.handler.ShardingBatchJobHandler;
 import io.github.atengk.boot.sample.job.xxl.handler.ShardingBatchJobHandler.MockOrder;
 import io.github.atengk.boot.sample.job.xxl.handler.SystemWarmupJobHandler;
 import io.github.atengk.boot.sample.job.xxl.handler.TenantJobHandler;
 import io.github.atengk.boot.sample.job.xxl.interceptor.CanaryAuditJobInterceptor;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
+import io.github.atengk.boot.sample.job.xxl.mock.EmbeddedMockXxlJobAdmin;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
-import java.io.IOException;
-import java.io.OutputStream;
-import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -41,20 +37,28 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * XXL-Job 场景样例工程端到端集成实测套件 (双模自适应：离线自洽 Mock Admin / 真实 Local Admin 联调)
+ * XXL-Job 场景样例工程端到端集成实测套件 (双模自适应：离线自洽 @Profile("!local") 内嵌 Mock Admin / 真实 Local Admin 联调)
  *
  * @author Ateng
  * @since 2026-10-31
  */
-@SpringBootTest(classes = SampleJobXxlApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+        classes = SampleJobXxlApplication.class,
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = "ateng.boot.job.xxl.port=0"
+)
 @Import(SampleJobXxlIntegrationTest.TestAlertEventListener.class)
 class SampleJobXxlIntegrationTest {
 
-    private static HttpServer mockAdminServer;
-    private static int mockAdminPort;
+    @Autowired
+    private EmbeddedMockXxlJobAdmin embeddedMockAdmin;
+
+    @Autowired
+    private XxlJobProperties xxlJobProperties;
 
     @Autowired
     private XxlJobEndpoint xxlJobEndpoint;
@@ -78,46 +82,42 @@ class SampleJobXxlIntegrationTest {
     private ShardingBatchJobHandler shardingBatchJobHandler;
 
     @Autowired
+    private DeadLetterBatchFailureHandler deadLetterBatchFailureHandler;
+
+    @Autowired
+    private PaymentCallbackRetryJobHandler paymentCallbackRetryJobHandler;
+
+    @Autowired
     private TenantJobHandler tenantJobHandler;
 
     @Autowired
     private TestAlertEventListener eventListener;
 
-    @BeforeAll
-    static void startMockAdmin() throws Exception {
-        // 如果未激活 local profile，则自动拉起离线轻量 Mock Admin 服务桩
-        String activeProfile = System.getProperty("spring.profiles.active", "");
-        if (!activeProfile.contains("local")) {
-            mockAdminServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-            mockAdminPort = mockAdminServer.getAddress().getPort();
-            mockAdminServer.createContext("/api", new MockAdminDispatcher());
-            mockAdminServer.setExecutor(null);
-            mockAdminServer.start();
+    @Test
+    @DisplayName("测试 @Profile(\"!local\") 内嵌 Mock Admin 自动绑定随机端口、local 退避屏蔽与心跳注册闭环")
+    void testEmbeddedMockAdminDualProfileLifecycle() {
+        assertTrue(embeddedMockAdmin.isRunning());
+        assertTrue(embeddedMockAdmin.getPort() > 0);
+        assertEquals("http://127.0.0.1:" + embeddedMockAdmin.getPort(), xxlJobProperties.getAdminAddresses());
 
-            // 动态设置调度中心地址指向 Mock 桩
-            System.setProperty("ateng.boot.job.xxl.admin-addresses", "http://127.0.0.1:" + mockAdminPort);
-            System.setProperty("ateng.boot.job.xxl.port", "0"); // 使用动态随机端口避免端口冲突
-        }
-    }
-
-    @AfterAll
-    static void stopMockAdmin() {
-        if (mockAdminServer != null) {
-            mockAdminServer.stop(0);
-        }
+        // 激活 local Profile 时 EmbeddedMockXxlJobAdmin 必须退避不装配
+        new ApplicationContextRunner()
+                .withUserConfiguration(EmbeddedMockXxlJobAdmin.class)
+                .withPropertyValues("spring.profiles.active=local")
+                .run(context -> assertFalse(context.containsBean("embeddedMockXxlJobAdmin")));
     }
 
     @Test
-    @DisplayName("测试系统预热与问候任务：MDC traceId 透传与正常调度")
+    @DisplayName("测试系统预热任务并确认旧测试桩别名已彻底清除")
     void testSystemWarmupJob() {
         XxlJobTestResult result = XxlJobTestHelper.trigger("systemWarmupJob", "warmup-cache");
         assertTrue(result.isSuccess());
         assertEquals(XxlJobContext.HANDLE_CODE_SUCCESS, result.handleCode());
 
-        // 兼容验证别名任务
-        XxlJobTestResult greetingResult = XxlJobTestHelper.trigger("simpleGreetingJob", "ateng-greeting");
-        assertTrue(greetingResult.isSuccess());
-        assertEquals(XxlJobContext.HANDLE_CODE_SUCCESS, greetingResult.handleCode());
+        // 旧测试桩别名已清除，不可再解析
+        assertNull(XxlJobTestHelper.getHandler("simpleGreetingJob"));
+        assertNull(XxlJobTestHelper.getHandler("alertDemoJob"));
+        assertNull(XxlJobTestHelper.getHandler("timeoutFallbackDemoJob"));
     }
 
     @Test
@@ -198,11 +198,18 @@ class SampleJobXxlIntegrationTest {
     }
 
     @Test
-    @DisplayName("测试 OpenAPI 编程式管理门面集群交互")
+    @DisplayName("测试 OpenAPI 编程式管理门面集群交互（含 updateJob 全对称操作）")
     void testOpenApiAdminTemplate() {
         assertNotNull(adminTemplate);
         assertTrue(adminTemplate.getEndpointCount() >= 1);
         assertDoesNotThrow(() -> adminTemplate.triggerJob(101, "test-param"));
+        com.xxl.job.core.openapi.admin.dto.JobUpdateRequest updateReq =
+                new com.xxl.job.core.openapi.admin.dto.JobUpdateRequest();
+        updateReq.setId(101);
+        updateReq.setName("updated-sample-job");
+        updateReq.setExecutorHandler("systemWarmupJob");
+        assertDoesNotThrow(() -> adminTemplate.updateJob(updateReq));
+        assertFalse(embeddedMockAdmin.getRecordedRequestPaths().isEmpty());
     }
 
     @Test
@@ -231,12 +238,53 @@ class SampleJobXxlIntegrationTest {
         assertTrue(skipResult.handleMsg().contains("[INTERCEPTED]"));
         assertEquals(1, canaryInterceptor.getSkippedCount());
 
-        // 2. 正常任务：preHandle 准入放行，正常执行业务并在 afterCompletion 完成终态审计
+        // 2. 正常任务：preHandle 准入放行，正常执行业务并在 postHandle/afterCompletion 消费 jobId 与 logId
         XxlJobTestResult normalResult = XxlJobTestHelper.trigger("canaryNormalJob");
         assertTrue(normalResult.isSuccess());
         assertEquals(XxlJobContext.HANDLE_CODE_SUCCESS, normalResult.handleCode());
         assertTrue(canaryInterceptor.getAuditedJobs().contains("canaryNormalJob"));
+        assertTrue(canaryInterceptor.getPostHandledCount() >= 1);
         assertTrue(canaryInterceptor.getCompletedCount() >= 1);
+        assertNotNull(canaryInterceptor.getLastCapturedMeta());
+        assertEquals("canaryNormalJob", canaryInterceptor.getLastCapturedMeta().jobHandler());
+        assertTrue(canaryInterceptor.getLastCapturedMeta().logId() > 0);
+    }
+
+    @Test
+    @DisplayName("测试独立单注解 @AtengXxlJob 本地退避重试：瞬态自愈零误告警与耗尽收敛单次告警")
+    void testStandaloneAtengXxlJobLocalRetryAndExhaust() {
+        paymentCallbackRetryJobHandler.reset();
+        eventListener.clearEvents();
+
+        // 1. 瞬态自愈（retryCount=2, retryInterval=100ms）：第 3 次成功且不触发任何错误告警
+        XxlJobTestResult recoverResult = XxlJobTestHelper.trigger("paymentCallbackRetryJob", "run-recover-1");
+        assertTrue(recoverResult.isSuccess());
+        assertEquals(XxlJobContext.HANDLE_CODE_SUCCESS, recoverResult.handleCode());
+        assertEquals(3, paymentCallbackRetryJobHandler.getTotalExecutions());
+        assertTrue(eventListener.getCapturedEvents().isEmpty());
+
+        // 2. 耗尽重试（exhaust=true）：尝试 3 次后抛出异常并仅收敛发布 1 次 INITIAL_FAILURE 告警
+        paymentCallbackRetryJobHandler.reset();
+        eventListener.clearEvents();
+        XxlJobTestResult exhaustResult = XxlJobTestHelper.trigger("paymentCallbackRetryJob", "run-exhaust-1,exhaust=true");
+        assertFalse(exhaustResult.isSuccess());
+        assertEquals(3, paymentCallbackRetryJobHandler.getTotalExecutions());
+        assertEquals(1, eventListener.getCapturedEvents().size());
+        assertEquals(XxlJobAlertEvent.AlertType.INITIAL_FAILURE, eventListener.getCapturedEvents().get(0).getAlertType());
+    }
+
+    @Test
+    @DisplayName("测试并发分片批处理：withFailFast/withProgressLogInterval 派生视图与全局 BatchFailureHandler SPI 兜底")
+    void testShardingParallelWithGlobalBatchFailureHandlerSpi() {
+        deadLetterBatchFailureHandler.clearGlobalDeadLetters();
+        shardingBatchJobHandler.clearDeadLetters();
+
+        XxlJobTestResult result = XxlJobTestHelper.trigger("shardingParallelBatchJob", null, 0, 1);
+        assertTrue(result.isSuccess());
+        assertEquals(XxlJobContext.HANDLE_CODE_SUCCESS, result.handleCode());
+        // 未传入显式回调 -> 自动路由至全局 DeadLetterBatchFailureHandler Bean（2 批异常：id=8 所在第2批与 id=16 所在第4批）
+        assertEquals(2, deadLetterBatchFailureHandler.getGlobalDeadLetters().size());
+        assertTrue(shardingBatchJobHandler.getDeadLetters().isEmpty());
     }
 
     @Test
@@ -269,9 +317,10 @@ class SampleJobXxlIntegrationTest {
     }
 
     @Test
-    @DisplayName("测试分片批处理：结构化流式进度打卡与切片异常死信补偿回调")
+    @DisplayName("测试分片批处理：结构化流式进度打卡与切片异常死信补偿回调（显式回调覆盖全局 SPI）")
     void testShardingBatchDeadLetterCallback() {
         shardingBatchJobHandler.clearDeadLetters();
+        deadLetterBatchFailureHandler.clearGlobalDeadLetters();
 
         XxlJobTestResult result = XxlJobTestHelper.trigger("shardingBatchDeadLetterJob", null, 0, 1);
         assertTrue(result.isSuccess());
@@ -279,6 +328,8 @@ class SampleJobXxlIntegrationTest {
 
         List<FailedBatch<MockOrder>> deadLetters = shardingBatchJobHandler.getDeadLetters();
         assertEquals(1, deadLetters.size());
+        // 显式传入 failureHandler 时，全局 BatchFailureHandler Bean 不得被重复触发
+        assertTrue(deadLetterBatchFailureHandler.getGlobalDeadLetters().isEmpty());
         FailedBatch<MockOrder> failedBatch = deadLetters.get(0);
         assertEquals(5, failedBatch.getItems().size());
         assertNotNull(failedBatch.getCause());

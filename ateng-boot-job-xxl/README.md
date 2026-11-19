@@ -8,19 +8,20 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.job.xxl.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **声明式增强** | 增强任务注解 | `@AtengXxlJob` | `enabled`<br>`context-aspect-enabled` | 声明式标注在 `@XxlJob` 方法上，按需织入四维上下文、本地硬超时、租户模式与降级补偿 | `XxlJobContextAspectTest` / `SystemWarmupJobHandler` |
-| **声明式增强** | 任务标识名称 | `@AtengXxlJob.value` | - | `String value()`，指定 JobHandler 标识名称（默认留空，优先以 `@XxlJob.value()` 为准） | `XxlJobContextAspectTest` / `SystemWarmupJobHandler` |
-| **声明式增强** | 本地硬超时阈值 | `@AtengXxlJob.timeout` | `default-job-timeout` | `String timeout()`，声明式本地硬超时字符串（如 `200ms`、`30s`），看门狗超限强行中断工作线程 | `LocalWatchdogTest` / `HistoryDataArchiveJobHandler` |
+| **声明式增强** | 增强任务注解（支持独立单注解注册） | `@AtengXxlJob` | `enabled`<br>`context-aspect-enabled` | 支持单独标注或与 `@XxlJob` 双标使用（`init`/`destroy` 与缺省方法名回退），按需织入四维上下文、重试与超时补偿 | `AtengXxlJobSpringExecutorRegistrationTest` / `PaymentCallbackRetryJobHandler` |
+| **声明式增强** | 任务标识名称与生命周期 | `@AtengXxlJob.value`<br>`init` / `destroy` | - | `String value()` / `init()` / `destroy()`（同时标注 `@XxlJob` 时优先取 `@XxlJob.value()`，留空回退方法名） | `AtengXxlJobSpringExecutorRegistrationTest` / `PaymentCallbackRetryJobHandler` |
+| **声明式增强** | 本地硬超时阈值 | `@AtengXxlJob.timeout` | `default-job-timeout` | `String timeout()`，声明式本地硬超时字符串（如 `200ms`、`30s`），约束包含重试在内的整次调度生命周期 | `LocalWatchdogTest` / `XxlJobRetryIntegrationTest` / `HistoryDataArchiveJobHandler` |
+| **声明式增强** | 方法级本地退避重试 | `@AtengXxlJob.retryCount`<br>`retryInterval` | `default-job-timeout` | `int retryCount()`（默认 0）与 `String retryInterval()`（默认 `1s`），仅对非致命瞬态异常退避重试，JSR-303/`Error`/`TimeoutException`/看门狗超时零重试 | `XxlJobRetryIntegrationTest` / `PaymentCallbackRetryJobHandler` |
 | **声明式增强** | 多租户隔离模式 | `@AtengXxlJob.tenantMode` | - | `JobTenantMode tenantMode()`，支持 `IGNORE`（忽略租户）、`PARAM`（入参绑定）、`ITERATE`（全租户遍历） | `XxlJobContextAspectTest` / `TenantJobHandler` |
 | **声明式增强** | 超时降级补偿方法 | `@AtengXxlJob.fallback` | - | `String fallback()`，指定同 Bean 降级补偿方法名，任务超时中断后就地异步触发补偿逻辑 | `LocalWatchdogTest` / `HistoryDataArchiveJobHandler` |
 | **声明式增强** | 方法级告警开关 | `@AtengXxlJob.alertEnabled` | `alert-enabled` | `boolean alertEnabled()`，方法级精细化静音开关，默认 true | `XxlJobAlertAggregatorTest` / `OrderReconciliationJobHandler` |
 | **声明式增强** | 方法级失败抑制阈值 | `@AtengXxlJob.alertSuppressThreshold` | `alert-suppress-threshold` | `int alertSuppressThreshold()`，方法级连续失败告警触发阈值（-1 表示继承全局配置） | `XxlJobAlertAggregatorTest` / `OrderReconciliationJobHandler` |
 | **参数防卫校验** | JSR-303 快速失败 | 方法形参声明 `@Valid` | - | 切面自动将调度 JSON 入参反序列化为形参强类型 DTO 并执行 JSR-303 防卫与 Fail-Fast 阻断 | `XxlJobContextAspectTest` / `ParamValidationJobHandler` |
-| **切面拦截责任链** | 任务执行切面拦截器 SPI | `XxlJobInterceptor` | - | 三阶段切面扩展点：`preHandle`、`postHandle`、`afterCompletion`，支持企业级灰度与审计 | `XxlJobContextAspectTest` / `CanaryAuditJobInterceptor` |
-| **切面拦截责任链** | 灰度跳过优雅终止 | `XxlJobInterceptor.preHandle` | - | `boolean preHandle(XxlJobExecutionContext context)`，返回 false 时优雅终止并返回 200 SUCCESS 防告警风暴 | `XxlJobContextAspectTest` / `CanaryAuditJobInterceptor` |
-| **切面拦截责任链** | 任务执行后置处理 | `XxlJobInterceptor.postHandle` | - | `void postHandle(XxlJobExecutionContext context, Object result)`，任务成功执行后调用 | `XxlJobContextAspectTest` / `CanaryAuditJobInterceptor` |
-| **切面拦截责任链** | 任务完成终态清理 | `XxlJobInterceptor.afterCompletion` | - | `void afterCompletion(XxlJobExecutionContext context, Throwable throwable)`，在 finally 块逆序触发终态归档 | `XxlJobContextAspectTest` / `CanaryAuditJobInterceptor` |
-| **切面拦截责任链** | 执行上下文模型 | `XxlJobExecutionContext` | - | 携带 `jobHandler`、`jobId`、`traceId`、`tenantId`、`shardIndex`、`jobParam`、`targetMethod` 与扩展属性 | `XxlJobContextAspectTest` / `CanaryAuditJobInterceptor` |
+| **切面拦截责任链** | 任务执行切面拦截器 SPI | `XxlJobInterceptor` | - | 三阶段切面扩展点：`preHandle`、`postHandle`、`afterCompletion`，支持企业级灰度与审计 | `XxlJobInterceptorIntegrationTest` / `CanaryAuditJobInterceptor` |
+| **切面拦截责任链** | 灰度跳过优雅终止 | `XxlJobInterceptor.preHandle` | - | `boolean preHandle(XxlJobExecutionContext context)`，返回 false 时优雅终止并返回 200 SUCCESS 防告警风暴 | `XxlJobInterceptorIntegrationTest` / `CanaryAuditJobInterceptor` |
+| **切面拦截责任链** | 任务执行后置处理 | `XxlJobInterceptor.postHandle` | - | `void postHandle(XxlJobExecutionContext context, Object result)`，任务成功执行后调用 | `XxlJobInterceptorIntegrationTest` / `CanaryAuditJobInterceptor` |
+| **切面拦截责任链** | 任务完成终态清理 | `XxlJobInterceptor.afterCompletion` | - | `void afterCompletion(XxlJobExecutionContext context, Throwable throwable)`，在 finally 块逆序触发终态归档 | `XxlJobInterceptorIntegrationTest` / `CanaryAuditJobInterceptor` |
+| **切面拦截责任链** | 执行上下文全量元数据 | `XxlJobExecutionContext` | - | 跨三阶段透传 `getJobId()`、`getLogId()`、`getJobHandler()`、`getShardIndex()`、`getShardTotal()`、`getJobParam()`、`getTargetMethod()`、`getTraceId()`、`getTenantId()` 与 `attributes` | `XxlJobInterceptorIntegrationTest` / `CanaryAuditJobInterceptor` |
 | **运行时治理** | 节点级任务治理总线 | `JobRuntimeGovernor` | - | 内存单例总线，支持在单个节点维度对特定任务实施临时静默与恢复，随 Pod 重启自复位 | `JobRuntimeGovernorTest` / `XxlJobGovernorController` |
 | **运行时治理** | 暂停任务处理器 | `JobRuntimeGovernor.pause` | - | `void pause(String handler)`，将指定任务加入内存静默名单，被调度触发时直接旁路跳过 | `JobRuntimeGovernorTest` / `XxlJobGovernorController` |
 | **运行时治理** | 恢复任务处理器 | `JobRuntimeGovernor.resume` | - | `void resume(String handler)`，将指定任务移出静默名单，恢复正常调度执行 | `JobRuntimeGovernorTest` / `XxlJobGovernorController` |
@@ -28,18 +29,20 @@
 | **超时降级补偿** | 本地硬超时守护时间轮 | `LocalWatchdog` | `default-job-timeout` | 基于 Netty `HashedWheelTimer` 与受管线程工厂，超限强行中断工作线程并广播 `JobTimeoutEvent` | `LocalWatchdogTest` / `HistoryDataArchiveJobHandler` |
 | **超时降级补偿** | 全局超时降级处理器 SPI | `JobTimeoutFallbackHandler` | - | `void onTimeout(JobExecutionMetadata metadata, Duration elapsed)`，全局超时异步补偿回调 | `LocalWatchdogTest` / `HistoryDataArchiveJobHandler` |
 | **超时降级补偿** | 任务超时领域事件 | `JobTimeoutEvent` | - | Spring 领域事件，携带 `jobId`、`jobHandler`、`timeout`、`elapsed` 耗时元数据 | `LocalWatchdogTest` |
+| **分片流式批处理** | 无状态策略派生视图 | `XxlShardingBatchTemplate` | `batch-size`<br>`progress-log-interval` | `withFailFast(boolean)` / `withProgressLogInterval(int)` 返回不可变派生视图（原 Setter 标 `@Deprecated`），零单例串扰 | `BatchFailureHandlerIntegrationTest` / `ShardingBatchJobHandler` |
+| **分片流式批处理** | 失败切片回调 SPI | `BatchFailureHandler<T>` | - | `@FunctionalInterface extends Consumer<FailedBatch<T>>`，`onFailure(FailedBatch)` 支持全局 Spring Bean 自动装配与“显式优先、全局兜底”两级仲裁 | `BatchFailureHandlerIntegrationTest` / `DeadLetterBatchFailureHandler` |
 | **分片流式批处理** | 步长流式顺序消费 | `XxlShardingBatchTemplate` | `batch-size` | `executeStep(initialId, batchSize, queryFunc, idExtractor, consumer, failureHandler)` 游标拉取 | `XxlShardingBatchTemplateTest` / `ShardingBatchJobHandler` |
 | **分片流式批处理** | 步长逐条流式消费 | `XxlShardingBatchTemplate` | `batch-size` | `executeStepForEach(initialId, batchSize, queryFunc, idExtractor, itemConsumer, failureHandler)` | `XxlShardingBatchTemplateTest` |
 | **分片流式批处理** | 分片智能过滤流式消费 | `XxlShardingBatchTemplate` | `batch-size` | `executeShardedStep(sharding, initialId, batchSize, queryFunc, idExtractor, consumer, failureHandler)` | `XxlShardingBatchTemplateTest` / `ShardingBatchJobHandler` |
-| **分片流式批处理** | 步长受管并发消费 | `XxlShardingBatchTemplate` | `batch-max-concurrency` | `executeStepParallel(...)` 结合信号量背压并发分片拉取，透传四维上下文与死信收集 | `XxlShardingBatchTemplateTest` |
-| **分片流式批处理** | 分片广播受管并发消费 | `XxlShardingBatchTemplate` | `batch-max-concurrency` | `executeShardedStepParallel(...)` 广播分片智能切片 + 受管线程池并发消费 | `XxlShardingBatchTemplateTest` |
+| **分片流式批处理** | 步长受管并发消费 | `XxlShardingBatchTemplate` | `batch-max-concurrency` | `executeStepParallel(...)` 基于 `ReentrantLock` 与信号量背压并发消费，透传四维上下文与死信收集 | `BatchFailureHandlerIntegrationTest` / `XxlShardingBatchTemplateTest` |
+| **分片流式批处理** | 分片广播受管并发消费 | `XxlShardingBatchTemplate` | `batch-max-concurrency` | `executeShardedStepParallel(...)` 广播分片智能切片 + 受管线程池并发消费 + `BatchFailureHandler` SPI | `BatchFailureHandlerIntegrationTest` / `ShardingBatchJobHandler` |
 | **分片流式批处理** | 失败切片死信模型 | `FailedBatch<T>` | - | 封装 `items`（失败明细）、`batchIndex`、`cursorId`、`cause`，供补偿回调持久化死信 | `XxlShardingBatchTemplateTest` / `XxlJobDeadLetterController` |
 | **分片流式批处理** | 执行结果统计模型 | `BatchExecutionResult` | - | 封装总数、成功数、失败数、批次数、耗时与有界失败集合（`MAX_FAILED_ITEMS=1000` 截断防 OOM） | `XxlShardingBatchTemplateTest` / `ShardingBatchJobHandler` |
 | **分片流式批处理** | 实时流式进度打卡 | `XxlShardingBatchTemplate` | `progress-log-interval` | 定期输出结构化进度日志（默认每 5000 条输出一次已推进总数与耗时），消除长任务盲盒 | `XxlShardingBatchTemplateTest` / `ShardingBatchJobHandler` |
 | **多租户遍历** | 顺序多租户隔离遍历 | `TenantJobTemplate` | - | `executeForEachTenant(action)`，在独立租户沙箱中流式遍历各租户执行，杜绝数据串写 | `TenantJobTemplateTest` / `TenantJobHandler` |
-| **多租户遍历** | 受管并发多租户遍历 | `TenantJobTemplate` | `batch-max-concurrency` | `executeForEachTenantParallel(action)`，基于信号量背压与受管线程池并发遍历，透传上下文 | `TenantJobTemplateTest` / `TenantJobHandler` |
+| **多租户遍历** | 受管并发多租户遍历 | `TenantJobTemplate` | `batch-max-concurrency` | `executeForEachTenantParallel(action)`，基于信号量背压、`ReentrantLock` 与受管线程池并发遍历 | `TenantJobTemplateTest` / `TenantJobHandler` |
 | **多租户遍历** | 租户列表提供者 SPI | `TenantListProvider` | - | `List<String> getTenantIds()`，供业务系统注册有效租户提供者，配合模板遍历 | `TenantJobTemplateTest` / `TenantJobHandler` |
-| **ORM 流式扩展** | MyBatis-Plus 游标批处理 | `XxlMyBatisStreamingTemplate` | - | `executeStreaming(...)` 联动 `StreamingQueryTemplate` 与 `Cursor` 顺序/并发流式拉取 | `XxlShardingBatchTemplateTest` |
+| **ORM 流式扩展** | MyBatis-Plus 游标批处理 | `XxlMyBatisStreamingTemplate` | - | `executeStreaming(...)` / `executeStreamingParallel(...)`、协变 `withFailFast`/`withProgressLogInterval` 与 `BatchFailureHandler` SPI | `BatchFailureHandlerIntegrationTest` / `XxlShardingBatchTemplateTest` |
 | **OpenAPI 门面** | 调度任务生命周期管理 | `XxlJobAdminTemplate` | `admin-addresses`<br>`access-token` | `addJob`、`updateJob`、`startJob`、`stopJob`、`removeJob`、`triggerJob`，支持集群多节点故障转移 | `XxlJobAdminTemplateTest` / `XxlJobAdminController` |
 | **脱网极速调试** | 脱网单测手动触发 | `XxlJobTestHelper` | - | `trigger(handler, paramObject, shardIndex, shardTotal, tenantId)`，支持 POJO 自动序列化与 JSR-303 防卫 | `XxlJobTestHelperTest` / `XxlJobTriggerController` |
 | **运维端点** | 全量 Handler 状态清单 | `XxlJobEndpoint` | `enabled` | `GET /actuator/xxljobs`，列出已注册的 JobHandler 概览、执行器端口、元数据及静默状态 | `XxlJobEndpointTest` / `SampleJobXxlIntegrationTest` |
@@ -55,9 +58,13 @@
 | **健康探针** | 执行器健康状态检测 | `XxlJobHealthIndicator` | `enabled` | 暴露于 `/actuator/health`，优先读取执行器运行时顺延自愈端口与 IP，上报网络连通性 | `XxlJobEndpointTest` / `SampleJobXxlIntegrationTest` |
 | **监控度量** | Micrometer 核心指标 | `XxlJobMetricsBinder` | - | 发布 `ateng.job.xxl.execution` Timer 指标（Throughput、Failures、P50/P95/P99 分位数耗时） | `XxlJobEndpointTest` / `SampleJobXxlIntegrationTest` |
 | **日志镜像** | SLF4J 双写动态桥接 | `XxlJobLogbackAppenderRegistrar` | `log-mirror-enabled` | 自动向 Logback Root Logger 挂载动态 Appender，在调度线程将日志镜像至调度中心 | `XxlJobLogbackAppenderRegistrarTest` / `SystemWarmupJobHandler` |
-| **日志治理** | 历史日志防崩安全清理 | `AtengJobLogFileCleanHelper` | `log-path`<br>`log-retention-days` | 重构历史日志清理器，强制执行路径防卫与跨平台文件句柄防崩容错 | `AtengJobLogFileCleanHelperTest` |
+| **日志治理** | 受管历史日志安全清理 | `AtengJobLogFileCleanHelper` | `log-path`<br>`log-retention-days` | 优先托管至外部 `TaskScheduler`/`ScheduledExecutorService`（停机仅取消自身任务不误关），缺省回退自持有 `ThreadPoolTaskScheduler` | `AtengJobLogFileCleanHelperTest` |
+| **执行器注解对齐** | 注解元信息共享解析器 | `AtengXxlJobAnnotationHelper` | - | `resolveHandlerName`、`shouldRegisterAtengHandler`、`resolveLifecycleMethod` 统一扫描、测试与切面命名 | `AtengXxlJobSpringExecutorRegistrationTest` |
+| **执行器调度器** | 业务工作线程池线程 | `AtengJobThread` | - | 取代官方裸 `new Thread(futureTask)`，托管业务异步执行与超时中断响应 | `AtengJobThreadTest` |
+| **执行器加固** | 端口冲突顺延解析器 | `XxlJobPortResolver` | `port`<br>`port-detection-max-retry` | 绑定冲突时以步长 1 自动向上顺延探测空闲端口，防单机多实例启动冲突 | `XxlJobPortResolverTest` |
+| **执行器加固** | 网卡/容器 IP 探测器 | `ContainerIpDetector` | `ip` | 过滤虚拟/回环网卡，精准识别物理网卡或容器 POD 真实可路由 IP | `ContainerIpDetectorTest` |
 | **上下文传播** | 调度上下文异步全链路传播 | `XxlJobContextSnapshotProvider` | - | 实现 `AsyncContextSnapshotProvider` SPI，治理 `InheritableThreadLocal` 跨池浅拷贝污染 | `XxlJobContextSnapshotProviderTest` |
-| **自动装配** | 模块自动装配入口 | `AtengXxlJobAutoConfiguration` | `enabled` | Spring Boot 3 标准自动装配，平滑探测调度中心配置，标配完整缺省 Bean 守卫 | `AtengXxlJobAutoConfigurationTest` |
+| **自动装配** | 模块自动装配入口 | `AtengXxlJobAutoConfiguration` | `enabled` | Spring Boot 3 标准自动装配，透传全局 `BatchFailureHandler` 与受管 `TaskScheduler` 并标配完整缺省守卫 | `AtengXxlJobAutoConfigurationTest` |
 
 ---
 
@@ -83,6 +90,16 @@
 <dependency>
     <groupId>io.github.atengk</groupId>
     <artifactId>ateng-boot-job-xxl</artifactId>
+</dependency>
+```
+
+若未统一导入 BOM，也可独立显式声明当前版本：
+
+```xml
+<dependency>
+    <groupId>io.github.atengk</groupId>
+    <artifactId>ateng-boot-job-xxl</artifactId>
+    <version>1.2.0</version>
 </dependency>
 ```
 
@@ -338,6 +355,91 @@ public class ParamValidationJobHandler {
 
 ---
 
+### 3.3 独立单注解注册与方法级本地退避重试 (`retryCount` / `retryInterval`)
+
+#### 专属 YAML 配置片段
+
+```yaml
+ateng:
+  boot:
+    job:
+      xxl:
+        context-aspect-enabled: true                       # 依赖切面编排本地退避重试与看门狗总超时约束
+        default-job-timeout: 1h                            # 默认总超时阈值（涵盖所有本地重试与退避休眠耗时）
+        managed-pool-enabled: true                         # 是否交由 Core 受管异步线程池执行
+```
+
+#### 实战业务代码 (`PaymentCallbackRetryJobHandler`)
+
+```java
+package io.github.atengk.boot.sample.job.xxl.handler;
+
+import com.xxl.job.core.context.XxlJobContext;
+import com.xxl.job.core.context.XxlJobHelper;
+import io.github.atengk.boot.job.xxl.annotation.AtengXxlJob;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
+@Component
+public class PaymentCallbackRetryJobHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(PaymentCallbackRetryJobHandler.class);
+
+    private final ConcurrentMap<String, AtomicInteger> attemptCounters = new ConcurrentHashMap<>();
+    private final AtomicInteger totalExecutions = new AtomicInteger();
+
+    /**
+     * 独立单注解声明的支付回调补偿任务：首次失败 + 最多 2 次本地退避重试 (共 3 次尝试)
+     */
+    @AtengXxlJob(value = "paymentCallbackRetryJob", timeout = "5s", retryCount = 2, retryInterval = "100ms")
+    public void executePaymentCallbackRetry() {
+        String param = XxlJobHelper.getJobParam();
+        boolean exhaust = param != null && param.contains("exhaust=true");
+        String runKey = resolveRunKey(param);
+        int attempt = attemptCounters.computeIfAbsent(runKey, k -> new AtomicInteger()).incrementAndGet();
+        totalExecutions.incrementAndGet();
+
+        log.info(">>>>>> [PaymentCallbackRetryJobHandler] 执行支付回调推送 runKey={}, 第 {} 次尝试, exhaust={}",
+                runKey, attempt, exhaust);
+
+        if (exhaust) {
+            if (attempt >= 3) {
+                attemptCounters.remove(runKey);
+            }
+            throw new IllegalStateException("商户回调网关持续不可用 (attempt-" + attempt + ")");
+        }
+
+        // 前 2 次模拟瞬态网络超时失败，第 3 次退避重试后自愈成功
+        if (attempt < 3) {
+            throw new IllegalStateException("商户回调网关瞬态抖动 (attempt-" + attempt + ")");
+        }
+
+        attemptCounters.remove(runKey);
+        XxlJobHelper.handleSuccess("支付回调经本地退避重试第 " + attempt + " 次自愈成功");
+    }
+
+    private String resolveRunKey(String param) {
+        if (param != null && !param.isBlank()) {
+            return param;
+        }
+        XxlJobContext context = XxlJobContext.getXxlJobContext();
+        return context != null ? ("log-" + context.getLogId()) : "default-run";
+    }
+}
+```
+
+#### 核心机制与边界防御
+- **独立注册与命名优先级**：`AtengXxlJobSpringExecutor` 自动扫描仅标注 `@AtengXxlJob` 的方法并支持 `init`/`destroy` 与缺省方法名回退；通过 `AtengXxlJobAnnotationHelper` 与 `XxlJobTestHelper`、`XxlJobContextAspect` 保持严格一致（双标时优先取 `@XxlJob.value()`，跨方法同名启动期 Fail-Fast）；
+- **瞬态自愈与状态复位**：每次重试前自动清理上一轮可能写入 `XxlJobContext` 的残留 `handleFail` 失败码/文案；重试恢复成功时不触发 `INITIAL_FAILURE` 误告警且正常回调拦截器 `postHandle`；耗尽重试保留完整原始 `cause` 链并收敛触发单次告警；
+- **零重试与总超时红线**：对 JSR-303 参数校验失败、畸形 JSON 反序列化、`Error`、`TimeoutException`、`InterruptedException`、看门狗硬超时、`JobRuntimeGovernor` 节点静默与 `XxlJobInterceptor` 拦截严格执行 **0 次重试**；`timeout` 约束覆盖直跑与受管线程池模式下的整次调度周期（含重试与退避休眠）。
+
+---
+
 ## 4. 高可靠韧性保障套件 (Resilience & Reliability)
 
 ### 4.1 本地硬看门狗超时强中断与同 Bean 就地降级补偿
@@ -444,8 +546,7 @@ public class OrderReconciliationJobHandler {
         this.faultInjected.set(fault);
     }
 
-    @XxlJob("orderReconciliationJob")
-    @AtengXxlJob(value = "orderReconciliationJob", alertEnabled = true, alertSuppressThreshold = 3)
+    @AtengXxlJob(value = "orderReconciliationJob")
     public void executeOrderReconciliation() {
         String param = XxlJobHelper.getJobParam();
         boolean hasDiff = faultInjected.get() || (param != null && param.contains("hasDiff=true"));
@@ -493,7 +594,7 @@ log.info(">>>>>> 开始执行批量订单核销, 当前节点: {}", nodeAddress)
 #### 核心机制与边界防御
 - **动态 Logback 挂载**：启动期由 `XxlJobLogbackAppenderRegistrar` 动态向 Logback Root Logger 挂载镜像 Appender；
 - **线程上下文隔离**：仅拦截当前线程且 `XxlJobContext.getXxlJobContext() != null` 的调度线程日志，业务普通 Web 线程零性能开销；
-- **历史日志防崩清理**：`AtengJobLogFileCleanHelper` 重构清理器，在多实例共享磁盘与 Windows 平台下执行路径防卫与安全句柄释放，彻底解决原生开源版文件清理报 NPE 或锁死崩溃的缺陷。
+- **受管调度历史日志清理**：`AtengJobLogFileCleanHelper` 彻底移除 `Executors` 野线程，支持注入外部 Spring 受管 `TaskScheduler`（`ThreadPoolTaskScheduler`）或 `ScheduledExecutorService`，缺省时创建守护型自持有 `ThreadPoolTaskScheduler`；`stop()` 仅取消自身调度任务绝不误关外部共享调度器，在多实例共享磁盘与 Windows 平台下执行日期正则与隐藏文件防卫。
 
 ---
 
@@ -529,6 +630,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -552,10 +654,21 @@ public class ShardingBatchJobHandler {
         BatchExecutionResult summary = batchTemplate.executeShardedStep(
                 shardingContext,
                 0L,                  // 初始游标 ID
-                100,                 // 每批拉取 100 条
-                300L,                // 预估总条数，用于实时进度打卡
+                5,                   // 每批拉取 5 条
+                15L,                 // 预估总条数，用于实时进度打卡
                 false,               // failFast = false: 容错继续处理其余切片并收集死信
-                (lastId, limit) -> orderRepository.selectNextBatch(lastId, limit),
+                (lastId, limit) -> {
+                    long currentId = lastId != null ? lastId : 0L;
+                    if (currentId >= 15) {
+                        return List.of();
+                    }
+                    List<MockOrder> batch = new ArrayList<>();
+                    for (int i = 1; i <= limit; i++) {
+                        long id = currentId + i;
+                        batch.add(new MockOrder(id, "ORDER-" + id, (int) (id % 100)));
+                    }
+                    return batch;
+                },
                 MockOrder::id,       // 主键提取器
                 batch -> {
                     for (MockOrder order : batch) {
@@ -567,12 +680,51 @@ public class ShardingBatchJobHandler {
                 failedBatch -> {
                     log.warn(">>>>>> [DeadLetter] 捕获失败切片进入死信回调: 批次 {}, 失败条数 {}",
                             failedBatch.getBatchIndex(), failedBatch.getItems().size());
-                    deadLetters.add(failedBatch); // 投递至死信队列或存储死信表
+                    deadLetters.add(failedBatch); // 显式就近回调优先覆盖全局 BatchFailureHandler SPI
                 }
         );
 
         XxlJobHelper.handleSuccess(String.format("分片批处理完成: 成功 %d 条, 失败 %d 条, 死信收集 %d 批",
                 summary.getSuccessCount(), summary.getFailCount(), deadLetters.size()));
+    }
+
+    /**
+     * 并发分片流式批处理：依托无状态不可变派生视图 (withFailFast / withProgressLogInterval) 与全局 BatchFailureHandler SPI
+     */
+    @AtengXxlJob(value = "shardingParallelBatchJob", timeout = "30s")
+    public void executeShardingParallelWithGlobalFailureSpi(ShardingContext shardingContext) {
+        BatchExecutionResult summary = batchTemplate
+                .withFailFast(false)
+                .withProgressLogInterval(5)
+                .executeShardedStepParallel(
+                        shardingContext,
+                        0L,
+                        5,
+                        4,
+                        (lastId, limit) -> {
+                            long currentId = lastId != null ? lastId : 0L;
+                            if (currentId >= 20) {
+                                return List.of();
+                            }
+                            List<MockOrder> batch = new ArrayList<>();
+                            for (int i = 1; i <= limit; i++) {
+                                long id = currentId + i;
+                                batch.add(new MockOrder(id, "PARALLEL-ORDER-" + id, (int) (id % 100)));
+                            }
+                            return batch;
+                        },
+                        MockOrder::id,
+                        batch -> {
+                            for (MockOrder order : batch) {
+                                if (order.id() == 8L || order.id() == 16L) {
+                                    throw new IllegalStateException("并发分片订单 [ID=" + order.id() + "] 消费异常");
+                                }
+                            }
+                        }
+                );
+
+        XxlJobHelper.handleSuccess(String.format("并发分片批处理完成: 成功 %d 条, 失败 %d 条, 耗时 %dms",
+                summary.getSuccessCount(), summary.getFailCount(), summary.getDuration().toMillis()));
     }
 
     public record MockOrder(Long id, String orderNo, Integer amount) {}
@@ -581,8 +733,9 @@ public class ShardingBatchJobHandler {
 
 #### 核心机制与边界防御
 - **主键游标分页**：基于 `WHERE id > :lastId ORDER BY id ASC LIMIT :batchSize` 模式，杜绝深分页 `OFFSET` 性能恶化；
-- **分片智能过滤**：`executeShardedStep` 结合 `id % shardTotal == shardIndex` 自动识别当前分片归属，消除重复消费；
-- **堆内存防 OOM 刚性熔断**：`BatchExecutionResult` 强制实施 `MAX_FAILED_ITEMS = 1000` 截断防线，即便下游存储大面积故障，也不会将海量实体驻留堆内存导致 JVM 崩溃。
+- **无状态派生视图防串扰**：通过 `withFailFast(boolean)` 与 `withProgressLogInterval(int)` 派生携带独立不可变策略快照的轻量视图实例（原 `setFailFast` / `setProgressLogInterval` 标记 `@Deprecated`），彻底消灭共享单例在高并发调用下的状态篡改；
+- **两级失败回调仲裁**：传入非空 `failureHandler` 时仅执行显式回调；传入 `null` 或省略回调时自动路由至容器全局 `BatchFailureHandler` Bean，单批绝不双重触发；
+- **堆内存防 OOM 与零 Pinning**：基于 `ReentrantLock` 保护的 `BatchExecutionResult` 强制实施 `MAX_FAILED_ITEMS = 1000` 截断防线，溢出置位 `truncatedFailures = true` 同时保留精确 `failCount`。
 
 ---
 
@@ -607,10 +760,12 @@ import com.xxl.job.core.context.XxlJobHelper;
 import com.xxl.job.core.handler.annotation.XxlJob;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.job.xxl.annotation.AtengXxlJob;
-import io.github.atengk.boot.job.xxl.annotation.JobTenantMode;
+import io.github.atengk.boot.job.xxl.enums.JobTenantMode;
 import io.github.atengk.boot.job.xxl.template.BatchExecutionResult;
 import io.github.atengk.boot.job.xxl.template.TenantJobTemplate;
 import org.springframework.stereotype.Component;
+
+import java.util.Objects;
 
 @Component
 public class TenantJobHandler {
@@ -642,8 +797,10 @@ public class TenantJobHandler {
     @AtengXxlJob(value = "parallelTenantJob", tenantMode = JobTenantMode.ITERATE)
     public void executeParallelTenant() {
         BatchExecutionResult result = tenantJobTemplate.executeForEachTenantParallel(tenantId -> {
-            String currentTenant = TenantContextHolder.getTenantId(); // 严格等于当前并发分发租户
-            billingService.generateMonthlyBill(currentTenant);
+            String currentTenant = TenantContextHolder.getTenantId();
+            if (!Objects.equals(tenantId, currentTenant)) {
+                throw new IllegalStateException("租户上下文不匹配: expected=" + tenantId + ", actual=" + currentTenant);
+            }
         });
 
         XxlJobHelper.handleSuccess(String.format("多租户并发遍历完成: 总数 %d, 成功 %d, 失败 %d",
@@ -778,14 +935,23 @@ public void dynamicScheduleOperations() {
     addRequest.setScheduleConf("0 0 2 * * ?");
     int newJobId = adminTemplate.addJobAndGetId(addRequest);
 
-    // 2. 启动与停止任务
+    // 2. 更新调度任务配置
+    JobUpdateRequest updateRequest = new JobUpdateRequest();
+    updateRequest.setId(newJobId);
+    updateRequest.setName("每日凌晨数据清洗任务-已调优");
+    updateRequest.setExecutorHandler("dailyCleanJob");
+    updateRequest.setScheduleType("CRON");
+    updateRequest.setScheduleConf("0 0 4 * * ?");
+    adminTemplate.updateJob(updateRequest);
+
+    // 3. 启动与停止任务
     adminTemplate.startJob(newJobId);
     adminTemplate.stopJob(newJobId);
 
-    // 3. 编程式即时触发一次执行
+    // 4. 编程式即时触发一次执行
     adminTemplate.triggerJob(newJobId, "manual-trigger-param");
 
-    // 4. 清理注销任务
+    // 5. 清理注销任务
     adminTemplate.removeJob(newJobId);
 }
 ```
@@ -856,24 +1022,55 @@ public class CanaryAuditJobInterceptor implements XxlJobInterceptor {
 
         // 灰度拦截跳过规则：若任务名为 canarySkipJob，则优雅拦截并直接报告 200 SUCCESS
         if ("canarySkipJob".equalsIgnoreCase(jobName)) {
-            log.warn(">>>>>> [CanaryAuditJobInterceptor] 任务 [{}] 命中灰度拦截跳过规则，优雅终止执行！", jobName);
+            log.warn(">>>>>> [CanaryAuditJobInterceptor] 任务 [{}] (jobId={}, logId={}) 命中灰度拦截跳过规则，优雅终止执行！",
+                    jobName, context.getJobId(), context.getLogId());
             return false;
         }
 
-        log.info(">>>>>> [CanaryAuditJobInterceptor] [preHandle] 任务 [{}] 准入审计放行, traceId: {}",
-                jobName, context.getTraceId());
+        log.info(">>>>>> [CanaryAuditJobInterceptor] [preHandle] 任务 [{}] 准入审计放行, jobId={}, logId={}, shard={}/{}, traceId={}",
+                jobName, context.getJobId(), context.getLogId(), context.getShardIndex(), context.getShardTotal(), context.getTraceId());
         return true;
     }
 
     @Override
+    public void postHandle(XxlJobExecutionContext context, Object result) throws Exception {
+        log.info(">>>>>> [CanaryAuditJobInterceptor] [postHandle] 任务 [{}] (jobId={}, logId={}) 正常完成回调",
+                context.getJobHandler(), context.getJobId(), context.getLogId());
+    }
+
+    @Override
     public void afterCompletion(XxlJobExecutionContext context, Throwable throwable) throws Exception {
-        log.info(">>>>>> [CanaryAuditJobInterceptor] [afterCompletion] 任务 [{}] 执行终态归档, 异常: {}",
-                context.getJobName(), throwable != null ? throwable.getMessage() : "none");
+        log.info(">>>>>> [CanaryAuditJobInterceptor] [afterCompletion] 任务 [{}] (jobId={}, logId={}) 执行终态归档, 异常: {}",
+                context.getJobHandler(), context.getJobId(), context.getLogId(), throwable != null ? throwable.getMessage() : "none");
     }
 }
 ```
 
-### 8.2 全局超时降级处理器 SPI (`JobTimeoutFallbackHandler`)
+### 8.2 全局失败切片兜底处理器 SPI (`BatchFailureHandler<T>`)
+
+实现函数式 SPI `BatchFailureHandler<T>`（兼容 `Consumer<FailedBatch<T>>`）并注册为 Spring Bean，为未显式传入就近回调的流式分片批处理提供全局死信收集：
+
+```java
+@Component
+public class DeadLetterBatchFailureHandler implements BatchFailureHandler<Object> {
+
+    private static final Logger log = LoggerFactory.getLogger(DeadLetterBatchFailureHandler.class);
+
+    @Override
+    public void onFailure(FailedBatch<Object> failedBatch) {
+        if (failedBatch == null) {
+            return;
+        }
+        log.warn(">>>>>> [DeadLetterBatchFailureHandler] 全局 SPI 兜底接收失败切片: batchIndex={}, cursorId={}, items={}, cause={}",
+                failedBatch.getBatchIndex(),
+                failedBatch.getCursorId(),
+                failedBatch.getItems().size(),
+                failedBatch.getCause() != null ? failedBatch.getCause().getMessage() : "none");
+    }
+}
+```
+
+### 8.3 全局超时降级处理器 SPI (`JobTimeoutFallbackHandler`)
 
 当任务超时且未声明同 Bean 就地 `fallback` 时，系统自动回调全局降级 SPI：
 
@@ -892,15 +1089,18 @@ public class GlobalJobTimeoutFallbackHandler implements JobTimeoutFallbackHandle
 }
 ```
 
-### 8.3 堆内存防 OOM 刚性熔断不变量 (`MAX_FAILED_ITEMS = 1000`)
+### 8.4 全链路 `ReentrantLock` 虚拟线程防 Carrier Pinning 契约
+- `ateng-boot-job-xxl` 全模块（包含 `XxlShardingBatchTemplate`、`XxlMyBatisStreamingTemplate`、`TenantJobTemplate`、`XxlJobAlertAggregator`、`XxlJobTestHelper`、`AtengJobLogFileCleanHelper`）严格消除 `synchronized` 与 `Executors` 创建野线程行为（源码检出 0 处 `synchronized` 与 0 处 `Executors.`），所有互斥状态严格使用显式 `ReentrantLock` 并在 `finally` 校验 `isHeldByCurrentThread()` 释放，确保 JDK 21+ 虚拟线程运行时零 Carrier Pinning。
+
+### 8.5 堆内存防 OOM 刚性熔断不变量 (`MAX_FAILED_ITEMS = 1000`)
 - 在千万级数据分片处理中，若下游存储发生全局故障，可能会连续产生数万条失败明细；
 - 为防止将海量失败实体缓存在 `BatchExecutionResult` 中引发 JVM 堆内存溢出（OOM），框架在 `BatchExecutionResult` 中硬编码刚性上限 `MAX_FAILED_ITEMS = 1000`；溢出部分自动截断并置位 `truncatedFailures = true`，同时完整保留 `failCount` 失败计数，坚守内存确定性生命周期防线。
 
-### 8.4 拦截器返回值语义规范 (`preHandle` 返回 `false` 报告 200 SUCCESS)
+### 8.6 拦截器返回值语义规范 (`preHandle` 返回 `false` 报告 200 SUCCESS)
 - 在微服务集群进行金丝雀灰度发布或节点预检时，若某节点判定该任务不应在本机执行，拦截器 `preHandle` 返回 `false`；
 - 框架与 XXL-Job 调度中心协议达成共识：此时切面自动拦截并向调度中心报告 `200 SUCCESS` 并在消息中标记 `[INTERCEPTED]`，防止调度中心判定为网络或业务故障引发重试与报警风暴。
 
-### 8.5 Actuator 运维管控端点与 Micrometer 度量
+### 8.7 Actuator 运维管控端点与 Micrometer 度量
 - **Actuator 运维端点**：
   - `GET /actuator/xxljobs`：获取所有受管 `@XxlJob` 列表、增强元数据与单节点静默状态；
   - `GET /actuator/xxljobs/{handler}`：查询指定 Handler 的反射元数据、目标 Bean、方法签名与静默状态；
@@ -951,18 +1151,26 @@ public class GlobalJobTimeoutFallbackHandler implements JobTimeoutFallbackHandle
 
 | 领域控制器 | 体验端点与请求方式 | 业务场景描述 | 快速体验 cURL 命令 |
 | :--- | :--- | :--- | :--- |
-| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/warmup` | 手动触发系统冷启动热点缓存预热巡检任务 | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/warmup?param=system-init"` |
-| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/user-sync` | 触发强类型参数校验任务（支持 JSR-303 防卫） | `curl -X POST -H "Content-Type: application/json" -d '{"batchNo":"B001","batchSize":100}' "http://localhost:8080/sample/job-xxl/trigger/user-sync"` |
-| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/sharding-batch` | 模拟大数据流式分片广播与进度打卡 | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/sharding-batch?shardIndex=0&shardTotal=2"` |
-| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/reconciliation` | 模拟订单对账与注入借贷不平衡差错告警 | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/reconciliation?faultInjected=true"` |
+| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/warmup` | 手动触发系统冷启动热点缓存预热巡检任务 | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/warmup"` |
+| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/user-sync` | 触发强类型参数校验任务（支持 JSR-303 防卫） | `curl -X POST -H "Content-Type: application/json" -d '{"batchNo":"BATCH-20261111-001","batchSize":300,"tenantId":"TENANT-1001"}' "http://localhost:8080/sample/job-xxl/trigger/user-sync"` |
+| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/sharding-batch` | 模拟大数据流式分片广播与显式死信回调 | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/sharding-batch?shardIndex=0&shardTotal=2"` |
+| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/sharding-parallel` | 并发分片批处理（派生视图 + 全局 `BatchFailureHandler` SPI） | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/sharding-parallel?shardIndex=0&shardTotal=2"` |
+| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/reconciliation` | 模拟订单对账与注入借贷不平衡差错告警 | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/reconciliation?hasDiff=true"` |
 | **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/timeout-archive` | 模拟历史数据归档扫描超时与就地降级补偿 | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/timeout-archive"` |
-| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/tenant/parallel`| 触发多租户沙箱受管并发遍历核算任务 | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/tenant/parallel"` |
+| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/canary` | 演练 `XxlJobInterceptor` 灰度拦截与 `jobId`/`logId` 元数据审计 | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/canary?skip=true"` |
+| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/retry` | 演练独立单注解 `@AtengXxlJob` 退避重试自愈与耗尽路径 | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/retry?exhaust=false"` |
+| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/tenant/global` | 触发平台级全租户忽略任务（IGNORE 模态） | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/tenant/global"` |
+| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/tenant/scoped` | 触发单租户入参绑定隔离任务（PARAM 模态） | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/tenant/scoped?tenantId=TENANT-888"` |
+| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/tenant/parallel` | 触发多租户沙箱受管并发遍历核算任务（ITERATE 模态） | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/tenant/parallel"` |
 | **`XxlJobGovernorController`** | `POST /sample/job-xxl/governor/pause/{handler}` | 单节点内存级在线暂停特定任务 | `curl -X POST "http://localhost:8080/sample/job-xxl/governor/pause/pausableTaskJob"` |
-| **`XxlJobGovernorController`** | `POST /sample/job-xxl/governor/resume/{handler}`| 单节点内存级在线恢复特定任务 | `curl -X POST "http://localhost:8080/sample/job-xxl/governor/resume/pausableTaskJob"` |
+| **`XxlJobGovernorController`** | `POST /sample/job-xxl/governor/resume/{handler}` | 单节点内存级在线恢复特定任务 | `curl -X POST "http://localhost:8080/sample/job-xxl/governor/resume/pausableTaskJob"` |
 | **`XxlJobGovernorController`** | `GET /sample/job-xxl/governor/paused-handlers` | 查看当前节点被动态静默的任务清单 | `curl -X GET "http://localhost:8080/sample/job-xxl/governor/paused-handlers"` |
-| **`XxlJobAdminController`** | `POST /sample/job-xxl/admin/jobs` | 依托 OpenAPI 动态向调度中心注册新任务 | `curl -X POST -H "Content-Type: application/json" -d '{"jobGroup":1,"name":"动态任务","executorHandler":"testJob","scheduleType":"CRON","scheduleConf":"0 0 1 * * ?"}' "http://localhost:8080/sample/job-xxl/admin/jobs"` |
-| **`XxlJobAdminController`** | `POST /sample/job-xxl/admin/jobs/{jobId}/start` | 启动调度中心指定 ID 的任务 | `curl -X POST "http://localhost:8080/sample/job-xxl/admin/jobs/1/start"` |
-| **`XxlJobAdminController`** | `POST /sample/job-xxl/admin/jobs/{jobId}/trigger`| 远程即时触发一次调度中心任务 | `curl -X POST "http://localhost:8080/sample/job-xxl/admin/jobs/1/trigger?param=instant-run"` |
-| **`XxlJobDeadLetterController`** | `GET /sample/job-xxl/dead-letter/list` | 查询分片批处理捕获的死信切片队列 | `curl -X GET "http://localhost:8080/sample/job-xxl/dead-letter/list"` |
+| **`XxlJobAdminController`** | `POST /sample/job-xxl/admin/jobs` | 依托 OpenAPI 动态向调度中心注册新任务 | `curl -X POST -H "Content-Type: application/json" -d '{"jobGroup":1,"name":"动态报表任务","executorHandler":"reportJob","scheduleType":"CRON","scheduleConf":"0 0 3 * * ?"}' "http://localhost:8080/sample/job-xxl/admin/jobs"` |
+| **`XxlJobAdminController`** | `PUT /sample/job-xxl/admin/jobs` | 依托 OpenAPI 动态更新调度中心已有任务配置 | `curl -X PUT -H "Content-Type: application/json" -d '{"id":101,"name":"动态报表任务-已更新","executorHandler":"reportJob","scheduleType":"CRON","scheduleConf":"0 0 4 * * ?"}' "http://localhost:8080/sample/job-xxl/admin/jobs"` |
+| **`XxlJobAdminController`** | `POST /sample/job-xxl/admin/jobs/{jobId}/start` | 启动调度中心指定 ID 的任务 | `curl -X POST "http://localhost:8080/sample/job-xxl/admin/jobs/101/start"` |
+| **`XxlJobAdminController`** | `POST /sample/job-xxl/admin/jobs/{jobId}/stop` | 停止调度中心指定 ID 的任务 | `curl -X POST "http://localhost:8080/sample/job-xxl/admin/jobs/101/stop"` |
+| **`XxlJobAdminController`** | `POST /sample/job-xxl/admin/jobs/{jobId}/trigger` | 远程即时触发一次调度中心任务 | `curl -X POST "http://localhost:8080/sample/job-xxl/admin/jobs/101/trigger?param=manual-test"` |
+| **`XxlJobAdminController`** | `DELETE /sample/job-xxl/admin/jobs/{jobId}` | 从调度中心移除指定任务 | `curl -X DELETE "http://localhost:8080/sample/job-xxl/admin/jobs/101"` |
+| **`XxlJobDeadLetterController`** | `GET /sample/job-xxl/dead-letter/list` | 查询显式回调与全局 SPI 收集的死信切片队列 | `curl -X GET "http://localhost:8080/sample/job-xxl/dead-letter/list"` |
 | **`XxlJobDeadLetterController`** | `POST /sample/job-xxl/dead-letter/replay` | 手动重放死信切片 | `curl -X POST "http://localhost:8080/sample/job-xxl/dead-letter/replay"` |
 | **`XxlJobDeadLetterController`** | `DELETE /sample/job-xxl/dead-letter/clear` | 清理已解决的死信切片明细 | `curl -X DELETE "http://localhost:8080/sample/job-xxl/dead-letter/clear"` |
