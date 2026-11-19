@@ -10,10 +10,17 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -29,6 +36,12 @@ class XxlJobTestHelperTest {
 
     @Autowired
     private MockPojoJobHandler pojoHandler;
+
+    @Autowired
+    private XxlJobTestHelper xxlJobTestHelper;
+
+    @Autowired
+    private ApplicationContext applicationContext;
 
     @AfterEach
     void tearDown() {
@@ -89,6 +102,71 @@ class XxlJobTestHelperTest {
         assertThat(result.isSuccess()).isTrue();
         assertThat(pojoHandler.getCapturedTenant()).isEqualTo("tenant-sharding-999");
         assertThat(pojoHandler.getCapturedParam()).contains("\"orderNo\":\"ORDER-SHARDING\"");
+    }
+
+    @Test
+    @DisplayName("并发压测：高并发交错调用 setApplicationContext/clear/getHandler/trigger 无死锁无异常")
+    void testConcurrentHelperScanClearAndTrigger() throws Exception {
+        ThreadPoolTaskExecutor pool = new ThreadPoolTaskExecutor();
+        pool.setCorePoolSize(12);
+        pool.setMaxPoolSize(12);
+        pool.setThreadNamePrefix("helper-stress-");
+        pool.initialize();
+
+        try {
+            // 阶段一：高并发交错 setApplicationContext / getHandler / trigger（零锁撕裂与空窗）
+            CountDownLatch phase1Gate = new CountDownLatch(1);
+            List<CompletableFuture<Void>> phase1Futures = new ArrayList<>();
+            for (int i = 0; i < 24; i++) {
+                final int idx = i;
+                phase1Futures.add(CompletableFuture.runAsync(() -> {
+                    try {
+                        phase1Gate.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(e);
+                    }
+                    if (idx % 3 == 0) {
+                        xxlJobTestHelper.setApplicationContext(applicationContext);
+                    } else if (idx % 3 == 1) {
+                        assertThat(XxlJobTestHelper.getHandler("pojoJobHandler")).isNotNull();
+                    } else {
+                        XxlJobTestResult result = XxlJobTestHelper.trigger("atengOnlyJob", "stress-" + idx);
+                        assertThat(result.isSuccess()).isTrue();
+                    }
+                }, pool));
+            }
+            phase1Gate.countDown();
+            CompletableFuture.allOf(phase1Futures.toArray(new CompletableFuture[0])).get(10, TimeUnit.SECONDS);
+
+            // 阶段二：高并发交错 clear / setApplicationContext / getHandler（无死锁、无异常）
+            CountDownLatch phase2Gate = new CountDownLatch(1);
+            List<CompletableFuture<Void>> phase2Futures = new ArrayList<>();
+            for (int i = 0; i < 24; i++) {
+                final int idx = i;
+                phase2Futures.add(CompletableFuture.runAsync(() -> {
+                    try {
+                        phase2Gate.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(e);
+                    }
+                    if (idx % 3 == 0) {
+                        XxlJobTestHelper.clear();
+                    } else if (idx % 3 == 1) {
+                        xxlJobTestHelper.setApplicationContext(applicationContext);
+                    } else {
+                        XxlJobTestHelper.getHandler("pojoJobHandler");
+                    }
+                }, pool));
+            }
+            phase2Gate.countDown();
+            CompletableFuture.allOf(phase2Futures.toArray(new CompletableFuture[0])).get(10, TimeUnit.SECONDS);
+        } finally {
+            xxlJobTestHelper.setApplicationContext(applicationContext);
+            pool.shutdown();
+        }
+        assertThat(XxlJobTestHelper.trigger("pojoJobHandler", "after-stress").isSuccess()).isTrue();
     }
 
     public record DemoOrderPojo(Long orderId, String orderNo, Integer amount) {}

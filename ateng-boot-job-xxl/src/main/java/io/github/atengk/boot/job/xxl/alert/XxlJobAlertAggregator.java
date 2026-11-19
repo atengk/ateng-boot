@@ -17,8 +17,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * XXL-Job 三阶告警防风暴聚合与自愈引擎
@@ -105,27 +104,23 @@ public class XxlJobAlertAggregator {
         JobAlertState state = stateMap.computeIfAbsent(key, k -> new JobAlertState());
 
         long now = System.currentTimeMillis();
-        boolean isFirstFailure = state.recordFailure(now);
+        Duration suppressDuration = properties.getAlertSuppressDuration() != null
+                ? properties.getAlertSuppressDuration()
+                : Duration.ofMinutes(5);
+        int threshold = alertSuppressThreshold > 0
+                ? alertSuppressThreshold
+                : (properties.getAlertSuppressThreshold() > 0 ? properties.getAlertSuppressThreshold() : 10);
 
-        if (isFirstFailure) {
+        FailureTransition transition = state.recordFailure(now, threshold, suppressDuration);
+        if (transition.alertType() == XxlJobAlertEvent.AlertType.INITIAL_FAILURE) {
             // 阶段一：首发失败立即推送
             dispatchAlert(XxlJobAlertEvent.AlertType.INITIAL_FAILURE, key, param, traceId, durationMs, 1, Duration.ZERO, throwable);
+        } else if (transition.alertType() == XxlJobAlertEvent.AlertType.FAILURE_SUMMARY) {
+            // 阶段二：达到周期或连续失败阈值推送聚合摘要
+            dispatchAlert(XxlJobAlertEvent.AlertType.FAILURE_SUMMARY, key, param, traceId, durationMs,
+                    transition.totalFailures(), transition.failureDuration(), throwable);
         } else {
-            // 阶段二：检查是否达到周期摘要或数量阈值
-            Duration suppressDuration = properties.getAlertSuppressDuration() != null
-                    ? properties.getAlertSuppressDuration()
-                    : Duration.ofMinutes(5);
-            int threshold = alertSuppressThreshold > 0
-                    ? alertSuppressThreshold
-                    : (properties.getAlertSuppressThreshold() > 0 ? properties.getAlertSuppressThreshold() : 10);
-
-            if (state.shouldTriggerSummary(now, threshold, suppressDuration)) {
-                int totalCount = state.getTotalFailures();
-                Duration totalFailureDuration = Duration.ofMillis(now - state.firstFailureTimestamp);
-                dispatchAlert(XxlJobAlertEvent.AlertType.FAILURE_SUMMARY, key, param, traceId, durationMs, totalCount, totalFailureDuration, throwable);
-            } else {
-                log.debug("XXL-Job 任务 [{}] 持续失败中，已平滑抑制第 {} 次重复告警", key, state.getTotalFailures());
-            }
+            log.debug("XXL-Job 任务 [{}] 持续失败中，已平滑抑制第 {} 次重复告警", key, transition.totalFailures());
         }
     }
 
@@ -166,19 +161,18 @@ public class XxlJobAlertAggregator {
 
         String key = StringUtils.hasText(jobHandler) ? jobHandler : "defaultHandler";
         JobAlertState state = stateMap.get(key);
-        if (state == null || !state.inFailureState.get()) {
+        if (state == null) {
             return;
         }
 
-        // 阶段三：故障自愈恢复触发
-        long now = System.currentTimeMillis();
-        int totalFailures = state.getTotalFailures();
-        Duration totalFailureDuration = Duration.ofMillis(now - state.firstFailureTimestamp);
+        // 阶段三：在状态锁内原子判定并重置故障状态，避免高并发下重复自愈推送或统计撕裂
+        RecoveryTransition recovery = state.consumeRecovery(System.currentTimeMillis());
+        if (recovery == null) {
+            return;
+        }
 
-        // 重置状态
-        state.reset();
-
-        dispatchAlert(XxlJobAlertEvent.AlertType.RECOVERY, key, param, traceId, durationMs, totalFailures, totalFailureDuration, null);
+        dispatchAlert(XxlJobAlertEvent.AlertType.RECOVERY, key, param, traceId, durationMs,
+                recovery.totalFailures(), recovery.failureDuration(), null);
     }
 
     private void dispatchAlert(
@@ -287,70 +281,78 @@ public class XxlJobAlertAggregator {
         return fullTrace.length() > 500 ? fullTrace.substring(0, 500) + "\n... (truncated)" : fullTrace;
     }
 
+    private record FailureTransition(XxlJobAlertEvent.AlertType alertType, int totalFailures, Duration failureDuration) {
+    }
+
+    private record RecoveryTransition(int totalFailures, Duration failureDuration) {
+    }
+
     /**
-     * 单任务告警状态模型
+     * 单任务告警状态模型（基于 {@link ReentrantLock} 保证虚拟线程及高并发状态转移原子性）
      */
     private static class JobAlertState {
-        private final AtomicBoolean inFailureState = new AtomicBoolean(false);
-        private final AtomicInteger totalFailureCount = new AtomicInteger(0);
-        private final AtomicInteger lastAlertCount = new AtomicInteger(0);
-        private volatile long firstFailureTimestamp;
-        private volatile long lastAlertTimestamp;
+        private final ReentrantLock stateLock = new ReentrantLock();
+        private boolean inFailureState;
+        private int totalFailureCount;
+        private int lastAlertCount;
+        private long firstFailureTimestamp;
+        private long lastAlertTimestamp;
 
         /**
-         * 记录一次失败
-         *
-         * @param timestamp 发生时间戳
-         * @return 是否为首发失败
+         * 记录一次失败并在锁内原子计算本次告警决策（首发、阶段摘要或抑制）
          */
-        public boolean recordFailure(long timestamp) {
-            int current = totalFailureCount.incrementAndGet();
-            if (current == 1 || inFailureState.compareAndSet(false, true)) {
-                this.firstFailureTimestamp = timestamp;
-                this.lastAlertTimestamp = timestamp;
-                this.lastAlertCount.set(0);
-                this.inFailureState.set(true);
-                return true;
+        public FailureTransition recordFailure(long now, int threshold, Duration suppressDuration) {
+            stateLock.lock();
+            try {
+                totalFailureCount++;
+                if (!inFailureState) {
+                    inFailureState = true;
+                    firstFailureTimestamp = now;
+                    lastAlertTimestamp = now;
+                    lastAlertCount = 0;
+                    return new FailureTransition(XxlJobAlertEvent.AlertType.INITIAL_FAILURE, totalFailureCount, Duration.ZERO);
+                }
+
+                int diff = totalFailureCount - lastAlertCount;
+                long elapsed = Math.max(0L, now - lastAlertTimestamp);
+                long suppressMs = suppressDuration != null ? suppressDuration.toMillis() : Duration.ofMinutes(5).toMillis();
+
+                if (diff >= threshold || elapsed >= suppressMs) {
+                    lastAlertCount = totalFailureCount;
+                    lastAlertTimestamp = now;
+                    Duration totalDuration = Duration.ofMillis(Math.max(0L, now - firstFailureTimestamp));
+                    return new FailureTransition(XxlJobAlertEvent.AlertType.FAILURE_SUMMARY, totalFailureCount, totalDuration);
+                }
+                return new FailureTransition(null, totalFailureCount, Duration.ZERO);
+            } finally {
+                if (stateLock.isHeldByCurrentThread()) {
+                    stateLock.unlock();
+                }
             }
-            return false;
         }
 
         /**
-         * 获取故障期间累计失败总次数
+         * 原子读取并在处于故障态时消费并重置自愈恢复快照；健康态调用返回 null
          */
-        public int getTotalFailures() {
-            return totalFailureCount.get();
-        }
-
-        /**
-         * 判定并更新阶段摘要触发决策
-         *
-         * @param now              当前时间戳
-         * @param threshold        连续失败步长阈值
-         * @param suppressDuration 抑制周期时限
-         * @return 是否触发摘要
-         */
-        public synchronized boolean shouldTriggerSummary(long now, int threshold, Duration suppressDuration) {
-            int current = totalFailureCount.get();
-            int last = lastAlertCount.get();
-            int diff = current - last;
-            long elapsed = now - lastAlertTimestamp;
-            long suppressMs = suppressDuration != null ? suppressDuration.toMillis() : Duration.ofMinutes(5).toMillis();
-
-            if (diff >= threshold || elapsed >= suppressMs) {
-                this.lastAlertCount.set(current);
-                this.lastAlertTimestamp = now;
-                return true;
+        public RecoveryTransition consumeRecovery(long now) {
+            stateLock.lock();
+            try {
+                if (!inFailureState) {
+                    return null;
+                }
+                int failures = totalFailureCount;
+                Duration failureDuration = Duration.ofMillis(Math.max(0L, now - firstFailureTimestamp));
+                inFailureState = false;
+                totalFailureCount = 0;
+                lastAlertCount = 0;
+                firstFailureTimestamp = 0;
+                lastAlertTimestamp = 0;
+                return new RecoveryTransition(failures, failureDuration);
+            } finally {
+                if (stateLock.isHeldByCurrentThread()) {
+                    stateLock.unlock();
+                }
             }
-            return false;
-        }
-
-        public void reset() {
-            this.inFailureState.set(false);
-            this.totalFailureCount.set(0);
-            this.lastAlertCount.set(0);
-            this.firstFailureTimestamp = 0;
-            this.lastAlertTimestamp = 0;
         }
     }
 

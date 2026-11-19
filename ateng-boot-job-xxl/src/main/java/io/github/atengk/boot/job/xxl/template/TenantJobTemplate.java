@@ -27,6 +27,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 /**
@@ -289,7 +290,8 @@ public class TenantJobTemplate {
         long total = validTenantIds.size();
         AtomicLong successCount = new AtomicLong(0);
         AtomicLong failCount = new AtomicLong(0);
-        List<String> failedTenants = Collections.synchronizedList(new ArrayList<>());
+        List<String> failedTenants = new ArrayList<>();
+        ReentrantLock failedTenantsLock = new ReentrantLock();
         AtomicReference<Throwable> firstError = new AtomicReference<>();
         List<CompletableFuture<Void>> futures = new ArrayList<>(validTenantIds.size());
         Semaphore semaphore = new Semaphore(effectiveConcurrency);
@@ -353,9 +355,14 @@ public class TenantJobTemplate {
                         successCount.incrementAndGet();
                     } catch (Throwable t) {
                         failCount.incrementAndGet();
-                        synchronized (failedTenants) {
+                        failedTenantsLock.lock();
+                        try {
                             if (failedTenants.size() < BatchExecutionResult.MAX_FAILED_ITEMS) {
                                 failedTenants.add(tenantId);
+                            }
+                        } finally {
+                            if (failedTenantsLock.isHeldByCurrentThread()) {
+                                failedTenantsLock.unlock();
                             }
                         }
                         firstError.compareAndSet(null, t);
@@ -419,6 +426,16 @@ public class TenantJobTemplate {
                     "多租户并发遍历执行失败: " + t.getMessage(), t);
         }
 
+        List<String> failedTenantsSnapshot;
+        failedTenantsLock.lock();
+        try {
+            failedTenantsSnapshot = new ArrayList<>(failedTenants);
+        } finally {
+            if (failedTenantsLock.isHeldByCurrentThread()) {
+                failedTenantsLock.unlock();
+            }
+        }
+
         Duration duration = Duration.ofMillis(System.currentTimeMillis() - startTime);
         log.info("[TenantJobTemplate] 多租户并发遍历任务执行完毕，总数: {}, 成功: {}, 失败: {}, 耗时: {}ms",
                 total, successCount.get(), failCount.get(), duration.toMillis());
@@ -427,13 +444,13 @@ public class TenantJobTemplate {
             XxlJobHelper.log("<br><font color=\"" + summaryColor + "\">----------- [TENANT-JOB] 租户并发遍历完成 (总数: " +
                     total + ", 成功: " + successCount.get() + ", 失败: " + failCount.get() + ", 耗时: " + duration.toMillis() + "ms) -----------</font>");
             if (failCount.get() > 0) {
-                XxlJobHelper.handleFail("多租户并发遍历存在失败租户: " + failedTenants);
+                XxlJobHelper.handleFail("多租户并发遍历存在失败租户: " + failedTenantsSnapshot);
             }
         } catch (Throwable ignored) {
         }
 
         boolean truncated = failCount.get() > BatchExecutionResult.MAX_FAILED_ITEMS;
-        return new BatchExecutionResult(total, successCount.get(), failCount.get(), (int) total, duration, failedTenants, truncated);
+        return new BatchExecutionResult(total, successCount.get(), failCount.get(), (int) total, duration, failedTenantsSnapshot, truncated);
     }
 
     /**

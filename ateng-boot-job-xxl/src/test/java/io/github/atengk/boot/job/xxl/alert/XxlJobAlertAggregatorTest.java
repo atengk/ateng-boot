@@ -6,10 +6,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -28,7 +32,7 @@ class XxlJobAlertAggregatorTest {
 
     @BeforeEach
     void setUp() {
-        publishedEvents = new ArrayList<>();
+        publishedEvents = new CopyOnWriteArrayList<>();
         eventPublisher = event -> {
             if (event instanceof XxlJobAlertEvent alertEvent) {
                 publishedEvents.add(alertEvent);
@@ -127,6 +131,74 @@ class XxlJobAlertAggregatorTest {
         aggregator.onJobFailure("disabledJob", "p", "t", 10, new RuntimeException("Err"));
         aggregator.onJobSuccess("disabledJob", "p", "t", 10);
         assertTrue(publishedEvents.isEmpty());
+    }
+
+    @Test
+    @DisplayName("并发压测：高并发下同任务首发、摘要与自愈恢复状态转移严格原子且零重复")
+    void testConcurrentFailureSummaryAndSingleRecoveryAtomicity() throws Exception {
+        properties.setAlertSuppressThreshold(10);
+        properties.setAlertSuppressDuration(Duration.ofMinutes(10));
+
+        ThreadPoolTaskExecutor pool = new ThreadPoolTaskExecutor();
+        pool.setCorePoolSize(16);
+        pool.setMaxPoolSize(16);
+        pool.setThreadNamePrefix("alert-stress-");
+        pool.initialize();
+
+        try {
+            int failureCalls = 160;
+            CountDownLatch failureGate = new CountDownLatch(1);
+            List<CompletableFuture<Void>> failFutures = new CopyOnWriteArrayList<>();
+            for (int i = 0; i < failureCalls; i++) {
+                final int idx = i;
+                failFutures.add(CompletableFuture.runAsync(() -> {
+                    try {
+                        failureGate.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(e);
+                    }
+                    aggregator.onJobFailure("concurrentJob", "p-" + idx, "trace-" + idx, 10, new RuntimeException("err"));
+                }, pool));
+            }
+            failureGate.countDown();
+            CompletableFuture.allOf(failFutures.toArray(new CompletableFuture[0])).get(10, TimeUnit.SECONDS);
+
+            long initialCount = publishedEvents.stream()
+                    .filter(e -> e.getAlertType() == XxlJobAlertEvent.AlertType.INITIAL_FAILURE)
+                    .count();
+            long summaryCount = publishedEvents.stream()
+                    .filter(e -> e.getAlertType() == XxlJobAlertEvent.AlertType.FAILURE_SUMMARY)
+                    .count();
+            assertEquals(1, initialCount, "高并发下必须且仅触发 1 次首发告警");
+            assertEquals(16, summaryCount, "第 10、20...160 次失败应共触发 16 次聚合摘要");
+
+            // 16 线程同时报告成功，必须且仅推送 1 次 RECOVERY 事件且失败次数准确为 160
+            CountDownLatch recoveryGate = new CountDownLatch(1);
+            List<CompletableFuture<Void>> recoveryFutures = new CopyOnWriteArrayList<>();
+            for (int i = 0; i < 16; i++) {
+                final int idx = i;
+                recoveryFutures.add(CompletableFuture.runAsync(() -> {
+                    try {
+                        recoveryGate.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(e);
+                    }
+                    aggregator.onJobSuccess("concurrentJob", "ok-" + idx, "trace-ok-" + idx, 5);
+                }, pool));
+            }
+            recoveryGate.countDown();
+            CompletableFuture.allOf(recoveryFutures.toArray(new CompletableFuture[0])).get(10, TimeUnit.SECONDS);
+
+            List<XxlJobAlertEvent> recoveries = publishedEvents.stream()
+                    .filter(e -> e.getAlertType() == XxlJobAlertEvent.AlertType.RECOVERY)
+                    .toList();
+            assertEquals(1, recoveries.size(), "高并发下自愈恢复事件必须且仅触发 1 次");
+            assertEquals(160, recoveries.get(0).getFailureCount());
+        } finally {
+            pool.shutdown();
+        }
     }
 
 }

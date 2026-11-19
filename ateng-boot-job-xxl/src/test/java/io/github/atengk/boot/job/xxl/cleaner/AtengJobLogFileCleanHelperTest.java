@@ -1,17 +1,34 @@
 package io.github.atengk.boot.job.xxl.cleaner;
 
+import com.xxl.job.core.log.XxlJobFileAppender;
+import io.github.atengk.boot.job.xxl.autoconfigure.AtengXxlJobAutoConfiguration;
+import io.github.atengk.boot.job.xxl.executor.AtengXxlJobSpringExecutor;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -146,6 +163,165 @@ class AtengJobLogFileCleanHelperTest {
 
         // 重复 stop 幂等
         assertDoesNotThrow(() -> cleanHelper.stop());
+    }
+
+    @Test
+    @DisplayName("受管调度托管测试：传入外部 ThreadPoolTaskScheduler 执行清理并 stop 后外部调度器保持活跃")
+    void testExternalTaskSchedulerLifecycleWithoutMisclosing(@TempDir Path tempDir) throws Exception {
+        ThreadPoolTaskScheduler externalScheduler = new ThreadPoolTaskScheduler();
+        externalScheduler.setPoolSize(2);
+        externalScheduler.setThreadNamePrefix("external-test-scheduler-");
+        externalScheduler.initialize();
+
+        String previousLogPath = XxlJobFileAppender.getLogPath();
+        AtengJobLogFileCleanHelper helper = new AtengJobLogFileCleanHelper(externalScheduler);
+        try {
+            XxlJobFileAppender.initLogPath(tempDir.toString());
+            Path expiredDir = Files.createDirectory(tempDir.resolve("2020-01-01"));
+            Files.writeString(expiredDir.resolve("old.log"), "expired content");
+
+            helper.start(7);
+            assertThat(helper.isRunning()).isTrue();
+
+            // 轮询等待调度触发清理过期目录（最多 3 秒）
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (Files.exists(expiredDir) && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+            }
+            assertThat(Files.exists(expiredDir)).isFalse();
+
+            // stop 仅取消自身调度任务，外部共享调度器必须保持活跃不被误关
+            helper.stop();
+            assertThat(helper.isRunning()).isFalse();
+            assertThat(externalScheduler.getScheduledExecutor().isShutdown()).isFalse();
+
+            // 二次基于同一外部调度器重启动应正常工作
+            helper.start(7);
+            assertThat(helper.isRunning()).isTrue();
+            helper.stop();
+            assertThat(externalScheduler.getScheduledExecutor().isShutdown()).isFalse();
+        } finally {
+            helper.stop();
+            if (previousLogPath != null) {
+                XxlJobFileAppender.initLogPath(previousLogPath);
+            }
+            externalScheduler.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("受管调度托管测试：传入外部 ScheduledExecutorService 执行清理并 stop 后不被误关")
+    void testExternalScheduledExecutorServiceLifecycleWithoutMisclosing(@TempDir Path tempDir) throws Exception {
+        ScheduledThreadPoolExecutor externalExecutor = new ScheduledThreadPoolExecutor(1);
+        String previousLogPath = XxlJobFileAppender.getLogPath();
+        AtengJobLogFileCleanHelper helper = new AtengJobLogFileCleanHelper((ScheduledExecutorService) externalExecutor);
+        try {
+            XxlJobFileAppender.initLogPath(tempDir.toString());
+            Path expiredDir = Files.createDirectory(tempDir.resolve("2019-12-31"));
+            Files.writeString(expiredDir.resolve("old.log"), "old");
+
+            helper.start(7);
+            assertThat(helper.isRunning()).isTrue();
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (Files.exists(expiredDir) && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+            }
+            assertThat(Files.exists(expiredDir)).isFalse();
+
+            helper.stop();
+            assertThat(helper.isRunning()).isFalse();
+            assertThat(externalExecutor.isShutdown()).isFalse();
+        } finally {
+            helper.stop();
+            if (previousLogPath != null) {
+                XxlJobFileAppender.initLogPath(previousLogPath);
+            }
+            externalExecutor.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("并发压测：@TempDir 下多线程交错触发 AtengJobLogFileCleanHelper start/stop/clean 无死锁无状态错乱")
+    void testConcurrentStartStopAndCleanUnderTempDir(@TempDir Path tempDir) throws Exception {
+        ThreadPoolTaskExecutor callerPool = new ThreadPoolTaskExecutor();
+        callerPool.setCorePoolSize(8);
+        callerPool.setMaxPoolSize(8);
+        callerPool.setThreadNamePrefix("clean-concurrency-");
+        callerPool.initialize();
+
+        String previousLogPath = XxlJobFileAppender.getLogPath();
+        AtengJobLogFileCleanHelper concurrentHelper = new AtengJobLogFileCleanHelper();
+        try {
+            XxlJobFileAppender.initLogPath(tempDir.toString());
+            for (int i = 1; i <= 10; i++) {
+                Path oldDir = Files.createDirectory(tempDir.resolve(String.format("2020-01-%02d", i)));
+                Files.writeString(oldDir.resolve("job.log"), "old");
+            }
+
+            CountDownLatch gate = new CountDownLatch(1);
+            List<CompletableFuture<Void>> futures = new ArrayList<>();
+            for (int i = 0; i < 16; i++) {
+                final int idx = i;
+                futures.add(CompletableFuture.runAsync(() -> {
+                    try {
+                        gate.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(e);
+                    }
+                    if (idx % 3 == 0) {
+                        concurrentHelper.start(7);
+                    } else if (idx % 3 == 1) {
+                        concurrentHelper.clean(tempDir.toString(), 7);
+                    } else {
+                        concurrentHelper.stop();
+                    }
+                }, callerPool));
+            }
+            gate.countDown();
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get(10, TimeUnit.SECONDS);
+            concurrentHelper.stop();
+            assertThat(concurrentHelper.isRunning()).isFalse();
+        } finally {
+            concurrentHelper.stop();
+            if (previousLogPath != null) {
+                XxlJobFileAppender.initLogPath(previousLogPath);
+            }
+            callerPool.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("自动装配传递测试：AtengXxlJobAutoConfiguration 将容器 ThreadPoolTaskScheduler 传递至执行器")
+    void testAutoConfigurationPassesManagedTaskScheduler(@TempDir Path tempDir) throws Exception {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengXxlJobAutoConfiguration.class))
+                .withUserConfiguration(ExternalSchedulerConfig.class)
+                .withPropertyValues(
+                        "ateng.boot.job.xxl.admin-addresses=http://127.0.0.1:8080/xxl-job-admin",
+                        "ateng.boot.job.xxl.port=0",
+                        "ateng.boot.job.xxl.log-path=" + tempDir.toAbsolutePath().toString().replace("\\", "/")
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasBean("xxlJobExecutor");
+                    AtengXxlJobSpringExecutor executor = context.getBean(AtengXxlJobSpringExecutor.class);
+                    ThreadPoolTaskScheduler expectedScheduler = context.getBean(ThreadPoolTaskScheduler.class);
+                    assertThat(executor.getTaskScheduler()).isSameAs(expectedScheduler);
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class ExternalSchedulerConfig {
+        @Bean(destroyMethod = "shutdown")
+        public ThreadPoolTaskScheduler customTaskScheduler() {
+            ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+            scheduler.setPoolSize(1);
+            scheduler.setThreadNamePrefix("spring-managed-scheduler-");
+            scheduler.initialize();
+            return scheduler;
+        }
     }
 
 }

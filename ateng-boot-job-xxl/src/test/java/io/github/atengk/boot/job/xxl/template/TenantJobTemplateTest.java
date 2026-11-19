@@ -8,6 +8,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -232,6 +233,36 @@ class TenantJobTemplateTest {
 
         assertThat(result.getTotalCount()).isEqualTo(0);
         assertThat(result.isSuccess()).isTrue();
+    }
+
+    @Test
+    @DisplayName("并发压测：高并发多租户 failFast=false 下基于 ReentrantLock 精确有界收集失败租户并置位截断标记")
+    void testConcurrentParallelBoundedFailedTenantsCollection() {
+        ThreadPoolTaskExecutor pool = new ThreadPoolTaskExecutor();
+        pool.setCorePoolSize(16);
+        pool.setMaxPoolSize(16);
+        pool.setThreadNamePrefix("tenant-stress-");
+        pool.initialize();
+
+        try {
+            List<String> tenants = new ArrayList<>(1200);
+            for (int i = 1; i <= 1200; i++) {
+                tenants.add("tenant-" + i);
+            }
+
+            TenantJobTemplate template = new TenantJobTemplate(() -> tenants, pool);
+            BatchExecutionResult result = template.executeForEachTenantParallel(16, false, tenantId -> {
+                throw new IllegalStateException("fail-" + tenantId);
+            });
+
+            assertThat(result.isSuccess()).isFalse();
+            assertThat(result.getTotalCount()).isEqualTo(1200);
+            assertThat(result.getFailCount()).isEqualTo(1200);
+            assertThat(result.getFailedItems()).hasSize(BatchExecutionResult.MAX_FAILED_ITEMS);
+            assertThat(result.hasTruncatedFailures()).isTrue();
+        } finally {
+            pool.shutdown();
+        }
     }
 
 }

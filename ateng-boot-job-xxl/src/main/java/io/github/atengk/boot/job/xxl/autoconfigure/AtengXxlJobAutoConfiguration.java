@@ -37,6 +37,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.TaskScheduler;
 import org.springframework.util.StringUtils;
 
 import java.util.Collections;
@@ -63,13 +64,16 @@ public class AtengXxlJobAutoConfiguration {
     /**
      * 注册并初始化 XXL-Job Spring 执行器（生产受管强化版）
      *
-     * @param properties 执行器配置属性
+     * @param properties            执行器配置属性
+     * @param taskSchedulerProvider 可选 Spring 受管定时调度器 Provider（传递至日志清理器复用）
      * @return XXL-Job 执行器实例，在调度地址缺省时返回 null 处于静默旁路模式
      */
     @Bean
     @ConditionalOnMissingBean(XxlJobSpringExecutor.class)
     @ConditionalOnProperty(prefix = "ateng.boot.job.xxl", name = "admin-addresses")
-    public XxlJobSpringExecutor xxlJobExecutor(XxlJobProperties properties) {
+    public XxlJobSpringExecutor xxlJobExecutor(
+            XxlJobProperties properties,
+            ObjectProvider<TaskScheduler> taskSchedulerProvider) {
         if (!StringUtils.hasText(properties.getAdminAddresses())) {
             log.warn("XXL-Job 执行器已激活，但未检测到有效调度中心地址 ('ateng.boot.job.xxl.admin-addresses' 为空)，已平滑旁路跳过执行器初始化。");
             return null;
@@ -85,7 +89,8 @@ public class AtengXxlJobAutoConfiguration {
         log.info("开始装配 XXL-Job 执行器 [AppName: {}, AdminAddresses: {}, Port: {}]",
                 properties.getAppname(), properties.getAdminAddresses(), properties.getPort());
 
-        AtengXxlJobSpringExecutor executor = new AtengXxlJobSpringExecutor(properties);
+        TaskScheduler taskScheduler = taskSchedulerProvider != null ? taskSchedulerProvider.getIfAvailable() : null;
+        AtengXxlJobSpringExecutor executor = new AtengXxlJobSpringExecutor(properties, taskScheduler);
         executor.setAdminAddresses(properties.getAdminAddresses());
         executor.setAppname(properties.getAppname());
 

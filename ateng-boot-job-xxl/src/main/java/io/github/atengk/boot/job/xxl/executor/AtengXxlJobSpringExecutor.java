@@ -28,11 +28,13 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.core.MethodIntrospector;
 import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.scheduling.TaskScheduler;
 import org.springframework.util.ReflectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.concurrent.ScheduledExecutorService;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -109,16 +111,56 @@ public class AtengXxlJobSpringExecutor extends XxlJobSpringExecutor implements S
     private int logRetentionDays = 30;
 
     private ApplicationContext applicationContext;
+    private TaskScheduler taskScheduler;
+    private ScheduledExecutorService logCleanScheduledExecutor;
     private ExecutorRegistryThreadHelper registryThreadHelper;
     private TriggerCallbackThreadHelper callbackThreadHelper;
     private AtengJobLogFileCleanHelper cleanThreadHelper;
 
     public AtengXxlJobSpringExecutor() {
-        this(new XxlJobProperties());
+        this(new XxlJobProperties(), null);
     }
 
     public AtengXxlJobSpringExecutor(XxlJobProperties properties) {
+        this(properties, null);
+    }
+
+    /**
+     * 构造受管增强版 XXL-Job Spring 执行器
+     *
+     * @param properties    执行器配置属性
+     * @param taskScheduler 外部 Spring 受管定时调度器（可为 null，未提供时日志清理器回退使用自持有受管调度器）
+     */
+    public AtengXxlJobSpringExecutor(XxlJobProperties properties, TaskScheduler taskScheduler) {
         this.properties = properties != null ? properties : new XxlJobProperties();
+        this.taskScheduler = taskScheduler;
+    }
+
+    /**
+     * 获取当前执行器绑定的外部受管定时调度器
+     *
+     * @return 受管调度器实例（未绑定时返回 null）
+     */
+    public TaskScheduler getTaskScheduler() {
+        return this.taskScheduler;
+    }
+
+    /**
+     * 注入外部 Spring 受管定时调度器供日志清理器托管复用
+     *
+     * @param taskScheduler 外部受管定时调度器
+     */
+    public void setTaskScheduler(TaskScheduler taskScheduler) {
+        this.taskScheduler = taskScheduler;
+    }
+
+    /**
+     * 注入外部受管 {@link ScheduledExecutorService} 供日志清理器托管复用
+     *
+     * @param logCleanScheduledExecutor 外部受管定时调度执行器
+     */
+    public void setLogCleanScheduledExecutor(ScheduledExecutorService logCleanScheduledExecutor) {
+        this.logCleanScheduledExecutor = logCleanScheduledExecutor;
     }
 
     @Override
@@ -335,8 +377,15 @@ public class AtengXxlJobSpringExecutor extends XxlJobSpringExecutor implements S
                 INIT_ADMIN_BIZ_LIST_METHOD.invoke(this);
             }
 
-            // 6. 启动加固型日志清理后台线程 (严格正则校验，防御非日期目录与宿主隐性系统文件)
-            this.cleanThreadHelper = new AtengJobLogFileCleanHelper();
+            // 6. 启动加固型日志清理后台任务 (严格正则校验，托管至 Spring TaskScheduler 或自持有 ThreadPoolTaskScheduler)
+            TaskScheduler effectiveScheduler = resolveLogCleanTaskScheduler();
+            if (effectiveScheduler != null) {
+                this.cleanThreadHelper = new AtengJobLogFileCleanHelper(effectiveScheduler);
+            } else if (this.logCleanScheduledExecutor != null) {
+                this.cleanThreadHelper = new AtengJobLogFileCleanHelper(this.logCleanScheduledExecutor);
+            } else {
+                this.cleanThreadHelper = new AtengJobLogFileCleanHelper();
+            }
             this.cleanThreadHelper.start(getLogRetentionDays());
             if (CLEAN_HELPER_FIELD != null) {
                 CLEAN_HELPER_FIELD.set(this, this.cleanThreadHelper);
@@ -570,6 +619,19 @@ public class AtengXxlJobSpringExecutor extends XxlJobSpringExecutor implements S
             ReflectionUtils.makeAccessible(field);
         }
         return field;
+    }
+
+    private TaskScheduler resolveLogCleanTaskScheduler() {
+        if (this.taskScheduler != null) {
+            return this.taskScheduler;
+        }
+        if (this.applicationContext != null) {
+            try {
+                return this.applicationContext.getBeanProvider(TaskScheduler.class).getIfAvailable();
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
     }
 
 }

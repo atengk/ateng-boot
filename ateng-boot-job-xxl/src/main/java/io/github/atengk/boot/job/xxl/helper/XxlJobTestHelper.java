@@ -27,6 +27,7 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * XXL-Job 脱网本地调试与端到端测试辅助门面
@@ -45,22 +46,37 @@ public class XxlJobTestHelper implements ApplicationContextAware {
 
     private static final Logger log = LoggerFactory.getLogger(XxlJobTestHelper.class);
 
-    private static ApplicationContext applicationContext;
+    private static volatile ApplicationContext applicationContext;
     private static final ConcurrentMap<String, IJobHandler> FALLBACK_HANDLER_REPOSITORY = new ConcurrentHashMap<>();
+    private static final ReentrantLock REPOSITORY_LOCK = new ReentrantLock();
 
     @Override
     public void setApplicationContext(ApplicationContext context) throws BeansException {
-        applicationContext = context;
-        FALLBACK_HANDLER_REPOSITORY.clear();
-        scanAndRegisterSpringHandlers(context);
+        REPOSITORY_LOCK.lock();
+        try {
+            applicationContext = context;
+            FALLBACK_HANDLER_REPOSITORY.clear();
+            scanAndRegisterSpringHandlers(context);
+        } finally {
+            if (REPOSITORY_LOCK.isHeldByCurrentThread()) {
+                REPOSITORY_LOCK.unlock();
+            }
+        }
     }
 
     /**
      * 清理所有缓存的 Handler 与上下文引用 (常用于单测结束重置环境)
      */
-    public static synchronized void clear() {
-        FALLBACK_HANDLER_REPOSITORY.clear();
-        applicationContext = null;
+    public static void clear() {
+        REPOSITORY_LOCK.lock();
+        try {
+            FALLBACK_HANDLER_REPOSITORY.clear();
+            applicationContext = null;
+        } finally {
+            if (REPOSITORY_LOCK.isHeldByCurrentThread()) {
+                REPOSITORY_LOCK.unlock();
+            }
+        }
     }
 
     /**
@@ -286,50 +302,68 @@ public class XxlJobTestHelper implements ApplicationContextAware {
             return fallback;
         }
 
-        // 3. 尝试从 Spring 容器即时内省
-        if (applicationContext != null) {
-            scanAndRegisterSpringHandlers(applicationContext);
-            return FALLBACK_HANDLER_REPOSITORY.get(jobHandler);
+        // 3. 在锁保护下双重检查并从 Spring 容器即时内省，避免与 setApplicationContext/clear 交错出现空窗
+        REPOSITORY_LOCK.lock();
+        try {
+            IJobHandler rechecked = FALLBACK_HANDLER_REPOSITORY.get(jobHandler);
+            if (rechecked != null) {
+                return rechecked;
+            }
+            ApplicationContext currentContext = applicationContext;
+            if (currentContext != null) {
+                scanAndRegisterSpringHandlers(currentContext);
+                return FALLBACK_HANDLER_REPOSITORY.get(jobHandler);
+            }
+            return null;
+        } finally {
+            if (REPOSITORY_LOCK.isHeldByCurrentThread()) {
+                REPOSITORY_LOCK.unlock();
+            }
         }
-
-        return null;
     }
 
-    private static synchronized void scanAndRegisterSpringHandlers(ApplicationContext context) {
+    private static void scanAndRegisterSpringHandlers(ApplicationContext context) {
         if (context == null) {
             return;
         }
-        String[] beanNames = context.getBeanNamesForType(Object.class);
-        for (String beanName : beanNames) {
-            Object bean;
-            try {
-                bean = context.getBean(beanName);
-            } catch (Exception e) {
-                continue;
-            }
-            Map<Method, XxlJob> annotatedMethods = MethodIntrospector.selectMethods(
-                    bean.getClass(),
-                    (MethodIntrospector.MetadataLookup<XxlJob>) method -> AnnotatedElementUtils.findMergedAnnotation(method, XxlJob.class)
-            );
-
-            for (Map.Entry<Method, XxlJob> entry : annotatedMethods.entrySet()) {
-                XxlJob xxlJob = entry.getValue();
-                registerJobHandler(bean, entry.getKey(), xxlJob.value(), xxlJob.init(), xxlJob.destroy());
-            }
-
-            Map<Method, AtengXxlJob> atengAnnotatedMethods = MethodIntrospector.selectMethods(
-                    bean.getClass(),
-                    (MethodIntrospector.MetadataLookup<AtengXxlJob>) method -> AnnotatedElementUtils.findMergedAnnotation(method, AtengXxlJob.class)
-            );
-
-            for (Map.Entry<Method, AtengXxlJob> entry : atengAnnotatedMethods.entrySet()) {
-                Method method = entry.getKey();
-                AtengXxlJob atengJob = entry.getValue();
-                if (!AtengXxlJobAnnotationHelper.shouldRegisterAtengHandler(method, atengJob)) {
+        REPOSITORY_LOCK.lock();
+        try {
+            String[] beanNames = context.getBeanNamesForType(Object.class);
+            for (String beanName : beanNames) {
+                Object bean;
+                try {
+                    bean = context.getBean(beanName);
+                } catch (Exception e) {
                     continue;
                 }
-                String handlerName = AtengXxlJobAnnotationHelper.resolveHandlerName(method, atengJob);
-                registerJobHandler(bean, method, handlerName, atengJob.init(), atengJob.destroy());
+                Map<Method, XxlJob> annotatedMethods = MethodIntrospector.selectMethods(
+                        bean.getClass(),
+                        (MethodIntrospector.MetadataLookup<XxlJob>) method -> AnnotatedElementUtils.findMergedAnnotation(method, XxlJob.class)
+                );
+
+                for (Map.Entry<Method, XxlJob> entry : annotatedMethods.entrySet()) {
+                    XxlJob xxlJob = entry.getValue();
+                    registerJobHandler(bean, entry.getKey(), xxlJob.value(), xxlJob.init(), xxlJob.destroy());
+                }
+
+                Map<Method, AtengXxlJob> atengAnnotatedMethods = MethodIntrospector.selectMethods(
+                        bean.getClass(),
+                        (MethodIntrospector.MetadataLookup<AtengXxlJob>) method -> AnnotatedElementUtils.findMergedAnnotation(method, AtengXxlJob.class)
+                );
+
+                for (Map.Entry<Method, AtengXxlJob> entry : atengAnnotatedMethods.entrySet()) {
+                    Method method = entry.getKey();
+                    AtengXxlJob atengJob = entry.getValue();
+                    if (!AtengXxlJobAnnotationHelper.shouldRegisterAtengHandler(method, atengJob)) {
+                        continue;
+                    }
+                    String handlerName = AtengXxlJobAnnotationHelper.resolveHandlerName(method, atengJob);
+                    registerJobHandler(bean, method, handlerName, atengJob.init(), atengJob.destroy());
+                }
+            }
+        } finally {
+            if (REPOSITORY_LOCK.isHeldByCurrentThread()) {
+                REPOSITORY_LOCK.unlock();
             }
         }
     }
