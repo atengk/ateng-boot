@@ -54,6 +54,8 @@ class AtengJobLocalAutoConfigurationTest {
             assertThat(properties.getThreadNamePrefix()).isEqualTo("ateng-job-local-");
             assertThat(properties.isPreferDatabaseConfig()).isTrue();
             assertThat(properties.getInMemoryLogCapacity()).isEqualTo(100);
+            assertThat(properties.getMaxLogLinesPerExecution()).isEqualTo(500);
+            assertThat(properties.getLogRetention()).isEqualTo(java.time.Duration.ofDays(7));
 
             LocalJobLifecycleManager lifecycleManager = context.getBean(LocalJobLifecycleManager.class);
             assertThat(lifecycleManager.getPhase()).isEqualTo(Integer.MAX_VALUE - 100);
@@ -107,6 +109,8 @@ class AtengJobLocalAutoConfigurationTest {
                 "ateng.boot.job.local.thread-name-prefix=custom-job-",
                 "ateng.boot.job.local.shutdown-await-termination-period=45s",
                 "ateng.boot.job.local.in-memory-log-capacity=200",
+                "ateng.boot.job.local.max-log-lines-per-execution=25",
+                "ateng.boot.job.local.log-retention=14d",
                 "ateng.boot.job.local.log-retention-days=14",
                 "ateng.boot.job.local.alert.enabled=true"
         ).run(context -> {
@@ -115,8 +119,21 @@ class AtengJobLocalAutoConfigurationTest {
             assertThat(properties.getThreadNamePrefix()).isEqualTo("custom-job-");
             assertThat(properties.getShutdownAwaitTerminationPeriod().toSeconds()).isEqualTo(45);
             assertThat(properties.getInMemoryLogCapacity()).isEqualTo(200);
+            assertThat(properties.getMaxLogLinesPerExecution()).isEqualTo(25);
+            assertThat(properties.getLogRetention()).isEqualTo(java.time.Duration.ofDays(14));
             assertThat(properties.getLogRetentionDays()).isEqualTo(14);
             assertThat(properties.getAlert().isEnabled()).isTrue();
         });
+    }
+
+    @Test
+    @DisplayName("兼容旧配置：仅配置 log-retention-days 时自动同步联动为 Duration logRetention")
+    void testLegacyLogRetentionDaysCompatibility() {
+        contextRunner.withPropertyValues("ateng.boot.job.local.log-retention-days=10")
+                .run(context -> {
+                    JobLocalProperties properties = context.getBean(JobLocalProperties.class);
+                    assertThat(properties.getLogRetentionDays()).isEqualTo(10);
+                    assertThat(properties.getLogRetention()).isEqualTo(java.time.Duration.ofDays(10));
+                });
     }
 }

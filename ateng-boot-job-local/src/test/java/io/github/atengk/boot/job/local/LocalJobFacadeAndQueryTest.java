@@ -3,6 +3,8 @@ package io.github.atengk.boot.job.local;
 import io.github.atengk.boot.job.local.actuator.LocalJobEndpoint;
 import io.github.atengk.boot.job.local.annotation.LocalJob;
 import io.github.atengk.boot.job.local.config.AtengJobLocalAutoConfiguration;
+import io.github.atengk.boot.job.local.enums.TriggerType;
+import io.github.atengk.boot.job.local.model.JobDefinition;
 import io.github.atengk.boot.job.local.model.JobInfo;
 import io.github.atengk.boot.job.local.model.JobResult;
 import io.github.atengk.boot.job.local.template.LocalJobTemplate;
@@ -178,6 +180,58 @@ class LocalJobFacadeAndQueryTest {
         @SuppressWarnings("unchecked")
         List<Instant> jobNextTimes = (List<Instant>) jobDetail.get("nextExecutionTimes");
         assertThat(jobNextTimes).isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("测试 JobInfo.nextExecutionTime 实时计算：RUNNING 状态 Cron/FixedRate/FixedDelay 非空且处于未来，PAUSED 状态为 null")
+    void testNextExecutionTimeRealTimeCalculation() {
+        String rateJobName = "nextTimeFixedRateJob";
+        jobTemplate.registerFixedRate(rateJobName, Duration.ofSeconds(30), () -> {});
+        try {
+            Instant now = Instant.now();
+
+            // 1. Cron 任务
+            JobInfo cronInfo = jobTemplate.getJob("cronQueryJob");
+            assertThat(cronInfo).isNotNull();
+            assertThat(cronInfo.getNextExecutionTime()).isNotNull().isAfter(now);
+
+            // 2. FixedDelay 任务
+            JobInfo delayInfo = jobTemplate.getJob("slowQueryJob");
+            assertThat(delayInfo).isNotNull();
+            assertThat(delayInfo.getNextExecutionTime()).isNotNull().isAfter(now);
+
+            // 3. FixedRate 任务
+            JobInfo rateInfo = jobTemplate.getJob(rateJobName);
+            assertThat(rateInfo).isNotNull();
+            assertThat(rateInfo.getNextExecutionTime()).isNotNull().isAfter(now);
+
+            // 4. listJobs() 同样填充 nextExecutionTime
+            assertThat(jobTemplate.listJobs())
+                    .filteredOn(info -> rateJobName.equals(info.getJobName()))
+                    .singleElement()
+                    .satisfies(info -> assertThat(info.getNextExecutionTime()).isNotNull().isAfter(now));
+
+            // 5. 暂停后 nextExecutionTime 为 null，恢复后重新计算非空未来时间
+            assertThat(jobTemplate.pause(rateJobName)).isTrue();
+            assertThat(jobTemplate.getJob(rateJobName).getNextExecutionTime()).isNull();
+
+            assertThat(jobTemplate.resume(rateJobName)).isTrue();
+            assertThat(jobTemplate.getJob(rateJobName).getNextExecutionTime()).isNotNull().isAfter(Instant.now());
+
+            // 6. MANUAL 纯手动任务无调度触发计划，nextExecutionTime 为 null
+            String manualJobName = "manualOnlyNextTimeJob";
+            jobTemplate.register(JobDefinition.builder()
+                    .jobName(manualJobName)
+                    .triggerType(TriggerType.MANUAL)
+                    .build(), context -> JobResult.success("manual ok"));
+            try {
+                assertThat(jobTemplate.getJob(manualJobName).getNextExecutionTime()).isNull();
+            } finally {
+                jobTemplate.remove(manualJobName);
+            }
+        } finally {
+            jobTemplate.remove(rateJobName);
+        }
     }
 
     @Configuration(proxyBeanMethods = false)

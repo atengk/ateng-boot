@@ -5,20 +5,22 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.core.util.ValidatorUtil;
 import io.github.atengk.boot.job.local.enums.TriggerType;
+import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.ToString;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 任务运行时执行上下文
  * <p>
- * 在任务方法执行时作为参数传入，承载本次调度的元数据、参数、MDC 追踪号与实时日志收集，
+ * 在任务方法执行时作为参数传入，承载本次调度的元数据、参数、MDC 追踪号与有界实时日志收集，
  * 并提供 {@link #bind(Class)} 强类型 DTO 编程式绑定与 JSR-303 Fail-Fast 防卫。
  * </p>
  *
@@ -29,6 +31,16 @@ import java.util.concurrent.CopyOnWriteArrayList;
 @Builder
 @ToString
 public class JobContext {
+
+    /**
+     * 单次任务执行默认允许收集的最大日志行数（防单次执行堆内存 OOM）
+     */
+    public static final int DEFAULT_MAX_LOG_LINES = 500;
+
+    /**
+     * 日志行数触达上限时的截断提示标记
+     */
+    public static final String LOG_TRUNCATED_MARKER = "[LOG_TRUNCATED]";
 
     /**
      * 任务名称
@@ -62,19 +74,65 @@ public class JobContext {
     private final String traceId;
 
     /**
-     * 本次调度的实时执行日志收集缓冲
+     * 单次任务允许收集的最大日志行数（默认 500 行）
      */
     @Builder.Default
-    private final List<String> logs = new CopyOnWriteArrayList<>();
+    private final int maxLogLines = DEFAULT_MAX_LOG_LINES;
 
     /**
-     * 记录本次执行的临时业务日志
+     * 本次调度的实时执行日志收集缓冲
+     */
+    @Getter(AccessLevel.NONE)
+    @Builder.Default
+    private final List<String> logs = new ArrayList<>();
+
+    @Getter(AccessLevel.NONE)
+    @ToString.Exclude
+    private final ReentrantLock logLock = new ReentrantLock();
+
+    @Getter(AccessLevel.NONE)
+    @ToString.Exclude
+    private transient boolean logTruncated;
+
+    /**
+     * 获取本次执行已收集的实时日志只读快照（防御外部绕过有界上限直接修改内部缓冲）
+     *
+     * @return 不可变日志列表快照
+     */
+    public List<String> getLogs() {
+        logLock.lock();
+        try {
+            return Collections.unmodifiableList(new ArrayList<>(logs));
+        } finally {
+            if (logLock.isHeldByCurrentThread()) {
+                logLock.unlock();
+            }
+        }
+    }
+
+    /**
+     * 记录本次执行的临时业务日志（受 {@link #maxLogLines} 有界保护防 OOM）
      *
      * @param message 日志内容
      */
     public void log(String message) {
-        if (message != null) {
-            logs.add("[" + Instant.now() + "] " + message);
+        if (message == null) {
+            return;
+        }
+        int limit = maxLogLines > 0 ? maxLogLines : DEFAULT_MAX_LOG_LINES;
+        logLock.lock();
+        try {
+            if (logs.size() < limit) {
+                logs.add("[" + Instant.now() + "] " + message);
+            } else if (!logTruncated) {
+                logTruncated = true;
+                logs.add("[" + Instant.now() + "] " + LOG_TRUNCATED_MARKER
+                        + " Max log lines per execution (" + limit + ") reached, subsequent logs are omitted");
+            }
+        } finally {
+            if (logLock.isHeldByCurrentThread()) {
+                logLock.unlock();
+            }
         }
     }
 

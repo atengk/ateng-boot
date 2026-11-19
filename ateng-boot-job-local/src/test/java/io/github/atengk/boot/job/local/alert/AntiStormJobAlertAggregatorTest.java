@@ -13,6 +13,9 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -319,6 +322,58 @@ class AntiStormJobAlertAggregatorTest {
         aggregator.reset(null);
         aggregator.reset("");
         assertThat(recordingHandler.getAlerts()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("并发安全（ReentrantLock 防 Pinning）：多线程并发上报同一任务失败，首发仅放行 1 次且失败计数精准")
+    void testConcurrentAlertAggregationThreadSafety() throws Exception {
+        AntiStormJobAlertAggregator aggregator = new AntiStormJobAlertAggregator(
+                recordingHandler, true, Duration.ofMinutes(5), true);
+
+        int workers = 8;
+        int alertsPerWorker = 25;
+        Instant baseTime = Instant.now();
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(workers);
+        ThreadPoolTaskExecutor pool = new ThreadPoolTaskExecutor();
+        pool.setCorePoolSize(workers);
+        pool.setMaxPoolSize(workers);
+        pool.setThreadNamePrefix("alert-stress-");
+        pool.initialize();
+
+        try {
+            for (int w = 0; w < workers; w++) {
+                final int workerId = w;
+                pool.execute(() -> {
+                    try {
+                        startLatch.await(3, TimeUnit.SECONDS);
+                        for (int i = 0; i < alertsPerWorker; i++) {
+                            aggregator.handleAlert(JobAlertContext.builder()
+                                    .jobName("concurrentAlertJob")
+                                    .triggerType(TriggerType.FIXED_RATE)
+                                    .traceId("trace-" + workerId + "-" + i)
+                                    .alertType(JobAlertContext.ALERT_TYPE_FAILED)
+                                    .durationMs(10)
+                                    .errorMsg("Concurrent error " + i)
+                                    .timestamp(baseTime.plusMillis(i))
+                                    .build());
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } finally {
+                        doneLatch.countDown();
+                    }
+                });
+            }
+
+            startLatch.countDown();
+            assertThat(doneLatch.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(recordingHandler.getAlerts()).hasSize(1);
+            assertThat(aggregator.getSuppressedFailureCount("concurrentAlertJob"))
+                    .isEqualTo(workers * alertsPerWorker);
+        } finally {
+            pool.shutdown();
+        }
     }
 
     private static class RecordingJobAlertHandler implements JobAlertHandler {

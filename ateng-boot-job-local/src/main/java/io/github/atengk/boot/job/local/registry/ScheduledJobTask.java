@@ -26,6 +26,7 @@ import io.github.atengk.boot.job.local.model.JobDefinition;
 import io.github.atengk.boot.job.local.model.JobExecutionRecord;
 import io.github.atengk.boot.job.local.model.JobInfo;
 import io.github.atengk.boot.job.local.model.JobResult;
+import io.github.atengk.boot.job.local.properties.JobLocalProperties;
 import io.github.atengk.boot.job.local.storage.JobLogStorageProvider;
 import io.github.atengk.boot.job.local.tenant.DefaultTenantProvider;
 import io.github.atengk.boot.job.local.tenant.TenantProvider;
@@ -39,11 +40,14 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.scheduling.Trigger;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
+import org.springframework.scheduling.support.CronExpression;
 import org.springframework.scheduling.support.CronTrigger;
 import org.springframework.scheduling.support.PeriodicTrigger;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -86,6 +90,7 @@ public class ScheduledJobTask implements Runnable {
     private final JobClusterLockProvider clusterLockProvider;
     private final ApplicationEventPublisher eventPublisher;
     private final TenantProvider tenantProvider;
+    private final JobLocalProperties properties;
     private final AtomicInteger activeExecutions = new AtomicInteger(0);
 
     @Getter
@@ -160,6 +165,18 @@ public class ScheduledJobTask implements Runnable {
                             JobClusterLockProvider clusterLockProvider,
                             ApplicationEventPublisher eventPublisher,
                             TenantProvider tenantProvider) {
+        this(definition, handler, taskScheduler, workerExecutor, logStorageProvider, clusterLockProvider,
+                eventPublisher, tenantProvider, null);
+    }
+
+    public ScheduledJobTask(JobDefinition definition, JobHandler handler,
+                            ThreadPoolTaskScheduler taskScheduler,
+                            AsyncTaskExecutor workerExecutor,
+                            JobLogStorageProvider logStorageProvider,
+                            JobClusterLockProvider clusterLockProvider,
+                            ApplicationEventPublisher eventPublisher,
+                            TenantProvider tenantProvider,
+                            JobLocalProperties properties) {
         this.definition = definition;
         this.handler = handler;
         this.taskScheduler = taskScheduler;
@@ -168,6 +185,7 @@ public class ScheduledJobTask implements Runnable {
         this.clusterLockProvider = clusterLockProvider;
         this.eventPublisher = eventPublisher;
         this.tenantProvider = tenantProvider != null ? tenantProvider : new DefaultTenantProvider();
+        this.properties = properties;
         this.status = definition.getStatus() != null ? definition.getStatus()
                 : (definition.isEnabled() ? JobStatus.RUNNING : JobStatus.PAUSED);
         this.trigger = buildTrigger(definition);
@@ -390,6 +408,7 @@ public class ScheduledJobTask implements Runnable {
                 .tenantId(currentTenant)
                 .params(params != null ? params : Collections.emptyMap())
                 .traceId(traceId)
+                .maxLogLines(resolveMaxLogLines())
                 .build();
 
         AtomicInteger retryCount = new AtomicInteger(0);
@@ -491,6 +510,7 @@ public class ScheduledJobTask implements Runnable {
                         .tenantId(tenantId)
                         .params(params != null ? params : Collections.emptyMap())
                         .traceId(traceId)
+                        .maxLogLines(resolveMaxLogLines())
                         .build();
 
                 tenantContext.log("Starting execution for tenant [" + tenantId + "]");
@@ -720,6 +740,7 @@ public class ScheduledJobTask implements Runnable {
                 .clusterLock(definition.isClusterLock())
                 .description(definition.getDescription())
                 .tenantMode(definition.getTenantMode())
+                .nextExecutionTime(resolveNextExecutionTime())
                 .lastExecutionTime(this.lastExecutionTime)
                 .lastDurationMs(this.lastDurationMs)
                 .lastStatus(this.lastStatus)
@@ -727,6 +748,54 @@ public class ScheduledJobTask implements Runnable {
                 .lastTraceId(this.lastTraceId)
                 .executing(isExecuting())
                 .build();
+    }
+
+    private Instant resolveNextExecutionTime() {
+        if (this.status != JobStatus.RUNNING || TriggerType.MANUAL.equals(definition.getTriggerType())) {
+            return null;
+        }
+        Instant now = Instant.now();
+        if (TriggerType.CRON.equals(definition.getTriggerType())
+                || (definition.getCron() != null && !definition.getCron().isBlank())) {
+            try {
+                if (definition.getCron() != null && !definition.getCron().isBlank()) {
+                    CronExpression cronExpression = CronExpression.parse(definition.getCron().trim());
+                    ZonedDateTime next = cronExpression.next(ZonedDateTime.ofInstant(now, ZoneId.systemDefault()));
+                    return next != null ? next.toInstant() : null;
+                }
+            } catch (Exception ex) {
+                log.debug("Failed to calculate next execution time from cron [{}]: {}",
+                        definition.getCron(), ex.getMessage());
+            }
+        }
+        ScheduledFuture<?> future = this.scheduledFuture;
+        if (future != null && !future.isCancelled() && !future.isDone()) {
+            long delayMs = future.getDelay(TimeUnit.MILLISECONDS);
+            if (delayMs > 0) {
+                return now.plusMillis(delayMs);
+            }
+        }
+        Duration interval = TriggerType.FIXED_RATE.equals(definition.getTriggerType())
+                ? definition.getFixedRate()
+                : definition.getFixedDelay();
+        if (interval == null) {
+            interval = definition.getFixedRate() != null ? definition.getFixedRate() : definition.getFixedDelay();
+        }
+        if (interval != null && !interval.isZero() && !interval.isNegative()) {
+            Instant base = this.lastExecutionTime;
+            if (base != null) {
+                Instant candidate = base.plus(interval);
+                if (candidate.isAfter(now)) {
+                    return candidate;
+                }
+            } else if (definition.getInitialDelay() != null
+                    && !definition.getInitialDelay().isZero()
+                    && !definition.getInitialDelay().isNegative()) {
+                return now.plus(definition.getInitialDelay());
+            }
+            return now.plus(interval);
+        }
+        return null;
     }
 
     /**
@@ -791,9 +860,27 @@ public class ScheduledJobTask implements Runnable {
                     .logs(logs != null ? new ArrayList<>(logs) : Collections.emptyList())
                     .build();
             logStorageProvider.saveLog(record);
+            Duration logRetention = resolveLogRetention();
+            if (logRetention != null && !logRetention.isZero() && !logRetention.isNegative()) {
+                logStorageProvider.cleanExpiredLogs(logRetention);
+            }
         } catch (Throwable t) {
             log.warn("Failed to persist execution log for job [{}]: {}", definition.getJobName(), t.getMessage());
         }
+    }
+
+    private int resolveMaxLogLines() {
+        if (properties != null && properties.getMaxLogLinesPerExecution() > 0) {
+            return properties.getMaxLogLinesPerExecution();
+        }
+        return JobContext.DEFAULT_MAX_LOG_LINES;
+    }
+
+    private Duration resolveLogRetention() {
+        if (properties != null) {
+            return properties.getLogRetention();
+        }
+        return Duration.ofDays(7);
     }
 
     private String getStackTraceString(Throwable t) {

@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 三阶任务告警防风暴聚合器
@@ -241,6 +242,7 @@ public class AntiStormJobAlertAggregator {
      * 单个定时任务的告警抑制与故障聚合内部状态机
      */
     public static class JobAlertState {
+        private final ReentrantLock lock = new ReentrantLock();
         private final String jobName;
         private final Instant firstFailureTime;
         private volatile Instant lastFailureTime;
@@ -275,12 +277,19 @@ public class AntiStormJobAlertAggregator {
          * @param silenceWindow 静默窗口时长
          * @return true 表示成功跨越静默窗口并原子更新 lastAlertTime；false 表示处于静默期内应抑制
          */
-        public synchronized boolean tryTriggerPeriodicAlert(Instant now, Duration silenceWindow) {
-            if (Duration.between(lastAlertTime, now).compareTo(silenceWindow) >= 0) {
-                this.lastAlertTime = now;
-                return true;
+        public boolean tryTriggerPeriodicAlert(Instant now, Duration silenceWindow) {
+            lock.lock();
+            try {
+                if (Duration.between(lastAlertTime, now).compareTo(silenceWindow) >= 0) {
+                    this.lastAlertTime = now;
+                    return true;
+                }
+                return false;
+            } finally {
+                if (lock.isHeldByCurrentThread()) {
+                    lock.unlock();
+                }
             }
-            return false;
         }
 
         /**

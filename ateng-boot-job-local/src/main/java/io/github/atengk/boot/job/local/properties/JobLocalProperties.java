@@ -1,6 +1,7 @@
 package io.github.atengk.boot.job.local.properties;
 
 import io.github.atengk.boot.job.local.enums.ClusterLockType;
+import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -53,9 +54,78 @@ public class JobLocalProperties {
     private int inMemoryLogCapacity = 100;
 
     /**
-     * 数据库持久化模式下历史执行日志的最大保留天数（默认 7 天，定时任务每日凌晨自动清理过期日志）
+     * 单次任务执行期间 {@code JobContext.log(...)} 允许收集的最大日志行数（默认 500 行，超出自动截断防单次执行堆 OOM）
      */
+    private int maxLogLinesPerExecution = 500;
+
+    /**
+     * 历史执行日志的最大保留时长（默认 7 天，保存新执行记录时自动触发惰性清理）
+     */
+    private Duration logRetention = Duration.ofDays(7);
+
+    /**
+     * 历史执行日志的最大保留天数（默认 7 天）
+     *
+     * @deprecated 请优先使用强类型 {@link #logRetention}（如 {@code 7d}）
+     */
+    @Deprecated
     private int logRetentionDays = 7;
+
+    @Getter(AccessLevel.NONE)
+    @Setter(AccessLevel.NONE)
+    private boolean logRetentionExplicitlySet = false;
+
+    @Getter(AccessLevel.NONE)
+    @Setter(AccessLevel.NONE)
+    private boolean logRetentionDaysExplicitlySet = false;
+
+    /**
+     * 获取历史执行日志最大保留时长（若仅配置了旧版 {@code logRetentionDays}，自动联动换算）
+     *
+     * @return 日志保留时长
+     */
+    public Duration getLogRetention() {
+        if (!logRetentionExplicitlySet && logRetentionDaysExplicitlySet) {
+            return logRetentionDays > 0 ? Duration.ofDays(logRetentionDays) : Duration.ZERO;
+        }
+        return logRetention;
+    }
+
+    /**
+     * 设置历史执行日志最大保留时长
+     *
+     * @param logRetention 日志保留时长
+     */
+    public void setLogRetention(Duration logRetention) {
+        this.logRetention = logRetention;
+        this.logRetentionExplicitlySet = true;
+    }
+
+    /**
+     * 获取历史执行日志最大保留天数
+     *
+     * @return 保留天数
+     * @deprecated 请使用 {@link #getLogRetention()}
+     */
+    @Deprecated
+    public int getLogRetentionDays() {
+        return logRetentionDays;
+    }
+
+    /**
+     * 设置历史执行日志最大保留天数（未显式设置 {@link #logRetention} 时自动联动生效）
+     *
+     * @param logRetentionDays 保留天数
+     * @deprecated 请使用 {@link #setLogRetention(Duration)}
+     */
+    @Deprecated
+    public void setLogRetentionDays(int logRetentionDays) {
+        this.logRetentionDays = logRetentionDays;
+        this.logRetentionDaysExplicitlySet = true;
+        if (!logRetentionExplicitlySet) {
+            this.logRetention = logRetentionDays > 0 ? Duration.ofDays(logRetentionDays) : Duration.ZERO;
+        }
+    }
 
     /**
      * Actuator 运维端点配置

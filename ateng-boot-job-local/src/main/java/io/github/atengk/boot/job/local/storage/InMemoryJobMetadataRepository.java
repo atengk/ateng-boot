@@ -4,12 +4,14 @@ import io.github.atengk.boot.job.local.enums.JobStatus;
 import io.github.atengk.boot.job.local.enums.TriggerType;
 import io.github.atengk.boot.job.local.model.JobDefinition;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.Consumer;
 
 /**
  * 基于内存的受管任务元数据存储默认实现
@@ -55,13 +57,47 @@ public class InMemoryJobMetadataRepository implements JobMetadataRepository {
         if (jobName == null || newCron == null || newCron.isBlank()) {
             return false;
         }
-        JobDefinition def = store.get(jobName);
-        if (def != null) {
+        return updateTrigger(jobName, def -> {
             def.setCron(newCron.trim());
+            def.setFixedRate(null);
+            def.setFixedDelay(null);
             def.setTriggerType(TriggerType.CRON);
-            return true;
+        });
+    }
+
+    @Override
+    public boolean updateFixedRate(String jobName, Duration newFixedRate) {
+        if (jobName == null || newFixedRate == null || newFixedRate.isZero() || newFixedRate.isNegative()) {
+            return false;
         }
-        return false;
+        return updateTrigger(jobName, def -> {
+            def.setFixedRate(newFixedRate);
+            def.setFixedDelay(null);
+            def.setCron(null);
+            def.setTriggerType(TriggerType.FIXED_RATE);
+        });
+    }
+
+    @Override
+    public boolean updateFixedDelay(String jobName, Duration newFixedDelay) {
+        if (jobName == null || newFixedDelay == null || newFixedDelay.isZero() || newFixedDelay.isNegative()) {
+            return false;
+        }
+        return updateTrigger(jobName, def -> {
+            def.setFixedDelay(newFixedDelay);
+            def.setFixedRate(null);
+            def.setCron(null);
+            def.setTriggerType(TriggerType.FIXED_DELAY);
+        });
+    }
+
+    private boolean updateTrigger(String jobName, Consumer<JobDefinition> updater) {
+        JobDefinition def = store.get(jobName);
+        if (def == null) {
+            return false;
+        }
+        updater.accept(def);
+        return true;
     }
 
     @Override
