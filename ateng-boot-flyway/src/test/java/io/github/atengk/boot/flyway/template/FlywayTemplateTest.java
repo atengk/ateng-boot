@@ -1,8 +1,15 @@
 package io.github.atengk.boot.flyway.template;
 
+import io.github.atengk.boot.core.enums.IBaseEnum;
+import io.github.atengk.boot.core.util.AsyncUtil;
+import io.github.atengk.boot.core.util.EnumUtil;
 import io.github.atengk.boot.flyway.autoconfigure.AtengFlywayAutoConfiguration;
 import io.github.atengk.boot.flyway.config.FlywayConfigurationSupport;
+import io.github.atengk.boot.flyway.enums.BatchExecutionPolicy;
+import io.github.atengk.boot.flyway.enums.DynamicMountFailurePolicy;
+import io.github.atengk.boot.flyway.enums.FlywayExecutionMode;
 import io.github.atengk.boot.flyway.enums.FlywayResultCode;
+import io.github.atengk.boot.flyway.enums.MigrationTargetKind;
 import io.github.atengk.boot.flyway.exception.FlywayException;
 import io.github.atengk.boot.flyway.model.MigrationBaselineResult;
 import io.github.atengk.boot.flyway.model.MigrationOutcome;
@@ -10,6 +17,7 @@ import io.github.atengk.boot.flyway.model.MigrationRepairResult;
 import io.github.atengk.boot.flyway.model.MigrationScriptInfo;
 import io.github.atengk.boot.flyway.model.MigrationTargetInfo;
 import io.github.atengk.boot.flyway.model.MigrationValidationResult;
+import io.github.atengk.boot.flyway.spi.DefaultFlywayLockProvider;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -23,8 +31,12 @@ import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -262,5 +274,71 @@ class FlywayTemplateTest {
 
         FlywayException ex = new FlywayException(FlywayResultCode.MIGRATION_FAILED, raw);
         assertThat(ex.getMessage()).doesNotContain("SuperSecret123").doesNotContain("ddl_admin").doesNotContain("PlainPwd999");
+    }
+
+    @Test
+    @DisplayName("DefaultFlywayLockProvider 应对相同 targetKey 互斥超时抛 LOCK_TIMEOUT，对不同 targetKey 并行放行并在释锁后清理锁条目")
+    void shouldEnforceMutexTimeoutPerTargetKeyInDefaultLockProvider() throws Exception {
+        DefaultFlywayLockProvider provider = new DefaultFlywayLockProvider();
+        CountDownLatch holderEntered = new CountDownLatch(1);
+        CountDownLatch releaseHolder = new CountDownLatch(1);
+
+        CompletableFuture<String> holder = CompletableFuture.supplyAsync(() ->
+                provider.executeWithLock("master", Duration.ofSeconds(2), () -> {
+                    // 验证同线程可重入
+                    String nested = provider.executeWithLock("master", Duration.ofMillis(200), () -> "reentrant-ok");
+                    assertThat(nested).isEqualTo("reentrant-ok");
+                    holderEntered.countDown();
+                    try {
+                        assertThat(releaseHolder.await(5, TimeUnit.SECONDS)).isTrue();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return "held-ok";
+                }), AsyncUtil.getExecutor());
+
+        try {
+            assertThat(holderEntered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(provider.getTrackedLockCount()).isEqualTo(1);
+
+            // 不同 targetKey 应立即并行获锁成功并在释锁后自动回收
+            String otherResult = provider.executeWithLock("log_db", Duration.ofMillis(200), () -> "other-ok");
+            assertThat(otherResult).isEqualTo("other-ok");
+            assertThat(provider.getTrackedLockCount()).isEqualTo(1);
+
+            // 相同 targetKey 在持锁期间应超时抛出 LOCK_TIMEOUT (62008)
+            assertThatThrownBy(() -> provider.executeWithLock("master", Duration.ofMillis(80), () -> "should-timeout"))
+                    .isInstanceOf(FlywayException.class)
+                    .satisfies(err -> assertThat(((FlywayException) err).getCode())
+                            .isEqualTo(FlywayResultCode.LOCK_TIMEOUT.getCode()));
+            assertThat(provider.getTrackedLockCount()).isEqualTo(1);
+
+            releaseHolder.countDown();
+            assertThat(holder.get(5, TimeUnit.SECONDS)).isEqualTo("held-ok");
+            assertThat(provider.getTrackedLockCount()).isZero();
+        } finally {
+            releaseHolder.countDown();
+        }
+    }
+
+    @Test
+    @DisplayName("全部治理枚举应实现 IBaseEnum<String> 并支持 EnumUtil 双向解析与 OptionItem 转换")
+    void shouldImplementIBaseEnumContractAcrossAllGovernanceEnums() {
+        assertThat(FlywayExecutionMode.VALIDATE_ONLY).isInstanceOf(IBaseEnum.class);
+        assertThat(BatchExecutionPolicy.FAIL_SAFE).isInstanceOf(IBaseEnum.class);
+        assertThat(DynamicMountFailurePolicy.ROLLBACK_DATASOURCE).isInstanceOf(IBaseEnum.class);
+        assertThat(MigrationTargetKind.TENANT).isInstanceOf(IBaseEnum.class);
+
+        assertThat(EnumUtil.fromCode(FlywayExecutionMode.class, "VALIDATE_ONLY"))
+                .contains(FlywayExecutionMode.VALIDATE_ONLY);
+        assertThat(EnumUtil.getByCodeOrThrow(BatchExecutionPolicy.class, "FAIL_SAFE"))
+                .isEqualTo(BatchExecutionPolicy.FAIL_SAFE);
+        assertThat(EnumUtil.fromCode(DynamicMountFailurePolicy.class, "ROLLBACK_DATASOURCE"))
+                .contains(DynamicMountFailurePolicy.ROLLBACK_DATASOURCE);
+        assertThat(EnumUtil.fromCode(MigrationTargetKind.class, "TENANT"))
+                .contains(MigrationTargetKind.TENANT);
+
+        assertThat(FlywayExecutionMode.MIGRATE.toOption().getCode()).isEqualTo("MIGRATE");
+        assertThat(FlywayExecutionMode.MIGRATE.toOption().getLabel()).isNotBlank();
     }
 }

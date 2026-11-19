@@ -327,6 +327,36 @@ public class AtengFlywayProperties {
         private Charset encoding;
 
         /**
+         * 目标迁移版本锁定（如 "1" 或 "2.0"，为空时继承 spring.flyway.target）
+         */
+        private String target;
+
+        /**
+         * 忽略迁移校验模式列表（如 "*:missing"、"*:future"，为空时继承 spring.flyway.ignore-migration-patterns）
+         */
+        private List<String> ignoreMigrationPatterns;
+
+        /**
+         * 迁移历史记录中的操作人标识覆写（为空时继承 spring.flyway.installed-by）
+         */
+        private String installedBy;
+
+        /**
+         * 是否在单个数据库事务中执行单条迁移脚本（为空时继承 spring.flyway.execute-in-transaction）
+         */
+        private Boolean executeInTransaction;
+
+        /**
+         * 是否将同一批次的所有待执行脚本合并在单一事务中提交（为空时继承 spring.flyway.group）
+         */
+        private Boolean group;
+
+        /**
+         * 是否允许在同一迁移脚本中混用事务性与非事务性语句（为空时继承 spring.flyway.mixed）
+         */
+        private Boolean mixed;
+
+        /**
          * 目标级专属 SQL 占位符（优先于全局 spring.flyway.placeholders 及自动注入占位符）
          */
         private Map<String, String> placeholders = new LinkedHashMap<>();

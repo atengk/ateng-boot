@@ -58,10 +58,12 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * L3 SaaS 物理多租户启动批量迁移与动态挂载生命周期自愈闭环测试
@@ -707,11 +709,71 @@ class TenantMultiTenancyLifecycleTest {
                     assertThat(valSafe.getFailedCount()).isEqualTo(1);
                     assertThat(valSafe.getFailedTargets()).containsExactly("tenant_1002");
 
-                    org.assertj.core.api.Assertions.assertThatThrownBy(
+                    assertThatThrownBy(
                                     () -> template.validateAllTenants(BatchExecutionPolicy.FAIL_FAST))
                             .isInstanceOf(FlywayException.class)
                             .satisfies(ex -> assertThat(((FlywayException) ex).getCode())
                                     .isEqualTo(FlywayResultCode.VALIDATION_FAILED.getCode()));
                 });
+    }
+
+    @Test
+    @DisplayName("L3：开启 asyncStartup=true 时关闭 Spring 上下文应协作式取消未决异步租户迁移任务")
+    void shouldCancelPendingAsyncStartupTenantMigrationOnContextClose() throws Exception {
+        HikariDataSource masterDs = newH2Pool("master_shutdown");
+        Map<String, DataSource> dsMap = new LinkedHashMap<>();
+        dsMap.put("master", masterDs);
+        for (int i = 1; i <= 4; i++) {
+            dsMap.put("tenant_s" + i, newH2Pool("tenant_s" + i));
+        }
+        AtengDynamicRoutingDataSource routingDs = buildRoutingDataSource(dsMap);
+
+        CountDownLatch workerEntered = new CountDownLatch(1);
+        CountDownLatch workerInterrupted = new CountDownLatch(1);
+        FlywayMigrationListener slowListener = new FlywayMigrationListener() {
+            @Override
+            public void onBeforeMigrate(String targetKey) {
+                if (targetKey.startsWith("tenant_")) {
+                    workerEntered.countDown();
+                    try {
+                        Thread.sleep(5000);
+                    } catch (InterruptedException e) {
+                        workerInterrupted.countDown();
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+        };
+
+        CompletableFuture<BatchMigrationResult> capturedFuture = new CompletableFuture<>();
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        AtengAsyncAutoConfiguration.class,
+                        AtengFlywayAutoConfiguration.class,
+                        FlywayAutoConfiguration.class
+                ))
+                .withBean(DataSource.class, () -> routingDs)
+                .withBean(FlywayMigrationListener.class, () -> slowListener)
+                .withPropertyValues(
+                        "spring.flyway.locations=classpath:db/multi/master",
+                        "ateng.boot.flyway.tenant.enabled=true",
+                        "ateng.boot.flyway.tenant.async-startup=true",
+                        "ateng.boot.flyway.tenant.concurrency=1"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    FlywayTemplate template = context.getBean(FlywayTemplate.class);
+                    CompletableFuture<BatchMigrationResult> future = template.getStartupTenantMigrationFuture();
+                    assertThat(future).isNotNull();
+                    assertThat(workerEntered.await(5, TimeUnit.SECONDS)).isTrue();
+
+                    context.close();
+
+                    assertThat(future.isDone()).isTrue();
+                    assertThat(future.isCancelled()).isTrue();
+                    assertThat(workerInterrupted.await(5, TimeUnit.SECONDS)).isTrue();
+                    capturedFuture.complete(null);
+                });
+        assertThat(capturedFuture.isDone()).isTrue();
     }
 }

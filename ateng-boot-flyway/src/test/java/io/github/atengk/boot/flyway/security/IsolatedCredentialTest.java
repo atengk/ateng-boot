@@ -1,10 +1,12 @@
 package io.github.atengk.boot.flyway.security;
 
+import io.github.atengk.boot.core.util.AsyncUtil;
 import io.github.atengk.boot.core.util.CryptoUtil;
 import io.github.atengk.boot.core.util.HexUtil;
 import io.github.atengk.boot.flyway.autoconfigure.AtengFlywayAutoConfiguration;
 import io.github.atengk.boot.flyway.enums.FlywayResultCode;
 import io.github.atengk.boot.flyway.exception.FlywayException;
+import io.github.atengk.boot.flyway.model.MigrationTarget;
 import io.github.atengk.boot.flyway.properties.AtengFlywayProperties;
 import io.github.atengk.boot.flyway.template.FlywayTemplate;
 import org.flywaydb.core.Flyway;
@@ -21,7 +23,11 @@ import org.springframework.jdbc.datasource.SimpleDriverDataSource;
 
 import javax.sql.DataSource;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -209,5 +215,51 @@ class IsolatedCredentialTest {
         SimpleDriverDataSource simpleDs = (SimpleDriverDataSource) fallbackDs;
         assertThat(simpleDs.getConnectionProperties()).isNotNull();
         assertThat(simpleDs.getConnectionProperties().getProperty("connectTimeout")).isEqualTo("7000");
+    }
+
+    @Test
+    @DisplayName("并发调用 TransientFlywayExecutor 时瞬态连接池命名应严格唯一无冲突且结束时活跃池归零")
+    void shouldGenerateUniqueTransientPoolNamesUnderConcurrencyAndCloseAll() throws Exception {
+        String dbName = "flyway_iso_conc_" + UUID.randomUUID().toString().replace("-", "");
+        String jdbcUrl = "jdbc:h2:mem:" + dbName + ";DB_CLOSE_DELAY=-1;MODE=MySQL";
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        DataSourceAutoConfiguration.class,
+                        AtengFlywayAutoConfiguration.class,
+                        FlywayAutoConfiguration.class
+                ))
+                .withPropertyValues(
+                        "spring.datasource.url=" + jdbcUrl,
+                        "spring.datasource.username=sa",
+                        "spring.datasource.password=",
+                        "spring.datasource.driver-class-name=org.h2.Driver",
+                        "spring.flyway.locations=classpath:db/slice1",
+                        "ateng.boot.flyway.credential.url=" + jdbcUrl,
+                        "ateng.boot.flyway.credential.username=sa",
+                        "ateng.boot.flyway.credential.password="
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    TransientFlywayExecutor executor = context.getBean(TransientFlywayExecutor.class);
+                    FlywayTemplate template = context.getBean(FlywayTemplate.class);
+
+                    MigrationTarget target = MigrationTarget.builder()
+                            .targetKey("default")
+                            .credential(context.getBean(AtengFlywayProperties.class).getCredential())
+                            .build();
+
+                    List<CompletableFuture<Boolean>> futures = new ArrayList<>();
+                    for (int i = 0; i < 6; i++) {
+                        futures.add(CompletableFuture.supplyAsync(
+                                () -> template.executeTransient(target, flyway -> flyway.validateWithResult().validationSuccessful),
+                                AsyncUtil.getExecutor()));
+                    }
+                    CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get(15, TimeUnit.SECONDS);
+                    for (CompletableFuture<Boolean> future : futures) {
+                        assertThat(future.get()).isTrue();
+                    }
+                    assertThat(executor.getActiveTransientPoolCount()).isZero();
+                    assertThat(executor.getClosedTransientPoolCount()).isGreaterThanOrEqualTo(7L);
+                });
     }
 }

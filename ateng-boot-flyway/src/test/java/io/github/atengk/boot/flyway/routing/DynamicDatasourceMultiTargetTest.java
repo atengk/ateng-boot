@@ -507,4 +507,93 @@ class DynamicDatasourceMultiTargetTest {
                     assertThat(template.getLastMigrationSummary().getTotalTargets()).isZero();
                 });
     }
+
+    @Test
+    @DisplayName("目标级扩展参数 target/ignoreMigrationPatterns/installedBy/executeInTransaction/group/mixed 应全量接线生效")
+    void shouldApplyTargetLevelAdvancedFlywayOverridesForStaticAndTenantTargets(@TempDir Path tempDir) throws Exception {
+        Path v1v2Dir = tempDir.resolve("adv");
+        Files.createDirectories(v1v2Dir);
+        Files.writeString(v1v2Dir.resolve("V1__create_adv_item.sql"),
+                "CREATE TABLE adv_item (id BIGINT PRIMARY KEY, name VARCHAR(64));",
+                StandardCharsets.UTF_8);
+        Files.writeString(v1v2Dir.resolve("V2__add_adv_col.sql"),
+                "ALTER TABLE adv_item ADD COLUMN tag VARCHAR(32);",
+                StandardCharsets.UTF_8);
+
+        HikariDataSource masterDs = newH2Pool("master_adv");
+        HikariDataSource bizDs = newH2Pool("biz_adv");
+        HikariDataSource tenantDs = newH2Pool("tenant_9001_adv");
+        Map<String, DataSource> dsMap = new LinkedHashMap<>();
+        dsMap.put("master", masterDs);
+        dsMap.put("biz_adv", bizDs);
+        dsMap.put("tenant_9001", tenantDs);
+        AtengDynamicRoutingDataSource routingDs = buildRoutingDataSource(dsMap);
+
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        AtengFlywayAutoConfiguration.class,
+                        FlywayAutoConfiguration.class
+                ))
+                .withBean(DataSource.class, () -> routingDs)
+                .withPropertyValues(
+                        "spring.flyway.locations=classpath:db/multi/master",
+                        "ateng.boot.flyway.datasources.biz_adv.locations=filesystem:" + v1v2Dir.toAbsolutePath(),
+                        "ateng.boot.flyway.datasources.biz_adv.target=1",
+                        "ateng.boot.flyway.datasources.biz_adv.ignore-migration-patterns=*:pending",
+                        "ateng.boot.flyway.datasources.biz_adv.installed-by=release-bot",
+                        "ateng.boot.flyway.datasources.biz_adv.execute-in-transaction=false",
+                        "ateng.boot.flyway.datasources.biz_adv.group=true",
+                        "ateng.boot.flyway.datasources.biz_adv.mixed=true",
+                        "ateng.boot.flyway.tenant.enabled=true",
+                        "ateng.boot.flyway.tenant.locations=filesystem:" + v1v2Dir.toAbsolutePath(),
+                        "ateng.boot.flyway.tenant.target=1",
+                        "ateng.boot.flyway.tenant.installed-by=tenant-bot",
+                        "ateng.boot.flyway.tenant.ignore-migration-patterns=*:pending"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    FlywayTemplate template = context.getBean(FlywayTemplate.class);
+
+                    // 1. target=1 使 biz_adv 与 tenant_9001 仅迁移至 V1 而不应用 V2
+                    MigrationTargetInfo bizInfo = template.info("biz_adv");
+                    assertThat(bizInfo.getCurrentVersion()).isEqualTo("1");
+                    assertThat(bizInfo.getAppliedCount()).isEqualTo(1);
+                    assertThat(bizInfo.getScripts().get(0).getInstalledBy()).isEqualTo("release-bot");
+
+                    MigrationTargetInfo tenantInfo = template.info("tenant_9001");
+                    assertThat(tenantInfo.getCurrentVersion()).isEqualTo("1");
+                    assertThat(tenantInfo.getAppliedCount()).isEqualTo(1);
+                    assertThat(tenantInfo.getScripts().get(0).getInstalledBy()).isEqualTo("tenant-bot");
+
+                    // 2. ignore-migration-patterns=*:pending 使存在待执行 V2 的情况下 validate 仍可通过
+                    assertThat(template.validate("biz_adv").isValid()).isTrue();
+                    assertThat(template.validate("tenant_9001").isValid()).isTrue();
+
+                    // 3. 验证 TransientFlywayExecutor#buildFlyway 完整透传 executeInTransaction/group/mixed
+                    FlywayTargetResolver resolver = context.getBean(FlywayTargetResolver.class);
+                    MigrationTarget bizTarget = resolver.resolveTarget("biz_adv");
+                    assertThat(bizTarget).isNotNull();
+                    boolean flagsBound = template.executeTransient(
+                            MigrationTarget.builder()
+                                    .targetKey("biz_adv")
+                                    .kind(bizTarget.getKind())
+                                    .dataSource(bizTarget.getDataSource())
+                                    .credential(buildTempSaCredential())
+                                    .migrationConfig(bizTarget.getMigrationConfig())
+                                    .build(),
+                            flyway -> !flyway.getConfiguration().isExecuteInTransaction()
+                                    && flyway.getConfiguration().isGroup()
+                                    && flyway.getConfiguration().isMixed()
+                    );
+                    assertThat(flagsBound).isTrue();
+                });
+    }
+
+    private AtengFlywayProperties.CredentialProperties buildTempSaCredential() {
+        AtengFlywayProperties.CredentialProperties cred = new AtengFlywayProperties.CredentialProperties();
+        cred.setEnabled(true);
+        cred.setUsername("sa");
+        cred.setPassword("");
+        return cred;
+    }
 }

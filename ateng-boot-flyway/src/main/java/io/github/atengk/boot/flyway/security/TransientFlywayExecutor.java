@@ -61,6 +61,7 @@ public class TransientFlywayExecutor {
 
     private final AtomicInteger activeTransientPoolCount = new AtomicInteger(0);
     private final AtomicLong closedTransientPoolCount = new AtomicLong(0);
+    private final AtomicLong transientPoolSequence = new AtomicLong(0);
 
     /**
      * 构造隔离式瞬态 Flyway 执行器
@@ -227,7 +228,7 @@ public class TransientFlywayExecutor {
                                                  String password) {
         if (ClassUtils.isPresent(HIKARI_CLASS, TransientFlywayExecutor.class.getClassLoader())) {
             String poolSuffix = StringUtils.hasText(targetKey) ? targetKey.trim().replaceAll("[^a-zA-Z0-9._-]", "_") : "default";
-            long seq = closedTransientPoolCount.get() + activeTransientPoolCount.get() + 1;
+            long seq = transientPoolSequence.incrementAndGet();
             return HikariTransientDataSourceFactory.create(
                     "ateng-flyway-transient-ddl-" + poolSuffix + "-" + seq,
                     credential, jdbcUrl, username, password);

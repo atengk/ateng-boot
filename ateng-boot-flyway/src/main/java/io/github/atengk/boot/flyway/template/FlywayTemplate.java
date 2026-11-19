@@ -37,6 +37,7 @@ import org.flywaydb.core.api.output.RepairResult;
 import org.flywaydb.core.api.output.ValidateResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.flyway.FlywayMigrationStrategy;
 import org.springframework.context.ApplicationEventPublisher;
@@ -75,7 +76,7 @@ import java.util.function.UnaryOperator;
  * @author Ateng
  * @since 2026-11-17
  */
-public class FlywayTemplate {
+public class FlywayTemplate implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(FlywayTemplate.class);
 
@@ -92,6 +93,7 @@ public class FlywayTemplate {
     private final AtomicReference<MigrationSummary> lastMigrationSummary = new AtomicReference<>();
     private final AtomicLong summaryVersion = new AtomicLong(0);
     private final AtomicReference<CompletableFuture<BatchMigrationResult>> startupTenantMigrationFuture = new AtomicReference<>();
+    private final AtomicReference<FlywayBatchExecutor.AsyncBatchHandle> startupTenantBatchHandle = new AtomicReference<>();
 
     /**
      * 构造单目标数据源迁移门面
@@ -410,6 +412,26 @@ public class FlywayTemplate {
     }
 
     /**
+     * 容器关闭时协作式取消尚未完结的启动期异步租户迁移任务，防止停机期间访问已关闭连接池
+     */
+    @Override
+    public void destroy() {
+        CompletableFuture<BatchMigrationResult> exposedFuture = startupTenantMigrationFuture.get();
+        FlywayBatchExecutor.AsyncBatchHandle handle = startupTenantBatchHandle.getAndSet(null);
+        boolean activeExposed = exposedFuture != null && !exposedFuture.isDone();
+        boolean activeHandle = handle != null && !handle.future().isDone();
+        if (activeExposed || activeHandle) {
+            log.info("Spring 容器正在关闭，协作式取消尚未完结的启动期异步租户迁移任务");
+        }
+        if (activeExposed) {
+            exposedFuture.cancel(true);
+        }
+        if (activeHandle) {
+            handle.cancelAll(java.time.Duration.ofSeconds(2));
+        }
+    }
+
+    /**
      * 启动初始化调度入口：先同步完成静态核心目标，再按需同步或异步执行全租户批量迁移与摘要合并
      *
      * @param mode 启动执行模式（MIGRATE / VALIDATE_ONLY）
@@ -436,8 +458,10 @@ public class FlywayTemplate {
             FlywayBatchExecutor.AsyncBatchHandle handle = FlywayBatchExecutor.launchAsync(
                     tenantKeys, mode, tenantPolicy, concurrency, resolveTaskExecutor(),
                     this::executeBatchItem, this::sanitize);
+            startupTenantBatchHandle.set(handle);
             CompletableFuture<BatchMigrationResult> asyncFuture = handle.future()
                     .whenComplete((tenantResult, ex) -> {
+                        startupTenantBatchHandle.compareAndSet(handle, null);
                         if (tenantResult != null) {
                             BatchMigrationResult combined = FlywayBatchExecutor.mergeBatchResults(
                                     mode, tenantPolicy, staticResult, tenantResult);

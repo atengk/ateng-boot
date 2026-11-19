@@ -410,25 +410,36 @@ public class DynamicDatasourceFlywayTargetResolver implements FlywayTargetResolv
             AtengFlywayProperties.DataSourceMigrationProperties base,
             AtengFlywayProperties.DataSourceMigrationProperties override) {
         AtengFlywayProperties.DataSourceMigrationProperties merged = new AtengFlywayProperties.DataSourceMigrationProperties();
-        Optional.ofNullable(override != null && !CollectionUtils.isEmpty(override.getLocations())
-                ? override.getLocations() : base.getLocations())
-                .filter(list -> !list.isEmpty())
-                .ifPresent(list -> merged.setLocations(new ArrayList<>(list)));
+        java.util.List<String> locations = firstNonEmptyList(
+                override != null ? override.getLocations() : null, base.getLocations());
+        if (locations != null) {
+            merged.setLocations(locations);
+        }
         merged.setTable(firstNonBlank(override != null ? override.getTable() : null, base.getTable()));
-        merged.setSchemas(override != null && !CollectionUtils.isEmpty(override.getSchemas())
-                ? new ArrayList<>(override.getSchemas())
-                : (base.getSchemas() != null ? new ArrayList<>(base.getSchemas()) : null));
+        merged.setSchemas(firstNonEmptyOrCopy(
+                override != null ? override.getSchemas() : null, base.getSchemas()));
         merged.setDefaultSchema(firstNonBlank(override != null ? override.getDefaultSchema() : null, base.getDefaultSchema()));
-        merged.setBaselineOnMigrate(override != null && override.getBaselineOnMigrate() != null
-                ? override.getBaselineOnMigrate() : base.getBaselineOnMigrate());
+        merged.setBaselineOnMigrate(firstNonNull(
+                override != null ? override.getBaselineOnMigrate() : null, base.getBaselineOnMigrate()));
         merged.setBaselineVersion(firstNonBlank(override != null ? override.getBaselineVersion() : null, base.getBaselineVersion()));
         merged.setBaselineDescription(firstNonBlank(
                 override != null ? override.getBaselineDescription() : null, base.getBaselineDescription()));
-        merged.setValidateOnMigrate(override != null && override.getValidateOnMigrate() != null
-                ? override.getValidateOnMigrate() : base.getValidateOnMigrate());
-        merged.setOutOfOrder(override != null && override.getOutOfOrder() != null
-                ? override.getOutOfOrder() : base.getOutOfOrder());
-        merged.setEncoding(override != null && override.getEncoding() != null ? override.getEncoding() : base.getEncoding());
+        merged.setValidateOnMigrate(firstNonNull(
+                override != null ? override.getValidateOnMigrate() : null, base.getValidateOnMigrate()));
+        merged.setOutOfOrder(firstNonNull(
+                override != null ? override.getOutOfOrder() : null, base.getOutOfOrder()));
+        merged.setEncoding(firstNonNull(
+                override != null ? override.getEncoding() : null, base.getEncoding()));
+        merged.setTarget(firstNonBlank(override != null ? override.getTarget() : null, base.getTarget()));
+        merged.setIgnoreMigrationPatterns(firstNonEmptyOrCopy(
+                override != null ? override.getIgnoreMigrationPatterns() : null, base.getIgnoreMigrationPatterns()));
+        merged.setInstalledBy(firstNonBlank(override != null ? override.getInstalledBy() : null, base.getInstalledBy()));
+        merged.setExecuteInTransaction(firstNonNull(
+                override != null ? override.getExecuteInTransaction() : null, base.getExecuteInTransaction()));
+        merged.setGroup(firstNonNull(
+                override != null ? override.getGroup() : null, base.getGroup()));
+        merged.setMixed(firstNonNull(
+                override != null ? override.getMixed() : null, base.getMixed()));
         if (!CollectionUtils.isEmpty(base.getPlaceholders())) {
             merged.getPlaceholders().putAll(base.getPlaceholders());
         }
@@ -440,6 +451,28 @@ public class DynamicDatasourceFlywayTargetResolver implements FlywayTargetResolv
 
     private String firstNonBlank(String primary, String fallback) {
         return StringUtils.hasText(primary) ? primary : fallback;
+    }
+
+    private static <T> T firstNonNull(T primary, T fallback) {
+        return primary != null ? primary : fallback;
+    }
+
+    private static <T> java.util.List<T> firstNonEmptyList(java.util.List<T> primary, java.util.List<T> fallback) {
+        if (!CollectionUtils.isEmpty(primary)) {
+            return new ArrayList<>(primary);
+        }
+        if (!CollectionUtils.isEmpty(fallback)) {
+            return new ArrayList<>(fallback);
+        }
+        return null;
+    }
+
+    private static <T> java.util.List<T> firstNonEmptyOrCopy(java.util.List<T> primary, java.util.List<T> fallback) {
+        java.util.List<T> selected = firstNonEmptyList(primary, fallback);
+        if (selected != null) {
+            return selected;
+        }
+        return fallback != null ? new ArrayList<>(fallback) : null;
     }
 
     private Map<String, DataSource> safePhysicalMap(DynamicRoutingDataSource routingDataSource) {

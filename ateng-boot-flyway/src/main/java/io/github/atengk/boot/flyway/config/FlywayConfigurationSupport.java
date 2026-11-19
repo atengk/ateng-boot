@@ -204,6 +204,24 @@ public final class FlywayConfigurationSupport {
             if (encoding != null) {
                 configuration.encoding(encoding);
             }
+            if (StringUtils.hasText(override.getTarget())) {
+                configuration.target(override.getTarget().trim());
+            }
+            if (!CollectionUtils.isEmpty(override.getIgnoreMigrationPatterns())) {
+                configuration.ignoreMigrationPatterns(override.getIgnoreMigrationPatterns().toArray(new String[0]));
+            }
+            if (StringUtils.hasText(override.getInstalledBy())) {
+                configuration.installedBy(override.getInstalledBy().trim());
+            }
+            if (override.getExecuteInTransaction() != null) {
+                configuration.executeInTransaction(override.getExecuteInTransaction());
+            }
+            if (override.getGroup() != null) {
+                configuration.group(override.getGroup());
+            }
+            if (override.getMixed() != null) {
+                configuration.mixed(override.getMixed());
+            }
         }
 
         Map<String, String> mergedPlaceholders = buildMergedPlaceholders(target, globalProps, atengProps, override);

@@ -18,7 +18,9 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
@@ -52,17 +54,55 @@ final class FlywayBatchExecutor {
     record AsyncBatchHandle(
             CompletableFuture<BatchMigrationResult> future,
             AtomicBoolean aborted,
-            CompletableFuture<?>[] workers) {
+            CompletableFuture<?>[] workers,
+            Set<Thread> activeThreads) {
 
         void cancelAll() {
+            cancelAll(java.time.Duration.ZERO);
+        }
+
+        void cancelAll(java.time.Duration awaitTimeout) {
             aborted.set(true);
-            for (CompletableFuture<?> worker : workers) {
-                if (worker != null && !worker.isDone()) {
-                    worker.cancel(true);
+            for (Thread activeThread : activeThreads) {
+                if (activeThread != null && activeThread != Thread.currentThread()) {
+                    activeThread.interrupt();
+                }
+            }
+            if (awaitTimeout != null && !awaitTimeout.isZero() && !awaitTimeout.isNegative()
+                    && !activeThreads.isEmpty() && workers != null) {
+                awaitWorkersQuietly(awaitTimeout.toMillis());
+            }
+            if (workers != null) {
+                for (CompletableFuture<?> worker : workers) {
+                    if (worker != null && !worker.isDone()) {
+                        worker.cancel(true);
+                    }
                 }
             }
             if (!future.isDone()) {
                 future.cancel(true);
+            }
+        }
+
+        private void awaitWorkersQuietly(long timeoutMillis) {
+            long deadlineNanos = System.nanoTime()
+                    + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+            for (CompletableFuture<?> worker : workers) {
+                if (worker == null || worker.isDone()) {
+                    continue;
+                }
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                if (remainingNanos <= 0L) {
+                    break;
+                }
+                try {
+                    worker.get(remainingNanos, java.util.concurrent.TimeUnit.NANOSECONDS);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (Exception ignored) {
+                    // 工作线程在中止或中断后完成收尾即可，停机阶段不向上传播异常
+                }
             }
         }
     }
@@ -169,23 +209,30 @@ final class FlywayBatchExecutor {
         AtomicReference<RuntimeException> firstFastFailure = new AtomicReference<>();
 
         CompletableFuture<?>[] workers = new CompletableFuture<?>[workerCount];
+        Set<Thread> activeThreads = ConcurrentHashMap.newKeySet();
         for (int w = 0; w < workerCount; w++) {
             Runnable workerTask = AsyncContext.wrap(() -> {
-                while (!aborted.get() && !Thread.currentThread().isInterrupted()) {
-                    int idx = cursor.getAndIncrement();
-                    if (idx >= total) {
-                        break;
-                    }
-                    ItemResult item = runItemSafely(targetKeys.get(idx), mode, itemRunner, sanitizer);
-                    outcomeSlots[idx] = item.outcome();
-                    if (item.failure() != null) {
-                        failureSlots[idx] = item.failure();
-                        if (policy == BatchExecutionPolicy.FAIL_FAST) {
-                            aborted.set(true);
-                            firstFastFailure.compareAndSet(null, item.fastFailure());
+                Thread currentThread = Thread.currentThread();
+                activeThreads.add(currentThread);
+                try {
+                    while (!aborted.get() && !currentThread.isInterrupted()) {
+                        int idx = cursor.getAndIncrement();
+                        if (idx >= total) {
                             break;
                         }
+                        ItemResult item = runItemSafely(targetKeys.get(idx), mode, itemRunner, sanitizer);
+                        outcomeSlots[idx] = item.outcome();
+                        if (item.failure() != null) {
+                            failureSlots[idx] = item.failure();
+                            if (policy == BatchExecutionPolicy.FAIL_FAST) {
+                                aborted.set(true);
+                                firstFastFailure.compareAndSet(null, item.fastFailure());
+                                break;
+                            }
+                        }
                     }
+                } finally {
+                    activeThreads.remove(currentThread);
                 }
             });
             workers[w] = CompletableFuture.runAsync(workerTask, executor);
@@ -218,7 +265,7 @@ final class FlywayBatchExecutor {
             }
             return result;
         });
-        return new AsyncBatchHandle(combined, aborted, workers);
+        return new AsyncBatchHandle(combined, aborted, workers, activeThreads);
     }
 
     static BatchMigrationResult emptyResult(FlywayExecutionMode mode, BatchExecutionPolicy policy) {

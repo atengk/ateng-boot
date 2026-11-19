@@ -360,4 +360,46 @@ class AtengFlywayAutoConfigurationTest {
                     assertThat(summary.getOutcomes().get(0).getMigrationsExecuted()).isEqualTo(1);
                 });
     }
+
+    @Test
+    @DisplayName("单数据源模式下 datasources.default 的高阶目标级 Flyway 参数应全部生效")
+    void shouldApplyTargetLevelAdvancedFlywayOverridesForSinglePrimaryDatasource(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path tempDir) throws Exception {
+        java.nio.file.Path migrationDir = tempDir.resolve("primary-adv");
+        java.nio.file.Files.createDirectories(migrationDir);
+        java.nio.file.Files.writeString(migrationDir.resolve("V1__primary_base.sql"),
+                "CREATE TABLE t_primary_adv_v1 (id BIGINT PRIMARY KEY);");
+        java.nio.file.Files.writeString(migrationDir.resolve("V2__primary_next.sql"),
+                "CREATE TABLE t_primary_adv_v2 (id BIGINT PRIMARY KEY);");
+
+        String dbName = "flyway_s1_primary_adv_" + UUID.randomUUID().toString().replace("-", "");
+        newContextRunner(dbName)
+                .withPropertyValues(
+                        "ateng.boot.flyway.datasources.default.locations[0]=filesystem:"
+                                + migrationDir.toAbsolutePath().toString().replace('\\', '/'),
+                        "ateng.boot.flyway.datasources.default.target=1",
+                        "ateng.boot.flyway.datasources.default.ignore-migration-patterns[0]=*:ignored",
+                        "ateng.boot.flyway.datasources.default.installed-by=ateng-primary-audit",
+                        "ateng.boot.flyway.datasources.default.execute-in-transaction=true",
+                        "ateng.boot.flyway.datasources.default.group=true",
+                        "ateng.boot.flyway.datasources.default.mixed=true")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    FlywayTemplate template = context.getBean(FlywayTemplate.class);
+                    MigrationSummary summary = template.getLastMigrationSummary();
+                    assertThat(summary.getSuccessCount()).isEqualTo(1);
+                    assertThat(summary.getOutcomes().get(0).getMigrationsExecuted()).isEqualTo(1);
+
+                    javax.sql.DataSource dataSource = context.getBean(javax.sql.DataSource.class);
+                    try (java.sql.Connection conn = dataSource.getConnection();
+                         java.sql.Statement stmt = conn.createStatement();
+                         java.sql.ResultSet rs = stmt.executeQuery(
+                                 "SELECT \"version\", \"installed_by\" FROM \"flyway_schema_history\" WHERE \"version\" IS NOT NULL")) {
+                        assertThat(rs.next()).isTrue();
+                        assertThat(rs.getString("version")).isEqualTo("1");
+                        assertThat(rs.getString("installed_by")).isEqualTo("ateng-primary-audit");
+                        assertThat(rs.next()).isFalse();
+                    }
+                });
+    }
 }
