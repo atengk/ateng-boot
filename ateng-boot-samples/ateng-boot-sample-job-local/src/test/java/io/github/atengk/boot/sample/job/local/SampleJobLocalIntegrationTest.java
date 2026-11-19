@@ -2,22 +2,29 @@ package io.github.atengk.boot.sample.job.local;
 
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.job.local.alert.JobAlertContext;
+import io.github.atengk.boot.job.local.enums.DiscardReason;
 import io.github.atengk.boot.job.local.enums.JobStatus;
 import io.github.atengk.boot.job.local.enums.TriggerType;
+import io.github.atengk.boot.job.local.event.JobDiscardedEvent;
 import io.github.atengk.boot.job.local.event.JobEvent;
 import io.github.atengk.boot.job.local.event.JobStartingEvent;
 import io.github.atengk.boot.job.local.event.JobSuccessEvent;
 import io.github.atengk.boot.job.local.event.JobTimeoutEvent;
 import io.github.atengk.boot.job.local.exception.JobTimeoutException;
+import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
+import io.github.atengk.boot.job.local.lock.JobLockHandle;
 import io.github.atengk.boot.job.local.model.JobExecutionRecord;
 import io.github.atengk.boot.job.local.model.JobInfo;
 import io.github.atengk.boot.job.local.model.JobResult;
 import io.github.atengk.boot.job.local.template.LocalJobTemplate;
 import io.github.atengk.boot.sample.job.local.handler.SampleCustomJobAlertHandler;
+import io.github.atengk.boot.sample.job.local.handler.SampleGlobalTimeoutFallbackHandler;
+import io.github.atengk.boot.sample.job.local.interceptor.SampleMaintenanceInterceptor;
 import io.github.atengk.boot.sample.job.local.job.ClusterDeduplicationScenarioJob;
 import io.github.atengk.boot.sample.job.local.job.DailyReconciliationScenarioJob;
 import io.github.atengk.boot.sample.job.local.job.MultiTenantBillingScenarioJob;
 import io.github.atengk.boot.sample.job.local.job.OrderTimeoutCancelScenarioJob;
+import io.github.atengk.boot.sample.job.local.job.PaymentReconcileFallbackScenarioJob;
 import io.github.atengk.boot.sample.job.local.job.SystemMetricsSamplingScenarioJob;
 import io.github.atengk.boot.sample.job.local.job.TypedParamArchivingScenarioJob;
 import io.github.atengk.boot.sample.job.local.listener.SampleJobEventListener;
@@ -47,7 +54,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * 工业级单机定时任务样例工程端到端自洽集成测试套件
  * <p>
- * 全真覆盖 6 大专职业务场景任务调度、三大高内聚领域 Controller (Schedule/Manage/Audit) 与 Actuator 运维管控端点交互。
+ * 全真覆盖 7 大专职业务场景任务调度、三大高内聚领域 Controller (Schedule/Manage/Audit) 与 Actuator 运维管控端点交互。
  * </p>
  *
  * @author Ateng
@@ -88,22 +95,43 @@ class SampleJobLocalIntegrationTest {
     private SampleCustomJobAlertHandler sampleCustomJobAlertHandler;
 
     @Autowired
+    private PaymentReconcileFallbackScenarioJob paymentReconcileFallbackScenarioJob;
+
+    @Autowired
+    private SampleMaintenanceInterceptor sampleMaintenanceInterceptor;
+
+    @Autowired
+    private SampleGlobalTimeoutFallbackHandler sampleGlobalTimeoutFallbackHandler;
+
+    @Autowired
+    private JobClusterLockProvider jobClusterLockProvider;
+
+    @Autowired
     private MeterRegistry meterRegistry;
 
     @AfterEach
-    void tearDown() {
+    void tearDown() throws InterruptedException {
         MDC.clear();
         TenantContextHolder.clear();
+        sampleMaintenanceInterceptor.setMaintenanceMode(false);
+        sampleMaintenanceInterceptor.resetCounters();
+        sampleGlobalTimeoutFallbackHandler.setEnabled(false);
+        paymentReconcileFallbackScenarioJob.setSimulateTimeout(false);
         sampleJobEventListener.clearEvents();
         sampleCustomJobAlertHandler.clearAlerts();
         orderTimeoutCancelScenarioJob.setSimulateTimeout(false);
         orderTimeoutCancelScenarioJob.resetAttemptCount();
         multiTenantBillingScenarioJob.setSimulatedFailedTenant(null);
         multiTenantBillingScenarioJob.clearExecutedTenants();
+        // 等待集群互斥锁最小持有防时钟漂移窗口自然过期，避免跨用例间抢锁相互干扰
+        long deadline = System.currentTimeMillis() + 1500;
+        while (localJobTemplate.isClusterLocked("clusterDeduplicationJob") && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50);
+        }
     }
 
     @Test
-    @DisplayName("验证 6 大业务场景任务成功扫描并注册至受管注册表")
+    @DisplayName("验证 7 大业务场景任务成功扫描并注册至受管注册表")
     void testAllScenariosRegistered() {
         List<JobInfo> jobs = localJobTemplate.listJobs();
         assertThat(jobs).isNotEmpty();
@@ -115,7 +143,8 @@ class SampleJobLocalIntegrationTest {
                 "multiTenantBillingJob",
                 "systemMetricsSamplingJob",
                 "typedParamArchivingJob",
-                "clusterDeduplicationJob"
+                "clusterDeduplicationJob",
+                "paymentReconcileFallbackJob"
         );
     }
 
@@ -190,9 +219,10 @@ class SampleJobLocalIntegrationTest {
         JobResult allSuccessResult = localJobTemplate.trigger("multiTenantBillingJob");
         assertThat(allSuccessResult.isSuccess()).isTrue();
         assertThat(allSuccessResult.getMessage()).isEqualTo("完成 3/3 租户调度，成功 3，失败 0");
-        assertThat(multiTenantBillingScenarioJob.getExecutedTenants()).containsExactly("tenant-corp-a", "tenant-corp-b", "tenant-corp-c");
+        assertThat(multiTenantBillingScenarioJob.getExecutedTenants())
+                .containsExactlyInAnyOrder("tenant-corp-a", "tenant-corp-b", "tenant-corp-c");
 
-        // 2. Fail-Safe 容错隔离验证（中间租户 tenant-corp-b 报错，不阻断后续租户 tenant-corp-c）
+        // 2. Fail-Safe 容错隔离验证（并发模式下中间租户 tenant-corp-b 报错，不阻断其余租户）
         multiTenantBillingScenarioJob.clearExecutedTenants();
         multiTenantBillingScenarioJob.setSimulatedFailedTenant("tenant-corp-b");
 
@@ -200,10 +230,12 @@ class SampleJobLocalIntegrationTest {
         assertThat(failSafeResult.isSuccess()).isFalse();
         assertThat(failSafeResult.getMessage()).contains("完成 3/3 租户调度，成功 2，失败 1");
         assertThat(failSafeResult.getMessage()).contains("tenant-corp-b");
-        assertThat(multiTenantBillingScenarioJob.getExecutedTenants()).containsExactly("tenant-corp-a", "tenant-corp-b", "tenant-corp-c");
+        assertThat(multiTenantBillingScenarioJob.getExecutedTenants())
+                .containsExactlyInAnyOrder("tenant-corp-a", "tenant-corp-b", "tenant-corp-c");
 
         JobInfo jobInfo = localJobTemplate.getJob("multiTenantBillingJob");
         assertThat(jobInfo.getLastStatus()).isEqualTo("PARTIAL_SUCCESS");
+        assertThat(jobInfo.getTenantConcurrency()).isEqualTo(3);
     }
 
     @Test
@@ -252,12 +284,20 @@ class SampleJobLocalIntegrationTest {
     }
 
     @Test
-    @DisplayName("场景 6：分布式多节点集群防重互斥锁抢占与执行")
+    @DisplayName("场景 6：分布式多节点集群防重互斥锁抢占、续期与状态探测")
     void testScenario6ClusterDeduplicationLock() {
         JobResult result = localJobTemplate.trigger("clusterDeduplicationJob");
         assertThat(result.isSuccess()).isTrue();
         assertThat(result.getMessage()).contains("集群防重互斥锁获取成功");
         assertThat(clusterDeduplicationScenarioJob.getExecutionCount()).isGreaterThanOrEqualTo(1);
+
+        // 验证锁租约续期 (renew) 与解锁对称 SPI
+        JobLockHandle handle = jobClusterLockProvider.tryLock("sampleRenewCheckJob", java.time.Duration.ofSeconds(10));
+        assertThat(handle.isAcquired()).isTrue();
+        assertThat(jobClusterLockProvider.isLocked("sampleRenewCheckJob")).isTrue();
+        assertThat(jobClusterLockProvider.renew(handle, java.time.Duration.ofSeconds(20))).isTrue();
+        assertThat(jobClusterLockProvider.unlock(handle)).isTrue();
+        assertThat(jobClusterLockProvider.isLocked("sampleRenewCheckJob")).isFalse();
     }
 
     @Test
@@ -372,12 +412,41 @@ class SampleJobLocalIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.success").value(true));
 
-        // 5. POST /sample/job-local/schedule/trigger/cluster-lock 轻量集群防重互斥锁触发
+        // 5. POST /sample/job-local/schedule/trigger/cluster-lock 轻量集群防重互斥锁触发与最小持有窗口探测
         mockMvc.perform(post("/sample/job-local/schedule/trigger/cluster-lock"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.success").value(true))
                 .andExpect(jsonPath("$.data.message").value(org.hamcrest.Matchers.containsString("集群防重互斥锁获取成功")));
+
+        // 最小持有窗口（600ms）内非阻塞探测锁状态必为 true
+        mockMvc.perform(get("/sample/job-local/audit/jobs/clusterDeduplicationJob/lock-status"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 6. POST /sample/job-local/schedule/trigger/timeout-fallback 硬超时触发同 Bean 降级补偿
+        sampleJobEventListener.clearEvents();
+        mockMvc.perform(post("/sample/job-local/schedule/trigger/timeout-fallback")
+                        .param("simulateTimeout", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.message").value(org.hamcrest.Matchers.containsString("已切入 T+1 异步补账队列")));
+        assertThat(sampleJobEventListener.getCapturedEvents())
+                .anyMatch(e -> e instanceof JobTimeoutEvent && "paymentReconcileFallbackJob".equals(e.getJobName()));
+        assertThat(localJobTemplate.getJob("paymentReconcileFallbackJob").getLastStatus()).isEqualTo("TIMEOUT");
+
+        // 7. POST /sample/job-local/schedule/trigger/global-timeout-fallback 全局 LocalJobTimeoutFallbackHandler SPI 降级
+        sampleJobEventListener.clearEvents();
+        mockMvc.perform(post("/sample/job-local/schedule/trigger/global-timeout-fallback"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(false))
+                .andExpect(jsonPath("$.data.message").value(org.hamcrest.Matchers.containsString("全局 SPI 降级兜底")));
+        assertThat(sampleJobEventListener.getCapturedEvents())
+                .anyMatch(e -> e instanceof JobTimeoutEvent && "orderTimeoutCancelJob".equals(e.getJobName()));
+        assertThat(localJobTemplate.getJob("orderTimeoutCancelJob").getLastStatus()).isEqualTo("TIMEOUT");
     }
 
     @Test
@@ -448,6 +517,34 @@ class SampleJobLocalIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400))
                 .andExpect(jsonPath("$.success").value(false));
+
+        // 9. POST /sample/job-local/manage/interceptor/maintenance 切换发版维护窗口拦截器（拦截与恢复放行）
+        sampleJobEventListener.clearEvents();
+        mockMvc.perform(post("/sample/job-local/manage/interceptor/maintenance")
+                        .param("enabled", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        mockMvc.perform(post("/sample/job-local/schedule/trigger/dailyReconciliationJob"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(false));
+        assertThat(localJobTemplate.getJob("dailyReconciliationJob").getLastStatus()).isEqualTo("DISCARDED");
+        assertThat(sampleJobEventListener.getCapturedEvents()).anySatisfy(e -> {
+            assertThat(e).isInstanceOf(JobDiscardedEvent.class);
+            assertThat(((JobDiscardedEvent) e).getDiscardReason()).isEqualTo(DiscardReason.INTERCEPTOR_REJECTED);
+        });
+
+        mockMvc.perform(post("/sample/job-local/manage/interceptor/maintenance")
+                        .param("enabled", "false"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(false));
+
+        mockMvc.perform(post("/sample/job-local/schedule/trigger/dailyReconciliationJob"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.success").value(true));
     }
 
     @Test
@@ -460,12 +557,23 @@ class SampleJobLocalIntegrationTest {
                 .andExpect(jsonPath("$.data").isArray())
                 .andExpect(jsonPath("$.data[?(@.jobName == 'dailyReconciliationJob')]").exists());
 
-        // 2. GET /sample/job-local/audit/jobs/{jobName} 查询单任务详情
+        // 2. GET /sample/job-local/audit/jobs/{jobName} 查询单任务详情（含 nextExecutionTime 与新增扩展元数据）
         mockMvc.perform(get("/sample/job-local/audit/jobs/dailyReconciliationJob"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.jobName").value("dailyReconciliationJob"))
-                .andExpect(jsonPath("$.data.status").exists());
+                .andExpect(jsonPath("$.data.status").exists())
+                .andExpect(jsonPath("$.data.nextExecutionTime").isNotEmpty());
+
+        mockMvc.perform(get("/sample/job-local/audit/jobs/paymentReconcileFallbackJob"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.fallbackMethod").value("onReconcileTimeoutFallback"))
+                .andExpect(jsonPath("$.data.tenantConcurrency").value(1));
+
+        mockMvc.perform(get("/sample/job-local/audit/jobs/clusterDeduplicationJob/lock-status"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(false));
 
         // 3. GET /sample/job-local/audit/jobs/{jobName}/logs 查询最近审计历史日志
         localJobTemplate.trigger("dailyReconciliationJob");

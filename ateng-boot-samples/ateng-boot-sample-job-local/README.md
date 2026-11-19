@@ -1,6 +1,6 @@
 # ateng-boot-sample-job-local 单机定时任务体验工程
 
-> 专注于演示与自验 `ateng-boot-job-local` 核心特性（声明式 `@LocalJob` 注解、四阶重叠并发防卫 `OverlappingStrategy`、硬超时强中断熔断与指数退避重试、强类型 DTO 参数校验、SaaS 多租户全模态隔离、轻量集群互斥防重锁、Spring 领域事件与群机器人告警桥接、云原生 Micrometer 指标度量、以及三大高内聚领域 Controller 与 Actuator 运维管控端点）在真实企业场景下的开箱使用。
+> 专注于演示与自验 `ateng-boot-job-local` 核心特性（声明式 `@LocalJob` 注解、四阶重叠并发防卫 `OverlappingStrategy`、硬超时强中断熔断、指数退避重试与两级降级补偿 `fallbackMethod` / `LocalJobTimeoutFallbackHandler`、三阶段切面责任链拦截器 `LocalJobInterceptor`、强类型 DTO 参数校验、SaaS 多租户信号量并发轮询 `tenantConcurrency`、带防时钟漂移 `clusterLockMinHoldTime` 与状态探测 `isClusterLocked` 的轻量集群互斥锁、Spring 领域事件与群机器人告警桥接、云原生 Micrometer 指标度量、以及三大高内聚领域 Controller 与 Actuator 运维管控端点）在真实企业场景下的开箱使用。
 
 ---
 
@@ -32,17 +32,21 @@
 | **手动即时触发任务** | `LocalJobScheduleController` | `POST /sample/job-local/schedule/trigger/{jobName}` | `curl -X POST "http://localhost:8080/sample/job-local/schedule/trigger/dailyReconciliationJob"` |
 | **带参触发数据归档 (合规入参)** | `LocalJobScheduleController` | `POST /sample/job-local/schedule/trigger/archiving` | `curl -X POST "http://localhost:8080/sample/job-local/schedule/trigger/archiving" -H "Content-Type: application/json" -d '{"tableName":"t_order_history","retentionDays":90,"batchSize":500,"dryRun":true}'` |
 | **带参触发归档 (JSR-303 快速失败)** | `LocalJobScheduleController` | `POST /sample/job-local/schedule/trigger/archiving` | `curl -X POST "http://localhost:8080/sample/job-local/schedule/trigger/archiving" -H "Content-Type: application/json" -d '{"tableName":"","retentionDays":-5}'` |
-| **多租户账单轮询 (ITERATE 模态)** | `LocalJobScheduleController` | `POST /sample/job-local/schedule/trigger/billing` | `curl -X POST "http://localhost:8080/sample/job-local/schedule/trigger/billing"` |
-| **轻量集群互斥防重锁触发** | `LocalJobScheduleController` | `POST /sample/job-local/schedule/trigger/cluster-lock` | `curl -X POST "http://localhost:8080/sample/job-local/schedule/trigger/cluster-lock"` |
+| **多租户并发账单轮询 (ITERATE, concurrency=3)** | `LocalJobScheduleController` | `POST /sample/job-local/schedule/trigger/billing` | `curl -X POST "http://localhost:8080/sample/job-local/schedule/trigger/billing"` |
+| **轻量集群互斥锁触发 (minHoldTime=600ms)** | `LocalJobScheduleController` | `POST /sample/job-local/schedule/trigger/cluster-lock` | `curl -X POST "http://localhost:8080/sample/job-local/schedule/trigger/cluster-lock"` |
+| **支付对账超时熔断与同 Bean 降级补偿** | `LocalJobScheduleController` | `POST /sample/job-local/schedule/trigger/timeout-fallback` | `curl -X POST "http://localhost:8080/sample/job-local/schedule/trigger/timeout-fallback?simulateTimeout=true"` |
+| **无方法降级时的全局超时降级 SPI** | `LocalJobScheduleController` | `POST /sample/job-local/schedule/trigger/global-timeout-fallback` | `curl -X POST "http://localhost:8080/sample/job-local/schedule/trigger/global-timeout-fallback"` |
 | **暂停任务周期自动调度** | `LocalJobManageController` | `POST /sample/job-local/manage/pause/{jobName}` | `curl -X POST "http://localhost:8080/sample/job-local/manage/pause/dailyReconciliationJob"` |
 | **恢复任务周期自动调度** | `LocalJobManageController` | `POST /sample/job-local/manage/resume/{jobName}` | `curl -X POST "http://localhost:8080/sample/job-local/manage/resume/dailyReconciliationJob"` |
 | **动态更新 Cron 表达式** | `LocalJobManageController` | `POST /sample/job-local/manage/update/cron` | `curl -X POST "http://localhost:8080/sample/job-local/manage/update/cron" -H "Content-Type: application/json" -d '{"jobName":"dailyReconciliationJob","cronExpression":"0 0 3 * * ?"}'` |
 | **动态更新固定频率 (FixedRate)** | `LocalJobManageController` | `POST /sample/job-local/manage/update/rate` | `curl -X POST "http://localhost:8080/sample/job-local/manage/update/rate" -H "Content-Type: application/json" -d '{"jobName":"systemMetricsSamplingJob","fixedRate":"10s"}'` |
 | **动态更新固定延迟 (FixedDelay)** | `LocalJobManageController` | `POST /sample/job-local/manage/update/delay` | `curl -X POST "http://localhost:8080/sample/job-local/manage/update/delay" -H "Content-Type: application/json" -d '{"jobName":"orderTimeoutCancelJob","fixedDelay":"15s"}'` |
-| **编程式动态注册新 Cron 任务** | `LocalJobManageController` | `POST /sample/job-local/manage/dynamic/register` | `curl -X POST "http://localhost:8080/sample/job-local/manage/dynamic/register" -H "Content-Type: application/json" -d '{"jobName":"dynamicCleanJob","cron":"0 0 4 * * ?","description":"动态清理任务"}'` |
-| **动态注销并移除受管任务** | `LocalJobManageController` | `DELETE /sample/job-local/manage/{jobName}` | `curl -X DELETE "http://localhost:8080/sample/job-local/manage/dynamicCleanJob"` |
+| **编程式动态注册新 Cron 任务** | `LocalJobManageController` | `POST /sample/job-local/manage/dynamic/register` | `curl -X POST "http://localhost:8080/sample/job-local/manage/dynamic/register" -H "Content-Type: application/json" -d '{"jobName":"dynamicCleanupJob","cron":"0 0 4 * * ?","description":"动态清理任务"}'` |
+| **动态注销并移除受管任务** | `LocalJobManageController` | `DELETE /sample/job-local/manage/{jobName}` | `curl -X DELETE "http://localhost:8080/sample/job-local/manage/dynamicCleanupJob"` |
+| **系统发版维护窗口拦截器动态开关** | `LocalJobManageController` | `POST /sample/job-local/manage/interceptor/maintenance` | `curl -X POST "http://localhost:8080/sample/job-local/manage/interceptor/maintenance?enabled=true"` |
 | **巡检全量受管任务清单** | `LocalJobAuditController` | `GET /sample/job-local/audit/jobs` | `curl -X GET "http://localhost:8080/sample/job-local/audit/jobs"` |
-| **查询单任务详细状态与配置** | `LocalJobAuditController` | `GET /sample/job-local/audit/jobs/{jobName}` | `curl -X GET "http://localhost:8080/sample/job-local/audit/jobs/dailyReconciliationJob"` |
+| **查询单任务详细状态与元数据** | `LocalJobAuditController` | `GET /sample/job-local/audit/jobs/{jobName}` | `curl -X GET "http://localhost:8080/sample/job-local/audit/jobs/dailyReconciliationJob"` |
+| **探测指定任务集群互斥锁持有状态** | `LocalJobAuditController` | `GET /sample/job-local/audit/jobs/{jobName}/lock-status` | `curl -X GET "http://localhost:8080/sample/job-local/audit/jobs/clusterDeduplicationJob/lock-status"` |
 | **回查最近执行审计历史日志** | `LocalJobAuditController` | `GET /sample/job-local/audit/jobs/{jobName}/logs` | `curl -X GET "http://localhost:8080/sample/job-local/audit/jobs/dailyReconciliationJob/logs?limit=5"` |
 | **Cron 语法校验与时钟预演** | `LocalJobAuditController` | `POST /sample/job-local/audit/cron/preview` | `curl -X POST "http://localhost:8080/sample/job-local/audit/cron/preview" -H "Content-Type: application/json" -d '{"cron":"0 0 2 * * ?","count":3}'` |
 | **滚动清理过期历史日志** | `LocalJobAuditController` | `DELETE /sample/job-local/audit/logs/expired` | `curl -X DELETE "http://localhost:8080/sample/job-local/audit/logs/expired?retention=7d"` |

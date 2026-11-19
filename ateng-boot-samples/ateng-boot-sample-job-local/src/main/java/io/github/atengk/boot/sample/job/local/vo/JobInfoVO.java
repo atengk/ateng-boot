@@ -77,6 +77,21 @@ public class JobInfoVO implements Serializable {
     private boolean clusterLock;
 
     /**
+     * 集群互斥锁最小持有时长文本
+     */
+    private String clusterLockMinHoldTime;
+
+    /**
+     * 超时熔断同 Bean 降级补偿方法名
+     */
+    private String fallbackMethod;
+
+    /**
+     * SaaS 多租户并发遍历度
+     */
+    private int tenantConcurrency;
+
+    /**
      * 任务业务描述
      */
     private String description;
@@ -143,6 +158,9 @@ public class JobInfoVO implements Serializable {
                 .timeout(info.getTimeout() != null ? info.getTimeout().toString() : null)
                 .maxRetries(info.getMaxRetries())
                 .clusterLock(info.isClusterLock())
+                .clusterLockMinHoldTime(info.getClusterLockMinHoldTime() != null ? info.getClusterLockMinHoldTime().toString() : null)
+                .fallbackMethod(info.getFallbackMethod())
+                .tenantConcurrency(info.getTenantConcurrency())
                 .description(info.getDescription())
                 .nextExecutionTime(info.getNextExecutionTime())
                 .lastExecutionTime(info.getLastExecutionTime())

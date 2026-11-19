@@ -10,6 +10,7 @@ import io.github.atengk.boot.sample.job.local.dto.JobCronUpdateRequest;
 import io.github.atengk.boot.sample.job.local.dto.JobDelayUpdateRequest;
 import io.github.atengk.boot.sample.job.local.dto.JobDynamicRegisterRequest;
 import io.github.atengk.boot.sample.job.local.dto.JobRateUpdateRequest;
+import io.github.atengk.boot.sample.job.local.interceptor.SampleMaintenanceInterceptor;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
@@ -20,6 +21,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Duration;
@@ -27,7 +29,8 @@ import java.time.Duration;
 /**
  * 单机定时任务生命周期与动态管控控制器
  * <p>
- * 演示受管定时任务的暂停、恢复、Cron/频率/延迟动态重置、运行时编程式注册与注销移除等运维管控能力。
+ * 演示受管定时任务的暂停、恢复、Cron/频率/延迟动态重置、运行时编程式注册注销、
+ * 以及系统发版维护窗口切面责任链拦截器开关切换等运维管控能力。
  * </p>
  *
  * @author Ateng
@@ -41,6 +44,7 @@ import java.time.Duration;
 public class LocalJobManageController {
 
     private final LocalJobTemplate localJobTemplate;
+    private final SampleMaintenanceInterceptor sampleMaintenanceInterceptor;
 
     /**
      * 暂停指定受管定时任务的周期自动调度
@@ -157,5 +161,18 @@ public class LocalJobManageController {
         log.info("[LocalJobManageController] 注销并移除受管任务: jobName={}", jobName);
         boolean success = localJobTemplate.remove(jobName);
         return Result.success(success);
+    }
+
+    /**
+     * 动态开启或关闭系统发版维护窗口切面拦截器开关
+     *
+     * @param enabled true 开启维护拦截（阻断新调度）；false 关闭拦截（恢复正常执行）
+     * @return 当前维护拦截启用状态
+     */
+    @PostMapping("/interceptor/maintenance")
+    public Result<Boolean> toggleMaintenanceInterceptor(@RequestParam(defaultValue = "true") boolean enabled) {
+        log.info("[LocalJobManageController] 切换发版维护窗口拦截器状态: enabled={}", enabled);
+        sampleMaintenanceInterceptor.setMaintenanceMode(enabled);
+        return Result.success(sampleMaintenanceInterceptor.isMaintenanceMode());
     }
 }

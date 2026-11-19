@@ -85,6 +85,19 @@ public class LocalJobAuditController {
     }
 
     /**
+     * 探测指定任务的集群互斥锁当前是否处于持有（含最小持有窗口防时钟漂移）锁定状态
+     *
+     * @param jobName 任务标识名称
+     * @return true 表示锁正处于锁定持有状态
+     */
+    @GetMapping("/jobs/{jobName}/lock-status")
+    public Result<Boolean> getClusterLockStatus(@PathVariable @NotBlank(message = "任务标识不能为空") String jobName) {
+        log.info("[LocalJobAuditController] 探测任务集群锁持有状态: jobName={}", jobName);
+        boolean locked = localJobTemplate.isClusterLocked(jobName);
+        return Result.success(locked);
+    }
+
+    /**
      * 回查指定定时任务的最近执行历史审计日志清单
      *
      * @param jobName 任务标识名称

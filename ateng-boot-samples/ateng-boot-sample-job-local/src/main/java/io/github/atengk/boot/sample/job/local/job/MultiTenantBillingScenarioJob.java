@@ -40,6 +40,7 @@ public class MultiTenantBillingScenarioJob {
             name = "multiTenantBillingJob",
             description = "多租户账单自动化结算与出账任务",
             tenantMode = JobTenantMode.ITERATE,
+            tenantConcurrency = 3,
             fixedDelay = "1h",
             initialDelay = "1h"
     )

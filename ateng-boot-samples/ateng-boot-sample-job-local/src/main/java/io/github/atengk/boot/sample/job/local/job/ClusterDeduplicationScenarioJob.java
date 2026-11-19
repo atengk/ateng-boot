@@ -36,6 +36,7 @@ public class ClusterDeduplicationScenarioJob {
             description = "分布式多节点集群防重抢占与互斥调度任务",
             clusterLock = true,
             clusterLockLeaseTime = "1m",
+            clusterLockMinHoldTime = "600ms",
             fixedDelay = "1h",
             initialDelay = "1h"
     )

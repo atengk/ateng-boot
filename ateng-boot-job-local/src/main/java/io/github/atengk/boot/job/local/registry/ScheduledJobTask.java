@@ -619,6 +619,12 @@ public class ScheduledJobTask implements Runnable {
                     return new ExecutionOutcome(fallbackResult, null);
                 }
             } catch (Throwable fallbackEx) {
+                if (fallbackEx == ex) {
+                    saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "TIMEOUT",
+                            ex.getMessage(), ex.getMessage(), getStackTraceString(ex),
+                            retryCount.get(), context.getLogs());
+                    throw ex;
+                }
                 // 降级补偿自身失败时仍必须保留 TIMEOUT 审计记录，且不覆盖 TIMEOUT 状态，随后保留原因果链向外传播
                 ex.addSuppressed(fallbackEx);
                 context.log("Timeout fallback execution failed: " + fallbackEx.getMessage());

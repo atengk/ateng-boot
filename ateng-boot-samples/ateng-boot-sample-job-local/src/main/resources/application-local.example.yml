@@ -22,3 +22,4 @@ ateng:
           type: REDIS # 显式声明使用 Redis 轻量集群互斥锁 (RedisJobClusterLockProvider)
           key-prefix: "ateng:job:lock:"
           default-lease-time: 5m
+          default-min-hold-time: 0s

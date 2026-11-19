@@ -26,7 +26,7 @@ ateng:
         enabled: true
         pool-size: 5
         in-memory-log-capacity: 50
-        log-retention-days: 7
+        log-retention: 7d
         shutdown-await-termination-period: 30s
         cluster-lock:
           type: LOCAL # 默认使用本地单机内存锁保底，CI 与离线模式 100% 自洽

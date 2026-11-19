@@ -1,6 +1,6 @@
 # ateng-boot-job-local 基础设施 Starter
 
-> 面向单机定时调度与轻量分布式集群防重的生产级调度基础设施 Starter，坚持纯原生零重型臃肿依赖设计。基于 Spring `ThreadPoolTaskScheduler` 时钟调度器与受管 Worker 线程池双层物理隔离体系，提供声明式 `@LocalJob` 注解与对称操作门面 `LocalJobTemplate`、四阶重叠并发防卫策略（`OverlappingStrategy`）、硬超时强中断熔断与指数退避重试、强类型 DTO 入参绑定与 JSR-303 Fail-Fast 防卫、SaaS 多租户全模态隔离与 Fail-Safe 容错、三阶防风暴告警聚合器与故障自愈通知、原生零臃肿 Redis 轻量集群互斥锁与原子防误删、32 位无锁 MDC `traceId` 全链路追踪、有界环形淘汰防堆 OOM、云原生 Micrometer 监控指标度量、三大高内聚领域体验 Controller、`SmartLifecycle` 确定性停机排空以及 `/actuator/localjobs` 生产级运维管控端点。
+> 面向单机定时调度与轻量分布式集群防重的生产级调度基础设施 Starter，坚持纯原生零重型臃肿依赖设计。基于 Spring `ThreadPoolTaskScheduler` 时钟调度器与受管 Worker 线程池双层物理隔离体系，提供声明式 `@LocalJob` 注解与对称操作门面 `LocalJobTemplate`、四阶重叠并发防卫策略（`OverlappingStrategy`）、三阶段切面责任链拦截器（`LocalJobInterceptor`）、硬超时强中断熔断、指数退避重试与两级降级补偿（`fallbackMethod` / `LocalJobTimeoutFallbackHandler`）、强类型 DTO 入参绑定与 JSR-303 Fail-Fast 防卫、SaaS 多租户信号量受管并发遍历（`tenantConcurrency`）与 Fail-Safe 容错、三阶防风暴告警聚合器与故障自愈通知、原生零臃肿 Redis 轻量集群互斥锁（含续期、状态探测与非阻塞最小持有防时钟漂移 `clusterLockMinHoldTime`）、32 位无锁 MDC `traceId` 全链路追踪、有界环形淘汰防堆 OOM、云原生 Micrometer 监控指标度量、三大高内聚领域体验 Controller、`SmartLifecycle` 确定性停机排空以及 `/actuator/localjobs` 生产级运维管控端点。
 
 ---
 
@@ -18,9 +18,12 @@
 | **声明式调度** | 单次执行硬超时阈值 | `@LocalJob.timeout` | - | `String timeout()`，单次执行超时强行中断阈值（如 `300ms`），缺省不限时 | `LocalJobTimeoutRetryAndMdcTest`<br>`OrderTimeoutCancelScenarioJob` |
 | **声明式调度** | 失败指数重试次数 | `@LocalJob.maxRetries` | - | `int maxRetries()`，任务失败后最大自适应重试次数，默认 0 不重试 | `LocalJobTimeoutRetryAndMdcTest`<br>`OrderTimeoutCancelScenarioJob` |
 | **声明式调度** | 失败重试退避间隔 | `@LocalJob.retryInterval` | - | `String retryInterval()`，重试退避初始间隔（默认 `1s`），联动 `RetryUtil` 指数退避 | `LocalJobTimeoutRetryAndMdcTest`<br>`OrderTimeoutCancelScenarioJob` |
+| **声明式调度** | 超时方法级降级补偿 | `@LocalJob.fallbackMethod` | - | `String fallbackMethod()`，硬超时重试耗尽后反射调用同 Bean 兜底方法（4 档签名） | `LocalJobInterceptorAndFallbackTest`<br>`PaymentReconcileFallbackScenarioJob` |
 | **声明式调度** | 轻量集群互斥防重 | `@LocalJob.clusterLock` | `cluster-lock.enabled` | `boolean clusterLock()`，开启多节点集群互斥锁，抢锁失败安全跳过，默认 false | `LocalJobClusterLockTest`<br>`ClusterDeduplicationScenarioJob` |
 | **声明式调度** | 集群互斥锁租约时长 | `@LocalJob.clusterLockLeaseTime` | `cluster-lock.default-lease-time` | `String clusterLockLeaseTime()`，防死锁安全租约时长（默认 `5m`） | `LocalJobClusterLockTest`<br>`ClusterDeduplicationScenarioJob` |
+| **声明式调度** | 集群锁最小持有窗口 | `@LocalJob.clusterLockMinHoldTime` | `cluster-lock.default-min-hold-time` | `String clusterLockMinHoldTime()`，非阻塞收缩剩余租期防跨节点时钟漂移，默认空 | `LocalJobClusterLockTest`<br>`ClusterDeduplicationScenarioJob` |
 | **声明式调度** | SaaS 多租户调度模态 | `@LocalJob.tenantMode` | - | `JobTenantMode tenantMode()`，默认 `IGNORE`，支持 `PARAM` 单租户与 `ITERATE` 全租户轮询 | `LocalJobMultiTenantTest`<br>`MultiTenantBillingScenarioJob` |
+| **声明式调度** | 多租户受管并发度 | `@LocalJob.tenantConcurrency` | - | `int tenantConcurrency()`，`ITERATE` 下 `Semaphore` 并发度（默认 1，`<=0` 归一化为 1） | `LocalJobTenantConcurrencyTest`<br>`MultiTenantBillingScenarioJob` |
 | **声明式调度** | 任务人读描述 | `@LocalJob.description` | - | `String description()`，任务中文业务说明，用于 Actuator 与看板展示 | `LocalJobActuatorAndEventTest`<br>`DailyReconciliationScenarioJob` |
 | **声明式调度** | 任务静态启用开关 | `@LocalJob.enabled` | - | `boolean enabled()`，单任务静态启动开关，默认 true | `LocalJobSchedulingTest` |
 | **操作门面** | 手动立即触发任务 | `LocalJobTemplate` | - | `JobResult trigger(String jobName)`，手动立即触发执行一次指定任务 | `LocalJobFacadeAndQueryTest`<br>`LocalJobScheduleController` |
@@ -35,12 +38,13 @@
 | **操作门面** | 编程式注册固定频率 | `LocalJobTemplate` | - | `boolean registerFixedRate(String jobName, Duration fixedRate, Runnable runnable)` | `LocalJobFacadeAndQueryTest` |
 | **操作门面** | 编程式注册固定延迟 | `LocalJobTemplate` | - | `boolean registerFixedDelay(String jobName, Duration fixedDelay, Runnable runnable)` | `LocalJobFacadeAndQueryTest` |
 | **操作门面** | 注销并移除任务 | `LocalJobTemplate` | - | `boolean remove(String jobName)`，停止调度并从注册表彻底注销移除任务 | `LocalJobFacadeAndQueryTest`<br>`LocalJobManageController` |
-| **操作门面** | 查询单任务运行状态 | `LocalJobTemplate` | - | `JobInfo getJob(String jobName)`，获取任务定义、运行状态、统计指标与最近日志 | `LocalJobFacadeAndQueryTest`<br>`LocalJobAuditController` |
+| **操作门面** | 查询单任务运行状态 | `LocalJobTemplate` | - | `JobInfo getJob(String jobName)`，返回含真实 `nextExecutionTime` 等全量视图状态 | `LocalJobFacadeAndQueryTest`<br>`LocalJobAuditController` |
 | **操作门面** | 巡检所有受管任务清单 | `LocalJobTemplate` | - | `List<JobInfo> listJobs()`，获取系统内全量任务运行时清单（非 null 空安全） | `LocalJobFacadeAndQueryTest`<br>`LocalJobAuditController` |
-| **操作门面** | 查询最近执行审计日志 | `LocalJobTemplate` | - | `List<JobExecutionRecord> listRecentLogs(String jobName, int limit)`，回查审计记录 | `LocalJobStorageAndLifecycleTest`<br>`LocalJobAuditController` |
-| **操作门面** | 滚动清理过期历史日志 | `LocalJobTemplate` | `log-retention-days` | `int cleanExpiredLogs(Duration retentionDuration)`，清理过期历史记录 | `LocalJobStorageAndLifecycleTest`<br>`LocalJobAuditController` |
+| **操作门面** | 查询最近执行审计日志 | `LocalJobTemplate` | - | `List<JobExecutionRecord> listRecentLogs(String jobName, [int limit])` | `LocalJobStorageAndLifecycleTest`<br>`LocalJobAuditController` |
+| **操作门面** | 滚动清理过期历史日志 | `LocalJobTemplate` | `log-retention` | `int cleanExpiredLogs(Duration retentionDuration)`，清理过期历史记录 | `LocalJobStorageAndLifecycleTest`<br>`LocalJobAuditController` |
 | **操作门面** | 判断任务是否存在 | `LocalJobTemplate` | - | `boolean exists(String jobName)`，判断指定任务是否已存在于调度注册表中 | `LocalJobFacadeAndQueryTest` |
 | **操作门面** | 探测任务是否在执行中 | `LocalJobTemplate` | - | `boolean isExecuting(String jobName)`，判断任务当前是否处于 Worker 活跃运行中 | `LocalJobFacadeAndQueryTest` |
+| **操作门面** | 探测集群互斥锁持有 | `LocalJobTemplate` | - | `boolean isClusterLocked(String jobName)`，探测任务锁当前是否处于持有（含最小窗口）状态 | `LocalJobClusterLockTest`<br>`LocalJobAuditController` |
 | **操作门面** | Cron 语法合法性校验 | `LocalJobTemplate` | - | `boolean isValidCron(String cronExpression)`，校验 6 位标准 Cron 语法 | `LocalJobFacadeAndQueryTest`<br>`LocalJobAuditController` |
 | **操作门面** | Cron 未来触发时序预演 | `LocalJobTemplate` | - | `List<Instant> getNextExecutionTimes(String cron, int count, [Instant fromTime])` | `LocalJobFacadeAndQueryTest`<br>`LocalJobAuditController` |
 | **上下文句柄** | 强类型入参 DTO 绑定 | `JobContext` | - | `<T> T bind(Class<T> targetClass)`，反序列化入参并触发 JSR-303 Fail-Fast 校验 | `LocalJobParamValidationTest`<br>`TypedParamArchivingScenarioJob` |
@@ -50,24 +54,28 @@
 | **上下文句柄** | 获取当前租户标识 | `JobContext` | - | `String getTenantId()`，返回当前调度的租户标识（非租户或 IGNORE 模态为 null） | `LocalJobMultiTenantTest`<br>`MultiTenantBillingScenarioJob` |
 | **上下文句柄** | 获取任务启动时间 | `JobContext` | - | `Instant getFireTime()`，返回本次调度的实际触发启动时间戳 | `LocalJobFacadeAndQueryTest` |
 | **上下文句柄** | 获取调度自定义参数 | `JobContext` | - | `Map<String, Object> getParams()`，获取手动触发时传入的自定义业务参数 | `LocalJobParamValidationTest`<br>`TypedParamArchivingScenarioJob` |
-| **产物模型** | 成功结果快速构建 | `JobResult` | - | `JobResult.success()` / `JobResult.success(msg)` / `JobResult.success(msg, data)` | `LocalJobFacadeAndQueryTest`<br>`DailyReconciliationScenarioJob` |
+| **产物模型** | 成功结果快速构建 | `JobResult` | - | `JobResult.success(String message)` / `JobResult.success(String message, Object data)` | `LocalJobFacadeAndQueryTest`<br>`DailyReconciliationScenarioJob` |
 | **产物模型** | 失败结果快速构建 | `JobResult` | - | `JobResult.failure(String message)`，构建显式失败产物（记录失败状态与告警） | `LocalJobFacadeAndQueryTest`<br>`MultiTenantBillingScenarioJob` |
 | **多租户模态** | SaaS 租户隔离枚举 | `JobTenantMode` | - | `IGNORE`（忽略租户）、`PARAM`（入参指定租户）、`ITERATE`（全租户轮询遍历） | `LocalJobMultiTenantTest`<br>`MultiTenantBillingScenarioJob` |
 | **多租户发现** | 租户发现服务 SPI | `TenantProvider` | - | `List<String> getTenantIds()`，为 `ITERATE` 模态提供活跃租户标识列表 | `LocalJobMultiTenantTest`<br>`SampleTenantProvider` |
-| **集群互斥** | 集群互斥锁 SPI | `JobClusterLockProvider` | `cluster-lock.*` | `JobLockHandle tryLock(String jobName, Duration leaseTime)`，抢锁失败返回 null | `LocalJobClusterLockTest`<br>`ClusterDeduplicationScenarioJob` |
-| **集群互斥** | Redis 轻量互斥锁实现 | `RedisJobClusterLockProvider` | `cluster-lock.type=AUTO/REDIS`<br>`cluster-lock.key-prefix` | 原生 `SET NX PX` 原子抢占，Lua 脚本原子校验属主安全释放，防误删防死锁 | `RedisJobClusterLockProviderTest`<br>`ClusterDeduplicationScenarioJob` |
-| **告警防风暴** | 三阶告警聚合器 | `AntiStormJobAlertAggregator` | `alert.anti-storm.*` | 首发即送、滑动窗口累计降噪、阶段聚合汇总、自愈恢复绿色通知 | `AntiStormJobAlertAggregatorTest`<br>`SampleJobLocalIntegrationTest` |
+| **切面拦截器** | 三阶段任务拦截器 SPI | `LocalJobInterceptor` | - | 继承 `Ordered`：`preHandle` / `postHandle`（正序）、`afterCompletion`（逆序），拒绝触发 `INTERCEPTOR_REJECTED` | `LocalJobInterceptorAndFallbackTest`<br>`SampleMaintenanceInterceptor` |
+| **降级补偿** | 全局超时降级 SPI | `LocalJobTimeoutFallbackHandler` | - | `JobResult onTimeout(JobContext context, JobTimeoutException exception)`，无 `fallbackMethod` 时兜底 | `LocalJobInterceptorAndFallbackTest`<br>`SampleGlobalTimeoutFallbackHandler` |
+| **丢弃枚举** | 调度丢弃原因枚举 | `DiscardReason` | - | `OVERLAPPING_DISCARD`、`CLUSTER_LOCKED`、`INTERCEPTOR_REJECTED`、`OTHER` | `LocalJobInterceptorAndFallbackTest`<br>`SampleJobLocalIntegrationTest` |
+| **集群互斥** | 集群互斥锁 SPI | `JobClusterLockProvider` | `cluster-lock.*` | `tryLock` / `unlock(handle, [minHoldTime])` / `renew` / `isLocked`，支持非阻塞租期收缩与续期 | `LocalJobClusterLockTest`<br>`ClusterDeduplicationScenarioJob` |
+| **集群互斥** | 锁持有句柄与时间戳 | `JobLockHandle` | - | 封装 `lockKey`、`lockOwner`、`leaseExpireAt`、`acquiredAt` 与 `isExpired()` | `LocalJobClusterLockTest`<br>`RedisJobClusterLockProviderTest` |
+| **集群互斥** | Redis 轻量互斥锁实现 | `RedisJobClusterLockProvider` | `cluster-lock.type=AUTO/REDIS`<br>`cluster-lock.key-prefix` | `SET NX PX` 抢锁 + Lua 属主删锁与 `PEXPIRE` 收缩/续期脚本，防误删防死锁 | `RedisJobClusterLockProviderTest`<br>`ClusterDeduplicationScenarioJob` |
+| **告警防风暴** | 三阶告警聚合器 | `AntiStormJobAlertAggregator` | `alert.anti-storm.*` | 首发即送、滑动窗口累计降噪、自愈恢复绿色通知（`recovery-notice`） | `AntiStormJobAlertAggregatorTest`<br>`SampleJobLocalIntegrationTest` |
 | **告警扩展** | 异常失败告警转发 SPI | `JobAlertHandler` | `alert.enabled`<br>`alert.channel` | `void handleAlert(JobAlertContext context)`，接收告警上下文并转发通知平台 | `LocalJobActuatorAndEventTest`<br>`SampleCustomJobAlertHandler` |
 | **监控指标** | Micrometer 指标度量 | `LocalJobMetricsBinder` | `metrics.enabled` | 导出 Timer (`ateng.job.local.execution`)、Counter (`discarded`)、Gauge (`active`) | `LocalJobMetricsTest`<br>`SystemMetricsSamplingScenarioJob` |
 | **领域事件** | 任务调度生命周期事件 | `JobEvent` 族 | - | `JobStartingEvent`、`JobSuccessEvent`、`JobFailedEvent`、`JobTimeoutEvent`、`JobDiscardedEvent` | `LocalJobActuatorAndEventTest`<br>`SampleJobEventListener` |
-| **存储扩展** | 任务元数据仓储 SPI | `JobMetadataRepository` | `prefer-database-config` | `save` / `findById` / `findAll` / `deleteById`，支持数据库配置仲裁覆盖代码 | `LocalJobStorageAndLifecycleTest`<br>`InMemoryJobMetadataRepository` |
-| **存储扩展** | 日志存储与防 OOM SPI | `JobLogStorageProvider` | `in-memory-log-capacity` | `saveRecord` / `findRecentLogs` / `cleanExpiredLogs`，有界环形淘汰防堆溢出 | `LocalJobStorageAndLifecycleTest`<br>`InMemoryJobLogStorageProvider` |
+| **存储扩展** | 任务元数据仓储 SPI | `JobMetadataRepository` | `prefer-database-config` | `save` / `findByJobName` / `updateStatus` / `updateCron` / `updateFixedRate` / `updateFixedDelay` / `findAll` / `delete` | `LocalJobStorageAndLifecycleTest`<br>`InMemoryJobMetadataRepository` |
+| **存储扩展** | 日志存储与防 OOM SPI | `JobLogStorageProvider` | `in-memory-log-capacity`<br>`max-log-lines-per-execution`<br>`log-retention` | `saveLog` / `listLogs` / `cleanExpiredLogs(Duration)` / `cleanExpiredLogs(Instant)`，有界环形淘汰防 OOM | `LocalJobStorageAndLifecycleTest`<br>`InMemoryJobLogStorageProvider` |
 | **运维监控** | 任务管控 Actuator 端点 | `LocalJobEndpoint` | `actuator.enabled` | `/actuator/localjobs`，支持任务巡检、Cron 触发预演、即时触发、暂停与恢复 | `LocalJobActuatorAndEventTest`<br>`SampleJobLocalIntegrationTest` |
-| **运维体验端** | 调度触发控制器 | `LocalJobScheduleController` | - | `POST /sample/job-local/schedule/*`，支持即时触发、带参归档校验、多租户轮询 | `SampleJobLocalIntegrationTest`<br>`LocalJobScheduleController` |
-| **运维体验端** | 生命周期管控控制器 | `LocalJobManageController` | - | `POST/DELETE /sample/job-local/manage/*`，支持启停、动态更新周期、注册注销 | `SampleJobLocalIntegrationTest`<br>`LocalJobManageController` |
-| **运维体验端** | 状态巡检与审计控制器 | `LocalJobAuditController` | - | `GET/POST/DELETE /sample/job-local/audit/*`，支持全量巡检、详情、日志、预演 | `SampleJobLocalIntegrationTest`<br>`LocalJobAuditController` |
+| **运维体验端** | 调度触发控制器 | `LocalJobScheduleController` | - | `POST /sample/job-local/schedule/*`，支持即时触发、带参归档、多租户并发、集群锁、超时降级 | `SampleJobLocalIntegrationTest`<br>`LocalJobScheduleController` |
+| **运维体验端** | 生命周期管控控制器 | `LocalJobManageController` | - | `POST/DELETE /sample/job-local/manage/*`，支持启停、周期动态变更、注册注销与维护拦截开关 | `SampleJobLocalIntegrationTest`<br>`LocalJobManageController` |
+| **运维体验端** | 状态巡检与审计控制器 | `LocalJobAuditController` | - | `GET/POST/DELETE /sample/job-local/audit/*`，支持全量巡检、详情、锁状态探测、日志与预演 | `SampleJobLocalIntegrationTest`<br>`LocalJobAuditController` |
 | **生命周期** | 延迟就绪与停机排空 | `LocalJobLifecycleManager` | `shutdown-await-termination-period` | Spring `SmartLifecycle` phase=`MAX-100`，容器就绪后激活，退出时排空 Worker | `LocalJobStorageAndLifecycleTest`<br>`SampleJobLocalIntegrationTest` |
-| **自动装配** | 模块核心自动装配入口 | `AtengJobLocalAutoConfiguration` | `enabled` | 标准 Spring Boot 3 自动装配，全套 `@ConditionalOnMissingBean` 守卫与显式时序 | `AtengJobLocalAutoConfigurationTest` |
+| **自动装配** | 模块核心自动装配入口 | `AtengJobLocalAutoConfiguration` | `enabled`<br>`pool-size`<br>`thread-name-prefix` | 标准 Spring Boot 3 自动装配，延迟收集 SPI 与 `@ConditionalOnMissingBean` 守卫 | `AtengJobLocalAutoConfigurationTest` |
 
 ---
 
@@ -91,6 +99,16 @@
 </dependency>
 ```
 
+若独立引入（未使用 BOM 管控），请显式声明最新稳定版本号：
+
+```xml
+<dependency>
+    <groupId>io.github.atengk</groupId>
+    <artifactId>ateng-boot-job-local</artifactId>
+    <version>1.2.0</version>
+</dependency>
+```
+
 ### 极简起步三步走
 
 #### 步骤一：配置参数 (`application.yml`)
@@ -103,7 +121,7 @@ ateng:
         enabled: true
         pool-size: 5
         in-memory-log-capacity: 50
-        log-retention-days: 7
+        log-retention: 7d
         shutdown-await-termination-period: 30s
         actuator:
           enabled: true
@@ -350,7 +368,7 @@ ateng:
 
 ---
 
-### 4.2 硬超时强中断熔断与指数退避重试
+### 4.2 硬超时强中断熔断、指数退避重试与两级降级补偿
 
 #### 本节专属 YAML 配置片段
 
@@ -359,12 +377,13 @@ ateng:
   boot:
     job:
       local:
+        enabled: true
         alert:
           enabled: true
           channel: ops-robot
 ```
 
-#### 真实业务 Java 示例
+#### 真实业务 Java 示例：重试熔断 (`OrderTimeoutCancelScenarioJob.java`) 与超时降级 (`PaymentReconcileFallbackScenarioJob.java`)
 
 ```java
 @LocalJob(
@@ -378,11 +397,66 @@ public JobResult executeOrderTimeoutCancel(JobContext context) throws Interrupte
     // 若下游 RPC 卡死超过 300ms，自动触发 JobTimeoutException 并自适应退避重试
     return JobResult.success("关单处理成功");
 }
+
+@Component
+public class PaymentReconcileFallbackScenarioJob {
+
+    @LocalJob(
+            name = "paymentReconcileFallbackJob",
+            description = "第三方支付对账硬超时熔断与降级补偿任务",
+            fixedDelay = "1h",
+            initialDelay = "1h",
+            timeout = "100ms",
+            fallbackMethod = "onReconcileTimeoutFallback"
+    )
+    public JobResult reconcilePaymentGateway(JobContext context) throws InterruptedException {
+        context.log("开始拉取第三方支付渠道流水执行对账...");
+        Object paramFlag = context.getParams().get("simulateTimeout");
+        boolean shouldTimeout = simulateTimeout.get() || Boolean.parseBoolean(String.valueOf(paramFlag));
+        if (shouldTimeout) {
+            log.warn("paymentReconcileFallbackJob 模拟支付网关拉取耗时过长触发超时熔断...");
+            Thread.sleep(400);
+        }
+        context.log("第三方支付对账完成，核销流水 320 笔");
+        return JobResult.success("支付渠道对账完成，核销 320 笔");
+    }
+
+    public JobResult onReconcileTimeoutFallback(JobContext context, Throwable cause) {
+        log.warn("paymentReconcileFallbackJob 超时触发降级补偿，已转入 T+1 异步补账队列: cause={}",
+                cause != null ? cause.getMessage() : "unknown");
+        return JobResult.success("支付网关超时已触发降级补偿，任务 [" + context.getJobName() + "] 已切入 T+1 异步补账队列");
+    }
+}
+```
+
+#### 全局超时降级 SPI 实现 (`SampleGlobalTimeoutFallbackHandler.java`)
+
+当未在 `@LocalJob` 中声明方法级 `fallbackMethod` 时，可通过全局 `LocalJobTimeoutFallbackHandler` Bean 兜底：
+
+```java
+@Component
+public class SampleGlobalTimeoutFallbackHandler implements LocalJobTimeoutFallbackHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(SampleGlobalTimeoutFallbackHandler.class);
+
+    private final AtomicBoolean enabled = new AtomicBoolean(false);
+
+    @Override
+    public JobResult onTimeout(JobContext context, JobTimeoutException exception) {
+        if (!enabled.get()) {
+            throw exception;
+        }
+        log.warn("SampleGlobalTimeoutFallbackHandler 捕获任务 [{}] 全局超时降级: timeout={}",
+                context.getJobName(), exception.getTimeout());
+        return JobResult.failure("任务 [" + context.getJobName() + "] 超时已触发全局 SPI 降级兜底");
+    }
+}
 ```
 
 #### 核心机制与边界防御说明
-1. **确定性超时强中断**：时钟线程调度任务提交至 Worker 后，Worker 线程在超时阈值到达时被发送 `Thread.interrupt()`，阻塞 I/O 或循环等待立即感知中断退出，杜绝死锁与无界挂起；
-2. **自适应指数退避**：重试并非无脑重试，而是联动 Core 模块原生 `RetryUtil` 以 $2^n$ 指数递增等待时延，防止击垮处于故障中的下游中间件。
+1. **确定性超时强中断与指数退避**：Worker 线程达到 `timeout` 后由引擎发送 `Thread.interrupt()`，配合 `RetryUtil` 执行 $2^n$ 指数退避重试；
+2. **始终先记 `TIMEOUT` 再降级防漏报**：退避耗尽仍超时后，引擎**必定先置位 `TIMEOUT` 状态并广播 `JobTimeoutEvent`**（确保 `LocalJobMetricsBinder` 与防风暴告警不漏报），随后优先反射调用同 Bean `fallbackMethod`（支持 `(JobContext, Throwable)`、`(JobContext)`、`Throwable` 及无参 4 档签名并自动拆包 AOP 代理），未声明则回调全局 `LocalJobTimeoutFallbackHandler` 并保存降级摘要后平滑返回；
+3. **向后兼容与降级异常保全**：两者均未配置时保持向外抛出 `JobTimeoutException`；若降级方法自身抛异常，引擎仍强制写入 `TIMEOUT` 审计记录后保留因果链向外传播。
 
 ---
 
@@ -444,11 +518,9 @@ public class TypedParamArchivingScenarioJob {
 
 ---
 
-## 5. 企业级 SaaS 与轻量集群套件 (Capability Domain: Multi-Tenant & Cluster Lock)
+### 4.4 三阶段切面责任链拦截器 (`LocalJobInterceptor`)
 
-面向现代 SaaS 架构与微服务多 Pod 容器化部署提供开箱即用支持。
-
-### 5.1 SaaS 多租户全模态隔离与 Fail-Safe 容错
+适用于发版维护窗口静默拦截、灰度节点路由过滤、全链路审计追踪挂载与终态资源确定性清理。
 
 #### 本节专属 YAML 配置片段
 
@@ -458,6 +530,65 @@ ateng:
     job:
       local:
         enabled: true
+```
+
+#### 真实业务 Java 示例 (`SampleMaintenanceInterceptor.java`)
+
+```java
+@Component
+public class SampleMaintenanceInterceptor implements LocalJobInterceptor {
+
+    private final AtomicBoolean maintenanceMode = new AtomicBoolean(false);
+
+    @Override
+    public int getOrder() {
+        return 10;
+    }
+
+    @Override
+    public boolean preHandle(JobContext context) {
+        if (maintenanceMode.get()) {
+            log.warn("SampleMaintenanceInterceptor 检测到系统处于发版维护窗口，拦截跳过任务 [{}]",
+                    context != null ? context.getJobName() : "UNKNOWN");
+            return false;
+        }
+        return true;
+    }
+
+    @Override
+    public void postHandle(JobContext context, JobResult result) {
+        postHandleCount.incrementAndGet();
+    }
+
+    @Override
+    public void afterCompletion(JobContext context, JobResult result, Throwable ex) {
+        // 终态严格逆序清理，仅对 preHandle 已通过的拦截器触发
+        afterCompletionCount.incrementAndGet();
+    }
+}
+```
+
+#### 核心机制与边界防御说明
+1. **严格有序的三阶段生命周期**：多个 `LocalJobInterceptor` Bean 由自动装配结合 `SmartInitializingSingleton` 延迟收集排序（规避循环依赖），正序执行 `preHandle` 与 `postHandle`，并在 `finally` 中按**严格逆序**仅对已通过的拦截器执行 `afterCompletion`；
+2. **拦截拒绝事件化与隔离清理**：任一 `preHandle` 返回 `false` 时，引擎自动置 `DISCARDED` 状态、保存审计记录并广播 `JobDiscardedEvent(DiscardReason.INTERCEPTOR_REJECTED)`；单个拦截器 `afterCompletion` 或 `postHandle` 抛异常均被隔离记录，绝不阻断其余上游拦截器清理或扭曲主终态。
+
+---
+
+## 5. 企业级 SaaS 与轻量集群套件 (Capability Domain: Multi-Tenant & Cluster Lock)
+
+面向现代 SaaS 架构与微服务多 Pod 容器化部署提供开箱即用支持。
+
+### 5.1 SaaS 多租户全模态隔离、并发遍历与 Fail-Safe 容错
+
+#### 本节专属 YAML 配置片段
+
+```yaml
+ateng:
+  boot:
+    job:
+      local:
+        enabled: true
+        pool-size: 5
 ```
 
 #### 租户发现服务 SPI 实现 (`SampleTenantProvider.java`)
@@ -484,29 +615,30 @@ public class MultiTenantBillingScenarioJob {
             name = "multiTenantBillingJob",
             description = "多租户账单自动化结算与出账任务",
             tenantMode = JobTenantMode.ITERATE, // 声明为全租户轮询模态
+            tenantConcurrency = 3,              // 受 Semaphore(3) 背压限流在 Worker 线程池并发执行
             fixedDelay = "1h",
             initialDelay = "1h"
     )
     public JobResult executeMultiTenantBilling(JobContext context) {
         String currentTenant = context.getTenantId();
-        // 调度引擎已自动绑定当前租户至 TenantContextHolder 与 MDC
+        // 调度引擎已通过 AsyncContext.wrap 与 TenantContextHolder 自动隔离绑定当前租户及 MDC
         return JobResult.success("租户 [" + currentTenant + "] 账单核算成功");
     }
 }
 ```
 
 #### 核心机制与边界防御说明
-1. **三阶模态隔离**：
+1. **三阶模态与信号量并发背压**：
    - `IGNORE`（默认）：忽略租户概念，全局单次执行；
    - `PARAM`：从触发入参提取 `tenantId` 并在当前租户上下文中执行；
-   - `ITERATE`：全租户轮询模态，由调度器驱动逐个遍历 `TenantProvider` 提供的租户列表；
-2. **Fail-Safe 容错不雪崩**：在 `ITERATE` 模态下，若某单个租户核算失败（抛出异常），调度引擎自动捕获并记录该租户失败，**绝对不阻断后续其他正常租户的调度执行**，最终聚合输出完整统计报告（如 `完成 3/3 租户调度，成功 2，失败 1`）。
+   - `ITERATE`：全租户轮询模态，配置 `tenantConcurrency > 1`（`<=0` 自动归一化为 `1`）时通过 `localJobWorkerExecutor`、`Semaphore(tenantConcurrency)` 背压限流与 `AsyncContext.wrap` 四维上下文隔离并发遍历各租户，子线程 `finally` 确定性恢复 `TenantContextHolder`，并通过独立调度器延时中断看门狗避免同池嵌套死锁；
+2. **Fail-Safe 容错不雪崩**：在 `ITERATE` 模态下，若某单个租户核算失败，调度引擎自动捕获并线程安全聚合失败详情，**绝不阻断其余并发租户执行**，存在部分成功时置 `PARTIAL_SUCCESS` 并输出统计摘要（如 `完成 3/3 租户调度，成功 2，失败 1`）。
 
 ---
 
-### 5.2 原生零臃肿 Redis 轻量集群互斥防重与租约防死锁
+### 5.2 原生零臃肿 Redis 轻量集群互斥防重、续期与防时钟漂移
 
-无需引入重量级 Redisson 或大型分布式调度中心，仅依托 Spring Data Redis 原生原子原语实现轻量集群防重。
+无需引入重量级 Redisson 或大型分布式调度中心，仅依托 Spring Data Redis 原生原子原语实现轻量集群防重、续期、状态探测与最小持有防时钟漂移。
 
 #### 本节专属 YAML 配置片段 (`application.yml` 与 `application-local.yml`)
 
@@ -521,6 +653,7 @@ ateng:
           type: LOCAL                  # 默认单机内存锁保底，CI 零外部依赖风险
           key-prefix: "ateng:job:lock:"
           default-lease-time: 5m
+          default-min-hold-time: 0s    # 最小锁持有防时钟漂移窗口（0s 表示不开启）
 
 # 本地联调或生产集群配置 (application-local.yml / 生产环境)
 spring:
@@ -534,6 +667,7 @@ ateng:
       local:
         cluster-lock:
           type: AUTO                   # 自动装配 RedisJobClusterLockProvider
+          default-min-hold-time: 500ms # 全局兜底最小持有防时钟漂移窗口
 ```
 
 #### 真实业务 Java 示例 (`ClusterDeduplicationScenarioJob.java`)
@@ -544,29 +678,27 @@ public class ClusterDeduplicationScenarioJob {
 
     @LocalJob(
             name = "clusterDeduplicationJob",
-            description = "分布式多节点集群防重互斥调度任务",
-            fixedDelay = "10s",
-            clusterLock = true,            // 开启集群互斥防重
-            clusterLockLeaseTime = "1m"     // 安全租约时长 1 分钟
+            description = "分布式多节点集群防重抢占与互斥调度任务",
+            clusterLock = true,             // 开启集群互斥防重
+            clusterLockLeaseTime = "1m",    // 安全租约时长 1 分钟
+            clusterLockMinHoldTime = "600ms", // 非阻塞最小持有期，防多节点毫秒级时钟漂移重复触发
+            fixedDelay = "1h",
+            initialDelay = "1h"
     )
     public JobResult executeClusterDeduplication(JobContext context) {
-        return JobResult.success("集群防重互斥锁获取成功，成功执行分布式排他对账");
+        int count = executionCount.incrementAndGet();
+        context.log("成功抢占集群互斥分布式锁，执行分布式去重任务，当前轮次: " + count);
+        log.info("clusterDeduplicationJob acquired cluster lock and running, count={}, traceId={}",
+                count, context.getTraceId());
+        return JobResult.success("集群防重互斥锁获取成功，第 [" + count + "] 轮全局唯一任务调度完成");
     }
 }
 ```
 
 #### 核心机制与边界防御说明
-1. **原子租约抢占 (SET NX PX)**：多节点并发触发时，首个向 Redis 执行 `SET ateng:job:lock:<jobName> <nodeId@uuid> PX 60000 NX` 成功的节点获得执行权；抢锁失败的节点安全跳过当前周期，记录丢弃度量；
-2. **原子属主校验防误删 (Atomic Lua Script)**：释放锁时执行原子比对 Lua 脚本：
-   ```lua
-   if redis.call('get', KEYS[1]) == ARGV[1] then
-       return redis.call('del', KEYS[1])
-   else
-       return 0
-   end
-   ```
-   严禁因任务长耗时超出租期后误释放其他节点已获取的新锁；
-3. **租约防死锁安全网**：若节点宕机或断电，锁在 `leaseTime` 到期后由 Redis 自动清理，彻底杜绝死锁停摆。
+1. **原子租约抢占 (SET NX PX) 与句柄时间锚点**：多节点并发触发时，首个向 Redis 执行 `SET ateng:job:lock:<jobName> <nodeId@threadId:uuid> PX <leaseMs> NX` 成功的节点获得执行权并返回携带 `acquiredAt` 的 `JobLockHandle`；抢锁失败节点安全跳过并广播 `JobDiscardedEvent(DiscardReason.CLUSTER_LOCKED)`；
+2. **零线程阻塞最小持有收缩与原子续期 (Lua `PEXPIRE`)**：释放锁时若配置了 `clusterLockMinHoldTime` 且实际持有未满窗口，**绝不调用 `Thread.sleep` 阻塞 Worker 线程**，而是计算不超过既有租约上限的剩余窗口 `remainingMs`，通过属主校验 + `PEXPIRE` 原子 Lua 脚本收缩租期（若已超时或属主不符则安全退出）；`renew(handle, leaseTime)` 复用同一属主 `PEXPIRE` 契约，并对外暴露 `localJobTemplate.isClusterLocked(jobName)` 实时探测持锁状态；
+3. **原子属主校验防误删与租约兜底**：普通释放通过 Lua 属主比对 `del`，宕机由 Redis TTL 自动释放防死锁。
 
 ---
 
@@ -626,7 +758,7 @@ public class SampleJobEventListener {
 
     @EventListener
     public void onJobDiscarded(JobDiscardedEvent event) {
-        // 捕获并发丢弃或集群抢锁失败：event.getReason()
+        // 捕获并发丢弃、集群抢锁失败或拦截器拒绝：event.getDiscardReason(), event.getReason()
     }
 }
 ```
@@ -644,9 +776,9 @@ public class SampleJobEventListener {
 
 ### 6.4 内存有界环形淘汰防 OOM 与存储 SPI
 
-1. **有界环形淘汰防堆 OOM**：默认实现 `InMemoryJobLogStorageProvider` 为每个任务分配固定容量的环形队列（由 `in-memory-log-capacity` 控制，默认 100 条），新记录自动淘汰最旧记录，彻底杜绝内存泄漏；
-2. **滚动过期清理**：支持调用 `localJobTemplate.cleanExpiredLogs(Duration)` 按照时间窗口滚动清理历史审计日志；
-3. **元数据存储 SPI**：实现 `JobMetadataRepository` 可将任务配置持久化至数据库，实现控制台动态配置覆盖代码静态注解。
+1. **双重有界防堆 OOM**：默认实现 `InMemoryJobLogStorageProvider` 为每个任务维护有界环形历史队列（由 `in-memory-log-capacity` 控制，默认 100 条），同时单次执行中 `JobContext.log(...)` 受 `max-log-lines-per-execution`（默认 500 行）拦截截断；
+2. **滚动过期清理**：`JobLogStorageProvider` 提供 `saveLog` / `listLogs` / `cleanExpiredLogs` 对称契约，支持调用 `localJobTemplate.cleanExpiredLogs(Duration)`（及每次写入按 `log-retention` 惰性滚动清理）防历史堆积；
+3. **元数据存储 SPI**：实现 `JobMetadataRepository`（`save` / `findByJobName` / `updateStatus` / `updateCron` / `updateFixedRate` / `updateFixedDelay` / `findAll` / `delete`）可将任务配置持久化至数据库，配合 `prefer-database-config: true` 实现配置覆盖代码静态注解。
 
 ---
 
@@ -691,7 +823,22 @@ curl -X POST "http://localhost:8080/sample/job-local/schedule/trigger/archiving"
   -d '{"tableName":"","retentionDays":-5}'
 ```
 
-#### 3. 动态生命周期管控 (暂停 / 恢复 / 动态注册 / 注销)
+#### 3. 超时降级补偿与发版维护窗口拦截体验
+```bash
+# 触发第三方支付对账超时熔断与同 Bean fallbackMethod 降级补偿
+curl -X POST "http://localhost:8080/sample/job-local/schedule/trigger/timeout-fallback?simulateTimeout=true"
+
+# 触发全局 LocalJobTimeoutFallbackHandler SPI 兜底降级补偿
+curl -X POST "http://localhost:8080/sample/job-local/schedule/trigger/global-timeout-fallback"
+
+# 开启系统发版维护窗口切面拦截器（后续新触发将被 INTERCEPTOR_REJECTED 拦下并记 DISCARDED）
+curl -X POST "http://localhost:8080/sample/job-local/manage/interceptor/maintenance?enabled=true"
+
+# 关闭发版维护窗口拦截器恢复正常调度
+curl -X POST "http://localhost:8080/sample/job-local/manage/interceptor/maintenance?enabled=false"
+```
+
+#### 4. 动态生命周期管控 (暂停 / 恢复 / 动态注册 / 注销)
 ```bash
 # 暂停任务周期自动调度
 curl -X POST "http://localhost:8080/sample/job-local/manage/pause/dailyReconciliationJob"
@@ -713,13 +860,16 @@ curl -X POST "http://localhost:8080/sample/job-local/manage/dynamic/register" \
 curl -X DELETE "http://localhost:8080/sample/job-local/manage/dynamicCleanupJob"
 ```
 
-#### 4. 任务状态全量巡检与审计日志回查
+#### 5. 任务状态全量巡检、锁探测与审计日志回查
 ```bash
-# 巡检全量任务清单
+# 巡检全量任务清单（包含真实下次触发时间戳 nextExecutionTime）
 curl -X GET "http://localhost:8080/sample/job-local/audit/jobs"
 
-# 查询单任务详情
+# 查询单任务详情（含 nextExecutionTime、fallbackMethod、tenantConcurrency）
 curl -X GET "http://localhost:8080/sample/job-local/audit/jobs/dailyReconciliationJob"
+
+# 实时探测指定任务集群互斥锁持有状态（最小持有窗口内返回 true）
+curl -X GET "http://localhost:8080/sample/job-local/audit/jobs/clusterDeduplicationJob/lock-status"
 
 # 回查最近 5 条执行审计日志
 curl -X GET "http://localhost:8080/sample/job-local/audit/jobs/dailyReconciliationJob/logs?limit=5"
@@ -775,18 +925,22 @@ ateng:
       local:
         # 是否开启单机定时任务基础设施，默认 true
         enabled: true
-        # 调度线程池核心大小，默认 5
-        pool-size: 5
-        # 调度线程名称前缀，默认 "local-job-task-"
-        thread-name-prefix: "local-job-task-"
-        # 内存中每个任务保留的历史执行日志最大条数，默认 100 条 (超出后 FIFO 环形淘汰防堆 OOM)
-        in-memory-log-capacity: 100
-        # 历史日志默认保留天数，默认 7 天
-        log-retention-days: 7
+        # 是否优先使用数据库中的持久化状态与周期覆盖代码静态注解，默认 true
+        prefer-database-config: true
+        # 调度线程池核心大小，默认 Math.max(4, CPU 核心数)
+        pool-size: 4
+        # 调度线程名称前缀，默认 "ateng-job-local-"
+        thread-name-prefix: "ateng-job-local-"
         # 优雅停机最大等待完成时长，默认 30s
         shutdown-await-termination-period: 30s
-        # 是否优先使用数据库中的配置覆盖代码注解配置，默认 false
-        prefer-database-config: false
+        # 内存中每个任务保留的历史执行日志最大条数，默认 100 条 (超出后 FIFO 环形淘汰防堆 OOM)
+        in-memory-log-capacity: 100
+        # 单次任务执行期间 JobContext.log(...) 允许收集的最大日志行数，默认 500 行
+        max-log-lines-per-execution: 500
+        # 历史执行日志默认保留时长（优先推荐强类型 Duration），默认 7d
+        log-retention: 7d
+        # 已废弃兼容字段（请优先使用 log-retention），默认 7 天
+        log-retention-days: 7
         # Actuator 运维端点配置
         actuator:
           # 是否启用 /actuator/localjobs 运维管控端点，默认 true
@@ -795,28 +949,30 @@ ateng:
         alert:
           # 是否开启任务失败与超时告警通知，默认 false
           enabled: false
-          # 告警渠道标识 (如 "ops-robot", "dingtalk", "wecom", "feishu")
-          channel: "ops-robot"
+          # 告警渠道名称（代码默认 null，缺省使用默认通知渠道；可选示例 "ops-robot", "dingtalk", "wecom", "feishu"）
+          channel: ""
           # 三阶告警防风暴聚合器配置
           anti-storm:
             # 是否开启防风暴聚合抑制，默认 true
             enabled: true
             # 滑动静默窗口时长，默认 5m (在此期间内高频持续失败不重复发警报)
             silence-window: 5m
-            # 静默期内最大累计错误条数阈值，默认 50 次 (达到阈值时推送阶段聚合汇总)
-            max-storm-count: 50
+            # 任务自愈成功后是否发送恢复通知，默认 true
+            recovery-notice: true
         # 云原生监控度量指标配置
         metrics:
           # 是否开启 Micrometer 调度指标导出，默认 true
           enabled: true
         # 轻量集群互斥防重锁配置
         cluster-lock:
-          # 是否全局开启集群互斥防重锁支持，默认 false
-          enabled: false
+          # 是否全局开启集群互斥防重锁支持，默认 true
+          enabled: true
           # 集群互斥锁提供者类型: AUTO (自动探测降级) / REDIS (强制Redis) / LOCAL (强制单机内存保底)
           type: AUTO
           # Redis 互斥锁键名前缀，默认 "ateng:job:lock:"
           key-prefix: "ateng:job:lock:"
           # 互斥锁默认防死锁安全租约时长，默认 5m
           default-lease-time: 5m
+          # 集群互斥锁最小持有防时钟漂移默认窗口，默认 0s
+          default-min-hold-time: 0s
 ```
