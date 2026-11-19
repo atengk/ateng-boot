@@ -1,5 +1,6 @@
 package io.github.atengk.boot.statemachine.core;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.statemachine.builder.StateMachineBuilder;
 import io.github.atengk.boot.statemachine.builder.StateMachineBuilderFactory;
@@ -38,6 +39,7 @@ class StateTransitionAuditListenerTest {
     void tearDown() {
         MDC.clear();
         UserContextHolder.clear();
+        TenantContextHolder.clear();
     }
 
     @Test
@@ -304,5 +306,45 @@ class StateTransitionAuditListenerTest {
 
         assertThat(selectiveListener.supports("SUPPORTED_MACHINE")).isTrue();
         assertThat(selectiveListener.supports("OTHER_MACHINE")).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试审计事件自动捕获四维上下文(含 tenantId)与 idempotent 标记")
+    void testAuditListenerCapturesTenantIdAndIdempotentFlag() {
+        MDC.put("traceId", "TRACE-4D-1001");
+        UserContextHolder.set("user-op-1");
+        TenantContextHolder.setTenantId("tenant-saas-888");
+
+        List<TransitionAuditEvent<OrderState, OrderEvent, Void>> capturedEvents = new ArrayList<>();
+        StateMachineBuilder<OrderState, OrderEvent, Void> builder = StateMachineBuilderFactory.create();
+        builder.auditListener(capturedEvents::add);
+        builder.externalTransition()
+                .from(OrderState.WAIT_PAY)
+                .to(OrderState.PAID)
+                .on(OrderEvent.PAY)
+                .idempotent(true);
+
+        StateMachine<OrderState, OrderEvent, Void> machine = builder.build("AUDIT_4D_MACHINE");
+
+        // 1. 首次正常流转：idempotent = false
+        machine.fireEvent(OrderState.WAIT_PAY, OrderEvent.PAY, null);
+        // 2. 重复到达 PAY：幂等放行 idempotent = true
+        machine.fireEvent(OrderState.PAID, OrderEvent.PAY, null);
+
+        assertThat(capturedEvents).hasSize(2);
+
+        TransitionAuditEvent<OrderState, OrderEvent, Void> first = capturedEvents.get(0);
+        assertThat(first.getTraceId()).isEqualTo("TRACE-4D-1001");
+        assertThat(first.getOperator()).isEqualTo("user-op-1");
+        assertThat(first.getTenantId()).isEqualTo("tenant-saas-888");
+        assertThat(first.isSuccess()).isTrue();
+        assertThat(first.isIdempotent()).isFalse();
+
+        TransitionAuditEvent<OrderState, OrderEvent, Void> second = capturedEvents.get(1);
+        assertThat(second.getTraceId()).isEqualTo("TRACE-4D-1001");
+        assertThat(second.getOperator()).isEqualTo("user-op-1");
+        assertThat(second.getTenantId()).isEqualTo("tenant-saas-888");
+        assertThat(second.isSuccess()).isTrue();
+        assertThat(second.isIdempotent()).isTrue();
     }
 }

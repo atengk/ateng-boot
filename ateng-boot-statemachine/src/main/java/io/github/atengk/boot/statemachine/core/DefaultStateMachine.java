@@ -1,5 +1,6 @@
 package io.github.atengk.boot.statemachine.core;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.BatchSliceUtil;
 import io.github.atengk.boot.core.util.CollectionUtil;
@@ -69,7 +70,15 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             }
         }
         this.transitionMap = Collections.unmodifiableMap(deepImmutableMap);
-        this.interceptors = new CopyOnWriteArrayList<>(interceptors != null ? interceptors : Collections.emptyList());
+        List<StateMachineInterceptor<? super S, ? super E, ? super C>> supportedInterceptors = new ArrayList<>();
+        if (interceptors != null) {
+            for (StateMachineInterceptor<? super S, ? super E, ? super C> interceptor : interceptors) {
+                if (interceptor != null && interceptor.supports(machineId) && !supportedInterceptors.contains(interceptor)) {
+                    supportedInterceptors.add(interceptor);
+                }
+            }
+        }
+        this.interceptors = new CopyOnWriteArrayList<>(supportedInterceptors);
 
         Map<E, List<Transition<S, E, C>>> idempMap = new LinkedHashMap<>();
         for (Map<E, List<Transition<S, E, C>>> eventMap : deepImmutableMap.values()) {
@@ -122,7 +131,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
     }
 
     public void addInterceptor(StateMachineInterceptor<? super S, ? super E, ? super C> interceptor) {
-        if (interceptor != null && !this.interceptors.contains(interceptor)) {
+        if (interceptor != null && interceptor.supports(this.machineId) && !this.interceptors.contains(interceptor)) {
             this.interceptors.add(interceptor);
         }
     }
@@ -677,7 +686,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
         }
         Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
         notifyInterceptorsAfter(state, state, event, context, elapsed);
-        notifyAuditListeners(state, state, event, context, elapsed, true, null);
+        notifyAuditListeners(state, state, event, context, elapsed, true, true, null);
     }
 
     private record CasExecutionResult<S>(S targetState, boolean idempotent) {
@@ -686,7 +695,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
     private void notifyInterceptorsBefore(S sourceState, E event, C context) {
         for (StateMachineInterceptor<? super S, ? super E, ? super C> interceptor : interceptors) {
             try {
-                interceptor.beforeTransition(sourceState, event, context);
+                interceptor.beforeTransition(machineId, sourceState, event, context);
             } catch (Exception ex) {
                 log.warn("状态机 [{}] 拦截器 [{}] 前置通知执行异常: {}", machineId, interceptor.getClass().getSimpleName(), ex.getMessage(), ex);
             }
@@ -696,7 +705,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
     private void notifyInterceptorsAfter(S sourceState, S targetState, E event, C context, Duration elapsed) {
         for (StateMachineInterceptor<? super S, ? super E, ? super C> interceptor : interceptors) {
             try {
-                interceptor.afterTransition(sourceState, targetState, event, context, elapsed);
+                interceptor.afterTransition(machineId, sourceState, targetState, event, context, elapsed);
             } catch (Exception ex) {
                 log.warn("状态机 [{}] 拦截器 [{}] 后置通知执行异常: {}", machineId, interceptor.getClass().getSimpleName(), ex.getMessage(), ex);
             }
@@ -706,15 +715,19 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
     private void notifyInterceptorsException(S sourceState, E event, C context, Exception ex) {
         for (StateMachineInterceptor<? super S, ? super E, ? super C> interceptor : interceptors) {
             try {
-                interceptor.onException(sourceState, event, context, ex);
+                interceptor.onException(machineId, sourceState, event, context, ex);
             } catch (Exception interceptorEx) {
                 log.warn("状态机 [{}] 拦截器 [{}] 异常回调处理失败: {}", machineId, interceptor.getClass().getSimpleName(), interceptorEx.getMessage(), interceptorEx);
             }
         }
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
     private void notifyAuditListeners(S fromState, S toState, E event, C context, Duration elapsed, boolean success, Throwable cause) {
+        notifyAuditListeners(fromState, toState, event, context, elapsed, success, false, cause);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private void notifyAuditListeners(S fromState, S toState, E event, C context, Duration elapsed, boolean success, boolean idempotent, Throwable cause) {
         if (auditListeners.isEmpty()) {
             return;
         }
@@ -723,6 +736,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             traceId = org.slf4j.MDC.get("trace_id");
         }
         String operator = UserContextHolder.get();
+        String tenantId = TenantContextHolder.getTenantId();
         TransitionAuditEvent<S, E, C> auditEvent = TransitionAuditEvent.<S, E, C>builder()
                 .machineId(machineId)
                 .fromState(fromState)
@@ -730,9 +744,11 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                 .event(event)
                 .context(context)
                 .operator(operator)
+                .tenantId(tenantId)
                 .traceId(traceId)
                 .elapsed(elapsed)
                 .success(success)
+                .idempotent(idempotent)
                 .cause(cause)
                 .build();
 

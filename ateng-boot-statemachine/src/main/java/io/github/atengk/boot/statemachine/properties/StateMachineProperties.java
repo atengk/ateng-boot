@@ -5,6 +5,8 @@ import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
+import java.time.Duration;
+
 /**
  * 状态机组件配置属性
  *
@@ -49,6 +51,11 @@ public class StateMachineProperties {
          * 是否在日志中打印上下文载荷 (包含脱敏处理)，默认 false
          */
         private boolean logContext = false;
+
+        /**
+         * 单次状态跃迁耗时慢告警阈值（默认 500ms，设为 null 或非正数则关闭慢跃迁告警）
+         */
+        private Duration slowTransitionThreshold = Duration.ofMillis(500);
     }
 
     /**

@@ -26,22 +26,17 @@ public class MetricsStateMachineInterceptor implements StateMachineInterceptor<O
     }
 
     @Override
-    public void afterTransition(Object from, Object to, Object event, Object context, Duration elapsed) {
+    public void afterTransition(String machineId, Object from, Object to, Object event, Object context, Duration elapsed) {
         if (meterRegistry == null) {
             return;
         }
-        Counter.builder("statemachine.transition.total")
-                .description("Total number of state machine transitions")
-                .tag("from", String.valueOf(from))
-                .tag("to", String.valueOf(to))
-                .tag("event", String.valueOf(event))
-                .tag("status", "success")
-                .register(meterRegistry)
-                .increment();
+        String resolvedMachineId = resolveMachineId(machineId);
+        recordCounter(resolvedMachineId, from, to, event, "success");
 
         if (elapsed != null) {
             Timer.builder("statemachine.transition.timer")
                     .description("Latency of state machine transitions")
+                    .tag("machine_id", resolvedMachineId)
                     .tag("from", String.valueOf(from))
                     .tag("event", String.valueOf(event))
                     .tag("status", "success")
@@ -51,17 +46,36 @@ public class MetricsStateMachineInterceptor implements StateMachineInterceptor<O
     }
 
     @Override
-    public void onException(Object from, Object event, Object context, Exception ex) {
+    public void afterTransition(Object from, Object to, Object event, Object context, Duration elapsed) {
+        afterTransition(null, from, to, event, context, elapsed);
+    }
+
+    @Override
+    public void onException(String machineId, Object from, Object event, Object context, Exception ex) {
         if (meterRegistry == null) {
             return;
         }
+        recordCounter(resolveMachineId(machineId), from, "ERROR", event, "failure");
+    }
+
+    @Override
+    public void onException(Object from, Object event, Object context, Exception ex) {
+        onException(null, from, event, context, ex);
+    }
+
+    private void recordCounter(String machineId, Object from, Object to, Object event, String status) {
         Counter.builder("statemachine.transition.total")
                 .description("Total number of state machine transitions")
+                .tag("machine_id", machineId)
                 .tag("from", String.valueOf(from))
-                .tag("to", "ERROR")
+                .tag("to", String.valueOf(to))
                 .tag("event", String.valueOf(event))
-                .tag("status", "failure")
+                .tag("status", status)
                 .register(meterRegistry)
                 .increment();
+    }
+
+    private String resolveMachineId(String machineId) {
+        return (machineId != null && !machineId.isBlank()) ? machineId : "unknown";
     }
 }

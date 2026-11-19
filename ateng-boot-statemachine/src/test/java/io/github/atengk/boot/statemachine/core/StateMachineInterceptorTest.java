@@ -186,4 +186,56 @@ class StateMachineInterceptorTest {
         machine.fireEvent(TestState.STATE_A, TestEvent.EVENT_GO, "ctx");
         assertThat(logs).containsExactly("dynamic-before");
     }
+
+    @Test
+    @DisplayName("测试 machineId 感知拦截器钩子与 supports(machineId) 隔离守卫")
+    void testMachineIdAwareHooksAndSupportsIsolation() {
+        List<String> trace = new ArrayList<>();
+
+        StateMachineInterceptor<TestState, TestEvent, String> machineAwareInterceptor = new StateMachineInterceptor<>() {
+            @Override
+            public boolean supports(String machineId) {
+                return "TARGET_MACHINE".equals(machineId);
+            }
+
+            @Override
+            public void beforeTransition(String machineId, TestState from, TestEvent event, String context) {
+                trace.add("before:" + machineId + ":" + from);
+            }
+
+            @Override
+            public void afterTransition(String machineId, TestState from, TestState to, TestEvent event, String context, Duration elapsed) {
+                trace.add("after:" + machineId + ":" + from + "->" + to);
+            }
+
+            @Override
+            public void onException(String machineId, TestState from, TestEvent event, String context, Exception ex) {
+                trace.add("error:" + machineId + ":" + ex.getMessage());
+            }
+        };
+
+        StateMachineBuilder<TestState, TestEvent, String> targetBuilder = StateMachineBuilderFactory.create();
+        targetBuilder.interceptor(machineAwareInterceptor);
+        targetBuilder.externalTransition().from(TestState.STATE_A).to(TestState.STATE_B).on(TestEvent.EVENT_GO);
+        StateMachine<TestState, TestEvent, String> targetMachine = targetBuilder.build("TARGET_MACHINE");
+
+        StateMachineBuilder<TestState, TestEvent, String> otherBuilder = StateMachineBuilderFactory.create();
+        otherBuilder.interceptor(machineAwareInterceptor);
+        otherBuilder.externalTransition().from(TestState.STATE_A).to(TestState.STATE_B).on(TestEvent.EVENT_GO);
+        StateMachine<TestState, TestEvent, String> otherMachine = otherBuilder.build("OTHER_MACHINE");
+
+        assertThat(targetMachine.getInterceptors()).hasSize(1);
+        assertThat(otherMachine.getInterceptors()).isEmpty();
+
+        targetMachine.fireEvent(TestState.STATE_A, TestEvent.EVENT_GO, "ok");
+        targetMachine.fireEventQuietly(TestState.STATE_B, TestEvent.EVENT_GO, "fail");
+        otherMachine.fireEvent(TestState.STATE_A, TestEvent.EVENT_GO, "ignored");
+
+        assertThat(trace).containsExactly(
+                "before:TARGET_MACHINE:STATE_A",
+                "after:TARGET_MACHINE:STATE_A->STATE_B",
+                "before:TARGET_MACHINE:STATE_B",
+                "error:TARGET_MACHINE:状态机 [TARGET_MACHINE] 未找到从状态 [STATE_B] 响应事件 [EVENT_GO] 的合法跃迁路由"
+        );
+    }
 }

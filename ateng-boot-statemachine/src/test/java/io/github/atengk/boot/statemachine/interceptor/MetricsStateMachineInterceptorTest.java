@@ -77,4 +77,43 @@ class MetricsStateMachineInterceptorTest {
             interceptor.onException("A", "E", null, new RuntimeException());
         });
     }
+
+    @Test
+    @DisplayName("测试携带 machineId 的指标打标包含 machine_id 维度")
+    void testMetricsWithMachineIdTag() {
+        MeterRegistry registry = new SimpleMeterRegistry();
+        MetricsStateMachineInterceptor interceptor = new MetricsStateMachineInterceptor(registry);
+
+        interceptor.afterTransition("ORDER_LIFECYCLE", "WAIT_PAY", "PAID", "PAY", "ctx", Duration.ofMillis(25));
+        interceptor.onException("ORDER_LIFECYCLE", "PAID", "SHIP", "ctx", new IllegalStateException("fail"));
+
+        Counter successCounter = registry.find("statemachine.transition.total")
+                .tag("machine_id", "ORDER_LIFECYCLE")
+                .tag("from", "WAIT_PAY")
+                .tag("to", "PAID")
+                .tag("event", "PAY")
+                .tag("status", "success")
+                .counter();
+        assertThat(successCounter).isNotNull();
+        assertThat(successCounter.count()).isEqualTo(1.0);
+
+        Timer successTimer = registry.find("statemachine.transition.timer")
+                .tag("machine_id", "ORDER_LIFECYCLE")
+                .tag("from", "WAIT_PAY")
+                .tag("event", "PAY")
+                .tag("status", "success")
+                .timer();
+        assertThat(successTimer).isNotNull();
+        assertThat(successTimer.count()).isEqualTo(1);
+
+        Counter failureCounter = registry.find("statemachine.transition.total")
+                .tag("machine_id", "ORDER_LIFECYCLE")
+                .tag("from", "PAID")
+                .tag("to", "ERROR")
+                .tag("event", "SHIP")
+                .tag("status", "failure")
+                .counter();
+        assertThat(failureCounter).isNotNull();
+        assertThat(failureCounter.count()).isEqualTo(1.0);
+    }
 }

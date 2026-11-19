@@ -20,11 +20,13 @@ public class TransitionAuditEvent<S, E, C> {
     private final C context;
     private final String traceId;
     private final String operator;
+    private final String tenantId;
     private final Duration elapsed;
     private final boolean success;
+    private final boolean idempotent;
     private final Throwable cause;
 
-    public TransitionAuditEvent(String machineId, S fromState, S toState, E event, C context, String traceId, String operator, Duration elapsed, boolean success, Throwable cause) {
+    public TransitionAuditEvent(String machineId, S fromState, S toState, E event, C context, String traceId, String operator, String tenantId, Duration elapsed, boolean success, boolean idempotent, Throwable cause) {
         this.machineId = machineId;
         this.fromState = fromState;
         this.toState = toState;
@@ -32,13 +34,19 @@ public class TransitionAuditEvent<S, E, C> {
         this.context = context;
         this.traceId = traceId;
         this.operator = operator;
+        this.tenantId = tenantId;
         this.elapsed = elapsed != null ? elapsed : Duration.ZERO;
         this.success = success;
+        this.idempotent = idempotent;
         this.cause = cause;
     }
 
+    public TransitionAuditEvent(String machineId, S fromState, S toState, E event, C context, String traceId, String operator, Duration elapsed, boolean success, Throwable cause) {
+        this(machineId, fromState, toState, event, context, traceId, operator, null, elapsed, success, false, cause);
+    }
+
     public TransitionAuditEvent(String machineId, S fromState, S toState, E event, C context, String traceId, Duration elapsed, boolean success, Throwable cause) {
-        this(machineId, fromState, toState, event, context, traceId, null, elapsed, success, cause);
+        this(machineId, fromState, toState, event, context, traceId, null, null, elapsed, success, false, cause);
     }
 
     public static <S, E, C> Builder<S, E, C> builder() {
@@ -73,12 +81,20 @@ public class TransitionAuditEvent<S, E, C> {
         return operator;
     }
 
+    public String getTenantId() {
+        return tenantId;
+    }
+
     public Duration getElapsed() {
         return elapsed;
     }
 
     public boolean isSuccess() {
         return success;
+    }
+
+    public boolean isIdempotent() {
+        return idempotent;
     }
 
     public Throwable getCause() {
@@ -94,8 +110,10 @@ public class TransitionAuditEvent<S, E, C> {
                 ", event=" + event +
                 ", traceId='" + traceId + '\'' +
                 ", operator='" + operator + '\'' +
+                ", tenantId='" + tenantId + '\'' +
                 ", elapsed=" + elapsed.toMillis() + "ms" +
                 ", success=" + success +
+                ", idempotent=" + idempotent +
                 ", cause=" + (cause != null ? cause.getMessage() : "null") +
                 '}';
     }
@@ -108,8 +126,10 @@ public class TransitionAuditEvent<S, E, C> {
         private C context;
         private String traceId;
         private String operator;
+        private String tenantId;
         private Duration elapsed;
         private boolean success;
+        private boolean idempotent;
         private Throwable cause;
 
         public Builder<S, E, C> machineId(String machineId) {
@@ -147,6 +167,11 @@ public class TransitionAuditEvent<S, E, C> {
             return this;
         }
 
+        public Builder<S, E, C> tenantId(String tenantId) {
+            this.tenantId = tenantId;
+            return this;
+        }
+
         public Builder<S, E, C> elapsed(Duration elapsed) {
             this.elapsed = elapsed;
             return this;
@@ -157,13 +182,18 @@ public class TransitionAuditEvent<S, E, C> {
             return this;
         }
 
+        public Builder<S, E, C> idempotent(boolean idempotent) {
+            this.idempotent = idempotent;
+            return this;
+        }
+
         public Builder<S, E, C> cause(Throwable cause) {
             this.cause = cause;
             return this;
         }
 
         public TransitionAuditEvent<S, E, C> build() {
-            return new TransitionAuditEvent<>(machineId, fromState, toState, event, context, traceId, operator, elapsed, success, cause);
+            return new TransitionAuditEvent<>(machineId, fromState, toState, event, context, traceId, operator, tenantId, elapsed, success, idempotent, cause);
         }
     }
 }

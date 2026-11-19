@@ -5,6 +5,7 @@ import io.github.atengk.boot.statemachine.builder.StateMachineBuilderFactory;
 import io.github.atengk.boot.statemachine.core.DefaultStateMachine;
 import io.github.atengk.boot.statemachine.core.StateMachine;
 import io.github.atengk.boot.statemachine.core.StateMachineFactory;
+import io.github.atengk.boot.statemachine.core.StateMachineInterceptor;
 import io.github.atengk.boot.statemachine.interceptor.LoggingStateMachineInterceptor;
 import io.github.atengk.boot.statemachine.interceptor.MetricsStateMachineInterceptor;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -154,6 +155,74 @@ class AtengStateMachineAutoConfigurationTest {
                     assertThat(context.getStartupFailure())
                             .isInstanceOf(io.github.atengk.boot.statemachine.exception.StateMachineException.class)
                             .hasMessageContaining("重复注册冲突");
+                });
+    }
+
+    enum PaymentState {
+        INIT, DONE
+    }
+
+    enum PaymentEvent {
+        SETTLE
+    }
+
+    @Configuration
+    static class MultiMachineTypedInterceptorConfiguration {
+
+        final java.util.List<String> capturedMachineIds = new java.util.ArrayList<>();
+
+        @Bean
+        public StateMachine<TestState, TestEvent, String> orderFlowMachine() {
+            StateMachineBuilder<TestState, TestEvent, String> builder = StateMachineBuilderFactory.create();
+            builder.externalTransition().from(TestState.S1).to(TestState.S2).on(TestEvent.E1);
+            return builder.build("ORDER_FLOW_MACHINE");
+        }
+
+        @Bean
+        public StateMachine<PaymentState, PaymentEvent, Integer> paymentFlowMachine() {
+            StateMachineBuilder<PaymentState, PaymentEvent, Integer> builder = StateMachineBuilderFactory.create();
+            builder.externalTransition().from(PaymentState.INIT).to(PaymentState.DONE).on(PaymentEvent.SETTLE);
+            return builder.build("PAYMENT_FLOW_MACHINE");
+        }
+
+        @Bean
+        public StateMachineInterceptor<TestState, TestEvent, String> orderOnlyInterceptor() {
+            return new StateMachineInterceptor<>() {
+                @Override
+                public boolean supports(String machineId) {
+                    return "ORDER_FLOW_MACHINE".equals(machineId);
+                }
+
+                @Override
+                public void beforeTransition(String machineId, TestState from, TestEvent event, String context) {
+                    // 强类型消费 String context，若误注入 PAYMENT_FLOW_MACHINE(Integer) 将触发 ClassCastException
+                    capturedMachineIds.add(machineId + ":" + context.toUpperCase());
+                }
+            };
+        }
+    }
+
+    @Test
+    @DisplayName("测试多机台 Spring 容器中强类型拦截器按 supports(machineId) 定向隔离挂载")
+    void testMultiMachineTypedInterceptorIsolation() {
+        contextRunner
+                .withUserConfiguration(MultiMachineTypedInterceptorConfiguration.class)
+                .run(context -> {
+                    MultiMachineTypedInterceptorConfiguration cfg = context.getBean(MultiMachineTypedInterceptorConfiguration.class);
+                    @SuppressWarnings("unchecked")
+                    StateMachine<TestState, TestEvent, String> orderMachine =
+                            (StateMachine<TestState, TestEvent, String>) context.getBean("orderFlowMachine");
+                    @SuppressWarnings("unchecked")
+                    StateMachine<PaymentState, PaymentEvent, Integer> paymentMachine =
+                            (StateMachine<PaymentState, PaymentEvent, Integer>) context.getBean("paymentFlowMachine");
+
+                    assertThat(orderMachine.getInterceptors()).hasSize(2); // Logging + orderOnlyInterceptor
+                    assertThat(paymentMachine.getInterceptors()).hasSize(1); // 仅 Logging
+
+                    assertThat(orderMachine.fireEvent(TestState.S1, TestEvent.E1, "ord-1")).isEqualTo(TestState.S2);
+                    assertThat(paymentMachine.fireEvent(PaymentState.INIT, PaymentEvent.SETTLE, 999)).isEqualTo(PaymentState.DONE);
+
+                    assertThat(cfg.capturedMachineIds).containsExactly("ORDER_FLOW_MACHINE:ORD-1");
                 });
     }
 }

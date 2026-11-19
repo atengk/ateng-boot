@@ -84,7 +84,9 @@ public class StateMachineInitializer implements SmartInitializingSingleton, Appl
             // 1. 注入受管切面拦截器与轨迹审计监听器（受 supports(machineId) 隔离守护，杜绝泛型污染）
             if (interceptors != null) {
                 for (StateMachineInterceptor interceptor : interceptors) {
-                    machine.addInterceptor(interceptor);
+                    if (interceptor != null && interceptor.supports(machineId)) {
+                        machine.addInterceptor(interceptor);
+                    }
                 }
             }
             for (StateTransitionAuditListener auditListener : combinedAuditListeners) {
