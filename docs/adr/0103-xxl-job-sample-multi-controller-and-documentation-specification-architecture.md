@@ -48,11 +48,12 @@ flowchart TD
 
 ### 1. 落地 4 大高内聚领域控制器与契约解耦
 - 按业务能力将样例工程拆分为 4 大专职 `@RestController`：
-  1. `XxlJobTriggerController`（`/sample/job-xxl/trigger/*`）：负责任务的手动模拟驱动，覆盖轻量预热、参数校验、分片广播、订单对账告警自愈、超时归档就地降级补偿与多租户全模态隔离；
+  1. `XxlJobTriggerController`（`/sample/job-xxl/trigger/*`）：负责任务的手动模拟驱动，覆盖轻量预热（`/warmup`）、参数校验（`/user-sync`）、分片广播（`/sharding-batch`）、受管并发分片批处理（`/sharding-parallel`）、订单对账告警自愈（`/reconciliation`）、超时归档就地降级补偿（`/timeout-archive`）、方法级本地退避重试（`/retry`）、切面拦截器灰度跳过与放行审计（`/canary`）以及多租户全模态隔离（`/tenant/global`、`/tenant/scoped`、`/tenant/parallel`）；
   2. `XxlJobGovernorController`（`/sample/job-xxl/governor/*`）：负责单节点维度的任务内存动态静默、恢复与静默状态巡检；
-  3. `XxlJobAdminController`（`/sample/job-xxl/admin/*`）：负责通过编程式门面调用官方 OpenAPI，完成任务的新增、启停、即时触发与删除；
+  3. `XxlJobAdminController`（`/sample/job-xxl/admin/*`）：负责通过编程式门面调用官方 OpenAPI，完成任务的新增（`POST /jobs`）、更新（`PUT /jobs`）、启停（`POST /jobs/{jobId}/start|stop`）、即时触发（`POST /jobs/{jobId}/trigger`）与删除（`DELETE /jobs/{jobId}`）全生命周期对称闭环；
   4. `XxlJobDeadLetterController`（`/sample/job-xxl/dead-letter/*`）：负责流式批处理失败切片的内存收集、明细回查、受控重放补偿与现场清理。
-- 遵循 Zero-Entity-Leakage 契约，Controller 传输边界 100% 严禁暴露持久层 Entity，入参统一采用强类型 Request DTO（`UserSyncParam`、`AdminJobAddRequestDTO`），出参统一显式返回强类型 `Result<T>` 配合 2 个领域 VO（`JobTriggerVO`、`DeadLetterBatchVO`）。
+- 遵循 Zero-Entity-Leakage 契约，Controller 传输边界 100% 严禁暴露持久层 Entity，入参统一采用强类型 Request DTO（`UserSyncParam`、`AdminJobAddRequestDTO`、`AdminJobUpdateRequestDTO`），出参统一显式返回强类型 `Result<T>` 配合 2 个领域 VO（`JobTriggerVO`、`DeadLetterBatchVO`）。
+- **默认/CI `@Profile("!local")` 内嵌 Mock Admin 双模自洽**：在非 `local` 模式下，Sample 自动装配绑定本机随机空闲端口的轻量内嵌 Mock Admin 组件并动态注入 `XxlJobProperties.adminAddresses`，使 `mvn spring-boot:run` 与 `mvn test` 均无需外部依赖且零端口冲突；激活 `local` Profile 时自动切换至 `application-local.yml` 直连真实 XXL-Job 调度中心。
 
 ### 2. 真实业务模型演进与测试桩清零
 - 彻底废除既有测试桩命名，升级为贴合真实企业级生产场景的业务模型：

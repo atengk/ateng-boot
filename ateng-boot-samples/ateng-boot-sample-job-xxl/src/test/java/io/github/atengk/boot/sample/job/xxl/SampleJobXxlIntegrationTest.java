@@ -14,7 +14,7 @@ import io.github.atengk.boot.sample.job.xxl.handler.HistoryDataArchiveJobHandler
 import io.github.atengk.boot.sample.job.xxl.handler.OrderReconciliationJobHandler;
 import io.github.atengk.boot.sample.job.xxl.handler.PaymentCallbackRetryJobHandler;
 import io.github.atengk.boot.sample.job.xxl.handler.ShardingBatchJobHandler;
-import io.github.atengk.boot.sample.job.xxl.handler.ShardingBatchJobHandler.MockOrder;
+import io.github.atengk.boot.sample.job.xxl.handler.ShardingBatchJobHandler.OrderSettlementItem;
 import io.github.atengk.boot.sample.job.xxl.handler.SystemWarmupJobHandler;
 import io.github.atengk.boot.sample.job.xxl.handler.TenantJobHandler;
 import io.github.atengk.boot.sample.job.xxl.interceptor.CanaryAuditJobInterceptor;
@@ -263,10 +263,10 @@ class SampleJobXxlIntegrationTest {
         assertEquals(3, paymentCallbackRetryJobHandler.getTotalExecutions());
         assertTrue(eventListener.getCapturedEvents().isEmpty());
 
-        // 2. 耗尽重试（exhaust=true）：尝试 3 次后抛出异常并仅收敛发布 1 次 INITIAL_FAILURE 告警
+        // 2. 耗尽重试（failTimes=3）：尝试 3 次后抛出异常并仅收敛发布 1 次 INITIAL_FAILURE 告警
         paymentCallbackRetryJobHandler.reset();
         eventListener.clearEvents();
-        XxlJobTestResult exhaustResult = XxlJobTestHelper.trigger("paymentCallbackRetryJob", "run-exhaust-1,exhaust=true");
+        XxlJobTestResult exhaustResult = XxlJobTestHelper.trigger("paymentCallbackRetryJob", "run-exhaust-1,failTimes=3");
         assertFalse(exhaustResult.isSuccess());
         assertEquals(3, paymentCallbackRetryJobHandler.getTotalExecutions());
         assertEquals(1, eventListener.getCapturedEvents().size());
@@ -326,11 +326,11 @@ class SampleJobXxlIntegrationTest {
         assertTrue(result.isSuccess());
         assertEquals(XxlJobContext.HANDLE_CODE_SUCCESS, result.handleCode());
 
-        List<FailedBatch<MockOrder>> deadLetters = shardingBatchJobHandler.getDeadLetters();
+        List<FailedBatch<OrderSettlementItem>> deadLetters = shardingBatchJobHandler.getDeadLetters();
         assertEquals(1, deadLetters.size());
         // 显式传入 failureHandler 时，全局 BatchFailureHandler Bean 不得被重复触发
         assertTrue(deadLetterBatchFailureHandler.getGlobalDeadLetters().isEmpty());
-        FailedBatch<MockOrder> failedBatch = deadLetters.get(0);
+        FailedBatch<OrderSettlementItem> failedBatch = deadLetters.get(0);
         assertEquals(5, failedBatch.getItems().size());
         assertNotNull(failedBatch.getCause());
         assertTrue(failedBatch.getCause().getMessage().contains("模拟业务处理失败"));

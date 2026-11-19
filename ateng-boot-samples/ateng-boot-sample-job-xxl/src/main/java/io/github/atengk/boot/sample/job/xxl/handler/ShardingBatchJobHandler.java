@@ -28,13 +28,13 @@ public class ShardingBatchJobHandler {
     private static final Logger log = LoggerFactory.getLogger(ShardingBatchJobHandler.class);
 
     private final XxlShardingBatchTemplate batchTemplate;
-    private final List<FailedBatch<MockOrder>> deadLetters = new CopyOnWriteArrayList<>();
+    private final List<FailedBatch<OrderSettlementItem>> deadLetters = new CopyOnWriteArrayList<>();
 
     public ShardingBatchJobHandler(XxlShardingBatchTemplate batchTemplate) {
         this.batchTemplate = batchTemplate;
     }
 
-    public List<FailedBatch<MockOrder>> getDeadLetters() {
+    public List<FailedBatch<OrderSettlementItem>> getDeadLetters() {
         return deadLetters;
     }
 
@@ -67,16 +67,16 @@ public class ShardingBatchJobHandler {
                     if (currentId >= 300) {
                         return List.of();
                     }
-                    List<MockOrder> batch = new ArrayList<>();
+                    List<OrderSettlementItem> batch = new ArrayList<>();
                     for (int i = 1; i <= limit; i++) {
                         long id = currentId + i;
-                        batch.add(new MockOrder(id, "ORDER-" + id, (int) (id % 100)));
+                        batch.add(new OrderSettlementItem(id, "ORDER-" + id, (int) (id % 100)));
                     }
                     return batch;
                 },
-                MockOrder::id,
+                OrderSettlementItem::id,
                 batch -> {
-                    for (MockOrder order : batch) {
+                    for (OrderSettlementItem order : batch) {
                         processedCount.incrementAndGet();
                     }
                 },
@@ -110,16 +110,16 @@ public class ShardingBatchJobHandler {
                     if (currentId >= 15) {
                         return List.of();
                     }
-                    List<MockOrder> batch = new ArrayList<>();
+                    List<OrderSettlementItem> batch = new ArrayList<>();
                     for (int i = 1; i <= limit; i++) {
                         long id = currentId + i;
-                        batch.add(new MockOrder(id, "ORDER-" + id, (int) (id % 100)));
+                        batch.add(new OrderSettlementItem(id, "ORDER-" + id, (int) (id % 100)));
                     }
                     return batch;
                 },
-                MockOrder::id,
+                OrderSettlementItem::id,
                 batch -> {
-                    for (MockOrder order : batch) {
+                    for (OrderSettlementItem order : batch) {
                         // 模拟 ID 为 8 的订单处理时抛出业务异常 (处于第 2 批: 6..10)
                         if (order.id() == 8L) {
                             throw new RuntimeException("订单 [ID=" + order.id() + "] 模拟业务处理失败");
@@ -159,16 +159,16 @@ public class ShardingBatchJobHandler {
                             if (currentId >= 20) {
                                 return List.of();
                             }
-                            List<MockOrder> batch = new ArrayList<>();
+                            List<OrderSettlementItem> batch = new ArrayList<>();
                             for (int i = 1; i <= limit; i++) {
                                 long id = currentId + i;
-                                batch.add(new MockOrder(id, "PARALLEL-ORDER-" + id, (int) (id % 100)));
+                                batch.add(new OrderSettlementItem(id, "PARALLEL-ORDER-" + id, (int) (id % 100)));
                             }
                             return batch;
                         },
-                        MockOrder::id,
+                        OrderSettlementItem::id,
                         batch -> {
-                            for (MockOrder order : batch) {
+                            for (OrderSettlementItem order : batch) {
                                 // 模拟 ID 为 8 与 16 的订单处理抛出业务异常
                                 if (order.id() == 8L || order.id() == 16L) {
                                     throw new IllegalStateException("并发分片订单 [ID=" + order.id() + "] 消费异常");
@@ -181,5 +181,5 @@ public class ShardingBatchJobHandler {
                 summary.getSuccessCount(), summary.getFailCount(), summary.getDuration().toMillis()));
     }
 
-    public record MockOrder(Long id, String orderNo, Integer amount) {}
+    public record OrderSettlementItem(Long id, String orderNo, Integer amount) {}
 }

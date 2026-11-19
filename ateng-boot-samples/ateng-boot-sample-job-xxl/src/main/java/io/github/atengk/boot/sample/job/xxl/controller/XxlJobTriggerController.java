@@ -7,6 +7,7 @@ import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper.XxlJobTestResult;
 import io.github.atengk.boot.sample.job.xxl.dto.UserSyncParam;
 import io.github.atengk.boot.sample.job.xxl.vo.JobTriggerVO;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -152,13 +153,14 @@ public class XxlJobTriggerController {
     /**
      * 触发支付回调补偿重试任务：演示独立单注解 @AtengXxlJob(retryCount=2, retryInterval="100ms") 本地退避重试闭环
      *
-     * @param exhaust false 模拟前 2 次瞬态失败第 3 次自愈；true 模拟持续故障耗尽重试并保留 cause 链
+     * @param failTimes 模拟连续失败次数（默认 2：前 2 次瞬态失败第 3 次自愈；>= 3 模拟耗尽重试并保留 cause 链）
      * @return 任务执行诊断结果
      */
     @PostMapping("/retry")
-    public Result<JobTriggerVO> triggerRetry(@RequestParam(defaultValue = "false") boolean exhaust) {
-        String param = "runId=" + IdUtil.fastSimpleUUID() + ",exhaust=" + exhaust;
-        log.info("[XxlJobTriggerController] 手动触发支付回调本地退避重试任务: paymentCallbackRetryJob, exhaust={}", exhaust);
+    public Result<JobTriggerVO> triggerRetry(
+            @RequestParam(defaultValue = "2") @Min(value = 0, message = "失败次数 failTimes 不能为负数") int failTimes) {
+        String param = "runId=" + IdUtil.fastSimpleUUID() + ",failTimes=" + failTimes;
+        log.info("[XxlJobTriggerController] 手动触发支付回调本地退避重试任务: paymentCallbackRetryJob, failTimes={}", failTimes);
         XxlJobTestResult result = XxlJobTestHelper.trigger("paymentCallbackRetryJob", param);
         return Result.success(JobTriggerVO.from(result));
     }

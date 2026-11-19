@@ -399,28 +399,44 @@ public class PaymentCallbackRetryJobHandler {
     @AtengXxlJob(value = "paymentCallbackRetryJob", timeout = "5s", retryCount = 2, retryInterval = "100ms")
     public void executePaymentCallbackRetry() {
         String param = XxlJobHelper.getJobParam();
-        boolean exhaust = param != null && param.contains("exhaust=true");
+        int failTimes = resolveFailTimes(param);
         String runKey = resolveRunKey(param);
         int attempt = attemptCounters.computeIfAbsent(runKey, k -> new AtomicInteger()).incrementAndGet();
         totalExecutions.incrementAndGet();
 
-        log.info(">>>>>> [PaymentCallbackRetryJobHandler] 执行支付回调推送 runKey={}, 第 {} 次尝试, exhaust={}",
-                runKey, attempt, exhaust);
+        log.info(">>>>>> [PaymentCallbackRetryJobHandler] 执行支付回调推送 runKey={}, 第 {} 次尝试, failTimes={}",
+                runKey, attempt, failTimes);
 
-        if (exhaust) {
+        if (attempt <= failTimes) {
             if (attempt >= 3) {
                 attemptCounters.remove(runKey);
             }
-            throw new IllegalStateException("商户回调网关持续不可用 (attempt-" + attempt + ")");
-        }
-
-        // 前 2 次模拟瞬态网络超时失败，第 3 次退避重试后自愈成功
-        if (attempt < 3) {
-            throw new IllegalStateException("商户回调网关瞬态抖动 (attempt-" + attempt + ")");
+            String errMsg = failTimes > 2
+                    ? "商户回调网关持续不可用 (attempt-" + attempt + ")"
+                    : "商户回调网关瞬态抖动 (attempt-" + attempt + ")";
+            throw new IllegalStateException(errMsg);
         }
 
         attemptCounters.remove(runKey);
         XxlJobHelper.handleSuccess("支付回调经本地退避重试第 " + attempt + " 次自愈成功");
+    }
+
+    private int resolveFailTimes(String param) {
+        if (param == null || param.isBlank()) {
+            return 2;
+        }
+        for (String segment : param.split(",")) {
+            String trimmed = segment.trim();
+            if (trimmed.startsWith("failTimes=")) {
+                String value = trimmed.substring("failTimes=".length()).trim();
+                try {
+                    return Math.max(0, Integer.parseInt(value));
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException("非法 failTimes 参数值: " + value, e);
+                }
+            }
+        }
+        return 2;
     }
 
     private String resolveRunKey(String param) {
@@ -528,7 +544,6 @@ ateng:
 package io.github.atengk.boot.sample.job.xxl.handler;
 
 import com.xxl.job.core.context.XxlJobHelper;
-import com.xxl.job.core.handler.annotation.XxlJob;
 import io.github.atengk.boot.job.xxl.annotation.AtengXxlJob;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -639,7 +654,7 @@ public class ShardingBatchJobHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ShardingBatchJobHandler.class);
     private final XxlShardingBatchTemplate batchTemplate;
-    private final List<FailedBatch<MockOrder>> deadLetters = new CopyOnWriteArrayList<>();
+    private final List<FailedBatch<OrderSettlementItem>> deadLetters = new CopyOnWriteArrayList<>();
 
     public ShardingBatchJobHandler(XxlShardingBatchTemplate batchTemplate) {
         this.batchTemplate = batchTemplate;
@@ -662,16 +677,16 @@ public class ShardingBatchJobHandler {
                     if (currentId >= 15) {
                         return List.of();
                     }
-                    List<MockOrder> batch = new ArrayList<>();
+                    List<OrderSettlementItem> batch = new ArrayList<>();
                     for (int i = 1; i <= limit; i++) {
                         long id = currentId + i;
-                        batch.add(new MockOrder(id, "ORDER-" + id, (int) (id % 100)));
+                        batch.add(new OrderSettlementItem(id, "ORDER-" + id, (int) (id % 100)));
                     }
                     return batch;
                 },
-                MockOrder::id,       // 主键提取器
+                OrderSettlementItem::id,       // 主键提取器
                 batch -> {
-                    for (MockOrder order : batch) {
+                    for (OrderSettlementItem order : batch) {
                         if (order.id() == 8L) {
                             throw new RuntimeException("订单 [ID=" + order.id() + "] 模拟业务处理失败");
                         }
@@ -706,16 +721,16 @@ public class ShardingBatchJobHandler {
                             if (currentId >= 20) {
                                 return List.of();
                             }
-                            List<MockOrder> batch = new ArrayList<>();
+                            List<OrderSettlementItem> batch = new ArrayList<>();
                             for (int i = 1; i <= limit; i++) {
                                 long id = currentId + i;
-                                batch.add(new MockOrder(id, "PARALLEL-ORDER-" + id, (int) (id % 100)));
+                                batch.add(new OrderSettlementItem(id, "PARALLEL-ORDER-" + id, (int) (id % 100)));
                             }
                             return batch;
                         },
-                        MockOrder::id,
+                        OrderSettlementItem::id,
                         batch -> {
-                            for (MockOrder order : batch) {
+                            for (OrderSettlementItem order : batch) {
                                 if (order.id() == 8L || order.id() == 16L) {
                                     throw new IllegalStateException("并发分片订单 [ID=" + order.id() + "] 消费异常");
                                 }
@@ -727,7 +742,7 @@ public class ShardingBatchJobHandler {
                 summary.getSuccessCount(), summary.getFailCount(), summary.getDuration().toMillis()));
     }
 
-    public record MockOrder(Long id, String orderNo, Integer amount) {}
+    public record OrderSettlementItem(Long id, String orderNo, Integer amount) {}
 }
 ```
 
@@ -1158,7 +1173,7 @@ public class GlobalJobTimeoutFallbackHandler implements JobTimeoutFallbackHandle
 | **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/reconciliation` | 模拟订单对账与注入借贷不平衡差错告警 | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/reconciliation?hasDiff=true"` |
 | **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/timeout-archive` | 模拟历史数据归档扫描超时与就地降级补偿 | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/timeout-archive"` |
 | **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/canary` | 演练 `XxlJobInterceptor` 灰度拦截与 `jobId`/`logId` 元数据审计 | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/canary?skip=true"` |
-| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/retry` | 演练独立单注解 `@AtengXxlJob` 退避重试自愈与耗尽路径 | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/retry?exhaust=false"` |
+| **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/retry` | 演练独立单注解 `@AtengXxlJob` 退避重试自愈与耗尽路径 | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/retry?failTimes=2"` |
 | **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/tenant/global` | 触发平台级全租户忽略任务（IGNORE 模态） | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/tenant/global"` |
 | **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/tenant/scoped` | 触发单租户入参绑定隔离任务（PARAM 模态） | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/tenant/scoped?tenantId=TENANT-888"` |
 | **`XxlJobTriggerController`** | `POST /sample/job-xxl/trigger/tenant/parallel` | 触发多租户沙箱受管并发遍历核算任务（ITERATE 模态） | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/tenant/parallel"` |

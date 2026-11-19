@@ -35,28 +35,45 @@ public class PaymentCallbackRetryJobHandler {
     @AtengXxlJob(value = "paymentCallbackRetryJob", timeout = "5s", retryCount = 2, retryInterval = "100ms")
     public void executePaymentCallbackRetry() {
         String param = XxlJobHelper.getJobParam();
-        boolean exhaust = param != null && param.contains("exhaust=true");
+        int failTimes = resolveFailTimes(param);
         String runKey = resolveRunKey(param);
         int attempt = attemptCounters.computeIfAbsent(runKey, k -> new AtomicInteger()).incrementAndGet();
         totalExecutions.incrementAndGet();
 
-        log.info(">>>>>> [PaymentCallbackRetryJobHandler] 执行支付回调推送 runKey={}, 第 {} 次尝试, exhaust={}",
-                runKey, attempt, exhaust);
+        log.info(">>>>>> [PaymentCallbackRetryJobHandler] 执行支付回调推送 runKey={}, 第 {} 次尝试, failTimes={}",
+                runKey, attempt, failTimes);
 
-        if (exhaust) {
+        if (attempt <= failTimes) {
+            // retryCount=2 最多执行 3 次尝试；达到或超过第 3 次时清理计数器防止内存残留
             if (attempt >= 3) {
                 attemptCounters.remove(runKey);
             }
-            throw new IllegalStateException("商户回调网关持续不可用 (attempt-" + attempt + ")");
-        }
-
-        // 前 2 次模拟瞬态网络超时失败，第 3 次退避重试后自愈成功
-        if (attempt < 3) {
-            throw new IllegalStateException("商户回调网关瞬态抖动 (attempt-" + attempt + ")");
+            String errMsg = failTimes > 2
+                    ? "商户回调网关持续不可用 (attempt-" + attempt + ")"
+                    : "商户回调网关瞬态抖动 (attempt-" + attempt + ")";
+            throw new IllegalStateException(errMsg);
         }
 
         attemptCounters.remove(runKey);
         XxlJobHelper.handleSuccess("支付回调经本地退避重试第 " + attempt + " 次自愈成功");
+    }
+
+    private int resolveFailTimes(String param) {
+        if (param == null || param.isBlank()) {
+            return 2;
+        }
+        for (String segment : param.split(",")) {
+            String trimmed = segment.trim();
+            if (trimmed.startsWith("failTimes=")) {
+                String value = trimmed.substring("failTimes=".length()).trim();
+                try {
+                    return Math.max(0, Integer.parseInt(value));
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException("非法 failTimes 参数值: " + value, e);
+                }
+            }
+        }
+        return 2;
     }
 
     private String resolveRunKey(String param) {

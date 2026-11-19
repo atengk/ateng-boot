@@ -39,7 +39,7 @@
 | **订单对账模拟差错告警自愈** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/reconciliation` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/reconciliation?hasDiff=true"` |
 | **历史冷数据归档超时降级** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/timeout-archive` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/timeout-archive"` |
 | **灰度切面拦截与元数据审计** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/canary` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/canary?skip=true"` |
-| **单注解退避重试自愈/耗尽** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/retry` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/retry?exhaust=false"` |
+| **单注解退避重试自愈/耗尽** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/retry` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/retry?failTimes=2"` |
 | **租户全局归档 (IGNORE 模态)** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/tenant/global` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/tenant/global"` |
 | **单租户隔离账单 (PARAM 模态)** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/tenant/scoped` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/tenant/scoped?tenantId=TENANT-888"` |
 | **多租户并发遍历 (ITERATE 模态)** | `XxlJobTriggerController` | `POST /sample/job-xxl/trigger/tenant/parallel` | `curl -X POST "http://localhost:8080/sample/job-xxl/trigger/tenant/parallel"` |

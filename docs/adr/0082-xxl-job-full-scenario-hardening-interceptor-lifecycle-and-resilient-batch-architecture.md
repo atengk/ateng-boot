@@ -101,8 +101,16 @@ flowchart TD
 
 ### 7. 底层防崩日志清理器与 Netty 受管线程规约
 - **防崩日志清理器 (`AtengJobLogFileCleanHelper`)**：
-  重构历史日志清理逻辑，强制执行目录存在性检查、非法相对路径越权拦截与 IOException 降级容错，确保在 Windows 临时句柄锁定下平滑跳过而不抛出次生异常；
+  重构历史日志清理逻辑，强制执行目录存在性检查、非法相对路径越权拦截与 IOException 降级容错，确保在 Windows 临时句柄锁定下平滑跳过而不抛出次生异常；采用 `ReentrantLock` 替代 `synchronized`，并支持接入 Spring 受管调度器（`ScheduledExecutorService` / `ThreadPoolTaskScheduler`），彻底消除野线程与虚拟线程 Pinning；
 - **Netty 命名线程工厂规约**：规范执行器内嵌 Netty 服务器的工作线程命名（`xxl-job, AtengEmbedServer-boss` / `worker`），统合到受管线程规范。
+
+### 8. `@AtengXxlJob` 独立单注解注册闭环、方法级本地退避重试与全链路虚拟线程防 Pinning（增量演进）
+- **`@AtengXxlJob` 独立扫描与双标幂等去重**：
+  `AtengXxlJobSpringExecutor.afterSingletonsInstantiated()` 除调用官方 `@XxlJob` 扫描外，同步扫描仅标注 `@AtengXxlJob("handlerName")`（含 `init`、`destroy`）的方法并注册至 `jobHandlerRepository`（若同一方法同时标注 `@XxlJob` 与 `@AtengXxlJob` 则幂等去重），消除脱网调试器与生产执行器之间的注册鸿沟；
+- **方法级本地退避重试 (`retryCount` / `retryInterval`)**：
+  在 `@AtengXxlJob` 中扩充 `retryCount`（默认 `0`）与 `retryInterval`（默认 `"1s"`）。切面在目标方法抛出非超时业务异常时执行受管退避重试；针对 JSR-303 参数校验失败、JSON 反序列化失败以及 `LocalWatchdog` 硬超时强中断（`session.isTimedOut()`）严格实施 **0 次重试立即 Fail-Fast**，且 `timeout` 约束含重试在内的整次调度总生命周期；
+- **`BatchFailureHandler<T>` 函数式 SPI 与无状态派生视图**：
+  正式落地 `@FunctionalInterface public interface BatchFailureHandler<T> extends Consumer<FailedBatch<T>>`，遵循“就近显式回调优先、全局 Spring Bean 缺省兜底”策略；`XxlShardingBatchTemplate` 提供 `withFailFast(boolean)` / `withProgressLogInterval(int)` 无状态不可变派生视图（存量 Setter 标记 `@Deprecated` 保持向后兼容），且全模块（`XxlJobAlertAggregator`、`XxlJobTestHelper`、`AtengJobLogFileCleanHelper`、`XxlShardingBatchTemplate`、`XxlMyBatisStreamingTemplate`、`TenantJobTemplate`）100% 采用 `ReentrantLock` 替代 `synchronized` 消除 JDK 21+ 虚拟线程 Carrier Pinning。
 
 ---
 

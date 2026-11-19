@@ -138,19 +138,24 @@ class SampleJobXxlWebControllerTest {
         assertThat(canaryInterceptor.getLastCapturedMeta().jobHandler()).isEqualTo("canaryNormalJob");
         assertThat(canaryInterceptor.getLastCapturedMeta().logId()).isPositive();
 
-        // 10. POST /sample/job-xxl/trigger/retry 独立单注解 @AtengXxlJob 本地退避重试自愈与耗尽路径
+        // 10. POST /sample/job-xxl/trigger/retry 独立单注解 @AtengXxlJob 本地退避重试自愈、耗尽与参数校验快速失败路径
         mockMvc.perform(post("/sample/job-xxl/trigger/retry")
-                        .param("exhaust", "false"))
+                        .param("failTimes", "2"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.success").value(true))
                 .andExpect(jsonPath("$.data.handleMsg").value(containsString("自愈成功")));
         mockMvc.perform(post("/sample/job-xxl/trigger/retry")
-                        .param("exhaust", "true"))
+                        .param("failTimes", "3"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.success").value(false))
                 .andExpect(jsonPath("$.data.errorMessage").value(containsString("持续不可用")));
+        mockMvc.perform(post("/sample/job-xxl/trigger/retry")
+                        .param("failTimes", "-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false));
 
         // 11. POST /sample/job-xxl/trigger/tenant/global 租户全局归档
         mockMvc.perform(post("/sample/job-xxl/trigger/tenant/global"))

@@ -628,7 +628,8 @@ public class AtengXxlJobSpringExecutor extends XxlJobSpringExecutor implements S
         if (this.applicationContext != null) {
             try {
                 return this.applicationContext.getBeanProvider(TaskScheduler.class).getIfAvailable();
-            } catch (Exception ignored) {
+            } catch (Exception ex) {
+                log.warn("解析容器受管 TaskScheduler 失败，日志清理器将回退使用默认受管守护调度器: {}", ex.getMessage());
             }
         }
         return null;

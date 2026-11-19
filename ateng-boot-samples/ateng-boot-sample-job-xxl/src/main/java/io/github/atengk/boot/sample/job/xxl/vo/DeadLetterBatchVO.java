@@ -1,7 +1,7 @@
 package io.github.atengk.boot.sample.job.xxl.vo;
 
 import io.github.atengk.boot.job.xxl.template.FailedBatch;
-import io.github.atengk.boot.sample.job.xxl.handler.ShardingBatchJobHandler.MockOrder;
+import io.github.atengk.boot.sample.job.xxl.handler.ShardingBatchJobHandler.OrderSettlementItem;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -47,7 +47,7 @@ public class DeadLetterBatchVO implements Serializable {
     /**
      * 失败订单记录明细
      */
-    private List<MockOrder> items;
+    private List<OrderSettlementItem> items;
 
     /**
      * 从内核 FailedBatch 模型转换为视图对象
@@ -59,11 +59,11 @@ public class DeadLetterBatchVO implements Serializable {
         if (failedBatch == null) {
             return null;
         }
-        List<MockOrder> orders = failedBatch.getItems() == null
+        List<OrderSettlementItem> orders = failedBatch.getItems() == null
                 ? List.of()
                 : failedBatch.getItems().stream()
-                .filter(MockOrder.class::isInstance)
-                .map(MockOrder.class::cast)
+                .filter(OrderSettlementItem.class::isInstance)
+                .map(OrderSettlementItem.class::cast)
                 .toList();
         return DeadLetterBatchVO.builder()
                 .batchIndex(failedBatch.getBatchIndex())
