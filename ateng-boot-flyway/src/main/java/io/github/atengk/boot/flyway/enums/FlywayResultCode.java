@@ -57,7 +57,12 @@ public enum FlywayResultCode implements IResultCode {
     /**
      * Flyway 迁移配置非法
      */
-    CONFIG_INVALID(62009, "Flyway 迁移配置非法");
+    CONFIG_INVALID(62009, "Flyway 迁移配置非法"),
+
+    /**
+     * 检测到未授权的高危破坏性 DDL 语句
+     */
+    DESTRUCTIVE_DDL_FORBIDDEN(62010, "检测到未授权的高危破坏性 DDL 语句，已阻断迁移执行");
 
     private final Integer code;
     private final String msg;

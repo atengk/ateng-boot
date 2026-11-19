@@ -8,6 +8,7 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.flyway.enums.FlywayResultCode;
 import io.github.atengk.boot.sample.flyway.dto.BaselineRequest;
+import io.github.atengk.boot.sample.flyway.dto.DestructiveDdlDemoRequest;
 import io.github.atengk.boot.sample.flyway.dto.IsolatedCredentialDemoRequest;
 import io.github.atengk.boot.sample.flyway.dto.TargetOperationRequest;
 import io.github.atengk.boot.sample.flyway.dto.TenantMountRequest;
@@ -310,5 +311,43 @@ class FlywaySampleControllersMockMvcTest {
         mockMvc.perform(get("/sample/flyway/governance/info").param("targetKey", "unknown_nonexistent_db"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(FlywayResultCode.TARGET_NOT_FOUND.getCode()));
+
+        // 待执行 SQL 高危 DDL 静态预检演练：未授权 TRUNCATE 触发 62010，豁免关闭同样触发 62010，豁免放行返回 200，空参数触发 400
+        mockMvc.perform(post("/sample/flyway/governance/destructive-ddl-guard/demo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(DestructiveDdlDemoRequest.builder()
+                                .sqlScript("CREATE TABLE t_audit (id BIGINT); TRUNCATE TABLE t_audit;")
+                                .allowExemptionAnnotation(true)
+                                .build())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(FlywayResultCode.DESTRUCTIVE_DDL_FORBIDDEN.getCode()));
+
+        mockMvc.perform(post("/sample/flyway/governance/destructive-ddl-guard/demo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(DestructiveDdlDemoRequest.builder()
+                                .sqlScript("-- @ateng-allow-destructive-ddl\nCREATE TABLE t_audit (id BIGINT); DROP TABLE t_audit;")
+                                .allowExemptionAnnotation(false)
+                                .build())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(FlywayResultCode.DESTRUCTIVE_DDL_FORBIDDEN.getCode()));
+
+        mockMvc.perform(post("/sample/flyway/governance/destructive-ddl-guard/demo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(DestructiveDdlDemoRequest.builder()
+                                .sqlScript("-- @ateng-allow-destructive-ddl\nCREATE TABLE t_audit (id BIGINT); DROP TABLE t_audit;")
+                                .allowExemptionAnnotation(true)
+                                .build())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.passed").value(true))
+                .andExpect(jsonPath("$.data.executedMigrations").value(1));
+
+        mockMvc.perform(post("/sample/flyway/governance/destructive-ddl-guard/demo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(DestructiveDdlDemoRequest.builder()
+                                .sqlScript("  ")
+                                .build())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
     }
 }

@@ -124,6 +124,21 @@ public class AtengFlywayProperties {
          * 在受保护环境下是否强制拦截 spring.flyway.clean-on-validation-error=true
          */
         private boolean forbidCleanOnValidationError = true;
+
+        /**
+         * 在受保护环境下是否静态扫描待执行 SQL，拦截未授权的 DROP TABLE/DATABASE/SCHEMA 与 TRUNCATE 语句
+         */
+        private boolean forbidDestructiveDdlInProtectedProfiles = true;
+
+        /**
+         * 是否无条件在所有环境下拦截待执行 SQL 中未授权的高危破坏性 DDL 语句
+         */
+        private boolean forbidDestructiveDdlAlways = false;
+
+        /**
+         * 是否允许经受审脚本在 SQL 注释中标注 {@code -- @ateng-allow-destructive-ddl} 显式豁免放行
+         */
+        private boolean allowDestructiveDdlAnnotation = true;
     }
 
     /**

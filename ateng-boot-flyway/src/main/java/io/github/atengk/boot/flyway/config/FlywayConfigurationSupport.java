@@ -149,13 +149,11 @@ public final class FlywayConfigurationSupport {
             }
         }
 
-        // 在定制器执行之后再次强制锁死生产环境守卫，防止外部 customizer 意外开启 clean
+        // 在定制器执行之后再次强制锁死生产环境守卫，并对 Customizer 违规开启 cleanOnValidationError 执行 Fail-Fast 阻断
         if (safetyGuard != null) {
             boolean effectiveCleanDisabled = safetyGuard.resolveEffectiveCleanDisabled(configuration.isCleanDisabled());
             configuration.cleanDisabled(effectiveCleanDisabled);
-            if (safetyGuard.isProtectedEnvironment()) {
-                configuration.cleanOnValidationError(false);
-            }
+            safetyGuard.validateConfiguration(targetKey, configuration.isCleanOnValidationError());
         }
 
         return configuration.load();

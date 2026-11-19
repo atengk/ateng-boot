@@ -49,4 +49,21 @@ class FlywayProtectedProfileGuardIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(FlywayResultCode.CLEAN_FORBIDDEN.getCode()));
     }
+
+    @Test
+    @DisplayName("prod Profile 下高危 DDL 预检演练端点应拦截未授权 DROP TABLE（62010）并放行带豁免标记脚本")
+    void shouldRejectDestructiveDdlAndAllowAnnotatedExemptionInProdProfile() throws Exception {
+        mockMvc.perform(post("/sample/flyway/governance/destructive-ddl-guard/demo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"sqlScript\":\"CREATE TABLE demo_tmp(id BIGINT); DROP TABLE demo_tmp;\",\"allowExemptionAnnotation\":true}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(FlywayResultCode.DESTRUCTIVE_DDL_FORBIDDEN.getCode()));
+
+        mockMvc.perform(post("/sample/flyway/governance/destructive-ddl-guard/demo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"sqlScript\":\"-- @ateng-allow-destructive-ddl\\nCREATE TABLE demo_tmp(id BIGINT); DROP TABLE demo_tmp;\",\"allowExemptionAnnotation\":true}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.passed").value(true));
+    }
 }

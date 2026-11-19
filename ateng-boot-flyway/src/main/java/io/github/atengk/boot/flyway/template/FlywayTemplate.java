@@ -862,6 +862,7 @@ public class FlywayTemplate {
         notifier.notifyBeforeMigrate(resolvedKey);
         try {
             MigrationOutcome outcome = executeWithFlyway(resolvedKey, true, flyway -> {
+                safetyGuard.assertPendingSqlSafe(resolvedKey, flyway);
                 if (migrationStrategy != null) {
                     int beforeApplied = safeAppliedCount(flyway);
                     migrationStrategy.migrate(flyway);

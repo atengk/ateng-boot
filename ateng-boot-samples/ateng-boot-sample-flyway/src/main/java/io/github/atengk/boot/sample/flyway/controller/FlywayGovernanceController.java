@@ -8,9 +8,11 @@ import io.github.atengk.boot.flyway.model.MigrationSummary;
 import io.github.atengk.boot.flyway.model.MigrationTargetInfo;
 import io.github.atengk.boot.flyway.template.FlywayTemplate;
 import io.github.atengk.boot.sample.flyway.dto.BaselineRequest;
+import io.github.atengk.boot.sample.flyway.dto.DestructiveDdlDemoRequest;
 import io.github.atengk.boot.sample.flyway.dto.IsolatedCredentialDemoRequest;
 import io.github.atengk.boot.sample.flyway.dto.TargetOperationRequest;
 import io.github.atengk.boot.sample.flyway.service.FlywayGovernanceService;
+import io.github.atengk.boot.sample.flyway.vo.DestructiveDdlDemoResponse;
 import io.github.atengk.boot.sample.flyway.vo.IsolatedCredentialDemoResponse;
 import io.github.atengk.boot.sample.flyway.vo.MigrationHealthResponse;
 import jakarta.validation.Valid;
@@ -117,6 +119,18 @@ public class FlywayGovernanceController {
     public Result<IsolatedCredentialDemoResponse> demonstrateIsolatedCredential(
             @Valid @RequestBody IsolatedCredentialDemoRequest request) {
         return Result.success(governanceService.demonstrateIsolatedCredential(request));
+    }
+
+    /**
+     * 演示待执行 SQL 高危破坏性 DDL 静态预检拦截（未授权返回 62010，带豁免注解或安全脚本放行）
+     *
+     * @param request 高危 DDL 预检演练请求
+     * @return 预检演练响应视图
+     */
+    @PostMapping("/destructive-ddl-guard/demo")
+    public Result<DestructiveDdlDemoResponse> demonstrateDestructiveDdlGuard(
+            @Valid @RequestBody DestructiveDdlDemoRequest request) {
+        return Result.success(governanceService.demonstrateDestructiveDdlGuard(request));
     }
 
     /**
