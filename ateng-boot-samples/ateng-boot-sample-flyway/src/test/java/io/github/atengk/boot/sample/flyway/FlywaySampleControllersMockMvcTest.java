@@ -8,6 +8,9 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.flyway.enums.BatchExecutionPolicy;
 import io.github.atengk.boot.flyway.enums.FlywayResultCode;
+import io.github.atengk.boot.flyway.model.MigrationTarget;
+import io.github.atengk.boot.flyway.properties.AtengFlywayProperties;
+import io.github.atengk.boot.flyway.spi.FlywayTargetResolver;
 import io.github.atengk.boot.sample.flyway.dto.BaselineRequest;
 import io.github.atengk.boot.sample.flyway.dto.BatchBaselineRequest;
 import io.github.atengk.boot.sample.flyway.dto.BatchPolicyRequest;
@@ -74,6 +77,9 @@ class FlywaySampleControllersMockMvcTest {
     @Autowired
     private SampleFlywayEventListener sampleFlywayEventListener;
 
+    @Autowired
+    private FlywayTargetResolver flywayTargetResolver;
+
     @AfterEach
     void cleanupContexts() {
         TenantContextHolder.clear();
@@ -115,6 +121,27 @@ class FlywaySampleControllersMockMvcTest {
         assertThat(tableExists(logDs, "biz_audit_log")).isTrue();
         assertThat(tableExists(logDs, "log_flyway_schema_history")).isTrue();
         assertThat(tableExists(logDs, "flyway_schema_history")).isFalse();
+
+        // 验证 log_db 目标级高阶参数（target / ignore-migration-patterns / installed-by 等）全量生效
+        MigrationTarget logTarget = flywayTargetResolver.resolveTarget("log_db");
+        assertThat(logTarget).isNotNull();
+        AtengFlywayProperties.DataSourceMigrationProperties logConfig = logTarget.getMigrationConfig();
+        assertThat(logConfig).isNotNull();
+        assertThat(logConfig.getTarget()).isEqualTo("2");
+        assertThat(logConfig.getIgnoreMigrationPatterns()).containsExactly("*:ignored");
+        assertThat(logConfig.getInstalledBy()).isEqualTo("platform-bot");
+        assertThat(logConfig.getExecuteInTransaction()).isTrue();
+        assertThat(logConfig.getGroup()).isFalse();
+        assertThat(logConfig.getMixed()).isFalse();
+        java.util.Set<String> installedByValues = new java.util.HashSet<>();
+        try (Connection conn = logDs.getConnection();
+             var stmt = conn.createStatement();
+             var rs = stmt.executeQuery("SELECT * FROM \"log_flyway_schema_history\"")) {
+            while (rs.next()) {
+                installedByValues.add(rs.getString("installed_by"));
+            }
+        }
+        assertThat(installedByValues).containsExactly("platform-bot");
 
         assertThat(tableExists(t1001Ds, "biz_tenant_order")).isTrue();
         assertThat(tableExists(t1001Ds, "sys_tenant_registry")).isFalse();

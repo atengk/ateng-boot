@@ -10,6 +10,8 @@ import io.github.atengk.boot.flyway.model.BatchOperationResult;
 import io.github.atengk.boot.flyway.model.MigrationOutcome;
 import io.github.atengk.boot.flyway.model.MigrationSummary;
 import io.github.atengk.boot.flyway.model.TargetFailure;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.util.CollectionUtils;
 
 import java.time.Duration;
@@ -44,6 +46,8 @@ import java.util.function.Function;
  * @since 2026-11-17
  */
 final class FlywayBatchExecutor {
+
+    private static final Logger log = LoggerFactory.getLogger(FlywayBatchExecutor.class);
 
     private FlywayBatchExecutor() {
     }
@@ -110,21 +114,14 @@ final class FlywayBatchExecutor {
                                                 Function<String, String> sanitizer,
                                                 Consumer<MigrationSummary> summaryRecorder,
                                                 boolean recordSummary) {
-        Consumer<SlotBatchSnapshot<MigrationOutcome>> failFastRecorder = (recordSummary && summaryRecorder != null)
-                ? partial -> summaryRecorder.accept(toSummary(assembleMigrationResult(mode, policy, partial)))
-                : null;
         SlotBatchSnapshot<MigrationOutcome> snapshot = runSlotsSerially(
                 targetKeys,
                 policy,
                 key -> itemRunner.run(key, mode),
                 resolveErrorCode(mode),
                 sanitizer,
-                failFastRecorder);
-        BatchMigrationResult result = assembleMigrationResult(mode, policy, snapshot);
-        if (recordSummary && summaryRecorder != null) {
-            summaryRecorder.accept(toSummary(result));
-        }
-        return result;
+                createFailFastSummaryRecorder(mode, policy, summaryRecorder, recordSummary));
+        return finalizeMigrationBatch(mode, policy, snapshot, summaryRecorder, recordSummary);
     }
 
     static BatchMigrationResult executeConcurrently(List<String> targetKeys,
@@ -137,9 +134,6 @@ final class FlywayBatchExecutor {
                                                     Function<String, String> sanitizer,
                                                     Consumer<MigrationSummary> summaryRecorder,
                                                     boolean recordSummary) {
-        Consumer<SlotBatchSnapshot<MigrationOutcome>> failFastRecorder = (recordSummary && summaryRecorder != null)
-                ? partial -> summaryRecorder.accept(toSummary(assembleMigrationResult(mode, policy, partial)))
-                : null;
         SlotBatchSnapshot<MigrationOutcome> snapshot = awaitSlotsConcurrently(
                 targetKeys,
                 policy,
@@ -149,7 +143,27 @@ final class FlywayBatchExecutor {
                 key -> itemRunner.run(key, mode),
                 resolveErrorCode(mode),
                 sanitizer,
-                failFastRecorder);
+                createFailFastSummaryRecorder(mode, policy, summaryRecorder, recordSummary));
+        return finalizeMigrationBatch(mode, policy, snapshot, summaryRecorder, recordSummary);
+    }
+
+    private static Consumer<SlotBatchSnapshot<MigrationOutcome>> createFailFastSummaryRecorder(
+            FlywayExecutionMode mode,
+            BatchExecutionPolicy policy,
+            Consumer<MigrationSummary> summaryRecorder,
+            boolean recordSummary) {
+        if (!recordSummary || summaryRecorder == null) {
+            return null;
+        }
+        return partial -> summaryRecorder.accept(toSummary(assembleMigrationResult(mode, policy, partial)));
+    }
+
+    private static BatchMigrationResult finalizeMigrationBatch(
+            FlywayExecutionMode mode,
+            BatchExecutionPolicy policy,
+            SlotBatchSnapshot<MigrationOutcome> snapshot,
+            Consumer<MigrationSummary> summaryRecorder,
+            boolean recordSummary) {
         BatchMigrationResult result = assembleMigrationResult(mode, policy, snapshot);
         if (recordSummary && summaryRecorder != null) {
             summaryRecorder.accept(toSummary(result));
@@ -629,8 +643,9 @@ final class FlywayBatchExecutor {
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
                 break;
-            } catch (Exception ignored) {
+            } catch (Exception ex) {
                 // 工作线程在中止或中断后完成收尾即可，停机阶段不向上传播异常
+                log.debug("停机等待 Flyway 批处理工作线程退出时发生非致命异常（已忽略）: {}", ex.getMessage());
             }
         }
     }

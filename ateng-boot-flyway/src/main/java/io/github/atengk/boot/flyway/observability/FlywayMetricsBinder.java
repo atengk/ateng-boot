@@ -177,10 +177,7 @@ public class FlywayMetricsBinder implements MeterBinder, FlywayMigrationListener
     private int queryPendingSafely() {
         try {
             pendingProbeCount.incrementAndGet();
-            AtengFlywayProperties.ObservabilityProperties obs = properties.getObservability();
-            ObservabilityTargetScope scope = obs != null
-                    ? obs.resolveEffectiveTargetScope()
-                    : ObservabilityTargetScope.PRIMARY_AND_STATIC;
+            ObservabilityTargetScope scope = ObservabilityTtlCache.resolveTargetScope(properties);
             List<String> keys = flywayTemplate.resolveObservableTargetKeys(scope);
             if (keys.isEmpty()) {
                 return 0;

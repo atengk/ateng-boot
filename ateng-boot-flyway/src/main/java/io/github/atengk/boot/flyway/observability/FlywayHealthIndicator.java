@@ -90,9 +90,7 @@ public class FlywayHealthIndicator implements HealthIndicator, FlywayMigrationLi
 
     private Health evaluateHealth() {
         AtengFlywayProperties.ObservabilityProperties obs = properties.getObservability();
-        ObservabilityTargetScope scope = obs != null
-                ? obs.resolveEffectiveTargetScope()
-                : ObservabilityTargetScope.PRIMARY_AND_STATIC;
+        ObservabilityTargetScope scope = ObservabilityTtlCache.resolveTargetScope(properties);
         boolean failOnPending = obs != null && obs.isFailOnPending();
 
         MigrationSummary summary = flywayTemplate.getLastMigrationSummary();

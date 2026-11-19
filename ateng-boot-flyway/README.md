@@ -344,13 +344,26 @@ public Result<DestructiveDdlDemoResponse> demonstrateDestructiveDdlGuard(
 ```
 
 ```java
-// 业务迁移脚本若确需清理旧表或重构结构，须显式附带受控审批注解方可在允许豁免的策略下放行；
-// 否则立即阻断并抛出 DESTRUCTIVE_DDL_FORBIDDEN (62010)
-String sql = """
-        -- @ateng-allow-destructive-ddl
-        CREATE TABLE t_audit (id BIGINT);
-        DROP TABLE t_audit;
-        """;
+AtengFlywayProperties guardProps = new AtengFlywayProperties();
+guardProps.getGuard().setEnabled(true);
+guardProps.getGuard().setForbidDestructiveDdlInProtectedProfiles(true);
+guardProps.getGuard().setForbidDestructiveDdlAlways(true);
+guardProps.getGuard().setAllowDestructiveDdlAnnotation(request.isAllowExemptionAnnotation());
+ProductionSafetyGuard demoGuard = new ProductionSafetyGuard(guardProps, environment);
+
+FlywayProperties flywayProps = new FlywayProperties();
+flywayProps.setLocations(List.of("filesystem:" + tempDir.toAbsolutePath()));
+Flyway flyway = FlywayConfigurationSupport.buildFlyway(
+        "guard-demo",
+        demoDataSource,
+        flywayProps,
+        new DefaultResourceLoader(),
+        Collections.emptyList(),
+        Collections.emptyList(),
+        Collections.emptyList(),
+        demoGuard
+);
+
 demoGuard.assertPendingSqlSafe("guard-demo", flyway);
 MigrateResult migrateResult = flyway.migrate();
 ```

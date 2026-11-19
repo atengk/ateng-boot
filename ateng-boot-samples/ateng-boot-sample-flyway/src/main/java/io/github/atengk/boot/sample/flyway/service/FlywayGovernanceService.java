@@ -22,6 +22,7 @@ import io.github.atengk.boot.sample.flyway.vo.DestructiveDdlDemoResponse;
 import io.github.atengk.boot.sample.flyway.vo.IsolatedCredentialDemoResponse;
 import io.github.atengk.boot.sample.flyway.vo.MigrationHealthResponse;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.output.MigrateResult;
 import org.flywaydb.core.api.output.ValidateResult;
@@ -47,6 +48,7 @@ import java.util.Map;
  * @author Ateng
  * @since 2026-11-17
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class FlywayGovernanceService {
@@ -199,8 +201,9 @@ public class FlywayGovernanceService {
                 FileUtil.cleanDirectorySafely(tempDir);
                 try {
                     Files.deleteIfExists(tempDir);
-                } catch (IOException ignored) {
+                } catch (IOException ex) {
                     // 临时目录外层删除失败不影响演练响应契约
+                    log.debug("清理高危 DDL 演练临时目录 [{}] 失败（已忽略）: {}", tempDir, ex.getMessage());
                 }
             }
         }

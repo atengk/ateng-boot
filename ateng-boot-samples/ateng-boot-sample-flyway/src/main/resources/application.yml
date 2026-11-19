@@ -88,6 +88,13 @@ ateng:
           locations:
             - classpath:db/migration/log_db
           table: log_flyway_schema_history
+          target: "2"
+          ignore-migration-patterns:
+            - "*:ignored"
+          installed-by: "platform-bot"
+          execute-in-transaction: true
+          group: false
+          mixed: false
           placeholders:
             auditScope: platform-audit
       tenant:

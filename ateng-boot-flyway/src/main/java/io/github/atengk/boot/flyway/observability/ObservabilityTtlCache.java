@@ -1,5 +1,6 @@
 package io.github.atengk.boot.flyway.observability;
 
+import io.github.atengk.boot.flyway.enums.ObservabilityTargetScope;
 import io.github.atengk.boot.flyway.properties.AtengFlywayProperties;
 
 import java.time.Duration;
@@ -67,6 +68,11 @@ final class ObservabilityTtlCache<T> {
 
     void invalidate() {
         this.snapshot = null;
+    }
+
+    static ObservabilityTargetScope resolveTargetScope(AtengFlywayProperties properties) {
+        AtengFlywayProperties.ObservabilityProperties obs = properties != null ? properties.getObservability() : null;
+        return obs != null ? obs.resolveEffectiveTargetScope() : ObservabilityTargetScope.PRIMARY_AND_STATIC;
     }
 
     private Duration resolveCacheTtl() {

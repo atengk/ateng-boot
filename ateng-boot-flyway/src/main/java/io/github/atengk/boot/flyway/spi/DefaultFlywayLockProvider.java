@@ -39,7 +39,10 @@ public class DefaultFlywayLockProvider implements FlywayLockProvider {
             if (waitTimeout == null || waitTimeout.isNegative() || waitTimeout.isZero()) {
                 acquired = entry.lock.tryLock();
             } else {
-                acquired = entry.lock.tryLock(waitTimeout.toMillis(), TimeUnit.MILLISECONDS);
+                long waitNanos = waitTimeout.getSeconds() > 86_400L * 365
+                        ? TimeUnit.DAYS.toNanos(365)
+                        : waitTimeout.toNanos();
+                acquired = entry.lock.tryLock(waitNanos, TimeUnit.NANOSECONDS);
             }
             return acquired;
         } catch (InterruptedException e) {
