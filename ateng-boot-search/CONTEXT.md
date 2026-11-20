@@ -116,4 +116,32 @@ _Avoid_: FlushMode, SyncPolicy, RefreshOption
 描述异步 `reindex`、`updateByQuery` 与 `deleteByQuery` 服务端长任务执行进度、完成标识及失败明细的不可变状态载荷。
 _Avoid_: AsyncJobInfo, ReindexProgress, TaskResult
 
+**SearchEngineDialect (搜索引擎方言适配器)**:
+封装 `ELASTICSEARCH`（8.x）与 `OPENSEARCH` 协议分歧的内部方言适配组件，统一 `_pit`、`rescore`、`_msearch` 等端点请求兼容。
+_Avoid_: EsAdapter, EngineBridge, VersionHandler
+
+**SearchBucket (强类型聚合分桶模型)**:
+与底层 ES 客户端解耦的分桶聚合载体，统一承接 `terms`、`date_histogram`、`filter` 桶及其递归嵌套子聚合指标。
+_Avoid_: AggBucketWrapper, ElasticBucket, TermNode
+
+**SearchNumericStats / SearchPercentilesResult (强类型度量统计模型)**:
+封装 `stats`（count/min/max/avg/sum）与 `percentiles`（P50/P95/P99 等分位数值）的零 ES 协议依赖结果视图。
+_Avoid_: StatDto, ElasticStats, QuantileMap
+
+**SearchSuggestResult / SearchInnerHit (建议器与嵌套内部命中模型)**:
+分别封装 `Completion`/`Term`/`Phrase Suggester` 推荐候选词项及 `Nested`/`Collapse` 内部命中的强类型载体。
+_Avoid_: SuggestItem, ChildHit, InnerDoc
+
+**SearchIndexSettings / SearchIndexTemplate (运行期设置与索引模板视图)**:
+与底层客户端解耦的索引运行期 Settings（分片、副本、刷新间隔、窗口上限）与 Index Template 元数据视图模型。
+_Avoid_: EsSettings, TemplateMeta, MappingConfig
+
+**RestClientBuilderCustomizer (HTTP 客户端定制 SPI)**:
+允许外部扩展注入请求头、代理或云厂商签名器（如 AWS SigV4）的传输层定制回调接口。
+_Avoid_: HttpClientHook, RestCustomizer, ElasticAuthFilter
+
+**SearchMetrics (检索可观测度量绑定器)**:
+采集 `ateng.search.operation.time`、`ateng.search.query.time` 与 `ateng.search.bulk.time` 并遵循 `operation` / `outcome` 低基数标签防爆门禁的 Micrometer 指标组件。
+_Avoid_: EsMonitor, QueryCounter, SearchStatsBinder
+
 

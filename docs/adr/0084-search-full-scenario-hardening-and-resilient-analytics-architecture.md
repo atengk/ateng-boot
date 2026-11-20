@@ -69,3 +69,15 @@
 3. **多租户安全绝对加固**：`deleteByQuery` 严格遵循四维上下文自动挂载租户隔离，杜绝跨租户灾难性误删；
 4. **复杂电商与时序分析全面覆盖**：`nested` 解决多 SKU 交叉误判，`dateHistogram` 原生支撑时序监控大盘；
 5. **100% 向后兼容与零臃肿**：所有新增接口皆为纯增量式扩展，完全依托 Spring Boot 3 纳管的标准官方驱动，无任何第三方包膨胀。
+
+---
+
+## 增量演进修订 (2026-11 / Epic #1127, #1128~#1132)
+
+在保留以上核心设计的基础上，`ateng-boot-search` 完成面向生产环境的全链路二次加固与能力完备性闭环：
+
+1. **单一兼容内核与双引擎方言 (`SearchEngineDialect`)**：基于 `Elasticsearch Java API Client 8.x` 兼容层并通过 `SearchEngineDialect` 隔离 Elasticsearch 8.x 与 OpenSearch 端点分歧（`_pit`、`_msearch`、`rescore`），避免双份厚客户端包膨胀；新增 `RestClientBuilderCustomizer` 与 `SearchInterceptor` SPI 强化传输定制与横切可观测。
+2. **多租户 `STRICT` 防 IDOR 闭环与四维异步上下文**：默认 `multi-tenancy.isolation-mode: STRICT` 为点查过滤、`existsById` 降级带租户 `_count` 探测及单点 `update`/`deleteById` 前置 `_mget` 归属核验；支持实体级/AOP 级 `@IgnoreTenant`（`@Order` + `runWithoutTenant`）与跨线程透传；新增 `SearchDataScopeHelper` 数据权限安全注入。
+3. **视图投影、防写覆盖、参数化局改与虚拟线程合轨**：补齐 `@HighlightField` 响应 VO 安全投影（`search(query, Entity.class, Vo.class)` 严守持久实体内存真明文）、`createIfAbsent`、`SearchRefreshPolicy`（`NONE`/`WAIT_UNTIL`/`IMMEDIATE`）、参数化 Painless `updateByQuery`/`updateByQueryAsync`、以及高阶特性对 `ReentrantLock` 的迁移消除 JDK 21+ 虚拟线程 Carrier Pinning。
+4. **AI 混合检索、PIT、`_msearch` 与零 ES 泄漏强类型聚合**：原生支持 `SearchHybridMode.CLIENT_RRF`（单次 `_msearch` 并发召回 BM25 + kNN 后客户端 RRF 重排，零付费许可证依赖）及 `CLIENT_WEIGHTED`/`NATIVE_RRF`；补齐 `PointInTime` 一致性深翻页闭包、`Rescore`、`Completion`/`Term`/`Phrase` 建议器与 `SearchBucket` / `SearchNumericStats` / `SearchPercentilesResult` / `SearchInnerHit` 全解耦读取模型。
+5. **流式批量韧性与全生命周期 DDL 治理**：`SearchBulkProcessor` 补齐 `maxRetries`/`retryBackoff` 瞬态指数退避重试与 `BulkDeadLetterHandler`（单条/整批死信分流）；`SearchIndexOperations` 补齐 `ComponentTemplate`、`SearchIndexTemplate`、`SearchIndexSettings` 读写、精细 `addAlias`/`removeAlias`/`getAliases` 与 `reindexAsync` + `waitForTask`/`cancelTask` 后台任务闭环；`SearchMetrics` 纳管低基数 Micrometer 指标（`ateng.search.operation.time`）。

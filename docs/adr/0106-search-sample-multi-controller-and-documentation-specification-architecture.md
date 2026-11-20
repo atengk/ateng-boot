@@ -99,3 +99,18 @@ flowchart TD
 
 ### 妥协与边界
 - 样例工程引入 `ateng-boot-web` 仅限于标注了 `<maven.deploy.skip>true</maven.deploy.skip>` 的非分发样例工程内部，`ateng-boot-search` Starter 本身依然保持 100% 纯净原生依赖，无任何非必要的 Web 传输层耦合。
+
+---
+
+## 增量演进修订 (2026-11 / #1132~#1133)
+
+围绕二次加固特性同步升级 4 大样例 Controller、双模自动化测试及五维文档闭环：
+
+1. **4 大 Controller 全能力端点扩展**：
+   - `ProductSearchController` 增补 `/search-vo`（`@HighlightField` VO 投影）、`/source-trimmed`（剔除高维向量）、`/pit-pages`（PIT 一致性快照遍历）、`/msearch`（批量异构检索）、`/hybrid`（`CLIENT_RRF` 零许可证 AI 混合检索）、`/dashboard`（Cardinality/Stats/Percentiles P50·P95·P99/嵌套子聚合）与 `/spell-suggest`（Term/Phrase 纠错）；
+   - `LogAnalyticsController` 增补 `/mark-ip`（参数化 `updateByQuery` + `WAIT_UNTIL`）与 `/dashboard`（全局与按日独立 IP 子聚合）；
+   - `BulkIngestionController` 增补 `/stream-raw`（演示类型冲突局部死信）、`/stream-delete` 与 `/dead-letter/stats`（关联自定义 `SampleBulkDeadLetterRecorder` SPI）；
+   - `IndexLifecycleController` 增补 `/component-template/*`、`/settings`、`/alias/*`、`/reindex-async`、`/task` 与 `/task/cancel`；
+   - 新增 `SampleTenantHeaderFilter` 基于 `X-Tenant-Id` 透传测试 `TenantIsolationMode.STRICT` 隔离。
+2. **Mock + 真实 Elasticsearch 8.x 双模集成验证**：`@Profile("!local")` 内存 Mock 测试（`SampleSearchIntegrationTest` 与 `SampleSearchWebControllerTest`）保障无集群 100% 离线回归；`-Dspring.profiles.active=local` 连接真实 Elasticsearch 8.x 集群端到端验证通过，测试结束在 `@AfterAll` 确定性清理测试索引、模板与别名。
+3. **Sample-First 1:1 逆向五维文档与术语同步**：基于实测全绿的 Sample 代码重构 `ateng-boot-search/README.md`（修正历史误标如 `@IgnoreTenant`、`afterBulk(..., Throwable)`、`putIndexTemplate(String, String)` 并补齐 `AtengSearchProperties` 全量配置项与双形式 Maven 坐标），更新 `ateng-boot-sample-search/README.md` 四段式体验卡全覆盖 4 大 Controller cURL 示例，并同步 [CONTEXT.md](../../ateng-boot-search/CONTEXT.md) 与 [CONTEXT-MAP.md](../../CONTEXT-MAP.md)。
