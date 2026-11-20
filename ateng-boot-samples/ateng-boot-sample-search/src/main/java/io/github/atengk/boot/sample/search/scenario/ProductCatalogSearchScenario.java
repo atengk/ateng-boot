@@ -400,4 +400,39 @@ public class ProductCatalogSearchScenario {
                 .build();
         return searchTemplate.hybridSearch(textQuery, "embedding", vector, safeK, Math.max(20, safeK * 4), options, ProductDoc.class);
     }
+
+    /**
+     * 商品价格与类目多维大盘分析（Cardinality + Stats + Percentiles + 嵌套子聚合）
+     *
+     * @return 携带强类型多维聚合指标的 {@link SearchPage}
+     */
+    public SearchPage<ProductDoc> analyzePriceDashboard() {
+        SearchQuery query = SearchQueryBuilder.create()
+                .cardinalityAggregation("unique_brands", "brand")
+                .statsAggregation("price_stats", "price")
+                .percentilesAggregation("price_pct", "price", 50.0, 95.0, 99.0)
+                .termsAggregation("by_category", "category", 10, sub -> sub
+                        .statsAggregation("cat_price_stats", "price")
+                        .percentilesAggregation("cat_price_pct", "price", 50.0, 95.0))
+                .size(0)
+                .build();
+        return searchTemplate.search(query, ProductDoc.class);
+    }
+
+    /**
+     * 商品标题检索拼写纠错建议 (Term Suggester + Phrase Suggester)
+     *
+     * @param text 待建议/纠错文本
+     * @param size 建议条数上限
+     * @return 携带强类型建议列表的 {@link SearchPage}
+     */
+    public SearchPage<ProductDoc> suggestProductTitles(String text, int size) {
+        int safeSize = Math.max(1, size);
+        SearchQuery query = SearchQueryBuilder.create()
+                .termSuggest("title_term", "title", text, safeSize)
+                .phraseSuggest("title_phrase", "title", text, safeSize)
+                .size(0)
+                .build();
+        return searchTemplate.search(query, ProductDoc.class);
+    }
 }

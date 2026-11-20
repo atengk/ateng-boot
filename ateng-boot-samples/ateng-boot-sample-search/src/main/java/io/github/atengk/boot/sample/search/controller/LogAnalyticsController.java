@@ -1,6 +1,8 @@
 package io.github.atengk.boot.sample.search.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.search.dto.AccessLogDashboardResponse;
+import io.github.atengk.boot.sample.search.dto.AccessLogMarkIpRequest;
 import io.github.atengk.boot.sample.search.dto.AccessLogPurgeRequest;
 import io.github.atengk.boot.sample.search.dto.AccessLogRecordRequest;
 import io.github.atengk.boot.sample.search.dto.SearchSampleConvertHelper;
@@ -63,7 +65,7 @@ public class LogAnalyticsController {
             @RequestParam(defaultValue = "access_log_*") String index,
             @RequestParam(defaultValue = "1d") String interval) {
         SearchPage<AccessLogDoc> page = logScenario.aggregateTrafficTrend(index, interval);
-        return Result.success(SearchSampleConvertHelper.toTrafficTrends(page.getAggregations()));
+        return Result.success(SearchSampleConvertHelper.toTrafficTrends(page));
     }
 
     /**
@@ -73,5 +75,24 @@ public class LogAnalyticsController {
     public Result<Long> purgeHistoricalLogs(@RequestBody @Valid AccessLogPurgeRequest request) {
         long deletedCount = logScenario.purgeHistoricalLogsBefore(request.getCutoffTime());
         return Result.success(deletedCount);
+    }
+
+    /**
+     * 基于参数化 UpdateByQuery 与 WAIT_UNTIL 刷新策略按条件批量订正日志客户端 IP
+     */
+    @PostMapping("/mark-ip")
+    public Result<Long> markLogsClientIp(@RequestBody @Valid AccessLogMarkIpRequest request) {
+        long updatedCount = logScenario.markLogsClientIp(request.getPath(), request.getClientIp());
+        return Result.success(updatedCount);
+    }
+
+    /**
+     * 查询日志多维分析大盘（Cardinality 去重 IP + DateHistogram 按日独立 IP 子聚合，零 ES 类型泄漏）
+     */
+    @GetMapping("/dashboard")
+    public Result<AccessLogDashboardResponse> analyzeAccessLogDashboard(
+            @RequestParam(defaultValue = "access_log_*") String index) {
+        SearchPage<AccessLogDoc> page = logScenario.analyzeAccessLogDashboard(index);
+        return Result.success(SearchSampleConvertHelper.toAccessLogDashboard(page));
     }
 }

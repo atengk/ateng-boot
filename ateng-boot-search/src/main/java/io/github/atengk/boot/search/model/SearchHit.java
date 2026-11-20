@@ -83,6 +83,12 @@ public class SearchHit<T> implements Serializable {
     private Map<String, List<String>> highlightFields = Collections.emptyMap();
 
     /**
+     * 嵌套或折叠查询的内部命中文档集合（Key 为 inner_hits 名称，Value 为内部命中文档列表）
+     */
+    @Builder.Default
+    private Map<String, List<SearchInnerHit>> innerHits = Collections.emptyMap();
+
+    /**
      * 获取文档实体本体（等价于 getContent）
      *
      * @return 文档实体
@@ -119,6 +125,20 @@ public class SearchHit<T> implements Serializable {
     }
 
     /**
+     * 按名称获取嵌套或折叠内部命中文档列表
+     *
+     * @param name inner_hits 名称
+     * @return 内部命中文档列表（保底返回空集合）
+     */
+    public List<SearchInnerHit> getInnerHits(String name) {
+        if (name == null || innerHits == null || innerHits.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<SearchInnerHit> list = innerHits.get(name);
+        return list != null ? list : Collections.emptyList();
+    }
+
+    /**
      * 将命中文档安全投影转换为视图对象 (VO) 并自动回填 {@code @HighlightField} 高亮富文本
      * <p>
      * 严格遵守“内存真明文”不变量：仅向转换生成的目标 VO 回填高亮片段，绝不篡改原实体属性。
@@ -144,6 +164,7 @@ public class SearchHit<T> implements Serializable {
                 .routing(this.routing)
                 .sortValues(this.sortValues)
                 .highlightFields(this.highlightFields)
+                .innerHits(this.innerHits != null ? this.innerHits : Collections.emptyMap())
                 .build();
     }
 }

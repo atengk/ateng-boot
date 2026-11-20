@@ -5,7 +5,9 @@ import co.elastic.clients.elasticsearch._types.SortOptions;
 import co.elastic.clients.elasticsearch._types.aggregations.Aggregation;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch.core.search.FieldCollapse;
+import co.elastic.clients.elasticsearch.core.search.FieldSuggester;
 import co.elastic.clients.elasticsearch.core.search.Highlight;
+import co.elastic.clients.elasticsearch.core.search.Rescore;
 import co.elastic.clients.elasticsearch.core.search.SourceConfig;
 import lombok.Getter;
 
@@ -107,12 +109,22 @@ public class SearchQuery implements Serializable {
      */
     private final Boolean fetchSource;
 
+    /**
+     * 二阶段精排重打分规则列表 (Rescore)
+     */
+    private final List<Rescore> rescores;
+
+    /**
+     * 检索建议器字典 (Suggester)
+     */
+    private final Map<String, FieldSuggester> suggesters;
+
     SearchQuery(List<String> indices, Query query, List<SortOptions> sorts, Highlight highlight,
                 Map<String, Aggregation> aggregations, List<KnnSearch> knnSearches,
                 int from, int size, int pageNum, String routing,
                 List<String> searchAfter, boolean trackTotalHits) {
         this(indices, query, sorts, highlight, aggregations, knnSearches, from, size, pageNum, routing,
-                searchAfter, trackTotalHits, null, null, null, null);
+                searchAfter, trackTotalHits, null, null, null, null, null, null);
     }
 
     SearchQuery(List<String> indices, Query query, List<SortOptions> sorts, Highlight highlight,
@@ -121,7 +133,7 @@ public class SearchQuery implements Serializable {
                 List<String> searchAfter, boolean trackTotalHits,
                 FieldCollapse collapse) {
         this(indices, query, sorts, highlight, aggregations, knnSearches, from, size, pageNum, routing,
-                searchAfter, trackTotalHits, collapse, null, null, null);
+                searchAfter, trackTotalHits, collapse, null, null, null, null, null);
     }
 
     SearchQuery(List<String> indices, Query query, List<SortOptions> sorts, Highlight highlight,
@@ -130,6 +142,17 @@ public class SearchQuery implements Serializable {
                 List<String> searchAfter, boolean trackTotalHits,
                 FieldCollapse collapse, List<String> sourceIncludes,
                 List<String> sourceExcludes, Boolean fetchSource) {
+        this(indices, query, sorts, highlight, aggregations, knnSearches, from, size, pageNum, routing,
+                searchAfter, trackTotalHits, collapse, sourceIncludes, sourceExcludes, fetchSource, null, null);
+    }
+
+    SearchQuery(List<String> indices, Query query, List<SortOptions> sorts, Highlight highlight,
+                Map<String, Aggregation> aggregations, List<KnnSearch> knnSearches,
+                int from, int size, int pageNum, String routing,
+                List<String> searchAfter, boolean trackTotalHits,
+                FieldCollapse collapse, List<String> sourceIncludes,
+                List<String> sourceExcludes, Boolean fetchSource,
+                List<Rescore> rescores, Map<String, FieldSuggester> suggesters) {
         this.indices = indices != null ? Collections.unmodifiableList(indices) : Collections.emptyList();
         this.query = query;
         this.sorts = sorts != null ? Collections.unmodifiableList(sorts) : Collections.emptyList();
@@ -146,6 +169,8 @@ public class SearchQuery implements Serializable {
         this.sourceIncludes = sourceIncludes != null ? Collections.unmodifiableList(sourceIncludes) : Collections.emptyList();
         this.sourceExcludes = sourceExcludes != null ? Collections.unmodifiableList(sourceExcludes) : Collections.emptyList();
         this.fetchSource = fetchSource;
+        this.rescores = rescores != null ? Collections.unmodifiableList(rescores) : Collections.emptyList();
+        this.suggesters = suggesters != null ? Collections.unmodifiableMap(suggesters) : Collections.emptyMap();
     }
 
     /**

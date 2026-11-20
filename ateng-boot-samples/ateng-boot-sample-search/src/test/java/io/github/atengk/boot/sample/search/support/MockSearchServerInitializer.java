@@ -128,6 +128,88 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
                 return jsonResponse(200, "{\"id\":\"mock-pit-id-001\"}");
             }
 
+            // 1.6 异步任务状态查询与取消（须在通用路由之前匹配）
+            if (path.contains("/_tasks/")) {
+                if (path.contains("/_cancel")) {
+                    return jsonResponse(200, "{\"nodes\":{}}");
+                }
+                return jsonResponse(200, """
+                        {
+                          "completed": true,
+                          "task": {
+                            "node": "mock-node",
+                            "id": 1001,
+                            "type": "transport",
+                            "action": "indices:data/write/reindex",
+                            "description": "reindex from [product_v1] to [product_v2]",
+                            "start_time_in_millis": 1700000000000,
+                            "running_time_in_nanos": 1000000,
+                            "cancellable": true,
+                            "cancelled": false,
+                            "headers": {},
+                            "status": {
+                              "total": 10,
+                              "created": 10,
+                              "updated": 0,
+                              "deleted": 0,
+                              "version_conflicts": 0
+                            }
+                          }
+                        }
+                        """);
+            }
+
+            // 1.7 组件模板生命周期 (HEAD / PUT / DELETE /_component_template)
+            if (path.contains("/_component_template")) {
+                if ("HEAD".equals(method)) {
+                    return new MockResponse().setResponseCode(200).setHeader("X-Elastic-Product", "Elasticsearch");
+                }
+                return jsonResponse(200, "{\"acknowledged\":true}");
+            }
+
+            // 1.8 运行期 Settings 获取与动态修改 (GET / PUT /_settings)
+            if (path.contains("/_settings")) {
+                if ("GET".equals(method)) {
+                    String indexName = extractIndexName(cleanPath);
+                    if (indexName.isBlank()) {
+                        indexName = "product_v2";
+                    }
+                    return jsonResponse(200, """
+                            {
+                              "%s": {
+                                "settings": {
+                                  "index": {
+                                    "number_of_shards": "1",
+                                    "number_of_replicas": "0",
+                                    "refresh_interval": "5s"
+                                  }
+                                }
+                              }
+                            }
+                            """.formatted(indexName));
+                }
+                return jsonResponse(200, "{\"acknowledged\":true}");
+            }
+
+            // 1.9 精细别名查询 (GET /_alias)
+            if (path.contains("/_alias") && !path.contains("/_aliases")) {
+                String indexName = extractIndexName(cleanPath);
+                if (indexName.isBlank()) {
+                    indexName = "product_v2";
+                }
+                return jsonResponse(200, """
+                        {
+                          "%s": {
+                            "aliases": {
+                              "product_alias": {
+                                "is_write_index": true
+                              }
+                            }
+                          }
+                        }
+                        """.formatted(indexName));
+            }
+
             // 2. 别名与索引结构管理
             if (path.contains("/_aliases") || path.contains("/_index_template") || path.contains("/_mapping") || (method.equals("DELETE") && !path.contains("/_doc"))) {
                 return jsonResponse(200, "{\"acknowledged\":true}");
@@ -154,8 +236,11 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
                         """);
             }
 
-            // 2.2 服务端数据重索引
+            // 2.2 服务端数据重索引（支持 wait_for_completion=false 异步模式）
             if (path.contains("/_reindex")) {
+                if (path.contains("wait_for_completion=false")) {
+                    return jsonResponse(200, "{\"task\":\"mock-node:1001\"}");
+                }
                 return jsonResponse(200, """
                         {
                           "took": 15,
@@ -163,6 +248,27 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
                           "total": 50,
                           "updated": 0,
                           "created": 50,
+                          "deleted": 0,
+                          "batches": 1,
+                          "version_conflicts": 0,
+                          "noops": 0,
+                          "retries": { "bulk": 0, "search": 0 },
+                          "throttled_millis": 0,
+                          "requests_per_second": -1.0,
+                          "throttled_until_millis": 0,
+                          "failures": []
+                        }
+                        """);
+            }
+
+            // 2.2.1 参数化 UpdateByQuery
+            if (path.contains("/_update_by_query")) {
+                return jsonResponse(200, """
+                        {
+                          "took": 6,
+                          "timed_out": false,
+                          "total": 2,
+                          "updated": 2,
                           "deleted": 0,
                           "batches": 1,
                           "version_conflicts": 0,
@@ -524,6 +630,86 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
                                       "stock": 100,
                                       "status": "ON_SALE"
                                     }
+                                  }
+                                ]
+                              }
+                            }
+                            """);
+                }
+                if (body.contains("unique_ips")) {
+                    return jsonResponse(200, """
+                            {
+                              "took": 4,
+                              "timed_out": false,
+                              "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                              "hits": { "total": { "value": 100, "relation": "eq" }, "hits": [] },
+                              "aggregations": {
+                                "cardinality#unique_ips": { "value": 18 },
+                                "date_histogram#daily_traffic": {
+                                  "buckets": [
+                                    {
+                                      "key_as_string": "2026-11-20T00:00:00.000Z",
+                                      "key": 1795132800000,
+                                      "doc_count": 60,
+                                      "cardinality#daily_unique_ips": { "value": 12 }
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                            """);
+                }
+                if (body.contains("unique_brands") || body.contains("price_pct")) {
+                    return jsonResponse(200, """
+                            {
+                              "took": 4,
+                              "timed_out": false,
+                              "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                              "hits": { "total": { "value": 10, "relation": "eq" }, "hits": [] },
+                              "aggregations": {
+                                "cardinality#unique_brands": { "value": 2 },
+                                "stats#price_stats": { "count": 10, "min": 1999.0, "max": 9999.0, "avg": 5999.0, "sum": 59990.0 },
+                                "tdigest_percentiles#price_pct": { "values": { "50.0": 5999.0, "95.0": 9999.0, "99.0": 9999.0 } },
+                                "sterms#by_category": {
+                                  "buckets": [
+                                    {
+                                      "key": "手机",
+                                      "doc_count": 10,
+                                      "stats#cat_price_stats": { "count": 10, "min": 1999.0, "max": 9999.0, "avg": 5999.0, "sum": 59990.0 },
+                                      "tdigest_percentiles#cat_price_pct": { "values": { "50.0": 5999.0, "95.0": 9999.0 } }
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                            """);
+                }
+                if (body.contains("title_term") || body.contains("title_phrase")) {
+                    return jsonResponse(200, """
+                            {
+                              "took": 2,
+                              "timed_out": false,
+                              "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                              "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] },
+                              "suggest": {
+                                "term#title_term": [
+                                  {
+                                    "text": "iphon",
+                                    "offset": 0,
+                                    "length": 5,
+                                    "options": [
+                                      { "text": "iphone", "score": 0.8, "freq": 5 }
+                                    ]
+                                  }
+                                ],
+                                "phrase#title_phrase": [
+                                  {
+                                    "text": "iphon pro",
+                                    "offset": 0,
+                                    "length": 9,
+                                    "options": [
+                                      { "text": "iphone pro", "score": 0.9 }
+                                    ]
                                   }
                                 ]
                               }

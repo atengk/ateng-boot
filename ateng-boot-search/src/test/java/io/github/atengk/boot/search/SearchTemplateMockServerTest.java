@@ -5,6 +5,7 @@ import co.elastic.clients.elasticsearch._types.aggregations.CalendarInterval;
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping;
 import co.elastic.clients.elasticsearch._types.query_dsl.ChildScoreMode;
 import co.elastic.clients.elasticsearch.core.search.FieldCollapse;
+import co.elastic.clients.elasticsearch.core.search.ScoreMode;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.search.driver.ElasticsearchClientDriver;
@@ -14,17 +15,26 @@ import io.github.atengk.boot.search.entity.RoutedOrderDoc;
 import io.github.atengk.boot.search.entity.SearchItemDoc;
 import io.github.atengk.boot.search.entity.UserDoc;
 import io.github.atengk.boot.search.enums.SearchEngineType;
+import io.github.atengk.boot.search.enums.SearchRefreshPolicy;
 import io.github.atengk.boot.search.enums.SearchResultCode;
 import io.github.atengk.boot.search.exception.SearchBulkException;
 import io.github.atengk.boot.search.exception.SearchException;
 import io.github.atengk.boot.search.exception.SearchPaginationExceededException;
 import io.github.atengk.boot.search.exception.SearchVersionConflictException;
 import io.github.atengk.boot.search.model.OccVersion;
+import io.github.atengk.boot.search.model.SearchBucket;
 import io.github.atengk.boot.search.model.SearchBulkFailure;
 import io.github.atengk.boot.search.model.SearchBulkResult;
 import io.github.atengk.boot.search.model.SearchHit;
+import io.github.atengk.boot.search.model.SearchIndexSettings;
+import io.github.atengk.boot.search.model.SearchIndexTemplate;
+import io.github.atengk.boot.search.model.SearchInnerHit;
+import io.github.atengk.boot.search.model.SearchNumericStats;
 import io.github.atengk.boot.search.model.SearchPage;
+import io.github.atengk.boot.search.model.SearchPercentilesResult;
 import io.github.atengk.boot.search.model.SearchScrollResult;
+import io.github.atengk.boot.search.model.SearchSuggestResult;
+import io.github.atengk.boot.search.model.SearchTaskStatus;
 import io.github.atengk.boot.search.properties.AtengSearchProperties;
 import io.github.atengk.boot.search.query.SearchQuery;
 import io.github.atengk.boot.search.query.SearchQueryBuilder;
@@ -42,6 +52,7 @@ import org.slf4j.MDC;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -2363,6 +2374,7 @@ class SearchTemplateMockServerTest {
                 {
                   "took": 6,
                   "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
                   "total": 5,
                   "deleted": 5,
                   "batches": 1,
@@ -3901,5 +3913,668 @@ class SearchTemplateMockServerTest {
         assertThat(mappedPage.getHits().get(0).getContent().getTitle()).isEqualTo("Spring Boot Search");
         assertThat(mappedPage.getHits().get(0).getContent().getHighlightedTitle()).isEqualTo("<em>Spring</em> Boot Search");
         assertThat(mappedPage.getHits().get(0).getScore()).isEqualTo(3.0);
+    }
+
+    @Test
+    @DisplayName("测试 SearchRefreshPolicy、createIfAbsent 防覆盖写与参数化安全 updateByQuery（含租户隔离与脚本注入防线）")
+    void testRefreshPolicyCreateIfAbsentAndParameterizedUpdateByQuery() throws Exception {
+        TenantContextHolder.setTenantId("tenant_u");
+
+        // 1. SearchRefreshPolicy 枚举编码与 index/update/deleteById/batch 策略参数传递
+        assertThat(io.github.atengk.boot.search.enums.SearchRefreshPolicy.WAIT_UNTIL.getCode()).isEqualTo("wait_for");
+        assertThat(io.github.atengk.boot.search.enums.SearchRefreshPolicy.IMMEDIATE.getCode()).isEqualTo("true");
+        assertThat(io.github.atengk.boot.search.enums.SearchRefreshPolicy.NONE.getCode()).isEqualTo("false");
+
+        mockWebServer.enqueue(esResponse(404, "{\"_index\":\"user_idx\",\"_id\":\"10\",\"found\":false}"));
+        mockWebServer.enqueue(esResponse(201, "{\"_index\":\"user_idx\",\"_id\":\"10\",\"_version\":1,\"result\":\"created\",\"_seq_no\":1,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        UserDoc user = UserDoc.builder().id(10L).username("bob").age(20).build();
+        searchTemplate.save(user, io.github.atengk.boot.search.enums.SearchRefreshPolicy.WAIT_UNTIL);
+        mockWebServer.takeRequest(); // pre-check GET
+        RecordedRequest saveWaitReq = mockWebServer.takeRequest();
+        assertThat(saveWaitReq.getPath()).contains("refresh=wait_for");
+
+        // 2. createIfAbsent 发送 op_type=create；重复创建返回 409 转为 SearchVersionConflictException
+        mockWebServer.enqueue(esResponse(404, "{\"_index\":\"user_idx\",\"_id\":\"11\",\"found\":false}"));
+        mockWebServer.enqueue(esResponse(201, "{\"_index\":\"user_idx\",\"_id\":\"11\",\"_version\":1,\"result\":\"created\",\"_seq_no\":1,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        UserDoc newUser = UserDoc.builder().id(11L).username("carol").age(22).build();
+        assertThat(searchTemplate.createIfAbsent(newUser, io.github.atengk.boot.search.enums.SearchRefreshPolicy.IMMEDIATE)).isEqualTo("11");
+        mockWebServer.takeRequest(); // pre-check GET
+        RecordedRequest createReq = mockWebServer.takeRequest();
+        assertThat(createReq.getPath()).contains("op_type=create").contains("refresh=true");
+
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"11\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_u\"}}"));
+        mockWebServer.enqueue(esResponse(409, "{\"error\":{\"type\":\"version_conflict_engine_exception\",\"reason\":\"document already exists\"},\"status\":409}"));
+        assertThatThrownBy(() -> searchTemplate.createIfAbsent(newUser))
+                .isInstanceOf(SearchVersionConflictException.class);
+        mockWebServer.takeRequest();
+        mockWebServer.takeRequest();
+
+        // 3. 参数化 updateByQuery：防 Painless 注入与租户隔离注入
+        assertThatThrownBy(() -> searchTemplate.updateByQuery(
+                SearchQueryBuilder.create().matchAll().build(),
+                Map.of("age; ctx._source.clear()", 99),
+                UserDoc.class))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThatThrownBy(() -> searchTemplate.updateByQuery(
+                SearchQueryBuilder.create().matchAll().build(),
+                Map.of("tenant_id", "tenant_evil"),
+                UserDoc.class))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 5,
+                  "timed_out": false,
+                  "total": 3,
+                  "updated": 3,
+                  "deleted": 0,
+                  "batches": 1,
+                  "version_conflicts": 0,
+                  "noops": 0,
+                  "retries": {"bulk": 0, "search": 0},
+                  "throttled_millis": 0,
+                  "requests_per_second": -1.0,
+                  "throttled_until_millis": 0,
+                  "failures": []
+                }
+                """));
+        long updated = searchTemplate.updateByQuery(
+                SearchQueryBuilder.create().term("username", "bob").build(),
+                Map.of("age", 30),
+                UserDoc.class,
+                io.github.atengk.boot.search.enums.SearchRefreshPolicy.IMMEDIATE);
+        assertThat(updated).isEqualTo(3L);
+        RecordedRequest ubqReq = mockWebServer.takeRequest();
+        assertThat(ubqReq.getPath()).contains("/user_idx/_update_by_query").contains("refresh=true");
+        String ubqBody = ubqReq.getBody().readUtf8();
+        assertThat(ubqBody).contains("\"conflicts\":\"proceed\"");
+        assertThat(ubqBody).contains("\"lang\":\"painless\"");
+        assertThat(ubqBody).contains("\"params\":{\"p0\":30}");
+        assertThat(ubqBody).contains("\"tenant_id\":{\"value\":\"tenant_u\"}");
+    }
+
+    @Test
+    @DisplayName("测试 Suggester、Rescore、InnerHits、高阶聚合与强类型结果模型")
+    void testSuggesterRescoreInnerHitsAndTypedAggregations() throws Exception {
+        String searchResponseJson = """
+                {
+                  "took": 6,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": {
+                    "total": { "value": 1, "relation": "eq" },
+                    "hits": [
+                      {
+                        "_index": "user_idx",
+                        "_id": "u-100",
+                        "_score": 5.5,
+                        "_source": { "id": 100, "username": "Alice", "age": 28 },
+                        "inner_hits": {
+                          "matched_skus": {
+                            "hits": {
+                              "total": { "value": 1, "relation": "eq" },
+                              "hits": [
+                                {
+                                  "_index": "user_idx",
+                                  "_id": "u-100",
+                                  "_score": 3.2,
+                                  "_source": { "skuId": "sku-9", "color": "Titanium", "price": 5999 }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "suggest": {
+                    "completion#title_completion": [
+                      {
+                        "text": "mac",
+                        "offset": 0,
+                        "length": 3,
+                        "options": [
+                          { "text": "MacBook Pro 16", "_index": "user_idx", "_id": "u-100", "_score": 2.0 }
+                        ]
+                      }
+                    ],
+                    "term#title_term": [
+                      {
+                        "text": "macbok",
+                        "offset": 0,
+                        "length": 6,
+                        "options": [
+                          { "text": "macbook", "score": 0.83, "freq": 42 }
+                        ]
+                      }
+                    ],
+                    "phrase#title_phrase": [
+                      {
+                        "text": "macbok pro",
+                        "offset": 0,
+                        "length": 10,
+                        "options": [
+                          { "text": "macbook pro", "score": 0.91, "highlighted": "<em>macbook</em> pro" }
+                        ]
+                      }
+                    ]
+                  },
+                  "aggregations": {
+                    "cardinality#unique_users": { "value": 42 },
+                    "stats#age_stats": { "count": 10, "min": 18.0, "max": 60.0, "avg": 32.5, "sum": 325.0 },
+                    "tdigest_percentiles#latency_pct": { "values": { "50.0": 12.5, "95.0": 88.0, "99.0": 150.2 } },
+                    "filter#error_filter": {
+                      "doc_count": 3,
+                      "cardinality#unique_ip": { "value": 2 }
+                    },
+                    "date_histogram#daily_trend": {
+                      "buckets": [
+                        {
+                          "key_as_string": "2026-11-20T00:00:00.000Z",
+                          "key": 1795132800000,
+                          "doc_count": 5,
+                          "avg#avg_age": { "value": 29.0 }
+                        }
+                      ]
+                    },
+                    "sterms#by_dept": {
+                      "buckets": [
+                        {
+                          "key": "engineering",
+                          "doc_count": 8,
+                          "stats#dept_stats": { "count": 8, "min": 22.0, "max": 45.0, "avg": 31.0, "sum": 248.0 },
+                          "tdigest_percentiles#dept_pct": { "values": { "50.0": 30.0, "95.0": 44.0 } },
+                          "sterms#by_role": {
+                            "buckets": [
+                              { "key": "senior", "doc_count": 3, "min#min_age": { "value": 28.0 } }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+                """;
+        mockWebServer.enqueue(new MockResponse()
+                .setBody(searchResponseJson)
+                .addHeader("Content-Type", "application/json")
+                .addHeader("X-Elastic-Product", "Elasticsearch"));
+
+        SearchQuery query = SearchQuery.builder()
+                .match("username", "Alice")
+                .nested("skus", ChildScoreMode.Max, n -> n.term("skus.color", "Titanium"), "matched_skus", 3)
+                .collapse("dept.keyword", "top_dept_docs", 2)
+                .rescore(100, r -> r.matchPhrase("username", "Alice Pro"), 0.5, 2.0, ScoreMode.Total)
+                .completionSuggest("title_completion", "suggest_field", "mac", 5, true)
+                .termSuggest("title_term", "username", "macbok", 3)
+                .phraseSuggest("title_phrase", "username", "macbok pro", 2)
+                .cardinalityAggregation("unique_users", "userId.keyword")
+                .statsAggregation("age_stats", "age")
+                .percentilesAggregation("latency_pct", "latencyMs", 50.0, 95.0, 99.0)
+                .filterAggregation("error_filter", f -> f.term("status", 500),
+                        sub -> sub.cardinalityAggregation("unique_ip", "clientIp.keyword"))
+                .dateHistogramAggregation("daily_trend", "createTime", CalendarInterval.Day,
+                        sub -> sub.avgAggregation("avg_age", "age"))
+                .termsAggregation("by_dept", "dept.keyword", 10,
+                        sub -> sub.statsAggregation("dept_stats", "age")
+                                .percentilesAggregation("dept_pct", "age", 50.0, 95.0)
+                                .termsAggregation("by_role", "role.keyword", 5,
+                                        leaf -> leaf.minAggregation("min_age", "age")))
+                .build();
+
+        SearchPage<UserDoc> page = searchTemplate.search(query, UserDoc.class);
+
+        // 验证请求体中包含 suggest / rescore / collapse.inner_hits / aggregations / nested.inner_hits
+        RecordedRequest req = mockWebServer.takeRequest();
+        String reqBody = req.getBody().readUtf8();
+        assertThat(reqBody).contains("\"suggest\"").contains("\"title_completion\"").contains("\"title_term\"").contains("\"title_phrase\"");
+        assertThat(reqBody).contains("\"rescore\"").contains("\"window_size\":100").contains("\"rescore_query_weight\":2.0");
+        assertThat(reqBody).contains("\"inner_hits\"").contains("\"matched_skus\"").contains("\"top_dept_docs\"");
+        assertThat(reqBody).contains("\"cardinality\"").contains("\"stats\"").contains("\"percentiles\"");
+
+        // 验证强类型结果模型
+        assertThat(page.getMetricValue("unique_users")).isEqualTo(42.0);
+        assertThat(page.getMetricValue("missing_metric")).isNull();
+
+        SearchNumericStats ageStats = page.getStats("age_stats");
+        assertThat(ageStats).isNotNull();
+        assertThat(ageStats.getCount()).isEqualTo(10L);
+        assertThat(ageStats.getAvg()).isEqualTo(32.5);
+
+        SearchPercentilesResult pct = page.getPercentiles("latency_pct");
+        assertThat(pct).isNotNull();
+        assertThat(pct.getPercentile(95)).isEqualTo(88.0);
+        assertThat(pct.getPercentile(99.0)).isEqualTo(150.2);
+
+        SearchBucket errorFilter = page.getFilterBucket("error_filter");
+        assertThat(errorFilter).isNotNull();
+        assertThat(errorFilter.getDocCount()).isEqualTo(3L);
+        assertThat(errorFilter.getMetricValue("unique_ip")).isEqualTo(2.0);
+
+        List<SearchBucket> trend = page.getDateHistogramBuckets("daily_trend");
+        assertThat(trend).hasSize(1);
+        assertThat(trend.get(0).getKeyAsString()).isEqualTo("2026-11-20T00:00:00.000Z");
+        assertThat(trend.get(0).getMetricValue("avg_age")).isEqualTo(29.0);
+
+        List<SearchBucket> depts = page.getTermsBuckets("by_dept");
+        assertThat(depts).hasSize(1);
+        SearchBucket eng = depts.get(0);
+        assertThat(eng.getKey()).isEqualTo("engineering");
+        assertThat(eng.getStats("dept_stats").getMax()).isEqualTo(45.0);
+        assertThat(eng.getPercentiles("dept_pct").getPercentile(50)).isEqualTo(30.0);
+        assertThat(eng.getTermsBuckets("by_role")).hasSize(1);
+        assertThat(eng.getTermsBuckets("by_role").get(0).getMetricValue("min_age")).isEqualTo(28.0);
+
+        List<SearchSuggestResult> completion = page.getSuggestions("title_completion");
+        assertThat(completion).hasSize(1);
+        assertThat(completion.get(0).getText()).isEqualTo("MacBook Pro 16");
+        assertThat(completion.get(0).getId()).isEqualTo("u-100");
+        assertThat(page.getSuggestions("title_term")).extracting(SearchSuggestResult::getFreq).containsExactly(42L);
+        assertThat(page.getSuggestions("title_phrase")).extracting(SearchSuggestResult::getHighlighted).containsExactly("<em>macbook</em> pro");
+        assertThat(page.getSuggestions("missing_suggest")).isEmpty();
+
+        SearchHit<UserDoc> hit = page.getHits().get(0);
+        List<SearchInnerHit> innerHits = hit.getInnerHits("matched_skus");
+        assertThat(innerHits).hasSize(1);
+        assertThat(innerHits.get(0).getScore()).isEqualTo(3.2);
+        assertThat(innerHits.get(0).getSource()).containsEntry("skuId", "sku-9");
+        assertThat(hit.getInnerHits("missing_inner")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("测试 ComponentTemplate、Settings、Alias 与异步 Task 治理")
+    void testComponentTemplateSettingsAliasesAndAsyncTasks() throws Exception {
+        // 1. putComponentTemplate / existsComponentTemplate / deleteComponentTemplate
+        mockWebServer.enqueue(new MockResponse().setBody("{\"acknowledged\":true}")
+                .addHeader("Content-Type", "application/json")
+                .addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setResponseCode(200)
+                .addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("{\"acknowledged\":true}")
+                .addHeader("Content-Type", "application/json")
+                .addHeader("X-Elastic-Product", "Elasticsearch"));
+
+        boolean compPut = searchTemplate.indices().putComponentTemplate("base_settings_comp", """
+                {
+                  "template": {
+                    "settings": { "number_of_shards": 1, "number_of_replicas": 0 }
+                  }
+                }
+                """);
+        assertThat(compPut).isTrue();
+        assertThat(searchTemplate.indices().existsComponentTemplate("base_settings_comp")).isTrue();
+        assertThat(searchTemplate.indices().deleteComponentTemplate("base_settings_comp")).isTrue();
+
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_component_template/base_settings_comp");
+        assertThat(mockWebServer.takeRequest().getMethod()).isEqualTo("HEAD");
+        assertThat(mockWebServer.takeRequest().getMethod()).isEqualTo("DELETE");
+
+        // 2. getIndexTemplate
+        mockWebServer.enqueue(new MockResponse().setBody("""
+                {
+                  "index_templates": [
+                    {
+                      "name": "logs_tpl",
+                      "index_template": {
+                        "index_patterns": ["logs-*"],
+                        "composed_of": ["base_settings_comp"],
+                        "priority": 100
+                      }
+                    }
+                  ]
+                }
+                """).addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        SearchIndexTemplate tplItem = searchTemplate.indices().getIndexTemplate("logs_tpl");
+        assertThat(tplItem).isNotNull();
+        assertThat(tplItem.getName()).isEqualTo("logs_tpl");
+        assertThat(tplItem.getIndexPatterns()).containsExactly("logs-*");
+        assertThat(tplItem.getComposedOf()).containsExactly("base_settings_comp");
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_index_template/logs_tpl");
+
+        // 3. getSettings / putSettings
+        mockWebServer.enqueue(new MockResponse().setBody("""
+                {
+                  "user_idx": {
+                    "settings": {
+                      "index": {
+                        "number_of_replicas": "1",
+                        "refresh_interval": "1s"
+                      }
+                    }
+                  }
+                }
+                """).addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("{\"acknowledged\":true}")
+                .addHeader("Content-Type", "application/json")
+                .addHeader("X-Elastic-Product", "Elasticsearch"));
+
+        SearchIndexSettings settings = searchTemplate.indices().getSettings("user_idx");
+        assertThat(settings).isNotNull();
+        assertThat(settings.getNumberOfReplicas()).isEqualTo("1");
+        assertThat(settings.getRefreshInterval()).isEqualTo("1s");
+        assertThat(searchTemplate.indices().putSettings("user_idx", "{\"index\":{\"refresh_interval\":\"5s\"}}")).isTrue();
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/user_idx/_settings");
+        RecordedRequest putSettingsReq = mockWebServer.takeRequest();
+        assertThat(putSettingsReq.getMethod()).isEqualTo("PUT");
+        assertThat(putSettingsReq.getPath()).contains("/user_idx/_settings");
+
+        // 4. addAlias / getAliases / removeAlias
+        mockWebServer.enqueue(new MockResponse().setBody("{\"acknowledged\":true}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("""
+                {
+                  "user_v2": {
+                    "aliases": {
+                      "user_alias": { "is_write_index": true }
+                    }
+                  }
+                }
+                """).addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("{\"acknowledged\":true}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+
+        assertThat(searchTemplate.indices().addAlias("user_v2", "user_alias", true)).isTrue();
+        assertThat(searchTemplate.indices().getAliases("user_v2")).containsExactly("user_alias");
+        assertThat(searchTemplate.indices().removeAlias("user_v2", "user_alias")).isTrue();
+        assertThat(mockWebServer.takeRequest().getBody().readUtf8()).contains("\"is_write_index\":true");
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/user_v2/_alias");
+        assertThat(mockWebServer.takeRequest().getBody().readUtf8()).contains("\"remove\"");
+
+        // 5. reindexAsync / waitForTask (1 running -> 1 completed) / cancelTask
+        mockWebServer.enqueue(new MockResponse().setBody("{\"task\":\"node-1:1001\"}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("""
+                {
+                  "completed": false,
+                  "task": {
+                    "node": "node-1",
+                    "id": 1001,
+                    "type": "transport",
+                    "action": "indices:data/write/reindex",
+                    "description": "reindex from [user_v1] to [user_v2]",
+                    "start_time_in_millis": 1700000000000,
+                    "running_time_in_nanos": 5000000,
+                    "cancellable": true,
+                    "cancelled": false,
+                    "headers": {},
+                    "status": {
+                      "total": 100,
+                      "created": 40,
+                      "updated": 10,
+                      "deleted": 0,
+                      "version_conflicts": 0
+                    }
+                  }
+                }
+                """).addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("""
+                {
+                  "completed": true,
+                  "task": {
+                    "node": "node-1",
+                    "id": 1001,
+                    "type": "transport",
+                    "action": "indices:data/write/reindex",
+                    "description": "reindex from [user_v1] to [user_v2]",
+                    "start_time_in_millis": 1700000000000,
+                    "running_time_in_nanos": 9000000,
+                    "cancellable": true,
+                    "cancelled": false,
+                    "headers": {},
+                    "status": {
+                      "total": 100,
+                      "created": 80,
+                      "updated": 20,
+                      "deleted": 0,
+                      "version_conflicts": 1
+                    }
+                  }
+                }
+                """).addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("{\"nodes\":{}}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+
+        String taskId = searchTemplate.indices().reindexAsync("user_v1", "user_v2");
+        assertThat(taskId).isEqualTo("node-1:1001");
+        SearchTaskStatus finalStatus = searchTemplate.indices().waitForTask(taskId, Duration.ofSeconds(5), Duration.ofMillis(20));
+        assertThat(finalStatus.isCompleted()).isTrue();
+        assertThat(finalStatus.getTotal()).isEqualTo(100L);
+        assertThat(finalStatus.getCreated()).isEqualTo(80L);
+        assertThat(finalStatus.getUpdated()).isEqualTo(20L);
+        assertThat(finalStatus.getVersionConflicts()).isEqualTo(1L);
+        assertThat(searchTemplate.indices().cancelTask(taskId)).isTrue();
+
+        assertThat(mockWebServer.takeRequest().getPath()).contains("wait_for_completion=false");
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_tasks/node-1:1001");
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_tasks/node-1:1001");
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_tasks/node-1:1001/_cancel");
+
+        // 6. SearchTemplate.updateByQueryAsync & deleteByQueryAsync
+        TenantContextHolder.setTenantId("tenant_async");
+        mockWebServer.enqueue(new MockResponse().setBody("{\"task\":\"node-1:2002\"}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("{\"task\":\"node-1:2003\"}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+
+        String ubqTaskId = searchTemplate.updateByQueryAsync(
+                SearchQueryBuilder.create().term("username", "Alice").build(),
+                Map.of("age", 31),
+                UserDoc.class);
+        String dbqTaskId = searchTemplate.deleteByQueryAsync(
+                SearchQueryBuilder.create().term("username", "Alice").build(),
+                UserDoc.class);
+
+        assertThat(ubqTaskId).isEqualTo("node-1:2002");
+        assertThat(dbqTaskId).isEqualTo("node-1:2003");
+        RecordedRequest ubqAsyncReq = mockWebServer.takeRequest();
+        assertThat(ubqAsyncReq.getPath()).contains("/_update_by_query").contains("wait_for_completion=false");
+        assertThat(ubqAsyncReq.getBody().readUtf8()).contains("\"tenant_id\":{\"value\":\"tenant_async\"}");
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_delete_by_query").contains("wait_for_completion=false");
+    }
+
+    @Test
+    @DisplayName("对抗性与边界契约：waitForTask 超时/404/取消/亚毫秒轮询、显式 Painless 脚本防御、RefreshPolicy 全载体与聚合边界")
+    void testAdversarialAndBoundaryContractsFor1132() throws Exception {
+        // 1. waitForTask 超时熔断 -> SEARCH_TIMEOUT_ERROR（独立 Dispatcher 彻底免疫机器抖动）
+        String runningTaskJson = """
+                {
+                  "completed": false,
+                  "task": {
+                    "node": "n1",
+                    "id": 99,
+                    "type": "transport",
+                    "action": "indices:data/write/reindex",
+                    "description": "still running",
+                    "start_time_in_millis": 1700000000000,
+                    "running_time_in_nanos": 1000000,
+                    "cancellable": true,
+                    "cancelled": false,
+                    "headers": {}
+                  }
+                }
+                """;
+        try (MockWebServer timeoutServer = new MockWebServer()) {
+            timeoutServer.setDispatcher(new okhttp3.mockwebserver.Dispatcher() {
+                @Override
+                public MockResponse dispatch(RecordedRequest request) {
+                    return new MockResponse().setBody(runningTaskJson)
+                            .addHeader("Content-Type", "application/json")
+                            .addHeader("X-Elastic-Product", "Elasticsearch");
+                }
+            });
+            timeoutServer.start();
+            AtengSearchProperties timeoutProps = new AtengSearchProperties();
+            timeoutProps.setUris(List.of("http://" + timeoutServer.getHostName() + ":" + timeoutServer.getPort()));
+            timeoutProps.setEngine(SearchEngineType.ELASTICSEARCH);
+            try (ElasticsearchClientDriver timeoutDriver = new ElasticsearchClientDriver(timeoutProps)) {
+                SearchTemplate isolatedTemplate = new SearchTemplate(timeoutDriver, timeoutProps);
+                assertThatThrownBy(() -> isolatedTemplate.indices().waitForTask("n1:99", Duration.ofMillis(30), Duration.ofMillis(10)))
+                        .isInstanceOf(SearchException.class)
+                        .satisfies(ex -> assertThat(((SearchException) ex).getCode()).isEqualTo(SearchResultCode.SEARCH_TIMEOUT_ERROR.getCode()));
+            }
+        }
+
+        // 2. waitForTask 404 任务不存在 + getTaskStatus 返回 null + 非法 Duration + 亚毫秒 pollInterval 不死循环
+        mockWebServer.enqueue(new MockResponse().setResponseCode(404).setBody("{\"error\":{\"type\":\"resource_not_found_exception\",\"reason\":\"task not found\"},\"status\":404}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        assertThat(searchTemplate.indices().getTaskStatus("n1:404")).isNull();
+        mockWebServer.takeRequest();
+
+        mockWebServer.enqueue(new MockResponse().setResponseCode(404).setBody("{\"error\":{\"type\":\"resource_not_found_exception\",\"reason\":\"task not found\"},\"status\":404}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        assertThatThrownBy(() -> searchTemplate.indices().waitForTask("n1:404", Duration.ofSeconds(1), Duration.ofMillis(10)))
+                .isInstanceOf(SearchException.class);
+        mockWebServer.takeRequest();
+
+        assertThatThrownBy(() -> searchTemplate.indices().waitForTask("n1:1", Duration.ZERO, Duration.ofMillis(10)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> searchTemplate.indices().waitForTask("n1:1", Duration.ofSeconds(1), Duration.ofMillis(-1)))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        mockWebServer.enqueue(new MockResponse().setBody(runningTaskJson)
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("""
+                {
+                  "completed": false,
+                  "task": {
+                    "node": "n1",
+                    "id": 99,
+                    "type": "transport",
+                    "action": "indices:data/write/reindex",
+                    "description": "cancelled task",
+                    "start_time_in_millis": 1700000000000,
+                    "running_time_in_nanos": 2000000,
+                    "cancellable": true,
+                    "cancelled": true,
+                    "headers": {}
+                  }
+                }
+                """).addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        SearchTaskStatus cancelledStatus = searchTemplate.indices()
+                .waitForTask("n1:99", Duration.ofSeconds(2), Duration.ofNanos(500));
+        assertThat(cancelledStatus.isCancelled()).isTrue();
+        mockWebServer.takeRequest();
+        mockWebServer.takeRequest();
+
+        // 3. 参数化路径白名单严格收敛 & deleteByQueryAsync 空参数 Fast-Fail & 显式 Painless 脚本防跨租户改写
+        TenantContextHolder.setTenantId("tenant_sec");
+        assertThatThrownBy(() -> searchTemplate.updateByQuery(
+                SearchQueryBuilder.create().term("username", "Alice").build(),
+                Map.of("a..b", "bad"),
+                UserDoc.class)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> searchTemplate.updateByQuery(
+                SearchQueryBuilder.create().term("username", "Alice").build(),
+                Map.of("a.", "bad"),
+                UserDoc.class)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> searchTemplate.deleteByQueryAsync((SearchQuery) null, UserDoc.class))
+                .isInstanceOf(NullPointerException.class);
+
+        assertThatThrownBy(() -> searchTemplate.updateByQuery(
+                "user_idx",
+                SearchQueryBuilder.create().term("username", "Alice").build(),
+                "ctx._source['tenant_id'] = 'other'",
+                null,
+                UserDoc.class,
+                SearchRefreshPolicy.NONE))
+                .isInstanceOf(SearchException.class)
+                .satisfies(ex -> assertThat(((SearchException) ex).getCode()).isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED.getCode()));
+
+        // 合法显式 Painless 脚本重载（含 params 绑定、NONE refresh=false 与自动租户隔离注入）
+        mockWebServer.enqueue(new MockResponse().setBody("{\"updated\":3,\"version_conflicts\":0,\"failures\":[]}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        long scriptUpdated = searchTemplate.updateByQuery(
+                "user_idx",
+                SearchQueryBuilder.create().term("username", "Alice").build(),
+                "ctx._source.age += params.delta",
+                Map.of("delta", 1),
+                UserDoc.class,
+                SearchRefreshPolicy.NONE);
+        assertThat(scriptUpdated).isEqualTo(3L);
+        RecordedRequest scriptReq = mockWebServer.takeRequest();
+        assertThat(scriptReq.getPath()).contains("refresh=false");
+        String scriptBody = scriptReq.getBody().readUtf8();
+        assertThat(scriptBody).contains("ctx._source.age += params.delta").contains("\"delta\":1").contains("\"tenant_id\":{\"value\":\"tenant_sec\"}");
+
+        // 4. SearchRefreshPolicy 全载体路径（update / deleteById / updateBatch / deleteBatch + NONE）
+        TenantContextHolder.clear();
+        mockWebServer.enqueue(new MockResponse().setBody("{\"_index\":\"user_idx\",\"_id\":\"10\",\"_version\":2,\"result\":\"updated\",\"_seq_no\":2,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        assertThat(searchTemplate.update(UserDoc.class, "10", null, Map.of("age", 35), SearchRefreshPolicy.NONE)).isTrue();
+        assertThat(mockWebServer.takeRequest().getPath()).contains("refresh=false");
+
+        mockWebServer.enqueue(new MockResponse().setBody("{\"_index\":\"user_idx\",\"_id\":\"10\",\"_version\":3,\"result\":\"deleted\",\"_seq_no\":3,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        assertThat(searchTemplate.deleteById(UserDoc.class, "10", null, SearchRefreshPolicy.WAIT_UNTIL)).isTrue();
+        assertThat(mockWebServer.takeRequest().getPath()).contains("refresh=wait_for");
+
+        String bulkOk = "{\"took\":2,\"errors\":false,\"items\":[{\"update\":{\"_index\":\"user_idx\",\"_id\":\"1\",\"status\":200}}]}";
+        mockWebServer.enqueue(new MockResponse().setBody(bulkOk)
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        searchTemplate.updateBatch("user_idx", List.of(UserDoc.builder().id(1L).age(36).build()), false, SearchRefreshPolicy.IMMEDIATE);
+        assertThat(mockWebServer.takeRequest().getPath()).contains("refresh=true");
+
+        String bulkDelOk = "{\"took\":2,\"errors\":false,\"items\":[{\"delete\":{\"_index\":\"user_idx\",\"_id\":\"1\",\"status\":200}}]}";
+        mockWebServer.enqueue(new MockResponse().setBody(bulkDelOk)
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        searchTemplate.deleteBatch(UserDoc.class, List.of("1"), null, SearchRefreshPolicy.NONE);
+        assertThat(mockWebServer.takeRequest().getPath()).contains("refresh=false");
+
+        // 5. QueryBuilder 负数/零值边界校验
+        assertThatThrownBy(() -> SearchQuery.builder().rescore(0, r -> r.matchAll()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> SearchQuery.builder().nested("skus", ChildScoreMode.Max, n -> n.matchAll(), null, -1))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> SearchQuery.builder().termsAggregation("a", "b", 0))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // 6. SearchAggregationConverter 边界（NaN 过滤、hdrPercentiles、lterms、dterms）与 JDK 序列化契约
+        String edgeAggJson = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] },
+                  "aggregations": {
+                    "avg#nan_avg": { "value": "NaN" },
+                    "hdr_percentiles#lat_hdr": {
+                      "values": { "50.0": "NaN", "95.0": "42.5" }
+                    },
+                    "lterms#by_code": {
+                      "buckets": [
+                        { "key": 200, "doc_count": 7 }
+                      ]
+                    },
+                    "dterms#by_rate": {
+                      "buckets": [
+                        { "key": 1.5, "doc_count": 3 }
+                      ]
+                    }
+                  }
+                }
+                """;
+        mockWebServer.enqueue(new MockResponse().setBody(edgeAggJson)
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        SearchPage<UserDoc> edgePage = searchTemplate.search(SearchQuery.builder().size(0).build(), UserDoc.class);
+        mockWebServer.takeRequest();
+
+        assertThat(edgePage.getMetricValue("nan_avg")).isNull();
+        assertThat(edgePage.getPercentiles("lat_hdr").getPercentile(50)).isNull();
+        assertThat(edgePage.getPercentiles("lat_hdr").getPercentile(95)).isEqualTo(42.5);
+        assertThat(edgePage.getTermsBuckets("by_code")).extracting(SearchBucket::getKey).containsExactly("200");
+        assertThat(edgePage.getTermsBuckets("by_rate")).extracting(SearchBucket::getKey).containsExactly("1.5");
+        assertThat(cancelledStatus).isInstanceOf(java.io.Serializable.class);
+        assertThat(SearchIndexSettings.builder().refreshInterval("1s").build()).isInstanceOf(java.io.Serializable.class);
+        assertThat(SearchIndexTemplate.builder().name("tpl").build()).isInstanceOf(java.io.Serializable.class);
+        try (var bos = new java.io.ByteArrayOutputStream(); var oos = new java.io.ObjectOutputStream(bos)) {
+            oos.writeObject(cancelledStatus);
+            oos.writeObject(edgePage.getPercentiles("lat_hdr"));
+            oos.writeObject(edgePage.getTermsBuckets("by_code").get(0));
+            oos.writeObject(SearchSuggestResult.builder().text("test").score(1.0).build());
+            oos.writeObject(SearchInnerHit.builder().id("1").source(Map.of("k", "v")).build());
+            assertThat(bos.toByteArray()).isNotEmpty();
+        }
     }
 }

@@ -4,7 +4,10 @@ import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.Conflicts;
 import co.elastic.clients.elasticsearch._types.FieldValue;
 import co.elastic.clients.elasticsearch._types.KnnSearch;
+import co.elastic.clients.elasticsearch._types.OpType;
+import co.elastic.clients.elasticsearch._types.Refresh;
 import co.elastic.clients.elasticsearch._types.Result;
+import co.elastic.clients.elasticsearch._types.Script;
 import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.aggregations.Aggregate;
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
@@ -19,6 +22,7 @@ import co.elastic.clients.elasticsearch.core.IndexResponse;
 import co.elastic.clients.elasticsearch.core.MgetResponse;
 import co.elastic.clients.elasticsearch.core.MsearchResponse;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
+import co.elastic.clients.elasticsearch.core.UpdateByQueryResponse;
 import co.elastic.clients.elasticsearch.core.UpdateResponse;
 import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
 import co.elastic.clients.elasticsearch.core.get.GetResult;
@@ -26,9 +30,15 @@ import co.elastic.clients.elasticsearch.core.mget.MultiGetResponseItem;
 import co.elastic.clients.elasticsearch.core.msearch.MultiSearchItem;
 import co.elastic.clients.elasticsearch.core.msearch.MultiSearchResponseItem;
 import co.elastic.clients.elasticsearch.core.msearch.RequestItem;
+import co.elastic.clients.elasticsearch.core.search.CompletionSuggestOption;
 import co.elastic.clients.elasticsearch.core.search.Hit;
+import co.elastic.clients.elasticsearch.core.search.InnerHitsResult;
+import co.elastic.clients.elasticsearch.core.search.PhraseSuggestOption;
 import co.elastic.clients.elasticsearch.core.search.ResponseBody;
 import co.elastic.clients.elasticsearch.core.search.SourceConfig;
+import co.elastic.clients.elasticsearch.core.search.Suggestion;
+import co.elastic.clients.elasticsearch.core.search.TermSuggestOption;
+import co.elastic.clients.json.JsonData;
 import co.elastic.clients.json.JsonpUtils;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
 import co.elastic.clients.transport.endpoints.BooleanResponse;
@@ -40,6 +50,7 @@ import io.github.atengk.boot.search.bulk.SearchBulkProcessor;
 import io.github.atengk.boot.search.driver.SearchEngineDialect;
 import io.github.atengk.boot.search.enums.SearchEngineType;
 import io.github.atengk.boot.search.enums.SearchHybridMode;
+import io.github.atengk.boot.search.enums.SearchRefreshPolicy;
 import io.github.atengk.boot.search.enums.SearchResultCode;
 import io.github.atengk.boot.search.exception.SearchBulkException;
 import io.github.atengk.boot.search.exception.SearchException;
@@ -51,9 +62,11 @@ import io.github.atengk.boot.search.model.OccVersion;
 import io.github.atengk.boot.search.model.SearchBulkFailure;
 import io.github.atengk.boot.search.model.SearchBulkResult;
 import io.github.atengk.boot.search.model.SearchHit;
+import io.github.atengk.boot.search.model.SearchInnerHit;
 import io.github.atengk.boot.search.model.SearchPage;
 import io.github.atengk.boot.search.model.SearchPointInTime;
 import io.github.atengk.boot.search.model.SearchScrollResult;
+import io.github.atengk.boot.search.model.SearchSuggestResult;
 import io.github.atengk.boot.search.properties.AtengSearchProperties;
 import io.github.atengk.boot.search.query.SearchQuery;
 import io.github.atengk.boot.search.query.SearchQueryBuilder;
@@ -208,6 +221,18 @@ public class SearchTemplate {
     }
 
     /**
+     * 保存（新增或全量替换）文档并指定写入刷新策略
+     *
+     * @param document      待索引的文档实体
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @param <T>           实体类型
+     * @return 索引后的文档 ID
+     */
+    public <T> String save(T document, SearchRefreshPolicy refreshPolicy) {
+        return index(document, refreshPolicy);
+    }
+
+    /**
      * 保存（新增或全量替换）文档，支持基于 OccVersion 的乐观并发控制 (OCC)
      *
      * @param document   待索引的文档实体
@@ -217,6 +242,56 @@ public class SearchTemplate {
      */
     public <T> String save(T document, OccVersion occVersion) {
         return index(document, occVersion);
+    }
+
+    /**
+     * 仅在文档不存在时创建文档（{@code op_type=create} 防覆盖写，若主键已存在触发 {@link SearchVersionConflictException}）
+     *
+     * @param document 待创建文档实体
+     * @param <T>      实体类型
+     * @return 新创建文档 ID
+     */
+    public <T> String createIfAbsent(T document) {
+        return createIfAbsent(document, null);
+    }
+
+    /**
+     * 仅在文档不存在时创建文档并指定写入刷新策略（{@code op_type=create}）
+     *
+     * @param document      待创建文档实体
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @param <T>           实体类型
+     * @return 新创建文档 ID
+     */
+    public <T> String createIfAbsent(T document, SearchRefreshPolicy refreshPolicy) {
+        Objects.requireNonNull(document, "document must not be null");
+        String index = SearchMetadataHelper.resolveIndexName(document.getClass());
+        return createIfAbsent(index, document, refreshPolicy);
+    }
+
+    /**
+     * 仅在指定索引中文档不存在时创建文档（{@code op_type=create}）
+     *
+     * @param index    目标索引名
+     * @param document 待创建文档实体
+     * @param <T>      实体类型
+     * @return 新创建文档 ID
+     */
+    public <T> String createIfAbsent(String index, T document) {
+        return createIfAbsent(index, document, null);
+    }
+
+    /**
+     * 仅在指定索引中文档不存在时创建文档并指定写入刷新策略（{@code op_type=create}）
+     *
+     * @param index         目标索引名
+     * @param document      待创建文档实体
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @param <T>           实体类型
+     * @return 新创建文档 ID
+     */
+    public <T> String createIfAbsent(String index, T document, SearchRefreshPolicy refreshPolicy) {
+        return doIndex(index, document, null, null, refreshPolicy, true);
     }
 
     /**
@@ -230,6 +305,20 @@ public class SearchTemplate {
      */
     public <T> String index(T document) {
         return index(document, null, null);
+    }
+
+    /**
+     * 索引（新增或全量替换）文档并指定写入刷新策略
+     *
+     * @param document      待索引的文档实体
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @param <T>           实体类型
+     * @return 索引后的文档 ID
+     */
+    public <T> String index(T document, SearchRefreshPolicy refreshPolicy) {
+        Objects.requireNonNull(document, "document must not be null");
+        String index = SearchMetadataHelper.resolveIndexName(document.getClass());
+        return index(index, document, null, null, refreshPolicy);
     }
 
     /**
@@ -272,6 +361,19 @@ public class SearchTemplate {
     }
 
     /**
+     * 索引（新增或全量替换）文档至指定索引并指定写入刷新策略
+     *
+     * @param index         目标索引名
+     * @param document      待索引的文档实体
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @param <T>           实体类型
+     * @return 索引后的文档 ID
+     */
+    public <T> String index(String index, T document, SearchRefreshPolicy refreshPolicy) {
+        return index(index, document, null, null, refreshPolicy);
+    }
+
+    /**
      * 索引（新增或全量替换）文档至指定索引，支持基于 OccVersion 的乐观并发控制 (OCC)
      *
      * @param index      目标索引名
@@ -295,6 +397,30 @@ public class SearchTemplate {
      * @return 索引后的文档 ID
      */
     public <T> String index(String index, T document, Long ifSeqNo, Long ifPrimaryTerm) {
+        return index(index, document, ifSeqNo, ifPrimaryTerm, null);
+    }
+
+    /**
+     * 索引（新增或全量替换）文档至指定索引，支持乐观并发控制 (OCC) 与写入刷新策略
+     *
+     * @param index         目标索引名
+     * @param document      待索引的文档实体
+     * @param ifSeqNo       期望的序列号
+     * @param ifPrimaryTerm 期望的分片世代
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @param <T>           实体类型
+     * @return 索引后的文档 ID
+     */
+    public <T> String index(String index, T document, Long ifSeqNo, Long ifPrimaryTerm, SearchRefreshPolicy refreshPolicy) {
+        return doIndex(index, document, ifSeqNo, ifPrimaryTerm, refreshPolicy, false);
+    }
+
+    private <T> String doIndex(String index,
+                               T document,
+                               Long ifSeqNo,
+                               Long ifPrimaryTerm,
+                               SearchRefreshPolicy refreshPolicy,
+                               boolean createOnly) {
         if (!StringUtils.hasText(index)) {
             throw new IllegalArgumentException("Index must not be blank");
         }
@@ -304,7 +430,7 @@ public class SearchTemplate {
         String routing = SearchMetadataHelper.resolveRouting(document);
         Class<?> entityClass = document instanceof Map<?, ?> ? null : document.getClass();
 
-        return executeObserved("index", index, entityClass, routing, null, false, () -> {
+        return executeObserved(createOnly ? "createIfAbsent" : "index", index, entityClass, routing, null, false, () -> {
             try {
                 Object payload = SearchTenantHelper.preparePayloadForWrite(
                         document, entityClass, properties, SearchTenantHelper.resolveObjectMapper(searchEngineClient));
@@ -321,6 +447,12 @@ public class SearchTemplate {
                     }
                     if (ifSeqNo != null && ifPrimaryTerm != null) {
                         builder.ifSeqNo(ifSeqNo).ifPrimaryTerm(ifPrimaryTerm);
+                    }
+                    if (createOnly) {
+                        builder.opType(OpType.Create);
+                    }
+                    if (refreshPolicy != null) {
+                        builder.refresh(toEsRefresh(refreshPolicy));
                     }
                     return builder;
                 });
@@ -1060,7 +1192,36 @@ public class SearchTemplate {
      * @return 是否成功更新
      */
     public boolean update(String index, String id, String routing, Map<String, Object> partialDoc, boolean docAsUpsert, OccVersion occVersion) {
-        return doUpdate(index, null, id, routing, partialDoc, docAsUpsert, occVersion);
+        return doUpdate(index, null, id, routing, partialDoc, docAsUpsert, occVersion, null);
+    }
+
+    /**
+     * 局部更新文档字段（指定写入刷新策略）
+     *
+     * @param clazz         实体类类型
+     * @param id            文档 ID
+     * @param routing       分片路由键（可为 null）
+     * @param partialDoc    局部变更字段键值对
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @return 是否成功更新
+     */
+    public boolean update(Class<?> clazz, String id, String routing, Map<String, Object> partialDoc, SearchRefreshPolicy refreshPolicy) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        String index = SearchMetadataHelper.resolveIndexName(clazz);
+        return doUpdate(index, clazz, id, routing, partialDoc, false, null, refreshPolicy);
+    }
+
+    /**
+     * 局部更新文档字段（指定索引与写入刷新策略）
+     *
+     * @param index         目标索引名
+     * @param id            文档 ID
+     * @param partialDoc    局部变更字段键值对
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @return 是否成功更新
+     */
+    public boolean update(String index, String id, Map<String, Object> partialDoc, SearchRefreshPolicy refreshPolicy) {
+        return doUpdate(index, null, id, null, partialDoc, false, null, refreshPolicy);
     }
 
     /**
@@ -1172,6 +1333,17 @@ public class SearchTemplate {
                                  T partialDoc,
                                  boolean docAsUpsert,
                                  OccVersion occVersion) {
+        return doUpdate(index, explicitEntityClass, id, routing, partialDoc, docAsUpsert, occVersion, null);
+    }
+
+    private <T> boolean doUpdate(String index,
+                                 Class<?> explicitEntityClass,
+                                 String id,
+                                 String routing,
+                                 T partialDoc,
+                                 boolean docAsUpsert,
+                                 OccVersion occVersion,
+                                 SearchRefreshPolicy refreshPolicy) {
         if (!StringUtils.hasText(index)) {
             throw new IllegalArgumentException("Index must not be blank");
         }
@@ -1202,6 +1374,9 @@ public class SearchTemplate {
                     }
                     if (occVersion != null && occVersion.isSpecified()) {
                         builder.ifSeqNo(occVersion.seqNo()).ifPrimaryTerm(occVersion.primaryTerm());
+                    }
+                    if (refreshPolicy != null) {
+                        builder.refresh(toEsRefresh(refreshPolicy));
                     }
                     return builder;
                 }, Void.class);
@@ -1282,10 +1457,46 @@ public class SearchTemplate {
      * @return 是否成功删除（若文档不存在则返回 false）
      */
     public boolean deleteById(String index, String id, String routing) {
-        return doDeleteById(index, null, id, routing);
+        return doDeleteById(index, null, id, routing, null);
+    }
+
+    /**
+     * 根据文档 ID 与分片路由键删除文档并指定写入刷新策略
+     *
+     * @param clazz         实体类类型
+     * @param id            文档 ID
+     * @param routing       分片路由键（可为 null）
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @return 是否成功删除
+     */
+    public boolean deleteById(Class<?> clazz, String id, String routing, SearchRefreshPolicy refreshPolicy) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        if (SearchMetadataHelper.hasRoutingAnnotation(clazz) && !StringUtils.hasText(routing)) {
+            throw new SearchException(SearchResultCode.SEARCH_ROUTING_REQUIRED,
+                    "Routing key is required for document entity [" + clazz.getSimpleName() + "] annotated with @SearchRouting. Use deleteById with routing parameter.");
+        }
+        String index = SearchMetadataHelper.resolveIndexName(clazz);
+        return doDeleteById(index, clazz, id, routing, refreshPolicy);
+    }
+
+    /**
+     * 根据文档 ID 与分片路由键从指定索引删除文档并指定写入刷新策略
+     *
+     * @param index         目标索引名
+     * @param id            文档 ID
+     * @param routing       分片路由键（可为 null）
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @return 是否成功删除
+     */
+    public boolean deleteById(String index, String id, String routing, SearchRefreshPolicy refreshPolicy) {
+        return doDeleteById(index, null, id, routing, refreshPolicy);
     }
 
     private boolean doDeleteById(String index, Class<?> entityClass, String id, String routing) {
+        return doDeleteById(index, entityClass, id, routing, null);
+    }
+
+    private boolean doDeleteById(String index, Class<?> entityClass, String id, String routing, SearchRefreshPolicy refreshPolicy) {
         if (!StringUtils.hasText(index)) {
             throw new IllegalArgumentException("Index must not be blank");
         }
@@ -1302,6 +1513,9 @@ public class SearchTemplate {
                     builder.index(index).id(id);
                     if (StringUtils.hasText(routing)) {
                         builder.routing(routing);
+                    }
+                    if (refreshPolicy != null) {
+                        builder.refresh(toEsRefresh(refreshPolicy));
                     }
                     return builder;
                 });
@@ -1405,33 +1619,82 @@ public class SearchTemplate {
             throw new IllegalArgumentException("Index must not be blank");
         }
         Objects.requireNonNull(query, "query must not be null");
-        return executeObserved("deleteByQuery", index, clazz, query.getRouting(), query, false,
-                () -> executeDoDeleteByQuery(index, query, clazz));
+        return executeObserved("deleteByQuery", index, clazz, query.getRouting(), query, false, () -> {
+            DeleteByQueryResponse response = executeDoDeleteByQuery(index, query, clazz, true);
+            return response != null && response.deleted() != null ? response.deleted() : 0L;
+        });
     }
 
-    private long executeDoDeleteByQuery(String index, SearchQuery query, Class<?> clazz) {
+    /**
+     * 异步发起条件物理删除任务并立即返回后台 TaskId（不阻塞等待完成）
+     *
+     * @param query 查询规格对象
+     * @param clazz 实体类类型
+     * @return 异步任务唯一标识 {@code nodeId:taskId}（索引不存在时返回 null）
+     */
+    public String deleteByQueryAsync(SearchQuery query, Class<?> clazz) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        Objects.requireNonNull(query, "query must not be null");
+        String index = CollectionUtil.isNotEmpty(query.getIndices())
+                ? String.join(",", query.getIndices())
+                : SearchMetadataHelper.resolveIndexName(clazz);
+        return deleteByQueryAsync(index, query, clazz);
+    }
+
+    /**
+     * 在指定索引上异步发起条件物理删除任务并立即返回后台 TaskId
+     *
+     * @param index 目标索引名
+     * @param query 查询规格对象
+     * @return 异步任务唯一标识 {@code nodeId:taskId}（索引不存在时返回 null）
+     */
+    public String deleteByQueryAsync(String index, SearchQuery query) {
+        return deleteByQueryAsync(index, query, null);
+    }
+
+    /**
+     * 在指定索引上异步发起条件物理删除任务并立即返回后台 TaskId
+     *
+     * @param index 目标索引名
+     * @param query 查询规格对象
+     * @param clazz 实体类类型（可为 null）
+     * @return 异步任务唯一标识 {@code nodeId:taskId}（索引不存在时返回 null）
+     */
+    public String deleteByQueryAsync(String index, SearchQuery query, Class<?> clazz) {
+        if (!StringUtils.hasText(index)) {
+            throw new IllegalArgumentException("Index must not be blank");
+        }
+        Objects.requireNonNull(query, "query must not be null");
+        return executeObserved("deleteByQueryAsync", index, clazz, query.getRouting(), query, false, () -> {
+            DeleteByQueryResponse response = executeDoDeleteByQuery(index, query, clazz, false);
+            return response != null ? response.task() : null;
+        });
+    }
+
+    private DeleteByQueryResponse executeDoDeleteByQuery(String index,
+                                                         SearchQuery query,
+                                                         Class<?> clazz,
+                                                         boolean waitForCompletion) {
         try {
-            Query baseQuery = query != null ? query.getQuery() : null;
-            SearchTenantHelper.rejectCrossTenantQueryFilter(
-                    baseQuery, clazz, properties, SearchTenantHelper.resolveObjectMapper(searchEngineClient));
-            Query effectiveQuery = wrapTenantFilterIfNecessary(baseQuery, clazz);
-            Query finalQuery = effectiveQuery != null ? effectiveQuery : Query.of(q -> q.matchAll(m -> m));
+            Query finalQuery = resolveTenantScopedQuery(query, clazz);
 
             DeleteByQueryResponse response = getClient().deleteByQuery(builder -> {
-                builder.index(index).query(finalQuery);
-                builder.conflicts(Conflicts.Proceed);
+                builder.index(index)
+                        .query(finalQuery)
+                        .conflicts(Conflicts.Proceed)
+                        .waitForCompletion(waitForCompletion);
                 if (query != null && StringUtils.hasText(query.getRouting())) {
                     builder.routing(query.getRouting());
                 }
                 return builder;
             });
-            log.debug("Executed deleteByQuery on index [{}], deleted: {}, versionConflicts: {}",
-                    index, response.deleted(), response.versionConflicts());
-            return response.deleted() != null ? response.deleted() : 0L;
+            log.debug("Executed deleteByQuery on index [{}], deleted: {}, task: {}, versionConflicts: {}",
+                    index, response.deleted(), response.task(), response.versionConflicts());
+            return response;
         } catch (Exception e) {
             if (SearchExceptionClassifier.isNotFound(e)) {
                 log.debug("Index not found during deleteByQuery on index [{}]", index);
-                return 0L;
+                return null;
             }
             if (e instanceof SearchException se) {
                 throw se;
@@ -1439,6 +1702,285 @@ public class SearchTemplate {
             throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_DOCUMENT_DELETE_ERROR),
                     "Failed to execute deleteByQuery on index [" + index + "]: " + e.getMessage(), e);
         }
+    }
+
+    // ==================== 4.1 条件驱动批量更新 (UpdateByQuery) ====================
+
+    private static final Pattern SAFE_FIELD_PATH_PATTERN =
+            Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$");
+
+    /**
+     * 基于参数化安全脚本按查询条件批量更新文档字段（自动注入多租户隔离）
+     *
+     * @param query         查询规格对象
+     * @param partialFields 待更新字段键值对（编译为参数化 Painless 脚本，严防脚本注入）
+     * @param clazz         实体类类型
+     * @return 成功更新的文档数量
+     */
+    public long updateByQuery(SearchQuery query, Map<String, Object> partialFields, Class<?> clazz) {
+        return updateByQuery(query, partialFields, clazz, null);
+    }
+
+    /**
+     * 基于参数化安全脚本按查询条件批量更新文档字段并指定刷新策略
+     *
+     * @param query         查询规格对象
+     * @param partialFields 待更新字段键值对
+     * @param clazz         实体类类型
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @return 成功更新的文档数量
+     */
+    public long updateByQuery(SearchQuery query,
+                              Map<String, Object> partialFields,
+                              Class<?> clazz,
+                              SearchRefreshPolicy refreshPolicy) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        Objects.requireNonNull(query, "query must not be null");
+        String index = CollectionUtil.isNotEmpty(query.getIndices())
+                ? String.join(",", query.getIndices())
+                : SearchMetadataHelper.resolveIndexName(clazz);
+        return updateByQuery(index, query, partialFields, clazz, refreshPolicy);
+    }
+
+    /**
+     * 在指定索引上基于参数化安全脚本按查询条件批量更新文档字段
+     *
+     * @param index         目标索引名
+     * @param query         查询规格对象
+     * @param partialFields 待更新字段键值对
+     * @param clazz         实体类类型（可为 null）
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @return 成功更新的文档数量
+     */
+    public long updateByQuery(String index,
+                              SearchQuery query,
+                              Map<String, Object> partialFields,
+                              Class<?> clazz,
+                              SearchRefreshPolicy refreshPolicy) {
+        Script script = buildParameterizedUpdateScript(partialFields, clazz);
+        return executeUpdateByQuery(index, query, script, clazz, refreshPolicy);
+    }
+
+    /**
+     * 在指定索引上基于显式 Painless 脚本按查询条件批量更新文档（脚本逃生舱，仍强制注入多租户隔离并拦截租户列改写）
+     *
+     * @param index          目标索引名
+     * @param query          查询规格对象
+     * @param painlessScript Painless 源码脚本
+     * @param params         脚本参数映射（可为 null）
+     * @param clazz          实体类类型（可为 null）
+     * @param refreshPolicy  写入刷新策略（可为 null）
+     * @return 成功更新的文档数量
+     */
+    public long updateByQuery(String index,
+                              SearchQuery query,
+                              String painlessScript,
+                              Map<String, Object> params,
+                              Class<?> clazz,
+                              SearchRefreshPolicy refreshPolicy) {
+        if (!StringUtils.hasText(painlessScript)) {
+            throw new IllegalArgumentException("painlessScript must not be blank");
+        }
+        rejectCrossTenantPainlessMutation(painlessScript, clazz);
+        Map<String, JsonData> jsonParams = toScriptJsonParams(params);
+        Script script = Script.of(s -> s.inline(in -> {
+            in.lang("painless").source(painlessScript);
+            if (!jsonParams.isEmpty()) {
+                in.params(jsonParams);
+            }
+            return in;
+        }));
+        return executeUpdateByQuery(index, query, script, clazz, refreshPolicy);
+    }
+
+    private long executeUpdateByQuery(String index,
+                                      SearchQuery query,
+                                      Script script,
+                                      Class<?> clazz,
+                                      SearchRefreshPolicy refreshPolicy) {
+        if (!StringUtils.hasText(index)) {
+            throw new IllegalArgumentException("Index must not be blank");
+        }
+        Objects.requireNonNull(query, "query must not be null");
+        return executeObserved("updateByQuery", index, clazz, query.getRouting(), query, false, () -> {
+            UpdateByQueryResponse response = executeDoUpdateByQuery(index, query, script, clazz, refreshPolicy, true);
+            return response != null && response.updated() != null ? response.updated() : 0L;
+        });
+    }
+
+    /**
+     * 基于参数化安全脚本异步发起条件批量更新任务并立即返回 TaskId（自动注入多租户隔离）
+     *
+     * @param query         查询规格对象
+     * @param partialFields 待更新字段键值对
+     * @param clazz         实体类类型
+     * @return 异步任务唯一标识 {@code nodeId:taskId}（索引不存在时返回 null）
+     */
+    public String updateByQueryAsync(SearchQuery query, Map<String, Object> partialFields, Class<?> clazz) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        Objects.requireNonNull(query, "query must not be null");
+        String index = CollectionUtil.isNotEmpty(query.getIndices())
+                ? String.join(",", query.getIndices())
+                : SearchMetadataHelper.resolveIndexName(clazz);
+        return updateByQueryAsync(index, query, partialFields, clazz);
+    }
+
+    /**
+     * 在指定索引上基于参数化安全脚本异步发起条件批量更新任务并立即返回 TaskId
+     *
+     * @param index         目标索引名
+     * @param query         查询规格对象
+     * @param partialFields 待更新字段键值对
+     * @return 异步任务唯一标识 {@code nodeId:taskId}（索引不存在时返回 null）
+     */
+    public String updateByQueryAsync(String index, SearchQuery query, Map<String, Object> partialFields) {
+        return updateByQueryAsync(index, query, partialFields, null);
+    }
+
+    /**
+     * 在指定索引上基于参数化安全脚本异步发起条件批量更新任务并立即返回 TaskId
+     *
+     * @param index         目标索引名
+     * @param query         查询规格对象
+     * @param partialFields 待更新字段键值对
+     * @param clazz         实体类类型（可为 null）
+     * @return 异步任务唯一标识 {@code nodeId:taskId}（索引不存在时返回 null）
+     */
+    public String updateByQueryAsync(String index,
+                                     SearchQuery query,
+                                     Map<String, Object> partialFields,
+                                     Class<?> clazz) {
+        if (!StringUtils.hasText(index)) {
+            throw new IllegalArgumentException("Index must not be blank");
+        }
+        Objects.requireNonNull(query, "query must not be null");
+        Script script = buildParameterizedUpdateScript(partialFields, clazz);
+        return executeObserved("updateByQueryAsync", index, clazz, query.getRouting(), query, false, () -> {
+            UpdateByQueryResponse response = executeDoUpdateByQuery(index, query, script, clazz, null, false);
+            return response != null ? response.task() : null;
+        });
+    }
+
+    private UpdateByQueryResponse executeDoUpdateByQuery(String index,
+                                                         SearchQuery query,
+                                                         Script script,
+                                                         Class<?> clazz,
+                                                         SearchRefreshPolicy refreshPolicy,
+                                                         boolean waitForCompletion) {
+        try {
+            Query finalQuery = resolveTenantScopedQuery(query, clazz);
+
+            UpdateByQueryResponse response = getClient().updateByQuery(builder -> {
+                builder.index(index)
+                        .query(finalQuery)
+                        .script(script)
+                        .conflicts(Conflicts.Proceed)
+                        .waitForCompletion(waitForCompletion);
+                if (query != null && StringUtils.hasText(query.getRouting())) {
+                    builder.routing(query.getRouting());
+                }
+                if (refreshPolicy != null) {
+                    builder.refresh(refreshPolicy.toBooleanRefresh());
+                }
+                return builder;
+            });
+            log.debug("Executed updateByQuery on index [{}], updated: {}, task: {}, versionConflicts: {}",
+                    index, response.updated(), response.task(), response.versionConflicts());
+            return response;
+        } catch (Exception e) {
+            if (SearchExceptionClassifier.isNotFound(e)) {
+                log.debug("Index not found during updateByQuery on index [{}]", index);
+                return null;
+            }
+            if (e instanceof SearchException se) {
+                throw se;
+            }
+            throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                    "Failed to execute updateByQuery on index [" + index + "]: " + e.getMessage(), e);
+        }
+    }
+
+    private Query resolveTenantScopedQuery(SearchQuery query, Class<?> clazz) {
+        Query baseQuery = query != null ? query.getQuery() : null;
+        SearchTenantHelper.rejectCrossTenantQueryFilter(
+                baseQuery, clazz, properties, SearchTenantHelper.resolveObjectMapper(searchEngineClient));
+        Query effectiveQuery = wrapTenantFilterIfNecessary(baseQuery, clazz);
+        return effectiveQuery != null ? effectiveQuery : Query.of(q -> q.matchAll(m -> m));
+    }
+
+    private void rejectCrossTenantPainlessMutation(String painlessScript, Class<?> clazz) {
+        String activeTenantId = SearchTenantHelper.resolveActiveTenantId(properties, clazz);
+        if (activeTenantId == null) {
+            return;
+        }
+        String tenantColumn = SearchTenantHelper.resolveTenantColumn(properties);
+        String quotedColumns = Pattern.quote("tenantId") + "|" + Pattern.quote("tenant_id")
+                + (StringUtils.hasText(tenantColumn) ? "|" + Pattern.quote(tenantColumn) : "");
+        Pattern tenantMutationPattern = Pattern.compile(
+                "(?is)(?:ctx\\s*\\.\\s*_source\\s*(?:\\.\\s*(?:" + quotedColumns + ")\\b|\\[\\s*['\"](?:" + quotedColumns + ")['\"]\\s*])\\s*=|ctx\\s*\\.\\s*_source\\s*\\.\\s*put\\s*\\(\\s*['\"](?:" + quotedColumns + ")['\"])"
+        );
+        if (tenantMutationPattern.matcher(painlessScript).find()) {
+            throw new SearchException(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED,
+                    "Cross-tenant field mutation blocked in explicit Painless script for tenant [" + activeTenantId + "]");
+        }
+    }
+
+    private static Refresh toEsRefresh(SearchRefreshPolicy policy) {
+        if (policy == null) {
+            return null;
+        }
+        return switch (policy) {
+            case IMMEDIATE -> Refresh.True;
+            case WAIT_UNTIL -> Refresh.WaitFor;
+            case NONE -> Refresh.False;
+        };
+    }
+
+    private Script buildParameterizedUpdateScript(Map<String, Object> partialFields, Class<?> clazz) {
+        if (partialFields == null || partialFields.isEmpty()) {
+            throw new IllegalArgumentException("partialFields must not be empty");
+        }
+        String activeTenantId = SearchTenantHelper.resolveActiveTenantId(properties, clazz);
+        String tenantColumn = SearchTenantHelper.resolveTenantColumn(properties);
+        StringBuilder source = new StringBuilder();
+        Map<String, JsonData> params = new LinkedHashMap<>();
+        int idx = 0;
+        for (Map.Entry<String, Object> entry : partialFields.entrySet()) {
+            String field = entry.getKey();
+            if (!StringUtils.hasText(field) || !SAFE_FIELD_PATH_PATTERN.matcher(field).matches()) {
+                throw new IllegalArgumentException("Unsafe or invalid field path in updateByQuery: [" + field + "]");
+            }
+            if (activeTenantId != null && (field.equals(tenantColumn) || "tenantId".equals(field) || "tenant_id".equals(field))) {
+                String incomingVal = entry.getValue() != null ? entry.getValue().toString().trim() : null;
+                if (!activeTenantId.equals(incomingVal)) {
+                    throw new SearchException(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED,
+                            "Cross-tenant field mutation blocked in updateByQuery for tenant [" + activeTenantId + "]");
+                }
+            }
+            String paramKey = "p" + idx++;
+            String[] segments = field.split("\\.");
+            source.append("ctx._source");
+            for (String segment : segments) {
+                source.append("['").append(segment).append("']");
+            }
+            source.append(" = params['").append(paramKey).append("']; ");
+            params.put(paramKey, JsonData.of(entry.getValue()));
+        }
+        String scriptText = source.toString().trim();
+        return Script.of(s -> s.inline(in -> in.lang("painless").source(scriptText).params(params)));
+    }
+
+    private static Map<String, JsonData> toScriptJsonParams(Map<String, Object> params) {
+        if (params == null || params.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, JsonData> result = new LinkedHashMap<>(params.size());
+        for (Map.Entry<String, Object> entry : params.entrySet()) {
+            if (StringUtils.hasText(entry.getKey())) {
+                result.put(entry.getKey(), JsonData.of(entry.getValue()));
+            }
+        }
+        return result;
     }
 
     // ==================== 5. 双模批量写入治理 (Bulk Operations) ====================
@@ -1470,7 +2012,32 @@ public class SearchTemplate {
      * @throws SearchBulkException 当任一文档写入失败时抛出
      */
     public <T> SearchBulkResult indexBatch(String index, Collection<T> documents) {
-        return doBulkIndex(index, documents, false);
+        return doBulkIndex(index, documents, false, null);
+    }
+
+    /**
+     * 批量索引文档并指定写入刷新策略（严格快速失败模式）
+     *
+     * @param documents     待索引文档集合
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @param <T>           文档实体类型
+     * @return 批量操作结果模型
+     */
+    public <T> SearchBulkResult indexBatch(Collection<T> documents, SearchRefreshPolicy refreshPolicy) {
+        return doBulkIndex(null, documents, false, refreshPolicy);
+    }
+
+    /**
+     * 批量索引文档至指定索引并指定写入刷新策略（严格快速失败模式）
+     *
+     * @param index         目标索引名（为 null 时自动解析各实体类注解）
+     * @param documents     待索引文档集合
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @param <T>           文档实体类型
+     * @return 批量操作结果模型
+     */
+    public <T> SearchBulkResult indexBatch(String index, Collection<T> documents, SearchRefreshPolicy refreshPolicy) {
+        return doBulkIndex(index, documents, false, refreshPolicy);
     }
 
     /**
@@ -1496,7 +2063,20 @@ public class SearchTemplate {
      * @return 批量操作结果模型（包含成功数与失败列表快照）
      */
     public <T> SearchBulkResult indexBatchLenient(String index, Collection<T> documents) {
-        return doBulkIndex(index, documents, true);
+        return doBulkIndex(index, documents, true, null);
+    }
+
+    /**
+     * 批量索引文档并指定写入刷新策略（宽容模式）
+     *
+     * @param index         目标索引名（为 null 时自动解析各实体类注解）
+     * @param documents     待索引文档集合
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @param <T>           文档实体类型
+     * @return 批量操作结果模型
+     */
+    public <T> SearchBulkResult indexBatchLenient(String index, Collection<T> documents, SearchRefreshPolicy refreshPolicy) {
+        return doBulkIndex(index, documents, true, refreshPolicy);
     }
 
     /**
@@ -1524,7 +2104,21 @@ public class SearchTemplate {
      * @throws SearchBulkException 当任一文档更新失败时抛出
      */
     public <T> SearchBulkResult updateBatch(String index, Collection<T> partialDocs, boolean docAsUpsert) {
-        return doBulkUpdate(index, partialDocs, docAsUpsert, false);
+        return doBulkUpdate(index, partialDocs, docAsUpsert, false, null);
+    }
+
+    /**
+     * 批量局部更新文档，支持 docAsUpsert 与写入刷新策略（严格快速失败模式）
+     *
+     * @param index         目标索引名（为 null 时自动解析实体注解）
+     * @param partialDocs   局部变更实体集合
+     * @param docAsUpsert   若文档不存在是否直接写入
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @param <T>           文档实体类型
+     * @return 批量操作结果模型
+     */
+    public <T> SearchBulkResult updateBatch(String index, Collection<T> partialDocs, boolean docAsUpsert, SearchRefreshPolicy refreshPolicy) {
+        return doBulkUpdate(index, partialDocs, docAsUpsert, false, refreshPolicy);
     }
 
     /**
@@ -1548,7 +2142,21 @@ public class SearchTemplate {
      * @return 批量操作结果模型
      */
     public <T> SearchBulkResult updateBatchLenient(String index, Collection<T> partialDocs, boolean docAsUpsert) {
-        return doBulkUpdate(index, partialDocs, docAsUpsert, true);
+        return doBulkUpdate(index, partialDocs, docAsUpsert, true, null);
+    }
+
+    /**
+     * 批量局部更新文档，支持 docAsUpsert 与写入刷新策略（宽容模式）
+     *
+     * @param index         目标索引名（为 null 时自动解析实体注解）
+     * @param partialDocs   局部变更实体集合
+     * @param docAsUpsert   若文档不存在是否直接写入
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @param <T>           文档实体类型
+     * @return 批量操作结果模型
+     */
+    public <T> SearchBulkResult updateBatchLenient(String index, Collection<T> partialDocs, boolean docAsUpsert, SearchRefreshPolicy refreshPolicy) {
+        return doBulkUpdate(index, partialDocs, docAsUpsert, true, refreshPolicy);
     }
 
     /**
@@ -1573,9 +2181,22 @@ public class SearchTemplate {
      * @throws SearchBulkException 当任一文档删除失败时抛出
      */
     public SearchBulkResult deleteBatch(Class<?> clazz, Collection<String> ids, String routing) {
+        return deleteBatch(clazz, ids, routing, null);
+    }
+
+    /**
+     * 根据主键 ID 集合与分片路由键批量删除文档并指定写入刷新策略（严格快速失败模式）
+     *
+     * @param clazz         实体类类型（用于解析索引名）
+     * @param ids           待删除的文档 ID 集合
+     * @param routing       分片路由键（可为 null）
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @return 批量操作结果模型
+     */
+    public SearchBulkResult deleteBatch(Class<?> clazz, Collection<String> ids, String routing, SearchRefreshPolicy refreshPolicy) {
         Objects.requireNonNull(clazz, "clazz must not be null");
         String index = SearchMetadataHelper.resolveIndexName(clazz);
-        return doBulkDelete(index, clazz, ids, routing, false);
+        return doBulkDelete(index, clazz, ids, routing, false, refreshPolicy);
     }
 
     /**
@@ -1600,7 +2221,20 @@ public class SearchTemplate {
      * @throws SearchBulkException 当任一文档删除失败时抛出
      */
     public SearchBulkResult deleteBatch(String index, Collection<String> ids, String routing) {
-        return doBulkDelete(index, null, ids, routing, false);
+        return deleteBatch(index, ids, routing, null);
+    }
+
+    /**
+     * 根据主键 ID 集合与分片路由键批量从指定索引删除文档并指定写入刷新策略（严格快速失败模式）
+     *
+     * @param index         目标索引名
+     * @param ids           待删除的文档 ID 集合
+     * @param routing       分片路由键（可为 null）
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @return 批量操作结果模型
+     */
+    public SearchBulkResult deleteBatch(String index, Collection<String> ids, String routing, SearchRefreshPolicy refreshPolicy) {
+        return doBulkDelete(index, null, ids, routing, false, refreshPolicy);
     }
 
     /**
@@ -1623,9 +2257,22 @@ public class SearchTemplate {
      * @return 批量操作结果模型
      */
     public SearchBulkResult deleteBatchLenient(Class<?> clazz, Collection<String> ids, String routing) {
+        return deleteBatchLenient(clazz, ids, routing, null);
+    }
+
+    /**
+     * 根据主键 ID 集合与分片路由键批量删除文档并指定写入刷新策略（宽容模式）
+     *
+     * @param clazz         实体类类型（用于解析索引名）
+     * @param ids           待删除的文档 ID 集合
+     * @param routing       分片路由键（可为 null）
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @return 批量操作结果模型
+     */
+    public SearchBulkResult deleteBatchLenient(Class<?> clazz, Collection<String> ids, String routing, SearchRefreshPolicy refreshPolicy) {
         Objects.requireNonNull(clazz, "clazz must not be null");
         String index = SearchMetadataHelper.resolveIndexName(clazz);
-        return doBulkDelete(index, clazz, ids, routing, true);
+        return doBulkDelete(index, clazz, ids, routing, true, refreshPolicy);
     }
 
     /**
@@ -1648,10 +2295,23 @@ public class SearchTemplate {
      * @return 批量操作结果模型
      */
     public SearchBulkResult deleteBatchLenient(String index, Collection<String> ids, String routing) {
-        return doBulkDelete(index, null, ids, routing, true);
+        return deleteBatchLenient(index, ids, routing, null);
     }
 
-    private <T> SearchBulkResult doBulkIndex(String index, Collection<T> documents, boolean lenient) {
+    /**
+     * 根据主键 ID 集合与分片路由键批量从指定索引删除文档并指定写入刷新策略（宽容模式）
+     *
+     * @param index         目标索引名
+     * @param ids           待删除的文档 ID 集合
+     * @param routing       分片路由键（可为 null）
+     * @param refreshPolicy 写入刷新策略（可为 null）
+     * @return 批量操作结果模型
+     */
+    public SearchBulkResult deleteBatchLenient(String index, Collection<String> ids, String routing, SearchRefreshPolicy refreshPolicy) {
+        return doBulkDelete(index, null, ids, routing, true, refreshPolicy);
+    }
+
+    private <T> SearchBulkResult doBulkIndex(String index, Collection<T> documents, boolean lenient, SearchRefreshPolicy refreshPolicy) {
         if (CollectionUtil.isEmpty(documents)) {
             return emptyBulkResult();
         }
@@ -1659,6 +2319,9 @@ public class SearchTemplate {
         BulkRequest.Builder bulkBuilder = new BulkRequest.Builder();
         if (StringUtils.hasText(index)) {
             bulkBuilder.index(index);
+        }
+        if (refreshPolicy != null) {
+            bulkBuilder.refresh(toEsRefresh(refreshPolicy));
         }
 
         int validItemCount = 0;
@@ -1700,7 +2363,7 @@ public class SearchTemplate {
         return executeBulk(bulkBuilder.build(), validItemCount, lenient);
     }
 
-    private <T> SearchBulkResult doBulkUpdate(String index, Collection<T> partialDocs, boolean docAsUpsert, boolean lenient) {
+    private <T> SearchBulkResult doBulkUpdate(String index, Collection<T> partialDocs, boolean docAsUpsert, boolean lenient, SearchRefreshPolicy refreshPolicy) {
         if (CollectionUtil.isEmpty(partialDocs)) {
             return emptyBulkResult();
         }
@@ -1708,6 +2371,9 @@ public class SearchTemplate {
         BulkRequest.Builder bulkBuilder = new BulkRequest.Builder();
         if (StringUtils.hasText(index)) {
             bulkBuilder.index(index);
+        }
+        if (refreshPolicy != null) {
+            bulkBuilder.refresh(toEsRefresh(refreshPolicy));
         }
 
         int validItemCount = 0;
@@ -1753,7 +2419,8 @@ public class SearchTemplate {
                                           Class<?> entityClass,
                                           Collection<String> ids,
                                           String routing,
-                                          boolean lenient) {
+                                          boolean lenient,
+                                          SearchRefreshPolicy refreshPolicy) {
         Objects.requireNonNull(index, "index must not be null");
         if (CollectionUtil.isEmpty(ids)) {
             return emptyBulkResult();
@@ -1774,6 +2441,9 @@ public class SearchTemplate {
         }
 
         BulkRequest.Builder bulkBuilder = new BulkRequest.Builder().index(index);
+        if (refreshPolicy != null) {
+            bulkBuilder.refresh(toEsRefresh(refreshPolicy));
+        }
         for (String id : validIds) {
             bulkBuilder.operations(op -> op.delete(d -> {
                 d.index(index).id(id);
@@ -2228,6 +2898,12 @@ public class SearchTemplate {
                             }
                             if (query.getAggregations() != null && !query.getAggregations().isEmpty()) {
                                 b.aggregations(query.getAggregations());
+                            }
+                            if (CollectionUtil.isNotEmpty(query.getRescores())) {
+                                b.rescore(query.getRescores());
+                            }
+                            if (CollectionUtil.isNotEmpty(query.getSuggesters())) {
+                                b.suggest(s -> s.suggesters(query.getSuggesters()));
                             }
                             if (sourceConfig != null) {
                                 b.source(sourceConfig);
@@ -3038,6 +3714,16 @@ public class SearchTemplate {
                     b.aggregations(query.getAggregations());
                 }
 
+                // 二阶段精排 Rescore 配置
+                if (CollectionUtil.isNotEmpty(query.getRescores())) {
+                    b.rescore(query.getRescores());
+                }
+
+                // 检索建议器 Suggester 配置
+                if (CollectionUtil.isNotEmpty(query.getSuggesters())) {
+                    b.suggest(s -> s.suggesters(query.getSuggesters()));
+                }
+
                 // kNN 向量检索（仅 Elasticsearch 模式下设置 top-level knn 参数，OpenSearch 模式已在 query 中融合）
                 if (!isOpenSearch && CollectionUtil.isNotEmpty(effectiveKnn)) {
                     b.knn(effectiveKnn);
@@ -3148,6 +3834,8 @@ public class SearchTemplate {
                     ? esHit.sort().stream().map(SearchTemplate::formatFieldValue).toList()
                     : Collections.emptyList();
 
+            Map<String, List<SearchInnerHit>> innerHits = extractInnerHits(esHit);
+
             SearchHit<T> hit = SearchHit.<T>builder()
                     .id(esHit.id())
                     .index(esHit.index())
@@ -3159,10 +3847,41 @@ public class SearchTemplate {
                     .routing(esHit.routing())
                     .sortValues(sortValues)
                     .highlightFields(highlights)
+                    .innerHits(innerHits)
                     .build();
             resultList.add(hit);
         }
         return resultList;
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> Map<String, List<SearchInnerHit>> extractInnerHits(Hit<T> esHit) {
+        Map<String, InnerHitsResult> rawInnerHits = esHit.innerHits();
+        if (rawInnerHits == null || rawInnerHits.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, List<SearchInnerHit>> converted = new LinkedHashMap<>(rawInnerHits.size());
+        rawInnerHits.forEach((name, innerResult) -> {
+            if (innerResult == null || innerResult.hits() == null || innerResult.hits().hits() == null) {
+                converted.put(name, Collections.emptyList());
+                return;
+            }
+            List<SearchInnerHit> items = innerResult.hits().hits().stream()
+                    .map(ih -> {
+                        Map<String, Object> src = ih.source() != null
+                                ? (Map<String, Object>) ih.source().to(Map.class)
+                                : Collections.emptyMap();
+                        return SearchInnerHit.builder()
+                                .id(ih.id())
+                                .index(ih.index())
+                                .score(ih.score())
+                                .source(src != null ? src : Collections.emptyMap())
+                                .build();
+                    })
+                    .toList();
+            converted.put(name, items);
+        });
+        return converted;
     }
 
     private <T> SearchPage<T> buildSearchPage(ResponseBody<T> response, SearchQuery query, Class<T> clazz, boolean populateHighlights) {
@@ -3174,13 +3893,65 @@ public class SearchTemplate {
         Map<String, Aggregate> aggregations = (response != null && response.aggregations() != null)
                 ? response.aggregations()
                 : Collections.emptyMap();
+        Map<String, List<SearchSuggestResult>> suggestions = extractSuggestions(response);
         return SearchPage.<T>builder()
                 .hits(hits)
                 .total(total)
                 .pageNum(query.getPageNum())
                 .pageSize(query.getSize())
                 .aggregations(aggregations)
+                .suggestions(suggestions)
                 .build();
+    }
+
+    private <T> Map<String, List<SearchSuggestResult>> extractSuggestions(ResponseBody<T> response) {
+        if (response == null || response.suggest() == null || response.suggest().isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, List<SearchSuggestResult>> result = new LinkedHashMap<>(response.suggest().size());
+        response.suggest().forEach((name, suggestionList) -> {
+            if (suggestionList == null || suggestionList.isEmpty()) {
+                result.put(name, Collections.emptyList());
+                return;
+            }
+            List<SearchSuggestResult> options = new ArrayList<>();
+            for (Suggestion<T> suggestion : suggestionList) {
+                if (suggestion == null) {
+                    continue;
+                }
+                if (suggestion.isCompletion() && suggestion.completion() != null
+                        && suggestion.completion().options() != null) {
+                    for (CompletionSuggestOption<T> opt : suggestion.completion().options()) {
+                        options.add(SearchSuggestResult.builder()
+                                .text(opt.text())
+                                .score(opt.score())
+                                .id(opt.id())
+                                .build());
+                    }
+                } else if (suggestion.isTerm() && suggestion.term() != null
+                        && suggestion.term().options() != null) {
+                    for (TermSuggestOption opt : suggestion.term().options()) {
+                        options.add(SearchSuggestResult.builder()
+                                .text(opt.text())
+                                .score(opt.score())
+                                .freq(opt.freq())
+                                .highlighted(opt.highlighted())
+                                .build());
+                    }
+                } else if (suggestion.isPhrase() && suggestion.phrase() != null
+                        && suggestion.phrase().options() != null) {
+                    for (PhraseSuggestOption opt : suggestion.phrase().options()) {
+                        options.add(SearchSuggestResult.builder()
+                                .text(opt.text())
+                                .score(opt.score())
+                                .highlighted(opt.highlighted())
+                                .build());
+                    }
+                }
+            }
+            result.put(name, options);
+        });
+        return result;
     }
 
     private <T> SearchScrollResult<T> buildSearchScrollResult(SearchResponse<T> response, int pageSize, Class<T> clazz) {

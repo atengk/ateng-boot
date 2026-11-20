@@ -1,6 +1,9 @@
 package io.github.atengk.boot.sample.search;
 
 import io.github.atengk.boot.core.model.PageResult;
+import io.github.atengk.boot.sample.search.dto.AccessLogDashboardResponse;
+import io.github.atengk.boot.sample.search.dto.ProductDashboardResponse;
+import io.github.atengk.boot.sample.search.dto.SearchSampleConvertHelper;
 import io.github.atengk.boot.sample.search.model.AccessLogDoc;
 import io.github.atengk.boot.sample.search.model.ProductDoc;
 import io.github.atengk.boot.sample.search.scenario.BulkIngestionScenario;
@@ -19,6 +22,8 @@ import io.github.atengk.boot.search.model.SearchBulkResult;
 import io.github.atengk.boot.search.model.SearchHit;
 import io.github.atengk.boot.search.model.SearchPage;
 import io.github.atengk.boot.search.model.SearchScrollResult;
+import io.github.atengk.boot.search.model.SearchSuggestResult;
+import io.github.atengk.boot.search.model.SearchTaskStatus;
 import io.github.atengk.boot.search.properties.AtengSearchProperties;
 import io.github.atengk.boot.search.query.SearchQueryBuilder;
 import io.github.atengk.boot.search.template.SearchTemplate;
@@ -37,6 +42,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.test.context.ContextConfiguration;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
@@ -230,6 +236,12 @@ class SampleSearchIntegrationTest {
                     if (searchTemplate.indices().exists(idx)) {
                         searchTemplate.indices().delete(idx);
                     }
+                }
+                if (searchTemplate.indices().existsIndexTemplate("sample_log_template")) {
+                    searchTemplate.indices().deleteIndexTemplate("sample_log_template");
+                }
+                if (searchTemplate.indices().existsComponentTemplate("sample_comp_tpl")) {
+                    searchTemplate.indices().deleteComponentTemplate("sample_comp_tpl");
                 }
             } catch (Exception ignored) {
             }
@@ -467,6 +479,49 @@ class SampleSearchIntegrationTest {
         assertThat(deleted).isGreaterThanOrEqualTo(0L);
     }
 
+    @Test
+    @DisplayName("12.1 参数化 UpdateByQuery (WAIT_UNTIL)、日志大盘与商品分位数/拼写建议")
+    void testParameterizedUpdateByQueryAndTypedDashboards() {
+        AccessLogDoc seedLog = AccessLogDoc.builder()
+                .id("LOG_DASH_001")
+                .path("/api/v1/dashboard/test")
+                .clientIp("10.0.0.10")
+                .timestamp(LocalDateTime.now())
+                .build();
+        logAnalyticsScenario.recordAccessLog(seedLog);
+        if (isLocalProfileActive()) {
+            searchTemplate.indices().refresh("access_log_*");
+        }
+
+        // 1. 参数化 UpdateByQuery + WAIT_UNTIL 写后可见
+        long updated = logAnalyticsScenario.markLogsClientIp("/api/v1/dashboard/test", "10.0.0.99");
+        assertThat(updated).isGreaterThanOrEqualTo(1L);
+
+        // 2. 日志大盘强类型读取 (Cardinality + DateHistogram 嵌套去重 IP)
+        SearchPage<AccessLogDoc> logPage = logAnalyticsScenario.analyzeAccessLogDashboard("access_log_*");
+        AccessLogDashboardResponse logDashboard = SearchSampleConvertHelper.toAccessLogDashboard(logPage);
+        assertThat(logDashboard.getUniqueIpCount()).isGreaterThanOrEqualTo(1L);
+        assertThat(logDashboard.getDailyBuckets()).isNotEmpty();
+
+        // 3. 商品分位数大盘 (Stats + Percentiles + 嵌套类目统计)
+        SearchPage<ProductDoc> productDashPage = productCatalogScenario.analyzePriceDashboard();
+        ProductDashboardResponse productDashboard = SearchSampleConvertHelper.toProductDashboard(productDashPage);
+        assertThat(productDashboard.getUniqueBrandCount()).isGreaterThanOrEqualTo(1L);
+        assertThat(productDashboard.getPriceStats()).isNotNull();
+        assertThat(productDashboard.getPriceStats().getCount()).isGreaterThanOrEqualTo(1L);
+        assertThat(productDashboard.getPricePercentiles()).isNotNull();
+        assertThat(productDashboard.getPricePercentiles().getPercentile(95)).isNotNull();
+        assertThat(productDashboard.getCategoryStats()).isNotEmpty();
+
+        // 4. 商品标题 Term + Phrase Suggester
+        SearchPage<ProductDoc> suggestPage = productCatalogScenario.suggestProductTitles("iphon", 5);
+        List<SearchSuggestResult> termSuggestions = suggestPage.getSuggestions("title_term");
+        assertThat(termSuggestions).isNotNull();
+        if (!isLocalProfileActive()) {
+            assertThat(termSuggestions).isNotEmpty();
+        }
+    }
+
     // =========================================================================
     // 场景三：生产零停机平滑热迁移与 DDL 闭环场景 (ZeroDowntimeReindexScenario)
     // =========================================================================
@@ -521,6 +576,35 @@ class SampleSearchIntegrationTest {
         // 4. 原子别名热切换 (swapAlias)
         boolean swapped = zeroDowntimeScenario.switchTrafficAlias("product_alias", "product_v1", "product_v2");
         assertThat(swapped).isTrue();
+    }
+
+    @Test
+    @DisplayName("14.1 ComponentTemplate、Settings、Alias 精细运维与异步 Task 治理")
+    void testComponentTemplateSettingsAliasesAndAsyncTaskGovernance() {
+        String compName = "sample_comp_tpl";
+        String compJson = """
+                {
+                  "template": {
+                    "settings": { "number_of_shards": 1, "number_of_replicas": 0 }
+                  }
+                }
+                """;
+        assertThat(zeroDowntimeScenario.applyComponentTemplate(compName, compJson)).isTrue();
+        assertThat(zeroDowntimeScenario.existsComponentTemplate(compName)).isTrue();
+        assertThat(zeroDowntimeScenario.removeComponentTemplate(compName)).isTrue();
+
+        assertThat(zeroDowntimeScenario.updateIndexSettings("product_v2", "{\"index\":{\"refresh_interval\":\"5s\"}}")).isTrue();
+        assertThat(zeroDowntimeScenario.getIndexSettingsSummary("product_v2")).containsEntry("refreshInterval", "5s");
+
+        assertThat(zeroDowntimeScenario.addAlias("product_v2", "product_alias", true)).isTrue();
+        assertThat(zeroDowntimeScenario.getAliases("product_v2")).contains("product_alias");
+        assertThat(zeroDowntimeScenario.removeAlias("product_v2", "product_alias")).isTrue();
+
+        String taskId = zeroDowntimeScenario.reindexAsync("product_v1", "product_v2");
+        assertThat(taskId).isNotBlank();
+        SearchTaskStatus taskStatus = zeroDowntimeScenario.waitForTask(taskId, Duration.ofSeconds(15));
+        assertThat(taskStatus).isNotNull();
+        assertThat(taskStatus.isCompleted()).isTrue();
     }
 
     // =========================================================================

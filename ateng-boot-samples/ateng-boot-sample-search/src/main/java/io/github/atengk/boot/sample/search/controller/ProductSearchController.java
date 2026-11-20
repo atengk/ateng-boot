@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.search.dto.ProductBatchGetRequest;
 import io.github.atengk.boot.sample.search.dto.ProductCollapseRequest;
+import io.github.atengk.boot.sample.search.dto.ProductDashboardResponse;
 import io.github.atengk.boot.sample.search.dto.ProductGeoSearchRequest;
 import io.github.atengk.boot.sample.search.dto.ProductHybridSearchRequest;
 import io.github.atengk.boot.sample.search.dto.ProductKnnSearchRequest;
@@ -24,7 +25,10 @@ import io.github.atengk.boot.search.model.OccVersion;
 import io.github.atengk.boot.search.model.SearchHit;
 import io.github.atengk.boot.search.model.SearchPage;
 import io.github.atengk.boot.search.model.SearchScrollResult;
+import io.github.atengk.boot.search.model.SearchSuggestResult;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
@@ -187,7 +191,27 @@ public class ProductSearchController {
     @GetMapping("/metrics")
     public Result<Map<String, Double>> aggregatePriceMetrics(@RequestParam(required = false) String category) {
         SearchPage<ProductDoc> page = productScenario.aggregatePriceMetrics(category);
-        return Result.success(SearchSampleConvertHelper.toMetricValues(page.getAggregations()));
+        return Result.success(SearchSampleConvertHelper.toMetricValues(page));
+    }
+
+    /**
+     * 商品价格统计、分位数 (P50/P95/P99) 与类目嵌套子聚合多维大盘
+     */
+    @GetMapping("/dashboard")
+    public Result<ProductDashboardResponse> analyzePriceDashboard() {
+        SearchPage<ProductDoc> page = productScenario.analyzePriceDashboard();
+        return Result.success(SearchSampleConvertHelper.toProductDashboard(page));
+    }
+
+    /**
+     * 商品标题拼写纠错建议与短语推荐 (Term + Phrase Suggester)
+     */
+    @GetMapping("/spell-suggest")
+    public Result<Map<String, List<SearchSuggestResult>>> suggestProductTitles(
+            @RequestParam @NotBlank String text,
+            @RequestParam(defaultValue = "5") @Min(1) int size) {
+        SearchPage<ProductDoc> page = productScenario.suggestProductTitles(text, size);
+        return Result.success(page.getSuggestions());
     }
 
     /**

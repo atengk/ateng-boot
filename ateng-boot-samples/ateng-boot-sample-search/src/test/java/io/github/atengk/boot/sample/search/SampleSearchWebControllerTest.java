@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.search;
 
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.sample.search.dto.AccessLogMarkIpRequest;
 import io.github.atengk.boot.sample.search.dto.AccessLogPurgeRequest;
 import io.github.atengk.boot.sample.search.dto.AccessLogRecordRequest;
 import io.github.atengk.boot.sample.search.dto.AliasSwapRequest;
@@ -8,7 +9,10 @@ import io.github.atengk.boot.sample.search.dto.BulkDeadLetterStatsResponse;
 import io.github.atengk.boot.sample.search.dto.BulkIngestRequest;
 import io.github.atengk.boot.sample.search.dto.BulkRawIngestRequest;
 import io.github.atengk.boot.sample.search.dto.BulkStreamDeleteRequest;
+import io.github.atengk.boot.sample.search.dto.ComponentTemplateRequest;
+import io.github.atengk.boot.sample.search.dto.IndexAliasManageRequest;
 import io.github.atengk.boot.sample.search.dto.IndexCreateRequest;
+import io.github.atengk.boot.sample.search.dto.IndexSettingsUpdateRequest;
 import io.github.atengk.boot.sample.search.dto.IndexTemplateRequest;
 import io.github.atengk.boot.sample.search.dto.ProductBatchGetRequest;
 import io.github.atengk.boot.sample.search.dto.ProductCollapseRequest;
@@ -49,11 +53,13 @@ import java.util.List;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -224,6 +230,9 @@ class SampleSearchWebControllerTest {
                 }
                 if (searchTemplate.indices().existsIndexTemplate("sample_log_template")) {
                     searchTemplate.indices().deleteIndexTemplate("sample_log_template");
+                }
+                if (searchTemplate.indices().existsComponentTemplate("sample_comp_tpl")) {
+                    searchTemplate.indices().deleteComponentTemplate("sample_comp_tpl");
                 }
             } catch (Exception ex) {
                 log.warn("Failed to clean up local test indices in tearDownAll: {}", ex.getMessage());
@@ -567,6 +576,29 @@ class SampleSearchWebControllerTest {
     }
 
     @Test
+    @DisplayName("1.16.6 商品价格 Stats/Percentiles 与类目嵌套子聚合大盘")
+    void test16_6_productDashboard() throws Exception {
+        mockMvc.perform(get("/sample/search/product/dashboard"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.uniqueBrandCount", notNullValue()))
+                .andExpect(jsonPath("$.data.priceStats.count", notNullValue()))
+                .andExpect(jsonPath("$.data.pricePercentiles.values", notNullValue()))
+                .andExpect(jsonPath("$.data.categoryStats[0].category", notNullValue()));
+    }
+
+    @Test
+    @DisplayName("1.16.7 商品标题 Term/Phrase 拼写纠错建议 (Suggester)")
+    void test16_7_productSuggest() throws Exception {
+        mockMvc.perform(get("/sample/search/product/spell-suggest")
+                        .param("text", "iphon")
+                        .param("size", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.title_term", notNullValue()));
+    }
+
+    @Test
     @DisplayName("1.17 主键物理删除商品")
     void test17_deleteProduct() throws Exception {
         mockMvc.perform(delete("/sample/search/product/delete")
@@ -645,6 +677,33 @@ class SampleSearchWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(200)))
                 .andExpect(isLocalProfileActive() ? jsonPath("$.data", notNullValue()) : jsonPath("$.data", equalTo("10")));
+    }
+
+    @Test
+    @DisplayName("2.5 参数化 UpdateByQuery (WAIT_UNTIL) 批量订正日志客户端 IP")
+    void test24_markLogsClientIp() throws Exception {
+        AccessLogMarkIpRequest request = AccessLogMarkIpRequest.builder()
+                .path("/api/v1/goods/detail")
+                .clientIp("10.20.30.40")
+                .build();
+
+        mockMvc.perform(post("/sample/search/log/mark-ip")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", notNullValue()));
+    }
+
+    @Test
+    @DisplayName("2.6 日志多维分析大盘 (Cardinality + 按日独立 IP 子聚合)")
+    void test25_analyzeAccessLogDashboard() throws Exception {
+        mockMvc.perform(get("/sample/search/log/dashboard")
+                        .param("index", "access_log_*"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.uniqueIpCount", notNullValue()))
+                .andExpect(jsonPath("$.data.dailyBuckets", notNullValue()));
     }
 
     // =========================================================================
@@ -827,6 +886,116 @@ class SampleSearchWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(200)))
                 .andExpect(jsonPath("$.data", equalTo(true)));
+    }
+
+    @Test
+    @DisplayName("4.7 组件模板 ComponentTemplate 创建、存在性检查与对称删除")
+    void test46_componentTemplateLifecycle() throws Exception {
+        ComponentTemplateRequest request = ComponentTemplateRequest.builder()
+                .templateName("sample_comp_tpl")
+                .templateJson("{\"template\":{\"settings\":{\"number_of_shards\":1,\"number_of_replicas\":0}}}")
+                .build();
+
+        mockMvc.perform(post("/sample/search/index/component-template/apply")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(true)));
+
+        mockMvc.perform(get("/sample/search/index/component-template/exists")
+                        .param("templateName", "sample_comp_tpl"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(true)));
+
+        mockMvc.perform(delete("/sample/search/index/component-template/delete")
+                        .param("templateName", "sample_comp_tpl"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(true)));
+    }
+
+    @Test
+    @DisplayName("4.8 运行期 Settings 获取/动态调优与 Alias 增查删精细治理")
+    void test47_settingsAndAliasLifecycle() throws Exception {
+        IndexSettingsUpdateRequest settingsReq = IndexSettingsUpdateRequest.builder()
+                .indexName("product_v2")
+                .settingsJson("{\"index\":{\"refresh_interval\":\"5s\"}}")
+                .build();
+
+        mockMvc.perform(put("/sample/search/index/settings")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(settingsReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(true)));
+
+        mockMvc.perform(get("/sample/search/index/settings")
+                        .param("indexName", "product_v2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.refreshInterval", equalTo("5s")));
+
+        IndexAliasManageRequest addAliasReq = IndexAliasManageRequest.builder()
+                .indexName("product_v2")
+                .aliasName("product_alias")
+                .writeIndex(true)
+                .build();
+
+        mockMvc.perform(post("/sample/search/index/alias/add")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(addAliasReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(true)));
+
+        mockMvc.perform(get("/sample/search/index/alias/list")
+                        .param("indexName", "product_v2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", notNullValue()));
+
+        mockMvc.perform(delete("/sample/search/index/alias/remove")
+                        .param("indexName", "product_v2")
+                        .param("aliasName", "product_alias"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(true)));
+    }
+
+    @Test
+    @DisplayName("4.9 异步 Reindex 提交与 Task 状态追踪/取消治理")
+    void test48_asyncReindexAndTaskGovernance() throws Exception {
+        ReindexRequest request = ReindexRequest.builder()
+                .sourceIndex("product_v1")
+                .targetIndex("product_v2")
+                .build();
+
+        String responseBody = mockMvc.perform(post("/sample/search/index/reindex-async")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", notNullValue()))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        String taskId = com.fasterxml.jackson.databind.json.JsonMapper.builder().build()
+                .readTree(responseBody).path("data").asText();
+
+        mockMvc.perform(get("/sample/search/index/task")
+                        .param("taskId", taskId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.taskId", equalTo(taskId)));
+
+        mockMvc.perform(post("/sample/search/index/task/cancel")
+                        .param("taskId", taskId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(isLocalProfileActive() ? jsonPath("$.data", notNullValue()) : jsonPath("$.data", equalTo(true)));
     }
 
     @org.junit.jupiter.api.AfterEach

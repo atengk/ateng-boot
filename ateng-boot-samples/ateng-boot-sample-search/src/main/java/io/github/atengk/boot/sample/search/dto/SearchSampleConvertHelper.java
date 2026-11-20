@@ -1,9 +1,10 @@
 package io.github.atengk.boot.sample.search.dto;
 
-import co.elastic.clients.elasticsearch._types.aggregations.Aggregate;
 import io.github.atengk.boot.sample.search.model.AccessLogDoc;
 import io.github.atengk.boot.sample.search.model.ProductDoc;
+import io.github.atengk.boot.search.model.SearchBucket;
 import io.github.atengk.boot.search.model.SearchHit;
+import io.github.atengk.boot.search.model.SearchPage;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -147,39 +148,75 @@ public final class SearchSampleConvertHelper {
                 .build();
     }
 
-    public static List<TrafficTrendResponse> toTrafficTrends(Map<String, Aggregate> aggregations) {
-        if (aggregations == null || !aggregations.containsKey("daily_traffic")) {
+    public static List<TrafficTrendResponse> toTrafficTrends(SearchPage<?> page) {
+        if (page == null) {
             return Collections.emptyList();
         }
-        Aggregate agg = aggregations.get("daily_traffic");
-        if (agg == null || !agg.isDateHistogram()) {
+        List<SearchBucket> buckets = page.getDateHistogramBuckets("daily_traffic");
+        if (buckets.isEmpty()) {
             return Collections.emptyList();
         }
-        return agg.dateHistogram().buckets().array().stream()
+        return buckets.stream()
                 .map(bucket -> TrafficTrendResponse.builder()
-                        .bucket(bucket.keyAsString() != null ? bucket.keyAsString() : String.valueOf(bucket.key()))
-                        .docCount(bucket.docCount())
+                        .bucket(bucket.getKeyAsString() != null ? bucket.getKeyAsString() : bucket.getKey())
+                        .docCount(bucket.getDocCount())
                         .build())
                 .collect(Collectors.toList());
     }
 
-    public static Map<String, Double> toMetricValues(Map<String, Aggregate> aggregations) {
-        if (aggregations == null || aggregations.isEmpty()) {
+    public static Map<String, Double> toMetricValues(SearchPage<?> page) {
+        if (page == null) {
             return Collections.emptyMap();
         }
         Map<String, Double> result = new LinkedHashMap<>();
-        aggregations.forEach((name, agg) -> {
-            if (agg == null) {
-                return;
+        for (String name : new String[]{"min_price", "max_price", "avg_price"}) {
+            Double value = page.getMetricValue(name);
+            if (value != null) {
+                result.put(name, value);
             }
-            if (agg.isMin()) {
-                result.put(name, agg.min().value());
-            } else if (agg.isMax()) {
-                result.put(name, agg.max().value());
-            } else if (agg.isAvg()) {
-                result.put(name, agg.avg().value());
-            }
-        });
+        }
         return result;
+    }
+
+    public static AccessLogDashboardResponse toAccessLogDashboard(SearchPage<?> page) {
+        if (page == null) {
+            return AccessLogDashboardResponse.builder().build();
+        }
+        Double uniqueIps = page.getMetricValue("unique_ips");
+        List<AccessLogDashboardResponse.DailyBucketItem> items = page.getDateHistogramBuckets("daily_traffic").stream()
+                .map(bucket -> {
+                    Double dailyUnique = bucket.getMetricValue("daily_unique_ips");
+                    return AccessLogDashboardResponse.DailyBucketItem.builder()
+                            .bucket(bucket.getKeyAsString() != null ? bucket.getKeyAsString() : bucket.getKey())
+                            .docCount(bucket.getDocCount())
+                            .uniqueIpCount(dailyUnique != null ? dailyUnique.longValue() : 0L)
+                            .build();
+                })
+                .collect(Collectors.toList());
+        return AccessLogDashboardResponse.builder()
+                .uniqueIpCount(uniqueIps != null ? uniqueIps.longValue() : 0L)
+                .dailyBuckets(items)
+                .build();
+    }
+
+    public static ProductDashboardResponse toProductDashboard(SearchPage<?> page) {
+        if (page == null) {
+            return ProductDashboardResponse.builder().build();
+        }
+        Double uniqueBrands = page.getMetricValue("unique_brands");
+        List<ProductDashboardResponse.CategoryStatsItem> categories = page.getTermsBuckets("by_category").stream()
+                .map(bucket -> ProductDashboardResponse.CategoryStatsItem.builder()
+                        .category(bucket.getKey())
+                        .docCount(bucket.getDocCount())
+                        .priceStats(bucket.getStats("cat_price_stats"))
+                        .pricePercentiles(bucket.getPercentiles("cat_price_pct"))
+                        .build())
+                .collect(Collectors.toList());
+        return ProductDashboardResponse.builder()
+                .uniqueBrandCount(uniqueBrands != null ? uniqueBrands.longValue() : 0L)
+                .priceStats(page.getStats("price_stats"))
+                .pricePercentiles(page.getPercentiles("price_pct"))
+                .categoryStats(categories)
+                .build();
     }
 }
