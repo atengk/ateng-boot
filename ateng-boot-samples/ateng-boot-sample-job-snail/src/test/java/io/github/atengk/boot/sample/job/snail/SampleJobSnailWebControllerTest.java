@@ -79,8 +79,6 @@ class SampleJobSnailWebControllerTest {
         SnailRetryFailureTracker.clear();
         runtimeGovernor.resumeAll();
         retryDemoService.resetAttemptCount();
-        reconciliationJobHandler.setFaultInjected(false);
-        logisticsBatchJobHandler.setFaultInjected(false);
         logisticsBatchJobHandler.clearDeadLetterBatches();
         archiveJobHandler.reset();
         SnailJobTestHelper.clear();
@@ -582,6 +580,47 @@ class SampleJobSnailWebControllerTest {
         mockMvc.perform(post("/sample/job-snail/trigger/local-retry")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(invalidJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", not(200)));
+    }
+
+    @Test
+    @DisplayName("1.12 触发多租户受管并发背压遍历端点（正常与单租户容错）")
+    void testTriggerTenantParallel() throws Exception {
+        mockMvc.perform(post("/sample/job-snail/trigger/tenant/parallel"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.jobName").value("tenantParallelBatchJob"))
+                .andExpect(jsonPath("$.data.status").value("SUCCESS"));
+
+        mockMvc.perform(post("/sample/job-snail/trigger/tenant/parallel")
+                        .param("param", "FAIL_ONE"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.status").value("SUCCESS"));
+    }
+
+    @Test
+    @DisplayName("4.5 调度中心任务状态切换 OpenAPI (updateJobStatus / enable / disable)")
+    void testAdminJobStatusOperations() throws Exception {
+        mockMvc.perform(post("/sample/job-snail/admin/jobs/1001/status")
+                        .param("status", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        mockMvc.perform(post("/sample/job-snail/admin/jobs/1001/enable"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        mockMvc.perform(post("/sample/job-snail/admin/jobs/1001/disable"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        mockMvc.perform(post("/sample/job-snail/admin/jobs/1001/status")
+                        .param("status", "-1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", not(200)));
     }

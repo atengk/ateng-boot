@@ -1,67 +1,89 @@
 package io.github.atengk.boot.job.snail.actuator;
 
-import com.aizuda.snailjob.client.core.cache.RetryerInfoCache;
 import com.aizuda.snailjob.client.core.retryer.RetryerInfo;
-import com.aizuda.snailjob.client.job.core.cache.JobExecutorInfoCache;
 import com.aizuda.snailjob.client.job.core.dto.JobArgs;
 import com.aizuda.snailjob.client.job.core.dto.JobExecutorInfo;
 import io.github.atengk.boot.core.util.IdUtil;
-import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.job.snail.context.SnailJobContext;
 import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
 import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
 import io.github.atengk.boot.job.snail.governor.SnailJobRuntimeGovernor;
+import io.github.atengk.boot.job.snail.model.ShardingContext;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
+import io.github.atengk.boot.job.snail.support.SnailJobInvocationSupport;
 import org.slf4j.MDC;
+import org.springframework.beans.BeansException;
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation;
 import org.springframework.boot.actuate.endpoint.annotation.Selector;
 import org.springframework.boot.actuate.endpoint.annotation.WriteOperation;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationContextAware;
 import org.springframework.lang.Nullable;
 import org.springframework.util.ReflectionUtils;
 
-import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * SnailJob 任务调度与分布式重试运维管控与本地手动触发 Actuator 端点
  *
  * <p>端点路径为 {@code /actuator/snailjobs}：
  * <ul>
- *     <li>{@code GET /actuator/snailjobs}：列出当前应用装配的所有任务处理器、重试场景及执行器拓扑概览；</li>
+ *     <li>{@code GET /actuator/snailjobs}：列出当前应用装配的所有任务处理器（原生 {@code @JobExecutor}、独立 {@code @AtengSnailJob} 及切片任务）、重试场景及执行器拓扑概览；</li>
  *     <li>{@code GET /actuator/snailjobs/{name}}：查询指定任务或重试场景的详细元数据配置；</li>
- *     <li>{@code POST /actuator/snailjobs/{jobName}}：脱机手动触发指定任务，支持传入自定义入参并返回执行明细。</li>
+ *     <li>{@code POST /actuator/snailjobs/{jobName}}：脱机手动触发或治理（pause/resume），统一校验 {@code @Valid}、{@code maxPayloadSize} 与运行时暂停态。</li>
  * </ul></p>
  *
  * @author Ateng
  * @since 2026-10-31
  */
 @Endpoint(id = "snailjobs")
-public class SnailJobEndpoint {
+public class SnailJobEndpoint implements ApplicationContextAware {
+
+    private static final String TRACE_ID_KEY = "traceId";
 
     private final SnailJobProperties properties;
     private final GracefulDrainStateMachine drainStateMachine;
     private final SnailJobRuntimeGovernor governor;
+    private volatile ApplicationContext applicationContext;
 
     public SnailJobEndpoint(SnailJobProperties properties, GracefulDrainStateMachine drainStateMachine) {
-        this(properties, drainStateMachine, null);
+        this(properties, drainStateMachine, null, null);
     }
 
     public SnailJobEndpoint(
             SnailJobProperties properties,
             GracefulDrainStateMachine drainStateMachine,
             SnailJobRuntimeGovernor governor) {
+        this(properties, drainStateMachine, governor, null);
+    }
+
+    public SnailJobEndpoint(
+            SnailJobProperties properties,
+            GracefulDrainStateMachine drainStateMachine,
+            SnailJobRuntimeGovernor governor,
+            ApplicationContext applicationContext) {
         this.properties = properties != null ? properties : new SnailJobProperties();
         this.drainStateMachine = drainStateMachine;
         this.governor = governor;
+        this.applicationContext = applicationContext;
+    }
+
+    @Override
+    public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
+        this.applicationContext = applicationContext;
     }
 
     /**
      * 查询所有已注册的调度任务与重试场景概览
-     *
-     * @return 调度与重试资产概览信息
      */
     @ReadOperation
     public Map<String, Object> listJobs() {
@@ -106,9 +128,6 @@ public class SnailJobEndpoint {
 
     /**
      * 查询指定调度任务或重试场景的元数据详情
-     *
-     * @param name 任务名称 (executorName) 或重试场景标识 (scene)
-     * @return 任务或重试场景元数据配置
      */
     @ReadOperation
     public Map<String, Object> jobDetail(@Selector String name) {
@@ -116,8 +135,8 @@ public class SnailJobEndpoint {
         result.put("name", name);
         result.put("isPaused", governor != null && governor.isPaused(name));
 
-        // 1. 优先匹配调度任务
-        JobExecutorInfo jobInfo = JobExecutorInfoCache.get(name);
+        Map<String, JobExecutorInfo> scannedJobs = SnailJobInvocationSupport.scanSpringJobs(applicationContext);
+        JobExecutorInfo jobInfo = SnailJobInvocationSupport.resolveJobExecutor(name, scannedJobs);
         if (jobInfo != null) {
             result.put("exists", true);
             result.put("type", "JOB");
@@ -142,10 +161,10 @@ public class SnailJobEndpoint {
             return result;
         }
 
-        // 2. 匹配重试场景
         Map<String, RetryerInfo> retryers = getAllRetryers();
         for (RetryerInfo retryer : retryers.values()) {
-            if (name.equalsIgnoreCase(retryer.getScene()) || name.equalsIgnoreCase(retryer.getScene() + "#" + retryer.getExecutorClassName())) {
+            if (name.equalsIgnoreCase(retryer.getScene())
+                    || name.equalsIgnoreCase(retryer.getScene() + "#" + retryer.getExecutorClassName())) {
                 result.put("exists", true);
                 result.put("type", "RETRY");
                 result.put("scene", retryer.getScene());
@@ -171,11 +190,6 @@ public class SnailJobEndpoint {
 
     /**
      * 运维管控与脱机手动触发指定调度任务 (支持 pause / resume / trigger)
-     *
-     * @param jobName 调度任务名称
-     * @param action  治理动作 (可选: pause / resume / trigger，缺省为 trigger)
-     * @param args    调度入参 (可选，仅 trigger 时生效)
-     * @return 执行或治理结果详情
      */
     @WriteOperation
     public Map<String, Object> manageJob(
@@ -190,10 +204,6 @@ public class SnailJobEndpoint {
 
     /**
      * 全局批量动态治理操作 (如 resumeAll / clear / 批量 pause / resume)
-     *
-     * @param action  治理动作 (pause / resume / resumeAll / clear)
-     * @param jobName 任务名称 (当 action 为 pause / resume 时必填)
-     * @return 治理结果响应
      */
     @WriteOperation
     public Map<String, Object> manageGovernor(@Nullable String action, @Nullable String jobName) {
@@ -227,19 +237,16 @@ public class SnailJobEndpoint {
     }
 
     /**
-     * 脱机手动触发指定调度任务执行
-     *
-     * @param jobName 调度任务名称
-     * @param args    调度入参 (可选)
-     * @return 执行结果详情
+     * 脱机手动触发指定调度任务执行（与 SnailJobTestHelper 共享发现、参数绑定、@Valid、载荷上限与暂停拦截语义）
      */
     public Map<String, Object> triggerJob(String jobName, @Nullable String args) {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("jobName", jobName);
         response.put("args", args);
 
-        JobExecutorInfo jobInfo = JobExecutorInfoCache.get(jobName);
-        if (jobInfo == null) {
+        Map<String, JobExecutorInfo> scannedJobs = SnailJobInvocationSupport.scanSpringJobs(applicationContext);
+        JobExecutorInfo jobInfo = SnailJobInvocationSupport.resolveJobExecutor(jobName, scannedJobs);
+        if (jobInfo == null || jobInfo.getMethod() == null) {
             response.put("success", false);
             response.put("message", "调度任务 [" + jobName + "] 未找到或尚未注册装配");
             return response;
@@ -247,12 +254,13 @@ public class SnailJobEndpoint {
 
         long startTime = System.currentTimeMillis();
         String traceId = IdUtil.fastSimpleUUID();
-        String previousTraceId = MDC.get("traceId");
+        String previousTraceId = MDC.get(TRACE_ID_KEY);
+        SnailJobContext previousJobContext = SnailJobContextHolder.get();
 
-        // 构造本地执行上下文
-        JobArgs jobArgs = new JobArgs();
-        jobArgs.setExecutorInfo(jobName);
-        jobArgs.setJobParams(args);
+        Method method = jobInfo.getMethod();
+        Object target = jobInfo.getExecutor();
+
+        JobArgs jobArgs = SnailJobInvocationSupport.buildJobArgs(jobName, method, args, 0, 1);
         jobArgs.setJobId(0L);
         jobArgs.setTaskBatchId(0L);
 
@@ -260,31 +268,21 @@ public class SnailJobEndpoint {
         snailContext.setJobName(jobName);
         snailContext.setJobArgs(jobArgs);
         snailContext.setRawJobParams(args);
-        SnailJobContextHolder.set(snailContext);
+        if (jobName.contains(":")) {
+            snailContext.setTaskName(jobName.substring(jobName.indexOf(':') + 1));
+        }
 
         try {
-            MDC.put("traceId", traceId);
+            MDC.put(TRACE_ID_KEY, traceId);
+            SnailJobContextHolder.set(snailContext);
 
-            Method method = jobInfo.getMethod();
-            Object target = jobInfo.getExecutor();
-            Object executionResult;
+            SnailJobInvocationSupport.enforceGovernorNotPaused(governor, jobName);
+            SnailJobInvocationSupport.enforceMaxPayloadSize(properties, args, jobName);
 
-            if (method.getParameterCount() > 0) {
-                Class<?> paramType = method.getParameterTypes()[0];
-                Object resolvedArg;
-                if (JobArgs.class.isAssignableFrom(paramType)) {
-                    resolvedArg = jobArgs;
-                } else if (String.class.isAssignableFrom(paramType)) {
-                    resolvedArg = args;
-                } else if (args != null && !args.isBlank()) {
-                    resolvedArg = JsonUtil.parseObject(args, paramType);
-                } else {
-                    resolvedArg = null;
-                }
-                executionResult = ReflectionUtils.invokeMethod(method, target, resolvedArg);
-            } else {
-                executionResult = ReflectionUtils.invokeMethod(method, target);
-            }
+            ReflectionUtils.makeAccessible(method);
+            Object[] invocationArgs = SnailJobInvocationSupport.prepareAndValidateArguments(
+                    method, jobArgs, args, new ShardingContext(0, 1), snailContext);
+            Object executionResult = ReflectionUtils.invokeMethod(method, target, invocationArgs);
 
             long durationMs = System.currentTimeMillis() - startTime;
             response.put("success", true);
@@ -302,67 +300,47 @@ public class SnailJobEndpoint {
             response.put("durationMs", durationMs);
             response.put("traceId", traceId);
             response.put("error", root.getMessage() != null ? root.getMessage() : root.getClass().getSimpleName());
+            response.put("errorType", root.getClass().getSimpleName());
             return response;
 
         } finally {
             if (previousTraceId != null) {
-                MDC.put("traceId", previousTraceId);
+                MDC.put(TRACE_ID_KEY, previousTraceId);
             } else {
-                MDC.remove("traceId");
+                MDC.remove(TRACE_ID_KEY);
             }
-            SnailJobContextHolder.remove();
+            if (previousJobContext != null) {
+                SnailJobContextHolder.set(previousJobContext);
+            } else {
+                SnailJobContextHolder.remove();
+            }
         }
     }
 
     private Map<String, JobExecutorInfo> getAllJobExecutors() {
-        try {
-            Field field = JobExecutorInfoCache.class.getDeclaredField("JOB_EXECUTOR_REPOSITORY");
-            field.setAccessible(true);
-            @SuppressWarnings("unchecked")
-            Map<String, JobExecutorInfo> map = (Map<String, JobExecutorInfo>) field.get(null);
-            if (map != null) {
-                return map;
+        Map<String, JobExecutorInfo> merged = new LinkedHashMap<>();
+        merged.putAll(SnailJobInvocationSupport.getLoadedJobExecutors());
+        if (applicationContext != null) {
+            Map<String, JobExecutorInfo> scanned = SnailJobInvocationSupport.scanSpringJobs(applicationContext);
+            for (Map.Entry<String, JobExecutorInfo> entry : scanned.entrySet()) {
+                merged.putIfAbsent(entry.getKey(), entry.getValue());
             }
-        } catch (Throwable ignored) {
         }
-        return Collections.emptyMap();
+        return merged;
     }
 
     private Map<String, RetryerInfo> getAllRetryers() {
-        try {
-            Field field = RetryerInfoCache.class.getDeclaredField("RETRY_HANDLER_REPOSITORY");
-            field.setAccessible(true);
-            Object tableObj = field.get(null);
-            if (tableObj != null) {
-                Method valuesMethod = null;
-                try {
-                    valuesMethod = tableObj.getClass().getMethod("values");
-                } catch (NoSuchMethodException e) {
-                    for (Class<?> iface : tableObj.getClass().getInterfaces()) {
-                        try {
-                            valuesMethod = iface.getMethod("values");
-                            break;
-                        } catch (NoSuchMethodException ignored) {
-                        }
-                    }
-                }
-                if (valuesMethod != null) {
-                    valuesMethod.setAccessible(true);
-                    Object vals = valuesMethod.invoke(tableObj);
-                    if (vals instanceof Iterable<?> iterable) {
-                        Map<String, RetryerInfo> result = new LinkedHashMap<>();
-                        for (Object val : iterable) {
-                            if (val instanceof RetryerInfo info) {
-                                String key = info.getScene() + "#" + info.getExecutorClassName();
-                                result.put(key, info);
-                            }
-                        }
-                        return result;
-                    }
-                }
-            }
-        } catch (Throwable ignored) {
+        Map<String, RetryerInfo> result = new LinkedHashMap<>();
+        for (RetryerInfo info : SnailJobInvocationSupport.getLoadedRetryers()) {
+            String key = info.getScene() + "#" + info.getExecutorClassName();
+            result.put(key, info);
         }
-        return Collections.emptyMap();
+        if (applicationContext != null) {
+            Map<String, RetryerInfo> scanned = SnailJobInvocationSupport.scanSpringRetryers(applicationContext);
+            for (Map.Entry<String, RetryerInfo> entry : scanned.entrySet()) {
+                result.putIfAbsent(entry.getKey(), entry.getValue());
+            }
+        }
+        return result;
     }
 }

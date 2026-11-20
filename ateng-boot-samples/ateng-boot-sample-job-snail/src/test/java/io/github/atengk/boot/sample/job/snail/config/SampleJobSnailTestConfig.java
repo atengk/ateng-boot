@@ -55,6 +55,9 @@ public class SampleJobSnailTestConfig {
         // 1. 任务管理 OpenAPI 行为打桩
         when(mock.addJob(any())).thenReturn(1001L);
         when(mock.updateJob(any())).thenReturn(true);
+        when(mock.updateJobStatus(anyLong(), any())).thenReturn(true);
+        when(mock.enableJob(anyLong())).thenReturn(true);
+        when(mock.disableJob(anyLong())).thenReturn(true);
         when(mock.triggerJob(anyLong())).thenReturn(true);
         when(mock.deleteJob(anyLong())).thenReturn(true);
 

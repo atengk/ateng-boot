@@ -65,4 +65,34 @@ public class TenantJobHandler {
 
         return ExecuteResult.success("Tenant batch finished: total=" + result.totalCount() + ", success=" + result.successCount());
     }
+
+    /**
+     * 独立 @AtengSnailJob 多租户并行背压执行示例（Semaphore 限流 + 全链路上下文透传 + BatchFailureHandler）
+     */
+    @AtengSnailJob(name = "tenantParallelBatchJob", tenantMode = JobTenantMode.ITERATE)
+    public ExecuteResult tenantParallelBatchJob(JobArgs args) {
+        String param = args != null && args.getJobParams() != null ? String.valueOf(args.getJobParams()) : "";
+        boolean injectTenantFail = "FAIL_ONE".equalsIgnoreCase(param);
+        List<String> tenants = injectTenantFail
+                ? List.of("tenant-alpha", "tenant-bad", "tenant-gamma")
+                : List.of("tenant-alpha", "tenant-beta", "tenant-gamma");
+
+        BatchExecutionResult<String> result = tenantJobTemplate.executeForEachTenantParallel(
+                tenants,
+                2,
+                false,
+                tenantId -> {
+                    log.info("[TenantJobHandler] 并行执行租户 [{}] 任务, 上下文租户={}",
+                            tenantId, TenantContextHolder.getTenantId());
+                    if (injectTenantFail && "tenant-bad".equals(tenantId)) {
+                        throw new IllegalStateException("模拟并发多租户单租户异常: " + tenantId);
+                    }
+                },
+                failed -> log.warn("[TenantJobHandler] 捕获并发租户失败回调: tenant={}, reason={}",
+                        failed.cursorStart(), failed.getCause() != null ? failed.getCause().getMessage() : "unknown")
+        );
+
+        return ExecuteResult.success("Tenant parallel finished: total=" + result.totalCount()
+                + ", success=" + result.successCount() + ", fail=" + result.failCount());
+    }
 }

@@ -90,6 +90,50 @@ public class SnailJobAdminController {
     }
 
     /**
+     * 运维切换调度任务启停状态（对应 OpenAPI updateJobStatus）
+     *
+     * @param jobId  任务 ID
+     * @param status 目标状态（0=禁用，1=启用）
+     * @return 是否更新成功
+     */
+    @PostMapping("/jobs/{jobId}/status")
+    public Result<Boolean> updateJobStatus(
+            @PathVariable @NotNull(message = "任务 ID 不能为空") @Min(value = 1, message = "任务 ID 必须大于 0") Long jobId,
+            @RequestParam @NotNull(message = "任务状态 status 不能为空") @Min(value = 0, message = "任务状态 status 不能小于 0") Integer status) {
+        Boolean updated = adminTemplate.updateJobStatus(jobId, status);
+        log.info("[SnailJobAdminController] 运维切换任务状态 [jobId={}, status={}]: {}", jobId, status, updated);
+        return Result.success(requireSuccessResult(updated, "更新调度任务状态"));
+    }
+
+    /**
+     * 启用指定调度任务
+     *
+     * @param jobId 任务 ID
+     * @return 是否启用成功
+     */
+    @PostMapping("/jobs/{jobId}/enable")
+    public Result<Boolean> enableJob(
+            @PathVariable @NotNull(message = "任务 ID 不能为空") @Min(value = 1, message = "任务 ID 必须大于 0") Long jobId) {
+        Boolean enabled = adminTemplate.enableJob(jobId);
+        log.info("[SnailJobAdminController] 启用任务 [jobId={}]: {}", jobId, enabled);
+        return Result.success(requireSuccessResult(enabled, "启用调度任务"));
+    }
+
+    /**
+     * 停用指定调度任务
+     *
+     * @param jobId 任务 ID
+     * @return 是否停用成功
+     */
+    @PostMapping("/jobs/{jobId}/disable")
+    public Result<Boolean> disableJob(
+            @PathVariable @NotNull(message = "任务 ID 不能为空") @Min(value = 1, message = "任务 ID 必须大于 0") Long jobId) {
+        Boolean disabled = adminTemplate.disableJob(jobId);
+        log.info("[SnailJobAdminController] 停用任务 [jobId={}]: {}", jobId, disabled);
+        return Result.success(requireSuccessResult(disabled, "停用调度任务"));
+    }
+
+    /**
      * 删除指定调度任务
      *
      * @param jobId 任务 ID

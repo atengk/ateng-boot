@@ -9,15 +9,21 @@ import java.util.List;
 /**
  * 分布式批处理执行统计结果
  *
- * <p>封装分片批处理或多租户遍历执行的总处理条数、成功数、失败数、分批批次计数、整体执行耗时以及失败分片详情。</p>
+ * <p>封装分片批处理、MyBatis 流式处理或多租户并发执行的总处理条数、成功数、失败数、
+ * 分批批次计数、整体执行耗时、有界失败分片清单及截断标记（默认上限 {@value #MAX_FAILED_ITEMS} 条）。</p>
  *
- * @param <K> 游标主键类型
+ * @param <K> 游标主键或租户标识类型
  * @author Ateng
  * @since 2026-10-31
  */
 public class BatchExecutionResult<K> implements Serializable {
 
     private static final long serialVersionUID = 1L;
+
+    /**
+     * 默认最大失败明细保留上限，防止海量异常风暴导致 JVM 堆内存溢出 (OOM)
+     */
+    public static final int MAX_FAILED_ITEMS = 500;
 
     /**
      * 总处理数据量（条数/租户数）
@@ -45,23 +51,61 @@ public class BatchExecutionResult<K> implements Serializable {
     private final Duration duration;
 
     /**
-     * 失败批次明细清单
+     * 失败批次明细清单（有界不可变集合）
      */
     private final List<FailedBatch<K>> failedBatches;
 
+    /**
+     * 失败明细是否因超出上限而被截断
+     */
+    private final boolean truncatedFailures;
+
     public BatchExecutionResult(long totalCount, long successCount, long failCount, int batchCount, Duration duration) {
-        this(totalCount, successCount, failCount, batchCount, duration, Collections.emptyList());
+        this(totalCount, successCount, failCount, batchCount, duration, Collections.emptyList(), MAX_FAILED_ITEMS, false);
     }
 
     public BatchExecutionResult(long totalCount, long successCount, long failCount, int batchCount, Duration duration, List<FailedBatch<K>> failedBatches) {
+        this(totalCount, successCount, failCount, batchCount, duration, failedBatches, MAX_FAILED_ITEMS, false);
+    }
+
+    public BatchExecutionResult(
+            long totalCount,
+            long successCount,
+            long failCount,
+            int batchCount,
+            Duration duration,
+            List<FailedBatch<K>> failedBatches,
+            boolean truncatedFailures) {
+        this(totalCount, successCount, failCount, batchCount, duration, failedBatches, MAX_FAILED_ITEMS, truncatedFailures);
+    }
+
+    public BatchExecutionResult(
+            long totalCount,
+            long successCount,
+            long failCount,
+            int batchCount,
+            Duration duration,
+            List<FailedBatch<K>> failedBatches,
+            int maxFailedItems,
+            boolean truncatedFailures) {
         this.totalCount = totalCount;
         this.successCount = successCount;
         this.failCount = failCount;
         this.batchCount = batchCount;
         this.duration = duration != null ? duration : Duration.ZERO;
-        this.failedBatches = (failedBatches != null && !failedBatches.isEmpty())
-                ? Collections.unmodifiableList(new ArrayList<>(failedBatches))
-                : Collections.emptyList();
+        int limit = maxFailedItems > 0 ? maxFailedItems : MAX_FAILED_ITEMS;
+        if (failedBatches != null && !failedBatches.isEmpty()) {
+            if (failedBatches.size() > limit) {
+                this.failedBatches = Collections.unmodifiableList(new ArrayList<>(failedBatches.subList(0, limit)));
+                this.truncatedFailures = true;
+            } else {
+                this.failedBatches = Collections.unmodifiableList(new ArrayList<>(failedBatches));
+                this.truncatedFailures = truncatedFailures;
+            }
+        } else {
+            this.failedBatches = Collections.emptyList();
+            this.truncatedFailures = truncatedFailures;
+        }
     }
 
     /**
@@ -158,6 +202,24 @@ public class BatchExecutionResult<K> implements Serializable {
         return failedBatches.size();
     }
 
+    /**
+     * 失败分片清单是否因超过上限而被截断
+     *
+     * @return true 若发生截断
+     */
+    public boolean isTruncatedFailures() {
+        return truncatedFailures;
+    }
+
+    /**
+     * 失败分片清单是否因超过上限而被截断 (流式风格)
+     *
+     * @return true 若发生截断
+     */
+    public boolean truncatedFailures() {
+        return truncatedFailures;
+    }
+
     @Override
     public String toString() {
         return "BatchExecutionResult{" +
@@ -166,6 +228,7 @@ public class BatchExecutionResult<K> implements Serializable {
                 ", failCount=" + failCount +
                 ", batchCount=" + batchCount +
                 ", failedBatchCount=" + failedBatches.size() +
+                ", truncatedFailures=" + truncatedFailures +
                 ", duration=" + duration.toMillis() + "ms" +
                 '}';
     }

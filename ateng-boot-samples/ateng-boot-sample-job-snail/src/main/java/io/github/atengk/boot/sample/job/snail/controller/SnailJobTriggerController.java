@@ -183,6 +183,18 @@ public class SnailJobTriggerController {
     }
 
     /**
+     * 触发多租户受管并发背压遍历任务
+     *
+     * @param param 可选参数（传 FAIL_ONE 模拟单租户异常容错）
+     * @return 任务触发结果视图
+     */
+    @PostMapping("/tenant/parallel")
+    public Result<JobTriggerVO> triggerTenantParallel(@RequestParam(required = false) String param) {
+        SnailJobTestResult result = scenarioService.executeTenantParallel(param);
+        return Result.success(scenarioService.toTriggerVO("tenantParallelBatchJob", result));
+    }
+
+    /**
      * 触发全局平台忽略租户归档任务
      *
      * @return 任务触发结果视图

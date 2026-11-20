@@ -124,11 +124,9 @@ class SampleJobSnailIntegrationTest {
         SnailRetryContextRegistry.clear();
         SnailRetryFailureTracker.clear();
         deadLetterEventCollector.clear();
-        reconciliationJobHandler.setFaultInjected(false);
         retryDemoService.resetAttemptCount();
         billSettlementJobHandler.reset();
         archiveJobHandler.reset();
-        logisticsBatchJobHandler.setFaultInjected(false);
         logisticsBatchJobHandler.clearDeadLetterBatches();
         auditJobInterceptor.reset();
         runtimeGovernor.resumeAll();
@@ -257,7 +255,6 @@ class SampleJobSnailIntegrationTest {
     @DisplayName("8. 订单对账告警防风暴聚合与自愈状态机端到端实测")
     void testOrderReconciliationJobStateMachine() {
         // 第一次失败：触发首发告警
-        reconciliationJobHandler.setFaultInjected(true);
         SnailJobTestResult fail1 = testHelper.triggerJob("orderReconciliationJob", "FAIL");
         assertThat(fail1.isSuccess()).isTrue();
         ExecuteResult er1 = (ExecuteResult) fail1.result();
@@ -268,7 +265,6 @@ class SampleJobSnailIntegrationTest {
         assertThat(er2.getStatus()).isEqualTo(StatusEnum.NO.getStatus());
 
         // 故障恢复：记录自愈现场并上报恢复
-        reconciliationJobHandler.setFaultInjected(false);
         ExecuteResult recovery = (ExecuteResult) testHelper.triggerJob("orderReconciliationJob", "OK").result();
         assertThat(recovery.getStatus()).isEqualTo(StatusEnum.YES.getStatus());
     }
@@ -548,5 +544,39 @@ class SampleJobSnailIntegrationTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("模拟退款通道瞬时熔断");
         assertThat(retryContextStore.get("orderRefundRetry:orderRefundRetry_FAIL_REFUND")).isNull();
+    }
+
+    @Test
+    @DisplayName("17. 并发多租户背压、BatchFailureHandler 死信与 SnailJobEndpoint 统一独立任务发现实测")
+    void testParallelTenantBatchFailureAndUnifiedEndpointDiscovery() {
+        // 17.1 验证物流分片批处理通过 BatchFailureHandler 回调捕获死信切片
+        SnailJobTestResult logisticsFail = testHelper.triggerJob("logisticsStatusSyncJob", "FAIL", 0, 1);
+        assertThat(logisticsFail.isSuccess()).isTrue();
+        assertThat(logisticsBatchJobHandler.getDeadLetterBatches()).isNotEmpty();
+
+        // 17.2 验证独立 @AtengSnailJob 多租户受管并发背压任务（含容错失败收集）
+        SnailJobTestResult parallelOk = scenarioService.executeTenantParallel(null);
+        assertThat(parallelOk.isSuccess()).isTrue();
+        assertThat(String.valueOf(((ExecuteResult) parallelOk.result()).getResult()))
+                .contains("total=3, success=3, fail=0");
+
+        SnailJobTestResult parallelPartialFail = scenarioService.executeTenantParallel("FAIL_ONE");
+        assertThat(parallelPartialFail.isSuccess()).isTrue();
+        assertThat(String.valueOf(((ExecuteResult) parallelPartialFail.result()).getResult()))
+                .contains("total=3, success=2, fail=1");
+
+        // 17.3 验证 SnailJobEndpoint 发现并触发独立 @AtengSnailJob 且执行运行时暂停态拦截
+        Map<String, Object> jobsSummary = snailJobEndpoint.listJobs();
+        @SuppressWarnings("unchecked")
+        java.util.List<String> jobs = (java.util.List<String>) jobsSummary.get("jobs");
+        assertThat(jobs).contains("tenantParallelBatchJob", "localRetrySyncJob");
+
+        Map<String, Object> endpointTriggerOk = snailJobEndpoint.triggerJob("tenantParallelBatchJob", null);
+        assertThat(endpointTriggerOk.get("success")).isEqualTo(true);
+
+        runtimeGovernor.pause("tenantParallelBatchJob");
+        Map<String, Object> endpointPaused = snailJobEndpoint.triggerJob("tenantParallelBatchJob", null);
+        assertThat(endpointPaused.get("success")).isEqualTo(false);
+        assertThat(String.valueOf(endpointPaused.get("error"))).contains("暂停");
     }
 }

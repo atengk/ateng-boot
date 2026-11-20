@@ -6,12 +6,20 @@ import com.aizuda.snailjob.client.core.retryer.RetryerInfo;
 import com.aizuda.snailjob.client.job.core.cache.JobExecutorInfoCache;
 import com.aizuda.snailjob.client.job.core.dto.JobArgs;
 import com.aizuda.snailjob.client.job.core.dto.JobExecutorInfo;
+import io.github.atengk.boot.job.snail.annotation.AtengSnailJob;
+import io.github.atengk.boot.job.snail.context.SnailJobContext;
 import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
 import io.github.atengk.boot.job.snail.governor.SnailJobRuntimeGovernor;
+import io.github.atengk.boot.job.snail.model.ShardingContext;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.support.GenericApplicationContext;
+import org.springframework.util.unit.DataSize;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -237,5 +245,95 @@ public class SnailJobEndpointTest {
         assertEquals(true, result.get("success"));
         assertEquals(2, result.get("resumedCount"));
         assertEquals(0, governor.getPausedCount());
+    }
+
+    @Test
+    public void testStandaloneAtengSnailJobDiscoveryMultiParamValidationPayloadAndGovernor() {
+        GenericApplicationContext ctx = new GenericApplicationContext();
+        StandaloneEndpointService standaloneBean = new StandaloneEndpointService();
+        ctx.registerBean("standaloneEndpointService", StandaloneEndpointService.class, () -> standaloneBean);
+        ctx.refresh();
+
+        try {
+            properties.setMaxPayloadSize(DataSize.ofBytes(64));
+            SnailJobEndpoint unifiedEndpoint = new SnailJobEndpoint(properties, drainStateMachine, governor, ctx);
+
+            // 1. 无需预先写入 JobExecutorInfoCache，即可发现独立 @AtengSnailJob
+            Map<String, Object> list = unifiedEndpoint.listJobs();
+            @SuppressWarnings("unchecked")
+            java.util.List<String> jobs = (java.util.List<String>) list.get("jobs");
+            assertTrue(jobs.contains("standaloneMultiParamJob"));
+
+            Map<String, Object> detail = unifiedEndpoint.jobDetail("standaloneMultiParamJob");
+            assertEquals(true, detail.get("exists"));
+            assertEquals("JOB", detail.get("type"));
+
+            // 2. 多参数绑定（ShardingContext + SnailJobContext + @Valid DTO）
+            Map<String, Object> okRes = unifiedEndpoint.triggerJob(
+                    "standaloneMultiParamJob", "{\"bizKey\":\"ORD-1\",\"count\":5}");
+            assertEquals(true, okRes.get("success"));
+            assertTrue(((String) okRes.get("result")).contains("ORD-1|count=5|hasCtx=true|shard=0/1"));
+
+            // 3. @Valid JSR-303 校验拦截
+            Map<String, Object> invalidDtoRes = unifiedEndpoint.triggerJob(
+                    "standaloneMultiParamJob", "{\"bizKey\":\"\",\"count\":0}");
+            assertEquals(false, invalidDtoRes.get("success"));
+            assertTrue(((String) invalidDtoRes.get("error")).contains("JSR-303"));
+
+            // 4. 畸形 JSON 显式抛语义异常（不透传 String 导致 argument type mismatch）
+            Map<String, Object> badJsonRes = unifiedEndpoint.triggerJob(
+                    "standaloneMultiParamJob", "{bad-json");
+            assertEquals(false, badJsonRes.get("success"));
+            assertTrue(((String) badJsonRes.get("error")).contains("JSON"));
+
+            // 5. maxPayloadSize 载荷超限拦截
+            String oversized = "{\"bizKey\":\"" + "X".repeat(80) + "\",\"count\":1}";
+            Map<String, Object> oversizedRes = unifiedEndpoint.triggerJob("standaloneMultiParamJob", oversized);
+            assertEquals(false, oversizedRes.get("success"));
+            assertTrue(((String) oversizedRes.get("error")).contains("maxPayloadSize"));
+
+            // 6. SnailJobRuntimeGovernor 暂停拦截
+            governor.pause("standaloneMultiParamJob");
+            Map<String, Object> pausedRes = unifiedEndpoint.triggerJob(
+                    "standaloneMultiParamJob", "{\"bizKey\":\"ORD-2\",\"count\":2}");
+            assertEquals(false, pausedRes.get("success"));
+            assertTrue(((String) pausedRes.get("error")).contains("暂停"));
+        } finally {
+            governor.resumeAll();
+            ctx.close();
+        }
+    }
+
+    public static class StandaloneDto {
+        @NotBlank(message = "bizKey不能为空")
+        private String bizKey;
+        @Min(value = 1, message = "count必须大于0")
+        private int count;
+
+        public String getBizKey() {
+            return bizKey;
+        }
+
+        public void setBizKey(String bizKey) {
+            this.bizKey = bizKey;
+        }
+
+        public int getCount() {
+            return count;
+        }
+
+        public void setCount(int count) {
+            this.count = count;
+        }
+    }
+
+    public static class StandaloneEndpointService {
+
+        @AtengSnailJob(name = "standaloneMultiParamJob")
+        public String handle(ShardingContext sharding, SnailJobContext jobContext, @Valid StandaloneDto dto) {
+            return dto.getBizKey() + "|count=" + dto.getCount()
+                    + "|hasCtx=" + (jobContext != null)
+                    + "|shard=" + sharding.getShardIndex() + "/" + sharding.getShardTotal();
+        }
     }
 }

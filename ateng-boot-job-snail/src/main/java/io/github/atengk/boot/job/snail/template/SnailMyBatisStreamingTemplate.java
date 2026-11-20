@@ -1,30 +1,24 @@
 package io.github.atengk.boot.job.snail.template;
 
-import io.github.atengk.boot.core.context.TenantContextHolder;
-import io.github.atengk.boot.core.context.TenantContextHolder.TenantSnapshot;
-import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.SpringUtil;
-import io.github.atengk.boot.job.snail.context.SnailJobContext;
-import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
 import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
 import org.apache.ibatis.cursor.Cursor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -33,7 +27,8 @@ import java.util.function.Supplier;
  *
  * <p>继承自 {@link SnailShardingBatchTemplate}，专门在具备持久层 MyBatis-Plus 依赖的环境下，
  * 对接 {@link StreamingQueryTemplate} 与 MyBatis 原生 {@link Cursor} 流式查询，
- * 提供单线程游标分批拉取与受管多线程并发消费能力。</p>
+ * 提供单线程游标分批拉取与受管多线程并发消费能力，统一沉淀结构化 {@link FailedBatch}
+ * 与有界失败收集，并支持 {@link BatchFailureHandler} 与无状态派生视图。</p>
  *
  * @author Ateng
  * @since 2026-10-31
@@ -65,9 +60,93 @@ public class SnailMyBatisStreamingTemplate extends SnailShardingBatchTemplate {
         super(taskExecutor, defaultBatchSize, defaultMaxConcurrency, defaultFailFast, managedPoolEnabled);
     }
 
-    public SnailMyBatisStreamingTemplate(Executor taskExecutor, int defaultBatchSize, int defaultMaxConcurrency, StreamingQueryTemplate streamingQueryTemplate) {
+    public SnailMyBatisStreamingTemplate(
+            Executor taskExecutor,
+            int defaultBatchSize,
+            int defaultMaxConcurrency,
+            StreamingQueryTemplate streamingQueryTemplate) {
         super(taskExecutor, defaultBatchSize, defaultMaxConcurrency);
         this.streamingQueryTemplate = streamingQueryTemplate;
+    }
+
+    public SnailMyBatisStreamingTemplate(
+            Executor taskExecutor,
+            int defaultBatchSize,
+            int defaultMaxConcurrency,
+            boolean defaultFailFast,
+            boolean managedPoolEnabled,
+            int progressLogInterval,
+            int maxFailedItems,
+            StreamingQueryTemplate streamingQueryTemplate,
+            BatchFailureHandler<?> defaultFailureHandler) {
+        super(taskExecutor, defaultBatchSize, defaultMaxConcurrency, defaultFailFast, managedPoolEnabled,
+                progressLogInterval, maxFailedItems, defaultFailureHandler);
+        this.streamingQueryTemplate = streamingQueryTemplate;
+    }
+
+    protected SnailMyBatisStreamingTemplate(
+            Executor taskExecutor,
+            int defaultBatchSize,
+            int defaultMaxConcurrency,
+            boolean defaultFailFast,
+            boolean managedPoolEnabled,
+            int progressLogInterval,
+            int maxFailedItems,
+            StreamingQueryTemplate streamingQueryTemplate,
+            BatchFailureHandler<?> defaultFailureHandler,
+            boolean preserveZeroInterval) {
+        super(taskExecutor, defaultBatchSize, defaultMaxConcurrency, defaultFailFast, managedPoolEnabled,
+                progressLogInterval, maxFailedItems, defaultFailureHandler, preserveZeroInterval);
+        this.streamingQueryTemplate = streamingQueryTemplate;
+    }
+
+    @Override
+    public SnailMyBatisStreamingTemplate withFailFast(boolean failFast) {
+        return new SnailMyBatisStreamingTemplate(
+                getTaskExecutor(),
+                getDefaultBatchSize(),
+                getDefaultMaxConcurrency(),
+                failFast,
+                isManagedPoolEnabled(),
+                getProgressLogInterval(),
+                getMaxFailedItems(),
+                this.streamingQueryTemplate,
+                getDefaultFailureHandler(),
+                true
+        );
+    }
+
+    @Override
+    public SnailMyBatisStreamingTemplate withProgressLogInterval(int progressLogInterval) {
+        return new SnailMyBatisStreamingTemplate(
+                getTaskExecutor(),
+                getDefaultBatchSize(),
+                getDefaultMaxConcurrency(),
+                isFailFast(),
+                isManagedPoolEnabled(),
+                progressLogInterval,
+                getMaxFailedItems(),
+                this.streamingQueryTemplate,
+                getDefaultFailureHandler(),
+                true
+        );
+    }
+
+    @Override
+    public SnailMyBatisStreamingTemplate withMaxConcurrency(int maxConcurrency) {
+        int resolved = maxConcurrency > 0 ? maxConcurrency : DEFAULT_MAX_CONCURRENCY;
+        return new SnailMyBatisStreamingTemplate(
+                getTaskExecutor(),
+                getDefaultBatchSize(),
+                resolved,
+                isFailFast(),
+                isManagedPoolEnabled(),
+                getProgressLogInterval(),
+                getMaxFailedItems(),
+                this.streamingQueryTemplate,
+                getDefaultFailureHandler(),
+                true
+        );
     }
 
     public StreamingQueryTemplate getStreamingQueryTemplate() {
@@ -81,43 +160,51 @@ public class SnailMyBatisStreamingTemplate extends SnailShardingBatchTemplate {
         return this.streamingQueryTemplate;
     }
 
+    /**
+     * 动态设置 MyBatis-Plus 流式查询模板
+     *
+     * @param streamingQueryTemplate 流式查询模板
+     * @deprecated 直接修改共享单例字段存在并发安全隐患，请通过构造器或方法参数传入 {@link StreamingQueryTemplate}
+     */
+    @Deprecated(since = "1.2.0")
     public void setStreamingQueryTemplate(StreamingQueryTemplate streamingQueryTemplate) {
         this.streamingQueryTemplate = streamingQueryTemplate;
     }
 
     // ==================== MyBatis-Plus 流式游标消费 ====================
 
-    /**
-     * 联动 MyBatis-Plus 流式游标分批流式消费（顺序消费）
-     *
-     * @param cursorSupplier 游标提供者
-     * @param batchSize      分批大小
-     * @param batchConsumer  分批消费逻辑
-     * @param <T>            实体类型
-     * @return 批处理执行汇总统计
-     */
-    public <T> BatchExecutionResult executeStreaming(
+    public <T> BatchExecutionResult<Integer> executeStreaming(
             Supplier<Cursor<T>> cursorSupplier,
             int batchSize,
             Consumer<List<T>> batchConsumer) {
-        return executeStreaming(getStreamingQueryTemplate(), cursorSupplier, batchSize, batchConsumer);
+        return executeStreaming(getStreamingQueryTemplate(), cursorSupplier, batchSize, batchConsumer, null);
     }
 
-    /**
-     * 联动指定 StreamingQueryTemplate 进行游标流式分批消费（顺序消费）
-     *
-     * @param customStreamingTemplate 自定义或注入的 StreamingQueryTemplate
-     * @param cursorSupplier         游标提供者
-     * @param batchSize              分批大小
-     * @param batchConsumer          分批消费逻辑
-     * @param <T>                    实体类型
-     * @return 批处理执行汇总统计
-     */
-    public <T> BatchExecutionResult executeStreaming(
+    public <T> BatchExecutionResult<Integer> executeStreaming(
+            Supplier<Cursor<T>> cursorSupplier,
+            int batchSize,
+            Consumer<List<T>> batchConsumer,
+            BatchFailureHandler<Integer> failureHandler) {
+        return executeStreaming(getStreamingQueryTemplate(), cursorSupplier, batchSize, batchConsumer, failureHandler);
+    }
+
+    public <T> BatchExecutionResult<Integer> executeStreaming(
             StreamingQueryTemplate customStreamingTemplate,
             Supplier<Cursor<T>> cursorSupplier,
             int batchSize,
             Consumer<List<T>> batchConsumer) {
+        return executeStreaming(customStreamingTemplate, cursorSupplier, batchSize, batchConsumer, null);
+    }
+
+    /**
+     * 联动指定 StreamingQueryTemplate 进行游标流式分批消费（支持显式 {@link BatchFailureHandler}）
+     */
+    public <T> BatchExecutionResult<Integer> executeStreaming(
+            StreamingQueryTemplate customStreamingTemplate,
+            Supplier<Cursor<T>> cursorSupplier,
+            int batchSize,
+            Consumer<List<T>> batchConsumer,
+            BatchFailureHandler<Integer> failureHandler) {
         Objects.requireNonNull(cursorSupplier, "cursorSupplier 不能为 null");
         Objects.requireNonNull(batchConsumer, "batchConsumer 不能为 null");
         int effectiveBatchSize = batchSize > 0 ? batchSize : getDefaultBatchSize();
@@ -127,19 +214,28 @@ public class SnailMyBatisStreamingTemplate extends SnailShardingBatchTemplate {
         AtomicLong successCount = new AtomicLong(0);
         AtomicLong failCount = new AtomicLong(0);
         AtomicInteger batchCount = new AtomicInteger(0);
+        List<FailedBatch<Integer>> failedBatches = new ArrayList<>();
+        ReentrantLock failedLock = new ReentrantLock();
+        AtomicBoolean truncated = new AtomicBoolean(false);
+        AtomicLong nextProgressThreshold = createProgressThreshold();
 
         Consumer<List<T>> dispatcher = batch -> {
             if (batch == null || batch.isEmpty()) {
                 return;
             }
             int size = batch.size();
-            totalCount.addAndGet(size);
+            long processed = totalCount.addAndGet(size);
             int batchIndex = batchCount.incrementAndGet();
             try {
                 batchConsumer.accept(Collections.unmodifiableList(batch));
-                successCount.addAndGet(size);
+                long currentSuccess = successCount.addAndGet(size);
+                emitProgressIfNeeded(processed, currentSuccess, failCount.get(), batchIndex, startTime, nextProgressThreshold);
             } catch (Throwable t) {
-                failCount.addAndGet(size);
+                long currentFail = failCount.addAndGet(size);
+                FailedBatch<Integer> failed = new FailedBatch<>(batchIndex, batchIndex, null, batchIndex, size, t);
+                recordFailedBatch(failedBatches, failedLock, truncated, getMaxFailedItems(), failed);
+                notifyFailureHandler(failed, failureHandler);
+                emitProgressIfNeeded(processed, successCount.get(), currentFail, batchIndex, startTime, nextProgressThreshold);
                 if (isFailFast()) {
                     if (t instanceof RuntimeException re) {
                         throw re;
@@ -174,34 +270,62 @@ public class SnailMyBatisStreamingTemplate extends SnailShardingBatchTemplate {
                     }
                     throw new IllegalStateException("MyBatis 游标遍历异常", e);
                 }
+                int errBatch = batchCount.incrementAndGet();
+                FailedBatch<Integer> failed = new FailedBatch<>(errBatch, errBatch, null, errBatch, 0, e);
+                recordFailedBatch(failedBatches, failedLock, truncated, getMaxFailedItems(), failed);
+                notifyFailureHandler(failed, failureHandler);
                 log.error("[SnailMyBatisStreamingTemplate] 游标遍历底层异常: {}", e.getMessage(), e);
             }
         }
 
         Duration duration = Duration.ofNanos(System.nanoTime() - startTime);
-        return new BatchExecutionResult(totalCount.get(), successCount.get(), failCount.get(), batchCount.get(), duration);
+        return new BatchExecutionResult<>(
+                totalCount.get(),
+                successCount.get(),
+                failCount.get(),
+                batchCount.get(),
+                duration,
+                failedBatches,
+                getMaxFailedItems(),
+                truncated.get());
     }
 
-    /**
-     * 联动 MyBatis-Plus 流式游标分批并发消费（受管线程池 + 信号量背压）
-     */
-    public <T> BatchExecutionResult executeStreamingParallel(
+    public <T> BatchExecutionResult<Integer> executeStreamingParallel(
             Supplier<Cursor<T>> cursorSupplier,
             int batchSize,
             int maxConcurrency,
             Consumer<List<T>> batchConsumer) {
-        return executeStreamingParallel(getStreamingQueryTemplate(), cursorSupplier, batchSize, maxConcurrency, batchConsumer);
+        return executeStreamingParallel(getStreamingQueryTemplate(), cursorSupplier, batchSize, maxConcurrency, batchConsumer, null);
     }
 
-    /**
-     * 联动指定 StreamingQueryTemplate 进行游标流式分批并发消费
-     */
-    public <T> BatchExecutionResult executeStreamingParallel(
+    public <T> BatchExecutionResult<Integer> executeStreamingParallel(
+            Supplier<Cursor<T>> cursorSupplier,
+            int batchSize,
+            int maxConcurrency,
+            Consumer<List<T>> batchConsumer,
+            BatchFailureHandler<Integer> failureHandler) {
+        return executeStreamingParallel(getStreamingQueryTemplate(), cursorSupplier, batchSize, maxConcurrency, batchConsumer, failureHandler);
+    }
+
+    public <T> BatchExecutionResult<Integer> executeStreamingParallel(
             StreamingQueryTemplate customStreamingTemplate,
             Supplier<Cursor<T>> cursorSupplier,
             int batchSize,
             int maxConcurrency,
             Consumer<List<T>> batchConsumer) {
+        return executeStreamingParallel(customStreamingTemplate, cursorSupplier, batchSize, maxConcurrency, batchConsumer, null);
+    }
+
+    /**
+     * 联动指定 StreamingQueryTemplate 进行游标流式分批并发消费（支持显式 {@link BatchFailureHandler}）
+     */
+    public <T> BatchExecutionResult<Integer> executeStreamingParallel(
+            StreamingQueryTemplate customStreamingTemplate,
+            Supplier<Cursor<T>> cursorSupplier,
+            int batchSize,
+            int maxConcurrency,
+            Consumer<List<T>> batchConsumer,
+            BatchFailureHandler<Integer> failureHandler) {
         Objects.requireNonNull(cursorSupplier, "cursorSupplier 不能为 null");
         Objects.requireNonNull(batchConsumer, "batchConsumer 不能为 null");
 
@@ -214,23 +338,22 @@ public class SnailMyBatisStreamingTemplate extends SnailShardingBatchTemplate {
         AtomicLong successCount = new AtomicLong(0);
         AtomicLong failCount = new AtomicLong(0);
         AtomicInteger batchCount = new AtomicInteger(0);
+        List<FailedBatch<Integer>> failedBatches = new ArrayList<>();
+        ReentrantLock failedLock = new ReentrantLock();
+        AtomicBoolean truncated = new AtomicBoolean(false);
+        AtomicLong nextProgressThreshold = createProgressThreshold();
 
         Semaphore semaphore = new Semaphore(effectiveConcurrency);
-        List<CompletableFuture<Void>> futures = Collections.synchronizedList(new ArrayList<>());
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
         AtomicReference<Throwable> firstError = new AtomicReference<>(null);
-
-        Map<String, String> mdcContext = MDC.getCopyOfContextMap();
-        String currentTenant = TenantContextHolder.getTenantId();
-        boolean ignoreTenant = TenantContextHolder.isIgnoreTenant();
-        String currentUser = UserContextHolder.getExplicit();
-        SnailJobContext parentJobContext = SnailJobContextHolder.get();
+        ParentContextSnapshot parentContext = ParentContextSnapshot.capture();
 
         Consumer<List<T>> dispatcher = batch -> {
             if (batch == null || batch.isEmpty() || (isFailFast() && firstError.get() != null)) {
                 return;
             }
             int size = batch.size();
-            totalCount.addAndGet(size);
+            long processed = totalCount.addAndGet(size);
             int batchIndex = batchCount.incrementAndGet();
 
             try {
@@ -241,50 +364,23 @@ public class SnailMyBatisStreamingTemplate extends SnailShardingBatchTemplate {
             }
 
             List<T> immutableBatch = Collections.unmodifiableList(batch);
-            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                Map<String, String> previousMdc = MDC.getCopyOfContextMap();
-                if (mdcContext != null) {
-                    MDC.setContextMap(mdcContext);
-                } else {
-                    MDC.clear();
-                }
-
-                TenantSnapshot tenantSnapshot = TenantContextHolder.capturePrevious();
-                TenantContextHolder.setTenantId(currentTenant);
-                TenantContextHolder.setIgnoreTenant(ignoreTenant);
-
-                String previousUser = UserContextHolder.getExplicit();
-                if (currentUser != null) {
-                    UserContextHolder.set(currentUser);
-                } else {
-                    UserContextHolder.clear();
-                }
-
-                SnailJobContextHolder.set(parentJobContext);
-
+            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> parentContext.runWithContext(() -> {
                 try {
                     batchConsumer.accept(immutableBatch);
-                    successCount.addAndGet(size);
+                    long currentSuccess = successCount.addAndGet(size);
+                    emitProgressIfNeeded(processed, currentSuccess, failCount.get(), batchIndex, startTime, nextProgressThreshold);
                 } catch (Throwable t) {
-                    failCount.addAndGet(size);
+                    long currentFail = failCount.addAndGet(size);
+                    FailedBatch<Integer> failed = new FailedBatch<>(batchIndex, batchIndex, null, batchIndex, size, t);
+                    recordFailedBatch(failedBatches, failedLock, truncated, getMaxFailedItems(), failed);
+                    notifyFailureHandler(failed, failureHandler);
                     firstError.compareAndSet(null, t);
                     log.error("[SnailMyBatisStreamingTemplate] 游标并发切片异常 [批次: {}]: {}", batchIndex, t.getMessage(), t);
+                    emitProgressIfNeeded(processed, successCount.get(), currentFail, batchIndex, startTime, nextProgressThreshold);
                 } finally {
                     semaphore.release();
-                    SnailJobContextHolder.remove();
-                    TenantContextHolder.restore(tenantSnapshot);
-                    if (previousUser != null) {
-                        UserContextHolder.set(previousUser);
-                    } else {
-                        UserContextHolder.clear();
-                    }
-                    if (previousMdc != null) {
-                        MDC.setContextMap(previousMdc);
-                    } else {
-                        MDC.clear();
-                    }
                 }
-            }, executor);
+            }), executor);
 
             futures.add(future);
         };
@@ -310,16 +406,16 @@ public class SnailMyBatisStreamingTemplate extends SnailShardingBatchTemplate {
                     }
                 }
             } catch (Exception e) {
+                int errBatch = batchCount.incrementAndGet();
+                FailedBatch<Integer> failed = new FailedBatch<>(errBatch, errBatch, null, errBatch, 0, e);
+                recordFailedBatch(failedBatches, failedLock, truncated, getMaxFailedItems(), failed);
+                notifyFailureHandler(failed, failureHandler);
                 firstError.compareAndSet(null, e);
                 log.error("[SnailMyBatisStreamingTemplate] 游标并发流式异常: {}", e.getMessage(), e);
             }
         }
 
-        try {
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get(1, TimeUnit.HOURS);
-        } catch (Exception e) {
-            firstError.compareAndSet(null, e);
-        }
+        awaitAllFutures(futures, firstError);
 
         if (isFailFast() && firstError.get() != null) {
             Throwable t = firstError.get();
@@ -330,6 +426,14 @@ public class SnailMyBatisStreamingTemplate extends SnailShardingBatchTemplate {
         }
 
         Duration duration = Duration.ofNanos(System.nanoTime() - startTime);
-        return new BatchExecutionResult(totalCount.get(), successCount.get(), failCount.get(), batchCount.get(), duration);
+        return new BatchExecutionResult<>(
+                totalCount.get(),
+                successCount.get(),
+                failCount.get(),
+                batchCount.get(),
+                duration,
+                snapshotFailedBatches(failedBatches, failedLock),
+                getMaxFailedItems(),
+                truncated.get());
     }
 }

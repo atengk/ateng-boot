@@ -353,6 +353,163 @@ class SnailShardingBatchTemplateTest {
         assertThat(workerThreads).containsExactly(callerThread);
     }
 
+    @Test
+    @DisplayName("BatchFailureHandler SPI: 全局默认兜底与显式回调覆写互不重复")
+    void testBatchFailureHandlerPrecedenceAndNoDuplicateInvocation() {
+        List<FailedBatch<Long>> globalCaptured = new CopyOnWriteArrayList<>();
+        List<FailedBatch<Long>> explicitCaptured = new CopyOnWriteArrayList<>();
+        BatchFailureHandler<Long> globalHandler = globalCaptured::add;
+
+        SnailShardingBatchTemplate managedTemplate = new SnailShardingBatchTemplate(
+                Executors.newFixedThreadPool(2), 2, 2, false, false, 100, 500, globalHandler);
+
+        List<Long> mockDb = List.of(1L, 2L, 3L, 4L);
+
+        // 1. 未传显式回调：由全局默认 SPI 兜底触发
+        BatchExecutionResult<Long> fallbackResult = managedTemplate.executeStep(
+                0L,
+                2,
+                false,
+                (lastId, size) -> mockDb.stream().filter(id -> id > lastId).limit(size).toList(),
+                id -> id,
+                chunk -> {
+                    if (chunk.contains(1L)) {
+                        throw new IllegalStateException("global fallback error");
+                    }
+                }
+        );
+        assertThat(fallbackResult.getFailCount()).isEqualTo(2);
+        assertThat(globalCaptured).hasSize(1);
+        assertThat(globalCaptured.get(0).cursorStart()).isEqualTo(1L);
+
+        // 2. 传入显式回调：显式回调优先触发，全局默认 SPI 不重复触发
+        BatchExecutionResult<Long> overrideResult = managedTemplate.executeStep(
+                0L,
+                2,
+                false,
+                (lastId, size) -> mockDb.stream().filter(id -> id > lastId).limit(size).toList(),
+                id -> id,
+                chunk -> {
+                    if (chunk.contains(3L)) {
+                        throw new IllegalStateException("explicit override error");
+                    }
+                },
+                explicitCaptured::add
+        );
+        assertThat(overrideResult.getFailCount()).isEqualTo(2);
+        assertThat(explicitCaptured).hasSize(1);
+        assertThat(explicitCaptured.get(0).cursorStart()).isEqualTo(3L);
+        assertThat(globalCaptured).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("不可变派生视图: withFailFast / withProgressLogInterval / withMaxConcurrency 不污染原单例")
+    void testImmutableDerivedViewsIsolation() {
+        SnailShardingBatchTemplate base = new SnailShardingBatchTemplate(
+                Runnable::run, 10, 4, true, false, 5000, 500, null);
+
+        SnailShardingBatchTemplate tolerantView = base.withFailFast(false);
+        SnailShardingBatchTemplate customIntervalView = tolerantView.withProgressLogInterval(2);
+        SnailShardingBatchTemplate customConcurrencyView = customIntervalView.withMaxConcurrency(1);
+
+        assertThat(base.isFailFast()).isTrue();
+        assertThat(base.getProgressLogInterval()).isEqualTo(5000);
+        assertThat(base.getDefaultMaxConcurrency()).isEqualTo(4);
+
+        assertThat(tolerantView.isFailFast()).isFalse();
+        assertThat(customIntervalView.getProgressLogInterval()).isEqualTo(2);
+        assertThat(customConcurrencyView.getDefaultMaxConcurrency()).isEqualTo(1);
+        assertThat(customConcurrencyView.isFailFast()).isFalse();
+
+        // 原单例保持 failFast=true，派生视图保持 failFast=false
+        List<Long> mockDb = List.of(1L, 2L, 3L);
+        BatchExecutionResult<Long> viewResult = customConcurrencyView.executeStep(
+                0L,
+                1,
+                (lastId, size) -> mockDb.stream().filter(id -> id > lastId).limit(size).toList(),
+                id -> id,
+                chunk -> {
+                    if (chunk.contains(2L)) {
+                        throw new RuntimeException("view fail-open");
+                    }
+                }
+        );
+        assertThat(viewResult.getFailCount()).isEqualTo(1);
+        assertThat(viewResult.getSuccessCount()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("有界失败明细上限保护: MAX_FAILED_ITEMS = 500 截断防 OOM")
+    void testBoundedFailedItemsTruncationAt500() {
+        assertThat(BatchExecutionResult.MAX_FAILED_ITEMS).isEqualTo(500);
+
+        List<Long> ids = new ArrayList<>(520);
+        for (long i = 1; i <= 520; i++) {
+            ids.add(i);
+        }
+
+        SnailShardingBatchTemplate boundedTemplate = template.withFailFast(false);
+        BatchExecutionResult<Long> result = boundedTemplate.executeStepParallel(
+                0L,
+                1,
+                4,
+                false,
+                (lastId, size) -> {
+                    long from = lastId != null ? lastId : 0L;
+                    return ids.stream().filter(id -> id > from).limit(size).toList();
+                },
+                id -> id,
+                chunk -> {
+                    throw new IllegalStateException("mass failure storm");
+                }
+        );
+
+        assertThat(result.getTotalCount()).isEqualTo(520);
+        assertThat(result.getFailCount()).isEqualTo(520);
+        assertThat(result.getFailedBatchCount()).isEqualTo(500);
+        assertThat(result.getFailedBatches()).hasSize(500);
+        assertThat(result.isTruncatedFailures()).isTrue();
+    }
+
+    @Test
+    @DisplayName("SnailMyBatisStreamingTemplate: 结构化 FailedBatch 返回、派生视图与 @Deprecated 兼容")
+    void testStreamingTemplateStructuredFailuresAndDerivedViews() throws Exception {
+        SnailMyBatisStreamingTemplate streaming = new SnailMyBatisStreamingTemplate(Runnable::run, 2, 2, false, false);
+        SnailMyBatisStreamingTemplate derived = streaming
+                .withFailFast(false)
+                .withProgressLogInterval(0)
+                .withMaxConcurrency(1);
+
+        assertThat(derived).isInstanceOf(SnailMyBatisStreamingTemplate.class);
+        assertThat(SnailMyBatisStreamingTemplate.class
+                .getMethod("setStreamingQueryTemplate", io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate.class)
+                .isAnnotationPresent(Deprecated.class)).isTrue();
+
+        List<String> rows = List.of("A", "B", "C", "D");
+        List<FailedBatch<Integer>> captured = new CopyOnWriteArrayList<>();
+
+        BatchExecutionResult<Integer> result = derived.executeStreamingParallel(
+                () -> new MockCursor<>(rows),
+                2,
+                1,
+                batch -> {
+                    if (batch.contains("C")) {
+                        throw new IllegalStateException("streaming chunk error");
+                    }
+                },
+                captured::add
+        );
+
+        assertThat(result.getTotalCount()).isEqualTo(4);
+        assertThat(result.getSuccessCount()).isEqualTo(2);
+        assertThat(result.getFailCount()).isEqualTo(2);
+        assertThat(result.getFailedBatches()).hasSize(1);
+        assertThat(result.getFailedBatches().get(0).getCause())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("streaming chunk error");
+        assertThat(captured).hasSize(1);
+    }
+
     /**
      * 纯内存 Mock MyBatis Cursor 实现
      */

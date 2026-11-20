@@ -117,6 +117,17 @@ public class SnailJobScenarioService {
     }
 
     /**
+     * 执行多租户受管并发背压遍历场景
+     *
+     * @param param 可选参数（传 FAIL_ONE 模拟单租户失败容错）
+     * @return 任务执行诊断报告
+     */
+    public SnailJobTestResult executeTenantParallel(String param) {
+        log.info("[SnailJobScenarioService] 触发多租户并发背压遍历场景, param={}", param);
+        return SnailJobTestHelper.triggerJob("tenantParallelBatchJob", param);
+    }
+
+    /**
      * 执行单租户限定任务场景
      *
      * @param tenantId 租户标识

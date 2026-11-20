@@ -16,14 +16,22 @@ import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.job.snail.annotation.AtengSnailJob;
 import io.github.atengk.boot.job.snail.annotation.AtengSnailRetry;
+import io.github.atengk.boot.job.snail.context.SnailJobContext;
 import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
+import io.github.atengk.boot.job.snail.governor.SnailJobRuntimeGovernor;
 import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper.SnailJobTestResult;
 import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper.SnailRetryTestResult;
+import io.github.atengk.boot.job.snail.model.ShardingContext;
+import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 import org.springframework.context.support.GenericApplicationContext;
+import org.springframework.util.unit.DataSize;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -83,6 +91,39 @@ public class SnailJobTestHelperTest {
         @MergeReduceExecutor
         public String executeMergeReduce(MergeReduceArgs args) {
             return "mergeReduceDone:" + args.getJobParams();
+        }
+
+        @AtengSnailJob("multiParamValidatedJob")
+        public String executeMultiParamValidated(
+                ShardingContext sharding,
+                SnailJobContext jobContext,
+                @Valid HelperDto dto) {
+            return dto.getOrderNo() + "|count=" + dto.getCount()
+                    + "|shard=" + sharding.getShardIndex() + "/" + sharding.getShardTotal()
+                    + "|hasCtx=" + (jobContext != null);
+        }
+    }
+
+    public static class HelperDto {
+        @NotBlank(message = "orderNo不能为空")
+        private String orderNo;
+        @Min(value = 1, message = "count必须大于0")
+        private int count;
+
+        public String getOrderNo() {
+            return orderNo;
+        }
+
+        public void setOrderNo(String orderNo) {
+            this.orderNo = orderNo;
+        }
+
+        public int getCount() {
+            return count;
+        }
+
+        public void setCount(int count) {
+            this.count = count;
         }
     }
 
@@ -236,6 +277,60 @@ public class SnailJobTestHelperTest {
         @JobExecutor(name = "switchedOnlyJob")
         public String executeSwitched() {
             return "switchedDone";
+        }
+    }
+
+    @Test
+    public void testMultiParamBindingValidationMalformedJsonPayloadAndGovernor() {
+        GenericApplicationContext governedCtx = new GenericApplicationContext();
+        SnailJobRuntimeGovernor governor = new SnailJobRuntimeGovernor();
+        SnailJobProperties props = new SnailJobProperties();
+        props.setMaxPayloadSize(DataSize.ofBytes(80));
+        governedCtx.registerBean(SnailJobRuntimeGovernor.class, () -> governor);
+        governedCtx.registerBean(SnailJobProperties.class, () -> props);
+        governedCtx.registerBean("sampleTestService", SampleTestService.class, SampleTestService::new);
+        governedCtx.refresh();
+
+        try {
+            helper.setApplicationContext(governedCtx);
+
+            // 1. 多参数绑定（ShardingContext + SnailJobContext + @Valid DTO）
+            SnailJobTestResult okResult = SnailJobTestHelper.triggerJob(
+                    "multiParamValidatedJob", "{\"orderNo\":\"ORD-100\",\"count\":3}", 1, 4);
+            assertTrue(okResult.isSuccess());
+            assertEquals("ORD-100|count=3|shard=1/4|hasCtx=true", okResult.result());
+
+            // 2. 畸形 JSON 显式抛出语义异常，严禁透传字符串引发 argument type mismatch
+            SnailJobTestResult malformedResult = SnailJobTestHelper.triggerJob("multiParamValidatedJob", "{broken-json");
+            assertFalse(malformedResult.isSuccess());
+            assertNotNull(malformedResult.throwable());
+            assertTrue(malformedResult.throwable() instanceof BusinessException);
+            assertTrue(malformedResult.throwable().getMessage().contains("JSON"));
+
+            // 3. @Valid JSR-303 参数校验 Fail-Fast
+            SnailJobTestResult invalidResult = SnailJobTestHelper.triggerJob(
+                    "multiParamValidatedJob", "{\"orderNo\":\"\",\"count\":0}");
+            assertFalse(invalidResult.isSuccess());
+            assertTrue(invalidResult.throwable() instanceof BusinessException);
+            assertTrue(invalidResult.throwable().getMessage().contains("JSR-303"));
+
+            // 4. maxPayloadSize 载荷超限拦截
+            String oversized = "{\"orderNo\":\"" + "A".repeat(90) + "\",\"count\":1}";
+            SnailJobTestResult payloadResult = SnailJobTestHelper.triggerJob("multiParamValidatedJob", oversized);
+            assertFalse(payloadResult.isSuccess());
+            assertTrue(payloadResult.throwable() instanceof BusinessException);
+            assertTrue(payloadResult.throwable().getMessage().contains("maxPayloadSize"));
+
+            // 5. SnailJobRuntimeGovernor 暂停态拦截
+            governor.pause("multiParamValidatedJob");
+            SnailJobTestResult pausedResult = SnailJobTestHelper.triggerJob(
+                    "multiParamValidatedJob", "{\"orderNo\":\"ORD-200\",\"count\":1}");
+            assertFalse(pausedResult.isSuccess());
+            assertTrue(pausedResult.throwable() instanceof BusinessException);
+            assertTrue(pausedResult.throwable().getMessage().contains("暂停"));
+        } finally {
+            SnailJobTestHelper.clear();
+            governedCtx.close();
         }
     }
 }

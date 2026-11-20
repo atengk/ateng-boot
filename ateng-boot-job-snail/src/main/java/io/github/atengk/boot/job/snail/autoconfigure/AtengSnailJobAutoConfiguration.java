@@ -31,6 +31,7 @@ import io.github.atengk.boot.job.snail.retry.generator.SpelIdempotentIdGenerator
 import io.github.atengk.boot.job.snail.retry.scanner.AtengSnailRetryScanner;
 import io.github.atengk.boot.job.snail.retry.template.SnailRetryTemplate;
 import io.github.atengk.boot.job.snail.scanner.AtengSnailJobScanner;
+import io.github.atengk.boot.job.snail.template.BatchFailureHandler;
 import io.github.atengk.boot.job.snail.template.SnailJobAdminTemplate;
 import io.github.atengk.boot.job.snail.template.SnailMyBatisStreamingTemplate;
 import io.github.atengk.boot.job.snail.template.SnailShardingBatchTemplate;
@@ -219,6 +220,7 @@ public class AtengSnailJobAutoConfiguration {
      *
      * @param properties                SnailJob 配置属性
      * @param drainStateMachineProvider 平滑排空状态机提供者 (可选)
+     * @param taskExecutorProvider      Core 受管线程池提供者 (可选)
      * @return SnailJobHealthIndicator 实例
      */
     @Bean
@@ -226,8 +228,13 @@ public class AtengSnailJobAutoConfiguration {
     @ConditionalOnMissingBean(name = "snailJobHealthIndicator")
     public SnailJobHealthIndicator snailJobHealthIndicator(
             SnailJobProperties properties,
-            ObjectProvider<GracefulDrainStateMachine> drainStateMachineProvider) {
-        return new SnailJobHealthIndicator(properties, drainStateMachineProvider.getIfAvailable());
+            ObjectProvider<GracefulDrainStateMachine> drainStateMachineProvider,
+            @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
+        return new SnailJobHealthIndicator(
+                properties,
+                drainStateMachineProvider.getIfAvailable(),
+                resolveManagedExecutor(properties, taskExecutorProvider)
+        );
     }
 
     /**
@@ -334,14 +341,19 @@ public class AtengSnailJobAutoConfiguration {
             @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "batch-template-enabled", havingValue = "true", matchIfMissing = true)
             public SnailShardingBatchTemplate snailMyBatisStreamingTemplate(
                     @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
-                    SnailJobProperties properties) {
+                    SnailJobProperties properties,
+                    ObjectProvider<BatchFailureHandler<?>> batchFailureHandlerProvider) {
                 SnailJobProperties.BatchProperties batch = properties.getBatch();
                 return new SnailMyBatisStreamingTemplate(
                         resolveManagedExecutor(properties, taskExecutorProvider),
                         batch.getDefaultBatchSize(),
                         batch.getDefaultMaxConcurrency(),
                         true,
-                        properties.isManagedPoolEnabled()
+                        properties.isManagedPoolEnabled(),
+                        batch.getProgressLogInterval(),
+                        batch.getMaxFailedItems(),
+                        null,
+                        batchFailureHandlerProvider.getIfAvailable()
                 );
             }
         }
@@ -351,14 +363,18 @@ public class AtengSnailJobAutoConfiguration {
         @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "batch-template-enabled", havingValue = "true", matchIfMissing = true)
         public SnailShardingBatchTemplate snailShardingBatchTemplate(
                 @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
-                SnailJobProperties properties) {
+                SnailJobProperties properties,
+                ObjectProvider<BatchFailureHandler<?>> batchFailureHandlerProvider) {
             SnailJobProperties.BatchProperties batch = properties.getBatch();
             return new SnailShardingBatchTemplate(
                     resolveManagedExecutor(properties, taskExecutorProvider),
                     batch.getDefaultBatchSize(),
                     batch.getDefaultMaxConcurrency(),
                     true,
-                    properties.isManagedPoolEnabled()
+                    properties.isManagedPoolEnabled(),
+                    batch.getProgressLogInterval(),
+                    batch.getMaxFailedItems(),
+                    batchFailureHandlerProvider.getIfAvailable()
             );
         }
 
@@ -367,8 +383,20 @@ public class AtengSnailJobAutoConfiguration {
         @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "tenant-template-enabled", havingValue = "true", matchIfMissing = true)
         public TenantJobTemplate tenantJobTemplate(
                 ObjectProvider<TenantListProvider> tenantListProvider,
-                ObjectProvider<PlatformTransactionManager> transactionManagerProvider) {
-            return new TenantJobTemplate(tenantListProvider.getIfAvailable(), transactionManagerProvider);
+                ObjectProvider<PlatformTransactionManager> transactionManagerProvider,
+                @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
+                SnailJobProperties properties,
+                ObjectProvider<BatchFailureHandler<?>> batchFailureHandlerProvider) {
+            SnailJobProperties.BatchProperties batch = properties.getBatch();
+            return new TenantJobTemplate(
+                    tenantListProvider.getIfAvailable(),
+                    transactionManagerProvider,
+                    resolveManagedExecutor(properties, taskExecutorProvider),
+                    batch.getDefaultMaxConcurrency(),
+                    properties.isManagedPoolEnabled(),
+                    batch.getMaxFailedItems(),
+                    batchFailureHandlerProvider.getIfAvailable()
+            );
         }
     }
 
