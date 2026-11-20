@@ -2,7 +2,6 @@ package io.github.atengk.boot.search.template;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.Conflicts;
-import co.elastic.clients.elasticsearch._types.ElasticsearchException;
 import co.elastic.clients.elasticsearch._types.FieldValue;
 import co.elastic.clients.elasticsearch._types.KnnSearch;
 import co.elastic.clients.elasticsearch._types.Result;
@@ -24,10 +23,13 @@ import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
 import co.elastic.clients.elasticsearch.core.get.GetResult;
 import co.elastic.clients.elasticsearch.core.mget.MultiGetResponseItem;
 import co.elastic.clients.elasticsearch.core.search.Hit;
+import co.elastic.clients.json.JsonpUtils;
+import co.elastic.clients.json.jackson.JacksonJsonpMapper;
 import co.elastic.clients.transport.endpoints.BooleanResponse;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.search.bulk.SearchBulkProcessor;
+import io.github.atengk.boot.search.driver.SearchEngineDialect;
 import io.github.atengk.boot.search.enums.SearchEngineType;
 import io.github.atengk.boot.search.enums.SearchResultCode;
 import io.github.atengk.boot.search.exception.SearchBulkException;
@@ -44,13 +46,14 @@ import io.github.atengk.boot.search.model.SearchScrollResult;
 import io.github.atengk.boot.search.properties.AtengSearchProperties;
 import io.github.atengk.boot.search.query.SearchQuery;
 import io.github.atengk.boot.search.spi.SearchEngineClient;
+import io.github.atengk.boot.search.spi.SearchInterceptor;
+import io.github.atengk.boot.search.spi.SearchInvocationContext;
 import io.github.atengk.boot.search.util.SearchExceptionClassifier;
 import io.github.atengk.boot.search.util.SearchMetadataHelper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.elasticsearch.client.ResponseException;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -58,6 +61,10 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 搜索引擎统一操作门面模板
@@ -74,20 +81,29 @@ public class SearchTemplate {
     private final SearchEngineClient searchEngineClient;
     private final SearchIndexOperations searchIndexOperations;
     private final AtengSearchProperties properties;
-    private SearchMetrics searchMetrics;
+    private final List<SearchInterceptor> interceptors;
+    private volatile SearchMetrics searchMetrics;
 
     public SearchTemplate(SearchEngineClient searchEngineClient) {
-        this(searchEngineClient, new AtengSearchProperties(), null);
+        this(searchEngineClient, new AtengSearchProperties(), null, Collections.emptyList());
     }
 
     public SearchTemplate(SearchEngineClient searchEngineClient, AtengSearchProperties properties) {
-        this(searchEngineClient, properties, null);
+        this(searchEngineClient, properties, null, Collections.emptyList());
     }
 
     public SearchTemplate(SearchEngineClient searchEngineClient, AtengSearchProperties properties, SearchMetrics searchMetrics) {
+        this(searchEngineClient, properties, searchMetrics, Collections.emptyList());
+    }
+
+    public SearchTemplate(SearchEngineClient searchEngineClient,
+                          AtengSearchProperties properties,
+                          SearchMetrics searchMetrics,
+                          List<SearchInterceptor> interceptors) {
         this.searchEngineClient = Objects.requireNonNull(searchEngineClient, "searchEngineClient must not be null");
         this.properties = properties != null ? properties : new AtengSearchProperties();
         this.searchMetrics = searchMetrics;
+        this.interceptors = interceptors != null ? List.copyOf(interceptors) : Collections.emptyList();
         this.searchIndexOperations = new SearchIndexOperations(this);
     }
 
@@ -259,34 +275,37 @@ public class SearchTemplate {
         String documentId = SearchMetadataHelper.resolveDocumentId(document);
         String routing = SearchMetadataHelper.resolveRouting(document);
 
-        try {
-            IndexResponse response = getClient().index(builder -> {
-                builder.index(index).document(document);
-                if (StringUtils.hasText(documentId)) {
-                    builder.id(documentId);
+        return executeObserved("index", index, document.getClass(), routing, null, false, () -> {
+            try {
+                IndexResponse response = getClient().index(builder -> {
+                    builder.index(index).document(document);
+                    if (StringUtils.hasText(documentId)) {
+                        builder.id(documentId);
+                    }
+                    if (StringUtils.hasText(routing)) {
+                        builder.routing(routing);
+                    }
+                    if (ifSeqNo != null && ifPrimaryTerm != null) {
+                        builder.ifSeqNo(ifSeqNo).ifPrimaryTerm(ifPrimaryTerm);
+                    }
+                    return builder;
+                });
+                log.debug("Indexed document [id={}] to index [{}], result: {}", response.id(), index, response.result());
+                return response.id();
+            } catch (Exception e) {
+                if (SearchExceptionClassifier.isVersionConflict(e)) {
+                    throw new SearchVersionConflictException(
+                            "Document version conflict on index [" + index + "] id [" + documentId + "]: " + e.getMessage(),
+                            ifSeqNo, ifPrimaryTerm, e);
                 }
-                if (StringUtils.hasText(routing)) {
-                    builder.routing(routing);
+                if (e instanceof SearchException se) {
+                    throw se;
                 }
-                if (ifSeqNo != null && ifPrimaryTerm != null) {
-                    builder.ifSeqNo(ifSeqNo).ifPrimaryTerm(ifPrimaryTerm);
-                }
-                return builder;
-            });
-            log.debug("Indexed document [id={}] to index [{}], result: {}", response.id(), index, response.result());
-            return response.id();
-        } catch (Exception e) {
-            if (SearchExceptionClassifier.isVersionConflict(e)) {
-                throw new SearchVersionConflictException(
-                        "Document version conflict on index [" + index + "] id [" + documentId + "]: " + e.getMessage(),
-                        ifSeqNo, ifPrimaryTerm, e);
+                throw new SearchException(
+                        SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_DOCUMENT_INDEX_ERROR),
+                        "Failed to index document [id=" + documentId + "] to index [" + index + "]: " + e.getMessage(), e);
             }
-            if (e instanceof SearchException se) {
-                throw se;
-            }
-            throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_INDEX_ERROR,
-                    "Failed to index document [id=" + documentId + "] to index [" + index + "]: " + e.getMessage(), e);
-        }
+        });
     }
 
     // ==================== 2. 文档获取 (Get) ====================
@@ -413,37 +432,39 @@ public class SearchTemplate {
                     "Routing key is required for document entity [" + clazz.getSimpleName() + "] annotated with @SearchRouting. Use getById/getHitById with routing parameter.");
         }
 
-        try {
-            GetResponse<T> response = getClient().get(builder -> {
-                builder.index(index).id(id);
-                if (StringUtils.hasText(routing)) {
-                    builder.routing(routing);
+        return executeObserved("getById", index, clazz, routing, null, false, () -> {
+            try {
+                GetResponse<T> response = getClient().get(builder -> {
+                    builder.index(index).id(id);
+                    if (StringUtils.hasText(routing)) {
+                        builder.routing(routing);
+                    }
+                    return builder;
+                }, clazz);
+                if (response.found() && response.source() != null) {
+                    return SearchHit.<T>builder()
+                            .id(response.id())
+                            .index(response.index())
+                            .content(response.source())
+                            .seqNo(response.seqNo())
+                            .primaryTerm(response.primaryTerm())
+                            .version(response.version())
+                            .routing(response.routing())
+                            .build();
                 }
-                return builder;
-            }, clazz);
-            if (response.found() && response.source() != null) {
-                return SearchHit.<T>builder()
-                        .id(response.id())
-                        .index(response.index())
-                        .content(response.source())
-                        .seqNo(response.seqNo())
-                        .primaryTerm(response.primaryTerm())
-                        .version(response.version())
-                        .routing(response.routing())
-                        .build();
-            }
-            return null;
-        } catch (Exception e) {
-            if (SearchExceptionClassifier.isNotFound(e)) {
-                log.debug("Document or index not found for index [{}] and id [{}]", index, id);
                 return null;
+            } catch (Exception e) {
+                if (SearchExceptionClassifier.isNotFound(e)) {
+                    log.debug("Document or index not found for index [{}] and id [{}]", index, id);
+                    return null;
+                }
+                if (e instanceof SearchException se) {
+                    throw se;
+                }
+                throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_DOCUMENT_GET_ERROR),
+                        "Failed to get document [id=" + id + "] from index [" + index + "]: " + e.getMessage(), e);
             }
-            if (e instanceof SearchException se) {
-                throw se;
-            }
-            throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_GET_ERROR,
-                    "Failed to get document [id=" + id + "] from index [" + index + "]: " + e.getMessage(), e);
-        }
+        });
     }
 
     /**
@@ -615,10 +636,8 @@ public class SearchTemplate {
             return Collections.emptyList();
         }
 
-        if (searchMetrics != null) {
-            return searchMetrics.recordQuery(() -> executeDoGetHitsByIds(index, clazz, validIds, routing));
-        }
-        return executeDoGetHitsByIds(index, clazz, validIds, routing);
+        return executeObserved("getByIds", index, clazz, routing, null, false,
+                () -> executeDoGetHitsByIds(index, clazz, validIds, routing));
     }
 
     private <T> List<SearchHit<T>> executeDoGetHitsByIds(String index, Class<T> clazz, List<String> idList, String routing) {
@@ -659,7 +678,7 @@ public class SearchTemplate {
             if (e instanceof SearchException se) {
                 throw se;
             }
-            throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_GET_ERROR,
+            throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_DOCUMENT_GET_ERROR),
                     "Failed to get documents by ids from index [" + index + "]: " + e.getMessage(), e);
         }
     }
@@ -740,26 +759,28 @@ public class SearchTemplate {
                     "Routing key is required for document entity [" + clazz.getSimpleName() + "] annotated with @SearchRouting. Use existsById with routing parameter.");
         }
 
-        try {
-            BooleanResponse response = getClient().exists(builder -> {
-                builder.index(index).id(id);
-                if (StringUtils.hasText(routing)) {
-                    builder.routing(routing);
+        return executeObserved("existsById", index, clazz, routing, null, false, () -> {
+            try {
+                BooleanResponse response = getClient().exists(builder -> {
+                    builder.index(index).id(id);
+                    if (StringUtils.hasText(routing)) {
+                        builder.routing(routing);
+                    }
+                    return builder;
+                });
+                return response.value();
+            } catch (Exception e) {
+                if (SearchExceptionClassifier.isNotFound(e)) {
+                    log.debug("Document or index not found for index [{}] and id [{}]", index, id);
+                    return false;
                 }
-                return builder;
-            });
-            return response.value();
-        } catch (Exception e) {
-            if (SearchExceptionClassifier.isNotFound(e)) {
-                log.debug("Document or index not found for index [{}] and id [{}]", index, id);
-                return false;
+                if (e instanceof SearchException se) {
+                    throw se;
+                }
+                throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_DOCUMENT_GET_ERROR),
+                        "Failed to check document existence for id [" + id + "] on index [" + index + "]: " + e.getMessage(), e);
             }
-            if (e instanceof SearchException se) {
-                throw se;
-            }
-            throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_GET_ERROR,
-                    "Failed to check document existence for id [" + id + "] on index [" + index + "]: " + e.getMessage(), e);
-        }
+        });
     }
 
     // ==================== 3. 局部更新与 Upsert (Update) ====================
@@ -1060,42 +1081,45 @@ public class SearchTemplate {
         Objects.requireNonNull(partialDoc, "partialDoc must not be null");
 
         String resolvedRouting = StringUtils.hasText(routing) ? routing : SearchMetadataHelper.resolveRouting(partialDoc);
+        Class<?> entityClass = partialDoc instanceof Map<?, ?> ? null : partialDoc.getClass();
 
-        try {
-            UpdateResponse<Void> response = getClient().update(builder -> {
-                builder.index(index)
-                        .id(id)
-                        .doc(partialDoc)
-                        .docAsUpsert(docAsUpsert);
-                if (StringUtils.hasText(resolvedRouting)) {
-                    builder.routing(resolvedRouting);
-                }
-                if (occVersion != null && occVersion.isSpecified()) {
-                    builder.ifSeqNo(occVersion.seqNo()).ifPrimaryTerm(occVersion.primaryTerm());
-                }
-                return builder;
-            }, Void.class);
+        return executeObserved("update", index, entityClass, resolvedRouting, null, false, () -> {
+            try {
+                UpdateResponse<Void> response = getClient().update(builder -> {
+                    builder.index(index)
+                            .id(id)
+                            .doc(partialDoc)
+                            .docAsUpsert(docAsUpsert);
+                    if (StringUtils.hasText(resolvedRouting)) {
+                        builder.routing(resolvedRouting);
+                    }
+                    if (occVersion != null && occVersion.isSpecified()) {
+                        builder.ifSeqNo(occVersion.seqNo()).ifPrimaryTerm(occVersion.primaryTerm());
+                    }
+                    return builder;
+                }, Void.class);
 
-            log.debug("Updated document [id={}] on index [{}], result: {}", id, index, response.result());
-            return response.result() == Result.Updated || response.result() == Result.Created || response.result() == Result.NoOp;
-        } catch (Exception e) {
-            if (SearchExceptionClassifier.isVersionConflict(e)) {
-                throw new SearchVersionConflictException(
-                        "Document version conflict on update for index [" + index + "] id [" + id + "]: " + e.getMessage(),
-                        occVersion != null ? occVersion.seqNo() : null,
-                        occVersion != null ? occVersion.primaryTerm() : null,
-                        e);
+                log.debug("Updated document [id={}] on index [{}], result: {}", id, index, response.result());
+                return response.result() == Result.Updated || response.result() == Result.Created || response.result() == Result.NoOp;
+            } catch (Exception e) {
+                if (SearchExceptionClassifier.isVersionConflict(e)) {
+                    throw new SearchVersionConflictException(
+                            "Document version conflict on update for index [" + index + "] id [" + id + "]: " + e.getMessage(),
+                            occVersion != null ? occVersion.seqNo() : null,
+                            occVersion != null ? occVersion.primaryTerm() : null,
+                            e);
+                }
+                if (SearchExceptionClassifier.isNotFound(e)) {
+                    log.debug("Document or index not found for update on index [{}] and id [{}]", index, id);
+                    return false;
+                }
+                if (e instanceof SearchException se) {
+                    throw se;
+                }
+                throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                        "Failed to update document [id=" + id + "] on index [" + index + "]: " + e.getMessage(), e);
             }
-            if (SearchExceptionClassifier.isNotFound(e)) {
-                log.debug("Document or index not found for update on index [{}] and id [{}]", index, id);
-                return false;
-            }
-            if (e instanceof SearchException se) {
-                throw se;
-            }
-            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
-                    "Failed to update document [id=" + id + "] on index [" + index + "]: " + e.getMessage(), e);
-        }
+        });
     }
 
     // ==================== 4. 文档删除 (Delete) ====================
@@ -1158,27 +1182,29 @@ public class SearchTemplate {
             throw new IllegalArgumentException("Document id must not be blank");
         }
 
-        try {
-            DeleteResponse response = getClient().delete(builder -> {
-                builder.index(index).id(id);
-                if (StringUtils.hasText(routing)) {
-                    builder.routing(routing);
+        return executeObserved("deleteById", index, null, routing, null, false, () -> {
+            try {
+                DeleteResponse response = getClient().delete(builder -> {
+                    builder.index(index).id(id);
+                    if (StringUtils.hasText(routing)) {
+                        builder.routing(routing);
+                    }
+                    return builder;
+                });
+                log.debug("Deleted document [id={}] from index [{}], result: {}", id, index, response.result());
+                return response.result() == Result.Deleted;
+            } catch (Exception e) {
+                if (SearchExceptionClassifier.isNotFound(e)) {
+                    log.debug("Document or index not found for deletion on index [{}] and id [{}]", index, id);
+                    return false;
                 }
-                return builder;
-            });
-            log.debug("Deleted document [id={}] from index [{}], result: {}", id, index, response.result());
-            return response.result() == Result.Deleted;
-        } catch (Exception e) {
-            if (SearchExceptionClassifier.isNotFound(e)) {
-                log.debug("Document or index not found for deletion on index [{}] and id [{}]", index, id);
-                return false;
+                if (e instanceof SearchException se) {
+                    throw se;
+                }
+                throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_DOCUMENT_DELETE_ERROR),
+                        "Failed to delete document [id=" + id + "] from index [" + index + "]: " + e.getMessage(), e);
             }
-            if (e instanceof SearchException se) {
-                throw se;
-            }
-            throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_DELETE_ERROR,
-                    "Failed to delete document [id=" + id + "] from index [" + index + "]: " + e.getMessage(), e);
-        }
+        });
     }
 
     /**
@@ -1225,10 +1251,8 @@ public class SearchTemplate {
             throw new IllegalArgumentException("Index must not be blank");
         }
         Objects.requireNonNull(query, "query must not be null");
-        if (searchMetrics != null) {
-            return searchMetrics.recordQuery(() -> executeDoDeleteByQuery(index, query, clazz));
-        }
-        return executeDoDeleteByQuery(index, query, clazz);
+        return executeObserved("deleteByQuery", index, clazz, query.getRouting(), query, false,
+                () -> executeDoDeleteByQuery(index, query, clazz));
     }
 
     private long executeDoDeleteByQuery(String index, SearchQuery query, Class<?> clazz) {
@@ -1256,7 +1280,7 @@ public class SearchTemplate {
             if (e instanceof SearchException se) {
                 throw se;
             }
-            throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_DELETE_ERROR,
+            throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_DOCUMENT_DELETE_ERROR),
                     "Failed to execute deleteByQuery on index [" + index + "]: " + e.getMessage(), e);
         }
     }
@@ -1543,10 +1567,9 @@ public class SearchTemplate {
      * @return 批量操作结果模型
      */
     public SearchBulkResult executeBulk(BulkRequest bulkRequest, int totalItems, boolean lenient) {
-        if (searchMetrics != null) {
-            return searchMetrics.recordBulk(() -> doExecuteBulk(bulkRequest, totalItems, lenient));
-        }
-        return doExecuteBulk(bulkRequest, totalItems, lenient);
+        String index = bulkRequest != null ? bulkRequest.index() : null;
+        return executeObserved("bulk", index, null, null, null, true,
+                () -> doExecuteBulk(bulkRequest, totalItems, lenient));
     }
 
     private SearchBulkResult doExecuteBulk(BulkRequest bulkRequest, int totalItems, boolean lenient) {
@@ -1594,7 +1617,7 @@ public class SearchTemplate {
         } catch (SearchException se) {
             throw se;
         } catch (Exception e) {
-            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
+            throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
                     "Bulk operation execution failed: " + e.getMessage(), e);
         }
     }
@@ -1660,10 +1683,8 @@ public class SearchTemplate {
         if (!StringUtils.hasText(index)) {
             throw new IllegalArgumentException("Index must not be blank");
         }
-        if (searchMetrics != null) {
-            return searchMetrics.recordQuery(() -> executeDoCount(index, query, clazz));
-        }
-        return executeDoCount(index, query, clazz);
+        return executeObserved("count", index, clazz, query != null ? query.getRouting() : null, query, false,
+                () -> executeDoCount(index, query, clazz));
     }
 
     private long executeDoCount(String index, SearchQuery query, Class<?> clazz) {
@@ -1690,7 +1711,7 @@ public class SearchTemplate {
             if (e instanceof SearchException se) {
                 throw se;
             }
-            throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_GET_ERROR,
+            throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_DOCUMENT_GET_ERROR),
                     "Failed to execute count on index [" + index + "]: " + e.getMessage(), e);
         }
     }
@@ -1846,43 +1867,22 @@ public class SearchTemplate {
     }
 
     private <T> SearchResponse<T> doSearch(String index, SearchQuery query, Class<T> clazz,
-                                          boolean isSearchAfter, List<String> sortValues, Integer overrideSize) {
-        if (searchMetrics != null) {
-            return searchMetrics.recordQuery(() -> executeDoSearch(index, query, clazz, isSearchAfter, sortValues, overrideSize));
-        }
-        return executeDoSearch(index, query, clazz, isSearchAfter, sortValues, overrideSize);
+                                           boolean isSearchAfter, List<String> sortValues, Integer overrideSize) {
+        String operation = isSearchAfter ? "searchAfter" : "search";
+        return executeObserved(operation, index, clazz, query != null ? query.getRouting() : null, query, false,
+                () -> executeDoSearch(index, query, clazz, isSearchAfter, sortValues, overrideSize));
     }
 
     private <T> SearchResponse<T> executeDoSearch(String index, SearchQuery query, Class<T> clazz,
-                                                 boolean isSearchAfter, List<String> sortValues, Integer overrideSize) {
+                                                  boolean isSearchAfter, List<String> sortValues, Integer overrideSize) {
         try {
             // 组装多租户隐式过滤
             Query baseQuery = wrapTenantFilterIfNecessary(query.getQuery(), clazz);
 
-            // 当底层引擎为 OpenSearch 2.x 时，将 top-level knn 转译为 Query DSL 原生 knn 语法
-            boolean isOpenSearch = searchEngineClient.getEngineType() == SearchEngineType.OPENSEARCH;
-            Query effectiveQuery = baseQuery;
-            if (isOpenSearch && CollectionUtil.isNotEmpty(query.getKnnSearches())) {
-                List<Query> osKnnQueries = new ArrayList<>();
-                for (KnnSearch knn : query.getKnnSearches()) {
-                    String field = knn.field();
-                    List<Float> vector = knn.queryVector();
-                    long k = knn.k();
-                    Map<String, Object> knnData = Map.of(
-                            field, Map.of(
-                                    "vector", vector != null ? vector : java.util.Collections.emptyList(),
-                                    "k", k
-                            )
-                    );
-                    osKnnQueries.add(Query.of(q -> q._custom("knn", knnData)));
-                }
-                if (baseQuery == null) {
-                    effectiveQuery = osKnnQueries.size() == 1 ? osKnnQueries.get(0) : Query.of(q -> q.bool(b -> b.must(osKnnQueries)));
-                } else {
-                    effectiveQuery = Query.of(q -> q.bool(b -> b.must(baseQuery).must(osKnnQueries)));
-                }
-            }
-            final Query finalQuery = effectiveQuery;
+            // 当底层引擎为 OpenSearch 时，由方言适配器将 top-level knn 转译为 Query DSL 原生 knn 语法
+            boolean isOpenSearch = SearchEngineDialect.isOpenSearch(searchEngineClient.getEngineType());
+            final Query finalQuery = SearchEngineDialect.adaptKnnQuery(
+                    searchEngineClient.getEngineType(), baseQuery, query.getKnnSearches());
 
             SearchResponse<T> response = getClient().search(b -> {
                 b.index(index);
@@ -1949,7 +1949,7 @@ public class SearchTemplate {
             if (e instanceof SearchException se) {
                 throw se;
             }
-            throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_GET_ERROR,
+            throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_DOCUMENT_GET_ERROR),
                     "Failed to execute search on index [" + index + "]: " + e.getMessage(), e);
         }
     }
@@ -2064,7 +2064,7 @@ public class SearchTemplate {
                 .build();
     }
 
-    // ==================== 7. 底层逃生舱 (Execute) ====================
+    // ==================== 7. 底层逃生舱与受管观测执行器 (Execute) ====================
 
     /**
      * 原生底层逃生舱执行器
@@ -2075,7 +2075,165 @@ public class SearchTemplate {
      */
     public <R> R execute(SearchCallback<R> callback) {
         Objects.requireNonNull(callback, "SearchCallback must not be null");
-        return searchEngineClient.execute(callback);
+        return executeObserved("execute", null, null, null, null, false,
+                () -> searchEngineClient.execute(callback));
+    }
+
+    private static final JacksonJsonpMapper SLOW_QUERY_JSONP_MAPPER = new JacksonJsonpMapper();
+    private static final Pattern VECTOR_ARRAY_PATTERN = Pattern.compile("\"((?:query_)?vector)\"\\s*:\\s*\\[([^\\]]*)\\]");
+    private static final int MAX_SLOW_QUERY_DSL_LENGTH = 2048;
+
+    /**
+     * 统一数据面/结构面受管观测执行模板（拦截链 + 指标采集 + 慢查询审计）
+     */
+    <R> R executeObserved(String operation,
+                          String index,
+                          Class<?> entityClass,
+                          String routing,
+                          SearchQuery query,
+                          boolean bulkMetric,
+                          Supplier<R> action) {
+        SearchInvocationContext context = null;
+        if (!interceptors.isEmpty()) {
+            context = SearchInvocationContext.builder()
+                    .operation(operation)
+                    .index(index)
+                    .entityClass(entityClass)
+                    .routing(routing)
+                    .query(query)
+                    .engineType(searchEngineClient.getEngineType())
+                    .build();
+        }
+
+        long startNanos = System.nanoTime();
+        String outcome = "SUCCESS";
+        int startedInterceptors = 0;
+        R result;
+        try {
+            if (context != null) {
+                for (SearchInterceptor interceptor : interceptors) {
+                    interceptor.beforeExecute(context);
+                    startedInterceptors++;
+                }
+            }
+            result = action.get();
+        } catch (Throwable t) {
+            outcome = "ERROR";
+            if (context != null && startedInterceptors > 0) {
+                for (int i = startedInterceptors - 1; i >= 0; i--) {
+                    try {
+                        interceptors.get(i).onError(context, t);
+                    } catch (Throwable ignored) {
+                        log.warn("SearchInterceptor.onError threw exception: {}", ignored.getMessage());
+                    }
+                }
+            }
+            long elapsedNanos = System.nanoTime() - startNanos;
+            if (searchMetrics != null) {
+                searchMetrics.recordDuration(operation, bulkMetric, outcome, elapsedNanos);
+            }
+            logSlowQueryIfNecessary(operation, index, query, outcome, elapsedNanos);
+            throw t;
+        }
+
+        try {
+            if (context != null) {
+                for (int i = startedInterceptors - 1; i >= 0; i--) {
+                    interceptors.get(i).afterExecute(context, result);
+                }
+            }
+            return result;
+        } finally {
+            long elapsedNanos = System.nanoTime() - startNanos;
+            if (searchMetrics != null) {
+                searchMetrics.recordDuration(operation, bulkMetric, outcome, elapsedNanos);
+            }
+            logSlowQueryIfNecessary(operation, index, query, outcome, elapsedNanos);
+        }
+    }
+
+    private void logSlowQueryIfNecessary(String operation, String index, SearchQuery query, String outcome, long elapsedNanos) {
+        AtengSearchProperties.ObservabilityProperties obs = properties.getObservability();
+        if (obs == null || !log.isWarnEnabled()) {
+            return;
+        }
+        Duration threshold = obs.getSlowQueryThreshold();
+        if (threshold == null || threshold.isZero() || threshold.isNegative()) {
+            return;
+        }
+        if (elapsedNanos < threshold.toNanos()) {
+            return;
+        }
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(elapsedNanos);
+        String dslSummary = obs.isLogSlowQueryDsl() && query != null
+                ? ", dsl=" + formatSlowQueryDsl(query, obs.isMaskVectorInLogs())
+                : "";
+        log.warn("Slow search operation detected [op={}, index={}, outcome={}, elapsedMs={}ms, thresholdMs={}ms{}]",
+                operation, index, outcome, elapsedMs, threshold.toMillis(), dslSummary);
+    }
+
+    private static String formatSlowQueryDsl(SearchQuery query, boolean maskVectors) {
+        StringBuilder sb = new StringBuilder();
+        try {
+            boolean hasQuery = query.getQuery() != null;
+            boolean hasKnn = CollectionUtil.isNotEmpty(query.getKnnSearches());
+            if (hasQuery && hasKnn) {
+                sb.append("{\"query\":");
+                JsonpUtils.toString(query.getQuery(), SLOW_QUERY_JSONP_MAPPER, sb);
+                sb.append(",\"knn\":[");
+                for (int i = 0; i < query.getKnnSearches().size(); i++) {
+                    if (i > 0) {
+                        sb.append(',');
+                    }
+                    JsonpUtils.toString(query.getKnnSearches().get(i), SLOW_QUERY_JSONP_MAPPER, sb);
+                }
+                sb.append("]}");
+            } else if (hasQuery) {
+                JsonpUtils.toString(query.getQuery(), SLOW_QUERY_JSONP_MAPPER, sb);
+            } else if (hasKnn) {
+                sb.append("{\"knn\":[");
+                for (int i = 0; i < query.getKnnSearches().size(); i++) {
+                    if (i > 0) {
+                        sb.append(',');
+                    }
+                    JsonpUtils.toString(query.getKnnSearches().get(i), SLOW_QUERY_JSONP_MAPPER, sb);
+                }
+                sb.append("]}");
+            } else {
+                sb.append("{\"from\":").append(query.getFrom()).append(",\"size\":").append(query.getSize()).append('}');
+            }
+        } catch (Exception e) {
+            return "<dsl serialization failed: " + e.getMessage() + ">";
+        }
+        String dsl = sb.toString();
+        if (maskVectors) {
+            dsl = maskVectorArrays(dsl);
+        }
+        if (dsl.length() > MAX_SLOW_QUERY_DSL_LENGTH) {
+            return dsl.substring(0, MAX_SLOW_QUERY_DSL_LENGTH) + "...(truncated)";
+        }
+        return dsl;
+    }
+
+    private static String maskVectorArrays(String dsl) {
+        Matcher matcher = VECTOR_ARRAY_PATTERN.matcher(dsl);
+        if (!matcher.find()) {
+            return dsl;
+        }
+        matcher.reset();
+        StringBuilder masked = new StringBuilder();
+        while (matcher.find()) {
+            String field = matcher.group(1);
+            String elements = matcher.group(2);
+            int dims = 0;
+            if (elements != null && !elements.isBlank()) {
+                dims = elements.split(",").length;
+            }
+            String replacement = "\"" + field + "\":[\"<vector masked: " + dims + " dims>\"]";
+            matcher.appendReplacement(masked, Matcher.quoteReplacement(replacement));
+        }
+        matcher.appendTail(masked);
+        return masked.toString();
     }
 
     // ==================== 私有辅助方法 ====================

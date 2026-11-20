@@ -67,6 +67,11 @@ public class AtengSearchProperties {
     private Duration socketTimeout = Duration.ofSeconds(30);
 
     /**
+     * 连接池借用连接超时时间（默认 3 秒，防连接池耗尽时无界挂起）
+     */
+    private Duration connectionRequestTimeout = Duration.ofSeconds(3);
+
+    /**
      * 连接池最大并发连接数（默认 100）
      */
     private int maxConnections = 100;
@@ -104,6 +109,12 @@ public class AtengSearchProperties {
      */
     @NestedConfigurationProperty
     private BulkProcessorProperties bulk = new BulkProcessorProperties();
+
+    /**
+     * 慢查询审计与日志脱敏可观测配置
+     */
+    @NestedConfigurationProperty
+    private ObservabilityProperties observability = new ObservabilityProperties();
 
     @Data
     public static class SslProperties {
@@ -185,5 +196,23 @@ public class AtengSearchProperties {
          * 优雅停机排空最大等待超时时间（默认 10 秒）
          */
         private Duration awaitCloseTimeout = Duration.ofSeconds(10);
+    }
+
+    @Data
+    public static class ObservabilityProperties {
+        /**
+         * 慢查询告警阈值（默认 1 秒，null 或 <= 0 表示关闭慢查询日志）
+         */
+        private Duration slowQueryThreshold = Duration.ofSeconds(1);
+
+        /**
+         * 触发慢查询告警时是否记录脱敏后的 DSL 摘要（默认 true）
+         */
+        private boolean logSlowQueryDsl = true;
+
+        /**
+         * 记录日志时是否自动折叠/脱敏高维浮点向量数组（默认 true，防日志打爆）
+         */
+        private boolean maskVectorInLogs = true;
     }
 }

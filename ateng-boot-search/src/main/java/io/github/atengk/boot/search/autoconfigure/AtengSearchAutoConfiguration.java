@@ -8,7 +8,9 @@ import io.github.atengk.boot.search.bulk.SearchBulkProcessor;
 import io.github.atengk.boot.search.driver.ElasticsearchClientDriver;
 import io.github.atengk.boot.search.metrics.SearchMetrics;
 import io.github.atengk.boot.search.properties.AtengSearchProperties;
+import io.github.atengk.boot.search.spi.RestClientBuilderCustomizer;
 import io.github.atengk.boot.search.spi.SearchEngineClient;
+import io.github.atengk.boot.search.spi.SearchInterceptor;
 import io.github.atengk.boot.search.template.SearchTemplate;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
@@ -42,7 +44,8 @@ import java.util.concurrent.ScheduledExecutorService;
 @AutoConfigureAfter(name = {
         "org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration",
         "org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration",
-        "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration"
+        "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration",
+        "io.github.atengk.boot.observability.autoconfigure.AtengHealthAutoConfiguration"
 })
 @ConditionalOnClass(ElasticsearchClient.class)
 @ConditionalOnProperty(prefix = "ateng.boot.search", name = "enabled", havingValue = "true", matchIfMissing = true)
@@ -52,18 +55,29 @@ public class AtengSearchAutoConfiguration {
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean(SearchEngineClient.class)
     public SearchEngineClient searchEngineClient(AtengSearchProperties properties,
-                                                 ObjectProvider<ObjectMapper> objectMapperProvider) {
+                                                 ObjectProvider<ObjectMapper> objectMapperProvider,
+                                                 ObjectProvider<RestClientBuilderCustomizer> customizersProvider) {
         log.info("Auto-configuring SearchEngineClient with engine: {}", properties.getEngine());
-        return new ElasticsearchClientDriver(properties, objectMapperProvider.getIfAvailable());
+        return new ElasticsearchClientDriver(
+                properties,
+                objectMapperProvider.getIfAvailable(),
+                customizersProvider.orderedStream().toList()
+        );
     }
 
     @Bean
     @ConditionalOnMissingBean(SearchTemplate.class)
     public SearchTemplate searchTemplate(SearchEngineClient searchEngineClient,
                                          AtengSearchProperties properties,
-                                         ObjectProvider<SearchMetrics> searchMetricsProvider) {
+                                         ObjectProvider<SearchMetrics> searchMetricsProvider,
+                                         ObjectProvider<SearchInterceptor> searchInterceptorsProvider) {
         log.info("Auto-configuring SearchTemplate");
-        return new SearchTemplate(searchEngineClient, properties, searchMetricsProvider.getIfAvailable());
+        return new SearchTemplate(
+                searchEngineClient,
+                properties,
+                searchMetricsProvider.getIfAvailable(),
+                searchInterceptorsProvider.orderedStream().toList()
+        );
     }
 
     @Bean(destroyMethod = "close")
@@ -95,7 +109,7 @@ public class AtengSearchAutoConfiguration {
     static class SearchActuatorConfiguration {
 
         @Bean
-        @ConditionalOnMissingBean
+        @ConditionalOnMissingBean(value = SearchHealthIndicator.class, name = {"searchHealthIndicator", "searchSafeHealthIndicator"})
         public SearchHealthIndicator searchHealthIndicator(
                 SearchEngineClient searchEngineClient,
                 @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {

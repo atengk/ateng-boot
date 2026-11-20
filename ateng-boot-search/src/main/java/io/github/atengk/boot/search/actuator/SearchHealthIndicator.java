@@ -3,6 +3,7 @@ package io.github.atengk.boot.search.actuator;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.HealthStatus;
 import co.elastic.clients.elasticsearch.cluster.HealthResponse;
+import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.search.enums.SearchEngineType;
 import io.github.atengk.boot.search.spi.SearchEngineClient;
 import lombok.extern.slf4j.Slf4j;
@@ -43,9 +44,10 @@ public class SearchHealthIndicator extends AbstractHealthIndicator {
 
     @Override
     protected void doHealthCheck(Health.Builder builder) {
+        Runnable probeTask = AsyncContext.wrap(() -> performCheck(builder));
         CompletableFuture<Void> checkFuture = executor != null
-                ? CompletableFuture.runAsync(() -> performCheck(builder), executor)
-                : CompletableFuture.runAsync(() -> performCheck(builder));
+                ? CompletableFuture.runAsync(probeTask, executor)
+                : CompletableFuture.runAsync(probeTask);
         try {
             checkFuture.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } catch (TimeoutException e) {

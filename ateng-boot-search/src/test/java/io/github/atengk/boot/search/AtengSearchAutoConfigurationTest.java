@@ -35,7 +35,32 @@ class AtengSearchAutoConfigurationTest {
             assertThat(context).hasSingleBean(SearchEngineClient.class);
             assertThat(context).hasSingleBean(SearchTemplate.class);
             assertThat(context).hasSingleBean(SearchBulkProcessor.class);
+            io.github.atengk.boot.search.properties.AtengSearchProperties props =
+                    context.getBean(io.github.atengk.boot.search.properties.AtengSearchProperties.class);
+            assertThat(props.getConnectionRequestTimeout()).isEqualTo(java.time.Duration.ofSeconds(3));
         });
+    }
+
+    @Test
+    @DisplayName("测试强类型超时与可观测配置属性绑定及 RestClientBuilderCustomizer 有序装配")
+    void testCustomTimeoutAndRestClientCustomizerBinding() {
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.search.connection-request-timeout=7s",
+                        "ateng.boot.search.observability.slow-query-threshold=250ms",
+                        "ateng.boot.search.observability.log-slow-query-dsl=false",
+                        "ateng.boot.search.observability.mask-vector-in-logs=false"
+                )
+                .withUserConfiguration(CustomizerConfiguration.class)
+                .run(context -> {
+                    io.github.atengk.boot.search.properties.AtengSearchProperties props =
+                            context.getBean(io.github.atengk.boot.search.properties.AtengSearchProperties.class);
+                    assertThat(props.getConnectionRequestTimeout()).isEqualTo(java.time.Duration.ofSeconds(7));
+                    assertThat(props.getObservability().getSlowQueryThreshold()).isEqualTo(java.time.Duration.ofMillis(250));
+                    assertThat(props.getObservability().isLogSlowQueryDsl()).isFalse();
+                    assertThat(props.getObservability().isMaskVectorInLogs()).isFalse();
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.search.spi.RestClientBuilderCustomizer.class);
+                });
     }
 
     @Test
@@ -75,12 +100,26 @@ class AtengSearchAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("测试装配类声明了 @AutoConfigureAfter 包含 JacksonAutoConfiguration")
+    @DisplayName("测试装配类声明了 @AutoConfigureAfter 包含 JacksonAutoConfiguration 与 AtengHealthAutoConfiguration")
     void testAutoConfigureAfterJackson() {
         org.springframework.boot.autoconfigure.AutoConfigureAfter after =
                 AtengSearchAutoConfiguration.class.getAnnotation(org.springframework.boot.autoconfigure.AutoConfigureAfter.class);
         assertThat(after).isNotNull();
-        assertThat(after.name()).contains("org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration");
+        assertThat(after.name()).contains(
+                "org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration",
+                "io.github.atengk.boot.observability.autoconfigure.AtengHealthAutoConfiguration"
+        );
+    }
+
+    @Test
+    @DisplayName("测试存在 searchSafeHealthIndicator 时原生 SearchHealthIndicator 主动让位避让")
+    void testYieldToObservabilitySafeHealthIndicator() {
+        contextRunner
+                .withUserConfiguration(MetricsConfiguration.class, SafeHealthIndicatorConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasBean("searchSafeHealthIndicator");
+                    assertThat(context).doesNotHaveBean(io.github.atengk.boot.search.actuator.SearchHealthIndicator.class);
+                });
     }
 
     @Test
@@ -125,6 +164,119 @@ class AtengSearchAutoConfigurationTest {
 
                 @Override
                 public void close() throws IOException {
+                }
+            };
+        }
+    }
+
+    @Test
+    @DisplayName("测试多 RestClientBuilderCustomizer 与 SearchInterceptor 按 @Order 有序装配并生效")
+    void testOrderedCustomizersAndInterceptorsAutoConfiguration() throws Exception {
+        OrderedExtensionsConfiguration.TRACE.clear();
+        try (okhttp3.mockwebserver.MockWebServer server = new okhttp3.mockwebserver.MockWebServer()) {
+            server.start();
+            server.enqueue(new okhttp3.mockwebserver.MockResponse()
+                    .setResponseCode(200)
+                    .setHeader("Content-Type", "application/json")
+                    .setHeader("X-Elastic-Product", "Elasticsearch")
+                    .setBody("{\"_index\":\"user_idx\",\"_id\":\"1\",\"found\":false}"));
+
+            new ApplicationContextRunner()
+                    .withConfiguration(AutoConfigurations.of(AtengSearchAutoConfiguration.class))
+                    .withUserConfiguration(OrderedExtensionsConfiguration.class)
+                    .withPropertyValues("ateng.boot.search.uris[0]=http://" + server.getHostName() + ":" + server.getPort())
+                    .run(context -> {
+                        SearchTemplate template = context.getBean(SearchTemplate.class);
+                        template.getById(io.github.atengk.boot.search.entity.UserDoc.class, "1");
+
+                        okhttp3.mockwebserver.RecordedRequest request = server.takeRequest();
+                        assertThat(request.getHeader("X-Order-Trace")).isEqualTo("second");
+                        assertThat(OrderedExtensionsConfiguration.TRACE).containsExactly(
+                                "customizer-1",
+                                "customizer-2",
+                                "before-1",
+                                "before-2",
+                                "after-2",
+                                "after-1"
+                        );
+                    });
+        } finally {
+            OrderedExtensionsConfiguration.TRACE.clear();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomizerConfiguration {
+        @Bean
+        public io.github.atengk.boot.search.spi.RestClientBuilderCustomizer headerCustomizer() {
+            return (builder, props) -> builder.setDefaultHeaders(
+                    new org.apache.http.Header[]{new org.apache.http.message.BasicHeader("X-Custom-Client", "ateng")}
+            );
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class SafeHealthIndicatorConfiguration {
+        @Bean(name = {"searchSafeHealthIndicator", "searchHealthIndicator"})
+        public org.springframework.boot.actuate.health.HealthIndicator searchSafeHealthIndicator() {
+            return () -> org.springframework.boot.actuate.health.Health.up().withDetail("safe", true).build();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class OrderedExtensionsConfiguration {
+        static final java.util.List<String> TRACE = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+
+        @Bean
+        @org.springframework.core.annotation.Order(200)
+        public io.github.atengk.boot.search.spi.RestClientBuilderCustomizer secondCustomizer() {
+            return (builder, props) -> {
+                TRACE.add("customizer-2");
+                builder.setDefaultHeaders(
+                        new org.apache.http.Header[]{new org.apache.http.message.BasicHeader("X-Order-Trace", "second")}
+                );
+            };
+        }
+
+        @Bean
+        @org.springframework.core.annotation.Order(100)
+        public io.github.atengk.boot.search.spi.RestClientBuilderCustomizer firstCustomizer() {
+            return (builder, props) -> {
+                TRACE.add("customizer-1");
+                builder.setDefaultHeaders(
+                        new org.apache.http.Header[]{new org.apache.http.message.BasicHeader("X-Order-Trace", "first")}
+                );
+            };
+        }
+
+        @Bean
+        @org.springframework.core.annotation.Order(20)
+        public io.github.atengk.boot.search.spi.SearchInterceptor secondInterceptor() {
+            return new io.github.atengk.boot.search.spi.SearchInterceptor() {
+                @Override
+                public void beforeExecute(io.github.atengk.boot.search.spi.SearchInvocationContext context) {
+                    TRACE.add("before-2");
+                }
+
+                @Override
+                public void afterExecute(io.github.atengk.boot.search.spi.SearchInvocationContext context, Object result) {
+                    TRACE.add("after-2");
+                }
+            };
+        }
+
+        @Bean
+        @org.springframework.core.annotation.Order(10)
+        public io.github.atengk.boot.search.spi.SearchInterceptor firstInterceptor() {
+            return new io.github.atengk.boot.search.spi.SearchInterceptor() {
+                @Override
+                public void beforeExecute(io.github.atengk.boot.search.spi.SearchInvocationContext context) {
+                    TRACE.add("before-1");
+                }
+
+                @Override
+                public void afterExecute(io.github.atengk.boot.search.spi.SearchInvocationContext context, Object result) {
+                    TRACE.add("after-1");
                 }
             };
         }

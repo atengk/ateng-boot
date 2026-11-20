@@ -56,13 +56,16 @@ public class SearchIndexOperations {
      */
     public boolean exists(String index) {
         Objects.requireNonNull(index, "index must not be null");
-        try {
-            BooleanResponse response = getClient().indices().exists(b -> b.index(index));
-            return response.value();
-        } catch (Exception e) {
-            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
-                    "Failed to check existence for index [" + index + "]: " + e.getMessage(), e);
-        }
+        return searchTemplate.executeObserved("indices.exists", index, null, null, null, false, () -> {
+            try {
+                BooleanResponse response = getClient().indices().exists(b -> b.index(index));
+                return response.value();
+            } catch (Exception e) {
+                throw new SearchException(
+                        SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                        "Failed to check existence for index [" + index + "]: " + e.getMessage(), e);
+            }
+        });
     }
 
     /**
@@ -85,13 +88,16 @@ public class SearchIndexOperations {
      */
     public boolean existsAlias(String alias) {
         Objects.requireNonNull(alias, "alias must not be null");
-        try {
-            BooleanResponse response = getClient().indices().existsAlias(b -> b.name(alias));
-            return response.value();
-        } catch (Exception e) {
-            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
-                    "Failed to check existence for alias [" + alias + "]: " + e.getMessage(), e);
-        }
+        return searchTemplate.executeObserved("indices.existsAlias", alias, null, null, null, false, () -> {
+            try {
+                BooleanResponse response = getClient().indices().existsAlias(b -> b.name(alias));
+                return response.value();
+            } catch (Exception e) {
+                throw new SearchException(
+                        SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                        "Failed to check existence for alias [" + alias + "]: " + e.getMessage(), e);
+            }
+        });
     }
 
     /**
@@ -125,20 +131,23 @@ public class SearchIndexOperations {
      */
     public boolean create(String index, String mappingJsonOrDsl) {
         Objects.requireNonNull(index, "index must not be null");
-        try {
-            CreateIndexResponse response = getClient().indices().create(b -> {
-                b.index(index);
-                if (StringUtils.hasText(mappingJsonOrDsl)) {
-                    b.withJson(new StringReader(mappingJsonOrDsl));
-                }
-                return b;
-            });
-            log.info("Created index [{}] acknowledged: {}", index, response.acknowledged());
-            return response.acknowledged();
-        } catch (Exception e) {
-            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
-                    "Failed to create index [" + index + "]: " + e.getMessage(), e);
-        }
+        return searchTemplate.executeObserved("indices.create", index, null, null, null, false, () -> {
+            try {
+                CreateIndexResponse response = getClient().indices().create(b -> {
+                    b.index(index);
+                    if (StringUtils.hasText(mappingJsonOrDsl)) {
+                        b.withJson(new StringReader(mappingJsonOrDsl));
+                    }
+                    return b;
+                });
+                log.info("Created index [{}] acknowledged: {}", index, response.acknowledged());
+                return response.acknowledged();
+            } catch (Exception e) {
+                throw new SearchException(
+                        SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                        "Failed to create index [" + index + "]: " + e.getMessage(), e);
+            }
+        });
     }
 
     /**
@@ -149,18 +158,21 @@ public class SearchIndexOperations {
      */
     public boolean delete(String index) {
         Objects.requireNonNull(index, "index must not be null");
-        try {
-            DeleteIndexResponse response = getClient().indices().delete(b -> b.index(index));
-            log.info("Deleted index [{}] acknowledged: {}", index, response.acknowledged());
-            return response.acknowledged();
-        } catch (Exception e) {
-            if (SearchExceptionClassifier.isNotFound(e)) {
-                log.debug("Index [{}] does not exist, deletion returns false", index);
-                return false;
+        return searchTemplate.executeObserved("indices.delete", index, null, null, null, false, () -> {
+            try {
+                DeleteIndexResponse response = getClient().indices().delete(b -> b.index(index));
+                log.info("Deleted index [{}] acknowledged: {}", index, response.acknowledged());
+                return response.acknowledged();
+            } catch (Exception e) {
+                if (SearchExceptionClassifier.isNotFound(e)) {
+                    log.debug("Index [{}] does not exist, deletion returns false", index);
+                    return false;
+                }
+                throw new SearchException(
+                        SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                        "Failed to delete index [" + index + "]: " + e.getMessage(), e);
             }
-            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
-                    "Failed to delete index [" + index + "]: " + e.getMessage(), e);
-        }
+        });
     }
 
     /**
@@ -185,15 +197,18 @@ public class SearchIndexOperations {
     public boolean putMapping(String index, String mappingJson) {
         Objects.requireNonNull(index, "index must not be null");
         Objects.requireNonNull(mappingJson, "mappingJson must not be null");
-        try {
-            PutMappingResponse response = getClient().indices()
-                    .putMapping(b -> b.index(index).withJson(new StringReader(mappingJson)));
-            log.info("Updated mapping for index [{}] acknowledged: {}", index, response.acknowledged());
-            return response.acknowledged();
-        } catch (Exception e) {
-            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
-                    "Failed to put mapping for index [" + index + "]: " + e.getMessage(), e);
-        }
+        return searchTemplate.executeObserved("indices.putMapping", index, null, null, null, false, () -> {
+            try {
+                PutMappingResponse response = getClient().indices()
+                        .putMapping(b -> b.index(index).withJson(new StringReader(mappingJson)));
+                log.info("Updated mapping for index [{}] acknowledged: {}", index, response.acknowledged());
+                return response.acknowledged();
+            } catch (Exception e) {
+                throw new SearchException(
+                        SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                        "Failed to put mapping for index [" + index + "]: " + e.getMessage(), e);
+            }
+        });
     }
 
     /**
@@ -217,19 +232,22 @@ public class SearchIndexOperations {
      */
     public TypeMapping getMapping(String index) {
         Objects.requireNonNull(index, "index must not be null");
-        try {
-            GetMappingResponse response = getClient().indices().getMapping(b -> b.index(index));
-            if (response.result() != null && response.result().containsKey(index)) {
-                return response.result().get(index).mappings();
-            }
-            return null;
-        } catch (Exception e) {
-            if (SearchExceptionClassifier.isNotFound(e)) {
+        return searchTemplate.executeObserved("indices.getMapping", index, null, null, null, false, () -> {
+            try {
+                GetMappingResponse response = getClient().indices().getMapping(b -> b.index(index));
+                if (response.result() != null && response.result().containsKey(index)) {
+                    return response.result().get(index).mappings();
+                }
                 return null;
+            } catch (Exception e) {
+                if (SearchExceptionClassifier.isNotFound(e)) {
+                    return null;
+                }
+                throw new SearchException(
+                        SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                        "Failed to get mapping for index [" + index + "]: " + e.getMessage(), e);
             }
-            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
-                    "Failed to get mapping for index [" + index + "]: " + e.getMessage(), e);
-        }
+        });
     }
 
     /**
@@ -242,15 +260,18 @@ public class SearchIndexOperations {
     public boolean putIndexTemplate(String templateName, String templateJson) {
         Objects.requireNonNull(templateName, "templateName must not be null");
         Objects.requireNonNull(templateJson, "templateJson must not be null");
-        try {
-            PutIndexTemplateResponse response = getClient().indices()
-                    .putIndexTemplate(b -> b.name(templateName).withJson(new StringReader(templateJson)));
-            log.info("Put index template [{}] acknowledged: {}", templateName, response.acknowledged());
-            return response.acknowledged();
-        } catch (Exception e) {
-            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
-                    "Failed to put index template [" + templateName + "]: " + e.getMessage(), e);
-        }
+        return searchTemplate.executeObserved("indices.putIndexTemplate", templateName, null, null, null, false, () -> {
+            try {
+                PutIndexTemplateResponse response = getClient().indices()
+                        .putIndexTemplate(b -> b.name(templateName).withJson(new StringReader(templateJson)));
+                log.info("Put index template [{}] acknowledged: {}", templateName, response.acknowledged());
+                return response.acknowledged();
+            } catch (Exception e) {
+                throw new SearchException(
+                        SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                        "Failed to put index template [" + templateName + "]: " + e.getMessage(), e);
+            }
+        });
     }
 
     /**
@@ -261,13 +282,16 @@ public class SearchIndexOperations {
      */
     public boolean existsIndexTemplate(String templateName) {
         Objects.requireNonNull(templateName, "templateName must not be null");
-        try {
-            BooleanResponse response = getClient().indices().existsIndexTemplate(b -> b.name(templateName));
-            return response.value();
-        } catch (Exception e) {
-            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
-                    "Failed to check existence for index template [" + templateName + "]: " + e.getMessage(), e);
-        }
+        return searchTemplate.executeObserved("indices.existsIndexTemplate", templateName, null, null, null, false, () -> {
+            try {
+                BooleanResponse response = getClient().indices().existsIndexTemplate(b -> b.name(templateName));
+                return response.value();
+            } catch (Exception e) {
+                throw new SearchException(
+                        SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                        "Failed to check existence for index template [" + templateName + "]: " + e.getMessage(), e);
+            }
+        });
     }
 
     /**
@@ -278,19 +302,22 @@ public class SearchIndexOperations {
      */
     public boolean deleteIndexTemplate(String templateName) {
         Objects.requireNonNull(templateName, "templateName must not be null");
-        try {
-            DeleteIndexTemplateResponse response = getClient().indices()
-                    .deleteIndexTemplate(b -> b.name(templateName));
-            log.info("Deleted index template [{}] acknowledged: {}", templateName, response.acknowledged());
-            return response.acknowledged();
-        } catch (Exception e) {
-            if (SearchExceptionClassifier.isNotFound(e)) {
-                log.debug("Index template [{}] does not exist, deletion returns false", templateName);
-                return false;
+        return searchTemplate.executeObserved("indices.deleteIndexTemplate", templateName, null, null, null, false, () -> {
+            try {
+                DeleteIndexTemplateResponse response = getClient().indices()
+                        .deleteIndexTemplate(b -> b.name(templateName));
+                log.info("Deleted index template [{}] acknowledged: {}", templateName, response.acknowledged());
+                return response.acknowledged();
+            } catch (Exception e) {
+                if (SearchExceptionClassifier.isNotFound(e)) {
+                    log.debug("Index template [{}] does not exist, deletion returns false", templateName);
+                    return false;
+                }
+                throw new SearchException(
+                        SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                        "Failed to delete index template [" + templateName + "]: " + e.getMessage(), e);
             }
-            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
-                    "Failed to delete index template [" + templateName + "]: " + e.getMessage(), e);
-        }
+        });
     }
 
     /**
@@ -307,22 +334,24 @@ public class SearchIndexOperations {
     public boolean swapAlias(String aliasName, String oldIndex, String newIndex) {
         Objects.requireNonNull(aliasName, "aliasName must not be null");
         Objects.requireNonNull(newIndex, "newIndex must not be null");
+        return searchTemplate.executeObserved("indices.swapAlias", newIndex, null, null, null, false, () -> {
+            try {
+                List<Action> actions = new ArrayList<>();
+                if (StringUtils.hasText(oldIndex)) {
+                    actions.add(Action.of(a -> a.remove(r -> r.index(oldIndex).alias(aliasName))));
+                }
+                actions.add(Action.of(a -> a.add(ad -> ad.index(newIndex).alias(aliasName))));
 
-        try {
-            List<Action> actions = new ArrayList<>();
-            if (StringUtils.hasText(oldIndex)) {
-                actions.add(Action.of(a -> a.remove(r -> r.index(oldIndex).alias(aliasName))));
+                UpdateAliasesResponse response = getClient().indices().updateAliases(b -> b.actions(actions));
+                log.info("Swapped alias [{}] from old index [{}] to new index [{}], acknowledged: {}",
+                        aliasName, oldIndex, newIndex, response.acknowledged());
+                return response.acknowledged();
+            } catch (Exception e) {
+                throw new SearchException(
+                        SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                        "Failed to swap alias [" + aliasName + "] from [" + oldIndex + "] to [" + newIndex + "]: " + e.getMessage(), e);
             }
-            actions.add(Action.of(a -> a.add(ad -> ad.index(newIndex).alias(aliasName))));
-
-            UpdateAliasesResponse response = getClient().indices().updateAliases(b -> b.actions(actions));
-            log.info("Swapped alias [{}] from old index [{}] to new index [{}], acknowledged: {}",
-                    aliasName, oldIndex, newIndex, response.acknowledged());
-            return response.acknowledged();
-        } catch (Exception e) {
-            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
-                    "Failed to swap alias [" + aliasName + "] from [" + oldIndex + "] to [" + newIndex + "]: " + e.getMessage(), e);
-        }
+        });
     }
 
     /**
@@ -335,18 +364,21 @@ public class SearchIndexOperations {
      */
     public boolean refresh(String index) {
         Objects.requireNonNull(index, "index must not be null");
-        try {
-            RefreshResponse response = getClient().indices().refresh(b -> b.index(index));
-            boolean success = response.shards() == null || response.shards().failed() == null || response.shards().failed().intValue() == 0;
-            log.info("Refreshed index [{}], successful shards: {}, failed shards: {}",
-                    index,
-                    response.shards() != null ? response.shards().successful() : null,
-                    response.shards() != null ? response.shards().failed() : 0);
-            return success;
-        } catch (Exception e) {
-            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
-                    "Failed to refresh index [" + index + "]: " + e.getMessage(), e);
-        }
+        return searchTemplate.executeObserved("indices.refresh", index, null, null, null, false, () -> {
+            try {
+                RefreshResponse response = getClient().indices().refresh(b -> b.index(index));
+                boolean success = response.shards() == null || response.shards().failed() == null || response.shards().failed().intValue() == 0;
+                log.info("Refreshed index [{}], successful shards: {}, failed shards: {}",
+                        index,
+                        response.shards() != null ? response.shards().successful() : null,
+                        response.shards() != null ? response.shards().failed() : 0);
+                return success;
+            } catch (Exception e) {
+                throw new SearchException(
+                        SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                        "Failed to refresh index [" + index + "]: " + e.getMessage(), e);
+            }
+        });
     }
 
     /**
@@ -392,33 +424,36 @@ public class SearchIndexOperations {
         if (sourceIndex.trim().equals(targetIndex.trim())) {
             throw new IllegalArgumentException("sourceIndex and targetIndex must not be the same: [" + sourceIndex + "]");
         }
-        try {
-            ReindexResponse response = getClient().reindex(b -> {
-                b.source(s -> {
-                    s.index(sourceIndex);
-                    if (filterQuery != null && filterQuery.getQuery() != null) {
-                        s.query(filterQuery.getQuery());
-                    }
-                    return s;
+        return searchTemplate.executeObserved("indices.reindex", targetIndex, null, null, filterQuery, false, () -> {
+            try {
+                ReindexResponse response = getClient().reindex(b -> {
+                    b.source(s -> {
+                        s.index(sourceIndex);
+                        if (filterQuery != null && filterQuery.getQuery() != null) {
+                            s.query(filterQuery.getQuery());
+                        }
+                        return s;
+                    });
+                    b.dest(d -> d.index(targetIndex));
+                    b.conflicts(Conflicts.Proceed);
+                    b.waitForCompletion(true);
+                    return b;
                 });
-                b.dest(d -> d.index(targetIndex));
-                b.conflicts(Conflicts.Proceed);
-                b.waitForCompletion(true);
-                return b;
-            });
-            boolean noFailures = response.failures() == null || response.failures().isEmpty();
-            boolean notTimedOut = !Boolean.TRUE.equals(response.timedOut());
-            boolean success = noFailures && notTimedOut;
-            log.info("Reindexed from [{}] to [{}], total: {}, created: {}, updated: {}, failures: {}, timedOut: {}",
-                    sourceIndex, targetIndex, response.total(), response.created(), response.updated(),
-                    response.failures() != null ? response.failures().size() : 0, response.timedOut());
-            return success;
-        } catch (Exception e) {
-            if (e instanceof SearchException se) {
-                throw se;
+                boolean noFailures = response.failures() == null || response.failures().isEmpty();
+                boolean notTimedOut = !Boolean.TRUE.equals(response.timedOut());
+                boolean success = noFailures && notTimedOut;
+                log.info("Reindexed from [{}] to [{}], total: {}, created: {}, updated: {}, failures: {}, timedOut: {}",
+                        sourceIndex, targetIndex, response.total(), response.created(), response.updated(),
+                        response.failures() != null ? response.failures().size() : 0, response.timedOut());
+                return success;
+            } catch (Exception e) {
+                if (e instanceof SearchException se) {
+                    throw se;
+                }
+                throw new SearchException(
+                        SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                        "Failed to reindex from [" + sourceIndex + "] to [" + targetIndex + "]: " + e.getMessage(), e);
             }
-            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
-                    "Failed to reindex from [" + sourceIndex + "] to [" + targetIndex + "]: " + e.getMessage(), e);
-        }
+        });
     }
 }

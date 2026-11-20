@@ -2850,4 +2850,224 @@ class SearchTemplateMockServerTest {
         // 空白文本不生成 matchPhrase 节点，缺省回退为 matchAll
         assertThat(query.getQuery().isMatchAll()).isTrue();
     }
+
+    @Test
+    @DisplayName("测试 RestClientBuilderCustomizer 出站请求头定制、负数超时拦截与 classpath TrustStore 防卫")
+    void testRestClientCustomizerAndSslBounds() throws Exception {
+        AtengSearchProperties props = new AtengSearchProperties();
+        props.setUris(Collections.singletonList("http://" + mockWebServer.getHostName() + ":" + mockWebServer.getPort()));
+        props.setConnectionRequestTimeout(java.time.Duration.ofSeconds(2));
+
+        ElasticsearchClientDriver customDriver = new ElasticsearchClientDriver(
+                props,
+                null,
+                List.of((builder, p) -> builder.setDefaultHeaders(
+                        new org.apache.http.Header[]{new org.apache.http.message.BasicHeader("X-Custom-Header", "ateng-search")}
+                ))
+        );
+        try {
+            SearchTemplate customTemplate = new SearchTemplate(customDriver, props);
+            mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"1\",\"found\":false}"));
+            customTemplate.getById(UserDoc.class, "1");
+
+            RecordedRequest req = mockWebServer.takeRequest();
+            assertThat(req.getHeader("X-Custom-Header")).isEqualTo("ateng-search");
+        } finally {
+            customDriver.close();
+        }
+
+        // 负数超时 Fail-Fast
+        AtengSearchProperties negativeProps = new AtengSearchProperties();
+        negativeProps.setConnectionRequestTimeout(java.time.Duration.ofMillis(-1));
+        assertThatThrownBy(() -> new ElasticsearchClientDriver(negativeProps))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("connectionRequestTimeout");
+
+        // classpath: 不存在证书时转译为 SearchException 且保留原因链
+        AtengSearchProperties sslProps = new AtengSearchProperties();
+        sslProps.getSsl().setEnabled(true);
+        sslProps.getSsl().setTrustStorePath("classpath:non-existent-truststore.jks");
+        assertThatThrownBy(() -> new ElasticsearchClientDriver(sslProps))
+                .isInstanceOf(SearchException.class)
+                .hasMessageContaining("SSL")
+                .hasCauseInstanceOf(IOException.class);
+    }
+
+    @Test
+    @DisplayName("测试有效 classpath TrustStore 加载、超大 Duration 饱和截断与 connectionRequestTimeout 连接池等待超时")
+    void testValidClasspathTrustStoreAndConnectionPoolTimeout(@org.junit.jupiter.api.io.TempDir java.nio.file.Path tempDir) throws Exception {
+        // 1. 生成有效默认类型 TrustStore 并验证 classpath: 加载成功且释放流
+        java.nio.file.Path trustStoreFile = tempDir.resolve("test-search-truststore.keystore");
+        java.security.KeyStore keyStore = java.security.KeyStore.getInstance(java.security.KeyStore.getDefaultType());
+        keyStore.load(null, "changeit".toCharArray());
+        try (java.io.OutputStream os = java.nio.file.Files.newOutputStream(trustStoreFile)) {
+            keyStore.store(os, "changeit".toCharArray());
+        }
+
+        ClassLoader originalCl = Thread.currentThread().getContextClassLoader();
+        try (java.net.URLClassLoader urlClassLoader = new java.net.URLClassLoader(
+                new java.net.URL[]{tempDir.toUri().toURL()}, originalCl)) {
+            Thread.currentThread().setContextClassLoader(urlClassLoader);
+
+            AtengSearchProperties validSslProps = new AtengSearchProperties();
+            validSslProps.setUris(Collections.singletonList("https://" + mockWebServer.getHostName() + ":" + mockWebServer.getPort()));
+            validSslProps.getSsl().setEnabled(true);
+            validSslProps.getSsl().setTrustStorePath("classpath:" + trustStoreFile.getFileName());
+            validSslProps.getSsl().setTrustStorePassword("changeit");
+
+            try (ElasticsearchClientDriver sslDriver = new ElasticsearchClientDriver(validSslProps)) {
+                assertThat(sslDriver.getElasticsearchClient()).isNotNull();
+            }
+        } finally {
+            Thread.currentThread().setContextClassLoader(originalCl);
+        }
+
+        // 2. 超大 Duration（超过 Integer.MAX_VALUE 毫秒）饱和截断不溢出
+        AtengSearchProperties hugeTimeoutProps = new AtengSearchProperties();
+        hugeTimeoutProps.setUris(Collections.singletonList("http://" + mockWebServer.getHostName() + ":" + mockWebServer.getPort()));
+        hugeTimeoutProps.setConnectTimeout(java.time.Duration.ofDays(30));
+        hugeTimeoutProps.setSocketTimeout(java.time.Duration.ofDays(30));
+        hugeTimeoutProps.setConnectionRequestTimeout(java.time.Duration.ofDays(30));
+        try (ElasticsearchClientDriver hugeDriver = new ElasticsearchClientDriver(hugeTimeoutProps)) {
+            assertThat(hugeDriver.getElasticsearchClient()).isNotNull();
+        }
+
+        // 3. 单连接池饱和时验证 connectionRequestTimeout 生效快速超时
+        AtengSearchProperties poolProps = new AtengSearchProperties();
+        poolProps.setUris(Collections.singletonList("http://" + mockWebServer.getHostName() + ":" + mockWebServer.getPort()));
+        poolProps.setMaxConnections(1);
+        poolProps.setMaxConnectionsPerRoute(1);
+        poolProps.setConnectionRequestTimeout(java.time.Duration.ofMillis(80));
+        poolProps.setSocketTimeout(java.time.Duration.ofSeconds(5));
+
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"slow\",\"found\":false}")
+                .setBodyDelay(500, java.util.concurrent.TimeUnit.MILLISECONDS));
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"fast\",\"found\":false}"));
+
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try (ElasticsearchClientDriver poolDriver = new ElasticsearchClientDriver(poolProps)) {
+            SearchTemplate poolTemplate = new SearchTemplate(poolDriver, poolProps);
+            java.util.concurrent.Future<UserDoc> firstFuture = executor.submit(() -> poolTemplate.getById(UserDoc.class, "slow"));
+            Thread.sleep(25);
+            assertThatThrownBy(() -> poolTemplate.getById(UserDoc.class, "fast"))
+                    .isInstanceOf(SearchException.class)
+                    .extracting(ex -> ((SearchException) ex).getResultCode())
+                    .isEqualTo(SearchResultCode.SEARCH_TIMEOUT_ERROR);
+            assertThat(firstFuture.get()).isNull();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("测试 SearchInterceptor SPI 拦截链前后置执行、属性共享与异常回调")
+    void testSearchInterceptorLifecycle() {
+        List<String> events = new java.util.ArrayList<>();
+        io.github.atengk.boot.search.spi.SearchInterceptor first = new io.github.atengk.boot.search.spi.SearchInterceptor() {
+            @Override
+            public void beforeExecute(io.github.atengk.boot.search.spi.SearchInvocationContext context) {
+                context.setAttribute("traceTag", "first");
+                events.add("before-1:" + context.getOperation() + ":" + context.getIndex());
+            }
+
+            @Override
+            public void afterExecute(io.github.atengk.boot.search.spi.SearchInvocationContext context, Object result) {
+                events.add("after-1:" + context.getAttribute("traceTag"));
+            }
+
+            @Override
+            public void onError(io.github.atengk.boot.search.spi.SearchInvocationContext context, Throwable cause) {
+                events.add("error-1:" + cause.getClass().getSimpleName());
+            }
+        };
+        io.github.atengk.boot.search.spi.SearchInterceptor second = new io.github.atengk.boot.search.spi.SearchInterceptor() {
+            @Override
+            public void beforeExecute(io.github.atengk.boot.search.spi.SearchInvocationContext context) {
+                events.add("before-2:" + context.getAttribute("traceTag"));
+            }
+
+            @Override
+            public void afterExecute(io.github.atengk.boot.search.spi.SearchInvocationContext context, Object result) {
+                events.add("after-2");
+            }
+        };
+
+        SearchTemplate intercepted = new SearchTemplate(driver, new AtengSearchProperties(), null, List.of(first, second));
+        mockWebServer.enqueue(esResponse(200,
+                "{\"took\":1,\"timed_out\":false,\"_shards\":{\"total\":1,\"successful\":1,\"skipped\":0,\"failed\":0},\"hits\":{\"total\":{\"value\":0,\"relation\":\"eq\"},\"hits\":[]}}"));
+
+        intercepted.search(SearchQueryBuilder.create().matchAll().build(), UserDoc.class);
+        assertThat(events).containsExactly("before-1:search:user_idx", "before-2:first", "after-2", "after-1:first");
+
+        events.clear();
+        mockWebServer.enqueue(esResponse(500, "{\"error\":{\"type\":\"search_phase_execution_exception\",\"reason\":\"boom\"},\"status\":500}"));
+        assertThatThrownBy(() -> intercepted.search(SearchQueryBuilder.create().matchAll().build(), UserDoc.class))
+                .isInstanceOf(SearchException.class);
+        assertThat(events).anyMatch(e -> e.startsWith("error-1:"));
+    }
+
+    @Test
+    @DisplayName("测试慢查询向量数组脱敏日志输出与 HTTP 429/401 异常精细分类转译")
+    void testSlowQueryVectorMaskingAndClassifierMapping() {
+        ch.qos.logback.classic.Logger templateLogger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(SearchTemplate.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> listAppender =
+                new ch.qos.logback.core.read.ListAppender<>();
+        listAppender.start();
+        templateLogger.addAppender(listAppender);
+
+        try {
+            AtengSearchProperties props = new AtengSearchProperties();
+            props.getObservability().setSlowQueryThreshold(java.time.Duration.ofNanos(1));
+            props.getObservability().setLogSlowQueryDsl(true);
+            props.getObservability().setMaskVectorInLogs(true);
+
+            io.micrometer.core.instrument.simple.SimpleMeterRegistry meterRegistry =
+                    new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+            io.github.atengk.boot.search.metrics.SearchMetrics metrics =
+                    new io.github.atengk.boot.search.metrics.SearchMetrics(meterRegistry);
+
+            SearchTemplate observedTemplate = new SearchTemplate(driver, props, metrics);
+
+            mockWebServer.enqueue(esResponse(200,
+                    "{\"took\":1,\"timed_out\":false,\"_shards\":{\"total\":1,\"successful\":1,\"skipped\":0,\"failed\":0},\"hits\":{\"total\":{\"value\":0,\"relation\":\"eq\"},\"hits\":[]}}"));
+
+            SearchQuery knnQuery = SearchQueryBuilder.create()
+                    .knn("embedding", List.of(0.123456f, -0.654321f, 0.999999f), 5, 20)
+                    .build();
+            observedTemplate.search(knnQuery, UserDoc.class);
+
+            assertThat(listAppender.list)
+                    .extracting(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+                    .anySatisfy(msg -> {
+                        assertThat(msg).contains("Slow search operation detected");
+                        assertThat(msg).contains("<vector masked: 3 dims>");
+                        assertThat(msg).doesNotContain("0.123456");
+                    });
+
+            assertThat(meterRegistry.find("ateng.search.operation.time")
+                    .tag("operation", "search")
+                    .tag("outcome", "SUCCESS")
+                    .timer())
+                    .isNotNull()
+                    .satisfies(timer -> assertThat(timer.count()).isEqualTo(1L));
+
+            // 429 限流 -> SEARCH_RATE_LIMITED
+            mockWebServer.enqueue(esResponse(429, "{\"error\":{\"type\":\"es_rejected_execution_exception\",\"reason\":\"rejected execution\"},\"status\":429}"));
+            assertThatThrownBy(() -> observedTemplate.search(SearchQueryBuilder.create().matchAll().build(), UserDoc.class))
+                    .isInstanceOf(SearchException.class)
+                    .extracting(ex -> ((SearchException) ex).getResultCode())
+                    .isEqualTo(SearchResultCode.SEARCH_RATE_LIMITED);
+
+            // 401 鉴权失败 -> SEARCH_AUTH_ERROR
+            mockWebServer.enqueue(esResponse(401, "{\"error\":{\"type\":\"security_exception\",\"reason\":\"unauthorized\"},\"status\":401}"));
+            assertThatThrownBy(() -> observedTemplate.search(SearchQueryBuilder.create().matchAll().build(), UserDoc.class))
+                    .isInstanceOf(SearchException.class)
+                    .extracting(ex -> ((SearchException) ex).getResultCode())
+                    .isEqualTo(SearchResultCode.SEARCH_AUTH_ERROR);
+        } finally {
+            templateLogger.detachAppender(listAppender);
+            listAppender.stop();
+        }
+    }
 }

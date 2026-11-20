@@ -14,7 +14,7 @@ ateng:
       engine: elasticsearch
       uris:
         - http://127.0.0.1:${search.mock.port:9200}
-      connection-timeout: 2s
+      connect-timeout: 2s
       socket-timeout: 5s
       bulk:
         enabled: true

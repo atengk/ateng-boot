@@ -140,4 +140,56 @@ class SearchHealthIndicatorTest {
         assertThat(health.getStatus()).isEqualTo(Status.DOWN);
         assertThat(health.getDetails().get("error").toString()).contains("timed out after 2 seconds");
     }
+
+    @org.junit.jupiter.api.AfterEach
+    void cleanupContext() {
+        org.slf4j.MDC.clear();
+        io.github.atengk.boot.core.context.TenantContextHolder.clear();
+    }
+
+    @Test
+    @DisplayName("探针异步执行期间完整透传并隔离清理四维上下文 (MDC / TenantContextHolder)")
+    void testAsyncContextPropagation() throws Exception {
+        org.slf4j.MDC.put("traceId", "trace-search-probe-1128");
+        io.github.atengk.boot.core.context.TenantContextHolder.setTenantId("tenant-probe");
+        java.util.concurrent.ExecutorService executorService = Executors.newSingleThreadExecutor();
+        try {
+            SearchEngineClient engineClient = mock(SearchEngineClient.class);
+            ElasticsearchClient esClient = mock(ElasticsearchClient.class);
+            ElasticsearchClusterClient clusterClient = mock(ElasticsearchClusterClient.class);
+            HealthResponse healthResponse = mock(HealthResponse.class);
+
+            java.util.concurrent.atomic.AtomicReference<String> capturedTraceId = new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<String> capturedTenantId = new java.util.concurrent.atomic.AtomicReference<>();
+
+            when(engineClient.getEngineType()).thenReturn(SearchEngineType.ELASTICSEARCH);
+            when(engineClient.getElasticsearchClient()).thenReturn(esClient);
+            when(esClient.cluster()).thenReturn(clusterClient);
+            when(clusterClient.health()).thenAnswer(invocation -> {
+                capturedTraceId.set(org.slf4j.MDC.get("traceId"));
+                capturedTenantId.set(io.github.atengk.boot.core.context.TenantContextHolder.getTenantId());
+                return healthResponse;
+            });
+            when(healthResponse.status()).thenReturn(HealthStatus.Green);
+            when(healthResponse.clusterName()).thenReturn("ateng-cluster");
+
+            SearchHealthIndicator indicator = new SearchHealthIndicator(engineClient, executorService);
+            Health health = indicator.health();
+
+            assertThat(health.getStatus()).isEqualTo(Status.UP);
+            assertThat(capturedTraceId.get()).isEqualTo("trace-search-probe-1128");
+            assertThat(capturedTenantId.get()).isEqualTo("tenant-probe");
+            assertThat(org.slf4j.MDC.get("traceId")).isEqualTo("trace-search-probe-1128");
+
+            // 验证异步线程执行完毕后内部上下文已清理，不会污染后续非托管任务
+            String residualTenant = executorService.submit(
+                    io.github.atengk.boot.core.context.TenantContextHolder::getTenantId
+            ).get();
+            String residualTrace = executorService.submit(() -> org.slf4j.MDC.get("traceId")).get();
+            assertThat(residualTenant).isNull();
+            assertThat(residualTrace).isNull();
+        } finally {
+            executorService.shutdownNow();
+        }
+    }
 }

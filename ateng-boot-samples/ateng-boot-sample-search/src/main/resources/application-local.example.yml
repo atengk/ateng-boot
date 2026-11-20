@@ -12,5 +12,5 @@ ateng:
       engine: elasticsearch # 引擎类型：elasticsearch 或 opensearch
       uris:
         - http://YOUR_SEARCH_HOST:YOUR_SEARCH_PORT
-      connection-timeout: 2s
+      connect-timeout: 2s
       socket-timeout: 5s

@@ -18,7 +18,15 @@ import io.github.atengk.boot.sample.search.dto.ProductSaveRequest;
 import io.github.atengk.boot.sample.search.dto.ProductScrollQueryRequest;
 import io.github.atengk.boot.sample.search.dto.ProductSearchRequest;
 import io.github.atengk.boot.sample.search.dto.ReindexRequest;
+import io.github.atengk.boot.sample.search.model.ProductDoc;
 import io.github.atengk.boot.sample.search.support.MockSearchServerInitializer;
+import io.github.atengk.boot.search.enums.SearchEngineType;
+import io.github.atengk.boot.search.model.SearchHit;
+import io.github.atengk.boot.search.properties.AtengSearchProperties;
+import io.github.atengk.boot.search.template.SearchTemplate;
+import lombok.extern.slf4j.Slf4j;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Test;
@@ -26,6 +34,7 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.env.Environment;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.web.servlet.MockMvc;
@@ -47,11 +56,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * 全文检索样例工程 4 大领域控制器 Web 端到端自动化回归测试
  * <p>
- * 基于 Spring MockMvc 配合 100% 内存自洽 MockSearchServer，全覆盖商品检索、日志分析、批量写入与索引生命周期控制器。
+ * 支持离线自洽 MockSearchServer 与 {@code -Dspring.profiles.active=local} 真实集群双模回归，
+ * 全覆盖商品检索、日志分析、批量写入与索引生命周期控制器。
  *
  * @author Ateng
  * @since 2026-11-11
  */
+@Slf4j
 @SpringBootTest(classes = SampleSearchApplication.class)
 @AutoConfigureMockMvc
 @ContextConfiguration(initializers = MockSearchServerInitializer.class)
@@ -60,6 +71,160 @@ class SampleSearchWebControllerTest {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private SearchTemplate searchTemplate;
+
+    @Autowired(required = false)
+    private AtengSearchProperties properties;
+
+    @Autowired
+    private Environment environment;
+
+    private static final String OPENSEARCH_PRODUCT_MAPPING = """
+            {
+              "settings": {
+                "index.knn": true
+              },
+              "mappings": {
+                "properties": {
+                  "id": { "type": "keyword" },
+                  "title": { "type": "text" },
+                  "description": { "type": "text" },
+                  "category": { "type": "keyword" },
+                  "brand": { "type": "keyword" },
+                  "status": { "type": "keyword" },
+                  "price": { "type": "double" },
+                  "stock": { "type": "integer" },
+                  "tenantId": { "type": "keyword" },
+                  "createTime": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||strict_date_optional_time||epoch_millis" },
+                  "location": { "type": "geo_point" },
+                  "embedding": { "type": "knn_vector", "dimension": 4 },
+                  "skus": {
+                    "type": "nested",
+                    "properties": {
+                      "skuId": { "type": "keyword" },
+                      "color": { "type": "keyword" },
+                      "price": { "type": "double" },
+                      "stock": { "type": "integer" }
+                    }
+                  }
+                }
+              }
+            }
+            """;
+
+    private static final String ELASTICSEARCH_PRODUCT_MAPPING = """
+            {
+              "mappings": {
+                "properties": {
+                  "id": { "type": "keyword" },
+                  "title": { "type": "text" },
+                  "description": { "type": "text" },
+                  "category": { "type": "keyword" },
+                  "brand": { "type": "keyword" },
+                  "status": { "type": "keyword" },
+                  "price": { "type": "double" },
+                  "stock": { "type": "integer" },
+                  "tenantId": { "type": "keyword" },
+                  "createTime": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||strict_date_optional_time||epoch_millis" },
+                  "location": { "type": "geo_point" },
+                  "embedding": { "type": "dense_vector", "dims": 4 },
+                  "skus": {
+                    "type": "nested",
+                    "properties": {
+                      "skuId": { "type": "keyword" },
+                      "color": { "type": "keyword" },
+                      "price": { "type": "double" },
+                      "stock": { "type": "integer" }
+                    }
+                  }
+                }
+              }
+            }
+            """;
+
+    private static final String ACCESS_LOG_MAPPING = """
+            {
+              "mappings": {
+                "properties": {
+                  "id": { "type": "keyword" },
+                  "path": { "type": "keyword" },
+                  "clientIp": { "type": "keyword" },
+                  "timestamp": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||strict_date_optional_time||epoch_millis" }
+                }
+              }
+            }
+            """;
+
+    private boolean isLocalProfileActive() {
+        return environment != null && Arrays.asList(environment.getActiveProfiles()).contains("local");
+    }
+
+    @BeforeEach
+    void setUp() {
+        if (isLocalProfileActive()) {
+            ensureLocalIndicesReady();
+        }
+    }
+
+    private void ensureLocalIndicesReady() {
+        try {
+            boolean isOpenSearch = properties != null && properties.getEngine() == SearchEngineType.OPENSEARCH;
+            String mappingJson = isOpenSearch ? OPENSEARCH_PRODUCT_MAPPING : ELASTICSEARCH_PRODUCT_MAPPING;
+            if (!searchTemplate.indices().exists("product_index")) {
+                searchTemplate.indices().create("product_index", mappingJson);
+            }
+            String todayLogIndex = "access_log_" + java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd"));
+            if (!searchTemplate.indices().exists(todayLogIndex)) {
+                searchTemplate.indices().create(todayLogIndex, ACCESS_LOG_MAPPING);
+            }
+            ProductDoc doc = ProductDoc.builder()
+                    .id("P001")
+                    .title("iPhone 16 Pro Max 手机")
+                    .description("苹果年度旗舰芯片A18 Pro")
+                    .category("手机")
+                    .brand("Apple")
+                    .price(new BigDecimal("9999.00"))
+                    .stock(100)
+                    .status("ON_SALE")
+                    .location(new ProductDoc.GeoPoint(31.2304, 121.4737))
+                    .embedding(List.of(0.12f, 0.34f, 0.56f, 0.78f))
+                    .tenantId("tenant-001")
+                    .createTime(LocalDateTime.now())
+                    .skus(List.of(
+                            ProductDoc.SkuItem.builder().skuId("SKU-001").color("曜石黑").price(new BigDecimal("9999.00")).stock(50).build(),
+                            ProductDoc.SkuItem.builder().skuId("SKU-002").color("沙漠钛").price(new BigDecimal("10999.00")).stock(50).build()
+                    ))
+                    .build();
+            searchTemplate.index(doc);
+            searchTemplate.indices().refresh("product_index");
+        } catch (Exception ex) {
+            log.warn("ensureLocalIndicesReady failed: {}", ex.getMessage());
+        }
+    }
+
+    @AfterAll
+    static void tearDownAll(@Autowired(required = false) SearchTemplate searchTemplate,
+                            @Autowired(required = false) Environment environment) {
+        if (searchTemplate != null && environment != null
+                && Arrays.asList(environment.getActiveProfiles()).contains("local")) {
+            try {
+                String todayLogIndex = "access_log_" + java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd"));
+                String[] testIndices = {"product_index", "product_v1", "product_v2", "order_idx", todayLogIndex};
+                for (String idx : testIndices) {
+                    if (searchTemplate.indices().exists(idx)) {
+                        searchTemplate.indices().delete(idx);
+                    }
+                }
+                if (searchTemplate.indices().existsIndexTemplate("sample_log_template")) {
+                    searchTemplate.indices().deleteIndexTemplate("sample_log_template");
+                }
+            } catch (Exception ex) {
+                log.warn("Failed to clean up local test indices in tearDownAll: {}", ex.getMessage());
+            }
+        }
+    }
 
     // =========================================================================
     // 1. ProductSearchController 测试
@@ -170,12 +335,21 @@ class SampleSearchWebControllerTest {
     @Test
     @DisplayName("1.7 基于 OCC 乐观并发控制安全更新价格")
     void test07_updatePriceOcc() throws Exception {
+        long seqNo = 1L;
+        long primaryTerm = 1L;
+        if (isLocalProfileActive()) {
+            SearchHit<ProductDoc> hit = searchTemplate.getHitById(ProductDoc.class, "P001", "Apple");
+            if (hit != null && hit.getSeqNo() != null && hit.getPrimaryTerm() != null) {
+                seqNo = hit.getSeqNo();
+                primaryTerm = hit.getPrimaryTerm();
+            }
+        }
         ProductOccUpdateRequest request = ProductOccUpdateRequest.builder()
                 .id("P001")
                 .brand("Apple")
                 .price(new BigDecimal("8888.00"))
-                .seqNo(1L)
-                .primaryTerm(1L)
+                .seqNo(seqNo)
+                .primaryTerm(primaryTerm)
                 .build();
 
         mockMvc.perform(post("/sample/search/product/update-price-occ")
@@ -232,7 +406,7 @@ class SampleSearchWebControllerTest {
     void test11_searchWithCollapse() throws Exception {
         ProductCollapseRequest request = ProductCollapseRequest.builder()
                 .brand("Apple")
-                .collapseField("brand.keyword")
+                .collapseField(isLocalProfileActive() ? "brand" : "brand.keyword")
                 .build();
 
         mockMvc.perform(post("/sample/search/product/collapse")
@@ -344,21 +518,31 @@ class SampleSearchWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(200)))
                 .andExpect(jsonPath("$.data", equalTo("LOG001")));
+
+        if (isLocalProfileActive()) {
+            searchTemplate.indices().refresh("access_log_*");
+        }
     }
 
     @Test
     @DisplayName("2.2 路径访问量轻量 Count 统计")
     void test21_countLogsByPath() throws Exception {
+        if (isLocalProfileActive()) {
+            searchTemplate.indices().refresh("access_log_*");
+        }
         mockMvc.perform(get("/sample/search/log/count")
                         .param("path", "/api/v1/goods/detail"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(200)))
-                .andExpect(jsonPath("$.data", equalTo("42")));
+                .andExpect(isLocalProfileActive() ? jsonPath("$.data", notNullValue()) : jsonPath("$.data", equalTo("42")));
     }
 
     @Test
     @DisplayName("2.3 DateHistogram 时序直方图聚合走势")
     void test22_aggregateTrafficTrend() throws Exception {
+        if (isLocalProfileActive()) {
+            searchTemplate.indices().refresh("access_log_*");
+        }
         mockMvc.perform(get("/sample/search/log/trend")
                         .param("index", "access_log_*")
                         .param("interval", "1d"))
@@ -381,7 +565,7 @@ class SampleSearchWebControllerTest {
                         .content(JsonUtil.toJsonString(request)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(200)))
-                .andExpect(jsonPath("$.data", equalTo("10")));
+                .andExpect(isLocalProfileActive() ? jsonPath("$.data", notNullValue()) : jsonPath("$.data", equalTo("10")));
     }
 
     // =========================================================================
@@ -459,6 +643,9 @@ class SampleSearchWebControllerTest {
     @Test
     @DisplayName("4.1 索引结构 DDL 创建")
     void test40_createIndex() throws Exception {
+        if (isLocalProfileActive() && searchTemplate.indices().exists("order_idx")) {
+            searchTemplate.indices().delete("order_idx");
+        }
         IndexCreateRequest request = IndexCreateRequest.builder()
                 .indexName("order_idx")
                 .mappingJson("{\"mappings\":{\"properties\":{\"orderNo\":{\"type\":\"keyword\"}}}}")
@@ -501,6 +688,14 @@ class SampleSearchWebControllerTest {
     @Test
     @DisplayName("4.4 服务端数据重索引 Reindex")
     void test43_reindex() throws Exception {
+        if (isLocalProfileActive()) {
+            if (!searchTemplate.indices().exists("product_v1")) {
+                searchTemplate.indices().create("product_v1");
+            }
+            if (!searchTemplate.indices().exists("product_v2")) {
+                searchTemplate.indices().create("product_v2");
+            }
+        }
         ReindexRequest request = ReindexRequest.builder()
                 .sourceIndex("product_v1")
                 .targetIndex("product_v2")
@@ -517,6 +712,9 @@ class SampleSearchWebControllerTest {
     @Test
     @DisplayName("4.5 显式物理段刷新 (Refresh)")
     void test44_refreshIndex() throws Exception {
+        if (isLocalProfileActive() && !searchTemplate.indices().exists("product_v2")) {
+            searchTemplate.indices().create("product_v2");
+        }
         mockMvc.perform(post("/sample/search/index/refresh")
                         .param("indexName", "product_v2"))
                 .andExpect(status().isOk())
@@ -527,6 +725,17 @@ class SampleSearchWebControllerTest {
     @Test
     @DisplayName("4.6 生产原子别名热切换 (swapAlias)")
     void test45_swapAlias() throws Exception {
+        if (isLocalProfileActive()) {
+            if (!searchTemplate.indices().exists("product_v1")) {
+                searchTemplate.indices().create("product_v1");
+            }
+            if (!searchTemplate.indices().exists("product_v2")) {
+                searchTemplate.indices().create("product_v2");
+            }
+            if (!searchTemplate.indices().existsAlias("product_alias")) {
+                searchTemplate.indices().swapAlias("product_alias", null, "product_v1");
+            }
+        }
         AliasSwapRequest request = AliasSwapRequest.builder()
                 .aliasName("product_alias")
                 .oldIndex("product_v1")
