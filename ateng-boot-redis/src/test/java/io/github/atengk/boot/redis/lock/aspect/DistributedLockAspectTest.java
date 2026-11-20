@@ -18,6 +18,7 @@ import org.redisson.api.RReadWriteLock;
 import org.redisson.api.RedissonClient;
 
 import java.lang.reflect.Method;
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -281,7 +282,7 @@ class DistributedLockAspectTest {
         when(rLock.isHeldByCurrentThread()).thenReturn(true);
 
         // 设置极低的慢锁阈值触发告警分支
-        redisProperties.getLock().setSlowThresholdMs(10L);
+        redisProperties.getLock().setSlowThreshold(Duration.ofMillis(10L));
 
         Method method = SampleService.class.getMethod("processSlow", String.class);
         DistributedLock annotation = method.getAnnotation(DistributedLock.class);

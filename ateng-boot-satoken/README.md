@@ -13,8 +13,8 @@
 | **状态与续签** | 状态校验与有效期续期 | `LoginHelper` | `token.timeout`<br>`token.active-timeout` | `isLogin([loginType])` / `checkLogin([loginType])` / `getTokenValue([loginType])` / `getTokenValueByLoginId(loginId[, deviceType])` / `getTokenValueByLoginType(loginType, loginId[, deviceType])` / `getTokenTimeout([loginType])` / `getSessionTimeout([loginType])` / `getLoginDeviceType([loginType])` / `renewTimeout([loginType,] Duration)` / `renewTimeoutByToken([loginType,] tokenValue, Duration)` | `LoginHelperTest` / `AuthSessionController` |
 | **短效凭据** | 强类型临时业务令牌 | `TempTokenHelper`<br>`LoginHelper` | - | `createTempToken(Object, Duration)` / `parseTempToken(String)` / `parseTempToken(String, Class<T>)` / `getTempTokenTimeout(String)` / `deleteTempToken(String)`（零 `@class` 纯 JSON） | `TempTokenHelperTest` / `AuthSessionController` |
 | **设备治理** | 踢人下线与同端顶替 | `LoginHelper` | `token.is-concurrent`<br>`token.is-share`<br>`token.max-login-count` | `kickout(loginId[, deviceType])` / `kickoutByLoginType(loginType, loginId[, deviceType])` / `kickoutByToken([loginType,] tokenValue)` / `kickoutDevice([loginType,] loginId, deviceType)` / `kickoutByDevice([loginType,] loginId, deviceType)` / `replaced(loginId[, deviceType])` / `replacedByLoginType(loginType, loginId[, deviceType])` | `LoginHelperOnlineUserTest` / `OnlineSessionController` |
-| **账号封禁** | 阶梯封禁与受限校验 | `LoginHelper`<br>`@SaCheckDisable` | - | `disable(loginId, [service,] Duration / long)` / `disableByLoginType(loginType, loginId, [service,] Duration / long)` / `untieDisable(loginId[, service])` / `untieDisableByLoginType(...)` / `isDisable(...)` / `isDisableByLoginType(...)` / `checkDisable(...)` / `checkDisableByLoginType(...)` / `getDisableTime(...)` / `getDisableTimeByLoginType(...)` | `LoginHelperTest` / `OnlineSessionController` |
-| **二级认证** | 敏感操作二次安全窗 | `LoginHelper`<br>`@SaCheckSafe` | - | `openSafe([service,] Duration / int)` / `openSafeByLoginType(...)` / `isSafe([service])` / `isSafeByLoginType(...)` / `checkSafe([service])` / `checkSafeByLoginType(...)` / `closeSafe([service])` / `closeSafeByLoginType(...)` | `LoginHelperTest` / `AccessControlController` |
+| **账号封禁** | 阶梯封禁与受限校验 | `LoginHelper`<br>`@SaCheckDisable` | - | `disable(loginId, [service,] Duration)` / `disableByLoginType(loginType, loginId, [service,] Duration)` / `untieDisable(loginId[, service])` / `untieDisableByLoginType(...)` / `isDisable(...)` / `isDisableByLoginType(...)` / `checkDisable(...)` / `checkDisableByLoginType(...)` / `getDisableTime(...)` / `getDisableTimeByLoginType(...)` | `LoginHelperTest` / `OnlineSessionController` |
+| **二级认证** | 敏感操作二次安全窗 | `LoginHelper`<br>`@SaCheckSafe` | - | `openSafe([service,] Duration)` / `openSafeByLoginType(...)` / `isSafe([service])` / `isSafeByLoginType(...)` / `checkSafe([service])` / `checkSafeByLoginType(...)` / `closeSafe([service])` / `closeSafeByLoginType(...)` | `LoginHelperTest` / `AccessControlController` |
 | **载荷与身份** | 强类型主体与租户剥离 | `LoginHelper`<br>`LoginUser` | `primary-login-type` | `setLoginUser([loginType,] LoginUser)` / `getLoginUser([loginType])` / `getLoginUser([loginType,] Class<T>)` / `getUserId([loginType])` / `getUserIdAsLong([loginType])` / `getRealUserIdAsLong([loginType])` / `getUserAccount([loginType])` / `getUserName([loginType])` / `getTenantId([loginType])` / `getDeptId([loginType])` / `buildCompositeLoginId(tenantId, userId)` | `LoginHelperTest` / `AuthSessionController` |
 | **多账号体系** | 独立体系物理隔离 | `LoginHelper` | `primary-login-type` | `getStpLogic(String loginType)` / `registerStpLogic(String, StpLogic)` / `getPrimaryLoginType()` / `setPrimaryLoginType(String)` / `getActiveLoginType([preferredType])`，独立 `satoken-{loginType}` 请求头 | `LoginHelperMultiAccountTest` / `MultiAccountController` |
 | **RBAC 鉴权** | Controller & Service 鉴权与超管收敛 | `@SaCheckRole`<br>`@SaCheckPermission`<br>`LoginHelper` | `super-admin-roles`<br>`super-admin-permissions` | `getRoles([loginType])` / `getPermissions([loginType])` / `hasRole([loginType,] role)` / `hasPermission([loginType,] perm)` / `isSuperAdmin([loginType])` / `setSuperAdminRoles` / `setSuperAdminPermissions` / `resetSuperAdminConfig`（支持空列表禁用通配符超管） | `LoginHelperTest` / `AccessControlController` / `SampleSaTokenRouteAndTenantGovernanceIntegrationTest` |
@@ -658,7 +658,7 @@ public class AccessControlController {
      */
     @PostMapping("/open-safe")
     public Result<Integer> openSafe(@RequestParam(value = "timeout", defaultValue = "120") int timeout) {
-        LoginHelper.openSafe(timeout);
+        LoginHelper.openSafe(Duration.ofSeconds(timeout));
         return Result.success(timeout);
     }
 
@@ -1901,8 +1901,8 @@ public class DatabaseUserRolePermissionLoader implements UserRolePermissionLoade
 | `same-token.auto-inject-client` | `boolean` | `true` | 是否为受管 HTTP 客户端自动注入拦截器 |
 | `permission-cache.enabled` | `boolean` | `true` | 是否开启权限与角色缓存 |
 | `permission-cache.tenant-scoped` | `boolean` | `false` | 是否开启角色权限缓存多租户维度隔离（开启后生成 `ateng:satoken:cache:[<loginType>:]role-perms:<tenantId>:<roleCode>`） |
-| `permission-cache.timeout` | `Duration` | `5m` (`300s`) | 权限缓存基础有效期（同时向后兼容 `timeout-seconds` 别名） |
-| `permission-cache.empty-ttl` | `Duration` | `60s` | 空集合 `__EMPTY__` 防穿透哨兵有效期（同时向后兼容 `empty-ttl-seconds` 别名） |
+| `permission-cache.timeout` | `Duration` | `5m` (`300s`) | 权限缓存基础有效期 |
+| `permission-cache.empty-ttl` | `Duration` | `60s` | 空集合 `__EMPTY__` 防穿透哨兵有效期 |
 | `cluster-sync.enabled` | `boolean` | `true` | 是否开启 Redis Pub/Sub 集群同步广播 |
 | `cluster-sync.channel` | `String` | `"ateng:satoken:cluster-sync"` | Redis Pub/Sub 广播频道名称 |
 | `login-defense.enabled` | `boolean` | `false` | 是否开启双轨防暴力破解策略 |

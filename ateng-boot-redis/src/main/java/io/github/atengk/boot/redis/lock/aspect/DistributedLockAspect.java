@@ -51,11 +51,6 @@ public class DistributedLockAspect {
         this.distributedLockTemplate = Objects.requireNonNull(distributedLockTemplate, "DistributedLockTemplate must not be null");
     }
 
-    @Deprecated
-    public DistributedLockAspect(DistributedLockTemplate distributedLockTemplate, RedisProperties redisProperties) {
-        this(distributedLockTemplate);
-    }
-
     /**
      * 兼容基于 RedissonClient 直接构造的构造器
      */

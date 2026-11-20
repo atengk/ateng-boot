@@ -46,8 +46,8 @@ class TenantScopedRolePermissionCacheTest {
         TenantContextHolder.clear();
         TenantContextHolder.setTenantProvider(null);
         properties = new SaTokenProperties();
-        properties.getPermissionCache().setTimeoutSeconds(300);
-        properties.getPermissionCache().setEmptyTtlSeconds(60);
+        properties.getPermissionCache().setTimeout(java.time.Duration.ofSeconds(300));
+        properties.getPermissionCache().setEmptyTtl(java.time.Duration.ofSeconds(60));
         properties.getPermissionCache().setTenantScoped(true);
         cacheService = new PermissionCacheService();
         loader = mock(UserRolePermissionLoader.class);

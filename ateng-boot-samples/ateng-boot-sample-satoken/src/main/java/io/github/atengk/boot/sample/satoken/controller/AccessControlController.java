@@ -23,6 +23,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Duration;
+
 /**
  * 细粒度访问控制控制器
  * 演示 RBAC 角色/权限校验、二级安全认证与基于 @CheckDataOwner 的水平越权防御
@@ -111,7 +113,7 @@ public class AccessControlController {
      */
     @PostMapping("/open-safe")
     public Result<Integer> openSafe(@RequestParam(value = "timeout", defaultValue = "120") int timeout) {
-        LoginHelper.openSafe(timeout);
+        LoginHelper.openSafe(Duration.ofSeconds(timeout));
         return Result.success(timeout);
     }
 

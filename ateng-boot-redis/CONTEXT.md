@@ -16,7 +16,7 @@ _Avoid_: RedisTemplateCustomizer, RedisConfig, JacksonRedisConfig
 
 **RedisUtil**:
 面向五大基础结构（String/Hash/List/Set/ZSet）与三大高级结构（Geo/BitMap/HyperLogLog）的统一操作门面，提供 Pipeline 批处理、`buildKey` 前缀辅助，并强制以游标 `SCAN` 分批拉取替代高危 `KEYS *`。
-_Avoid_: RedisHelper, CacheUtil, RedisManager
+_Avoid_: RedisHelper, CacheUtil, RedisManager, hDelete, sRemove, zRemove, lSize, sSize, reverseRangeWithScores, isKeyExists, setKeyExpire, getKeyExpire, deleteKey, deleteKeys, setVal, getVal
 
 **RedisScriptExecutor**:
 受管原子 Lua 脚本执行门面，负责内联源码与 Classpath 脚本加载、SHA1 摘要预编译缓存、`EVALSHA` 优先通信与强类型结果转换。

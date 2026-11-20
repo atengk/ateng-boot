@@ -300,7 +300,6 @@ class RedisUtilTest {
         Set<ZSetOperations.TypedTuple<Object>> mockTuples = Set.of();
         when(zSetOperations.reverseRangeWithScores("zset:1", 0, 9)).thenReturn(mockTuples);
         assertThat(RedisUtil.zRevRangeWithScores("zset:1", 0, 9)).isEqualTo(mockTuples);
-        assertThat(RedisUtil.reverseRangeWithScores("zset:1", 0, 9)).isEqualTo(mockTuples);
 
         when(zSetOperations.reverseRangeByScore("zset:1", 0.0, 100.0)).thenReturn(Set.of("player1"));
         assertThat(RedisUtil.zRevRangeByScore("zset:1", 0.0, 100.0)).containsExactly("player1");
@@ -374,19 +373,15 @@ class RedisUtilTest {
     void shouldSupportInstanceMethodDelegation() {
         when(redisTemplate.hasKey("inst:k")).thenReturn(true);
         assertThat(redisUtil.hasKey("inst:k")).isTrue();
-        assertThat(redisUtil.isKeyExists("inst:k")).isTrue();
 
         when(redisTemplate.expire("inst:k", 10, TimeUnit.SECONDS)).thenReturn(true);
         assertThat(redisUtil.expire("inst:k", 10, TimeUnit.SECONDS)).isTrue();
-        assertThat(redisUtil.setKeyExpire("inst:k", 10, TimeUnit.SECONDS)).isTrue();
 
         when(redisTemplate.getExpire("inst:k", TimeUnit.SECONDS)).thenReturn(10L);
         assertThat(redisUtil.getExpire("inst:k", TimeUnit.SECONDS)).isEqualTo(10L);
-        assertThat(redisUtil.getKeyExpire("inst:k", TimeUnit.SECONDS)).isEqualTo(10L);
 
         when(redisTemplate.delete("inst:k")).thenReturn(true);
         assertThat(redisUtil.delete("inst:k")).isTrue();
-        assertThat(redisUtil.deleteKey("inst:k")).isTrue();
 
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
         when(valueOperations.get("inst:k")).thenReturn("inst_val");

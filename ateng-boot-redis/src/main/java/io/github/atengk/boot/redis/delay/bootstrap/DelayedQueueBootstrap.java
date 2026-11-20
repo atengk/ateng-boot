@@ -12,7 +12,6 @@ import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
 import io.github.atengk.boot.redis.util.RedisConsumptionContext;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RBlockingQueue;
-import org.redisson.api.RedissonClient;
 import org.slf4j.MDC;
 import org.springframework.aop.framework.autoproxy.AutoProxyUtils;
 import org.springframework.aop.scope.ScopedProxyUtils;
@@ -88,14 +87,6 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, SmartL
         this.objectMapper = objectMapper != null ? objectMapper : RedisSerializerFactory.createSafeObjectMapper();
         this.redisProperties = redisProperties;
         this.failureHandler = failureHandler != null ? failureHandler : new LoggingDelayedQueueFailureHandler();
-    }
-
-    @Deprecated
-    public DelayedQueueBootstrap(RedissonClient redissonClient,
-                                 RedisDelayedQueue redisDelayedQueue,
-                                 ObjectMapper objectMapper,
-                                 io.github.atengk.boot.redis.properties.RedisProperties redisProperties) {
-        this(redisDelayedQueue, objectMapper, redisProperties);
     }
 
     @Override

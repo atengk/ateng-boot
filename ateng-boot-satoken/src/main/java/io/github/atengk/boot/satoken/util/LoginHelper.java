@@ -1620,16 +1620,7 @@ public final class LoginHelper {
         if (duration == null) {
             throw new IllegalArgumentException("开启二级安全认证失败：维持时长不能为空");
         }
-        openSafe((int) duration.toSeconds());
-    }
-
-    /**
-     * 开启当前会话的二级安全认证模式（秒级向后兼容）
-     *
-     * @param timeoutSeconds 安全模式维持秒数
-     */
-    public static void openSafe(int timeoutSeconds) {
-        StpUtil.openSafe(timeoutSeconds);
+        StpUtil.openSafe((int) duration.toSeconds());
     }
 
     /**
@@ -1642,17 +1633,7 @@ public final class LoginHelper {
         if (duration == null) {
             throw new IllegalArgumentException("开启二级安全认证失败：维持时长不能为空");
         }
-        openSafe(service, (int) duration.toSeconds());
-    }
-
-    /**
-     * 开启当前会话指定业务的二级安全认证模式（秒级向后兼容）
-     *
-     * @param service        指定业务标识
-     * @param timeoutSeconds 安全模式维持秒数
-     */
-    public static void openSafe(String service, int timeoutSeconds) {
-        StpUtil.openSafe(service, timeoutSeconds);
+        StpUtil.openSafe(service, (int) duration.toSeconds());
     }
 
     /**
@@ -1665,17 +1646,7 @@ public final class LoginHelper {
         if (duration == null) {
             throw new IllegalArgumentException("开启二级安全认证失败：维持时长不能为空");
         }
-        openSafeByLoginType(loginType, (int) duration.toSeconds());
-    }
-
-    /**
-     * 开启指定账号体系当前会话的二级安全认证模式（秒级向后兼容）
-     *
-     * @param loginType      账号体系标识
-     * @param timeoutSeconds 安全模式维持秒数
-     */
-    public static void openSafeByLoginType(String loginType, int timeoutSeconds) {
-        getStpLogic(loginType).openSafe(timeoutSeconds);
+        getStpLogic(loginType).openSafe((int) duration.toSeconds());
     }
 
     /**
@@ -1689,18 +1660,7 @@ public final class LoginHelper {
         if (duration == null) {
             throw new IllegalArgumentException("开启二级安全认证失败：维持时长不能为空");
         }
-        openSafeByLoginType(loginType, service, (int) duration.toSeconds());
-    }
-
-    /**
-     * 开启指定账号体系当前会话指定业务的二级安全认证模式（秒级向后兼容）
-     *
-     * @param loginType      账号体系标识
-     * @param service        指定业务标识
-     * @param timeoutSeconds 安全模式维持秒数
-     */
-    public static void openSafeByLoginType(String loginType, String service, int timeoutSeconds) {
-        getStpLogic(loginType).openSafe(service, timeoutSeconds);
+        getStpLogic(loginType).openSafe(service, (int) duration.toSeconds());
     }
 
     /**
@@ -1825,17 +1785,7 @@ public final class LoginHelper {
         if (duration == null) {
             throw new IllegalArgumentException("封禁账号失败：封禁时长不能为空");
         }
-        disable(loginId, duration.toSeconds());
-    }
-
-    /**
-     * 封禁指定账号（秒级向后兼容）
-     *
-     * @param loginId            登录账号唯一标识
-     * @param disableTimeSeconds 封禁时长（秒）
-     */
-    public static void disable(Object loginId, long disableTimeSeconds) {
-        StpUtil.disable(loginId, disableTimeSeconds);
+        StpUtil.disable(loginId, duration.toSeconds());
     }
 
     /**
@@ -1849,18 +1799,7 @@ public final class LoginHelper {
         if (duration == null) {
             throw new IllegalArgumentException("封禁服务失败：封禁时长不能为空");
         }
-        disable(loginId, service, duration.toSeconds());
-    }
-
-    /**
-     * 封禁指定账号指定服务（秒级向后兼容）
-     *
-     * @param loginId            登录账号唯一标识
-     * @param service            指定服务标识
-     * @param disableTimeSeconds 封禁时长（秒）
-     */
-    public static void disable(Object loginId, String service, long disableTimeSeconds) {
-        StpUtil.disable(loginId, service, disableTimeSeconds);
+        StpUtil.disable(loginId, service, duration.toSeconds());
     }
 
     /**
@@ -1874,18 +1813,7 @@ public final class LoginHelper {
         if (duration == null) {
             throw new IllegalArgumentException("封禁账号失败：封禁时长不能为空");
         }
-        disableByLoginType(loginType, loginId, duration.toSeconds());
-    }
-
-    /**
-     * 封禁指定账号体系下的指定账号（秒级向后兼容）
-     *
-     * @param loginType          账号体系标识
-     * @param loginId            登录账号唯一标识
-     * @param disableTimeSeconds 封禁时长（秒）
-     */
-    public static void disableByLoginType(String loginType, Object loginId, long disableTimeSeconds) {
-        getStpLogic(loginType).disable(loginId, disableTimeSeconds);
+        getStpLogic(loginType).disable(loginId, duration.toSeconds());
     }
 
     /**
@@ -1900,19 +1828,7 @@ public final class LoginHelper {
         if (duration == null) {
             throw new IllegalArgumentException("封禁服务失败：封禁时长不能为空");
         }
-        disableByLoginType(loginType, loginId, service, duration.toSeconds());
-    }
-
-    /**
-     * 封禁指定账号体系下的指定账号指定服务（秒级向后兼容）
-     *
-     * @param loginType          账号体系标识
-     * @param loginId            登录账号唯一标识
-     * @param service            指定服务标识
-     * @param disableTimeSeconds 封禁时长（秒）
-     */
-    public static void disableByLoginType(String loginType, Object loginId, String service, long disableTimeSeconds) {
-        getStpLogic(loginType).disable(loginId, service, disableTimeSeconds);
+        getStpLogic(loginType).disable(loginId, service, duration.toSeconds());
     }
 
     /**

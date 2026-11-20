@@ -309,20 +309,18 @@ class AtengRedisAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("测试 TwoLevelCacheProperties 兼容绑定 expires 属性别名")
-    void shouldBindTwoLevelCacheExpiresAlias() {
+    @DisplayName("测试 TwoLevelCacheProperties 强类型 ttls 映射绑定")
+    void shouldBindTwoLevelCacheTtls() {
         contextRunner.withUserConfiguration(TestMockConfiguration.class)
                 .withPropertyValues(
-                        "ateng.boot.redis.two-level.l1.expires.dictCache=3m",
-                        "ateng.boot.redis.two-level.l2.expires.dictCache=15m"
+                        "ateng.boot.redis.two-level.l1.ttls.dictCache=3m",
+                        "ateng.boot.redis.two-level.l2.ttls.dictCache=15m"
                 )
                 .run(context -> {
                     io.github.atengk.boot.redis.properties.RedisProperties properties =
                             context.getBean(io.github.atengk.boot.redis.properties.RedisProperties.class);
                     assertThat(properties.getTwoLevel().getL1().getTtls()).containsEntry("dictCache", Duration.ofMinutes(3));
                     assertThat(properties.getTwoLevel().getL2().getTtls()).containsEntry("dictCache", Duration.ofMinutes(15));
-                    assertThat(properties.getTwoLevel().getL1().getExpires()).containsEntry("dictCache", Duration.ofMinutes(3));
-                    assertThat(properties.getTwoLevel().getL2().getExpires()).containsEntry("dictCache", Duration.ofMinutes(15));
                 });
     }
 

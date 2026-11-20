@@ -167,8 +167,9 @@ public class CachedStpInterface implements StpInterface {
 
         // 2. 缓存未命中，回源业务加载器
         List<String> loaded = sourceSupplier.get();
+        long emptyTtlSeconds = resolveSeconds(properties.getPermissionCache().getEmptyTtl());
         if (loaded == null || loaded.isEmpty()) {
-            cacheService.set(cacheKey, EMPTY_SENTINEL, properties.getPermissionCache().getEmptyTtlSeconds());
+            cacheService.set(cacheKey, EMPTY_SENTINEL, emptyTtlSeconds);
             return Collections.emptyList();
         }
 
@@ -178,13 +179,17 @@ public class CachedStpInterface implements StpInterface {
                 .distinct()
                 .toList();
         if (cleanList.isEmpty()) {
-            cacheService.set(cacheKey, EMPTY_SENTINEL, properties.getPermissionCache().getEmptyTtlSeconds());
+            cacheService.set(cacheKey, EMPTY_SENTINEL, emptyTtlSeconds);
             return Collections.emptyList();
         }
-        long ttl = calculateTtlWithJitter(properties.getPermissionCache().getTimeoutSeconds());
+        long ttl = calculateTtlWithJitter(resolveSeconds(properties.getPermissionCache().getTimeout()));
         cacheService.set(cacheKey, serializeList(cleanList), ttl);
 
         return cleanList;
+    }
+
+    private static long resolveSeconds(java.time.Duration duration) {
+        return duration != null ? duration.toSeconds() : 0L;
     }
 
     /**

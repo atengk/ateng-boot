@@ -241,42 +241,6 @@ public class SaTokenProperties {
          * 开启后仅针对 {@code role-perms} 缓存键叠加当前租户标识隔离，防止跨租户同名角色权限缓存串味。
          */
         private boolean tenantScoped = false;
-
-        /**
-         * 获取权限与角色缓存有效期秒数（向后兼容）
-         *
-         * @return 缓存秒数
-         */
-        public long getTimeoutSeconds() {
-            return timeout != null ? timeout.toSeconds() : 0L;
-        }
-
-        /**
-         * 设置权限与角色缓存有效期秒数（向后兼容）
-         *
-         * @param timeoutSeconds 缓存秒数
-         */
-        public void setTimeoutSeconds(long timeoutSeconds) {
-            this.timeout = Duration.ofSeconds(timeoutSeconds);
-        }
-
-        /**
-         * 获取空权限/空角色防穿透哨兵缓存有效期秒数（向后兼容）
-         *
-         * @return 哨兵缓存秒数
-         */
-        public long getEmptyTtlSeconds() {
-            return emptyTtl != null ? emptyTtl.toSeconds() : 0L;
-        }
-
-        /**
-         * 设置空权限/空角色防穿透哨兵缓存有效期秒数（向后兼容）
-         *
-         * @param emptyTtlSeconds 哨兵缓存秒数
-         */
-        public void setEmptyTtlSeconds(long emptyTtlSeconds) {
-            this.emptyTtl = Duration.ofSeconds(emptyTtlSeconds);
-        }
     }
 
     /**

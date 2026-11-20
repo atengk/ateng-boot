@@ -305,7 +305,7 @@ public class DistributedLockTemplate {
         Objects.requireNonNull(supplier, "supplier must not be null");
 
         LockMode actualMode = mode != null ? mode : LockMode.REENTRANT;
-        TimeUnit actualTimeUnit = timeUnit != null ? timeUnit : (redisProperties.getLock().getTimeUnit() != null ? redisProperties.getLock().getTimeUnit() : TimeUnit.SECONDS);
+        TimeUnit actualTimeUnit = timeUnit != null ? timeUnit : TimeUnit.MILLISECONDS;
 
         long actualWaitTime;
         if (waitTime >= 0) {
@@ -363,7 +363,7 @@ public class DistributedLockTemplate {
         }
 
         long acquireCost = System.currentTimeMillis() - acquireStart;
-        long slowThreshold = redisProperties.getLock().getSlowThresholdMs();
+        long slowThreshold = resolveSlowThresholdMs();
         if (slowThreshold > 0 && acquireCost >= slowThreshold) {
             log.warn("[DistributedLock] 检测到慢分布式锁争锁: keys={}, mode={}, acquireCost={}ms, slowThreshold={}ms",
                     resolvedKeys, actualMode, acquireCost, slowThreshold);
@@ -391,12 +391,17 @@ public class DistributedLockTemplate {
         }
     }
 
+    private long resolveSlowThresholdMs() {
+        Duration slowThreshold = redisProperties.getLock().getSlowThreshold();
+        return slowThreshold != null ? slowThreshold.toMillis() : 0L;
+    }
+
     /**
      * 安全持锁释放与慢锁耗时审计
      */
     private void safeUnlockAndAudit(RLock rLock, List<String> keys, LockMode mode, long startTime) {
         long cost = System.currentTimeMillis() - startTime;
-        long slowThreshold = redisProperties.getLock().getSlowThresholdMs();
+        long slowThreshold = resolveSlowThresholdMs();
         if (slowThreshold > 0 && cost >= slowThreshold) {
             log.warn("[DistributedLock] 检测到慢分布式锁持锁: keys={}, mode={}, holdCost={}ms, slowThreshold={}ms",
                     keys, mode, cost, slowThreshold);

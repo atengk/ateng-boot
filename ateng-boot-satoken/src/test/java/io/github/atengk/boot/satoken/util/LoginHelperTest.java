@@ -203,16 +203,9 @@ class LoginHelperTest {
             LoginHelper.disable("user-1", Duration.ofHours(1));
             stpUtilMock.verify(() -> StpUtil.disable("user-1", 3600L));
 
-            // 秒级封禁
-            LoginHelper.disable("user-1", 1800L);
-            stpUtilMock.verify(() -> StpUtil.disable("user-1", 1800L));
-
             // 服务级封禁
             LoginHelper.disable("user-1", "chat", Duration.ofMinutes(10));
             stpUtilMock.verify(() -> StpUtil.disable("user-1", "chat", 600L));
-
-            LoginHelper.disable("user-1", "chat", 300L);
-            stpUtilMock.verify(() -> StpUtil.disable("user-1", "chat", 300L));
 
             // 状态判断与校验
             assertThat(LoginHelper.isDisable("user-1")).isTrue();

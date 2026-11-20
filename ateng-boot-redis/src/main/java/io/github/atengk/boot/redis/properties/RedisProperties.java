@@ -7,7 +7,6 @@ import org.springframework.boot.context.properties.NestedConfigurationProperty;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Redis 增强基础设施与分布式协同配置属性
@@ -110,11 +109,6 @@ public class RedisProperties {
         private Duration leaseTime = Duration.ofMillis(-1);
 
         /**
-         * 默认时间单位（向后兼容保留，建议优先在配置中使用标准 Duration 格式如 3s、500ms）
-         */
-        private TimeUnit timeUnit = TimeUnit.SECONDS;
-
-        /**
          * 分布式锁统一键名前缀（默认 "lock:"）
          */
         private String prefix = "lock:";
@@ -137,23 +131,6 @@ public class RedisProperties {
             this.waitTime = waitTime;
         }
 
-        /**
-         * 兼容旧版秒级/数值设置
-         *
-         * @param waitTimeSeconds 等待超时秒数
-         */
-        public void setWaitTime(long waitTimeSeconds) {
-            this.waitTime = Duration.ofSeconds(waitTimeSeconds);
-        }
-
-        public long getWaitTimeSeconds() {
-            return waitTime != null ? waitTime.toSeconds() : 3L;
-        }
-
-        public void setWaitTimeSeconds(long waitTimeSeconds) {
-            this.waitTime = Duration.ofSeconds(waitTimeSeconds);
-        }
-
         public Duration getLeaseTime() {
             return leaseTime;
         }
@@ -162,45 +139,12 @@ public class RedisProperties {
             this.leaseTime = leaseTime;
         }
 
-        /**
-         * 兼容旧版秒级/数值设置
-         *
-         * @param leaseTimeSeconds 租约超时秒数（-1 表示看门狗）
-         */
-        public void setLeaseTime(long leaseTimeSeconds) {
-            this.leaseTime = leaseTimeSeconds < 0 ? Duration.ofMillis(-1) : Duration.ofSeconds(leaseTimeSeconds);
-        }
-
-        public long getLeaseTimeSeconds() {
-            return leaseTime != null ? (leaseTime.isNegative() ? -1L : leaseTime.toSeconds()) : -1L;
-        }
-
-        public void setLeaseTimeSeconds(long leaseTimeSeconds) {
-            this.leaseTime = leaseTimeSeconds < 0 ? Duration.ofMillis(-1) : Duration.ofSeconds(leaseTimeSeconds);
-        }
-
-        public long getSlowThresholdMs() {
-            return slowThreshold != null ? slowThreshold.toMillis() : 0L;
-        }
-
-        public void setSlowThresholdMs(long slowThresholdMs) {
-            this.slowThreshold = Duration.ofMillis(slowThresholdMs);
-        }
-
         public Duration getSlowThreshold() {
             return slowThreshold;
         }
 
         public void setSlowThreshold(Duration slowThreshold) {
             this.slowThreshold = slowThreshold;
-        }
-
-        public Duration getSlowLockThreshold() {
-            return slowThreshold;
-        }
-
-        public void setSlowLockThreshold(Duration slowLockThreshold) {
-            this.slowThreshold = slowLockThreshold;
         }
     }
 
@@ -477,28 +421,6 @@ public class RedisProperties {
              * 针对特定 cacheName 的 L1 写入后过期时长映射
              */
             private Map<String, Duration> ttls = new HashMap<>();
-
-            /**
-             * 兼容历史文档 expires 属性命名（等价于 ttls）
-             *
-             * @return 独立过期时间映射
-             * @deprecated 请使用 {@link #getTtls()}
-             */
-            @Deprecated
-            public Map<String, Duration> getExpires() {
-                return this.ttls;
-            }
-
-            /**
-             * 兼容历史文档 expires 属性命名（等价于 ttls）
-             *
-             * @param expires 独立过期时间映射
-             * @deprecated 请使用 {@link #setTtls(Map)}
-             */
-            @Deprecated
-            public void setExpires(Map<String, Duration> expires) {
-                this.ttls = expires != null ? expires : new HashMap<>();
-            }
         }
 
         /**
@@ -536,28 +458,6 @@ public class RedisProperties {
              * 针对特定 cacheName 的 L2 独立过期时间映射
              */
             private Map<String, Duration> ttls = new HashMap<>();
-
-            /**
-             * 兼容历史文档 expires 属性命名（等价于 ttls）
-             *
-             * @return 独立过期时间映射
-             * @deprecated 请使用 {@link #getTtls()}
-             */
-            @Deprecated
-            public Map<String, Duration> getExpires() {
-                return this.ttls;
-            }
-
-            /**
-             * 兼容历史文档 expires 属性命名（等价于 ttls）
-             *
-             * @param expires 独立过期时间映射
-             * @deprecated 请使用 {@link #setTtls(Map)}
-             */
-            @Deprecated
-            public void setExpires(Map<String, Duration> expires) {
-                this.ttls = expires != null ? expires : new HashMap<>();
-            }
         }
     }
 
@@ -593,14 +493,6 @@ public class RedisProperties {
 
         public void setDefaultExpire(Duration defaultExpire) {
             this.defaultExpire = defaultExpire;
-        }
-
-        public void setDefaultExpireSeconds(long seconds) {
-            this.defaultExpire = Duration.ofSeconds(seconds);
-        }
-
-        public long getDefaultExpireSeconds() {
-            return defaultExpire != null ? defaultExpire.toSeconds() : 600L;
         }
     }
 
@@ -669,14 +561,6 @@ public class RedisProperties {
 
         public void setPollTimeout(Duration pollTimeout) {
             this.pollTimeout = pollTimeout;
-        }
-
-        public void setPollTimeoutSeconds(long seconds) {
-            this.pollTimeout = Duration.ofSeconds(seconds);
-        }
-
-        public long getPollTimeoutSeconds() {
-            return pollTimeout != null ? pollTimeout.toSeconds() : 2L;
         }
     }
 

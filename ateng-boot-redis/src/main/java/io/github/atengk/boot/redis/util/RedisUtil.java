@@ -701,18 +701,6 @@ public class RedisUtil {
         }
     }
 
-    /**
-     * 删除 Hash 中的字段（hDel 别名）
-     *
-     * @param key 键名
-     * @param hashKeys 字段名数组
-     * @return 成功删除的数量
-     */
-    @Deprecated
-    public static long hDelete(String key, Object... hashKeys) {
-        return hDel(key, hashKeys);
-    }
-
     // ==================== 4. List 列表操作 ====================
 
     /**
@@ -846,16 +834,6 @@ public class RedisUtil {
     }
 
     /**
-     * 获取列表长度（lLen 别名）
-     *
-     * @param key 键名
-     * @return 长度
-     */
-    public static long lSize(String key) {
-        return lLen(key);
-    }
-
-    /**
      * 根据索引获取元素
      *
      * @param key 键名
@@ -935,28 +913,6 @@ public class RedisUtil {
     public static long sCard(String key) {
         Long card = getTemplate().opsForSet().size(key);
         return card != null ? card : 0L;
-    }
-
-    /**
-     * 从集合中移除元素（sRem 别名）
-     *
-     * @param key 键名
-     * @param values 待移除元素
-     * @return 移除成功的数量
-     */
-    @Deprecated
-    public static long sRemove(String key, Object... values) {
-        return sRem(key, values);
-    }
-
-    /**
-     * 获取集合大小（sCard 别名）
-     *
-     * @param key 键名
-     * @return 大小
-     */
-    public static long sSize(String key) {
-        return sCard(key);
     }
 
     /**
@@ -1190,31 +1146,6 @@ public class RedisUtil {
     }
 
     /**
-     * 获取指定排名区间的成员及分值（降序排行榜别名方法，等同于 {@link #zRevRangeWithScores}）
-     *
-     * @param key 键名
-     * @param start 起始名次
-     * @param end 终止名次
-     * @return 带分值的成员集合
-     * @see #zRevRangeWithScores(String, long, long)
-     */
-    public static Set<ZSetOperations.TypedTuple<Object>> reverseRangeWithScores(String key, long start, long end) {
-        return zRevRangeWithScores(key, start, end);
-    }
-
-    /**
-     * 移除有序集合中的成员（zRem 别名）
-     *
-     * @param key 键名
-     * @param values 待移除成员
-     * @return 移除成功的数量
-     */
-    @Deprecated
-    public static long zRemove(String key, Object... values) {
-        return zRem(key, values);
-    }
-
-    /**
      * 渐进式游标遍历 ZSet 成员
      *
      * @param key 键名
@@ -1392,53 +1323,5 @@ public class RedisUtil {
             }
         });
         return results != null ? results : Collections.emptyList();
-    }
-
-    // ==================== 11. 历史兼容性别名（所有静态方法均支持通过 RedisUtil Bean 实例直接调用） ====================
-
-    // --- 兼容性别名（推荐使用同名实例方法） ---
-    @Deprecated
-    public boolean isKeyExists(String key) {
-        return hasKey(key);
-    }
-
-    @Deprecated
-    public boolean setKeyExpire(String key, long timeout, TimeUnit unit) {
-        return expire(key, timeout, unit);
-    }
-
-    @Deprecated
-    public long getKeyExpire(String key, TimeUnit unit) {
-        return getExpire(key, unit);
-    }
-
-    @Deprecated
-    public boolean deleteKey(String key) {
-        return delete(key);
-    }
-
-    @Deprecated
-    public long deleteKeys(Collection<String> keys) {
-        return delete(keys);
-    }
-
-    @Deprecated
-    public void setVal(String key, Object value) {
-        set(key, value);
-    }
-
-    @Deprecated
-    public void setVal(String key, Object value, long timeout, TimeUnit unit) {
-        set(key, value, timeout, unit);
-    }
-
-    @Deprecated
-    public Object getVal(String key) {
-        return get(key);
-    }
-
-    @Deprecated
-    public <T> T getVal(String key, Class<T> clazz) {
-        return get(key, clazz);
     }
 }
