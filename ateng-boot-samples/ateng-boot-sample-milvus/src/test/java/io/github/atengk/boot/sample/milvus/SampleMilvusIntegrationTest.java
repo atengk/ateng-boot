@@ -21,6 +21,7 @@ import io.milvus.v2.service.collection.response.GetCollectionStatsResp;
 import io.milvus.v2.service.collection.response.ListCollectionsResp;
 import io.milvus.v2.service.utility.response.DescribeAliasResp;
 import io.milvus.v2.service.utility.response.ListAliasResp;
+import io.milvus.v2.service.vector.request.DeleteReq;
 import io.milvus.v2.service.vector.request.GetReq;
 import io.milvus.v2.service.vector.request.HybridSearchReq;
 import io.milvus.v2.service.vector.request.InsertReq;
@@ -40,6 +41,7 @@ import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -87,6 +89,9 @@ class SampleMilvusIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private MilvusClientV2 milvusClientV2;
 
     @BeforeEach
     void setUp() {
@@ -163,9 +168,24 @@ class SampleMilvusIntegrationTest {
                     .entity(entityMap)
                     .build();
 
+            Map<String, Object> tenantAlphaMap = new HashMap<>();
+            tenantAlphaMap.put("id", 100L);
+            tenantAlphaMap.put("category", "SAAS");
+            tenantAlphaMap.put("tenant_id", "tenant_corp_alpha");
+            tenantAlphaMap.put("title", "租户隔离专有文档");
+            tenantAlphaMap.put("content", "严格保障租户数据安全");
+            tenantAlphaMap.put("vector", List.of(0.1f, 0.1f, 0.1f, 0.1f));
+
             when(client.get(any(GetReq.class))).thenAnswer(invocation -> {
                 GetReq req = invocation.getArgument(0);
-                Map<String, Object> targetMap = "sample_multimodal".equals(req.getCollectionName()) ? multimodalMap : entityMap;
+                Map<String, Object> targetMap;
+                if ("sample_multimodal".equals(req.getCollectionName())) {
+                    targetMap = multimodalMap;
+                } else if (req.getIds() != null && req.getIds().contains(100L)) {
+                    targetMap = tenantAlphaMap;
+                } else {
+                    targetMap = entityMap;
+                }
                 QueryResp.QueryResult r = QueryResp.QueryResult.builder().entity(targetMap).build();
                 return GetResp.builder().getResults(Collections.singletonList(r)).build();
             });
@@ -397,13 +417,12 @@ class SampleMilvusIntegrationTest {
         DocumentInsertDto tenantInsertDto = DocumentInsertDto.builder()
                 .id(100L)
                 .category("SAAS")
-                .tenantId("tenant_corp_alpha")
                 .title("租户隔离专有文档")
                 .content("严格保障租户数据安全")
                 .vector(List.of(0.1f, 0.1f, 0.1f, 0.1f))
                 .build();
 
-        // 1. 租户写入
+        // 1. 租户写入 (DTO 未传 tenantId，验证由上下文自动填充至 tenant_id 而非 category)
         mockMvc.perform(post("/sample/milvus/tenant/insert")
                         .header("X-Tenant-Id", "tenant_corp_alpha")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -415,10 +434,20 @@ class SampleMilvusIntegrationTest {
         // 验证调用后线程上下文已安全重置清理
         assertThat(TenantContextHolder.getTenantId()).isNull();
 
-        // 2. 租户检索
+        if (Mockito.mockingDetails(milvusClientV2).isMock()) {
+            ArgumentCaptor<InsertReq> insertCaptor = ArgumentCaptor.forClass(InsertReq.class);
+            Mockito.verify(milvusClientV2, Mockito.atLeastOnce()).insert(insertCaptor.capture());
+            List<InsertReq> allInserts = insertCaptor.getAllValues();
+            InsertReq lastInsert = allInserts.get(allInserts.size() - 1);
+            assertThat(lastInsert.getData().get(0).get("tenant_id").getAsString()).isEqualTo("tenant_corp_alpha");
+            assertThat(lastInsert.getData().get(0).get("category").getAsString()).isEqualTo("SAAS");
+        }
+
+        // 2. 租户检索 (自动织入 tenant_id 条件，而非 category)
         VectorSearchDto tenantSearchDto = VectorSearchDto.builder()
                 .vector(List.of(0.1f, 0.1f, 0.1f, 0.1f))
                 .topK(5)
+                .filterExpr("category == 'SAAS'")
                 .build();
         mockMvc.perform(post("/sample/milvus/tenant/search")
                         .header("X-Tenant-Id", "tenant_corp_alpha")
@@ -430,6 +459,14 @@ class SampleMilvusIntegrationTest {
 
         assertThat(TenantContextHolder.getTenantId()).isNull();
 
+        if (Mockito.mockingDetails(milvusClientV2).isMock()) {
+            ArgumentCaptor<SearchReq> searchCaptor = ArgumentCaptor.forClass(SearchReq.class);
+            Mockito.verify(milvusClientV2, Mockito.atLeastOnce()).search(searchCaptor.capture());
+            List<SearchReq> allSearches = searchCaptor.getAllValues();
+            assertThat(allSearches.get(allSearches.size() - 1).getFilter())
+                    .isEqualTo("(category == 'SAAS') and (tenant_id == 'tenant_corp_alpha')");
+        }
+
         // 3. 租户统计
         mockMvc.perform(get("/sample/milvus/tenant/count")
                         .header("X-Tenant-Id", "tenant_corp_alpha"))
@@ -438,6 +475,38 @@ class SampleMilvusIntegrationTest {
                 .andExpect(jsonPath("$.data").isNotEmpty());
 
         assertThat(TenantContextHolder.getTenantId()).isNull();
+
+        // 4. 租户点查：本租户正常读取，跨租户访问严格拦截返回空
+        mockMvc.perform(get("/sample/milvus/tenant/get/100")
+                        .header("X-Tenant-Id", "tenant_corp_alpha"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.id").value(100))
+                .andExpect(jsonPath("$.data.tenantId").value("tenant_corp_alpha"));
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+
+        mockMvc.perform(get("/sample/milvus/tenant/get/100")
+                        .header("X-Tenant-Id", "tenant_corp_other"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").doesNotExist());
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+
+        // 5. 租户安全删除：自动织入 tenant_id 隔离过滤
+        mockMvc.perform(delete("/sample/milvus/tenant/delete/100")
+                        .header("X-Tenant-Id", "tenant_corp_alpha"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+
+        if (Mockito.mockingDetails(milvusClientV2).isMock()) {
+            ArgumentCaptor<DeleteReq> deleteCaptor = ArgumentCaptor.forClass(DeleteReq.class);
+            Mockito.verify(milvusClientV2, Mockito.atLeastOnce()).delete(deleteCaptor.capture());
+            List<DeleteReq> allDeletes = deleteCaptor.getAllValues();
+            assertThat(allDeletes.get(allDeletes.size() - 1).getFilter())
+                    .isEqualTo("(id in [100]) and (tenant_id == 'tenant_corp_alpha')");
+        }
     }
 
     @Test

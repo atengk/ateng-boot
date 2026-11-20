@@ -29,6 +29,7 @@ class AtengMilvusPropertiesTest {
         assertThat(properties.isSecure()).isFalse();
         assertThat(properties.getConsistencyLevel()).isEqualTo(MilvusConsistencyLevel.BOUNDED);
         assertThat(properties.isAutoCreatePartition()).isFalse();
+        assertThat(properties.getTenantFieldName()).isEqualTo("tenant_id");
         assertThat(properties.getConnectTimeout()).isEqualTo(Duration.ofSeconds(10));
         assertThat(properties.getKeepAliveTime()).isEqualTo(Duration.ofSeconds(55));
         assertThat(properties.getKeepAliveTimeout()).isEqualTo(Duration.ofSeconds(20));

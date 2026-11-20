@@ -32,4 +32,9 @@ public @interface MilvusPartitionKey {
      * 字段语义描述
      */
     String description() default "多租户/分类分区路由键";
+
+    /**
+     * 是否同时作为 SaaS 多租户隔离列
+     */
+    boolean tenantField() default false;
 }

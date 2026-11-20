@@ -12,11 +12,14 @@ import io.github.atengk.boot.sample.milvus.vo.DocumentHitVo;
 import io.github.atengk.boot.sample.milvus.vo.DocumentVo;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -26,6 +29,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
@@ -57,19 +61,15 @@ public class MilvusTenantController {
         String effectiveTenantId = StringUtils.hasText(headerTenantId)
                 ? headerTenantId.trim()
                 : request.getTenantId();
-        if (StringUtils.hasText(effectiveTenantId)) {
-            TenantContextHolder.setTenantId(effectiveTenantId);
-        }
-        try {
-            SampleDocumentEntity entity = DocumentConverter.toEntity(request);
-            if (StringUtils.hasText(effectiveTenantId)) {
-                entity.setTenantId(effectiveTenantId);
-            }
+        SampleDocumentEntity entity = DocumentConverter.toEntity(request);
+        if (!StringUtils.hasText(effectiveTenantId)) {
             milvusTemplate.insertEntities(Collections.singletonList(entity));
             return Result.success(entity.getId());
-        } finally {
-            TenantContextHolder.clear();
         }
+        return Result.success(executeWithTenant(effectiveTenantId, () -> {
+            milvusTemplate.insertEntities(Collections.singletonList(entity));
+            return entity.getId();
+        }));
     }
 
     /**
@@ -83,21 +83,18 @@ public class MilvusTenantController {
     public Result<List<DocumentHitVo>> searchWithTenant(
             @Valid @RequestBody VectorSearchDto request,
             @RequestHeader("X-Tenant-Id") @NotBlank(message = "租户标识 X-Tenant-Id 不能为空") String tenantId) {
-        TenantContextHolder.setTenantId(tenantId.trim());
-        try {
+        List<DocumentHitVo> voList = executeWithTenant(tenantId, () -> {
             List<MilvusHit<SampleDocumentEntity>> hits = milvusTemplate.search(
                     SampleDocumentEntity.class,
                     request.getVector(),
                     request.getTopK(),
                     request.getFilterExpr()
             );
-            List<DocumentHitVo> voList = hits.stream()
+            return hits.stream()
                     .map(DocumentConverter::toHitVo)
                     .collect(Collectors.toList());
-            return Result.success(voList);
-        } finally {
-            TenantContextHolder.clear();
-        }
+        });
+        return Result.success(voList);
     }
 
     /**
@@ -111,10 +108,48 @@ public class MilvusTenantController {
     public Result<Long> countWithTenant(
             @RequestHeader("X-Tenant-Id") @NotBlank(message = "租户标识 X-Tenant-Id 不能为空") String tenantId,
             @RequestParam(name = "expr", required = false) String expr) {
+        long total = executeWithTenant(tenantId, () -> milvusTemplate.count(SampleDocumentEntity.class, expr));
+        return Result.success(total);
+    }
+
+    /**
+     * 租户上下文受限主键点查 (自动防御跨租户越权读取)
+     *
+     * @param id       文档主键 ID
+     * @param tenantId HTTP 请求头指定的租户标识
+     * @return 属于当前租户的文档视图 VO，跨租户访问时返回 null
+     */
+    @GetMapping("/get/{id}")
+    public Result<DocumentVo> getByIdWithTenant(
+            @PathVariable("id") @NotNull(message = "文档ID不能为空") Long id,
+            @RequestHeader("X-Tenant-Id") @NotBlank(message = "租户标识 X-Tenant-Id 不能为空") String tenantId) {
+        SampleDocumentEntity entity = executeWithTenant(tenantId,
+                () -> milvusTemplate.getById(SampleDocumentEntity.class, id));
+        return Result.success(DocumentConverter.toVo(entity));
+    }
+
+    /**
+     * 租户上下文受限安全删除 (自动织入租户隔离表达式，杜绝越权删数)
+     *
+     * @param id       文档主键 ID
+     * @param tenantId HTTP 请求头指定的租户标识
+     * @return 删除成功标识
+     */
+    @DeleteMapping("/delete/{id}")
+    public Result<Boolean> deleteByIdWithTenant(
+            @PathVariable("id") @NotNull(message = "文档ID不能为空") Long id,
+            @RequestHeader("X-Tenant-Id") @NotBlank(message = "租户标识 X-Tenant-Id 不能为空") String tenantId) {
+        executeWithTenant(tenantId, () -> {
+            milvusTemplate.deleteById(SampleDocumentEntity.class, id);
+            return Boolean.TRUE;
+        });
+        return Result.success(true);
+    }
+
+    private <T> T executeWithTenant(String tenantId, Supplier<T> action) {
         TenantContextHolder.setTenantId(tenantId.trim());
         try {
-            long total = milvusTemplate.count(SampleDocumentEntity.class, expr);
-            return Result.success(total);
+            return action.get();
         } finally {
             TenantContextHolder.clear();
         }

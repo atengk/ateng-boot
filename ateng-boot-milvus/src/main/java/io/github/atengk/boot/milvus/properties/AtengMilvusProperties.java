@@ -96,6 +96,11 @@ public class AtengMilvusProperties {
     private boolean tenantDatabaseRouting = false;
 
     /**
+     * 全局默认 SaaS 多租户隔离列名称 (无实体元数据推导时生效)
+     */
+    private String tenantFieldName = "tenant_id";
+
+    /**
      * 计算并获取有效的连接端点 URI
      *
      * @return 格式化后的 Milvus 连接 URI

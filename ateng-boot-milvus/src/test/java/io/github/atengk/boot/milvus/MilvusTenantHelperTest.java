@@ -2,6 +2,7 @@ package io.github.atengk.boot.milvus;
 
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.milvus.annotation.MilvusCollection;
+import io.github.atengk.boot.milvus.annotation.MilvusField;
 import io.github.atengk.boot.milvus.annotation.MilvusId;
 import io.github.atengk.boot.milvus.annotation.MilvusPartitionKey;
 import io.github.atengk.boot.milvus.annotation.MilvusVector;
@@ -47,6 +48,44 @@ class MilvusTenantHelperTest {
 
         @MilvusPartitionKey
         private String tenantId;
+
+        @MilvusVector(dimension = 4)
+        private List<Float> vector;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @MilvusCollection(name = "category_partitioned_doc")
+    static class CategoryPartitionedDoc {
+        @MilvusId
+        private Long id;
+
+        @MilvusPartitionKey
+        private String category;
+
+        @MilvusField(name = "tenant_id")
+        private String tenantId;
+
+        @MilvusVector(dimension = 4)
+        private List<Float> vector;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @MilvusCollection(name = "explicit_org_doc")
+    static class ExplicitOrgDoc {
+        @MilvusId
+        private Long id;
+
+        @MilvusPartitionKey
+        private String category;
+
+        @MilvusField(name = "org_code", tenantField = true)
+        private Long orgCode;
 
         @MilvusVector(dimension = 4)
         private List<Float> vector;
@@ -157,5 +196,35 @@ class MilvusTenantHelperTest {
         MilvusEntityMetadata longMeta = MilvusEntityMetadata.of(LongTenantDoc.class);
         MilvusTenantHelper.fillEntityTenantField(longDoc, longMeta);
         assertThat(longDoc.getTenantId()).isEqualTo(10086L);
+    }
+
+    @Test
+    @DisplayName("业务分区键与独立租户列并存时正交织入与填充，互不串列")
+    void testOrthogonalPartitionKeyAndTenantField() {
+        TenantContextHolder.setTenantId("10086");
+
+        // 1. category 为 @MilvusPartitionKey，tenant_id 为默认租户列
+        MilvusEntityMetadata catMeta = MilvusEntityMetadata.of(CategoryPartitionedDoc.class);
+        assertThat(MilvusTenantHelper.weaveEntityTenantFilter("category == 'TECH'", catMeta, false))
+                .isEqualTo("(category == 'TECH') and (tenant_id == '10086')");
+
+        CategoryPartitionedDoc catDoc = CategoryPartitionedDoc.builder().id(1L).build();
+        MilvusTenantHelper.fillEntityTenantField(catDoc, catMeta);
+        assertThat(catDoc.getCategory()).isNull();
+        assertThat(catDoc.getTenantId()).isEqualTo("10086");
+
+        // 2. category 为 @MilvusPartitionKey，org_code 为显式数值型租户列
+        MilvusEntityMetadata orgMeta = MilvusEntityMetadata.of(ExplicitOrgDoc.class);
+        assertThat(MilvusTenantHelper.weaveEntityTenantFilter("category == 'AI'", orgMeta, false))
+                .isEqualTo("(category == 'AI') and (org_code == 10086)");
+
+        ExplicitOrgDoc orgDoc = ExplicitOrgDoc.builder().id(2L).category("AI").build();
+        MilvusTenantHelper.fillEntityTenantField(orgDoc, orgMeta);
+        assertThat(orgDoc.getCategory()).isEqualTo("AI");
+        assertThat(orgDoc.getOrgCode()).isEqualTo(10086L);
+
+        // 3. 无实体元数据时允许传入全局默认租户列名
+        assertThat(MilvusTenantHelper.weaveEntityTenantFilter("status == 1", null, "org_id", false))
+                .isEqualTo("(status == 1) and (org_id == '10086')");
     }
 }

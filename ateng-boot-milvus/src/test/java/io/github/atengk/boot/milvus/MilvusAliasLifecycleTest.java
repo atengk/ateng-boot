@@ -1,6 +1,7 @@
 package io.github.atengk.boot.milvus;
 
 import io.github.atengk.boot.milvus.exception.MilvusException;
+import io.github.atengk.boot.milvus.exception.MilvusResultCode;
 import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
 import io.github.atengk.boot.milvus.template.MilvusTemplate;
 import io.milvus.v2.client.MilvusClientV2;
@@ -86,7 +87,9 @@ class MilvusAliasLifecycleTest {
 
         assertThatThrownBy(() -> template.alterAlias("article_v2", "article_active_alias"))
                 .isInstanceOf(MilvusException.class)
-                .hasMessageContaining("尚未加载至内存 (Not Loaded)");
+                .hasMessageContaining("尚未加载至内存 (Not Loaded)")
+                .satisfies(ex -> assertThat(((MilvusException) ex).getResultCode())
+                        .isEqualTo(MilvusResultCode.COLLECTION_NOT_LOADED));
 
         // 验证底层的 alterAlias 从未被调用，防御脏切流
         verify(client, never()).alterAlias(any(AlterAliasReq.class));

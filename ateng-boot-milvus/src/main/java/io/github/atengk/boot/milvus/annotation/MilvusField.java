@@ -49,4 +49,9 @@ public @interface MilvusField {
      * 自定义标量索引名称 (为空时由框架按 "idx_${fieldName}" 自动命名)
      */
     String indexName() default "";
+
+    /**
+     * 是否标记为 SaaS 多租户隔离列
+     */
+    boolean tenantField() default false;
 }

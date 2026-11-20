@@ -76,13 +76,62 @@ public final class MilvusTenantHelper {
      * @return 织入租户条件后的安全表达式
      */
     public static String weaveEntityTenantFilter(String originalFilter, MilvusEntityMetadata metadata, boolean ignoreTenant) {
-        if (metadata != null && metadata.getPartitionKeyField() != null) {
-            String tenantField = metadata.getPartitionKeyField().getFieldName();
-            DataType dt = metadata.getPartitionKeyField().getDataType();
-            boolean isNumeric = (dt == DataType.Int64 || dt == DataType.Int32 || dt == DataType.Int16 || dt == DataType.Int8);
-            return weaveTenantFilter(originalFilter, tenantField, isNumeric, ignoreTenant);
+        return weaveEntityTenantFilter(originalFilter, metadata, DEFAULT_TENANT_FIELD, ignoreTenant);
+    }
+
+    /**
+     * 根据实体元数据与全局默认租户列安全织入多租户过滤条件
+     *
+     * @param originalFilter     原始过滤表达式 (可为空)
+     * @param metadata           实体元数据 (可为空)
+     * @param defaultTenantField 全局默认租户列名称 (为空时默认 "tenant_id")
+     * @param ignoreTenant       是否显式忽略租户隔离
+     * @return 织入租户条件后的安全表达式
+     */
+    public static String weaveEntityTenantFilter(String originalFilter,
+                                                 MilvusEntityMetadata metadata,
+                                                 String defaultTenantField,
+                                                 boolean ignoreTenant) {
+        if (metadata != null && metadata.getTenantField() != null) {
+            MilvusEntityMetadata.FieldMetadata tenantField = metadata.getTenantField();
+            boolean isNumeric = isNumericType(tenantField.getDataType());
+            return weaveTenantFilter(originalFilter, tenantField.getFieldName(), isNumeric, ignoreTenant);
         }
-        return weaveTenantFilter(originalFilter, (String) null, false, ignoreTenant);
+        return weaveTenantFilter(originalFilter, resolveDefaultFieldName(defaultTenantField), false, ignoreTenant);
+    }
+
+    /**
+     * 解析当前操作实际生效的租户隔离列名称
+     *
+     * @param metadata           实体元数据 (可为空)
+     * @param explicitFieldName  显式指定的租户列名 (可为空)
+     * @param defaultTenantField 全局默认租户列名 (可为空)
+     * @return 生效的租户列名
+     */
+    public static String resolveEffectiveTenantField(MilvusEntityMetadata metadata,
+                                                     String explicitFieldName,
+                                                     String defaultTenantField) {
+        if (StringUtils.hasText(explicitFieldName)) {
+            return explicitFieldName.trim();
+        }
+        if (metadata != null && metadata.getTenantField() != null) {
+            return metadata.getTenantField().getFieldName();
+        }
+        return resolveDefaultFieldName(defaultTenantField);
+    }
+
+    private static String resolveDefaultFieldName(String defaultTenantField) {
+        return StringUtils.hasText(defaultTenantField) ? defaultTenantField.trim() : DEFAULT_TENANT_FIELD;
+    }
+
+    /**
+     * 判断 Milvus 字段数据类型是否为数值类型 (决定过滤条件是否不加单引号)
+     *
+     * @param dt Milvus DataType
+     * @return 是否为整数数值型
+     */
+    public static boolean isNumericType(DataType dt) {
+        return dt == DataType.Int64 || dt == DataType.Int32 || dt == DataType.Int16 || dt == DataType.Int8;
     }
 
     /**
@@ -156,17 +205,23 @@ public final class MilvusTenantHelper {
             return;
         }
 
-        MilvusEntityMetadata.FieldMetadata partitionKey = metadata.getPartitionKeyField();
-        if (partitionKey != null) {
-            Object currentVal = partitionKey.getFieldValue(entity);
+        MilvusEntityMetadata.FieldMetadata tenantField = metadata.getTenantField();
+        if (tenantField != null) {
+            Object currentVal = tenantField.getFieldValue(entity);
             if (currentVal == null) {
-                if (partitionKey.getField().getType() == Long.class || partitionKey.getField().getType() == long.class) {
+                Class<?> fieldType = tenantField.getField().getType();
+                if (fieldType == Long.class || fieldType == long.class) {
                     Long tenantIdLong = TenantContextHolder.getTenantIdAsLong();
                     if (tenantIdLong != null) {
-                        partitionKey.setFieldValue(entity, tenantIdLong);
+                        tenantField.setFieldValue(entity, tenantIdLong);
+                    }
+                } else if (fieldType == Integer.class || fieldType == int.class) {
+                    Long tenantIdLong = TenantContextHolder.getTenantIdAsLong();
+                    if (tenantIdLong != null) {
+                        tenantField.setFieldValue(entity, tenantIdLong.intValue());
                     }
                 } else {
-                    partitionKey.setFieldValue(entity, tenantId.trim());
+                    tenantField.setFieldValue(entity, tenantId.trim());
                 }
             }
         }

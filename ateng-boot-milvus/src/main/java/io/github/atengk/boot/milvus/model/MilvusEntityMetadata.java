@@ -49,6 +49,7 @@ public class MilvusEntityMetadata {
     private final FieldMetadata vectorField;
     private final List<FieldMetadata> vectorFields;
     private final FieldMetadata partitionKeyField;
+    private final FieldMetadata tenantField;
     private final FieldMetadata extraField;
     private final List<FieldMetadata> scalarFields;
     private final List<FieldMetadata> allFields;
@@ -65,6 +66,7 @@ public class MilvusEntityMetadata {
         private final DataType dataType;
         private final boolean isPrimaryKey;
         private final boolean isPartitionKey;
+        private final boolean isTenantField;
         private final boolean isVector;
         private final boolean isExtra;
         private final boolean autoId;
@@ -145,6 +147,7 @@ public class MilvusEntityMetadata {
         FieldMetadata vectorMetadata = null;
         List<FieldMetadata> vectorFields = new ArrayList<>();
         FieldMetadata partitionKeyMetadata = null;
+        FieldMetadata explicitTenantMetadata = null;
         FieldMetadata extraMetadata = null;
         List<FieldMetadata> scalars = new ArrayList<>();
         List<FieldMetadata> all = new ArrayList<>();
@@ -226,18 +229,23 @@ public class MilvusEntityMetadata {
                 }
                 String name = !partitionKeyAnn.name().isBlank() ? partitionKeyAnn.name().trim() : field.getName();
                 DataType dataType = inferDataType(field.getType(), DataType.None);
+                boolean isExplicitTenant = partitionKeyAnn.tenantField();
                 partitionKeyMetadata = FieldMetadata.builder()
                         .field(field)
                         .fieldName(name)
                         .dataType(dataType)
                         .isPrimaryKey(false)
                         .isPartitionKey(true)
+                        .isTenantField(isExplicitTenant)
                         .isVector(false)
                         .autoId(false)
                         .maxLength(partitionKeyAnn.maxLength())
                         .dimension(0)
                         .description(partitionKeyAnn.description())
                         .build();
+                if (isExplicitTenant) {
+                    explicitTenantMetadata = registerExplicitTenant(clazz, explicitTenantMetadata, partitionKeyMetadata);
+                }
                 all.add(partitionKeyMetadata);
             } else {
                 boolean hasDynamicAnn = field.isAnnotationPresent(MilvusDynamic.class);
@@ -270,6 +278,7 @@ public class MilvusEntityMetadata {
                 String indexName = (fieldAnn != null && StringUtils.hasText(fieldAnn.indexName()))
                         ? fieldAnn.indexName().trim()
                         : (indexType != IndexParam.IndexType.None ? "idx_" + name : "");
+                boolean isExplicitTenant = fieldAnn != null && fieldAnn.tenantField();
 
                 FieldMetadata scalar = FieldMetadata.builder()
                         .field(field)
@@ -277,6 +286,7 @@ public class MilvusEntityMetadata {
                         .dataType(dataType)
                         .isPrimaryKey(false)
                         .isPartitionKey(false)
+                        .isTenantField(isExplicitTenant)
                         .isVector(false)
                         .autoId(false)
                         .maxLength(maxLength)
@@ -285,6 +295,9 @@ public class MilvusEntityMetadata {
                         .indexName(indexName)
                         .description(desc)
                         .build();
+                if (isExplicitTenant) {
+                    explicitTenantMetadata = registerExplicitTenant(clazz, explicitTenantMetadata, scalar);
+                }
                 scalars.add(scalar);
                 all.add(scalar);
             }
@@ -298,6 +311,8 @@ public class MilvusEntityMetadata {
             throw new MilvusException(MilvusResultCode.OPERATION_FAILED,
                     "实体类 [" + clazz.getName() + "] 必须通过 @MilvusVector 显式指定向量字段");
         }
+
+        FieldMetadata resolvedTenantField = resolveTenantField(explicitTenantMetadata, partitionKeyMetadata, scalars);
 
         Set<String> declaredNames = new HashSet<>();
         for (FieldMetadata f : all) {
@@ -318,11 +333,46 @@ public class MilvusEntityMetadata {
                 .vectorField(vectorMetadata)
                 .vectorFields(Collections.unmodifiableList(vectorFields))
                 .partitionKeyField(partitionKeyMetadata)
+                .tenantField(resolvedTenantField)
                 .extraField(extraMetadata)
                 .scalarFields(Collections.unmodifiableList(scalars))
                 .allFields(Collections.unmodifiableList(all))
                 .declaredFieldNames(Collections.unmodifiableSet(declaredNames))
                 .build();
+    }
+
+    private static FieldMetadata resolveTenantField(FieldMetadata explicitTenant,
+                                                      FieldMetadata partitionKey,
+                                                      List<FieldMetadata> scalars) {
+        if (explicitTenant != null) {
+            return explicitTenant;
+        }
+        if (partitionKey != null && isDefaultTenantColumn(partitionKey)) {
+            return partitionKey;
+        }
+        for (FieldMetadata scalar : scalars) {
+            if (isDefaultTenantColumn(scalar)) {
+                return scalar;
+            }
+        }
+        return partitionKey;
+    }
+
+    private static FieldMetadata registerExplicitTenant(Class<?> clazz,
+                                                        FieldMetadata current,
+                                                        FieldMetadata candidate) {
+        if (current != null) {
+            throw new MilvusException(MilvusResultCode.OPERATION_FAILED,
+                    "实体类 [" + clazz.getName() + "] 仅支持配置一个租户隔离字段 tenantField");
+        }
+        return candidate;
+    }
+
+    private static boolean isDefaultTenantColumn(FieldMetadata fieldMeta) {
+        String colName = fieldMeta.getFieldName();
+        String javaName = fieldMeta.getField().getName();
+        return "tenant_id".equals(colName) || "tenantId".equals(colName)
+                || "tenant_id".equals(javaName) || "tenantId".equals(javaName);
     }
 
     /**

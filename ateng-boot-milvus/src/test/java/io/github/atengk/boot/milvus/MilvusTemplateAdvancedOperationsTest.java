@@ -2,6 +2,7 @@ package io.github.atengk.boot.milvus;
 
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.milvus.annotation.MilvusCollection;
+import io.github.atengk.boot.milvus.annotation.MilvusField;
 import io.github.atengk.boot.milvus.annotation.MilvusId;
 import io.github.atengk.boot.milvus.annotation.MilvusPartitionKey;
 import io.github.atengk.boot.milvus.annotation.MilvusVector;
@@ -86,6 +87,23 @@ class MilvusTemplateAdvancedOperationsTest {
         private List<Float> denseVector;
     }
 
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @MilvusCollection(name = "hybrid_partitioned_doc")
+    static class HybridPartitionedDoc {
+        @MilvusId
+        private Long id;
+        private String title;
+        @MilvusPartitionKey
+        private String category;
+        @MilvusField(name = "org_code", tenantField = true)
+        private String orgCode;
+        @MilvusVector(dimension = 3)
+        private List<Float> denseVector;
+    }
+
     @Test
     @DisplayName("hybridSearch - 稠密向量与稀疏向量混合检索融合 RRF 重排")
     void testHybridSearchWithRRF() {
@@ -134,9 +152,9 @@ class MilvusTemplateAdvancedOperationsTest {
         HybridSearchReq capturedReq = reqCaptor.getValue();
         assertThat(capturedReq.getCollectionName()).isEqualTo("hybrid_doc");
         assertThat(capturedReq.getSearchRequests()).hasSize(2);
-        // 验证多租户条件已自动织入各个子检索表达式
-        assertThat(capturedReq.getSearchRequests().get(0).getExpr()).isEqualTo("(status == 1) and (tenant_id == 'hybrid_tenant')");
-        assertThat(capturedReq.getSearchRequests().get(1).getExpr()).isEqualTo("tenant_id == 'hybrid_tenant'");
+        // 验证多租户条件已自动织入各个子检索表达式 (对齐 HybridDoc 实体列名 tenantId)
+        assertThat(capturedReq.getSearchRequests().get(0).getExpr()).isEqualTo("(status == 1) and (tenantId == 'hybrid_tenant')");
+        assertThat(capturedReq.getSearchRequests().get(1).getExpr()).isEqualTo("tenantId == 'hybrid_tenant'");
     }
 
     @Test
@@ -246,5 +264,41 @@ class MilvusTemplateAdvancedOperationsTest {
 
         // 恢复为 prior_db
         assertThat(MilvusContextHolder.getDatabase()).isEqualTo("prior_db");
+    }
+
+    @Test
+    @DisplayName("hybridSearch & streamingQuery - 业务分区键与独立租户列正交过滤")
+    void testHybridAndStreamingWithOrthogonalTenantField() {
+        TenantContextHolder.setTenantId("org_beta");
+
+        SearchResp mockResp = SearchResp.builder().searchResults(List.of(List.of())).build();
+        when(client.hybridSearch(any(HybridSearchReq.class))).thenReturn(mockResp);
+
+        MilvusHybridSearchRequest<HybridPartitionedDoc> hybridReq = MilvusHybridSearchRequest.of(HybridPartitionedDoc.class)
+                .addSearch(AnnSearch.of("denseVector", List.of(0.1f, 0.2f, 0.3f), 10, "category == 'AI'"))
+                .topK(5);
+        template.hybridSearch(hybridReq);
+
+        ArgumentCaptor<HybridSearchReq> hybridCaptor = ArgumentCaptor.forClass(HybridSearchReq.class);
+        verify(client).hybridSearch(hybridCaptor.capture());
+        assertThat(hybridCaptor.getValue().getSearchRequests().get(0).getExpr())
+                .isEqualTo("(category == 'AI') and (org_code == 'org_beta')");
+
+        QueryIterator mockIterator = mock(QueryIterator.class);
+        when(client.queryIterator(any(QueryIteratorReq.class))).thenReturn(mockIterator);
+        QueryResultsWrapper.RowRecord ownRow = mock(QueryResultsWrapper.RowRecord.class);
+        when(ownRow.getFieldValues()).thenReturn(Map.of("id", 1L, "category", "AI", "org_code", "org_beta"));
+        QueryResultsWrapper.RowRecord crossRow = mock(QueryResultsWrapper.RowRecord.class);
+        when(crossRow.getFieldValues()).thenReturn(Map.of("id", 2L, "category", "org_beta", "org_code", "org_other"));
+        when(mockIterator.next()).thenReturn(List.of(ownRow, crossRow)).thenReturn(List.of());
+
+        List<HybridPartitionedDoc> collected = new ArrayList<>();
+        template.streamingQueryEntities(HybridPartitionedDoc.class, "category == 'AI'", collected::addAll);
+
+        ArgumentCaptor<QueryIteratorReq> iterCaptor = ArgumentCaptor.forClass(QueryIteratorReq.class);
+        verify(client).queryIterator(iterCaptor.capture());
+        assertThat(iterCaptor.getValue().getExpr()).isEqualTo("(category == 'AI') and (org_code == 'org_beta')");
+        assertThat(collected).hasSize(1);
+        assertThat(collected.get(0).getId()).isEqualTo(1L);
     }
 }

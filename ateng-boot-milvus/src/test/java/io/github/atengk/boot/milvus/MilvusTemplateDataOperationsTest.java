@@ -3,10 +3,12 @@ package io.github.atengk.boot.milvus;
 import com.google.gson.JsonObject;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.milvus.annotation.MilvusCollection;
+import io.github.atengk.boot.milvus.annotation.MilvusField;
 import io.github.atengk.boot.milvus.annotation.MilvusId;
 import io.github.atengk.boot.milvus.annotation.MilvusPartitionKey;
 import io.github.atengk.boot.milvus.annotation.MilvusVector;
 import io.github.atengk.boot.milvus.exception.MilvusException;
+import io.github.atengk.boot.milvus.exception.MilvusResultCode;
 import io.github.atengk.boot.milvus.model.MilvusHit;
 import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
 import io.github.atengk.boot.milvus.properties.MilvusConsistencyLevel;
@@ -90,6 +92,27 @@ class MilvusTemplateDataOperationsTest {
 
         @MilvusPartitionKey(name = "tenant_id")
         private String tenantId;
+
+        @MilvusVector(dimension = 3)
+        private List<Float> vector;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @MilvusCollection(name = "partitioned_tenant_doc")
+    static class PartitionedTenantDoc {
+        @MilvusId
+        private Long id;
+
+        @MilvusPartitionKey(maxLength = 64)
+        private String category;
+
+        @MilvusField(name = "org_code", maxLength = 64, tenantField = true)
+        private String orgCode;
+
+        private String content;
 
         @MilvusVector(dimension = 3)
         private List<Float> vector;
@@ -181,7 +204,9 @@ class MilvusTemplateDataOperationsTest {
 
         assertThatThrownBy(() -> template.deleteByIds("kb_doc", List.of(101L)))
                 .isInstanceOf(MilvusException.class)
-                .hasMessageContaining("多租户安全拦截");
+                .hasMessageContaining("多租户安全拦截")
+                .satisfies(ex -> assertThat(((MilvusException) ex).getResultCode())
+                        .isEqualTo(MilvusResultCode.TENANT_ID_REQUIRED));
         verify(client, never()).delete(any(DeleteReq.class));
     }
 
@@ -376,5 +401,87 @@ class MilvusTemplateDataOperationsTest {
         template.insertBatch("kb_doc", data, 10);
 
         verify(client, times(3)).insert(any(InsertReq.class));
+    }
+
+    @Test
+    @DisplayName("正交解耦 - 实体兼有业务 @MilvusPartitionKey 与独立租户列时全链路按租户列隔离且遵循全局默认列名")
+    void testOrthogonalPartitionKeyAndTenantFieldAcrossDmlAndDql() {
+        TenantContextHolder.setTenantId("org_alpha");
+        when(client.insert(any(InsertReq.class))).thenReturn(InsertResp.builder().build());
+        when(client.upsert(any(UpsertReq.class))).thenReturn(UpsertResp.builder().build());
+        when(client.delete(any(DeleteReq.class))).thenReturn(null);
+        when(client.search(any(SearchReq.class))).thenReturn(SearchResp.builder()
+                .searchResults(List.of(List.of()))
+                .build());
+        when(client.query(any(QueryReq.class))).thenReturn(QueryResp.builder()
+                .queryResults(List.of())
+                .build());
+
+        // 1. insertEntities / upsertEntities 自动填充 org_code 而非 category
+        PartitionedTenantDoc doc = PartitionedTenantDoc.builder()
+                .id(1L)
+                .category("TECH")
+                .content("多租户正交隔离")
+                .vector(List.of(0.1f, 0.2f, 0.3f))
+                .build();
+        template.insertEntities(List.of(doc));
+        assertThat(doc.getOrgCode()).isEqualTo("org_alpha");
+        assertThat(doc.getCategory()).isEqualTo("TECH");
+
+        doc.setOrgCode(null);
+        template.upsertEntities(List.of(doc));
+        assertThat(doc.getOrgCode()).isEqualTo("org_alpha");
+
+        // 2. deleteEntities 按实体 org_code 过滤
+        template.deleteEntities(PartitionedTenantDoc.class, List.of(1L));
+        ArgumentCaptor<DeleteReq> deleteCaptor = ArgumentCaptor.forClass(DeleteReq.class);
+        verify(client).delete(deleteCaptor.capture());
+        assertThat(deleteCaptor.getValue().getFilter()).isEqualTo("(id in [1]) and (org_code == 'org_alpha')");
+
+        // 3. search / query / count 按实体 org_code 过滤（绝不织入 category）
+        template.search(PartitionedTenantDoc.class, List.of(0.1f, 0.2f, 0.3f), 5, "category == 'TECH'");
+        ArgumentCaptor<SearchReq> searchCaptor = ArgumentCaptor.forClass(SearchReq.class);
+        verify(client).search(searchCaptor.capture());
+        assertThat(searchCaptor.getValue().getFilter()).isEqualTo("(category == 'TECH') and (org_code == 'org_alpha')");
+
+        template.query(PartitionedTenantDoc.class, "category == 'TECH'");
+        template.count(PartitionedTenantDoc.class, "category == 'TECH'");
+        ArgumentCaptor<QueryReq> queryCaptor = ArgumentCaptor.forClass(QueryReq.class);
+        verify(client, times(2)).query(queryCaptor.capture());
+        assertThat(queryCaptor.getAllValues().get(0).getFilter()).isEqualTo("(category == 'TECH') and (org_code == 'org_alpha')");
+        assertThat(queryCaptor.getAllValues().get(1).getFilter()).isEqualTo("(category == 'TECH') and (org_code == 'org_alpha')");
+
+        // 4. getById / getByIds 使用 org_code 进行跨租户拦截（category 相同但 org_code 不同也必须拦截）
+        Map<String, Object> crossTenantRow = new HashMap<>();
+        crossTenantRow.put("id", 99L);
+        crossTenantRow.put("category", "org_alpha");
+        crossTenantRow.put("org_code", "org_beta");
+        when(client.get(any(GetReq.class))).thenReturn(GetResp.builder()
+                .getResults(List.of(QueryResp.QueryResult.builder().entity(crossTenantRow).build()))
+                .build());
+        assertThat(template.getById(PartitionedTenantDoc.class, 99L)).isNull();
+        assertThat(template.getByIds(PartitionedTenantDoc.class, List.of(99L))).isEmpty();
+        assertThat(template.existsById(PartitionedTenantDoc.class, 99L)).isFalse();
+
+        Map<String, Object> ownTenantRow = new HashMap<>();
+        ownTenantRow.put("id", 98L);
+        ownTenantRow.put("category", "OTHER");
+        ownTenantRow.put("org_code", "org_alpha");
+        when(client.get(any(GetReq.class))).thenReturn(GetResp.builder()
+                .getResults(List.of(QueryResp.QueryResult.builder().entity(ownTenantRow).build()))
+                .build());
+        assertThat(template.existsById(PartitionedTenantDoc.class, 98L)).isTrue();
+
+        // 5. 无实体类操作遵循全局默认配置 ateng.boot.milvus.tenant-field-name
+        properties.setTenantFieldName("custom_tenant_col");
+        Map<String, Object> rawRow = new HashMap<>();
+        rawRow.put("id", 2L);
+        template.insert("raw_col", List.of(rawRow));
+        assertThat(rawRow).containsEntry("custom_tenant_col", "org_alpha");
+        template.deleteByExpr("raw_col", "status == 1");
+        ArgumentCaptor<DeleteReq> rawDeleteCaptor = ArgumentCaptor.forClass(DeleteReq.class);
+        verify(client, times(2)).delete(rawDeleteCaptor.capture());
+        assertThat(rawDeleteCaptor.getAllValues().get(1).getFilter())
+                .isEqualTo("(status == 1) and (custom_tenant_col == 'org_alpha')");
     }
 }

@@ -81,6 +81,70 @@ class MilvusEntityMetadataTest {
         private List<Float> vector;
     }
 
+    @Data
+    @MilvusCollection(name = "partition_and_tenant_entity")
+    static class PartitionAndTenantEntity {
+        @MilvusId
+        private Long id;
+
+        @MilvusPartitionKey(maxLength = 64)
+        private String category;
+
+        @MilvusField(name = "tenant_id", maxLength = 64)
+        private String tenantId;
+
+        @MilvusVector(dimension = 4)
+        private List<Float> vector;
+    }
+
+    @Data
+    @MilvusCollection(name = "explicit_tenant_entity")
+    static class ExplicitTenantEntity {
+        @MilvusId
+        private Long id;
+
+        @MilvusPartitionKey(maxLength = 64)
+        private String category;
+
+        @MilvusField(name = "tenant_id", maxLength = 64)
+        private String tenantId;
+
+        @MilvusField(name = "org_code", maxLength = 64, tenantField = true)
+        private String orgCode;
+
+        @MilvusVector(dimension = 4)
+        private List<Float> vector;
+    }
+
+    @Data
+    @MilvusCollection(name = "duplicate_tenant_entity")
+    static class DuplicateTenantEntity {
+        @MilvusId
+        private Long id;
+
+        @MilvusPartitionKey(tenantField = true)
+        private String tenantA;
+
+        @MilvusField(tenantField = true)
+        private String tenantB;
+
+        @MilvusVector(dimension = 4)
+        private List<Float> vector;
+    }
+
+    @Data
+    @MilvusCollection(name = "legacy_partition_only_entity")
+    static class LegacyPartitionOnlyEntity {
+        @MilvusId
+        private Long id;
+
+        @MilvusPartitionKey
+        private String bizDomain;
+
+        @MilvusVector(dimension = 4)
+        private List<Float> vector;
+    }
+
     @Test
     @DisplayName("测试完整注解实体元数据解析")
     void testFullAnnotationMetadataParsing() {
@@ -155,5 +219,38 @@ class MilvusEntityMetadataTest {
         assertThatThrownBy(() -> MilvusEntityMetadata.of(InvalidIdTypeEntity.class))
                 .isInstanceOf(MilvusException.class)
                 .hasMessageContaining("类型只支持 Long (Int64) 或 String (VarChar)");
+    }
+
+    @Test
+    @DisplayName("测试物理分区键与租户隔离列正交解耦及确定性优先级解析")
+    void testTenantFieldOrthogonalResolution() {
+        // 1. 分区键 (category) 与 tenant_id 并存时互不混用
+        MilvusEntityMetadata separateMeta = MilvusEntityMetadata.of(PartitionAndTenantEntity.class);
+        assertThat(separateMeta.getPartitionKeyField()).isNotNull();
+        assertThat(separateMeta.getPartitionKeyField().getFieldName()).isEqualTo("category");
+        assertThat(separateMeta.getTenantField()).isNotNull();
+        assertThat(separateMeta.getTenantField().getFieldName()).isEqualTo("tenant_id");
+
+        // 2. 显式 tenantField = true 优先级最高
+        MilvusEntityMetadata explicitMeta = MilvusEntityMetadata.of(ExplicitTenantEntity.class);
+        assertThat(explicitMeta.getTenantField()).isNotNull();
+        assertThat(explicitMeta.getTenantField().getFieldName()).isEqualTo("org_code");
+
+        // 3. 兼容旧写法：非 tenant_id/tenantId 命名的 @MilvusPartitionKey 回退为租户列
+        MilvusEntityMetadata legacyPartitionMeta = MilvusEntityMetadata.of(LegacyPartitionOnlyEntity.class);
+        assertThat(legacyPartitionMeta.getTenantField()).isNotNull();
+        assertThat(legacyPartitionMeta.getTenantField().getFieldName()).isEqualTo("bizDomain");
+
+        // 4. 既无租户列又无分区键时 tenantField 为 null
+        MilvusEntityMetadata defaultMeta = MilvusEntityMetadata.of(DefaultNamingEntity.class);
+        assertThat(defaultMeta.getTenantField()).isNull();
+    }
+
+    @Test
+    @DisplayName("测试声明多个 tenantField = true 时前置 Fail-Fast 抛错")
+    void testDuplicateTenantFieldThrowsException() {
+        assertThatThrownBy(() -> MilvusEntityMetadata.of(DuplicateTenantEntity.class))
+                .isInstanceOf(MilvusException.class)
+                .hasMessageContaining("tenantField");
     }
 }
