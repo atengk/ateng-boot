@@ -1,8 +1,11 @@
 package io.github.atengk.boot.job.snail.autoconfigure;
 
 import com.aizuda.snailjob.client.common.config.SnailJobProperties.ServerConfig;
+import com.aizuda.snailjob.client.core.Scanner;
 import com.aizuda.snailjob.client.core.callback.complete.RetryCompleteCallback;
+import com.aizuda.snailjob.client.core.intercepter.SnailRetryInterceptor;
 import com.aizuda.snailjob.client.core.openapi.RetryOpenApiClientV2;
+import com.aizuda.snailjob.client.core.strategy.LocalRetryStrategies;
 import com.aizuda.snailjob.client.job.core.openapi.JobOpenApiClientV2;
 import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.job.snail.actuator.SnailJobEndpoint;
@@ -16,12 +19,16 @@ import io.github.atengk.boot.job.snail.interceptor.SnailJobInterceptor;
 import io.github.atengk.boot.job.snail.log.SnailJobLogbackAppenderRegistrar;
 import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
+import io.github.atengk.boot.job.snail.retry.aspect.AtengSnailRetryInterceptor;
+import io.github.atengk.boot.job.snail.retry.aspect.AtengSnailRetryPointcutAdvisor;
 import io.github.atengk.boot.job.snail.retry.aspect.SnailRetryContextAspect;
 import io.github.atengk.boot.job.snail.retry.callback.SnailRetryDeadLetterCallback;
 import io.github.atengk.boot.job.snail.retry.context.InMemorySnailRetryContextStore;
+import io.github.atengk.boot.job.snail.retry.context.RedisSnailRetryContextStore;
 import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextStore;
 import io.github.atengk.boot.job.snail.retry.generator.ArgsHashIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.generator.SpelIdempotentIdGenerator;
+import io.github.atengk.boot.job.snail.retry.scanner.AtengSnailRetryScanner;
 import io.github.atengk.boot.job.snail.retry.template.SnailRetryTemplate;
 import io.github.atengk.boot.job.snail.scanner.AtengSnailJobScanner;
 import io.github.atengk.boot.job.snail.template.SnailJobAdminTemplate;
@@ -37,9 +44,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
 import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -47,6 +56,10 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.context.annotation.Role;
+import org.springframework.core.Ordered;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.core.env.Environment;
 import org.springframework.util.StringUtils;
@@ -65,7 +78,10 @@ import java.util.concurrent.Executor;
  * @author Ateng
  * @since 2026-10-31
  */
-@AutoConfiguration(after = AtengAsyncAutoConfiguration.class)
+@AutoConfiguration(
+        after = AtengAsyncAutoConfiguration.class,
+        afterName = "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration"
+)
 @ConditionalOnClass(com.aizuda.snailjob.client.common.config.SnailJobProperties.class)
 @ConditionalOnProperty(prefix = "ateng.boot.job.snail", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(SnailJobProperties.class)
@@ -375,10 +391,46 @@ public class AtengSnailJobAutoConfiguration {
             return new ArgsHashIdempotentIdGenerator();
         }
 
+        @Configuration(proxyBeanMethods = false)
+        @ConditionalOnClass(StringRedisTemplate.class)
+        static class RedisSnailRetryContextStoreConfiguration {
+
+            @Bean
+            @ConditionalOnBean(StringRedisTemplate.class)
+            @ConditionalOnMissingBean(SnailRetryContextStore.class)
+            public SnailRetryContextStore redisSnailRetryContextStore(
+                    StringRedisTemplate stringRedisTemplate,
+                    SnailJobProperties properties) {
+                return new RedisSnailRetryContextStore(stringRedisTemplate, properties);
+            }
+        }
+
         @Bean
         @ConditionalOnMissingBean(SnailRetryContextStore.class)
-        public SnailRetryContextStore snailRetryContextStore() {
-            return new InMemorySnailRetryContextStore();
+        public SnailRetryContextStore snailRetryContextStore(SnailJobProperties properties) {
+            SnailJobProperties.RetryProperties retry = (properties != null && properties.getRetry() != null)
+                    ? properties.getRetry()
+                    : new SnailJobProperties.RetryProperties();
+            return new InMemorySnailRetryContextStore(retry.getInMemoryMaxSize(), retry.getContextTtl());
+        }
+
+        @Bean
+        @ConditionalOnClass(Scanner.class)
+        @ConditionalOnMissingBean
+        public AtengSnailRetryScanner atengSnailRetryScanner() {
+            return new AtengSnailRetryScanner();
+        }
+
+        @Bean
+        @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+        @ConditionalOnClass({SnailRetryInterceptor.class, LocalRetryStrategies.class})
+        @ConditionalOnBean(LocalRetryStrategies.class)
+        @ConditionalOnMissingBean(name = "atengSnailRetryPointcutAdvisor")
+        public AtengSnailRetryPointcutAdvisor atengSnailRetryPointcutAdvisor(
+                Environment environment,
+                @Lazy LocalRetryStrategies localRetryStrategies) {
+            int order = environment.getProperty("snail-job.aop.order", Integer.class, Ordered.HIGHEST_PRECEDENCE);
+            return new AtengSnailRetryPointcutAdvisor(new AtengSnailRetryInterceptor(order, localRetryStrategies));
         }
 
         @Bean
@@ -401,15 +453,17 @@ public class AtengSnailJobAutoConfiguration {
         @ConditionalOnMissingBean
         public SnailRetryTemplate snailRetryTemplate(
                 ObjectProvider<com.aizuda.snailjob.client.core.Report> reportProvider,
-                SnailJobProperties properties) {
-            return new SnailRetryTemplate(reportProvider, properties);
+                SnailJobProperties properties,
+                ObjectProvider<SnailRetryContextStore> contextStoreProvider) {
+            return new SnailRetryTemplate(reportProvider, properties, contextStoreProvider.getIfAvailable());
         }
 
         @Bean
         @ConditionalOnMissingBean(RetryCompleteCallback.class)
         public SnailRetryDeadLetterCallback snailRetryDeadLetterCallback(
-                ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider) {
-            return new SnailRetryDeadLetterCallback(alertAggregatorProvider);
+                ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider,
+                ObjectProvider<SnailRetryContextStore> contextStoreProvider) {
+            return new SnailRetryDeadLetterCallback(alertAggregatorProvider, contextStoreProvider);
         }
     }
 

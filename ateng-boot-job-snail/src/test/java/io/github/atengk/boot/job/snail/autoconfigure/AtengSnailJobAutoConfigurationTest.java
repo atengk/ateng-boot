@@ -23,7 +23,11 @@ import io.github.atengk.boot.job.snail.log.SnailJobLogbackAppenderRegistrar;
 import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
 import io.github.atengk.boot.job.snail.retry.aspect.SnailRetryContextAspect;
 import io.github.atengk.boot.job.snail.retry.callback.SnailRetryDeadLetterCallback;
+import io.github.atengk.boot.job.snail.retry.context.InMemorySnailRetryContextStore;
+import io.github.atengk.boot.job.snail.retry.context.RedisSnailRetryContextStore;
 import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextStore;
+import org.mockito.Mockito;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import io.github.atengk.boot.job.snail.retry.template.SnailRetryTemplate;
 import io.github.atengk.boot.job.snail.template.BatchExecutionResult;
 import io.github.atengk.boot.job.snail.template.SnailJobAdminTemplate;
@@ -478,6 +482,42 @@ class AtengSnailJobAutoConfigurationTest {
                 });
     }
 
+    @Test
+    @DisplayName("测试存在 StringRedisTemplate 时自动装配 RedisSnailRetryContextStore，缺失时降级内存且允许用户接管")
+    void testRetryContextStoreConditionalAutoConfiguration() {
+        // 1. 无 StringRedisTemplate 时降级为 InMemorySnailRetryContextStore
+        contextRunner.run(context -> {
+            assertThat(context).hasSingleBean(SnailRetryContextStore.class);
+            assertThat(context.getBean(SnailRetryContextStore.class)).isInstanceOf(InMemorySnailRetryContextStore.class);
+        });
+
+        // 1.1 缺省 Redis 类路径下平滑跳过 Redis 配置类并回退 InMemorySnailRetryContextStore
+        contextRunner
+                .withClassLoader(new FilteredClassLoader(StringRedisTemplate.class))
+                .run(context -> {
+                    assertThat(context).hasSingleBean(SnailRetryContextStore.class);
+                    assertThat(context.getBean(SnailRetryContextStore.class)).isInstanceOf(InMemorySnailRetryContextStore.class);
+                });
+
+        // 2. 引入 StringRedisTemplate 且开启重试时自动装配 RedisSnailRetryContextStore
+        contextRunner
+                .withUserConfiguration(MockRedisTemplateConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(SnailRetryContextStore.class);
+                    assertThat(context.getBean(SnailRetryContextStore.class)).isInstanceOf(RedisSnailRetryContextStore.class);
+                });
+
+        // 3. 存在自定义 SnailRetryContextStore Bean 时不覆盖用户实现
+        contextRunner
+                .withUserConfiguration(MockRedisTemplateConfiguration.class, CustomRetryContextStoreConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(SnailRetryContextStore.class);
+                    assertThat(context.getBean(SnailRetryContextStore.class))
+                            .isNotInstanceOf(RedisSnailRetryContextStore.class)
+                            .isNotInstanceOf(InMemorySnailRetryContextStore.class);
+                });
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class StandaloneJobScannerConfiguration {
 
@@ -589,6 +629,39 @@ class AtengSnailJobAutoConfigurationTest {
         @Bean
         public SnailJobProperties nativeProperties() {
             return new SnailJobProperties();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class MockRedisTemplateConfiguration {
+        @Bean
+        public StringRedisTemplate stringRedisTemplate() {
+            return Mockito.mock(StringRedisTemplate.class);
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomRetryContextStoreConfiguration {
+        @Bean
+        public SnailRetryContextStore customRetryContextStore() {
+            return new SnailRetryContextStore() {
+                @Override
+                public void put(String key, io.github.atengk.boot.core.context.AsyncContext.ContextSnapshot snapshot) {
+                }
+
+                @Override
+                public io.github.atengk.boot.core.context.AsyncContext.ContextSnapshot get(String key) {
+                    return null;
+                }
+
+                @Override
+                public void remove(String key) {
+                }
+
+                @Override
+                public void clear() {
+                }
+            };
         }
     }
 }

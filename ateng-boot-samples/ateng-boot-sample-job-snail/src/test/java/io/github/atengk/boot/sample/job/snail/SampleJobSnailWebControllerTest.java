@@ -5,6 +5,9 @@ import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
 import io.github.atengk.boot.job.snail.governor.SnailJobRuntimeGovernor;
 import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper;
+import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextRegistry;
+import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextStore;
+import io.github.atengk.boot.job.snail.retry.context.SnailRetryFailureTracker;
 import io.github.atengk.boot.job.snail.template.SnailJobAdminTemplate;
 import io.github.atengk.boot.sample.job.snail.config.SampleJobSnailTestConfig;
 import io.github.atengk.boot.sample.job.snail.handler.HistoryDataArchiveJobHandler;
@@ -62,12 +65,18 @@ class SampleJobSnailWebControllerTest {
     @Autowired
     private SnailJobAdminTemplate adminTemplate;
 
+    @Autowired
+    private SnailRetryContextStore retryContextStore;
+
     @AfterEach
     void tearDown() {
         SnailJobContextHolder.clear();
         TenantContextHolder.clear();
         UserContextHolder.clear();
         MDC.clear();
+        retryContextStore.clear();
+        SnailRetryContextRegistry.clear();
+        SnailRetryFailureTracker.clear();
         runtimeGovernor.resumeAll();
         retryDemoService.resetAttemptCount();
         reconciliationJobHandler.setFaultInjected(false);
@@ -315,6 +324,27 @@ class SampleJobSnailWebControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.scene").value("orderPayRetry"))
                 .andExpect(jsonPath("$.data.attemptCount").isNumber());
+    }
+
+    @Test
+    @DisplayName("2.5 触发纯 @AtengSnailRetry(value) 别名退款重试与双注解兼容端点")
+    void testRetryRefundAliasAndLegacyCompat() throws Exception {
+        mockMvc.perform(post("/sample/job-snail/retry/refund")
+                        .param("refundNo", "REFUND-WEB-1001")
+                        .param("amount", "66.00"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.scene").value("orderRefundRetry"))
+                .andExpect(jsonPath("$.data.mode").value("DECLARATIVE_VALUE_ALIAS"))
+                .andExpect(jsonPath("$.data.status").value("SUCCESS"));
+
+        mockMvc.perform(post("/sample/job-snail/retry/legacy-compat")
+                        .param("orderId", "ORD-WEB-COMPAT-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.scene").value("legacyDualCompatRetry"))
+                .andExpect(jsonPath("$.data.mode").value("DUAL_ANNOTATION_COMPAT"))
+                .andExpect(jsonPath("$.data.status").value("SUCCESS"));
     }
 
     // =========================================================================

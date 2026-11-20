@@ -10,6 +10,8 @@ import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
 import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextRegistry;
+import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextStore;
+import io.github.atengk.boot.job.snail.retry.context.SnailRetryFailureTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -44,14 +46,23 @@ public class SnailRetryTemplate {
 
     private final ObjectProvider<Report> reportProvider;
     private final SnailJobProperties properties;
+    private final SnailRetryContextStore contextStore;
 
     public SnailRetryTemplate() {
-        this(null, null);
+        this(null, null, null);
     }
 
     public SnailRetryTemplate(ObjectProvider<Report> reportProvider, SnailJobProperties properties) {
+        this(reportProvider, properties, null);
+    }
+
+    public SnailRetryTemplate(
+            ObjectProvider<Report> reportProvider,
+            SnailJobProperties properties,
+            SnailRetryContextStore contextStore) {
         this.reportProvider = reportProvider;
         this.properties = properties;
+        this.contextStore = contextStore != null ? contextStore : SnailRetryContextRegistry.getStore();
     }
 
     /**
@@ -94,24 +105,28 @@ public class SnailRetryTemplate {
         Objects.requireNonNull(callback, "callback 回调逻辑不能为空");
 
         String actualIdempotentId = StringUtils.hasText(idempotentId) ? idempotentId : IdUtil.fastSimpleUUID();
+        String previousTraceId = MDC.get(TRACE_ID_KEY);
         ensureTraceId();
 
         // 捕获调用方四维快照并登记
         AsyncContext.ContextSnapshot snapshot = AsyncContext.ContextSnapshot.capture();
         String contextKey = scene + ":" + actualIdempotentId;
-        SnailRetryContextRegistry.put(contextKey, snapshot);
+        this.contextStore.put(contextKey, snapshot);
 
+        int maxAttempts = resolveLocalMaxAttempts();
+        Duration backoff = resolveLocalBackoff();
         RetryUtil.RetryConfig retryConfig = RetryUtil.RetryConfig.builder()
-                .maxAttempts(DEFAULT_MAX_ATTEMPTS)
-                .delay(Duration.ofMillis(DEFAULT_BACKOFF_MS))
+                .maxAttempts(maxAttempts)
+                .delay(backoff)
                 .multiplier(1.5)
-                .maxDelay(Duration.ofMillis(DEFAULT_BACKOFF_MS * DEFAULT_MAX_ATTEMPTS))
+                .maxDelay(backoff.multipliedBy(Math.max(maxAttempts, 1)))
                 .onRetry((attempt, error) -> log.warn("SnailRetryTemplate 场景 [{}] 第 {} 次尝试失败 (幂等键: {}): {}",
                         scene, attempt, actualIdempotentId, error.getMessage()))
                 .build();
 
+        boolean keepContextForRemote = false;
         try {
-            return RetryUtil.execute(() -> {
+            T result = RetryUtil.execute(() -> {
                 try {
                     return callback.doWithRetry();
                 } catch (Throwable t) {
@@ -121,23 +136,34 @@ public class SnailRetryTemplate {
                     throw new RuntimeException(t);
                 }
             }, retryConfig);
+            return result;
         } catch (Throwable t) {
             Throwable rootCause = (t instanceof RuntimeException && t.getCause() != null) ? t.getCause() : t;
-            // 本地重试耗尽，尝试上报 SnailJob 服务端
+            SnailRetryFailureTracker.record(rootCause, contextKey, scene);
+
+            // 本地重试耗尽，尝试上报 SnailJob 服务端；仅上报成功时保留快照供远程/死信阶段消费
+            boolean reported = false;
             try {
-                reportManualRetry(scene, callback.getClass().getName(), new Object[]{actualIdempotentId}, actualIdempotentId, bizNo);
+                reported = reportManualRetry(scene, callback.getClass().getName(), new Object[]{actualIdempotentId}, actualIdempotentId, bizNo);
             } catch (Throwable ex) {
                 log.error("本地重试耗尽后上报 SnailJob 服务端异常 [Scene: {}, IdempotentId: {}]", scene, actualIdempotentId, ex);
             }
+            keepContextForRemote = reported;
 
             if (rootCause instanceof BusinessException be) {
                 throw be;
             }
             throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
-                    "业务重试耗尽 (" + DEFAULT_MAX_ATTEMPTS + " 次): " + (rootCause != null ? rootCause.getMessage() : "未知异常"),
+                    "业务重试耗尽 (" + maxAttempts + " 次): " + (rootCause != null ? rootCause.getMessage() : "未知异常"),
                     rootCause);
         } finally {
-            SnailRetryContextRegistry.remove(contextKey);
+            if (!keepContextForRemote) {
+                this.contextStore.remove(contextKey);
+                SnailRetryFailureTracker.remove(contextKey);
+            }
+            if (!StringUtils.hasText(previousTraceId)) {
+                MDC.remove(TRACE_ID_KEY);
+            }
         }
     }
 
@@ -199,9 +225,16 @@ public class SnailRetryTemplate {
         // 若传入业务幂等标识，捕获并持久化当前四维上下文快照供远程重试消费
         if (StringUtils.hasText(idempotentId)) {
             String contextKey = scene + ":" + idempotentId;
-            if (SnailRetryContextRegistry.get(contextKey) == null) {
-                ensureTraceId();
-                SnailRetryContextRegistry.put(contextKey, AsyncContext.ContextSnapshot.capture());
+            if (this.contextStore.get(contextKey) == null) {
+                String previousTraceId = MDC.get(TRACE_ID_KEY);
+                try {
+                    ensureTraceId();
+                    this.contextStore.put(contextKey, AsyncContext.ContextSnapshot.capture());
+                } finally {
+                    if (!StringUtils.hasText(previousTraceId)) {
+                        MDC.remove(TRACE_ID_KEY);
+                    }
+                }
             }
         }
 
@@ -217,6 +250,21 @@ public class SnailRetryTemplate {
             log.debug("未装配 SnailJob Report 实例，进入离线自洽模拟上报 [Scene: {}, Target: {}]", scene, targetClassName);
             return true;
         }
+    }
+
+    private int resolveLocalMaxAttempts() {
+        if (properties != null && properties.getRetry() != null && properties.getRetry().getLocalMaxAttempts() > 0) {
+            return properties.getRetry().getLocalMaxAttempts();
+        }
+        return DEFAULT_MAX_ATTEMPTS;
+    }
+
+    private Duration resolveLocalBackoff() {
+        if (properties != null && properties.getRetry() != null && properties.getRetry().getLocalBackoff() != null
+                && !properties.getRetry().getLocalBackoff().isNegative()) {
+            return properties.getRetry().getLocalBackoff();
+        }
+        return Duration.ofMillis(DEFAULT_BACKOFF_MS);
     }
 
     private void ensureTraceId() {

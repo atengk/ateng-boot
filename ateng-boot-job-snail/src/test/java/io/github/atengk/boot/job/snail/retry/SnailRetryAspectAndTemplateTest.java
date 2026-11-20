@@ -1,7 +1,20 @@
 package io.github.atengk.boot.job.snail.retry;
 
+import com.aizuda.snailjob.client.core.Report;
+import com.aizuda.snailjob.client.core.annotation.Retryable;
+import com.aizuda.snailjob.client.core.cache.RetryerInfoCache;
 import com.aizuda.snailjob.client.core.intercepter.RetrySiteSnapshot;
+import com.aizuda.snailjob.client.core.intercepter.SnailRetryInterceptor;
+import com.aizuda.snailjob.client.core.intercepter.SnailRetryPointcutAdvisor;
+import com.aizuda.snailjob.client.core.register.RetryableRegistrar;
+import com.aizuda.snailjob.client.core.register.scan.RetryableScanner;
+import com.aizuda.snailjob.client.core.retryer.RetryType;
+import com.aizuda.snailjob.client.core.retryer.RetryerInfo;
+import com.aizuda.snailjob.client.core.strategy.LocalRetryStrategies;
+import com.aizuda.snailjob.client.core.strategy.RetryStrategy;
+import com.aizuda.snailjob.common.core.context.SnailSpringContext;
 import com.aizuda.snailjob.common.core.model.IdempotentIdContext;
+import com.aizuda.snailjob.common.core.model.SnailJobHeaders;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
@@ -9,12 +22,18 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.job.snail.annotation.AtengSnailRetry;
 import io.github.atengk.boot.job.snail.autoconfigure.AtengSnailJobAutoConfiguration;
 import io.github.atengk.boot.job.snail.enums.JobTenantMode;
+import io.github.atengk.boot.job.snail.event.SnailRetryDeadLetterEvent;
+import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper;
+import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
 import io.github.atengk.boot.job.snail.retry.aspect.SnailRetryContextAspect;
+import io.github.atengk.boot.job.snail.retry.callback.SnailRetryDeadLetterCallback;
 import io.github.atengk.boot.job.snail.retry.context.InMemorySnailRetryContextStore;
 import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextRegistry;
 import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextStore;
+import io.github.atengk.boot.job.snail.retry.context.SnailRetryFailureTracker;
 import io.github.atengk.boot.job.snail.retry.generator.ArgsHashIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.generator.SpelIdempotentIdGenerator;
+import io.github.atengk.boot.job.snail.retry.scanner.AtengSnailRetryScanner;
 import io.github.atengk.boot.job.snail.retry.template.SnailRetryTemplate;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -22,15 +41,28 @@ import lombok.NoArgsConstructor;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.slf4j.MDC;
+import org.springframework.aop.Advisor;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.aop.AopAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.ApplicationListener;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
+import org.springframework.core.Ordered;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -62,13 +94,23 @@ class SnailRetryAspectAndTemplateTest {
     @Autowired
     private SnailRetryContextStore retryContextStore;
 
+    @Autowired
+    private SnailRetryDeadLetterCallback deadLetterCallback;
+
+    @Autowired
+    private TestDeadLetterListener deadLetterListener;
+
     @AfterEach
     void tearDown() {
         TenantContextHolder.clear();
         UserContextHolder.clear();
         MDC.clear();
+        retryContextStore.clear();
         SnailRetryContextRegistry.clear();
+        SnailRetryFailureTracker.clear();
         RetrySiteSnapshot.removeAll();
+        SnailJobTestHelper.clear();
+        deadLetterListener.clear();
     }
 
     @Test
@@ -253,12 +295,274 @@ class SnailRetryAspectAndTemplateTest {
         }
     }
 
+    @Test
+    @DisplayName("测试仅标注 @AtengSnailRetry（value 与 scene 两种写法）可被 RetryableRegistrar 扫描并通过真实 AOP 代理重试")
+    void testStandaloneAtengSnailRetryScannedAndInterceptedByNativeAop() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AopAutoConfiguration.class, AtengSnailJobAutoConfiguration.class))
+                .withUserConfiguration(NativeRetryAopTestConfig.class)
+                .run(context -> {
+                    SnailJobTestHelper.clear();
+                    try {
+                        RetryableScanner scanner = new RetryableScanner();
+                        scanner.setApplicationContext(context);
+                        AtengSnailRetryScanner atengScanner = context.getBean(AtengSnailRetryScanner.class);
+                        RetryableRegistrar registrar = new RetryableRegistrar();
+                        registrar.registerRetryHandler(scanner.doScan());
+                        registrar.registerRetryHandler(atengScanner.doScan());
+
+                        String targetClassName = StandaloneAnnotatedRetryService.class.getName();
+                        RetryerInfo valueInfo = RetryerInfoCache.get("valueAliasOnlyScene", targetClassName);
+                        RetryerInfo sceneInfo = RetryerInfoCache.get("sceneOnlyScene", targetClassName);
+                        RetryerInfo dualInfo = RetryerInfoCache.get("nativePrecedenceScene", targetClassName);
+
+                        assertThat(valueInfo).isNotNull();
+                        assertThat(valueInfo.getLocalTimes()).isEqualTo(2);
+                        assertThat(valueInfo.getIdempotentIdGenerate()).isEqualTo(SpelIdempotentIdGenerator.class);
+
+                        assertThat(sceneInfo).isNotNull();
+                        assertThat(sceneInfo.getLocalTimes()).isEqualTo(2);
+
+                        // 混用时显式直写 @Retryable 优先生效
+                        assertThat(dualInfo).isNotNull();
+                        assertThat(dualInfo.getLocalTimes()).isEqualTo(5);
+                        assertThat(RetryerInfoCache.get("ignoredAtengScene", targetClassName)).isNull();
+
+                        StandaloneAnnotatedRetryService service = context.getBean(StandaloneAnnotatedRetryService.class);
+                        TenantParamCommand cmd = new TenantParamCommand("ORD-STANDALONE-1", "tenant-param-99");
+
+                        String res = service.retryByValueAlias(cmd);
+                        assertThat(res).isEqualTo("recovered:ORD-STANDALONE-1:tenant-param-99");
+                        assertThat(service.getObservedFirstTenant()).isEqualTo("tenant-param-99");
+                        // 首次执行应用的租户应在方法退出后恢复，不污染调用方线程
+                        assertThat(TenantContextHolder.getTenantId()).isNull();
+
+                        assertThat(service.retryBySceneOnly(cmd)).isEqualTo("scene-ok:true");
+                        assertThat(service.dualAnnotatedPrecedence(cmd)).isEqualTo("dual-ok:ORD-STANDALONE-1");
+                    } finally {
+                        SnailJobTestHelper.clear();
+                    }
+                });
+    }
+
+    @Test
+    @DisplayName("测试 @AtengSnailRetry 首次执行生效 tenantMode、本地流不误删快照，且远程结束态完整清理关联键")
+    void testFirstExecutionTenantModeAndCompleteCleanupOnRemoteCompletion() {
+        TenantContextHolder.setTenantId("caller-tenant");
+        try {
+            String observed = mockRetryService.ignoreTenantFirstExecution("ORD-IGNORE-1");
+            assertThat(observed).isEqualTo("ignore=true");
+            // 退出后调用方原始租户完好无损
+            assertThat(TenantContextHolder.getTenantId()).isEqualTo("caller-tenant");
+            assertThat(TenantContextHolder.isIgnoreTenant()).isFalse();
+        } finally {
+            TenantContextHolder.clear();
+        }
+
+        // 验证 value 别名在切面首次执行存储快照 + 远程结束态完整清理细粒度与粗粒度索引键
+        MDC.put(SnailRetryContextAspect.TRACE_ID_KEY, "trace-clean-1");
+        UserContextHolder.set("user-clean-1");
+        TenantParamCommand cmd = new TenantParamCommand("ORD-CLEAN-1", "tenant-clean-1");
+        mockRetryService.valueAliasOnly(cmd);
+
+        String targetClass = MockRetryService.class.getName();
+        String expectedContextKey = "valueSceneAlias:" + targetClass + ":valueAliasOnly";
+        String expectedClassKey = "valueSceneAlias:" + targetClass;
+        String expectedIdemKey = "valueSceneAlias_ORD-CLEAN-1";
+        String expectedFineKey = expectedContextKey + ":" + expectedIdemKey;
+
+        assertThat(retryContextStore.get(expectedFineKey)).isNotNull();
+        assertThat(retryContextStore.get("valueSceneAlias:" + expectedIdemKey)).isNotNull();
+        assertThat(retryContextStore.get(expectedContextKey)).isNotNull();
+        assertThat(retryContextStore.get(expectedClassKey)).isNotNull();
+
+        // 模拟本地重试阶段（stage=LOCAL, isRetry=true）：不得提前删除细粒度快照
+        MDC.clear();
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
+        SnailJobHeaders localHeaders = new SnailJobHeaders();
+        localHeaders.setRetry(true);
+        RetrySiteSnapshot.setRetryHeader(localHeaders);
+        RetrySiteSnapshot.setStage(RetrySiteSnapshot.EnumStage.LOCAL.getStage());
+        try {
+            assertThatThrownBy(() -> mockRetryService.valueAliasFailOnce(cmd))
+                    .isInstanceOf(IllegalStateException.class);
+        } finally {
+            RetrySiteSnapshot.removeAll();
+        }
+        // 本地重试失败时快照必须继续保留以供后续重试或远程上报消费
+        assertThat(retryContextStore.get("valueSceneAlias:" + expectedIdemKey)).isNotNull();
+
+        // 模拟远程重试成功完结：全部关联索引键必须被彻底清理，防止跨租户串扰
+        RetrySiteSnapshot.setStage(RetrySiteSnapshot.EnumStage.REMOTE.getStage());
+        try {
+            mockRetryService.valueAliasOnly(cmd);
+        } finally {
+            RetrySiteSnapshot.removeAll();
+        }
+        assertThat(retryContextStore.get(expectedFineKey)).isNull();
+        assertThat(retryContextStore.get("valueSceneAlias:" + expectedIdemKey)).isNull();
+        assertThat(retryContextStore.get(expectedContextKey)).isNull();
+        assertThat(retryContextStore.get(expectedClassKey)).isNull();
+    }
+
+    @Test
+    @DisplayName("测试 SnailRetryTemplate 接入配置参数并在上报成功后保留快照、本地成功或上报失败后清除快照")
+    void testRetryTemplateConfigWiringAndSnapshotLifecycle() {
+        SnailJobProperties props = new SnailJobProperties();
+        props.getRetry().setLocalMaxAttempts(2);
+        props.getRetry().setLocalBackoff(Duration.ofMillis(10));
+
+        InMemorySnailRetryContextStore localStore = new InMemorySnailRetryContextStore(100, Duration.ofHours(1));
+        Report reportMock = Mockito.mock(Report.class);
+        ObjectProvider<Report> reportProvider = simpleObjectProvider(reportMock);
+        SnailRetryTemplate configuredTemplate = new SnailRetryTemplate(reportProvider, props, localStore);
+
+        // 1. 本地成功执行：上下文快照立即清除
+        MDC.put(SnailRetryContextAspect.TRACE_ID_KEY, "trace-tpl-ok");
+        UserContextHolder.set("user-tpl-ok");
+        TenantContextHolder.setTenantId("tenant-tpl-ok");
+        String okRes = configuredTemplate.executeWithIdempotent("tplScene", "IDEM_OK", () -> "DONE");
+        assertThat(okRes).isEqualTo("DONE");
+        assertThat(localStore.get("tplScene:IDEM_OK")).isNull();
+
+        // 2. 本地耗尽（按配置的 2 次）且 reportManualRetry 返回 true：必须保留上下文快照供远端回调还原
+        Mockito.when(reportMock.report(Mockito.eq("tplScene"), Mockito.anyString(), Mockito.any()))
+                .thenReturn(true);
+        AtomicInteger attemptsKeep = new AtomicInteger(0);
+        MDC.put(SnailRetryContextAspect.TRACE_ID_KEY, "trace-tpl-keep");
+        UserContextHolder.set("user-tpl-keep");
+        TenantContextHolder.setTenantId("tenant-tpl-keep");
+
+        assertThatThrownBy(() -> configuredTemplate.executeWithIdempotent("tplScene", "IDEM_KEEP", "BIZ-KEEP", () -> {
+            attemptsKeep.incrementAndGet();
+            throw new IllegalStateException("remote pending");
+        }))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("2 次");
+
+        assertThat(attemptsKeep.get()).isEqualTo(2);
+        AsyncContext.ContextSnapshot keptSnapshot = localStore.get("tplScene:IDEM_KEEP");
+        assertThat(keptSnapshot).isNotNull();
+        MDC.clear();
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
+        keptSnapshot.apply();
+        assertThat(MDC.get(SnailRetryContextAspect.TRACE_ID_KEY)).isEqualTo("trace-tpl-keep");
+        assertThat(UserContextHolder.getExplicit()).isEqualTo("user-tpl-keep");
+        assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant-tpl-keep");
+
+        // 3. 本地耗尽且 reportManualRetry 返回 false（上报失败放弃远端重试）：及时清除上下文快照
+        Mockito.when(reportMock.report(Mockito.eq("tplScene"), Mockito.anyString(), Mockito.any()))
+                .thenReturn(false);
+        assertThatThrownBy(() -> configuredTemplate.executeWithIdempotent("tplScene", "IDEM_DROP", () -> {
+            throw new IllegalStateException("report failed");
+        })).isInstanceOf(BusinessException.class);
+        assertThat(localStore.get("tplScene:IDEM_DROP")).isNull();
+    }
+
+    @Test
+    @DisplayName("测试 SnailRetryDeadLetterCallback 准确提取并透传幂等键、traceId、bizNo 与异常因果")
+    void testDeadLetterCallbackExtractsIdempotentKeyTraceIdAndCause() {
+        RetryerInfo info = new RetryerInfo(
+                "orderPayScene",
+                MockRetryService.class.getName(),
+                java.util.Collections.emptySet(),
+                java.util.Collections.emptySet(),
+                mockRetryService,
+                org.springframework.util.ReflectionUtils.findMethod(MockRetryService.class, "failWithCause", OrderCommand.class),
+                RetryType.LOCAL_REMOTE,
+                3,
+                1,
+                SpelIdempotentIdGenerator.class,
+                "#order.orderNo",
+                com.aizuda.snailjob.client.core.strategy.ExecutorAnnotationMethod.class,
+                true,
+                SnailRetryDeadLetterCallback.class,
+                false,
+                false,
+                60000L,
+                java.util.concurrent.TimeUnit.MILLISECONDS,
+                com.aizuda.snailjob.client.core.RetryCondition.NoRetry.class
+        );
+        RetryerInfoCache.put(info);
+
+        OrderCommand order = new OrderCommand("ORD-DL-999", "gpu", 5000);
+        MDC.put(SnailRetryContextAspect.TRACE_ID_KEY, "trace-dl-888");
+        UserContextHolder.set("user-dl-1");
+        TenantContextHolder.setTenantId("tenant-dl-1");
+
+        assertThatThrownBy(() -> mockRetryService.failWithCause(order))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("支付渠道连接池耗尽");
+
+        // 模拟异地/异步回调线程无局部 MDC 现场
+        MDC.clear();
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
+
+        deadLetterCallback.doMaxRetryCallback("orderPayScene", MockRetryService.class.getName(), new Object[]{order});
+
+        assertThat(deadLetterListener.events).hasSize(1);
+        SnailRetryDeadLetterEvent event = deadLetterListener.events.get(0);
+        assertThat(event.getScene()).isEqualTo("orderPayScene");
+        assertThat(event.getIdempotentId()).isEqualTo("orderPayScene_ORD-DL-999");
+        assertThat(event.getBizNo()).isEqualTo("ORD-DL-999");
+        assertThat(event.getTraceId()).isEqualTo("trace-dl-888");
+        assertThat(event.getThrowable())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("支付渠道连接池耗尽");
+        assertThat(retryContextStore.get("orderPayScene:orderPayScene_ORD-DL-999")).isNull();
+    }
+
+    private static <T> ObjectProvider<T> simpleObjectProvider(T instance) {
+        return new ObjectProvider<>() {
+            @Override
+            public T getObject(Object... args) {
+                return instance;
+            }
+
+            @Override
+            public T getIfAvailable() {
+                return instance;
+            }
+
+            @Override
+            public T getIfUnique() {
+                return instance;
+            }
+
+            @Override
+            public T getObject() {
+                return instance;
+            }
+        };
+    }
+
     @TestConfiguration
     @EnableAspectJAutoProxy
     static class TestConfig {
         @Bean
         public MockRetryService mockRetryService() {
             return new MockRetryService();
+        }
+
+        @Bean
+        public TestDeadLetterListener testDeadLetterListener() {
+            return new TestDeadLetterListener();
+        }
+    }
+
+    static class TestDeadLetterListener implements ApplicationListener<SnailRetryDeadLetterEvent> {
+        final List<SnailRetryDeadLetterEvent> events = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void onApplicationEvent(SnailRetryDeadLetterEvent event) {
+            events.add(event);
+        }
+
+        void clear() {
+            events.clear();
         }
     }
 
@@ -308,6 +612,112 @@ class SnailRetryAspectAndTemplateTest {
                 assertThat(TenantContextHolder.getTenantId()).isEqualTo(expectedTenant);
             }
             return "success: " + order.getOrderNo();
+        }
+
+        @AtengSnailRetry(scene = "ignoreTenantScene", idempotentSpel = "#orderNo", tenantMode = JobTenantMode.IGNORE)
+        public String ignoreTenantFirstExecution(String orderNo) {
+            return "ignore=" + TenantContextHolder.isIgnoreTenant();
+        }
+
+        @AtengSnailRetry(value = "valueSceneAlias", idempotentSpel = "#cmd.orderNo", tenantMode = JobTenantMode.PARAM)
+        public String valueAliasOnly(TenantParamCommand cmd) {
+            return "ok:" + cmd.getOrderNo() + ":" + TenantContextHolder.getTenantId();
+        }
+
+        @AtengSnailRetry(value = "valueSceneAlias", idempotentSpel = "#cmd.orderNo", tenantMode = JobTenantMode.PARAM)
+        public String valueAliasFailOnce(TenantParamCommand cmd) {
+            throw new IllegalStateException("local retry transient failure");
+        }
+
+        @AtengSnailRetry(scene = "orderPayScene", idempotentSpel = "#order.orderNo", bizNo = "#order.orderNo", tenantMode = JobTenantMode.PARAM)
+        public String failWithCause(OrderCommand order) {
+            throw new IllegalStateException("支付渠道连接池耗尽");
+        }
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class TenantParamCommand {
+        private String orderNo;
+        private String tenantId;
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    public static class NativeRetryAopTestConfig {
+        @Bean
+        public SnailSpringContext snailSpringContext() {
+            return new SnailSpringContext();
+        }
+
+        @Bean
+        public com.aizuda.snailjob.client.common.config.SnailJobProperties nativeSnailJobProperties() {
+            return new com.aizuda.snailjob.client.common.config.SnailJobProperties();
+        }
+
+        @Bean
+        public com.aizuda.snailjob.client.core.Report mockReport() {
+            return org.mockito.Mockito.mock(com.aizuda.snailjob.client.core.Report.class);
+        }
+
+        @Bean
+        public LocalRetryStrategies localRetryStrategies() {
+            return new LocalRetryStrategies();
+        }
+
+        @Bean
+        public Advisor snailJobPointcutAdvisor(RetryStrategy localRetryStrategies) {
+            return new SnailRetryPointcutAdvisor(
+                    new SnailRetryInterceptor(Ordered.HIGHEST_PRECEDENCE, localRetryStrategies));
+        }
+
+        @Bean
+        public StandaloneAnnotatedRetryService standaloneAnnotatedRetryService() {
+            return new StandaloneAnnotatedRetryService();
+        }
+    }
+
+    public static class StandaloneAnnotatedRetryService {
+        private final AtomicInteger valueAttempts = new AtomicInteger(0);
+        private final AtomicReference<String> observedFirstTenant = new AtomicReference<>();
+
+        @AtengSnailRetry(
+                value = "valueAliasOnlyScene",
+                idempotentSpel = "#cmd.orderNo",
+                retryStrategy = RetryType.ONLY_LOCAL,
+                localTimes = 2,
+                localInterval = 1,
+                tenantMode = JobTenantMode.PARAM
+        )
+        public String retryByValueAlias(TenantParamCommand cmd) {
+            int attempt = valueAttempts.incrementAndGet();
+            if (attempt == 1) {
+                observedFirstTenant.set(TenantContextHolder.getTenantId());
+                throw new IllegalStateException("first attempt transient error");
+            }
+            return "recovered:" + cmd.getOrderNo() + ":" + TenantContextHolder.getTenantId();
+        }
+
+        @AtengSnailRetry(
+                scene = "sceneOnlyScene",
+                idempotentSpel = "#cmd.orderNo",
+                retryStrategy = RetryType.ONLY_LOCAL,
+                localTimes = 2,
+                localInterval = 1,
+                tenantMode = JobTenantMode.IGNORE
+        )
+        public String retryBySceneOnly(TenantParamCommand cmd) {
+            return "scene-ok:" + TenantContextHolder.isIgnoreTenant();
+        }
+
+        @Retryable(scene = "nativePrecedenceScene", localTimes = 5)
+        @AtengSnailRetry(scene = "ignoredAtengScene", localTimes = 2, idempotentSpel = "#cmd.orderNo")
+        public String dualAnnotatedPrecedence(TenantParamCommand cmd) {
+            return "dual-ok:" + cmd.getOrderNo();
+        }
+
+        public String getObservedFirstTenant() {
+            return observedFirstTenant.get();
         }
     }
 }

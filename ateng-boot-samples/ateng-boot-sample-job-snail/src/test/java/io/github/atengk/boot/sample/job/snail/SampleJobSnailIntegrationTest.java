@@ -1,5 +1,9 @@
 package io.github.atengk.boot.sample.job.snail;
 
+import com.aizuda.snailjob.client.core.cache.RetryerInfoCache;
+import com.aizuda.snailjob.client.core.intercepter.RetrySiteSnapshot;
+import com.aizuda.snailjob.client.core.register.RetryableRegistrar;
+import com.aizuda.snailjob.client.core.register.scan.RetryableScanner;
 import com.aizuda.snailjob.common.core.enums.StatusEnum;
 import com.aizuda.snailjob.model.dto.ExecuteResult;
 import io.github.atengk.boot.core.context.TenantContextHolder;
@@ -13,7 +17,14 @@ import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper;
 import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper.SnailJobTestResult;
 import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper.SnailRetryTestResult;
 import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
+import io.github.atengk.boot.job.snail.retry.callback.SnailRetryDeadLetterCallback;
+import io.github.atengk.boot.job.snail.retry.context.RedisSnailRetryContextStore;
+import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextRegistry;
+import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextStore;
+import io.github.atengk.boot.job.snail.retry.context.SnailRetryFailureTracker;
+import io.github.atengk.boot.job.snail.retry.scanner.AtengSnailRetryScanner;
 import io.github.atengk.boot.sample.job.snail.config.SampleJobSnailTestConfig;
+import io.github.atengk.boot.sample.job.snail.config.SampleJobSnailTestConfig.SampleDeadLetterEventCollector;
 import io.github.atengk.boot.sample.job.snail.handler.*;
 import io.github.atengk.boot.sample.job.snail.interceptor.SampleAuditJobInterceptor;
 import io.github.atengk.boot.sample.job.snail.service.RetryDemoService;
@@ -26,12 +37,14 @@ import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
 
 import java.math.BigDecimal;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * SnailJob 调度与重试双擎场景工程端到端自验集成测试 (离线自洽沙箱)
@@ -85,12 +98,32 @@ class SampleJobSnailIntegrationTest {
     @Autowired
     private MeterRegistry meterRegistry;
 
+    @Autowired
+    private SnailRetryContextStore retryContextStore;
+
+    @Autowired
+    private SnailRetryDeadLetterCallback deadLetterCallback;
+
+    @Autowired
+    private SampleDeadLetterEventCollector deadLetterEventCollector;
+
+    @Autowired
+    private AtengSnailRetryScanner atengSnailRetryScanner;
+
+    @Autowired
+    private ApplicationContext applicationContext;
+
     @AfterEach
     void tearDown() {
         SnailJobContextHolder.clear();
         TenantContextHolder.clear();
         UserContextHolder.clear();
         MDC.clear();
+        RetrySiteSnapshot.removeAll();
+        retryContextStore.clear();
+        SnailRetryContextRegistry.clear();
+        SnailRetryFailureTracker.clear();
+        deadLetterEventCollector.clear();
         reconciliationJobHandler.setFaultInjected(false);
         retryDemoService.resetAttemptCount();
         billSettlementJobHandler.reset();
@@ -446,5 +479,74 @@ class SampleJobSnailIntegrationTest {
         assertThat(invalidResult.isSuccess()).isFalse();
         assertThat(invalidResult.throwable()).isNotNull();
         assertThat(invalidResult.throwable().getMessage()).containsAnyOf("不能为空", "大于0", "不合法");
+    }
+
+    @Test
+    @DisplayName("16. @AtengSnailRetry 单注解 Redis 分布式现场持久化、跨线程恢复与死信因果闭环实测")
+    void testAtengSnailRetryRedisContextAndDeadLetterClosedLoop() {
+        // 16.1 验证已自动装配基于 Redis 的 Fail-Open 重试上下文存储
+        assertThat(retryContextStore).isInstanceOf(RedisSnailRetryContextStore.class);
+
+        // 16.2 验证纯 @AtengSnailRetry（含 value 别名）与双注解显式 @Retryable 优先注册状态
+        RetryableScanner nativeScanner = new RetryableScanner();
+        nativeScanner.setApplicationContext(applicationContext);
+        RetryableRegistrar registrar = new RetryableRegistrar();
+        registrar.registerRetryHandler(nativeScanner.doScan());
+        registrar.registerRetryHandler(atengSnailRetryScanner.doScan());
+
+        String demoClass = RetryDemoService.class.getName();
+        assertThat(RetryerInfoCache.get("orderPayRetry", demoClass)).isNotNull();
+        assertThat(RetryerInfoCache.get("orderRefundRetry", demoClass)).isNotNull();
+        assertThat(RetryerInfoCache.get("legacyDualCompatRetry", demoClass)).isNotNull();
+        assertThat(RetryerInfoCache.get("ignoredFallbackScene", demoClass)).isNull();
+
+        // 16.3 验证纯 @AtengSnailRetry 首次执行保存四维现场至 Redis，远程恢复后精准还原并全量清理
+        MDC.put("traceId", "trace-sample-recover-1");
+        UserContextHolder.set("sample-operator-recover");
+        TenantContextHolder.setTenantId("sample-tenant-recover");
+        String firstResult = retryDemoService.refundOrder("REFUND-RECOVER-01", new BigDecimal("50.00"));
+        assertThat(firstResult).contains("TENANT_sample-tenant-recover:USER_sample-operator-recover");
+        assertThat(retryContextStore.get("orderRefundRetry:orderRefundRetry_REFUND-RECOVER-01")).isNotNull();
+
+        MDC.clear();
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
+
+        RetrySiteSnapshot.setStage(RetrySiteSnapshot.EnumStage.REMOTE.getStage());
+        try {
+            String remoteResult = retryDemoService.refundOrder("REFUND-RECOVER-01", new BigDecimal("50.00"));
+            assertThat(remoteResult).contains("TENANT_sample-tenant-recover:USER_sample-operator-recover");
+        } finally {
+            RetrySiteSnapshot.removeAll();
+        }
+        assertThat(retryContextStore.get("orderRefundRetry:orderRefundRetry_REFUND-RECOVER-01")).isNull();
+
+        // 16.4 验证重试耗尽死信回调自动从 Redis 还原 traceId 并透传幂等键、bizNo 与真实异常因果
+        MDC.put("traceId", "trace-sample-dl-99");
+        UserContextHolder.set("sample-operator-dl");
+        TenantContextHolder.setTenantId("sample-tenant-dl");
+        assertThatThrownBy(() -> retryDemoService.refundOrder("FAIL_REFUND", new BigDecimal("66.00")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("模拟退款通道瞬时熔断");
+
+        MDC.clear();
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
+
+        deadLetterCallback.doMaxRetryCallback(
+                "orderRefundRetry",
+                demoClass,
+                new Object[]{"FAIL_REFUND", new BigDecimal("66.00")}
+        );
+        assertThat(deadLetterEventCollector.getEvents()).hasSize(1);
+        var event = deadLetterEventCollector.getEvents().get(0);
+        assertThat(event.getScene()).isEqualTo("orderRefundRetry");
+        assertThat(event.getIdempotentId()).isEqualTo("orderRefundRetry_FAIL_REFUND");
+        assertThat(event.getBizNo()).isEqualTo("FAIL_REFUND");
+        assertThat(event.getTraceId()).isEqualTo("trace-sample-dl-99");
+        assertThat(event.getThrowable())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("模拟退款通道瞬时熔断");
+        assertThat(retryContextStore.get("orderRefundRetry:orderRefundRetry_FAIL_REFUND")).isNull();
     }
 }

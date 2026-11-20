@@ -96,6 +96,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- 可选依赖：Spring Data Redis (用于分布式远程重试四维现场快照持久化 RedisSnailRetryContextStore) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Lombok (编译期使用，不传递) -->
         <dependency>
             <groupId>org.projectlombok</groupId>

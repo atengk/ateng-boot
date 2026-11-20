@@ -60,6 +60,60 @@ public class SnailJobRetryController {
     }
 
     /**
+     * 触发声明式 @AtengSnailRetry(value = "orderRefundRetry") value 别名订单退款重试
+     *
+     * @param refundNo 退款单号
+     * @param amount   退款金额
+     * @return 重试执行结果视图
+     */
+    @PostMapping("/refund")
+    public Result<RetryExecutionVO> triggerRefundAliasRetry(
+            @RequestParam(defaultValue = "REFUND-ALIAS-1001") @NotBlank(message = "退款单号 refundNo 不能为空") String refundNo,
+            @RequestParam(defaultValue = "66.00") java.math.BigDecimal amount) {
+        String outcome;
+        String status = "SUCCESS";
+        try {
+            outcome = retryDemoService.refundOrder(refundNo, amount);
+        } catch (Exception e) {
+            log.warn("[SnailJobRetryController] 退款触发业务异常 (已进入 SnailJob 重试管道): {}", e.getMessage());
+            outcome = "Exception captured for refund retry: " + e.getMessage();
+            status = "RETRY_TRIGGERED";
+        }
+        RetryExecutionVO vo = RetryExecutionVO.builder()
+                .orderId(refundNo)
+                .scene("orderRefundRetry")
+                .idempotentId("orderRefundRetry_" + refundNo)
+                .attemptCount(retryDemoService.getAttemptCount())
+                .mode("DECLARATIVE_VALUE_ALIAS")
+                .status(status)
+                .message(outcome)
+                .build();
+        return Result.success(vo);
+    }
+
+    /**
+     * 触发 @AtengSnailRetry 与 @Retryable 混用向后兼容演示
+     *
+     * @param orderId 业务订单编号
+     * @return 重试执行结果视图
+     */
+    @PostMapping("/legacy-compat")
+    public Result<RetryExecutionVO> triggerLegacyDualCompat(
+            @RequestParam(defaultValue = "ORD-COMPAT-1001") @NotBlank(message = "订单编号 orderId 不能为空") String orderId) {
+        String outcome = retryDemoService.legacyDualCompatNotify(orderId);
+        RetryExecutionVO vo = RetryExecutionVO.builder()
+                .orderId(orderId)
+                .scene("legacyDualCompatRetry")
+                .idempotentId("legacyDualCompatRetry_" + orderId)
+                .attemptCount(retryDemoService.getAttemptCount())
+                .mode("DUAL_ANNOTATION_COMPAT")
+                .status("SUCCESS")
+                .message(outcome)
+                .build();
+        return Result.success(vo);
+    }
+
+    /**
      * 触发 SnailRetryTemplate 编程式闭包幂等重试
      *
      * @param orderId 业务订单编号

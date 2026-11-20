@@ -709,7 +709,7 @@ public class SnailJobTestHelper implements ApplicationContextAware, DisposableBe
                 FALLBACK_JOB_REPOSITORY.put(m.getName(), info);
             }
 
-            // 3. 扫描 @Retryable 与 @AtengSnailRetry
+            // 3. 扫描 @Retryable 与 @AtengSnailRetry（保留直接 @Retryable 优先级）
             Map<Method, Retryable> retryMethods = MethodIntrospector.selectMethods(
                     bean.getClass(),
                     (MethodIntrospector.MetadataLookup<Retryable>) method -> AnnotatedElementUtils.findMergedAnnotation(method, Retryable.class)
@@ -717,13 +717,18 @@ public class SnailJobTestHelper implements ApplicationContextAware, DisposableBe
             for (Map.Entry<Method, Retryable> entry : retryMethods.entrySet()) {
                 Method m = entry.getKey();
                 Retryable r = entry.getValue();
-                String scene = StringUtils.hasText(r.scene()) ? r.scene() : m.getName();
+                AtengSnailRetry ar = AnnotatedElementUtils.findMergedAnnotation(m, AtengSnailRetry.class);
+                String scene = StringUtils.hasText(r.scene())
+                        ? r.scene().trim()
+                        : (ar != null && StringUtils.hasText(ar.value()) ? ar.value().trim() : m.getName());
                 String key = scene + "#" + bean.getClass().getName();
+                Set<Class<? extends Throwable>> includeSet = r.include().length > 0 ? Set.of(r.include()) : Collections.emptySet();
+                Set<Class<? extends Throwable>> excludeSet = r.exclude().length > 0 ? Set.of(r.exclude()) : Collections.emptySet();
                 RetryerInfo retryerInfo = new RetryerInfo(
                         scene,
                         bean.getClass().getName(),
-                        Collections.emptySet(),
-                        Collections.emptySet(),
+                        includeSet,
+                        excludeSet,
                         bean,
                         m,
                         r.retryStrategy(),
@@ -750,30 +755,37 @@ public class SnailJobTestHelper implements ApplicationContextAware, DisposableBe
             for (Map.Entry<Method, AtengSnailRetry> entry : atengRetryMethods.entrySet()) {
                 Method m = entry.getKey();
                 AtengSnailRetry ar = entry.getValue();
-                String scene = StringUtils.hasText(ar.scene()) ? ar.scene() : m.getName();
+                String scene = StringUtils.hasText(ar.scene())
+                        ? ar.scene().trim()
+                        : (StringUtils.hasText(ar.value()) ? ar.value().trim() : m.getName());
                 String key = scene + "#" + bean.getClass().getName();
+                if (FALLBACK_RETRY_REPOSITORY.containsKey(key)) {
+                    continue;
+                }
+                Set<Class<? extends Throwable>> includeSet = ar.include().length > 0 ? Set.of(ar.include()) : Collections.emptySet();
+                Set<Class<? extends Throwable>> excludeSet = ar.exclude().length > 0 ? Set.of(ar.exclude()) : Collections.emptySet();
                 RetryerInfo retryerInfo = new RetryerInfo(
                         scene,
                         bean.getClass().getName(),
-                        Collections.emptySet(),
-                        Collections.emptySet(),
+                        includeSet,
+                        excludeSet,
                         bean,
                         m,
+                        ar.retryStrategy(),
+                        ar.localTimes(),
+                        ar.localInterval(),
+                        ar.idempotentId(),
+                        ar.bizNo(),
                         null,
-                        3,
-                        1,
-                        null,
-                        "",
-                        null,
-                        true,
-                        null,
+                        ar.isThrowException(),
+                        ar.retryCompleteCallback(),
                         false,
                         false,
                         0,
                         null,
                         null
                 );
-                FALLBACK_RETRY_REPOSITORY.put(key, retryerInfo);
+                FALLBACK_RETRY_REPOSITORY.putIfAbsent(key, retryerInfo);
             }
         }
     }

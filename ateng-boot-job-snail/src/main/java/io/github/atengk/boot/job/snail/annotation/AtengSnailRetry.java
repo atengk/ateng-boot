@@ -1,9 +1,12 @@
 package io.github.atengk.boot.job.snail.annotation;
 
 import com.aizuda.snailjob.client.core.IdempotentIdGenerate;
+import com.aizuda.snailjob.client.core.callback.complete.RetryCompleteCallback;
 import com.aizuda.snailjob.client.core.retryer.RetryType;
 import io.github.atengk.boot.job.snail.enums.JobTenantMode;
+import io.github.atengk.boot.job.snail.retry.callback.SnailRetryDeadLetterCallback;
 import io.github.atengk.boot.job.snail.retry.generator.SpelIdempotentIdGenerator;
+import org.springframework.core.annotation.AliasFor;
 
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
@@ -15,11 +18,15 @@ import java.lang.annotation.Target;
 /**
  * SnailJob 分布式重试生产级高阶声明式注解
  *
- * <p>提供生产级声明式重试配置：
+ * <p>单注解即可自动接入 {@code AtengSnailRetryScanner}（对接 {@code RetryableRegistrar} 服务端注册）
+ * 与 {@code AtengSnailRetryPointcutAdvisor} AOP 本地/远程重试执行闭环，同时兼容双写
+ * {@link com.aizuda.snailjob.client.core.annotation.Retryable}（显式直写 {@code @Retryable} 优先生效）：
  * <ul>
+ *     <li>支持 {@link #scene()} 与 {@link #value()} 别名统一标识重试场景；</li>
  *     <li>支持业务 SpEL 幂等键表达式提取（{@link #idempotentSpel()}）；</li>
  *     <li>默认挂载 {@link SpelIdempotentIdGenerator} 实现强业务唯一性防重；</li>
- *     <li>融合四维上下文（MDC traceId、User、TenantId、IgnoreTenant）跨时间与跨节点现场保真还原；</li>
+ *     <li>默认挂载 {@link SnailRetryDeadLetterCallback} 对接死信领域事件与告警聚合；</li>
+ *     <li>融合四维上下文（MDC traceId、User、TenantId、IgnoreTenant）首次执行与跨时间/跨节点现场保真还原；</li>
  *     <li>支持多租户隔离沙箱策略（{@link #tenantMode()}）。</li>
  * </ul></p>
  *
@@ -33,13 +40,15 @@ import java.lang.annotation.Target;
 public @interface AtengSnailRetry {
 
     /**
-     * 重试场景唯一标识（留空时默认取当前方法名）
+     * 重试场景唯一标识（与 {@link #value()} 互为别名，留空时默认取当前方法名）
      */
+    @AliasFor("value")
     String scene() default "";
 
     /**
-     * 场景标识别名
+     * 场景标识别名（与 {@link #scene()} 互为别名）
      */
+    @AliasFor("scene")
     String value() default "";
 
     /**
@@ -51,6 +60,11 @@ public @interface AtengSnailRetry {
      * 幂等 ID 生成器类型（默认为 SpelIdempotentIdGenerator）
      */
     Class<? extends IdempotentIdGenerate> idempotentId() default SpelIdempotentIdGenerator.class;
+
+    /**
+     * 重试完成/死信沉降回调实现类型（默认为 SnailRetryDeadLetterCallback）
+     */
+    Class<? extends RetryCompleteCallback> retryCompleteCallback() default SnailRetryDeadLetterCallback.class;
 
     /**
      * 业务追踪标识 SpEL 表达式（如 "#order.orderNo"）

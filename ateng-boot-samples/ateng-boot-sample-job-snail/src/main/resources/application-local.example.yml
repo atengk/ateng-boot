@@ -1,5 +1,14 @@
-# 本地服务联调配置模板（请复制为 application-local.yml 并填入真实 SnailJob 调度服务端连接信息）
+# 本地服务联调配置模板（请复制为 application-local.yml 并填入真实 SnailJob 与 Redis 连接信息）
 # 真实 application-local.yml 已被 .gitignore 忽略，绝对严禁提交公网真实 IP 与密码凭据至 Git
+spring:
+  data:
+    redis:
+      host: YOUR_REDIS_HOST
+      port: 6379
+      password: YOUR_REDIS_PASSWORD
+      database: 0
+      timeout: 3s
+
 ateng:
   boot:
     job:
@@ -11,3 +20,8 @@ ateng:
         openapi:
           port: 8080
           prefix: snail-job
+        retry:
+          enabled: true
+          context-ttl: 24h
+          local-max-attempts: 3
+          local-backoff: 200ms

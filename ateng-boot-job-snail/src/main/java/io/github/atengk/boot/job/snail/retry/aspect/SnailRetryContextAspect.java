@@ -18,6 +18,7 @@ import io.github.atengk.boot.job.snail.enums.JobTenantMode;
 import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
 import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextRegistry;
 import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextStore;
+import io.github.atengk.boot.job.snail.retry.context.SnailRetryFailureTracker;
 import io.github.atengk.boot.job.snail.retry.generator.ArgsHashIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.generator.SpelIdempotentIdGenerator;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -102,15 +103,17 @@ public class SnailRetryContextAspect {
         Method specificMethod = org.springframework.aop.support.AopUtils.getMostSpecificMethod(method, targetClass);
 
         AtengSnailRetry atengRetry = AnnotatedElementUtils.findMergedAnnotation(specificMethod, AtengSnailRetry.class);
-        Retryable retryable = AnnotatedElementUtils.findMergedAnnotation(specificMethod, Retryable.class);
+        if (atengRetry == null) {
+            atengRetry = AnnotatedElementUtils.findMergedAnnotation(targetClass, AtengSnailRetry.class);
+        }
+        Retryable directRetryable = specificMethod.getAnnotation(Retryable.class);
+        Retryable mergedRetryable = AnnotatedElementUtils.findMergedAnnotation(specificMethod, Retryable.class);
 
-        String scene = (atengRetry != null && StringUtils.hasText(atengRetry.scene()))
-                ? atengRetry.scene()
-                : (retryable != null && StringUtils.hasText(retryable.scene()) ? retryable.scene() : specificMethod.getName());
+        String scene = resolveScene(specificMethod, atengRetry, directRetryable, mergedRetryable);
         String executorClassName = targetClass.getName();
         String contextKey = scene + ":" + executorClassName + ":" + specificMethod.getName();
         String classKey = scene + ":" + executorClassName;
-        String idempotentKey = resolveIdempotentKey(atengRetry, specificMethod, pjp.getArgs());
+        String idempotentKey = resolveIdempotentKey(scene, atengRetry, specificMethod, pjp.getArgs());
         String fineGrainedKey = StringUtils.hasText(idempotentKey) ? (contextKey + ":" + idempotentKey) : contextKey;
 
         // 0. 平滑停机排空拦截与在途计数
@@ -121,85 +124,200 @@ public class SnailRetryContextAspect {
             drainStateMachine.incrementInFlightRetry();
         }
         long startTimeNanos = System.nanoTime();
+        String observedTraceId = MDC.get(TRACE_ID_KEY);
+        String observedTenantId = TenantContextHolder.getTenantId();
 
         try {
             Object result;
-            boolean isRemoteRetry = (RetrySiteSnapshot.getStage() != null
-                    && RetrySiteSnapshot.getStage() == RetrySiteSnapshot.EnumStage.REMOTE.getStage())
-                    || RetrySiteSnapshot.isRetryFlow();
+            Integer stage = RetrySiteSnapshot.getStage();
+            boolean isRemoteRetry = (stage != null && stage == RetrySiteSnapshot.EnumStage.REMOTE.getStage())
+                    || (stage == null && RetrySiteSnapshot.isRetryFlow());
+            boolean isLocalRetryFlow = !isRemoteRetry
+                    && stage != null
+                    && stage == RetrySiteSnapshot.EnumStage.LOCAL.getStage()
+                    && RetrySiteSnapshot.isRetryFlow();
 
-            if (isRemoteRetry) {
-                // 远程重试阶段：保存当前工作线程初始现场，优先通过细粒度幂等键还原上报时的四维快照
+            if (isRemoteRetry || isLocalRetryFlow) {
+                // 远程重试或本地重试流：暂存当前线程初始现场，优先还原上报/首次执行时保存的四维快照
                 AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
-                AsyncContext.ContextSnapshot recorded = this.contextStore.get(fineGrainedKey);
-                if (recorded == null && StringUtils.hasText(idempotentKey)) {
-                    recorded = this.contextStore.get(scene + ":" + idempotentKey);
-                }
-                if (recorded == null) {
-                    recorded = this.contextStore.get(contextKey);
-                }
-                if (recorded == null) {
-                    recorded = this.contextStore.get(classKey);
-                }
-
+                AsyncContext.ContextSnapshot recorded = findRecordedSnapshot(fineGrainedKey, scene, idempotentKey, contextKey, classKey);
                 if (recorded != null) {
                     recorded.apply();
-                    log.debug("SnailJob 远程重试已成功还原四维上下文快照 [Key: {}]", fineGrainedKey);
+                    log.debug("SnailJob 重试流已成功还原四维上下文快照 [Stage: {}, Key: {}]",
+                            isRemoteRetry ? "REMOTE" : "LOCAL", fineGrainedKey);
                 } else {
-                    // 若内存快照未命中（如重启或多节点），从方法实参中深度二次提取
-                    restoreFromArgsFallback(pjp.getArgs(), atengRetry);
+                    ensureTraceIdPresent();
+                    if (isRemoteRetry) {
+                        restoreFromArgsFallback(pjp.getArgs(), atengRetry);
+                    } else {
+                        applyTenantModeOnFirstExecution(atengRetry, pjp.getArgs());
+                    }
                 }
+                observedTraceId = MDC.get(TRACE_ID_KEY);
+                observedTenantId = TenantContextHolder.getTenantId();
 
+                boolean succeeded = false;
                 try {
                     result = pjp.proceed();
+                    succeeded = true;
                 } finally {
                     previous.restore();
-                    this.contextStore.remove(fineGrainedKey);
-                    if (StringUtils.hasText(idempotentKey)) {
-                        this.contextStore.remove(scene + ":" + idempotentKey);
+                    if (isRemoteRetry) {
+                        // 远程执行结束必须清理粗粒度共享索引键防跨租户串扰；成功完结时同步清理细粒度键
+                        this.contextStore.remove(contextKey);
+                        this.contextStore.remove(classKey);
+                        SnailRetryFailureTracker.remove(contextKey, classKey);
+                        if (succeeded) {
+                            removeFineGrainedKeys(fineGrainedKey, scene, idempotentKey);
+                        }
+                    } else if (succeeded) {
+                        // 本地重试成功自愈后再统一清理全量索引键，失败期间保留快照供下一次本地重试或远程上报消费
+                        cleanupAllKeys(fineGrainedKey, scene, idempotentKey, contextKey, classKey);
                     }
                 }
             } else {
-                // 首次业务执行或本地重试阶段：捕获并登记当前四维快照（挂载细粒度键防多租户并发串写）
-                ensureTraceIdPresent();
-                AsyncContext.ContextSnapshot currentSnapshot = AsyncContext.ContextSnapshot.capture();
-                this.contextStore.put(fineGrainedKey, currentSnapshot);
-                if (StringUtils.hasText(idempotentKey)) {
-                    this.contextStore.put(scene + ":" + idempotentKey, currentSnapshot);
-                }
-                this.contextStore.put(contextKey, currentSnapshot);
-                this.contextStore.put(classKey, currentSnapshot);
-
+                // 首次业务执行：即时生效 @AtengSnailRetry#tenantMode() 并捕获登记四维快照，退出时恢复调用方线程现场
+                AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
                 try {
+                    ensureTraceIdPresent();
+                    applyTenantModeOnFirstExecution(atengRetry, pjp.getArgs());
+                    observedTraceId = MDC.get(TRACE_ID_KEY);
+                    observedTenantId = TenantContextHolder.getTenantId();
+                    AsyncContext.ContextSnapshot currentSnapshot = AsyncContext.ContextSnapshot.capture();
+                    storeSnapshot(fineGrainedKey, scene, idempotentKey, contextKey, classKey, currentSnapshot);
                     result = pjp.proceed();
-                } catch (Throwable t) {
-                    // 发生异常即将上报，保持已登记的上下文快照供远程重试消费，向外抛出异常
-                    throw t;
+                } finally {
+                    previous.restore();
                 }
             }
 
             long durationMs = Duration.ofNanos(System.nanoTime() - startTimeNanos).toMillis();
             if (metricsBinder != null) {
-                metricsBinder.recordRetryExecution(scene, SnailJobMetricsBinder.STATUS_SUCCESS, TenantContextHolder.getTenantId(), Duration.ofMillis(durationMs));
+                metricsBinder.recordRetryExecution(scene, SnailJobMetricsBinder.STATUS_SUCCESS, observedTenantId, Duration.ofMillis(durationMs));
             }
             if (alertAggregator != null) {
-                alertAggregator.onRetrySuccess(scene, null, MDC.get(TRACE_ID_KEY), durationMs);
+                alertAggregator.onRetrySuccess(scene, null, observedTraceId, durationMs);
             }
             return result;
 
         } catch (Throwable t) {
+            SnailRetryFailureTracker.record(
+                    t,
+                    fineGrainedKey,
+                    StringUtils.hasText(idempotentKey) ? (scene + ":" + idempotentKey) : null,
+                    contextKey,
+                    classKey,
+                    scene
+            );
             long durationMs = Duration.ofNanos(System.nanoTime() - startTimeNanos).toMillis();
             if (metricsBinder != null) {
-                metricsBinder.recordRetryExecution(scene, SnailJobMetricsBinder.STATUS_FAILURE, TenantContextHolder.getTenantId(), Duration.ofMillis(durationMs));
+                metricsBinder.recordRetryExecution(scene, SnailJobMetricsBinder.STATUS_FAILURE, observedTenantId, Duration.ofMillis(durationMs));
             }
             if (alertAggregator != null) {
-                alertAggregator.onRetryFailure(scene, null, MDC.get(TRACE_ID_KEY), durationMs, t);
+                alertAggregator.onRetryFailure(scene, null, observedTraceId, durationMs, t);
             }
             throw t;
         } finally {
             if (drainStateMachine != null) {
                 drainStateMachine.decrementInFlightRetry();
             }
+        }
+    }
+
+    private static String resolveScene(
+            Method specificMethod,
+            AtengSnailRetry atengRetry,
+            Retryable directRetryable,
+            Retryable mergedRetryable) {
+        if (directRetryable != null && StringUtils.hasText(directRetryable.scene())) {
+            return directRetryable.scene().trim();
+        }
+        if (atengRetry != null) {
+            if (StringUtils.hasText(atengRetry.scene())) {
+                return atengRetry.scene().trim();
+            }
+            if (StringUtils.hasText(atengRetry.value())) {
+                return atengRetry.value().trim();
+            }
+        }
+        if (mergedRetryable != null && StringUtils.hasText(mergedRetryable.scene())) {
+            return mergedRetryable.scene().trim();
+        }
+        return specificMethod.getName();
+    }
+
+    private AsyncContext.ContextSnapshot findRecordedSnapshot(
+            String fineGrainedKey,
+            String scene,
+            String idempotentKey,
+            String contextKey,
+            String classKey) {
+        AsyncContext.ContextSnapshot recorded = this.contextStore.get(fineGrainedKey);
+        if (recorded == null && StringUtils.hasText(idempotentKey)) {
+            recorded = this.contextStore.get(scene + ":" + idempotentKey);
+        }
+        if (recorded == null) {
+            recorded = this.contextStore.get(contextKey);
+        }
+        if (recorded == null) {
+            recorded = this.contextStore.get(classKey);
+        }
+        return recorded;
+    }
+
+    private void storeSnapshot(
+            String fineGrainedKey,
+            String scene,
+            String idempotentKey,
+            String contextKey,
+            String classKey,
+            AsyncContext.ContextSnapshot snapshot) {
+        this.contextStore.put(fineGrainedKey, snapshot);
+        if (StringUtils.hasText(idempotentKey)) {
+            this.contextStore.put(scene + ":" + idempotentKey, snapshot);
+        }
+        this.contextStore.put(contextKey, snapshot);
+        this.contextStore.put(classKey, snapshot);
+    }
+
+    private void removeFineGrainedKeys(String fineGrainedKey, String scene, String idempotentKey) {
+        this.contextStore.remove(fineGrainedKey);
+        SnailRetryFailureTracker.remove(fineGrainedKey);
+        if (StringUtils.hasText(idempotentKey)) {
+            String idemIndexKey = scene + ":" + idempotentKey;
+            this.contextStore.remove(idemIndexKey);
+            SnailRetryFailureTracker.remove(idemIndexKey);
+        }
+    }
+
+    private void cleanupAllKeys(
+            String fineGrainedKey,
+            String scene,
+            String idempotentKey,
+            String contextKey,
+            String classKey) {
+        removeFineGrainedKeys(fineGrainedKey, scene, idempotentKey);
+        this.contextStore.remove(contextKey);
+        this.contextStore.remove(classKey);
+        SnailRetryFailureTracker.remove(contextKey, classKey);
+    }
+
+    private void applyTenantModeOnFirstExecution(AtengSnailRetry atengRetry, Object[] args) {
+        if (atengRetry == null) {
+            return;
+        }
+        JobTenantMode tenantMode = atengRetry.tenantMode();
+        if (tenantMode == JobTenantMode.IGNORE) {
+            TenantContextHolder.setIgnoreTenant(true);
+        } else if (tenantMode == JobTenantMode.PARAM) {
+            if (!StringUtils.hasText(TenantContextHolder.getTenantId())) {
+                String tenantId = SnailJobContextAspect.extractPropertyFromArgs(args, "getTenantId");
+                if (StringUtils.hasText(tenantId)) {
+                    TenantContextHolder.setTenantId(tenantId);
+                }
+            }
+        } else if (tenantMode == JobTenantMode.ITERATE) {
+            TenantContextHolder.clear();
         }
     }
 
@@ -247,14 +365,14 @@ public class SnailRetryContextAspect {
     /**
      * 根据业务注解与方法实参动态解析细粒度幂等标识（防御并发多租户快照串写）
      */
-    private String resolveIdempotentKey(AtengSnailRetry atengRetry, Method method, Object[] args) {
+    private String resolveIdempotentKey(String scene, AtengSnailRetry atengRetry, Method method, Object[] args) {
         if (args == null || args.length == 0) {
             return "empty";
         }
         if (atengRetry != null && StringUtils.hasText(atengRetry.idempotentSpel())) {
             try {
                 return spelIdempotentIdGenerator.idGenerate(new IdempotentIdContext(
-                        atengRetry.scene(),
+                        scene,
                         method.getDeclaringClass().getName(),
                         args,
                         null,
@@ -265,7 +383,7 @@ public class SnailRetryContextAspect {
         }
         try {
             return argsHashIdempotentIdGenerator.idGenerate(new IdempotentIdContext(
-                    atengRetry != null ? atengRetry.scene() : "",
+                    scene,
                     method.getDeclaringClass().getName(),
                     args,
                     null,
