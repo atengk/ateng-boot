@@ -164,6 +164,11 @@ public class AtengSearchProperties {
          * 浅分页最大结果窗口阈值，超过将刚性熔断（默认 10000）
          */
         private int maxResultWindow = 10000;
+
+        /**
+         * searchAfter 深度游标分页单次拉取每页大小上限（默认 1000，防 OOM）
+         */
+        private int maxSearchAfterSize = 1000;
     }
 
     @Data

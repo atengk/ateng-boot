@@ -68,6 +68,9 @@ public class SearchQueryBuilder {
     private final List<String> indices = new ArrayList<>();
     private boolean trackTotalHits = true;
     private FieldCollapse collapse;
+    private final Set<String> sourceIncludes = new LinkedHashSet<>();
+    private final Set<String> sourceExcludes = new LinkedHashSet<>();
+    private Boolean fetchSource;
 
     // ==================== 1. 精确与分词匹配 ====================
 
@@ -581,15 +584,77 @@ public class SearchQueryBuilder {
      * @return 当前构建器
      */
     public SearchQueryBuilder knn(String field, List<Float> vector, int k, int numCandidates) {
+        return knn(field, vector, k, numCandidates, null);
+    }
+
+    /**
+     * AI 稠密向量相似度检索 (kNN，支持前置布尔过滤条件)
+     *
+     * @param field          稠密向量字段名 (dense_vector)
+     * @param vector         查询向量数组
+     * @param k              召回 TopK 数量
+     * @param numCandidates  每个分片候选集大小 (通常 >= k)
+     * @param filterConsumer kNN 预过滤条件构建器（可为 null）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder knn(String field, float[] vector, int k, int numCandidates,
+                                  Consumer<SearchQueryBuilder> filterConsumer) {
+        if (!StringUtils.hasText(field) || vector == null || vector.length == 0) {
+            return this;
+        }
+        List<Float> floatList = new ArrayList<>(vector.length);
+        for (float v : vector) {
+            floatList.add(v);
+        }
+        return knn(field, floatList, k, numCandidates, filterConsumer);
+    }
+
+    /**
+     * 声明式 KNN 向量近邻检索（支持 List<Float> 集合与前置过滤条件）
+     *
+     * @param field          稠密向量字段名 (dense_vector)
+     * @param vector         查询向量集合
+     * @param k              召回 TopK 数量
+     * @param numCandidates  每个分片候选集大小 (通常 >= k)
+     * @param filterConsumer kNN 预过滤条件构建器（可为 null）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder knn(String field, List<Float> vector, int k, int numCandidates,
+                                  Consumer<SearchQueryBuilder> filterConsumer) {
         if (!StringUtils.hasText(field) || vector == null || vector.isEmpty()) {
             return this;
         }
-        knnSearches.add(KnnSearch.of(builder -> builder
-                .field(field)
-                .queryVector(new ArrayList<>(vector))
-                .k((long) k)
-                .numCandidates((long) numCandidates)
-        ));
+        Query filterQuery = null;
+        if (filterConsumer != null) {
+            SearchQueryBuilder filterBuilder = new SearchQueryBuilder();
+            filterConsumer.accept(filterBuilder);
+            filterQuery = filterBuilder.buildQuery();
+        }
+        final Query resolvedFilter = filterQuery;
+        knnSearches.add(KnnSearch.of(builder -> {
+            builder.field(field)
+                    .queryVector(new ArrayList<>(vector))
+                    .k((long) k)
+                    .numCandidates((long) numCandidates);
+            if (resolvedFilter != null) {
+                builder.filter(resolvedFilter);
+            }
+            return builder;
+        }));
+        return this;
+    }
+
+    /**
+     * 条件式流式查询构造语法糖（当 {@code condition} 为 {@code true} 时才执行构建逻辑）
+     *
+     * @param condition 布尔开关条件
+     * @param consumer  条件成立时对当前构建器的消费逻辑
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder when(boolean condition, Consumer<SearchQueryBuilder> consumer) {
+        if (condition && consumer != null) {
+            consumer.accept(this);
+        }
         return this;
     }
 
@@ -853,7 +918,10 @@ public class SearchQueryBuilder {
     }
 
     public SearchQueryBuilder size(int size) {
-        this.size = Math.max(1, size);
+        if (size < 0) {
+            throw new IllegalArgumentException("Search size must not be negative: " + size);
+        }
+        this.size = size;
         return this;
     }
 
@@ -938,6 +1006,76 @@ public class SearchQueryBuilder {
         return this;
     }
 
+    /**
+     * 指定 {@code _source} 仅返回的字段白名单（避免拉取 1536 维向量数组等大字段）
+     *
+     * @param fields 保留字段名列表
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder includes(String... fields) {
+        if (fields != null) {
+            addNonBlankFields(this.sourceIncludes, Arrays.asList(fields));
+        }
+        return this;
+    }
+
+    /**
+     * 指定 {@code _source} 仅返回的字段白名单集合
+     *
+     * @param fields 保留字段名集合
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder includes(Collection<String> fields) {
+        addNonBlankFields(this.sourceIncludes, fields);
+        return this;
+    }
+
+    /**
+     * 指定 {@code _source} 需要剔除的字段黑名单（如剔除 {@code embedding} 向量载荷）
+     *
+     * @param fields 剔除字段名列表
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder excludes(String... fields) {
+        if (fields != null) {
+            addNonBlankFields(this.sourceExcludes, Arrays.asList(fields));
+        }
+        return this;
+    }
+
+    /**
+     * 指定 {@code _source} 需要剔除的字段黑名单集合
+     *
+     * @param fields 剔除字段名集合
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder excludes(Collection<String> fields) {
+        addNonBlankFields(this.sourceExcludes, fields);
+        return this;
+    }
+
+    private static void addNonBlankFields(Set<String> target, Collection<String> fields) {
+        if (fields == null || fields.isEmpty()) {
+            return;
+        }
+        for (String f : fields) {
+            if (StringUtils.hasText(f)) {
+                target.add(f.trim());
+            }
+        }
+    }
+
+    /**
+     * 控制是否返回 {@code _source} 原始文档（设为 {@code false} 可仅返回文档 ID 与得分/聚合）
+     *
+     * @param fetchSource 是否拉取 _source
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder fetchSource(boolean fetchSource) {
+        this.fetchSource = fetchSource;
+        return this;
+    }
+
     // ==================== 10. 构建执行 ====================
 
     /**
@@ -999,6 +1137,8 @@ public class SearchQueryBuilder {
             );
         }
 
+        int resolvedPageNum = this.size > 0 ? (this.from / this.size) + 1 : 1;
+
         return new SearchQuery(
                 new ArrayList<>(indices),
                 finalQuery,
@@ -1008,11 +1148,14 @@ public class SearchQueryBuilder {
                 new ArrayList<>(knnSearches),
                 from,
                 size,
-                pageNum,
+                resolvedPageNum,
                 routing,
                 new ArrayList<>(searchAfter),
                 trackTotalHits,
-                collapse
+                collapse,
+                new ArrayList<>(sourceIncludes),
+                new ArrayList<>(sourceExcludes),
+                fetchSource
         );
     }
 

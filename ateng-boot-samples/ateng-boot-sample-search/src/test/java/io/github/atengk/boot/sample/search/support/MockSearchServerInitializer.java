@@ -120,6 +120,14 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
                         """);
             }
 
+            // 1.5 Point-In-Time (PIT) 开启与释放（须在通用 DELETE 索引分支之前匹配）
+            if (path.contains("/_pit")) {
+                if ("DELETE".equals(method)) {
+                    return jsonResponse(200, "{\"succeeded\":true,\"num_freed\":1}");
+                }
+                return jsonResponse(200, "{\"id\":\"mock-pit-id-001\"}");
+            }
+
             // 2. 别名与索引结构管理
             if (path.contains("/_aliases") || path.contains("/_index_template") || path.contains("/_mapping") || (method.equals("DELETE") && !path.contains("/_doc"))) {
                 return jsonResponse(200, "{\"acknowledged\":true}");
@@ -387,8 +395,141 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
                         """);
             }
 
+            // 4.95 批量异构检索 _msearch
+            if (path.contains("/_msearch")) {
+                String[] lines = body.split("\\R");
+                StringBuilder responsesJson = new StringBuilder("[");
+                boolean firstItem = true;
+                for (int i = 0; i + 1 < lines.length; i += 2) {
+                    String itemBody = lines[i + 1];
+                    if (!firstItem) {
+                        responsesJson.append(',');
+                    }
+                    firstItem = false;
+                    if (itemBody.contains("\"size\":0") || itemBody.contains("avg_price")) {
+                        responsesJson.append("""
+                                {
+                                  "took": 2,
+                                  "timed_out": false,
+                                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                                  "hits": { "total": { "value": 1, "relation": "eq" }, "hits": [] },
+                                  "aggregations": { "avg#avg_price": { "value": 9999.0 } }
+                                }
+                                """);
+                    } else if (itemBody.contains("\"knn\"")) {
+                        responsesJson.append("""
+                                {
+                                  "took": 2,
+                                  "timed_out": false,
+                                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                                  "hits": {
+                                    "total": { "value": 2, "relation": "eq" },
+                                    "hits": [
+                                      {
+                                        "_index": "product_index",
+                                        "_id": "P002",
+                                        "_score": 0.95,
+                                        "_source": {
+                                          "id": "P002",
+                                          "title": "MacBook Pro M4",
+                                          "description": "苹果旗舰芯片工作站",
+                                          "category": "笔记本",
+                                          "brand": "Apple",
+                                          "price": 15999.00,
+                                          "stock": 50,
+                                          "status": "ON_SALE"
+                                        }
+                                      },
+                                      {
+                                        "_index": "product_index",
+                                        "_id": "P001",
+                                        "_score": 0.88,
+                                        "_source": {
+                                          "id": "P001",
+                                          "title": "iPhone 16 Pro Max",
+                                          "description": "苹果年度旗舰芯片A18 Pro",
+                                          "category": "手机",
+                                          "brand": "Apple",
+                                          "price": 9999.00,
+                                          "stock": 100,
+                                          "status": "ON_SALE"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                }
+                                """);
+                    } else {
+                        responsesJson.append("""
+                                {
+                                  "took": 2,
+                                  "timed_out": false,
+                                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                                  "hits": {
+                                    "total": { "value": 1, "relation": "eq" },
+                                    "hits": [
+                                      {
+                                        "_index": "product_index",
+                                        "_id": "P001",
+                                        "_score": 1.8,
+                                        "_source": {
+                                          "id": "P001",
+                                          "title": "iPhone 16 Pro Max",
+                                          "description": "苹果年度旗舰芯片A18 Pro",
+                                          "category": "手机",
+                                          "brand": "Apple",
+                                          "price": 9999.00,
+                                          "stock": 100,
+                                          "status": "ON_SALE"
+                                        },
+                                        "highlight": {
+                                          "title": ["<em>iPhone</em> 16 Pro Max"],
+                                          "description": ["苹果年度<em>旗舰</em>芯片"]
+                                        }
+                                      }
+                                    ]
+                                  }
+                                }
+                                """);
+                    }
+                }
+                responsesJson.append(']');
+                return jsonResponse(200, "{\"took\":4,\"responses\":" + responsesJson + "}");
+            }
+
             // 5. 检索 Search
             if (path.contains("/_search")) {
+                if (body.contains("\"excludes\":[\"embedding\"]") || body.contains("\"excludes\":[\"embedding\"")) {
+                    return jsonResponse(200, """
+                            {
+                              "took": 2,
+                              "timed_out": false,
+                              "_shards": { "total": 3, "successful": 3, "skipped": 0, "failed": 0 },
+                              "hits": {
+                                "total": { "value": 1, "relation": "eq" },
+                                "max_score": 1.5,
+                                "hits": [
+                                  {
+                                    "_index": "product_index",
+                                    "_id": "P001",
+                                    "_score": 1.5,
+                                    "_routing": "Apple",
+                                    "_source": {
+                                      "id": "P001",
+                                      "title": "iPhone 16 Pro Max",
+                                      "description": "苹果年度旗舰芯片A18 Pro，支持Apple Intelligence",
+                                      "category": "手机",
+                                      "brand": "Apple",
+                                      "price": 9999.00,
+                                      "stock": 100,
+                                      "status": "ON_SALE"
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                            """);
+                }
                 if (body.contains("daily_traffic")) {
                     return jsonResponse(200, """
                             {

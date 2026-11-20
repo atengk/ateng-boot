@@ -5,7 +5,10 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.search.dto.ProductBatchGetRequest;
 import io.github.atengk.boot.sample.search.dto.ProductCollapseRequest;
 import io.github.atengk.boot.sample.search.dto.ProductGeoSearchRequest;
+import io.github.atengk.boot.sample.search.dto.ProductHybridSearchRequest;
 import io.github.atengk.boot.sample.search.dto.ProductKnnSearchRequest;
+import io.github.atengk.boot.sample.search.dto.ProductMultiSearchRequest;
+import io.github.atengk.boot.sample.search.dto.ProductMultiSearchResponse;
 import io.github.atengk.boot.sample.search.dto.ProductNestedSearchRequest;
 import io.github.atengk.boot.sample.search.dto.ProductOccUpdateRequest;
 import io.github.atengk.boot.sample.search.dto.ProductPartialUpdateRequest;
@@ -216,5 +219,60 @@ public class ProductSearchController {
                 .hasMore(scrollResult.isHasMore())
                 .build();
         return Result.success(response);
+    }
+
+    /**
+     * 视图级 VO 高亮投影搜索（不污染持久实体内存明文）
+     */
+    @PostMapping("/search-vo")
+    public Result<List<ProductResponse>> searchVoWithHighlight(@RequestBody @Valid ProductSearchRequest request) {
+        return Result.success(productScenario.searchMultiMatchVoWithHighlight(request.getKeyword()));
+    }
+
+    /**
+     * _source 裁剪检索（剔除 embedding 向量载荷以节约带宽）
+     */
+    @GetMapping("/source-trimmed")
+    public Result<List<ProductResponse>> searchSourceTrimmed(@RequestParam(required = false) String keyword) {
+        List<SearchHit<ProductDoc>> hits = productScenario.searchWithSourceTrimming(keyword);
+        return Result.success(SearchSampleConvertHelper.toHitResponseList(hits));
+    }
+
+    /**
+     * Point-In-Time (PIT) 一致性快照深度分页全量遍历
+     */
+    @GetMapping("/pit-pages")
+    public Result<List<ProductResponse>> searchWithPitTraversal(@RequestParam(defaultValue = "2") int size) {
+        List<SearchHit<ProductDoc>> hits = productScenario.searchWithPitTraversal(size);
+        return Result.success(SearchSampleConvertHelper.toHitResponseList(hits));
+    }
+
+    /**
+     * _msearch 批量异构检索（单次往返返回关键词命中列表与分类汇总指标）
+     */
+    @PostMapping("/msearch")
+    public Result<ProductMultiSearchResponse> batchMultiSearch(@RequestBody(required = false) ProductMultiSearchRequest request) {
+        String keyword = request != null ? request.getKeyword() : null;
+        String category = request != null ? request.getCategory() : null;
+        List<SearchPage<ProductDoc>> pages = productScenario.batchMultiSearch(keyword, category);
+        List<ProductResponse> items = !pages.isEmpty()
+                ? SearchSampleConvertHelper.toHitResponseList(pages.get(0).getHits())
+                : Collections.emptyList();
+        long statTotal = pages.size() > 1 ? pages.get(1).getTotal() : 0L;
+        return Result.success(ProductMultiSearchResponse.builder()
+                .items(items)
+                .statTotal(statTotal)
+                .build());
+    }
+
+    /**
+     * AI 混合检索融合 (BM25 + kNN，默认 CLIENT_RRF 零许可证模式)
+     */
+    @PostMapping("/hybrid")
+    public Result<List<ProductResponse>> hybridSearch(@RequestBody @Valid ProductHybridSearchRequest request) {
+        int k = request.getK() != null ? request.getK() : 5;
+        SearchPage<ProductDoc> page = productScenario.hybridSearch(
+                request.getKeyword(), request.getVector(), k, request.getMode());
+        return Result.success(SearchSampleConvertHelper.toHitResponseList(page.getHits()));
     }
 }

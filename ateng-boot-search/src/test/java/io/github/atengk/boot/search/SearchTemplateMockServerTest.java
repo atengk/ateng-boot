@@ -3380,4 +3380,526 @@ class SearchTemplateMockServerTest {
                 .extracting(e -> ((SearchException) e).getResultCode())
                 .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
     }
+
+    @Test
+    @DisplayName("测试 size(0) 聚合零命中下发、from/size pageNum 自动推算与 searchAfter 上限熔断")
+    void testSizeZeroFromPageNumAndMaxSearchAfterSizeGuard() throws Exception {
+        // 1. size(0) 必须真实生成 "size":0 且不抛异常；负数 size 快速失败
+        assertThatThrownBy(() -> SearchQueryBuilder.create().size(-1))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        SearchQuery aggOnlyQuery = SearchQueryBuilder.create()
+                .matchAll()
+                .size(0)
+                .avgAggregation("avg_age", "age")
+                .build();
+        assertThat(aggOnlyQuery.getSize()).isEqualTo(0);
+        assertThat(aggOnlyQuery.getPageNum()).isEqualTo(1);
+
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 1,
+                  "timed_out": false,
+                  "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                  "hits": {"total": {"value": 10, "relation": "eq"}, "hits": []},
+                  "aggregations": {"avg#avg_age": {"value": 25.0}}
+                }
+                """));
+        SearchPage<UserDoc> aggPage = searchTemplate.search(aggOnlyQuery, UserDoc.class);
+        assertThat(aggPage.getHits()).isEmpty();
+        assertThat(aggPage.getPageSize()).isEqualTo(0);
+        assertThat(aggPage.getTotalPages()).isEqualTo(0L);
+        RecordedRequest aggReq = mockWebServer.takeRequest();
+        assertThat(aggReq.getBody().readUtf8()).contains("\"size\":0");
+
+        // 2. 仅通过 from / size 设置偏移时同步推算 pageNum（不论调用顺序）
+        SearchQuery offsetFirst = SearchQueryBuilder.create().from(20).size(10).build();
+        assertThat(offsetFirst.getPageNum()).isEqualTo(3);
+        SearchQuery sizeFirst = SearchQueryBuilder.create().size(10).from(30).build();
+        assertThat(sizeFirst.getPageNum()).isEqualTo(4);
+
+        // 3. searchAfter 单页 size 超过 maxSearchAfterSize 立即触发 SearchPaginationExceededException
+        AtengSearchProperties strictPageProps = new AtengSearchProperties();
+        strictPageProps.getPagination().setMaxSearchAfterSize(50);
+        SearchTemplate limitedTemplate = new SearchTemplate(driver, strictPageProps);
+        SearchQuery scrollQuery = SearchQueryBuilder.create().matchAll().orderByAsc("id").build();
+
+        assertThatThrownBy(() -> limitedTemplate.searchAfter(scrollQuery, 51, UserDoc.class))
+                .isInstanceOf(SearchPaginationExceededException.class);
+    }
+
+    @Test
+    @DisplayName("测试 PointInTime(PIT) 生命周期、异常确定性关闭、OpenSearch 方言与上限熔断")
+    void testPointInTimeLifecycleAndOpenSearchDialect() throws Exception {
+        // 1. Elasticsearch executeWithPointInTime 正常路径：open -> searchAfterWithPit -> close
+        mockWebServer.enqueue(esResponse(200, "{\"id\":\"pit-es-123\"}"));
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                  "pit_id": "pit-es-123",
+                  "hits": {
+                    "total": {"value": 1, "relation": "eq"},
+                    "hits": [
+                      {
+                        "_index": "user_idx",
+                        "_id": "1",
+                        "_source": {"id": 1, "username": "alice"},
+                        "sort": ["1", 0]
+                      }
+                    ]
+                  }
+                }
+                """));
+        mockWebServer.enqueue(esResponse(200, "{\"succeeded\":true,\"num_freed\":1}"));
+
+        SearchQuery pitQuery = SearchQueryBuilder.create().matchAll().orderByAsc("id").build();
+        List<UserDoc> users = searchTemplate.executeWithPointInTime(UserDoc.class, java.time.Duration.ofMinutes(2), pit -> {
+            assertThat(pit.pitId()).isEqualTo("pit-es-123");
+            SearchScrollResult<UserDoc> page = searchTemplate.searchAfterWithPit(pit, pitQuery, 10, UserDoc.class);
+            assertThat(page.getDataList()).hasSize(1);
+            assertThat(page.getNextSortValues()).containsExactly("1", "0");
+            return page.getDataList();
+        });
+        assertThat(users).hasSize(1);
+
+        RecordedRequest openReq = mockWebServer.takeRequest();
+        assertThat(openReq.getMethod()).isEqualTo("POST");
+        assertThat(openReq.getPath()).isEqualTo("/user_idx/_pit?keep_alive=2m");
+
+        RecordedRequest pitSearchReq = mockWebServer.takeRequest();
+        assertThat(pitSearchReq.getMethod()).isEqualTo("POST");
+        assertThat(pitSearchReq.getPath()).startsWith("/_search").doesNotContain("user_idx");
+        String pitSearchBody = pitSearchReq.getBody().readUtf8();
+        assertThat(pitSearchBody).contains("\"pit\":{\"id\":\"pit-es-123\",\"keep_alive\":\"2m\"}");
+        assertThat(pitSearchBody).contains("\"size\":10");
+
+        RecordedRequest closeReq = mockWebServer.takeRequest();
+        assertThat(closeReq.getMethod()).isEqualTo("DELETE");
+        assertThat(closeReq.getPath()).isEqualTo("/_pit");
+        assertThat(closeReq.getBody().readUtf8()).contains("\"id\":\"pit-es-123\"");
+
+        // 2. 异常抛出路径仍然确定性关闭 PIT
+        mockWebServer.enqueue(esResponse(200, "{\"id\":\"pit-es-err\"}"));
+        mockWebServer.enqueue(esResponse(200, "{\"succeeded\":true,\"num_freed\":1}"));
+        assertThatThrownBy(() -> searchTemplate.executeWithPointInTime(UserDoc.class, java.time.Duration.ofSeconds(30), pit -> {
+            throw new IllegalStateException("business boom");
+        })).isInstanceOf(IllegalStateException.class).hasMessage("business boom");
+
+        assertThat(mockWebServer.takeRequest().getPath()).isEqualTo("/user_idx/_pit?keep_alive=30s");
+        RecordedRequest errCloseReq = mockWebServer.takeRequest();
+        assertThat(errCloseReq.getMethod()).isEqualTo("DELETE");
+        assertThat(errCloseReq.getPath()).isEqualTo("/_pit");
+        assertThat(errCloseReq.getBody().readUtf8()).contains("\"id\":\"pit-es-err\"");
+
+        // 3. searchAfterWithPit 超过 maxSearchAfterSize 立即熔断；SearchPointInTime 校验空白 index
+        assertThatThrownBy(() -> new io.github.atengk.boot.search.model.SearchPointInTime("pit-1", " ", java.time.Duration.ofMinutes(1)))
+                .isInstanceOf(IllegalArgumentException.class);
+        AtengSearchProperties strictProps = new AtengSearchProperties();
+        strictProps.getPagination().setMaxSearchAfterSize(5);
+        SearchTemplate strictTemplate = new SearchTemplate(driver, strictProps);
+        io.github.atengk.boot.search.model.SearchPointInTime dummyPit =
+                new io.github.atengk.boot.search.model.SearchPointInTime("pit-1", "user_idx", java.time.Duration.ofMinutes(1));
+        assertThatThrownBy(() -> strictTemplate.searchAfterWithPit(dummyPit, pitQuery, 6, UserDoc.class))
+                .isInstanceOf(SearchPaginationExceededException.class);
+
+        // 4. OpenSearch 方言：_search/point_in_time 端点适配
+        AtengSearchProperties osProps = new AtengSearchProperties();
+        osProps.setEngine(SearchEngineType.OPENSEARCH);
+        osProps.setUris(Collections.singletonList("http://" + mockWebServer.getHostName() + ":" + mockWebServer.getPort()));
+        try (ElasticsearchClientDriver osDriver = new ElasticsearchClientDriver(osProps)) {
+            SearchTemplate osTemplate = new SearchTemplate(osDriver, osProps);
+            mockWebServer.enqueue(new MockResponse().setResponseCode(200)
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("{\"pit_id\":\"pit-os-456\",\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+            mockWebServer.enqueue(new MockResponse().setResponseCode(200)
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("{\"pits\":[{\"pit_id\":\"pit-os-456\",\"successful\":true,\"num_freed\":1}]}"));
+
+            io.github.atengk.boot.search.model.SearchPointInTime osPit = osTemplate.openPointInTime(UserDoc.class, java.time.Duration.ofMinutes(1));
+            assertThat(osPit.pitId()).isEqualTo("pit-os-456");
+            assertThat(osTemplate.closePointInTime(osPit)).isTrue();
+
+            RecordedRequest osOpenReq = mockWebServer.takeRequest();
+            assertThat(osOpenReq.getMethod()).isEqualTo("POST");
+            assertThat(osOpenReq.getPath()).isEqualTo("/user_idx/_search/point_in_time?keep_alive=1m");
+
+            RecordedRequest osCloseReq = mockWebServer.takeRequest();
+            assertThat(osCloseReq.getMethod()).isEqualTo("DELETE");
+            assertThat(osCloseReq.getPath()).isEqualTo("/_search/point_in_time");
+            assertThat(osCloseReq.getBody().readUtf8()).contains("\"pit_id\":[\"pit-os-456\"]");
+        }
+    }
+
+    @Test
+    @DisplayName("测试 _source 裁剪、when 条件语法糖、kNN 预过滤方言及 msearch 批量异构检索")
+    void testSourceFilteringWhenKnnPreFilterAndMsearch() throws Exception {
+        // 1. includes / excludes / when / knn pre-filter in ES
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                  "hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}
+                }
+                """));
+        SearchQuery trimmedKnnQuery = SearchQueryBuilder.create()
+                .when(true, q -> q.term("status", "ACTIVE"))
+                .when(false, q -> q.term("status", "DELETED"))
+                .includes("id", "username")
+                .excludes("embedding")
+                .knn("embedding", List.of(0.1f, 0.2f), 5, 20, f -> f.term("category", "tech"))
+                .build();
+        searchTemplate.search(trimmedKnnQuery, UserDoc.class);
+        String esReqBody = mockWebServer.takeRequest().getBody().readUtf8();
+        assertThat(esReqBody).contains("\"_source\":{\"excludes\":[\"embedding\"],\"includes\":[\"id\",\"username\"]}");
+        assertThat(esReqBody).contains("ACTIVE").doesNotContain("DELETED");
+        assertThat(esReqBody).contains("\"knn\":").contains("\"category\"");
+
+        // fetchSource(false)
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 1,
+                  "timed_out": false,
+                  "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                  "hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}
+                }
+                """));
+        SearchQuery noSourceQuery = SearchQueryBuilder.create().matchAll().fetchSource(false).build();
+        searchTemplate.search(noSourceQuery, UserDoc.class);
+        assertThat(mockWebServer.takeRequest().getBody().readUtf8()).contains("\"_source\":false");
+
+        // 2. OpenSearch kNN pre-filter dialect
+        AtengSearchProperties osProps = new AtengSearchProperties();
+        osProps.setEngine(SearchEngineType.OPENSEARCH);
+        osProps.setUris(Collections.singletonList("http://" + mockWebServer.getHostName() + ":" + mockWebServer.getPort()));
+        try (ElasticsearchClientDriver osDriver = new ElasticsearchClientDriver(osProps)) {
+            SearchTemplate osTemplate = new SearchTemplate(osDriver, osProps);
+            mockWebServer.enqueue(new MockResponse().setResponseCode(200)
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("{\"took\":1,\"timed_out\":false,\"_shards\":{\"total\":1,\"successful\":1,\"skipped\":0,\"failed\":0},\"hits\":{\"total\":{\"value\":0,\"relation\":\"eq\"},\"hits\":[]}}"));
+            osTemplate.search(trimmedKnnQuery, UserDoc.class);
+            String osReqBody = mockWebServer.takeRequest().getBody().readUtf8();
+            assertThat(osReqBody).contains("\"knn\"").contains("\"filter\"").contains("\"category\"");
+        }
+
+        // 3. msearch 批量异构检索：空入参返回空集合；租户自动注入；窗口超限熔断；Interceptor + Metrics
+        assertThat(searchTemplate.msearch(Collections.emptyList(), UserDoc.class)).isEmpty();
+
+        SearchQuery overflowQuery = SearchQueryBuilder.create().from(9995).size(10).build();
+        assertThatThrownBy(() -> searchTemplate.msearch(List.of(overflowQuery), UserDoc.class))
+                .isInstanceOf(SearchPaginationExceededException.class);
+
+        TenantContextHolder.setTenantId("tenant_m");
+        io.micrometer.core.instrument.simple.SimpleMeterRegistry meterRegistry =
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        io.github.atengk.boot.search.metrics.SearchMetrics metrics =
+                new io.github.atengk.boot.search.metrics.SearchMetrics(meterRegistry);
+        java.util.List<String> interceptedOps = new java.util.ArrayList<>();
+        io.github.atengk.boot.search.spi.SearchInterceptor recorder = new io.github.atengk.boot.search.spi.SearchInterceptor() {
+            @Override
+            public void beforeExecute(io.github.atengk.boot.search.spi.SearchInvocationContext context) {
+                interceptedOps.add(context.getOperation());
+            }
+        };
+        SearchTemplate msearchTemplate = new SearchTemplate(driver, new AtengSearchProperties(), metrics, List.of(recorder));
+
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 5,
+                  "responses": [
+                    {
+                      "took": 2,
+                      "timed_out": false,
+                      "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                      "hits": {
+                        "total": {"value": 1, "relation": "eq"},
+                        "hits": [{"_index": "user_idx", "_id": "1", "_score": 1.2, "_source": {"id": 1, "username": "alice"}}]
+                      }
+                    },
+                    {
+                      "took": 3,
+                      "timed_out": false,
+                      "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                      "hits": {"total": {"value": 5, "relation": "eq"}, "hits": []},
+                      "aggregations": {"avg#avg_age": {"value": 30.0}}
+                    }
+                  ]
+                }
+                """));
+
+        SearchQuery q1 = SearchQueryBuilder.create().match("username", "alice").includes("id", "username").build();
+        SearchQuery q2 = SearchQueryBuilder.create().matchAll().size(0).avgAggregation("avg_age", "age").build();
+        List<SearchPage<UserDoc>> pages = msearchTemplate.msearch(List.of(q1, q2), UserDoc.class);
+
+        assertThat(pages).hasSize(2);
+        assertThat(pages.get(0).getDataList()).hasSize(1);
+        assertThat(pages.get(0).getDataList().get(0).getUsername()).isEqualTo("alice");
+        assertThat(pages.get(1).getHits()).isEmpty();
+        assertThat(pages.get(1).getAggregations()).containsKey("avg_age");
+
+        RecordedRequest msearchReq = mockWebServer.takeRequest();
+        assertThat(msearchReq.getPath()).contains("/_msearch");
+        String msearchBody = msearchReq.getBody().readUtf8();
+        assertThat(msearchBody).contains("\"tenant_id\":{\"value\":\"tenant_m\"}");
+        assertThat(msearchBody).contains("\"size\":0");
+        assertThat(interceptedOps).containsExactly("msearch");
+        assertThat(meterRegistry.find("ateng.search.operation.time").tag("operation", "msearch").timer()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("测试 HybridSearch 混合检索：CLIENT_RRF 零依赖融合、CLIENT_WEIGHTED 加权与 NATIVE_RRF 方言边界")
+    void testHybridSearchRrfWeightedAndNativeBoundary() throws Exception {
+        TenantContextHolder.setTenantId("tenant_h");
+        SearchQuery textQuery = SearchQueryBuilder.create()
+                .match("username", "alice")
+                .build();
+        List<Float> vec = List.of(0.1f, 0.2f, 0.3f);
+
+        // 1. CLIENT_RRF（默认零许可证模式）：单次 _msearch 召回 BM25=[1,2], kNN=[3,1] -> RRF(k=60) 顺序应为 [1, 3, 2]
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 4,
+                  "responses": [
+                    {
+                      "took": 2,
+                      "timed_out": false,
+                      "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                      "hits": {
+                        "total": {"value": 2, "relation": "eq"},
+                        "hits": [
+                          {"_index": "user_idx", "_id": "1", "_score": 5.0, "_source": {"id": 1, "username": "doc1"}, "highlight": {"username": ["<em>doc1</em>"]}},
+                          {"_index": "user_idx", "_id": "2", "_score": 3.0, "_source": {"id": 2, "username": "doc2"}}
+                        ]
+                      }
+                    },
+                    {
+                      "took": 2,
+                      "timed_out": false,
+                      "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                      "hits": {
+                        "total": {"value": 2, "relation": "eq"},
+                        "hits": [
+                          {"_index": "user_idx", "_id": "3", "_score": 0.9, "_source": {"id": 3, "username": "doc3"}},
+                          {"_index": "user_idx", "_id": "1", "_score": 0.8, "_source": {"id": 1, "username": "doc1"}}
+                        ]
+                      }
+                    }
+                  ]
+                }
+                """));
+
+        io.github.atengk.boot.search.model.HybridSearchOptions rrfOptions =
+                io.github.atengk.boot.search.model.HybridSearchOptions.builder()
+                        .mode(io.github.atengk.boot.search.enums.SearchHybridMode.CLIENT_RRF)
+                        .rrfRankConstant(60)
+                        .topK(5)
+                        .build();
+        SearchPage<UserDoc> rrfPage = searchTemplate.hybridSearch(textQuery, "embedding", vec, 5, 20, rrfOptions, UserDoc.class);
+        assertThat(rrfPage.getHits()).extracting(SearchHit::getId).containsExactly("1", "3", "2");
+        assertThat(rrfPage.getTotal()).isEqualTo(3L);
+        assertThat(rrfPage.getHits().get(0).getScore()).isCloseTo(1.0 / 61.0 + 1.0 / 62.0, org.assertj.core.data.Offset.offset(1e-9));
+        assertThat(rrfPage.getHits().get(0).getHighlightFields()).containsKey("username");
+
+        // topK / windowSize 超出 maxResultWindow 触发熔断
+        io.github.atengk.boot.search.model.HybridSearchOptions overflowHybrid =
+                io.github.atengk.boot.search.model.HybridSearchOptions.builder().topK(10001).build();
+        assertThatThrownBy(() -> searchTemplate.hybridSearch(textQuery, "embedding", vec, 5, 20, overflowHybrid, UserDoc.class))
+                .isInstanceOf(SearchPaginationExceededException.class);
+
+        RecordedRequest rrfReq = mockWebServer.takeRequest();
+        assertThat(rrfReq.getPath()).contains("/_msearch");
+        String rrfBody = rrfReq.getBody().readUtf8();
+        assertThat(rrfBody).contains("\"tenant_id\":{\"value\":\"tenant_h\"}");
+        assertThat(rrfBody).contains("\"knn\":").contains("\"filter\"");
+
+        // 2. CLIENT_WEIGHTED：BM25=[1(10.0), 2(5.0)], kNN=[2(0.8), 3(0.4)], textWeight=0.3, vectorWeight=0.7 -> [2(0.85), 3(0.35), 1(0.30)]
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 4,
+                  "responses": [
+                    {
+                      "took": 2,
+                      "timed_out": false,
+                      "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                      "hits": {
+                        "total": {"value": 2, "relation": "eq"},
+                        "hits": [
+                          {"_index": "user_idx", "_id": "1", "_score": 10.0, "_source": {"id": 1, "username": "doc1"}},
+                          {"_index": "user_idx", "_id": "2", "_score": 5.0, "_source": {"id": 2, "username": "doc2"}}
+                        ]
+                      }
+                    },
+                    {
+                      "took": 2,
+                      "timed_out": false,
+                      "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                      "hits": {
+                        "total": {"value": 2, "relation": "eq"},
+                        "hits": [
+                          {"_index": "user_idx", "_id": "2", "_score": 0.8, "_source": {"id": 2, "username": "doc2"}},
+                          {"_index": "user_idx", "_id": "3", "_score": 0.4, "_source": {"id": 3, "username": "doc3"}}
+                        ]
+                      }
+                    }
+                  ]
+                }
+                """));
+        io.github.atengk.boot.search.model.HybridSearchOptions weightedOptions =
+                io.github.atengk.boot.search.model.HybridSearchOptions.builder()
+                        .mode(io.github.atengk.boot.search.enums.SearchHybridMode.CLIENT_WEIGHTED)
+                        .textWeight(0.3)
+                        .vectorWeight(0.7)
+                        .topK(3)
+                        .build();
+        SearchPage<UserDoc> weightedPage = searchTemplate.hybridSearch(textQuery, "embedding", vec, 5, 20, weightedOptions, UserDoc.class);
+        assertThat(weightedPage.getHits()).extracting(SearchHit::getId).containsExactly("2", "3", "1");
+        assertThat(weightedPage.getHits().get(0).getScore()).isCloseTo(0.85, org.assertj.core.data.Offset.offset(1e-9));
+        mockWebServer.takeRequest();
+
+        // 3. NATIVE_RRF：Elasticsearch 发送 rank.rrf；OpenSearch 明确拒绝并快速失败
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                  "hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}
+                }
+                """));
+        io.github.atengk.boot.search.model.HybridSearchOptions nativeOptions =
+                io.github.atengk.boot.search.model.HybridSearchOptions.builder()
+                        .mode(io.github.atengk.boot.search.enums.SearchHybridMode.NATIVE_RRF)
+                        .rrfRankConstant(60)
+                        .windowSize(50)
+                        .topK(10)
+                        .build();
+        searchTemplate.hybridSearch(textQuery, "embedding", vec, 5, 20, nativeOptions, UserDoc.class);
+        String nativeBody = mockWebServer.takeRequest().getBody().readUtf8();
+        assertThat(nativeBody).contains("\"rank\":{\"rrf\":{\"rank_constant\":60,\"window_size\":50}}");
+
+        AtengSearchProperties osProps = new AtengSearchProperties();
+        osProps.setEngine(SearchEngineType.OPENSEARCH);
+        osProps.setUris(Collections.singletonList("http://" + mockWebServer.getHostName() + ":" + mockWebServer.getPort()));
+        try (ElasticsearchClientDriver osDriver = new ElasticsearchClientDriver(osProps)) {
+            SearchTemplate osTemplate = new SearchTemplate(osDriver, osProps);
+            assertThatThrownBy(() -> osTemplate.hybridSearch(textQuery, "embedding", vec, 5, 20, nativeOptions, UserDoc.class))
+                    .isInstanceOf(SearchException.class)
+                    .extracting(ex -> ((SearchException) ex).getResultCode())
+                    .isEqualTo(SearchResultCode.SEARCH_BAD_REQUEST);
+        }
+    }
+
+    @io.github.atengk.boot.search.annotation.SearchIndex("article_idx")
+    @lombok.Data
+    @lombok.NoArgsConstructor
+    @lombok.AllArgsConstructor
+    static class PlainArticleDoc {
+        @io.github.atengk.boot.search.annotation.SearchId
+        private String id;
+        private String title;
+        private String summary;
+        private String tenant_id;
+    }
+
+    @lombok.Data
+    @lombok.NoArgsConstructor
+    @lombok.AllArgsConstructor
+    static class ArticleHighlightVo {
+        private String id;
+        private String title;
+        private String summary;
+        @io.github.atengk.boot.search.annotation.HighlightField(target = "title")
+        private String highlightedTitle;
+        @io.github.atengk.boot.search.annotation.HighlightField(target = "summary")
+        private String highlightedSummary;
+    }
+
+    @Test
+    @DisplayName("测试 VO 视图级 @HighlightField 无污染投影与 SearchHit/SearchPage.map 转换")
+    void testVoHighlightProjectionWithoutEntityPollution() throws Exception {
+        TenantContextHolder.setTenantId("tenant_v");
+        String searchRespJson = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                  "hits": {
+                    "total": {"value": 1, "relation": "eq"},
+                    "hits": [
+                      {
+                        "_index": "article_idx",
+                        "_id": "A-1",
+                        "_score": 2.5,
+                        "_source": {
+                          "id": "A-1",
+                          "title": "Spring Boot Search",
+                          "summary": "Industrial search starter",
+                          "tenant_id": "tenant_v"
+                        },
+                        "highlight": {
+                          "title": ["<em>Spring</em> Boot Search"],
+                          "summary": ["Industrial <em>search</em> starter"]
+                        },
+                        "sort": ["A-1"]
+                      }
+                    ]
+                  }
+                }
+                """;
+
+        // 1. SearchTemplate.search(query, Entity.class, Vo.class) 自动解析索引与租户过滤并安全投影 VO 高亮
+        mockWebServer.enqueue(esResponse(200, searchRespJson));
+        SearchQuery query = SearchQueryBuilder.create()
+                .match("title", "Spring")
+                .highlight("title", "summary")
+                .build();
+        SearchPage<ArticleHighlightVo> voPage = searchTemplate.search(query, PlainArticleDoc.class, ArticleHighlightVo.class);
+        assertThat(voPage.getHits()).hasSize(1);
+        ArticleHighlightVo vo = voPage.getHits().get(0).getContent();
+        assertThat(vo.getTitle()).isEqualTo("Spring Boot Search");
+        assertThat(vo.getHighlightedTitle()).isEqualTo("<em>Spring</em> Boot Search");
+        assertThat(vo.getHighlightedSummary()).isEqualTo("Industrial <em>search</em> starter");
+        assertThat(voPage.getHits().get(0).getScore()).isEqualTo(2.5);
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        assertThat(req.getPath()).contains("/article_idx/_search");
+        assertThat(req.getBody().readUtf8()).contains("\"tenant_id\":{\"value\":\"tenant_v\"}");
+
+        // 2. SearchItemDoc (即使实体本身带有 @HighlightField) 在投影模式下也不被原地篡改
+        mockWebServer.enqueue(esResponse(200, searchRespJson));
+        SearchPage<ArticleHighlightVo> itemVoPage = searchTemplate.search(query, SearchItemDoc.class, ArticleHighlightVo.class);
+        assertThat(itemVoPage.getDataList()).hasSize(1);
+        assertThat(itemVoPage.getDataList().get(0).getHighlightedTitle()).isEqualTo("<em>Spring</em> Boot Search");
+        mockWebServer.takeRequest();
+
+        // 3. SearchPage.map / SearchHit.map 转换同时回填 VO @HighlightField 且不污染原实体
+        PlainArticleDoc origin = new PlainArticleDoc("A-1", "Spring Boot Search", "Industrial search starter", "tenant_v");
+        SearchHit<PlainArticleDoc> rawHit = SearchHit.<PlainArticleDoc>builder()
+                .id("A-1")
+                .index("article_idx")
+                .content(origin)
+                .score(3.0)
+                .highlightFields(Map.of("title", List.of("<em>Spring</em> Boot Search")))
+                .build();
+        SearchPage<PlainArticleDoc> rawPage = SearchPage.<PlainArticleDoc>builder()
+                .hits(List.of(rawHit))
+                .total(1L)
+                .pageNum(1)
+                .pageSize(10)
+                .build();
+
+        SearchPage<ArticleHighlightVo> mappedPage = rawPage.map(doc -> {
+            ArticleHighlightVo target = new ArticleHighlightVo();
+            target.setId(doc.getId());
+            target.setTitle(doc.getTitle());
+            target.setSummary(doc.getSummary());
+            return target;
+        });
+        assertThat(origin.getTitle()).isEqualTo("Spring Boot Search");
+        assertThat(mappedPage.getHits()).hasSize(1);
+        assertThat(mappedPage.getHits().get(0).getContent().getTitle()).isEqualTo("Spring Boot Search");
+        assertThat(mappedPage.getHits().get(0).getContent().getHighlightedTitle()).isEqualTo("<em>Spring</em> Boot Search");
+        assertThat(mappedPage.getHits().get(0).getScore()).isEqualTo(3.0);
+    }
 }

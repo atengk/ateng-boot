@@ -2,7 +2,10 @@ package io.github.atengk.boot.sample.search.scenario;
 
 import co.elastic.clients.elasticsearch._types.query_dsl.ChildScoreMode;
 import io.github.atengk.boot.core.model.PageResult;
+import io.github.atengk.boot.sample.search.dto.ProductResponse;
 import io.github.atengk.boot.sample.search.model.ProductDoc;
+import io.github.atengk.boot.search.enums.SearchHybridMode;
+import io.github.atengk.boot.search.model.HybridSearchOptions;
 import io.github.atengk.boot.search.model.OccVersion;
 import io.github.atengk.boot.search.model.SearchHit;
 import io.github.atengk.boot.search.model.SearchPage;
@@ -15,9 +18,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * 电商商品多维检索与高阶搜索业务场景组件
@@ -31,6 +37,8 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 public class ProductCatalogSearchScenario {
+
+    private static final int MAX_PIT_TRAVERSAL_PAGES = 20;
 
     private final SearchTemplate searchTemplate;
 
@@ -273,5 +281,123 @@ public class ProductCatalogSearchScenario {
                 .orderByAsc("id")
                 .build();
         return searchTemplate.searchAfter(query, sortValues, size, ProductDoc.class);
+    }
+
+    /**
+     * 视图级 @HighlightField 安全投影检索（严守 ProductDoc 内存真明文不被污染）
+     *
+     * @param keyword 搜索关键字
+     * @return 填充了高亮字段的 ProductResponse VO 列表
+     */
+    public List<ProductResponse> searchMultiMatchVoWithHighlight(String keyword) {
+        SearchQuery query = SearchQueryBuilder.create()
+                .multiMatch(keyword, "title", "description")
+                .highlight("title", "description")
+                .build();
+        SearchPage<ProductResponse> page = searchTemplate.search(query, ProductDoc.class, ProductResponse.class);
+        return page.getHits().stream().map(hit -> {
+            ProductResponse vo = hit.getContent();
+            if (vo != null) {
+                vo.setScore(hit.getScore());
+                if (hit.getSortValues() != null) {
+                    vo.setSortValues(new ArrayList<>(hit.getSortValues()));
+                }
+            }
+            return vo;
+        }).filter(Objects::nonNull).toList();
+    }
+
+    /**
+     * _source 裁剪检索（仅返回展示所需标量字段并剔除高维 embedding 向量数组）
+     *
+     * @param keyword 可选搜索关键字
+     * @return 裁剪后的商品命中列表
+     */
+    public List<SearchHit<ProductDoc>> searchWithSourceTrimming(String keyword) {
+        SearchQuery query = SearchQueryBuilder.create()
+                .when(keyword != null && !keyword.isBlank(), q -> q.multiMatch(keyword, "title", "description"))
+                .when(keyword == null || keyword.isBlank(), SearchQueryBuilder::matchAll)
+                .includes("id", "title", "description", "category", "brand", "price", "stock", "status")
+                .excludes("embedding")
+                .build();
+        return searchTemplate.search(query, ProductDoc.class).getHits();
+    }
+
+    /**
+     * 基于 Point-In-Time (PIT) 一致性快照执行全量深翻页遍历并在 finally 确定性释放快照
+     *
+     * @param pageSize 单页大小
+     * @return 遍历收集到的全量商品命中列表
+     */
+    public List<SearchHit<ProductDoc>> searchWithPitTraversal(int pageSize) {
+        int safeSize = Math.max(1, pageSize);
+        SearchQuery query = SearchQueryBuilder.create()
+                .matchAll()
+                .orderByAsc("id")
+                .build();
+        return searchTemplate.executeWithPointInTime(ProductDoc.class, Duration.ofMinutes(1), pit -> {
+            List<SearchHit<ProductDoc>> collected = new ArrayList<>();
+            List<String> cursor = null;
+            int guardLoops = 0;
+            while (guardLoops < MAX_PIT_TRAVERSAL_PAGES) {
+                guardLoops++;
+                SearchScrollResult<ProductDoc> batch = searchTemplate.searchAfterWithPit(pit, query, cursor, safeSize, ProductDoc.class);
+                if (batch.getHits() != null) {
+                    collected.addAll(batch.getHits());
+                }
+                List<String> nextCursor = batch.getNextSortValues();
+                if (!batch.hasNext() || nextCursor == null || nextCursor.isEmpty() || nextCursor.equals(cursor)) {
+                    break;
+                }
+                cursor = nextCursor;
+            }
+            return collected;
+        });
+    }
+
+    /**
+     * _msearch 单次 HTTP 往返批量异构检索（第一路关键词搜索 + 第二路分类计数）
+     *
+     * @param keyword  全文关键字
+     * @param category 指定分类
+     * @return 多路分页结果列表
+     */
+    public List<SearchPage<ProductDoc>> batchMultiSearch(String keyword, String category) {
+        SearchQuery keywordQuery = SearchQueryBuilder.create()
+                .when(keyword != null && !keyword.isBlank(), q -> q.multiMatch(keyword, "title", "description"))
+                .when(keyword == null || keyword.isBlank(), SearchQueryBuilder::matchAll)
+                .highlight("title", "description")
+                .size(5)
+                .build();
+        SearchQuery categoryStatQuery = SearchQueryBuilder.create()
+                .when(category != null && !category.isBlank(), q -> q.term("category", category))
+                .when(category == null || category.isBlank(), SearchQueryBuilder::matchAll)
+                .size(0)
+                .avgAggregation("avg_price", "price")
+                .build();
+        return searchTemplate.msearch(List.of(keywordQuery, categoryStatQuery), ProductDoc.class);
+    }
+
+    /**
+     * AI 混合检索融合 (BM25 词法召回 + kNN 向量召回，默认零许可证 CLIENT_RRF 模式)
+     *
+     * @param keyword 全文关键字
+     * @param vector  特征向量
+     * @param k       返回 TopK
+     * @param mode    融合模式（可为 null，默认 CLIENT_RRF）
+     * @return 融合重排后的分页结果
+     */
+    public SearchPage<ProductDoc> hybridSearch(String keyword, List<Float> vector, int k, SearchHybridMode mode) {
+        int safeK = Math.max(1, k);
+        SearchQuery textQuery = SearchQueryBuilder.create()
+                .multiMatch(keyword, "title", "description")
+                .highlight("title", "description")
+                .excludes("embedding")
+                .build();
+        HybridSearchOptions options = HybridSearchOptions.builder()
+                .mode(mode != null ? mode : SearchHybridMode.CLIENT_RRF)
+                .topK(safeK)
+                .build();
+        return searchTemplate.hybridSearch(textQuery, "embedding", vector, safeK, Math.max(20, safeK * 4), options, ProductDoc.class);
     }
 }

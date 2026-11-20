@@ -19,10 +19,27 @@ public class SearchPaginationExceededException extends SearchException {
     private final int maxResultWindow;
 
     public SearchPaginationExceededException(int requestedWindow, int maxResultWindow) {
-        super(SearchResultCode.SEARCH_PAGINATION_EXCEEDED,
+        this(requestedWindow, maxResultWindow,
                 String.format("Requested pagination window [from + size = %d] exceeds the safety limit [%d]. Consider using searchAfter for deep scroll pagination.",
                         requestedWindow, maxResultWindow));
+    }
+
+    public SearchPaginationExceededException(int requestedWindow, int maxResultWindow, String message) {
+        super(SearchResultCode.SEARCH_PAGINATION_EXCEEDED, message);
         this.requestedWindow = requestedWindow;
         this.maxResultWindow = maxResultWindow;
+    }
+
+    /**
+     * 构造深度游标分页单页条数超限异常
+     *
+     * @param requestedSize      请求的每页大小
+     * @param maxSearchAfterSize 允许的单页上限
+     * @return SearchPaginationExceededException
+     */
+    public static SearchPaginationExceededException forSearchAfter(int requestedSize, int maxSearchAfterSize) {
+        return new SearchPaginationExceededException(requestedSize, maxSearchAfterSize,
+                String.format("Requested searchAfter page size [%d] exceeds the safety limit [%d].",
+                        requestedSize, maxSearchAfterSize));
     }
 }

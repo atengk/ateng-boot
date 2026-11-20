@@ -17,12 +17,18 @@ import co.elastic.clients.elasticsearch.core.DeleteResponse;
 import co.elastic.clients.elasticsearch.core.GetResponse;
 import co.elastic.clients.elasticsearch.core.IndexResponse;
 import co.elastic.clients.elasticsearch.core.MgetResponse;
+import co.elastic.clients.elasticsearch.core.MsearchResponse;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.UpdateResponse;
 import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
 import co.elastic.clients.elasticsearch.core.get.GetResult;
 import co.elastic.clients.elasticsearch.core.mget.MultiGetResponseItem;
+import co.elastic.clients.elasticsearch.core.msearch.MultiSearchItem;
+import co.elastic.clients.elasticsearch.core.msearch.MultiSearchResponseItem;
+import co.elastic.clients.elasticsearch.core.msearch.RequestItem;
 import co.elastic.clients.elasticsearch.core.search.Hit;
+import co.elastic.clients.elasticsearch.core.search.ResponseBody;
+import co.elastic.clients.elasticsearch.core.search.SourceConfig;
 import co.elastic.clients.json.JsonpUtils;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
 import co.elastic.clients.transport.endpoints.BooleanResponse;
@@ -33,20 +39,24 @@ import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.search.bulk.SearchBulkProcessor;
 import io.github.atengk.boot.search.driver.SearchEngineDialect;
 import io.github.atengk.boot.search.enums.SearchEngineType;
+import io.github.atengk.boot.search.enums.SearchHybridMode;
 import io.github.atengk.boot.search.enums.SearchResultCode;
 import io.github.atengk.boot.search.exception.SearchBulkException;
 import io.github.atengk.boot.search.exception.SearchException;
 import io.github.atengk.boot.search.exception.SearchPaginationExceededException;
 import io.github.atengk.boot.search.exception.SearchVersionConflictException;
 import io.github.atengk.boot.search.metrics.SearchMetrics;
+import io.github.atengk.boot.search.model.HybridSearchOptions;
 import io.github.atengk.boot.search.model.OccVersion;
 import io.github.atengk.boot.search.model.SearchBulkFailure;
 import io.github.atengk.boot.search.model.SearchBulkResult;
 import io.github.atengk.boot.search.model.SearchHit;
 import io.github.atengk.boot.search.model.SearchPage;
+import io.github.atengk.boot.search.model.SearchPointInTime;
 import io.github.atengk.boot.search.model.SearchScrollResult;
 import io.github.atengk.boot.search.properties.AtengSearchProperties;
 import io.github.atengk.boot.search.query.SearchQuery;
+import io.github.atengk.boot.search.query.SearchQueryBuilder;
 import io.github.atengk.boot.search.spi.SearchEngineClient;
 import io.github.atengk.boot.search.spi.SearchInterceptor;
 import io.github.atengk.boot.search.spi.SearchInvocationContext;
@@ -68,6 +78,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -2063,7 +2074,562 @@ public class SearchTemplate {
         }
 
         SearchResponse<T> response = doSearch(index, query, clazz, false, null, null);
-        return buildSearchPage(response, query, clazz);
+        return buildSearchPage(response, query, clazz, true);
+    }
+
+    /**
+     * 执行标准浅分页检索并安全投影至指定视图对象 (VO)，严守持久实体内存真明文不被高亮标签污染
+     *
+     * @param query            查询规格对象
+     * @param indexEntityClass 索引映射实体类（用于解析 @SearchIndex、多租户隔离与反序列化）
+     * @param resultVoClass    目标视图投影类（支持标注 @HighlightField 回填高亮片段）
+     * @param <T>              索引实体类型
+     * @param <V>              视图投影类型
+     * @return 投影后的分页结果模型 SearchPage
+     */
+    public <T, V> SearchPage<V> search(SearchQuery query, Class<T> indexEntityClass, Class<V> resultVoClass) {
+        Objects.requireNonNull(query, "query must not be null");
+        Objects.requireNonNull(indexEntityClass, "indexEntityClass must not be null");
+        Objects.requireNonNull(resultVoClass, "resultVoClass must not be null");
+        String index = CollectionUtil.isNotEmpty(query.getIndices())
+                ? String.join(",", query.getIndices())
+                : SearchMetadataHelper.resolveIndexName(indexEntityClass);
+        return search(index, query, indexEntityClass, resultVoClass);
+    }
+
+    /**
+     * 在指定索引上执行标准浅分页检索并安全投影至指定视图对象 (VO)
+     *
+     * @param index            目标索引名
+     * @param query            查询规格对象
+     * @param indexEntityClass 索引映射实体类
+     * @param resultVoClass    目标视图投影类
+     * @param <T>              索引实体类型
+     * @param <V>              视图投影类型
+     * @return 投影后的分页结果模型 SearchPage
+     */
+    public <T, V> SearchPage<V> search(String index, SearchQuery query, Class<T> indexEntityClass, Class<V> resultVoClass) {
+        if (!StringUtils.hasText(index)) {
+            throw new IllegalArgumentException("Index must not be blank");
+        }
+        Objects.requireNonNull(query, "query must not be null");
+        Objects.requireNonNull(indexEntityClass, "indexEntityClass must not be null");
+        Objects.requireNonNull(resultVoClass, "resultVoClass must not be null");
+
+        int requestedWindow = query.getFrom() + query.getSize();
+        int maxWindow = properties.getPagination().getMaxResultWindow();
+        if (requestedWindow > maxWindow) {
+            throw new SearchPaginationExceededException(requestedWindow, maxWindow);
+        }
+
+        SearchResponse<T> response = doSearch(index, query, indexEntityClass, false, null, null);
+        SearchPage<T> entityPage = buildSearchPage(response, query, indexEntityClass, false);
+        ObjectMapper clientMapper = SearchTenantHelper.resolveObjectMapper(searchEngineClient);
+        return entityPage.map(entity -> clientMapper.convertValue(entity, resultVoClass));
+    }
+
+    // ==================== 6.2 批量异构检索 (_msearch) ====================
+
+    /**
+     * 单次 HTTP 往返批量执行多条异构检索查询
+     * <p>
+     * 自动从实体类解析默认索引并注入多租户隔离过滤条件，挂载 {@link SearchInterceptor} 与 {@link SearchMetrics}；
+     * 若入参为空集合直接返回空列表（严禁返回 null）。
+     *
+     * @param queries 查询规格列表
+     * @param clazz   实体类类型
+     * @param <T>     实体类型
+     * @return 与入参顺序一一对应的 {@link SearchPage} 结果列表
+     */
+    public <T> List<SearchPage<T>> msearch(List<SearchQuery> queries, Class<T> clazz) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        if (CollectionUtil.isEmpty(queries)) {
+            return Collections.emptyList();
+        }
+        String defaultIndex = SearchMetadataHelper.resolveIndexName(clazz);
+        return msearch(defaultIndex, queries, clazz);
+    }
+
+    /**
+     * 在指定默认索引上单次 HTTP 往返批量执行多条异构检索查询
+     *
+     * @param index   默认目标索引名（单个子查询若通过 {@code indices()} 指定索引则优先使用子查询索引）
+     * @param queries 查询规格列表
+     * @param clazz   实体类类型
+     * @param <T>     实体类型
+     * @return 与入参顺序一一对应的 {@link SearchPage} 结果列表
+     */
+    public <T> List<SearchPage<T>> msearch(String index, List<SearchQuery> queries, Class<T> clazz) {
+        if (!StringUtils.hasText(index)) {
+            throw new IllegalArgumentException("Index must not be blank");
+        }
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        if (CollectionUtil.isEmpty(queries)) {
+            return Collections.emptyList();
+        }
+        validateMsearchPaginationWindows(queries);
+        return executeObserved("msearch", index, clazz, null, null, false,
+                () -> doMsearch(index, queries, clazz, true));
+    }
+
+    private void validateMsearchPaginationWindows(List<SearchQuery> queries) {
+        int maxWindow = properties.getPagination().getMaxResultWindow();
+        for (SearchQuery query : queries) {
+            Objects.requireNonNull(query, "query item in msearch must not be null");
+            int requestedWindow = query.getFrom() + query.getSize();
+            if (requestedWindow > maxWindow) {
+                throw new SearchPaginationExceededException(requestedWindow, maxWindow);
+            }
+        }
+    }
+
+    private <T> List<SearchPage<T>> doMsearch(String defaultIndex, List<SearchQuery> queries, Class<T> clazz, boolean populateHighlights) {
+        try {
+            boolean isOpenSearch = SearchEngineDialect.isOpenSearch(searchEngineClient.getEngineType());
+            List<RequestItem> requestItems = new ArrayList<>(queries.size());
+            for (SearchQuery query : queries) {
+                String targetIndex = CollectionUtil.isNotEmpty(query.getIndices())
+                        ? String.join(",", query.getIndices())
+                        : defaultIndex;
+                Query baseQuery = wrapTenantFilterIfNecessary(query.getQuery(), clazz);
+                List<KnnSearch> effectiveKnn = enrichKnnWithTenantFilter(query.getKnnSearches(), clazz);
+                Query finalQuery = SearchEngineDialect.adaptKnnQuery(
+                        searchEngineClient.getEngineType(), baseQuery, effectiveKnn);
+                SourceConfig sourceConfig = query.toSourceConfig();
+
+                RequestItem item = RequestItem.of(ri -> ri
+                        .header(h -> {
+                            h.index(targetIndex);
+                            if (StringUtils.hasText(query.getRouting())) {
+                                h.routing(query.getRouting());
+                            }
+                            return h;
+                        })
+                        .body(b -> {
+                            if (finalQuery != null) {
+                                b.query(finalQuery);
+                            }
+                            if (query.isTrackTotalHits()) {
+                                b.trackTotalHits(tth -> tth.enabled(true));
+                            }
+                            b.from(query.getFrom());
+                            b.size(query.getSize());
+                            if (CollectionUtil.isNotEmpty(query.getSearchAfter())) {
+                                b.searchAfter(query.getSearchAfter().stream().map(FieldValue::of).toList());
+                            }
+                            if (CollectionUtil.isNotEmpty(query.getSorts())) {
+                                b.sort(query.getSorts());
+                            }
+                            if (query.getHighlight() != null) {
+                                b.highlight(query.getHighlight());
+                            }
+                            if (query.getCollapse() != null) {
+                                b.collapse(query.getCollapse());
+                            }
+                            if (query.getAggregations() != null && !query.getAggregations().isEmpty()) {
+                                b.aggregations(query.getAggregations());
+                            }
+                            if (sourceConfig != null) {
+                                b.source(sourceConfig);
+                            }
+                            if (!isOpenSearch && CollectionUtil.isNotEmpty(effectiveKnn)) {
+                                b.knn(effectiveKnn);
+                            }
+                            return b;
+                        })
+                );
+                requestItems.add(item);
+            }
+
+            MsearchResponse<T> response = getClient().msearch(b -> b.searches(requestItems), clazz);
+            if (response == null || CollectionUtil.isEmpty(response.responses())) {
+                return Collections.emptyList();
+            }
+            List<MultiSearchResponseItem<T>> items = response.responses();
+            List<SearchPage<T>> pages = new ArrayList<>(items.size());
+            for (int i = 0; i < items.size(); i++) {
+                MultiSearchResponseItem<T> item = items.get(i);
+                if (item.isFailure()) {
+                    String reason = item.failure() != null && item.failure().error() != null
+                            ? item.failure().error().reason()
+                            : "unknown msearch item error";
+                    throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_GET_ERROR,
+                            "msearch item [" + i + "] failed on index [" + defaultIndex + "]: " + reason);
+                }
+                if (item.isResult()) {
+                    MultiSearchItem<T> resultItem = item.result();
+                    SearchQuery sourceQuery = i < queries.size() ? queries.get(i) : queries.get(queries.size() - 1);
+                    pages.add(buildSearchPage(resultItem, sourceQuery, clazz, populateHighlights));
+                }
+            }
+            return pages;
+        } catch (Exception e) {
+            if (e instanceof SearchException se) {
+                throw se;
+            }
+            throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_DOCUMENT_GET_ERROR),
+                    "Failed to execute msearch on index [" + defaultIndex + "]: " + e.getMessage(), e);
+        }
+    }
+
+    // ==================== 6.3 混合检索融合 (Hybrid Search: BM25 + kNN) ====================
+
+    /**
+     * 执行默认 {@link SearchHybridMode#CLIENT_RRF} 模式的混合检索（BM25 全文词法 + kNN 稠密向量）
+     *
+     * @param textQuery     全文词法查询（可为 null，退化为 match_all）
+     * @param vectorField   稠密向量字段名
+     * @param vector        查询向量
+     * @param k             向量召回 TopK
+     * @param numCandidates 向量分片候选数
+     * @param clazz         实体类类型
+     * @param <T>           实体类型
+     * @return 融合重排后的分页结果模型
+     */
+    public <T> SearchPage<T> hybridSearch(SearchQuery textQuery,
+                                          String vectorField,
+                                          List<Float> vector,
+                                          int k,
+                                          int numCandidates,
+                                          Class<T> clazz) {
+        return hybridSearch(textQuery, vectorField, vector, k, numCandidates, HybridSearchOptions.defaults(), clazz);
+    }
+
+    /**
+     * 执行可配置融合策略的混合检索（自动从实体类解析索引名）
+     *
+     * @param textQuery     全文词法查询（可为 null，退化为 match_all）
+     * @param vectorField   稠密向量字段名
+     * @param vector        查询向量
+     * @param k             向量召回 TopK
+     * @param numCandidates 向量分片候选数
+     * @param options       混合融合配置（为 null 时使用默认 {@code CLIENT_RRF}）
+     * @param clazz         实体类类型
+     * @param <T>           实体类型
+     * @return 融合重排后的分页结果模型
+     */
+    public <T> SearchPage<T> hybridSearch(SearchQuery textQuery,
+                                          String vectorField,
+                                          List<Float> vector,
+                                          int k,
+                                          int numCandidates,
+                                          HybridSearchOptions options,
+                                          Class<T> clazz) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        String index = textQuery != null && CollectionUtil.isNotEmpty(textQuery.getIndices())
+                ? String.join(",", textQuery.getIndices())
+                : SearchMetadataHelper.resolveIndexName(clazz);
+        return hybridSearch(index, textQuery, vectorField, vector, k, numCandidates, options, clazz);
+    }
+
+    /**
+     * 在指定索引上执行默认 {@link SearchHybridMode#CLIENT_RRF} 模式的混合检索
+     *
+     * @param index         目标索引名
+     * @param textQuery     全文词法查询（可为 null，退化为 match_all）
+     * @param vectorField   稠密向量字段名
+     * @param vector        查询向量
+     * @param k             向量召回 TopK
+     * @param numCandidates 向量分片候选数
+     * @param clazz         实体类类型
+     * @param <T>           实体类型
+     * @return 融合重排后的分页结果模型
+     */
+    public <T> SearchPage<T> hybridSearch(String index,
+                                          SearchQuery textQuery,
+                                          String vectorField,
+                                          List<Float> vector,
+                                          int k,
+                                          int numCandidates,
+                                          Class<T> clazz) {
+        return hybridSearch(index, textQuery, vectorField, vector, k, numCandidates, HybridSearchOptions.defaults(), clazz);
+    }
+
+    /**
+     * 在指定索引上执行混合检索（支持 {@code CLIENT_RRF} / {@code CLIENT_WEIGHTED} / {@code NATIVE_RRF}）
+     *
+     * @param index         目标索引名
+     * @param textQuery     全文词法查询（可为 null，退化为 match_all）
+     * @param vectorField   稠密向量字段名
+     * @param vector        查询向量
+     * @param k             向量召回 TopK
+     * @param numCandidates 向量分片候选数
+     * @param options       混合融合配置（为 null 时使用默认 {@code CLIENT_RRF}）
+     * @param clazz         实体类类型
+     * @param <T>           实体类型
+     * @return 融合重排后的分页结果模型
+     */
+    public <T> SearchPage<T> hybridSearch(String index,
+                                          SearchQuery textQuery,
+                                          String vectorField,
+                                          List<Float> vector,
+                                          int k,
+                                          int numCandidates,
+                                          HybridSearchOptions options,
+                                          Class<T> clazz) {
+        if (!StringUtils.hasText(index)) {
+            throw new IllegalArgumentException("Index must not be blank");
+        }
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        if (!StringUtils.hasText(vectorField)) {
+            throw new IllegalArgumentException("vectorField must not be blank");
+        }
+        if (CollectionUtil.isEmpty(vector)) {
+            throw new IllegalArgumentException("vector must not be empty");
+        }
+        if (k <= 0) {
+            throw new IllegalArgumentException("k must be positive: " + k);
+        }
+        if (numCandidates <= 0) {
+            throw new IllegalArgumentException("numCandidates must be positive: " + numCandidates);
+        }
+
+        HybridSearchOptions resolvedOptions = options != null ? options : HybridSearchOptions.defaults();
+        SearchHybridMode mode = resolvedOptions.getMode() != null ? resolvedOptions.getMode() : SearchHybridMode.CLIENT_RRF;
+        SearchQuery baseTextQuery = textQuery != null ? textQuery : SearchQueryBuilder.create().matchAll().build();
+        int topK = resolvedOptions.getTopK() > 0
+                ? resolvedOptions.getTopK()
+                : (baseTextQuery.getSize() > 0 ? baseTextQuery.getSize() : 10);
+        int windowSize = resolvedOptions.getWindowSize() != null && resolvedOptions.getWindowSize() > 0
+                ? resolvedOptions.getWindowSize()
+                : Math.max(topK, k);
+        int maxWindow = properties.getPagination().getMaxResultWindow();
+        if (topK > maxWindow) {
+            throw new SearchPaginationExceededException(topK, maxWindow);
+        }
+        if (windowSize > maxWindow) {
+            throw new SearchPaginationExceededException(windowSize, maxWindow);
+        }
+
+        return executeObserved("hybridSearch", index, clazz, baseTextQuery.getRouting(), baseTextQuery, false, () -> {
+            if (mode == SearchHybridMode.NATIVE_RRF) {
+                return executeNativeRrfHybridSearch(index, baseTextQuery, vectorField, vector, k, numCandidates,
+                        resolvedOptions, topK, windowSize, clazz);
+            }
+            return executeClientHybridSearch(index, baseTextQuery, vectorField, vector, k, numCandidates,
+                    resolvedOptions, mode, topK, windowSize, clazz);
+        });
+    }
+
+    private <T> SearchPage<T> executeNativeRrfHybridSearch(String index,
+                                                           SearchQuery baseTextQuery,
+                                                           String vectorField,
+                                                           List<Float> vector,
+                                                           int k,
+                                                           int numCandidates,
+                                                           HybridSearchOptions options,
+                                                           int topK,
+                                                           int windowSize,
+                                                           Class<T> clazz) {
+        if (SearchEngineDialect.isOpenSearch(searchEngineClient.getEngineType())) {
+            throw new SearchException(SearchResultCode.SEARCH_BAD_REQUEST,
+                    "SearchHybridMode.NATIVE_RRF requires Elasticsearch 8.8+ rank.rrf and is unsupported on OpenSearch; use CLIENT_RRF instead.");
+        }
+        if (options.getRrfRankConstant() <= 0) {
+            throw new IllegalArgumentException("rrfRankConstant must be positive: " + options.getRrfRankConstant());
+        }
+        try {
+            Query scopedQuery = wrapTenantFilterIfNecessary(baseTextQuery.getQuery(), clazz);
+            SearchQuery knnBranch = SearchQueryBuilder.create()
+                    .knn(vectorField, vector, Math.max(k, windowSize), Math.max(numCandidates, Math.max(k, windowSize)),
+                            options.getKnnFilter())
+                    .build();
+            List<KnnSearch> scopedKnn = enrichKnnWithTenantFilter(knnBranch.getKnnSearches(), clazz);
+            SourceConfig sourceConfig = baseTextQuery.toSourceConfig();
+
+            SearchResponse<T> response = getClient().search(b -> {
+                b.index(index).from(0).size(topK);
+                if (scopedQuery != null) {
+                    b.query(scopedQuery);
+                }
+                if (StringUtils.hasText(baseTextQuery.getRouting())) {
+                    b.routing(baseTextQuery.getRouting());
+                }
+                if (baseTextQuery.isTrackTotalHits()) {
+                    b.trackTotalHits(tth -> tth.enabled(true));
+                }
+                if (baseTextQuery.getHighlight() != null) {
+                    b.highlight(baseTextQuery.getHighlight());
+                }
+                if (sourceConfig != null) {
+                    b.source(sourceConfig);
+                }
+                if (CollectionUtil.isNotEmpty(scopedKnn)) {
+                    b.knn(scopedKnn);
+                }
+                b.rank(r -> r.rrf(rrf -> rrf
+                        .rankConstant((long) options.getRrfRankConstant())
+                        .windowSize((long) windowSize)));
+                return b;
+            }, clazz);
+            return buildSearchPage(response, baseTextQuery.deriveBranch(baseTextQuery.getQuery(), scopedKnn, 0, topK, true), clazz, true);
+        } catch (Exception e) {
+            if (e instanceof SearchException se) {
+                throw se;
+            }
+            throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_DOCUMENT_GET_ERROR),
+                    "Failed to execute native RRF hybrid search on index [" + index + "]: " + e.getMessage(), e);
+        }
+    }
+
+    private <T> SearchPage<T> executeClientHybridSearch(String index,
+                                                        SearchQuery baseTextQuery,
+                                                        String vectorField,
+                                                        List<Float> vector,
+                                                        int k,
+                                                        int numCandidates,
+                                                        HybridSearchOptions options,
+                                                        SearchHybridMode mode,
+                                                        int topK,
+                                                        int windowSize,
+                                                        Class<T> clazz) {
+        if (mode == SearchHybridMode.CLIENT_RRF && options.getRrfRankConstant() <= 0) {
+            throw new IllegalArgumentException("rrfRankConstant must be positive: " + options.getRrfRankConstant());
+        }
+        if (mode == SearchHybridMode.CLIENT_WEIGHTED
+                && (options.getTextWeight() < 0 || options.getVectorWeight() < 0
+                || (options.getTextWeight() + options.getVectorWeight()) <= 0)) {
+            throw new IllegalArgumentException("textWeight and vectorWeight must be non-negative and their sum must be positive");
+        }
+
+        SearchQuery bm25Branch = baseTextQuery.deriveBranch(
+                baseTextQuery.getQuery() != null ? baseTextQuery.getQuery() : Query.of(q -> q.matchAll(m -> m)),
+                Collections.emptyList(),
+                0,
+                windowSize,
+                true
+        );
+        SearchQuery knnSpec = SearchQueryBuilder.create()
+                .knn(vectorField, vector, Math.max(k, windowSize), Math.max(numCandidates, Math.max(k, windowSize)),
+                        options.getKnnFilter())
+                .build();
+        SearchQuery knnBranch = baseTextQuery.deriveBranch(
+                null,
+                knnSpec.getKnnSearches(),
+                0,
+                windowSize,
+                false
+        );
+
+        List<SearchPage<T>> branchPages = doMsearch(index, List.of(bm25Branch, knnBranch), clazz, true);
+        List<SearchHit<T>> textHits = !branchPages.isEmpty() ? branchPages.get(0).getHits() : Collections.emptyList();
+        List<SearchHit<T>> vectorHits = branchPages.size() > 1 ? branchPages.get(1).getHits() : Collections.emptyList();
+        Map<String, Aggregate> aggregations = !branchPages.isEmpty() ? branchPages.get(0).getAggregations() : Collections.emptyMap();
+
+        HybridFusionResult<T> fusionResult = fuseHybridHits(textHits, vectorHits, options, mode, topK);
+        return SearchPage.<T>builder()
+                .hits(fusionResult.hits())
+                .total(fusionResult.totalMerged())
+                .pageNum(1)
+                .pageSize(topK)
+                .aggregations(aggregations != null ? aggregations : Collections.emptyMap())
+                .build();
+    }
+
+    private record HybridFusionResult<T>(List<SearchHit<T>> hits, long totalMerged) {
+    }
+
+    private static <T> HybridFusionResult<T> fuseHybridHits(List<SearchHit<T>> textHits,
+                                                            List<SearchHit<T>> vectorHits,
+                                                            HybridSearchOptions options,
+                                                            SearchHybridMode mode,
+                                                            int topK) {
+        Map<String, SearchHit<T>> mergedMap = new LinkedHashMap<>();
+        Map<String, Double> scoreMap = new LinkedHashMap<>();
+
+        if (mode == SearchHybridMode.CLIENT_WEIGHTED) {
+            double maxTextScore = maxPositiveScore(textHits);
+            double maxVectorScore = maxPositiveScore(vectorHits);
+            accumulateWeightedScores(textHits, maxTextScore, options.getTextWeight(), mergedMap, scoreMap, "text");
+            accumulateWeightedScores(vectorHits, maxVectorScore, options.getVectorWeight(), mergedMap, scoreMap, "vec");
+        } else {
+            int rankConstant = options.getRrfRankConstant();
+            accumulateRrfScores(textHits, rankConstant, mergedMap, scoreMap, "text");
+            accumulateRrfScores(vectorHits, rankConstant, mergedMap, scoreMap, "vec");
+        }
+
+        List<Map.Entry<String, Double>> sortedEntries = new ArrayList<>(scoreMap.entrySet());
+        sortedEntries.sort((a, b) -> Double.compare(b.getValue(), a.getValue()));
+
+        int limit = Math.min(topK, sortedEntries.size());
+        List<SearchHit<T>> fused = new ArrayList<>(limit);
+        for (int i = 0; i < limit; i++) {
+            Map.Entry<String, Double> entry = sortedEntries.get(i);
+            SearchHit<T> candidate = mergedMap.get(entry.getKey());
+            fused.add(candidate.toBuilder().score(entry.getValue()).build());
+        }
+        return new HybridFusionResult<>(fused, sortedEntries.size());
+    }
+
+    private static <T> void accumulateRrfScores(List<SearchHit<T>> hits,
+                                                int rankConstant,
+                                                Map<String, SearchHit<T>> mergedMap,
+                                                Map<String, Double> scoreMap,
+                                                String branchTag) {
+        if (hits == null || hits.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < hits.size(); i++) {
+            SearchHit<T> hit = hits.get(i);
+            String key = resolveHybridDocKey(hit, branchTag, i);
+            double rrfContribution = 1.0d / (rankConstant + (i + 1));
+            scoreMap.merge(key, rrfContribution, Double::sum);
+            mergeCandidateHit(mergedMap, key, hit);
+        }
+    }
+
+    private static <T> void accumulateWeightedScores(List<SearchHit<T>> hits,
+                                                     double maxScore,
+                                                     double weight,
+                                                     Map<String, SearchHit<T>> mergedMap,
+                                                     Map<String, Double> scoreMap,
+                                                     String branchTag) {
+        if (hits == null || hits.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < hits.size(); i++) {
+            SearchHit<T> hit = hits.get(i);
+            String key = resolveHybridDocKey(hit, branchTag, i);
+            double raw = hit.getScore() != null && hit.getScore() > 0d ? hit.getScore() : 0d;
+            double normalized = maxScore > 0d ? raw / maxScore : 0d;
+            scoreMap.merge(key, weight * normalized, Double::sum);
+            mergeCandidateHit(mergedMap, key, hit);
+        }
+    }
+
+    private static <T> double maxPositiveScore(List<SearchHit<T>> hits) {
+        double max = 0d;
+        if (hits != null) {
+            for (SearchHit<T> hit : hits) {
+                if (hit.getScore() != null && hit.getScore() > max) {
+                    max = hit.getScore();
+                }
+            }
+        }
+        return max > 0d ? max : 1.0d;
+    }
+
+    private static <T> void mergeCandidateHit(Map<String, SearchHit<T>> mergedMap, String key, SearchHit<T> incoming) {
+        SearchHit<T> existing = mergedMap.get(key);
+        if (existing == null) {
+            mergedMap.put(key, incoming);
+            return;
+        }
+        // 保留既有 BM25 高亮片段，若既有无高亮而新候选带高亮则补齐
+        if ((existing.getHighlightFields() == null || existing.getHighlightFields().isEmpty())
+                && incoming.getHighlightFields() != null && !incoming.getHighlightFields().isEmpty()) {
+            mergedMap.put(key, existing.toBuilder()
+                    .content(existing.getContent() != null ? existing.getContent() : incoming.getContent())
+                    .highlightFields(incoming.getHighlightFields())
+                    .build());
+        }
+    }
+
+    private static <T> String resolveHybridDocKey(SearchHit<T> hit, String branchTag, int idx) {
+        if (StringUtils.hasText(hit.getId())) {
+            return StringUtils.hasText(hit.getIndex()) ? hit.getIndex() + "::" + hit.getId() : hit.getId();
+        }
+        return "__anon_" + branchTag + "_" + idx;
     }
 
     /**
@@ -2131,8 +2697,19 @@ public class SearchTemplate {
         Objects.requireNonNull(clazz, "clazz must not be null");
 
         int pageSize = size > 0 ? size : query.getSize();
+        validateSearchAfterSize(pageSize);
         SearchResponse<T> response = doSearch(index, query, clazz, true, sortValues, pageSize);
         return buildSearchScrollResult(response, pageSize, clazz);
+    }
+
+    private void validateSearchAfterSize(int pageSize) {
+        if (pageSize <= 0) {
+            throw new IllegalArgumentException("searchAfter size must be positive: " + pageSize);
+        }
+        int maxSearchAfterSize = properties.getPagination().getMaxSearchAfterSize();
+        if (maxSearchAfterSize > 0 && pageSize > maxSearchAfterSize) {
+            throw SearchPaginationExceededException.forSearchAfter(pageSize, maxSearchAfterSize);
+        }
     }
 
     /**
@@ -2164,6 +2741,201 @@ public class SearchTemplate {
         return searchAfter(index, query, toSortValuesList(sortValues), size, clazz);
     }
 
+    // ==================== 6.1 Point-In-Time (PIT) 一致性快照深分页 ====================
+
+    /**
+     * 为实体映射索引开启一致性检索快照点 (Point-In-Time)，默认保活 1 分钟
+     *
+     * @param clazz 实体类类型
+     * @return 不可变 {@link SearchPointInTime} 句柄
+     */
+    public SearchPointInTime openPointInTime(Class<?> clazz) {
+        return openPointInTime(clazz, Duration.ofMinutes(1));
+    }
+
+    /**
+     * 为实体映射索引开启一致性检索快照点 (Point-In-Time)
+     *
+     * @param clazz     实体类类型
+     * @param keepAlive 快照保活时长（正数）
+     * @return 不可变 {@link SearchPointInTime} 句柄
+     */
+    public SearchPointInTime openPointInTime(Class<?> clazz, Duration keepAlive) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        String index = SearchMetadataHelper.resolveIndexName(clazz);
+        return openPointInTime(index, keepAlive);
+    }
+
+    /**
+     * 为指定索引开启一致性检索快照点 (Point-In-Time)，默认保活 1 分钟
+     *
+     * @param index 目标索引名或别名
+     * @return 不可变 {@link SearchPointInTime} 句柄
+     */
+    public SearchPointInTime openPointInTime(String index) {
+        return openPointInTime(index, Duration.ofMinutes(1));
+    }
+
+    /**
+     * 为指定索引开启一致性检索快照点 (Point-In-Time)
+     *
+     * @param index     目标索引名或别名
+     * @param keepAlive 快照保活时长（正数）
+     * @return 不可变 {@link SearchPointInTime} 句柄
+     */
+    public SearchPointInTime openPointInTime(String index, Duration keepAlive) {
+        if (!StringUtils.hasText(index)) {
+            throw new IllegalArgumentException("Index must not be blank");
+        }
+        Duration resolvedKeepAlive = keepAlive != null ? keepAlive : Duration.ofMinutes(1);
+        SearchEngineDialect.formatKeepAlive(resolvedKeepAlive);
+        return executeObserved("openPointInTime", index, null, null, null, false, () -> {
+            try {
+                return SearchEngineDialect.openPointInTime(searchEngineClient, index, resolvedKeepAlive);
+            } catch (Exception e) {
+                if (e instanceof SearchException se) {
+                    throw se;
+                }
+                throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                        "Failed to open Point-In-Time on index [" + index + "]: " + e.getMessage(), e);
+            }
+        });
+    }
+
+    /**
+     * 显式关闭指定的 Point-In-Time 快照句柄
+     *
+     * @param pit PIT 快照句柄
+     * @return true 表示释放成功；若快照已过期或不存在返回 false
+     */
+    public boolean closePointInTime(SearchPointInTime pit) {
+        Objects.requireNonNull(pit, "pit must not be null");
+        return closePointInTime(pit.pitId());
+    }
+
+    /**
+     * 显式关闭指定 ID 的 Point-In-Time 快照
+     *
+     * @param pitId PIT 快照唯一标识
+     * @return true 表示释放成功；若快照已过期或不存在返回 false
+     */
+    public boolean closePointInTime(String pitId) {
+        if (!StringUtils.hasText(pitId)) {
+            throw new IllegalArgumentException("pitId must not be blank");
+        }
+        return executeObserved("closePointInTime", null, null, null, null, false, () -> {
+            try {
+                return SearchEngineDialect.closePointInTime(searchEngineClient, pitId);
+            } catch (Exception e) {
+                if (SearchExceptionClassifier.isNotFound(e)) {
+                    return false;
+                }
+                if (e instanceof SearchException se) {
+                    throw se;
+                }
+                throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                        "Failed to close Point-In-Time [" + pitId + "]: " + e.getMessage(), e);
+            }
+        });
+    }
+
+    /**
+     * 基于一致性快照点执行深度游标滚动分页检索（首页）
+     *
+     * @param pit   PIT 快照句柄
+     * @param query 查询规格对象
+     * @param size  每页大小
+     * @param clazz 实体类类型
+     * @param <T>   实体类型
+     * @return 深度滚动结果模型
+     */
+    public <T> SearchScrollResult<T> searchAfterWithPit(SearchPointInTime pit, SearchQuery query, int size, Class<T> clazz) {
+        return searchAfterWithPit(pit, query, Collections.emptyList(), size, clazz);
+    }
+
+    /**
+     * 基于一致性快照点执行深度游标滚动分页检索（支持 {@code List<String>} 排序凭据）
+     *
+     * @param pit        PIT 快照句柄
+     * @param query      查询规格对象
+     * @param sortValues 上一批末尾排序凭据
+     * @param size       每页大小
+     * @param clazz      实体类类型
+     * @param <T>        实体类型
+     * @return 深度滚动结果模型
+     */
+    public <T> SearchScrollResult<T> searchAfterWithPit(SearchPointInTime pit,
+                                                        SearchQuery query,
+                                                        List<String> sortValues,
+                                                        int size,
+                                                        Class<T> clazz) {
+        Objects.requireNonNull(pit, "pit must not be null");
+        Objects.requireNonNull(query, "query must not be null");
+        Objects.requireNonNull(clazz, "clazz must not be null");
+
+        int pageSize = size > 0 ? size : query.getSize();
+        validateSearchAfterSize(pageSize);
+        SearchResponse<T> response = doSearch(pit.index(), query, clazz, true, sortValues, pageSize, pit);
+        return buildSearchScrollResult(response, pageSize, clazz);
+    }
+
+    /**
+     * 基于一致性快照点执行深度游标滚动分页检索（支持 {@code Object[]} 排序凭据）
+     *
+     * @param pit        PIT 快照句柄
+     * @param query      查询规格对象
+     * @param sortValues 上一批末尾排序凭据数组
+     * @param size       每页大小
+     * @param clazz      实体类类型
+     * @param <T>        实体类型
+     * @return 深度滚动结果模型
+     */
+    public <T> SearchScrollResult<T> searchAfterWithPit(SearchPointInTime pit,
+                                                        SearchQuery query,
+                                                        Object[] sortValues,
+                                                        int size,
+                                                        Class<T> clazz) {
+        return searchAfterWithPit(pit, query, toSortValuesList(sortValues), size, clazz);
+    }
+
+    /**
+     * 在受管 Point-In-Time 生命周期模板中执行分页遍历，并在 {@code finally} 块确定性释放服务端快照
+     *
+     * @param clazz     实体类类型
+     * @param keepAlive 快照保活时长
+     * @param action    基于 PIT 句柄的业务逻辑闭包
+     * @param <R>       返回结果泛型
+     * @return 闭包返回值
+     */
+    public <R> R executeWithPointInTime(Class<?> clazz, Duration keepAlive, Function<SearchPointInTime, R> action) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        String index = SearchMetadataHelper.resolveIndexName(clazz);
+        return executeWithPointInTime(index, keepAlive, action);
+    }
+
+    /**
+     * 在受管 Point-In-Time 生命周期模板中执行分页遍历，并在 {@code finally} 块确定性释放服务端快照
+     *
+     * @param index     目标索引名或别名
+     * @param keepAlive 快照保活时长
+     * @param action    基于 PIT 句柄的业务逻辑闭包
+     * @param <R>       返回结果泛型
+     * @return 闭包返回值
+     */
+    public <R> R executeWithPointInTime(String index, Duration keepAlive, Function<SearchPointInTime, R> action) {
+        Objects.requireNonNull(action, "action must not be null");
+        SearchPointInTime pit = openPointInTime(index, keepAlive);
+        try {
+            return action.apply(pit);
+        } finally {
+            try {
+                closePointInTime(pit.pitId());
+            } catch (Exception closeEx) {
+                log.warn("Failed to close PIT [{}] on index [{}]: {}", pit.pitId(), index, closeEx.getMessage(), closeEx);
+            }
+        }
+    }
+
     private static List<String> toSortValuesList(Object[] sortValues) {
         if (sortValues == null || sortValues.length == 0) {
             return Collections.emptyList();
@@ -2173,28 +2945,47 @@ public class SearchTemplate {
 
     private <T> SearchResponse<T> doSearch(String index, SearchQuery query, Class<T> clazz,
                                            boolean isSearchAfter, List<String> sortValues, Integer overrideSize) {
-        String operation = isSearchAfter ? "searchAfter" : "search";
+        return doSearch(index, query, clazz, isSearchAfter, sortValues, overrideSize, null);
+    }
+
+    private <T> SearchResponse<T> doSearch(String index, SearchQuery query, Class<T> clazz,
+                                           boolean isSearchAfter, List<String> sortValues, Integer overrideSize,
+                                           SearchPointInTime pit) {
+        String operation = pit != null ? "searchAfterWithPit" : (isSearchAfter ? "searchAfter" : "search");
         return executeObserved(operation, index, clazz, query != null ? query.getRouting() : null, query, false,
-                () -> executeDoSearch(index, query, clazz, isSearchAfter, sortValues, overrideSize));
+                () -> executeDoSearch(index, query, clazz, isSearchAfter, sortValues, overrideSize, pit));
     }
 
     private <T> SearchResponse<T> executeDoSearch(String index, SearchQuery query, Class<T> clazz,
-                                                  boolean isSearchAfter, List<String> sortValues, Integer overrideSize) {
+                                                  boolean isSearchAfter, List<String> sortValues, Integer overrideSize,
+                                                  SearchPointInTime pit) {
         try {
-            // 组装多租户隐式过滤
+            // 组装多租户隐式过滤（含 kNN 预过滤租户隔离）
             Query baseQuery = wrapTenantFilterIfNecessary(query.getQuery(), clazz);
+            List<KnnSearch> effectiveKnn = enrichKnnWithTenantFilter(query.getKnnSearches(), clazz);
 
             // 当底层引擎为 OpenSearch 时，由方言适配器将 top-level knn 转译为 Query DSL 原生 knn 语法
             boolean isOpenSearch = SearchEngineDialect.isOpenSearch(searchEngineClient.getEngineType());
             final Query finalQuery = SearchEngineDialect.adaptKnnQuery(
-                    searchEngineClient.getEngineType(), baseQuery, query.getKnnSearches());
+                    searchEngineClient.getEngineType(), baseQuery, effectiveKnn);
+            final SourceConfig sourceConfig = query.toSourceConfig();
 
             SearchResponse<T> response = getClient().search(b -> {
-                b.index(index);
+                if (pit != null) {
+                    b.pit(p -> {
+                        p.id(pit.pitId());
+                        if (pit.keepAlive() != null) {
+                            p.keepAlive(t -> t.time(SearchEngineDialect.formatKeepAlive(pit.keepAlive())));
+                        }
+                        return p;
+                    });
+                } else {
+                    b.index(index);
+                }
                 if (finalQuery != null) {
                     b.query(finalQuery);
                 }
-                if (StringUtils.hasText(query.getRouting())) {
+                if (pit == null && StringUtils.hasText(query.getRouting())) {
                     b.routing(query.getRouting());
                 }
                 if (query.isTrackTotalHits()) {
@@ -2222,8 +3013,9 @@ public class SearchTemplate {
                 if (CollectionUtil.isNotEmpty(query.getSorts())) {
                     b.sort(query.getSorts());
                 } else if (isSearchAfter) {
-                    // searchAfter 强制要求至少有一个确定的排序规则（若未指定，保底按 _id 排序）
-                    b.sort(s -> s.field(f -> f.field("_id").order(SortOrder.Asc)));
+                    // searchAfter 强制要求至少有一个确定的排序规则（PIT 默认使用 _shard_doc，普通 searchAfter 保底 _id）
+                    String fallbackSortField = pit != null ? "_shard_doc" : "_id";
+                    b.sort(s -> s.field(f -> f.field(fallbackSortField).order(SortOrder.Asc)));
                 }
 
                 // 高亮配置
@@ -2236,14 +3028,19 @@ public class SearchTemplate {
                     b.collapse(query.getCollapse());
                 }
 
+                // _source 裁剪配置
+                if (sourceConfig != null) {
+                    b.source(sourceConfig);
+                }
+
                 // 聚合配置
                 if (query.getAggregations() != null && !query.getAggregations().isEmpty()) {
                     b.aggregations(query.getAggregations());
                 }
 
                 // kNN 向量检索（仅 Elasticsearch 模式下设置 top-level knn 参数，OpenSearch 模式已在 query 中融合）
-                if (!isOpenSearch && CollectionUtil.isNotEmpty(query.getKnnSearches())) {
-                    b.knn(query.getKnnSearches());
+                if (!isOpenSearch && CollectionUtil.isNotEmpty(effectiveKnn)) {
+                    b.knn(effectiveKnn);
                 }
 
                 return b;
@@ -2290,7 +3087,47 @@ public class SearchTemplate {
         }
     }
 
-    private <T> List<SearchHit<T>> extractHits(SearchResponse<T> response, Class<T> clazz) {
+    private List<KnnSearch> enrichKnnWithTenantFilter(List<KnnSearch> knnSearches, Class<?> clazz) {
+        if (CollectionUtil.isEmpty(knnSearches)) {
+            return knnSearches;
+        }
+        String tenantId = SearchTenantHelper.resolveActiveTenantId(properties, clazz);
+        if (tenantId == null) {
+            return knnSearches;
+        }
+        String tenantColumn = SearchTenantHelper.resolveTenantColumn(properties);
+        Query tenantFilter = Query.of(q -> q.term(t -> t.field(tenantColumn).value(FieldValue.of(tenantId))));
+        List<KnnSearch> scoped = new ArrayList<>(knnSearches.size());
+        for (KnnSearch knn : knnSearches) {
+            List<Query> mergedFilters = new ArrayList<>();
+            if (CollectionUtil.isNotEmpty(knn.filter())) {
+                mergedFilters.addAll(knn.filter());
+            }
+            mergedFilters.add(tenantFilter);
+            scoped.add(KnnSearch.of(b -> {
+                b.field(knn.field())
+                        .queryVector(knn.queryVector())
+                        .k(knn.k())
+                        .filter(mergedFilters);
+                if (knn.numCandidates() != null) {
+                    b.numCandidates(knn.numCandidates());
+                }
+                if (knn.boost() != null) {
+                    b.boost(knn.boost());
+                }
+                if (knn.similarity() != null) {
+                    b.similarity(knn.similarity());
+                }
+                if (knn.innerHits() != null) {
+                    b.innerHits(knn.innerHits());
+                }
+                return b;
+            }));
+        }
+        return scoped;
+    }
+
+    private <T> List<SearchHit<T>> extractHits(ResponseBody<T> response, Class<T> clazz, boolean populateHighlights) {
         if (response == null || response.hits() == null || response.hits().hits() == null) {
             return Collections.emptyList();
         }
@@ -2302,8 +3139,8 @@ public class SearchTemplate {
                     ? esHit.highlight()
                     : Collections.emptyMap();
 
-            // 自动回填 @HighlightField
-            if (source != null && !highlights.isEmpty()) {
+            // 自动回填 @HighlightField（VO 投影场景延后至 VO 映射阶段回填，保护实体内存真明文）
+            if (populateHighlights && source != null && !highlights.isEmpty()) {
                 SearchMetadataHelper.populateHighlights(source, highlights);
             }
 
@@ -2328,8 +3165,8 @@ public class SearchTemplate {
         return resultList;
     }
 
-    private <T> SearchPage<T> buildSearchPage(SearchResponse<T> response, SearchQuery query, Class<T> clazz) {
-        List<SearchHit<T>> hits = extractHits(response, clazz);
+    private <T> SearchPage<T> buildSearchPage(ResponseBody<T> response, SearchQuery query, Class<T> clazz, boolean populateHighlights) {
+        List<SearchHit<T>> hits = extractHits(response, clazz, populateHighlights);
         long total = 0L;
         if (response != null && response.hits() != null && response.hits().total() != null) {
             total = response.hits().total().value();
@@ -2347,7 +3184,7 @@ public class SearchTemplate {
     }
 
     private <T> SearchScrollResult<T> buildSearchScrollResult(SearchResponse<T> response, int pageSize, Class<T> clazz) {
-        List<SearchHit<T>> hits = extractHits(response, clazz);
+        List<SearchHit<T>> hits = extractHits(response, clazz, true);
         List<String> nextSortValues = null;
         if (!hits.isEmpty()) {
             SearchHit<T> lastHit = hits.get(hits.size() - 1);

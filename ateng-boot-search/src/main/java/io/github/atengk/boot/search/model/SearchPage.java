@@ -12,6 +12,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Function;
 
 /**
  * 搜索引擎标准浅分页结果载荷模型
@@ -109,6 +110,27 @@ public class SearchPage<T> implements Serializable {
      */
     public PageResult<SearchHit<T>> toHitPageResult() {
         return PageResult.of(hits != null ? hits : Collections.emptyList(), total, pageNum, pageSize, getTotalPages());
+    }
+
+    /**
+     * 将当前分页结果安全投影转换为目标视图对象分页结果，自动回填 VO 上的 {@code @HighlightField}
+     *
+     * @param mapper 实体到视图对象的转换函数
+     * @param <V>    目标视图对象泛型
+     * @return 转换后的 {@link SearchPage}
+     */
+    public <V> SearchPage<V> map(Function<T, V> mapper) {
+        Objects.requireNonNull(mapper, "mapper must not be null");
+        List<SearchHit<V>> mappedHits = (this.hits == null || this.hits.isEmpty())
+                ? Collections.emptyList()
+                : this.hits.stream().map(hit -> hit.map(mapper)).toList();
+        return SearchPage.<V>builder()
+                .hits(mappedHits)
+                .total(this.total)
+                .pageNum(this.pageNum)
+                .pageSize(this.pageSize)
+                .aggregations(this.aggregations != null ? this.aggregations : Collections.emptyMap())
+                .build();
     }
 
     /**

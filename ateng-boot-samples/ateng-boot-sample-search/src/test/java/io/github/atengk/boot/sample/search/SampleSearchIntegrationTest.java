@@ -308,18 +308,30 @@ class SampleSearchIntegrationTest {
     }
 
     @Test
-    @DisplayName("03. 关键字全文多字段检索与 @HighlightField 高亮富文本自动回填")
+    @DisplayName("03. 关键字全文多字段检索与视图级 VO @HighlightField 无污染投影")
     void testKeywordSearchWithHighlight() {
         List<SearchHit<ProductDoc>> hits = productCatalogScenario.searchMultiMatchWithHighlight("手机");
         assertThat(hits).isNotEmpty();
 
+        // 1. 守卫持久实体内存真明文不被 HTML 高亮标签污染
         ProductDoc product = hits.get(0).getData();
-        if (!isLocalProfileActive()) {
-            assertThat(product.getTitle()).contains("<em>iPhone</em>");
-            assertThat(product.getDescription()).contains("<em>旗舰</em>");
-        } else {
-            assertThat(product.getTitle() + (product.getDescription() != null ? product.getDescription() : "")).contains("<em>");
-        }
+        assertThat(product.getTitle()).doesNotContain("<em>");
+
+        // 2. 通过 SearchHit.map 安全转换 VO 并自动回填 @HighlightField
+        io.github.atengk.boot.sample.search.dto.ProductResponse mappedVo =
+                hits.get(0).map(io.github.atengk.boot.sample.search.dto.SearchSampleConvertHelper::toResponse).getContent();
+        assertThat(mappedVo.getTitle()).doesNotContain("<em>");
+        assertThat(mappedVo.getHighlightedTitle() + (mappedVo.getHighlightedDescription() != null ? mappedVo.getHighlightedDescription() : ""))
+                .contains("<em>");
+
+        // 3. 通过 SearchTemplate.search(query, Entity, VO) 直接投影
+        List<io.github.atengk.boot.sample.search.dto.ProductResponse> projectedVos =
+                productCatalogScenario.searchMultiMatchVoWithHighlight("手机");
+        assertThat(projectedVos).isNotEmpty();
+        io.github.atengk.boot.sample.search.dto.ProductResponse projected = projectedVos.get(0);
+        assertThat(projected.getTitle()).doesNotContain("<em>");
+        assertThat(projected.getHighlightedTitle() + (projected.getHighlightedDescription() != null ? projected.getHighlightedDescription() : ""))
+                .contains("<em>");
     }
 
     @Test
@@ -386,6 +398,33 @@ class SampleSearchIntegrationTest {
         assertThat(result.getHits()).isNotEmpty();
         assertThat(result.hasNext()).isTrue();
         assertThat(result.getNextSortValues()).isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("10.1 PointInTime(PIT) 一致性快照深分页、_source 裁剪、msearch 与 HybridSearch CLIENT_RRF")
+    void testPitSourceTrimmingMsearchAndHybridSearch() {
+        // 1. _source 裁剪：剔除高维 embedding 向量字段
+        List<SearchHit<ProductDoc>> trimmedHits = productCatalogScenario.searchWithSourceTrimming("手机");
+        assertThat(trimmedHits).isNotEmpty();
+        assertThat(trimmedHits.get(0).getContent().getEmbedding()).isNull();
+
+        // 2. PIT 一致性快照遍历
+        List<SearchHit<ProductDoc>> pitHits = productCatalogScenario.searchWithPitTraversal(2);
+        assertThat(pitHits).isNotEmpty();
+
+        // 3. _msearch 批量异构检索
+        List<SearchPage<ProductDoc>> multiPages = productCatalogScenario.batchMultiSearch("手机", "手机");
+        assertThat(multiPages).hasSize(2);
+        assertThat(multiPages.get(0).getHits()).isNotEmpty();
+        assertThat(multiPages.get(1).getHits()).isEmpty();
+        assertThat(multiPages.get(1).getTotal()).isGreaterThanOrEqualTo(1L);
+
+        // 4. HybridSearch 零许可证依赖 CLIENT_RRF 融合
+        SearchPage<ProductDoc> hybridPage = productCatalogScenario.hybridSearch(
+                "手机", List.of(0.12f, 0.34f, 0.56f, 0.78f), 5,
+                io.github.atengk.boot.search.enums.SearchHybridMode.CLIENT_RRF);
+        assertThat(hybridPage.getHits()).isNotEmpty();
+        assertThat(hybridPage.getHits().get(0).getScore()).isPositive();
     }
 
     // =========================================================================

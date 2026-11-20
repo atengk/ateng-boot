@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.search.dto;
 
+import io.github.atengk.boot.search.annotation.HighlightField;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -24,6 +25,18 @@ public class ProductResponse {
     private String id;
     private String title;
     private String description;
+
+    /**
+     * 视图级标题高亮富文本片段（仅输出展示，严禁污染持久实体）
+     */
+    @HighlightField(target = "title")
+    private String highlightedTitle;
+
+    /**
+     * 视图级描述高亮富文本片段
+     */
+    @HighlightField(target = "description")
+    private String highlightedDescription;
     private String category;
     private String brand;
     private List<String> tags;

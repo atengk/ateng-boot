@@ -1,6 +1,5 @@
 package io.github.atengk.boot.sample.search.model;
 
-import io.github.atengk.boot.search.annotation.HighlightField;
 import io.github.atengk.boot.search.annotation.SearchId;
 import io.github.atengk.boot.search.annotation.SearchIndex;
 import io.github.atengk.boot.search.annotation.SearchRouting;
@@ -29,10 +28,8 @@ public class ProductDoc {
     @SearchId
     private String id;
 
-    @HighlightField
     private String title;
 
-    @HighlightField
     private String description;
 
     private String category;

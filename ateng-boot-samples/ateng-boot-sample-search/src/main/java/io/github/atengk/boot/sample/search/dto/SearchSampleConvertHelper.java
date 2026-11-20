@@ -6,7 +6,7 @@ import io.github.atengk.boot.sample.search.model.ProductDoc;
 import io.github.atengk.boot.search.model.SearchHit;
 
 import java.time.LocalDateTime;
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -102,10 +102,12 @@ public final class SearchSampleConvertHelper {
         if (hit == null || hit.getSource() == null) {
             return null;
         }
-        ProductResponse response = toResponse(hit.getSource());
-        response.setScore(hit.getScore());
-        if (hit.getSortValues() != null) {
-            response.setSortValues(Arrays.asList(hit.getSortValues()));
+        ProductResponse response = hit.map(SearchSampleConvertHelper::toResponse).getContent();
+        if (response != null) {
+            response.setScore(hit.getScore());
+            if (hit.getSortValues() != null) {
+                response.setSortValues(new ArrayList<>(hit.getSortValues()));
+            }
         }
         return response;
     }

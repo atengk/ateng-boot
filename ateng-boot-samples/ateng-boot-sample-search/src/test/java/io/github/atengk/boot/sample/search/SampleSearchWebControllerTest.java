@@ -377,7 +377,8 @@ class SampleSearchWebControllerTest {
                         .content(JsonUtil.toJsonString(request)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(200)))
-                .andExpect(jsonPath("$.data", notNullValue()));
+                .andExpect(jsonPath("$.data", notNullValue()))
+                .andExpect(jsonPath("$.data[0].title", not(containsString("<em>"))));
     }
 
     @Test
@@ -490,6 +491,79 @@ class SampleSearchWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(200)))
                 .andExpect(jsonPath("$.data.items", notNullValue()));
+    }
+
+    @Test
+    @DisplayName("1.16.1 视图级 VO 高亮投影搜索（不污染实体内存真明文）")
+    void test16_1_searchVoWithHighlight() throws Exception {
+        ProductSearchRequest request = ProductSearchRequest.builder()
+                .keyword("手机")
+                .build();
+
+        mockMvc.perform(post("/sample/search/product/search-vo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data[0].title", not(containsString("<em>"))))
+                .andExpect(jsonPath("$.data[0].highlightedTitle", containsString("<em>")));
+    }
+
+    @Test
+    @DisplayName("1.16.2 _source 裁剪检索（剔除向量载荷）")
+    void test16_2_searchSourceTrimmed() throws Exception {
+        mockMvc.perform(get("/sample/search/product/source-trimmed")
+                        .param("keyword", "手机"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data[0].id", notNullValue()));
+    }
+
+    @Test
+    @DisplayName("1.16.3 Point-In-Time (PIT) 快照深度分页遍历")
+    void test16_3_searchWithPitTraversal() throws Exception {
+        mockMvc.perform(get("/sample/search/product/pit-pages")
+                        .param("size", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data[0].id", notNullValue()));
+    }
+
+    @Test
+    @DisplayName("1.16.4 _msearch 批量异构检索")
+    void test16_4_batchMultiSearch() throws Exception {
+        io.github.atengk.boot.sample.search.dto.ProductMultiSearchRequest request =
+                io.github.atengk.boot.sample.search.dto.ProductMultiSearchRequest.builder()
+                        .keyword("手机")
+                        .category("手机")
+                        .build();
+
+        mockMvc.perform(post("/sample/search/product/msearch")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.items", notNullValue()))
+                .andExpect(jsonPath("$.data.statTotal", notNullValue()));
+    }
+
+    @Test
+    @DisplayName("1.16.5 HybridSearch 零许可证 CLIENT_RRF 混合检索")
+    void test16_5_hybridSearchRrf() throws Exception {
+        io.github.atengk.boot.sample.search.dto.ProductHybridSearchRequest request =
+                io.github.atengk.boot.sample.search.dto.ProductHybridSearchRequest.builder()
+                        .keyword("手机")
+                        .vector(Arrays.asList(0.12f, 0.34f, 0.56f, 0.78f))
+                        .k(5)
+                        .mode(io.github.atengk.boot.search.enums.SearchHybridMode.CLIENT_RRF)
+                        .build();
+
+        mockMvc.perform(post("/sample/search/product/hybrid")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data[0].id", notNullValue()));
     }
 
     @Test
