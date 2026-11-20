@@ -219,6 +219,40 @@ public class MilvusDatabaseClientManager implements DisposableBean {
     }
 
     /**
+     * 提取目标客户端实例当前持有的 gRPC 阻塞存根
+     *
+     * @param client MilvusClientV2 客户端实例
+     * @return 阻塞存根，未绑定时返回 null
+     */
+    public static MilvusServiceGrpc.MilvusServiceBlockingStub extractBlockingStub(MilvusClientV2 client) {
+        if (client == null) {
+            return null;
+        }
+        try {
+            return (MilvusServiceGrpc.MilvusServiceBlockingStub) STUB_FIELD.get(client);
+        } catch (IllegalAccessException ex) {
+            throw MilvusExceptionTranslator.translate("提取 MilvusClientV2 阻塞存根", ex);
+        }
+    }
+
+    /**
+     * 为指定客户端绑定 gRPC 阻塞存根（适用于测试替身或受控自定义通道绑定）
+     *
+     * @param target       目标客户端实例
+     * @param blockingStub gRPC 阻塞存根
+     */
+    public static void bindBlockingStub(MilvusClientV2 target,
+                                        MilvusServiceGrpc.MilvusServiceBlockingStub blockingStub) {
+        Assert.notNull(target, "target client must not be null");
+        Assert.notNull(blockingStub, "blockingStub must not be null");
+        try {
+            STUB_FIELD.set(target, blockingStub);
+        } catch (IllegalAccessException ex) {
+            throw MilvusExceptionTranslator.translate("绑定 MilvusClientV2 阻塞存根", ex);
+        }
+    }
+
+    /**
      * 复制连接配置并覆盖逻辑数据库名称
      *
      * @param source 原始配置

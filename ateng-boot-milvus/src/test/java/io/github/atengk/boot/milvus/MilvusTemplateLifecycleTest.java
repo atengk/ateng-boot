@@ -3,8 +3,23 @@ package io.github.atengk.boot.milvus;
 import io.github.atengk.boot.milvus.annotation.MilvusCollection;
 import io.github.atengk.boot.milvus.annotation.MilvusId;
 import io.github.atengk.boot.milvus.annotation.MilvusVector;
+import io.github.atengk.boot.milvus.client.MilvusDatabaseClientManager;
+import io.github.atengk.boot.milvus.context.MilvusContextHolder;
+import io.github.atengk.boot.milvus.exception.MilvusException;
+import io.github.atengk.boot.milvus.exception.MilvusResultCode;
 import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
 import io.github.atengk.boot.milvus.template.MilvusTemplate;
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
+import io.grpc.Server;
+import io.grpc.Status;
+import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
+import io.grpc.stub.StreamObserver;
+import io.milvus.grpc.ErrorCode;
+import io.milvus.grpc.FlushRequest;
+import io.milvus.grpc.FlushResponse;
+import io.milvus.grpc.MilvusServiceGrpc;
+import io.milvus.v2.client.ConnectConfig;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.common.IndexParam;
 import io.milvus.v2.service.collection.request.CreateCollectionReq;
@@ -31,17 +46,24 @@ import io.milvus.v2.service.partition.request.ListPartitionsReq;
 import io.milvus.v2.service.partition.request.LoadPartitionsReq;
 import io.milvus.v2.service.partition.request.ReleasePartitionsReq;
 import lombok.Data;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
+import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -73,6 +95,12 @@ class MilvusTemplateLifecycleTest {
         mockClient = Mockito.mock(MilvusClientV2.class);
         properties = new AtengMilvusProperties();
         milvusTemplate = new MilvusTemplate(mockClient, properties);
+        MilvusContextHolder.clear();
+    }
+
+    @AfterEach
+    void tearDown() {
+        MilvusContextHolder.clear();
     }
 
     // =========================================================================
@@ -186,6 +214,105 @@ class MilvusTemplateLifecycleTest {
         // dropPartition
         milvusTemplate.dropPartition("my_col", "p_202611");
         verify(mockClient).dropPartition(any(DropPartitionReq.class));
+    }
+
+    @Test
+    @DisplayName("isPartitionsLoaded - 对称探测分区加载状态与空入参前置防卫")
+    void testIsPartitionsLoaded() {
+        // 1. 全部目标分区均已加载 -> true
+        when(mockClient.getLoadState(any(GetLoadStateReq.class))).thenAnswer(inv -> {
+            GetLoadStateReq req = inv.getArgument(0);
+            assertThat(req.getCollectionName()).isEqualTo("my_col");
+            return "p1".equals(req.getPartitionName()) || "p2".equals(req.getPartitionName());
+        });
+        assertThat(milvusTemplate.isPartitionsLoaded("my_col", List.of("p1", "p2"))).isTrue();
+
+        // 2. 存在未加载分区 -> false
+        assertThat(milvusTemplate.isPartitionsLoaded("my_col", List.of("p1", "p3"))).isFalse();
+
+        // 3. 空入参前置防卫
+        assertThatThrownBy(() -> milvusTemplate.isPartitionsLoaded(" ", List.of("p1")))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> milvusTemplate.isPartitionsLoaded("my_col", Collections.emptyList()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> milvusTemplate.isPartitionsLoaded("my_col", List.of(" ")))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("flush - 显式数据封存落盘、数据库上下文透传与异常因果链保留")
+    void testFlushOperationsAndExceptionTranslation() throws Exception {
+        // 1. 前置空校验
+        assertThatThrownBy(() -> milvusTemplate.flush(" "))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> milvusTemplate.flush(Collections.emptyList()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> milvusTemplate.flush(List.of("ok", " ")))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> milvusTemplate.flush((Class<?>) null))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // 2. 未挂载 gRPC 阻塞存根的测试桩 Fail-Fast 契约
+        assertThatThrownBy(() -> milvusTemplate.flush("col_without_stub"))
+                .isInstanceOf(MilvusException.class)
+                .satisfies(ex -> assertThat(((MilvusException) ex).getResultCode())
+                        .isEqualTo(MilvusResultCode.CLIENT_INIT_FAILED));
+
+        // 3. 挂载真实 gRPC Flush 服务端验证请求内容、数据库透传与异常因果链
+        List<FlushRequest> capturedRequests = new ArrayList<>();
+        AtomicBoolean failNext = new AtomicBoolean(false);
+        MilvusServiceGrpc.MilvusServiceImplBase grpcService = new MilvusServiceGrpc.MilvusServiceImplBase() {
+            @Override
+            public void flush(FlushRequest request, StreamObserver<FlushResponse> responseObserver) {
+                capturedRequests.add(request);
+                if (failNext.get()) {
+                    responseObserver.onError(Status.INTERNAL.withDescription("disk flush failed").asRuntimeException());
+                    return;
+                }
+                responseObserver.onNext(FlushResponse.newBuilder()
+                        .setStatus(io.milvus.grpc.Status.newBuilder().setCode(0).setErrorCode(ErrorCode.Success).build())
+                        .build());
+                responseObserver.onCompleted();
+            }
+        };
+
+        Server server = NettyServerBuilder.forAddress(new InetSocketAddress("127.0.0.1", 0))
+                .addService(grpcService)
+                .build()
+                .start();
+        ManagedChannel channel = ManagedChannelBuilder.forAddress("127.0.0.1", server.getPort())
+                .usePlaintext()
+                .build();
+        try {
+            MilvusServiceGrpc.MilvusServiceBlockingStub stub = MilvusServiceGrpc.newBlockingStub(channel);
+            ConnectConfig cfg = ConnectConfig.builder().uri("http://127.0.0.1:" + server.getPort()).build();
+            MilvusClientV2 boundClient = MilvusDatabaseClientManager.createBoundClient(channel, stub, cfg);
+            MilvusTemplate grpcTemplate = new MilvusTemplate(boundClient, properties);
+
+            try (MilvusContextHolder.DatabaseScope ignored = MilvusContextHolder.useDatabase("analytics_db")) {
+                grpcTemplate.flush("single_col");
+                grpcTemplate.flush(List.of("col_a", "col_b"));
+                grpcTemplate.flush(DemoVectorEntity.class);
+            }
+
+            assertThat(capturedRequests).hasSize(3);
+            assertThat(capturedRequests.get(0).getDbName()).isEqualTo("analytics_db");
+            assertThat(capturedRequests.get(0).getCollectionNamesList()).containsExactly("single_col");
+            assertThat(capturedRequests.get(1).getDbName()).isEqualTo("analytics_db");
+            assertThat(capturedRequests.get(1).getCollectionNamesList()).containsExactly("col_a", "col_b");
+            assertThat(capturedRequests.get(2).getCollectionNamesList()).containsExactly("lifecycle_demo");
+
+            // 验证底层 gRPC 异常转译为 MilvusException 并保留 cause
+            failNext.set(true);
+            assertThatThrownBy(() -> grpcTemplate.flush("broken_col"))
+                    .isInstanceOf(MilvusException.class)
+                    .hasMessageContaining("disk flush failed")
+                    .hasCauseInstanceOf(io.grpc.StatusRuntimeException.class);
+        } finally {
+            MilvusDatabaseClientManager.shutdownChannelQuietly(channel);
+            server.shutdownNow();
+            server.awaitTermination(3, TimeUnit.SECONDS);
+        }
     }
 
     // =========================================================================

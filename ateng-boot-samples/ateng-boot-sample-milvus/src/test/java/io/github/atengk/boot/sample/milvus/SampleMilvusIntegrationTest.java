@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.enums.IBaseEnum;
 import io.github.atengk.boot.core.util.EnumUtil;
+import io.github.atengk.boot.milvus.client.MilvusDatabaseClientManager;
 import io.github.atengk.boot.milvus.context.MilvusContextHolder;
 import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
 import io.github.atengk.boot.milvus.properties.MilvusConsistencyLevel;
@@ -13,27 +14,46 @@ import io.github.atengk.boot.sample.milvus.dto.DatabaseCreateDto;
 import io.github.atengk.boot.sample.milvus.dto.DatabaseScopedSearchDto;
 import io.github.atengk.boot.sample.milvus.dto.DocumentBatchInsertDto;
 import io.github.atengk.boot.sample.milvus.dto.DocumentInsertDto;
+import io.github.atengk.boot.sample.milvus.dto.ExprSearchDto;
 import io.github.atengk.boot.sample.milvus.dto.GroupBySearchDto;
 import io.github.atengk.boot.sample.milvus.dto.HybridSearchDto;
 import io.github.atengk.boot.sample.milvus.dto.MultimodalDenseSearchDto;
 import io.github.atengk.boot.sample.milvus.dto.MultimodalHybridSearchDto;
 import io.github.atengk.boot.sample.milvus.dto.MultimodalInsertDto;
 import io.github.atengk.boot.sample.milvus.dto.MultimodalSparseSearchDto;
+import io.github.atengk.boot.sample.milvus.dto.PartitionArchiveInsertDto;
+import io.github.atengk.boot.sample.milvus.dto.PartitionBatchOpDto;
+import io.github.atengk.boot.sample.milvus.dto.PartitionOpDto;
 import io.github.atengk.boot.sample.milvus.dto.RangeSearchDto;
+import io.github.atengk.boot.sample.milvus.dto.StreamQueryDto;
 import io.github.atengk.boot.sample.milvus.dto.VectorSearchDto;
+import io.milvus.grpc.ErrorCode;
+import io.milvus.grpc.FlushRequest;
+import io.milvus.grpc.FlushResponse;
+import io.milvus.grpc.MilvusServiceGrpc;
+import io.milvus.orm.iterator.QueryIterator;
+import io.milvus.response.QueryResultsWrapper;
 import io.milvus.v2.client.MilvusClientV2;
+import io.milvus.v2.service.collection.request.GetLoadStateReq;
 import io.milvus.v2.service.collection.response.DescribeCollectionResp;
 import io.milvus.v2.service.collection.response.GetCollectionStatsResp;
 import io.milvus.v2.service.collection.response.ListCollectionsResp;
 import io.milvus.v2.service.database.request.CreateDatabaseReq;
 import io.milvus.v2.service.database.request.DropDatabaseReq;
 import io.milvus.v2.service.database.response.ListDatabasesResp;
+import io.milvus.v2.service.partition.request.CreatePartitionReq;
+import io.milvus.v2.service.partition.request.DropPartitionReq;
+import io.milvus.v2.service.partition.request.HasPartitionReq;
+import io.milvus.v2.service.partition.request.ListPartitionsReq;
+import io.milvus.v2.service.partition.request.LoadPartitionsReq;
+import io.milvus.v2.service.partition.request.ReleasePartitionsReq;
 import io.milvus.v2.service.utility.response.DescribeAliasResp;
 import io.milvus.v2.service.utility.response.ListAliasResp;
 import io.milvus.v2.service.vector.request.DeleteReq;
 import io.milvus.v2.service.vector.request.GetReq;
 import io.milvus.v2.service.vector.request.HybridSearchReq;
 import io.milvus.v2.service.vector.request.InsertReq;
+import io.milvus.v2.service.vector.request.QueryIteratorReq;
 import io.milvus.v2.service.vector.request.QueryReq;
 import io.milvus.v2.service.vector.request.SearchReq;
 import io.milvus.v2.service.vector.request.UpsertReq;
@@ -137,9 +157,82 @@ class SampleMilvusIntegrationTest {
             when(client.clientIsReady()).thenReturn(true);
             when(client.getServerVersion()).thenReturn("v2.4.4");
 
-            // 2. 集合生命周期与结构
+            // 2. 集合与物理分区生命周期及结构
             when(client.hasCollection(any())).thenReturn(false);
-            when(client.getLoadState(any())).thenReturn(true);
+
+            Map<String, Set<String>> partitionsByCol = new ConcurrentHashMap<>();
+            Map<String, Set<String>> loadedPartitionsByCol = new ConcurrentHashMap<>();
+
+            when(client.getLoadState(any(GetLoadStateReq.class))).thenAnswer(inv -> {
+                GetLoadStateReq req = inv.getArgument(0);
+                if (req.getPartitionName() != null) {
+                    Set<String> loaded = loadedPartitionsByCol.get(req.getCollectionName());
+                    return loaded != null && loaded.contains(req.getPartitionName());
+                }
+                return true;
+            });
+
+            when(client.hasPartition(any(HasPartitionReq.class))).thenAnswer(inv -> {
+                HasPartitionReq req = inv.getArgument(0);
+                Set<String> parts = partitionsByCol.get(req.getCollectionName());
+                return parts != null && parts.contains(req.getPartitionName());
+            });
+            Mockito.doAnswer(inv -> {
+                CreatePartitionReq req = inv.getArgument(0);
+                partitionsByCol.computeIfAbsent(req.getCollectionName(), k -> ConcurrentHashMap.newKeySet())
+                        .add(req.getPartitionName());
+                return null;
+            }).when(client).createPartition(any(CreatePartitionReq.class));
+            Mockito.doAnswer(inv -> {
+                DropPartitionReq req = inv.getArgument(0);
+                Set<String> parts = partitionsByCol.get(req.getCollectionName());
+                if (parts != null) {
+                    parts.remove(req.getPartitionName());
+                }
+                Set<String> loaded = loadedPartitionsByCol.get(req.getCollectionName());
+                if (loaded != null) {
+                    loaded.remove(req.getPartitionName());
+                }
+                return null;
+            }).when(client).dropPartition(any(DropPartitionReq.class));
+            when(client.listPartitions(any(ListPartitionsReq.class))).thenAnswer(inv -> {
+                ListPartitionsReq req = inv.getArgument(0);
+                Set<String> parts = partitionsByCol.computeIfAbsent(req.getCollectionName(), k -> {
+                    Set<String> set = ConcurrentHashMap.newKeySet();
+                    set.add("_default");
+                    return set;
+                });
+                return new ArrayList<>(parts);
+            });
+            Mockito.doAnswer(inv -> {
+                LoadPartitionsReq req = inv.getArgument(0);
+                if (req.getPartitionNames() != null) {
+                    loadedPartitionsByCol.computeIfAbsent(req.getCollectionName(), k -> ConcurrentHashMap.newKeySet())
+                            .addAll(req.getPartitionNames());
+                }
+                return null;
+            }).when(client).loadPartitions(any(LoadPartitionsReq.class));
+            Mockito.doAnswer(inv -> {
+                ReleasePartitionsReq req = inv.getArgument(0);
+                Set<String> loaded = loadedPartitionsByCol.get(req.getCollectionName());
+                if (loaded != null && req.getPartitionNames() != null) {
+                    loaded.removeAll(req.getPartitionNames());
+                }
+                return null;
+            }).when(client).releasePartitions(any(ReleasePartitionsReq.class));
+
+            // 绑定 gRPC Flush 阻塞存根
+            MilvusServiceGrpc.MilvusServiceBlockingStub blockingStub =
+                    Mockito.mock(MilvusServiceGrpc.MilvusServiceBlockingStub.class);
+            when(blockingStub.flush(any(FlushRequest.class))).thenReturn(
+                    FlushResponse.newBuilder()
+                            .setStatus(io.milvus.grpc.Status.newBuilder()
+                                    .setCode(0)
+                                    .setErrorCode(ErrorCode.Success)
+                                    .build())
+                            .build()
+            );
+            MilvusDatabaseClientManager.bindBlockingStub(client, blockingStub);
 
             ListCollectionsResp listResp = ListCollectionsResp.builder()
                     .collectionNames(Collections.singletonList("sample_document"))
@@ -194,6 +287,9 @@ class SampleMilvusIntegrationTest {
 
             when(client.get(any(GetReq.class))).thenAnswer(invocation -> {
                 GetReq req = invocation.getArgument(0);
+                if (req.getIds() != null && req.getIds().contains(999999L)) {
+                    return GetResp.builder().getResults(Collections.emptyList()).build();
+                }
                 Map<String, Object> targetMap;
                 if ("sample_multimodal".equals(req.getCollectionName())) {
                     targetMap = multimodalMap;
@@ -210,6 +306,16 @@ class SampleMilvusIntegrationTest {
                     .queryResults(Collections.singletonList(queryResult))
                     .build();
             when(client.query(any(QueryReq.class))).thenReturn(queryResp);
+
+            when(client.queryIterator(any(QueryIteratorReq.class))).thenAnswer(inv -> {
+                QueryIterator iterator = Mockito.mock(QueryIterator.class);
+                QueryResultsWrapper.RowRecord rowRecord = Mockito.mock(QueryResultsWrapper.RowRecord.class);
+                when(rowRecord.getFieldValues()).thenReturn(new HashMap<>(entityMap));
+                when(iterator.next())
+                        .thenReturn(Collections.singletonList(rowRecord))
+                        .thenReturn(Collections.emptyList());
+                return iterator;
+            });
 
             // 5. 向量检索与混合检索
             when(client.search(any(SearchReq.class))).thenAnswer(invocation -> {
@@ -367,12 +473,54 @@ class SampleMilvusIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(2));
 
-        // 4. 按主键查询
+        // 3.1 批量覆盖写入 (batchUpsert) 与显式落盘 flush
+        DocumentInsertDto doc2Updated = DocumentInsertDto.builder()
+                .id(2L)
+                .category("AI")
+                .tenantId("tenant_b")
+                .title("LLM 与 RAG 架构设计 (Upsert)")
+                .content("大模型向量召回优化")
+                .vector(List.of(0.2f, 0.3f, 0.4f, 0.5f))
+                .build();
+        DocumentBatchInsertDto batchUpsertDto = DocumentBatchInsertDto.builder()
+                .documents(Arrays.asList(doc2Updated, doc3))
+                .build();
+        mockMvc.perform(post("/sample/milvus/vector/batch-upsert")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(batchUpsertDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(2));
+
+        mockMvc.perform(post("/sample/milvus/lifecycle/collection/flush")
+                        .param("collectionName", "sample_document"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 4. 按主键查询、批量点查 (getByIds) 与存在性探测 (existsById)
         mockMvc.perform(get("/sample/milvus/vector/get/1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.id").isNotEmpty())
                 .andExpect(jsonPath("$.data.title").value("Spring Boot 向量检索技术"));
+
+        mockMvc.perform(get("/sample/milvus/vector/batch-get")
+                        .param("ids", "1", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data[0].id").isNotEmpty());
+
+        mockMvc.perform(get("/sample/milvus/vector/exists/1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        mockMvc.perform(get("/sample/milvus/vector/exists/999999"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(false));
 
         // 5. 向量相似度检索 (ANN Search)
         VectorSearchDto searchDto = VectorSearchDto.builder()
@@ -401,8 +549,14 @@ class SampleMilvusIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").isNotEmpty());
 
-        // 8. 按主键删除文档 1
+        // 8. 按主键删除文档 1 与按标量表达式删除文档 3
         mockMvc.perform(delete("/sample/milvus/vector/delete/1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        mockMvc.perform(delete("/sample/milvus/vector/delete-by-expr")
+                        .param("expr", "id == 3"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(true));
@@ -579,6 +733,8 @@ class SampleMilvusIntegrationTest {
 
         assertThat(TenantContextHolder.getTenantId()).isNull();
 
+        awaitGetVisible("/sample/milvus/tenant/get/100", "tenant_corp_alpha");
+
         // 4. 租户点查：本租户正常读取，跨租户访问严格拦截返回空
         mockMvc.perform(get("/sample/milvus/tenant/get/100")
                         .header("X-Tenant-Id", "tenant_corp_alpha"))
@@ -716,6 +872,69 @@ class SampleMilvusIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").isArray());
+
+        // 3. MilvusExprHelper 复合过滤表达式检索
+        ExprSearchDto scalarExprDto = ExprSearchDto.builder()
+                .collectionName("sample_document")
+                .vector(List.of(0.2f, 0.3f, 0.4f, 0.5f))
+                .category("AI")
+                .titlePrefix("LLM%")
+                .minId(2L)
+                .topK(5)
+                .build();
+        mockMvc.perform(post("/sample/milvus/search/expr")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(scalarExprDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.compiledExpr")
+                        .value("(category == 'AI') and (title like 'LLM%') and (id >= 2)"))
+                .andExpect(jsonPath("$.data.hits").isArray());
+
+        // 离线桩下额外校验 TEXT_MATCH BM25 表达式构造与单引号安全转义
+        if (Mockito.mockingDetails(milvusClientV2).isMock()) {
+            ExprSearchDto textMatchDto = ExprSearchDto.builder()
+                    .collectionName("sample_document")
+                    .vector(List.of(0.1f, 0.2f, 0.3f, 0.4f))
+                    .category("TECH")
+                    .textMatchQuery("Milvus's RAG")
+                    .topK(3)
+                    .build();
+            mockMvc.perform(post("/sample/milvus/search/expr")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(textMatchDto)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.compiledExpr")
+                            .value("(category == 'TECH') and (TEXT_MATCH(content, 'Milvus\\'s RAG'))"));
+        }
+
+        // 无过滤条件 Fail-Fast 校验
+        ExprSearchDto emptyExprDto = ExprSearchDto.builder()
+                .vector(List.of(0.1f, 0.2f, 0.3f, 0.4f))
+                .topK(5)
+                .build();
+        mockMvc.perform(post("/sample/milvus/search/expr")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(emptyExprDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        // 4. QueryIterator 游标流式深度遍历
+        StreamQueryDto streamDto = StreamQueryDto.builder()
+                .category("AI")
+                .minId(2L)
+                .batchSize(100)
+                .build();
+        mockMvc.perform(post("/sample/milvus/search/stream")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(streamDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.filterExpr").value("(category == 'AI') and (id >= 2)"))
+                .andExpect(jsonPath("$.data.batchCount").value(1))
+                .andExpect(jsonPath("$.data.totalCount").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").isNotEmpty());
     }
 
     @Test
@@ -791,7 +1010,102 @@ class SampleMilvusIntegrationTest {
 
     @Test
     @Order(9)
-    @DisplayName("9. 测试集合释放与删除终态清理 (MilvusLifecycleController)")
+    @DisplayName("9. 测试物理分区生命周期运维、isPartitionsLoaded、auto-create-partition 与显式落盘 flush (MilvusPartitionController)")
+    void testPartitionLifecycleAndFlush() throws Exception {
+        String archiveCol = "sample_archive_log";
+        try {
+            // 1. 初始化归档日志集合
+            mockMvc.perform(post("/sample/milvus/partition/init"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 2. 显式创建物理分区 part_202611 并列表验证
+            PartitionOpDto createPartDto = PartitionOpDto.builder()
+                    .collectionName(archiveCol)
+                    .partitionName("part_202611")
+                    .build();
+            mockMvc.perform(post("/sample/milvus/partition/create")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(createPartDto)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
+
+            mockMvc.perform(get("/sample/milvus/partition/list")
+                            .param("collectionName", archiveCol))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data", hasItem("part_202611")));
+
+            // 3. 加载分区并调用 isPartitionsLoaded 探测
+            PartitionBatchOpDto batchPartDto = PartitionBatchOpDto.builder()
+                    .collectionName(archiveCol)
+                    .partitionNames(List.of("part_202611"))
+                    .build();
+            mockMvc.perform(post("/sample/milvus/partition/load")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(batchPartDto)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
+
+            awaitPartitionLoadState(archiveCol, "part_202611", true);
+
+            // 4. 演示 auto-create-partition 自动补建 part_202612 并显式 flush 落盘
+            PartitionArchiveInsertDto archiveInsertDto = PartitionArchiveInsertDto.builder()
+                    .partitionName("part_202612")
+                    .id(5001L)
+                    .archiveMonth("2026-12")
+                    .title("归档审计日志")
+                    .vector(List.of(0.1f, 0.2f, 0.3f, 0.4f))
+                    .build();
+            mockMvc.perform(post("/sample/milvus/partition/archive-insert")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(archiveInsertDto)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(5001L));
+
+            mockMvc.perform(get("/sample/milvus/partition/list")
+                            .param("collectionName", archiveCol))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data", hasItem("part_202612")));
+
+            mockMvc.perform(post("/sample/milvus/lifecycle/collection/flush")
+                            .param("collectionName", archiveCol))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
+
+            // 5. 释放分区并确认 loaded=false，随后删除分区
+            mockMvc.perform(post("/sample/milvus/partition/release")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(batchPartDto)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
+
+            awaitPartitionLoadState(archiveCol, "part_202611", false);
+
+            mockMvc.perform(delete("/sample/milvus/partition")
+                            .param("collectionName", archiveCol)
+                            .param("partitionName", "part_202611"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
+        } finally {
+            try {
+                mockMvc.perform(delete("/sample/milvus/lifecycle/collection")
+                        .param("collectionName", archiveCol));
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    @Test
+    @Order(10)
+    @DisplayName("10. 测试集合释放与删除终态清理 (MilvusLifecycleController)")
     void testLifecycleReleaseAndDrop() throws Exception {
         // 1. 显式释放集合内存
         mockMvc.perform(post("/sample/milvus/lifecycle/collection/release")
@@ -809,8 +1123,8 @@ class SampleMilvusIntegrationTest {
     }
 
     @Test
-    @Order(10)
-    @DisplayName("10. 测试多模态多特征向量检索与混合召回 (MilvusMultimodalController)")
+    @Order(11)
+    @DisplayName("11. 测试多模态多特征向量检索与混合召回 (MilvusMultimodalController)")
     void testMultimodalOperations() throws Exception {
         // 1. 初始化多模态集合
         mockMvc.perform(post("/sample/milvus/multimodal/init"))
@@ -834,6 +1148,13 @@ class SampleMilvusIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(1001L));
+
+        mockMvc.perform(post("/sample/milvus/lifecycle/collection/flush")
+                        .param("collectionName", "sample_multimodal"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+        awaitGetVisible("/sample/milvus/multimodal/1001", null);
 
         // 3. 点查多模态文档
         mockMvc.perform(get("/sample/milvus/multimodal/1001"))
@@ -894,5 +1215,58 @@ class SampleMilvusIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(true));
+    }
+
+    private void awaitPartitionLoadState(String collectionName, String partitionName, boolean expectedLoaded) throws Exception {
+        int maxAttempts = Mockito.mockingDetails(milvusClientV2).isMock() ? 1 : 25;
+        for (int attempt = 0; attempt < maxAttempts; attempt++) {
+            String body = mockMvc.perform(get("/sample/milvus/partition/loaded")
+                            .param("collectionName", collectionName)
+                            .param("partitionNames", partitionName))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andReturn()
+                    .getResponse()
+                    .getContentAsString();
+            boolean loaded = objectMapper.readTree(body).path("data").asBoolean();
+            if (loaded == expectedLoaded) {
+                return;
+            }
+            Thread.sleep(200);
+        }
+        mockMvc.perform(get("/sample/milvus/partition/loaded")
+                        .param("collectionName", collectionName)
+                        .param("partitionNames", partitionName))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(expectedLoaded));
+    }
+
+    private void awaitGetVisible(String uri, String tenantHeader) throws Exception {
+        int maxAttempts = Mockito.mockingDetails(milvusClientV2).isMock() ? 1 : 40;
+        for (int attempt = 0; attempt < maxAttempts; attempt++) {
+            var request = get(uri);
+            if (tenantHeader != null) {
+                request.header("X-Tenant-Id", tenantHeader);
+            }
+            String body = mockMvc.perform(request)
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andReturn()
+                    .getResponse()
+                    .getContentAsString();
+            if (objectMapper.readTree(body).path("data").has("id")) {
+                return;
+            }
+            Thread.sleep(250);
+        }
+        var request = get(uri);
+        if (tenantHeader != null) {
+            request.header("X-Tenant-Id", tenantHeader);
+        }
+        mockMvc.perform(request)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.id").exists());
     }
 }

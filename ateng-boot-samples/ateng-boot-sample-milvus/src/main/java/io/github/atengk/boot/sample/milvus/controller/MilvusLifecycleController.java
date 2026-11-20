@@ -121,6 +121,20 @@ public class MilvusLifecycleController {
     }
 
     /**
+     * 显式将集合增量写入数据落盘封存为不可变 Segment
+     *
+     * @param collectionName 集合名称
+     * @return 操作成功标识
+     */
+    @PostMapping("/collection/flush")
+    public Result<Boolean> flushCollection(
+            @RequestParam(name = "collectionName", defaultValue = "sample_document")
+            @NotBlank(message = "集合名称不能为空") String collectionName) {
+        milvusTemplate.flush(collectionName.trim());
+        return Result.success(true);
+    }
+
+    /**
      * 删除指定集合
      *
      * @param collectionName 集合名称

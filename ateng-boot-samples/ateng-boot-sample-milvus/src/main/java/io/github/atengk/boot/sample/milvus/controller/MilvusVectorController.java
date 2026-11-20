@@ -11,6 +11,8 @@ import io.github.atengk.boot.sample.milvus.model.SampleDocumentEntity;
 import io.github.atengk.boot.sample.milvus.vo.DocumentHitVo;
 import io.github.atengk.boot.sample.milvus.vo.DocumentVo;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -85,6 +87,21 @@ public class MilvusVectorController {
     }
 
     /**
+     * 批量切片覆盖写入 (主键存在则更新，不存在则插入)
+     *
+     * @param request 批量写入请求 DTO
+     * @return 覆盖写入文档记录条数
+     */
+    @PostMapping("/batch-upsert")
+    public Result<Integer> batchUpsert(@Valid @RequestBody DocumentBatchInsertDto request) {
+        List<SampleDocumentEntity> entities = request.getDocuments().stream()
+                .map(DocumentConverter::toEntity)
+                .collect(Collectors.toList());
+        milvusTemplate.upsertBatchEntities(entities);
+        return Result.success(entities.size());
+    }
+
+    /**
      * 按主键 ID 查询文档详情
      *
      * @param id 文档主键 ID
@@ -97,6 +114,33 @@ public class MilvusVectorController {
     }
 
     /**
+     * 按主键列表批量点查文档详情
+     *
+     * @param ids 文档主键 ID 列表
+     * @return 文档视图 VO 列表
+     */
+    @GetMapping("/batch-get")
+    public Result<List<DocumentVo>> getByIds(
+            @RequestParam(name = "ids") @NotEmpty(message = "文档ID列表不能为空") List<@NotNull(message = "文档ID不能为空") Long> ids) {
+        List<SampleDocumentEntity> entities = milvusTemplate.getByIds(SampleDocumentEntity.class, ids);
+        List<DocumentVo> voList = entities.stream()
+                .map(DocumentConverter::toVo)
+                .collect(Collectors.toList());
+        return Result.success(voList);
+    }
+
+    /**
+     * 判定指定主键文档是否存在
+     *
+     * @param id 文档主键 ID
+     * @return 是否存在
+     */
+    @GetMapping("/exists/{id}")
+    public Result<Boolean> existsById(@PathVariable("id") @NotNull(message = "文档ID不能为空") Long id) {
+        return Result.success(milvusTemplate.existsById(SampleDocumentEntity.class, id));
+    }
+
+    /**
      * 按主键 ID 删除文档
      *
      * @param id 文档主键 ID
@@ -105,6 +149,19 @@ public class MilvusVectorController {
     @DeleteMapping("/delete/{id}")
     public Result<Boolean> deleteById(@PathVariable("id") @NotNull(message = "文档ID不能为空") Long id) {
         milvusTemplate.deleteById(SampleDocumentEntity.class, id);
+        return Result.success(true);
+    }
+
+    /**
+     * 按标量表达式条件批量删除文档
+     *
+     * @param expr 标量过滤表达式
+     * @return 删除成功标识
+     */
+    @DeleteMapping("/delete-by-expr")
+    public Result<Boolean> deleteByExpr(
+            @RequestParam(name = "expr") @NotBlank(message = "删除条件表达式不能为空") String expr) {
+        milvusTemplate.deleteEntitiesByExpr(SampleDocumentEntity.class, expr.trim());
         return Result.success(true);
     }
 

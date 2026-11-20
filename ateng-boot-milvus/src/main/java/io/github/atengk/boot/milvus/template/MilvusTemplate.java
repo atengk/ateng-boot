@@ -19,6 +19,10 @@ import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
 import io.github.atengk.boot.milvus.properties.MilvusConsistencyLevel;
 import io.github.atengk.boot.milvus.tenant.MilvusTenantHelper;
 import io.github.atengk.boot.milvus.util.MilvusExprHelper;
+import io.milvus.grpc.ErrorCode;
+import io.milvus.grpc.FlushRequest;
+import io.milvus.grpc.FlushResponse;
+import io.milvus.grpc.MilvusServiceGrpc;
 import io.milvus.orm.iterator.QueryIterator;
 import io.milvus.response.QueryResultsWrapper;
 import io.milvus.v2.client.MilvusClientV2;
@@ -383,6 +387,63 @@ public class MilvusTemplate {
         });
     }
 
+    /**
+     * 显式将指定集合的增量写入数据封存落盘为不可变 Segment
+     *
+     * @param collectionName 目标集合名称
+     */
+    public void flush(String collectionName) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        flush(Collections.singletonList(collectionName.trim()));
+    }
+
+    /**
+     * 显式将实体类对应集合的增量写入数据封存落盘为不可变 Segment
+     *
+     * @param entityClass 标注 @MilvusCollection 的实体类
+     */
+    public void flush(Class<?> entityClass) {
+        Assert.notNull(entityClass, "entityClass must not be null");
+        flush(MilvusEntityMetadata.of(entityClass).getCollectionName());
+    }
+
+    /**
+     * 批量显式将多个集合的增量写入数据封存落盘为不可变 Segment
+     *
+     * @param collectionNames 集合名称列表
+     */
+    public void flush(List<String> collectionNames) {
+        Assert.notEmpty(collectionNames, "collectionNames must not be empty");
+        List<String> normalized = new ArrayList<>(collectionNames.size());
+        for (String name : collectionNames) {
+            Assert.hasText(name, "collectionName element must not be empty");
+            normalized.add(name.trim());
+        }
+        execute("数据显式封存落盘", targetClient -> {
+            MilvusServiceGrpc.MilvusServiceBlockingStub stub =
+                    MilvusDatabaseClientManager.extractBlockingStub(targetClient);
+            if (stub == null) {
+                throw new MilvusException(MilvusResultCode.CLIENT_INIT_FAILED,
+                        "数据显式封存落盘失败: 当前 MilvusClientV2 未挂载可用 gRPC 阻塞存根");
+            }
+            String effectiveDb = resolveCurrentDatabase();
+            FlushRequest.Builder reqBuilder = FlushRequest.newBuilder()
+                    .addAllCollectionNames(normalized);
+            if (StringUtils.hasText(effectiveDb)) {
+                reqBuilder.setDbName(effectiveDb);
+            }
+            FlushResponse response = stub.flush(reqBuilder.build());
+            if (response != null && response.hasStatus()) {
+                int code = response.getStatus().getCode();
+                ErrorCode errorCode = response.getStatus().getErrorCode();
+                if (code != 0 || errorCode != ErrorCode.Success) {
+                    throw new IllegalStateException("Milvus flush failed: " + response.getStatus().getReason());
+                }
+            }
+            return null;
+        });
+    }
+
     // =========================================================================
     // 2. 向量索引生命周期运维 (Index DDL Operations)
     // =========================================================================
@@ -662,6 +723,36 @@ public class MilvusTemplate {
                     .partitionNames(partitionNames)
                     .build());
             return null;
+        });
+    }
+
+    /**
+     * 探测指定物理分区列表是否已全部加载至内存
+     *
+     * @param collectionName 集合名称
+     * @param partitionNames 物理分区名称列表
+     * @return 当且仅当所有目标分区均已加载至内存时返回 true，任一分区未加载返回 false
+     */
+    public boolean isPartitionsLoaded(String collectionName, List<String> partitionNames) {
+        Assert.hasText(collectionName, "collectionName must not be empty");
+        Assert.notEmpty(partitionNames, "partitionNames must not be empty");
+        List<String> normalizedPartitions = new ArrayList<>(partitionNames.size());
+        for (String partitionName : partitionNames) {
+            Assert.hasText(partitionName, "partitionName element must not be empty");
+            normalizedPartitions.add(partitionName.trim());
+        }
+        String targetCollection = collectionName.trim();
+        return execute("探测物理分区加载状态", c -> {
+            for (String partitionName : normalizedPartitions) {
+                Boolean loaded = c.getLoadState(GetLoadStateReq.builder()
+                        .collectionName(targetCollection)
+                        .partitionName(partitionName)
+                        .build());
+                if (!Boolean.TRUE.equals(loaded)) {
+                    return false;
+                }
+            }
+            return true;
         });
     }
 
@@ -1637,6 +1728,98 @@ public class MilvusTemplate {
      */
     public <T> List<MilvusHit<T>> search(Class<T> entityClass, List<Float> vector, int topK) {
         return search(entityClass, vector, topK, null, null);
+    }
+
+    /**
+     * 基于实体类的多向量列强类型向量相似度检索 (显式指定目标向量列与一致性级别)
+     *
+     * @param entityClass      实体类
+     * @param annsField        目标向量字段名称
+     * @param vector           查询向量
+     * @param topK             召回数量
+     * @param expr             标量过滤表达式 (可选)
+     * @param consistencyLevel 一致性级别 (可选，默认继承全局配置)
+     * @param <T>              实体泛型
+     * @return 命中结果列表
+     */
+    public <T> List<MilvusHit<T>> search(Class<T> entityClass,
+                                         String annsField,
+                                         List<Float> vector,
+                                         int topK,
+                                         String expr,
+                                         MilvusConsistencyLevel consistencyLevel) {
+        Assert.notNull(entityClass, "entityClass must not be null");
+        Assert.hasText(annsField, "annsField must not be empty");
+        MilvusEntityMetadata metadata = MilvusEntityMetadata.of(entityClass);
+        return search(metadata.getCollectionName(), annsField.trim(), vector, topK, expr, null, consistencyLevel, entityClass);
+    }
+
+    /**
+     * 基于实体类的多向量列强类型向量相似度检索 (显式指定目标向量列)
+     *
+     * @param entityClass 实体类
+     * @param annsField   目标向量字段名称
+     * @param vector      查询向量
+     * @param topK        召回数量
+     * @param expr        标量过滤表达式 (可选)
+     * @param <T>         实体泛型
+     * @return 命中结果列表
+     */
+    public <T> List<MilvusHit<T>> search(Class<T> entityClass,
+                                         String annsField,
+                                         List<Float> vector,
+                                         int topK,
+                                         String expr) {
+        return search(entityClass, annsField, vector, topK, expr, null);
+    }
+
+    /**
+     * 基于实体类的稀疏向量强类型检索 (支持 BM25 / SPLADE 稀疏特征字典及一致性级别定制)
+     *
+     * @param entityClass      实体类
+     * @param annsField        目标稀疏向量字段名称
+     * @param sparseVector     稀疏向量字典 (termId -> weight)
+     * @param topK             召回数量
+     * @param expr             标量过滤表达式 (可选)
+     * @param consistencyLevel 一致性级别 (可选，默认继承全局配置)
+     * @param <T>              实体泛型
+     * @return 命中结果列表
+     */
+    public <T> List<MilvusHit<T>> searchSparse(Class<T> entityClass,
+                                               String annsField,
+                                               Map<Long, Float> sparseVector,
+                                               int topK,
+                                               String expr,
+                                               MilvusConsistencyLevel consistencyLevel) {
+        Assert.notNull(entityClass, "entityClass must not be null");
+        Assert.hasText(annsField, "annsField must not be empty");
+        Assert.notEmpty(sparseVector, "sparseVector must not be empty");
+        MilvusSearchRequest<T> request = MilvusSearchRequest.of(entityClass)
+                .annsField(annsField.trim())
+                .sparseVector(sparseVector)
+                .topK(topK)
+                .expr(expr)
+                .consistencyLevel(consistencyLevel);
+        return search(request);
+    }
+
+    /**
+     * 基于实体类的稀疏向量强类型检索 (支持标量过滤表达式)
+     *
+     * @param entityClass  实体类
+     * @param annsField    目标稀疏向量字段名称
+     * @param sparseVector 稀疏向量字典 (termId -> weight)
+     * @param topK         召回数量
+     * @param expr         标量过滤表达式 (可选)
+     * @param <T>          实体泛型
+     * @return 命中结果列表
+     */
+    public <T> List<MilvusHit<T>> searchSparse(Class<T> entityClass,
+                                               String annsField,
+                                               Map<Long, Float> sparseVector,
+                                               int topK,
+                                               String expr) {
+        return searchSparse(entityClass, annsField, sparseVector, topK, expr, null);
     }
 
     /**

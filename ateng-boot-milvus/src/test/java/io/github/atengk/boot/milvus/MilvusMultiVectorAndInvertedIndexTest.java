@@ -1,23 +1,31 @@
 package io.github.atengk.boot.milvus;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.milvus.annotation.MilvusCollection;
 import io.github.atengk.boot.milvus.annotation.MilvusField;
 import io.github.atengk.boot.milvus.annotation.MilvusId;
 import io.github.atengk.boot.milvus.annotation.MilvusVector;
 import io.github.atengk.boot.milvus.model.MilvusEntityConverter;
 import io.github.atengk.boot.milvus.model.MilvusEntityMetadata;
+import io.github.atengk.boot.milvus.model.MilvusHit;
 import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
+import io.github.atengk.boot.milvus.properties.MilvusConsistencyLevel;
 import io.github.atengk.boot.milvus.template.MilvusTemplate;
 import io.milvus.v2.client.MilvusClientV2;
+import io.milvus.v2.common.ConsistencyLevel;
 import io.milvus.v2.common.DataType;
 import io.milvus.v2.common.IndexParam;
 import io.milvus.v2.service.collection.request.CreateCollectionReq;
 import io.milvus.v2.service.index.request.CreateIndexReq;
 import io.milvus.v2.service.index.request.ListIndexesReq;
+import io.milvus.v2.service.vector.request.SearchReq;
+import io.milvus.v2.service.vector.request.data.SparseFloatVec;
+import io.milvus.v2.service.vector.response.SearchResp;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -26,6 +34,7 @@ import org.mockito.ArgumentCaptor;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
@@ -46,6 +55,12 @@ class MilvusMultiVectorAndInvertedIndexTest {
         client = mock(MilvusClientV2.class);
         properties = new AtengMilvusProperties();
         template = new MilvusTemplate(client, properties);
+        TenantContextHolder.clear();
+    }
+
+    @AfterEach
+    void tearDown() {
+        TenantContextHolder.clear();
     }
 
     @Data
@@ -220,5 +235,79 @@ class MilvusMultiVectorAndInvertedIndexTest {
         assertThat(converted.getContent()).isEqualTo("BGE-M3 混合嵌入与倒排索引");
         assertThat(converted.getDenseVector()).containsExactly(0.1f, 0.2f, 0.3f);
         assertThat(converted.getSparseVector()).containsEntry(1001L, 0.85f).containsEntry(2002L, 1.25f);
+    }
+
+    @Test
+    @DisplayName("search & searchSparse - 多向量列强类型检索、稀疏向量检索与多租户过滤织入")
+    void testMultiVectorTypedSearchAndSearchSparse() {
+        TenantContextHolder.setTenantId("tenant_mm_01");
+
+        Map<String, Object> entityMap = new HashMap<>();
+        entityMap.put("id", 777L);
+        entityMap.put("content", "BM25 稀疏检索与稠密语义");
+        entityMap.put("readCount", 42);
+        entityMap.put("dense_vec", List.of(0.1f, 0.2f, 0.3f));
+        entityMap.put("sparse_vec", Map.of(101L, 0.9f));
+
+        SearchResp.SearchResult result = SearchResp.SearchResult.builder()
+                .id(777L)
+                .score(0.93f)
+                .entity(entityMap)
+                .build();
+        when(client.search(any(SearchReq.class))).thenReturn(SearchResp.builder()
+                .searchResults(List.of(List.of(result)))
+                .build());
+
+        // 1. 指定向量列稠密检索 (含一致性级别重载与默认一致性重载)
+        List<MilvusHit<HybridArticleEntity>> denseHits = template.search(
+                HybridArticleEntity.class,
+                "dense_vec",
+                List.of(0.1f, 0.2f, 0.3f),
+                5,
+                "readCount > 10",
+                MilvusConsistencyLevel.STRONG
+        );
+        assertThat(denseHits).hasSize(1);
+        assertThat(denseHits.get(0).getEntity().getId()).isEqualTo(777L);
+        assertThat(denseHits.get(0).getEntity().getContent()).isEqualTo("BM25 稀疏检索与稠密语义");
+
+        template.search(HybridArticleEntity.class, "dense_vec", List.of(0.1f, 0.2f, 0.3f), 5, null);
+
+        // 2. 指定向量列稀疏检索 (含一致性级别重载与默认一致性重载)
+        Map<Long, Float> sparseQuery = Map.of(101L, 1.2f, 205L, 0.6f);
+        List<MilvusHit<HybridArticleEntity>> sparseHits = template.searchSparse(
+                HybridArticleEntity.class,
+                "sparse_vec",
+                sparseQuery,
+                5,
+                "readCount > 10",
+                MilvusConsistencyLevel.STRONG
+        );
+        assertThat(sparseHits).hasSize(1);
+        assertThat(sparseHits.get(0).getEntity().getSparseVector()).containsEntry(101L, 0.9f);
+
+        template.searchSparse(HybridArticleEntity.class, "sparse_vec", sparseQuery, 3, null);
+
+        ArgumentCaptor<SearchReq> captor = ArgumentCaptor.forClass(SearchReq.class);
+        verify(client, times(4)).search(captor.capture());
+        List<SearchReq> reqs = captor.getAllValues();
+
+        assertThat(reqs.get(0).getAnnsField()).isEqualTo("dense_vec");
+        assertThat(reqs.get(0).getConsistencyLevel()).isEqualTo(ConsistencyLevel.STRONG);
+        assertThat(reqs.get(0).getFilter()).isEqualTo("(readCount > 10) and (tenant_id == 'tenant_mm_01')");
+
+        assertThat(reqs.get(2).getAnnsField()).isEqualTo("sparse_vec");
+        assertThat(reqs.get(2).getConsistencyLevel()).isEqualTo(ConsistencyLevel.STRONG);
+        assertThat(reqs.get(2).getData()).hasSize(1);
+        assertThat(reqs.get(2).getData().get(0)).isInstanceOf(SparseFloatVec.class);
+        assertThat(reqs.get(2).getFilter()).isEqualTo("(readCount > 10) and (tenant_id == 'tenant_mm_01')");
+
+        // 3. 前置 Fail-Fast 校验
+        assertThatThrownBy(() -> template.search(HybridArticleEntity.class, " ", List.of(0.1f), 5, null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.searchSparse(HybridArticleEntity.class, "sparse_vec", Collections.emptyMap(), 5, null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.searchSparse(HybridArticleEntity.class, " ", sparseQuery, 5, null))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

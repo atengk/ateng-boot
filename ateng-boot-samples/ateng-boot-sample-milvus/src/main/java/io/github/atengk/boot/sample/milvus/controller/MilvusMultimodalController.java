@@ -4,7 +4,6 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.milvus.model.AnnSearch;
 import io.github.atengk.boot.milvus.model.MilvusHit;
 import io.github.atengk.boot.milvus.model.MilvusHybridSearchRequest;
-import io.github.atengk.boot.milvus.model.MilvusSearchRequest;
 import io.github.atengk.boot.milvus.template.MilvusTemplate;
 import io.github.atengk.boot.sample.milvus.converter.MultimodalConverter;
 import io.github.atengk.boot.sample.milvus.dto.MultimodalDenseSearchDto;
@@ -91,17 +90,15 @@ public class MilvusMultimodalController {
      */
     @PostMapping("/search/dense")
     public Result<List<MultimodalHitVo>> searchDense(@Valid @RequestBody MultimodalDenseSearchDto dto) {
-        MilvusSearchRequest<SampleMultimodalEntity> request = MilvusSearchRequest.<SampleMultimodalEntity>builder()
-                .collectionName("sample_multimodal")
-                .entityClass(SampleMultimodalEntity.class)
-                .annsField("dense_vector")
-                .vector(dto.getVector())
-                .topK(dto.getTopK() != null ? dto.getTopK() : 5)
-                .expr(dto.getExpr())
-                .build();
-
-        log.info("执行多模态稠密向量检索: topK={}, expr={}", request.getTopK(), dto.getExpr());
-        List<MilvusHit<SampleMultimodalEntity>> hits = milvusTemplate.search(request);
+        int topK = dto.getTopK() != null ? dto.getTopK() : 5;
+        log.info("执行多模态稠密向量检索: topK={}, expr={}", topK, dto.getExpr());
+        List<MilvusHit<SampleMultimodalEntity>> hits = milvusTemplate.search(
+                SampleMultimodalEntity.class,
+                "dense_vector",
+                dto.getVector(),
+                topK,
+                dto.getExpr()
+        );
         return Result.success(MultimodalConverter.toHitVoList(hits));
     }
 
@@ -113,17 +110,15 @@ public class MilvusMultimodalController {
      */
     @PostMapping("/search/sparse")
     public Result<List<MultimodalHitVo>> searchSparse(@Valid @RequestBody MultimodalSparseSearchDto dto) {
-        MilvusSearchRequest<SampleMultimodalEntity> request = MilvusSearchRequest.<SampleMultimodalEntity>builder()
-                .collectionName("sample_multimodal")
-                .entityClass(SampleMultimodalEntity.class)
-                .annsField("sparse_vector")
-                .sparseVector(dto.getSparseVector())
-                .topK(dto.getTopK() != null ? dto.getTopK() : 5)
-                .expr(dto.getExpr())
-                .build();
-
-        log.info("执行多模态稀疏向量检索: topK={}, expr={}", request.getTopK(), dto.getExpr());
-        List<MilvusHit<SampleMultimodalEntity>> hits = milvusTemplate.search(request);
+        int topK = dto.getTopK() != null ? dto.getTopK() : 5;
+        log.info("执行多模态稀疏向量检索: topK={}, expr={}", topK, dto.getExpr());
+        List<MilvusHit<SampleMultimodalEntity>> hits = milvusTemplate.searchSparse(
+                SampleMultimodalEntity.class,
+                "sparse_vector",
+                dto.getSparseVector(),
+                topK,
+                dto.getExpr()
+        );
         return Result.success(MultimodalConverter.toHitVoList(hits));
     }
 
