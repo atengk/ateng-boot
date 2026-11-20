@@ -143,3 +143,30 @@ flowchart TD
 ### 3. 双模联调与离线自洽不变量
 - 样例工程引入 `spring-boot-starter-data-redis`，`application.yml` 默认配置 `ateng.boot.job.local.cluster-lock.type: LOCAL`，确保 CI 与无外部中间件环境下 100% 离线自洽；
 - 提供 `application-local.example.yml` 大写占位符模板，激活 `local` profile 即可无缝切换直连真实 Redis，验证原生原子 Lua 锁与租约生命周期。
+
+---
+
+## 增量演进附录二：切面拦截责任链、两级超时降级、防时钟漂移锁与虚拟线程防 Pinning 加固 (2026-11-19)
+
+### 1. 三阶段任务切面责任链拦截器 (`LocalJobInterceptor`)
+- 对标同族分布式调度模块 `ateng-boot-job-xxl` 与 `ateng-boot-job-snail`，新增支持 `Ordered` 排序的 `LocalJobInterceptor` SPI，提供 `preHandle(JobContext)`、`postHandle(JobContext, JobResult)` 与 `afterCompletion(JobContext, JobResult, Throwable)` 三个生命周期扩展点；
+- 责任链统一在整次调度外层（抢占重叠并发锁与集群锁之后、进入单次或全租户遍历之前）执行一次，避免多租户放大全局拦截开销；当 `preHandle` 返回 `false` 时，记录 `DISCARDED`、发布携带 `DiscardReason.INTERCEPTOR_REJECTED` 的 `JobDiscardedEvent` 并逆序触发已通过拦截器的 `afterCompletion`。
+
+### 2. 硬超时熔断两级降级补偿体系 (`fallbackMethod` + `LocalJobTimeoutFallbackHandler`)
+- `@LocalJob` 与 `JobDefinition` 新增 `fallbackMethod` 属性（默认 `""`），并引入全局 `@ConditionalOnMissingBean` 的 `LocalJobTimeoutFallbackHandler` SPI；
+- 当任务发生硬超时强中断且重试耗尽后，调度引擎依然广播 `JobTimeoutEvent` 并记录 `TIMEOUT` 状态以保障可观测性不丢失；随后优先反射调用同 Bean 上的 `fallbackMethod`（支持 `(JobContext, Throwable)`、`(JobContext)` 或无参签名），若未配置则委托全局 `LocalJobTimeoutFallbackHandler` Bean 执行补偿并返回降级 `JobResult`（若均未配置，则保持向外抛出 `JobTimeoutException` 的向后兼容行为）。
+
+### 3. 防跨节点时钟漂移最小锁持有时间 (`clusterLockMinHoldTime`) 与集群锁对称 SPI
+- 针对多 Pod 容器环境下极短耗时任务（如 5ms）立即释放集群锁后因节点间毫秒级 NTP 时钟偏移引发的重复执行痛点，在 `@LocalJob`、`JobDefinition` 与 `ClusterLockProperties` 中引入 `clusterLockMinHoldTime`（默认 `0s`）；
+- `JobLockHandle` 记录锁获取时间戳 `acquiredAt`，`JobClusterLockProvider` 新增非阻塞重载 `unlock(JobLockHandle handle, Duration minHoldTime)`：当实际耗时小于 `minHoldTime` 时严禁 `Thread.sleep` 阻塞 Worker 线程，而是非阻塞地将锁剩余有效期收缩更新为 `minHoldTime - elapsed`（Redis 端采用原子 Lua 比对 `owner` 后执行 `PEXPIRE`，内存锁直接更新 `leaseExpireAt`）；
+- `JobClusterLockProvider` SPI 补齐 `boolean renew(JobLockHandle handle, Duration leaseTime)`（Redis 原子 Lua 续期）与 `boolean isLocked(String jobName)` 对称方法。
+
+### 4. SaaS 多租户信号量受管并发遍历 (`tenantConcurrency`)
+- `@LocalJob` 与 `JobDefinition` 新增 `int tenantConcurrency() default 1`；
+- 当 `tenantConcurrency > 1` 且处于 `JobTenantMode.ITERATE` 时，依托受管 `localJobWorkerExecutor`、`Semaphore` 信号量背压限流与 `AsyncContext.wrap` 四维上下文隔离并行遍历各有效租户，并维持单租户 Fail-Safe 容错与汇总统计。
+
+### 5. 元数据仓储周期更新对称闭环、`nextExecutionTime` 实时计算与虚拟线程防 Pinning
+- `JobMetadataRepository` 与 `InMemoryJobMetadataRepository` 补齐 `updateFixedRate` 与 `updateFixedDelay` 接口，并在 `LocalJobRegistry` 中闭环调用；
+- `ScheduledJobTask.toJobInfo()` 为处于 `RUNNING` 状态的任务实时计算并填充 `nextExecutionTime`；
+- 清零 `InMemoryJobLogStorageProvider` 与 `AntiStormJobAlertAggregator` 中的 `synchronized` 关键字，全面切换为 `ReentrantLock`（遵循 `isHeldByCurrentThread()` + `finally` 释放范式）；
+- `JobLocalProperties` 与 `JobContext` 新增单次执行最大日志行数 `maxLogLinesPerExecution`（默认 `500`）与强类型 `Duration logRetention = Duration.ofDays(7)`（保留 `@Deprecated logRetentionDays` 向后兼容并在写入时惰性清理过期记录）。
