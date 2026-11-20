@@ -1,5 +1,6 @@
 package io.github.atengk.boot.milvus;
 
+import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.milvus.autoconfigure.AtengMilvusAutoConfiguration;
 import io.github.atengk.boot.milvus.client.MilvusDatabaseClientManager;
@@ -7,6 +8,7 @@ import io.github.atengk.boot.milvus.context.MilvusContextHolder;
 import io.github.atengk.boot.milvus.customizer.MilvusClientCustomizer;
 import io.github.atengk.boot.milvus.exception.MilvusException;
 import io.github.atengk.boot.milvus.health.MilvusHealthIndicator;
+import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
 import io.github.atengk.boot.milvus.template.MilvusTemplate;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
@@ -35,15 +37,15 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -118,28 +120,34 @@ class AtengMilvusAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("测试 MilvusClientCustomizer SPI 定制 ConnectConfig 与 rpc-deadline 透传")
+    @DisplayName("测试 MilvusClientCustomizer SPI 定制 ConnectConfigBuilder 与 rpc-deadline 透传")
     void testCustomizerAndRpcDeadlinePropagation() throws Exception {
-        AtomicReference<ConnectConfig> capturedConfig = new AtomicReference<>();
+        AtomicReference<AtengMilvusProperties> capturedProperties = new AtomicReference<>();
         contextRunner
                 .withPropertyValues(
                         "ateng.boot.milvus.uri=http://127.0.0.1:19998",
                         "ateng.boot.milvus.connect-timeout=200ms",
                         "ateng.boot.milvus.rpc-deadline=15s"
                 )
-                .withBean(MilvusClientCustomizer.class, () -> config -> {
-                    capturedConfig.set(config);
-                    config.setKeepAliveWithoutCalls(true);
-                    config.setDbName("custom_spi_db");
+                .withBean(MilvusClientCustomizer.class, () -> (builder, props) -> {
+                    capturedProperties.set(props);
+                    builder.keepAliveWithoutCalls(true);
+                    builder.dbName("custom_spi_db");
                 })
                 .run(context -> {
                     assertThat(context).hasSingleBean(MilvusClientV2.class);
                     assertThat(context).hasSingleBean(MilvusTemplate.class);
                     assertThat(context).hasSingleBean(MilvusDatabaseClientManager.class);
 
-                    assertThat(capturedConfig.get()).isNotNull();
-                    assertThat(capturedConfig.get().getRpcDeadlineMs()).isEqualTo(15_000L);
-                    assertThat(capturedConfig.get().isKeepAliveWithoutCalls()).isTrue();
+                    MilvusClientV2 client = context.getBean(MilvusClientV2.class);
+                    Field configField = MilvusClientV2.class.getDeclaredField("connectConfig");
+                    configField.setAccessible(true);
+                    ConnectConfig effectiveConfig = (ConnectConfig) configField.get(client);
+
+                    assertThat(capturedProperties.get()).isNotNull();
+                    assertThat(capturedProperties.get().getRpcDeadline()).isEqualTo(Duration.ofSeconds(15));
+                    assertThat(effectiveConfig.getRpcDeadlineMs()).isEqualTo(15_000L);
+                    assertThat(effectiveConfig.isKeepAliveWithoutCalls()).isTrue();
                     assertThat(context.getBean(MilvusDatabaseClientManager.class).getDefaultDatabase())
                             .isEqualTo("custom_spi_db");
                     assertThat(context.getBean(MilvusTemplate.class).resolveCurrentDatabase())
@@ -235,13 +243,17 @@ class AtengMilvusAutoConfigurationTest {
 
                         // 并发切库触发真实 gRPC 请求
                         int threads = 6;
-                        ExecutorService pool = Executors.newFixedThreadPool(threads);
+                        ThreadPoolTaskExecutor pool = new ThreadPoolTaskExecutor();
+                        pool.setCorePoolSize(threads);
+                        pool.setMaxPoolSize(threads);
+                        pool.setThreadFactory(new NamedThreadFactory("milvus-routing-test-"));
+                        pool.initialize();
                         CountDownLatch latch = new CountDownLatch(threads);
                         AtomicInteger errors = new AtomicInteger(0);
                         try {
                             for (int i = 0; i < threads; i++) {
                                 final String targetDb = (i % 2 == 0) ? "db_alpha" : "db_beta";
-                                pool.submit(() -> {
+                                pool.execute(() -> {
                                     try (MilvusContextHolder.DatabaseScope ignored = MilvusContextHolder.useDatabase(targetDb)) {
                                         List<String> cols = template.listCollections();
                                         if (!cols.contains("col_shared")) {
@@ -257,7 +269,7 @@ class AtengMilvusAutoConfigurationTest {
                             assertThat(latch.await(10, TimeUnit.SECONDS)).isTrue();
                             assertThat(errors.get()).isZero();
                         } finally {
-                            pool.shutdownNow();
+                            pool.shutdown();
                         }
 
                         // 验证每次 RPC 仅有单一 dbname 头，且同时覆盖两库

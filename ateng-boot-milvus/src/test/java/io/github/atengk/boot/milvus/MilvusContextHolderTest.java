@@ -1,14 +1,14 @@
 package io.github.atengk.boot.milvus;
 
+import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.milvus.context.MilvusContextHolder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -99,7 +99,11 @@ class MilvusContextHolderTest {
 
         int threads = 8;
         int rounds = 50;
-        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        ThreadPoolTaskExecutor pool = new ThreadPoolTaskExecutor();
+        pool.setCorePoolSize(threads);
+        pool.setMaxPoolSize(threads);
+        pool.setThreadFactory(new NamedThreadFactory("milvus-ctx-test-"));
+        pool.initialize();
         CountDownLatch startLatch = new CountDownLatch(1);
         CountDownLatch doneLatch = new CountDownLatch(threads);
         AtomicInteger mismatchCount = new AtomicInteger(0);
@@ -107,7 +111,7 @@ class MilvusContextHolderTest {
         try {
             for (int t = 0; t < threads; t++) {
                 final String threadDb = "tenant_db_" + t;
-                pool.submit(() -> {
+                pool.execute(() -> {
                     try {
                         startLatch.await();
                         for (int r = 0; r < rounds; r++) {
@@ -140,7 +144,7 @@ class MilvusContextHolderTest {
             assertThat(doneLatch.await(10, TimeUnit.SECONDS)).isTrue();
             assertThat(mismatchCount.get()).isZero();
         } finally {
-            pool.shutdownNow();
+            pool.shutdown();
         }
     }
 }

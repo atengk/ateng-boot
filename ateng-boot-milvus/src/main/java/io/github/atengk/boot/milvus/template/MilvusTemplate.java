@@ -2057,39 +2057,21 @@ public class MilvusTemplate {
         String effectiveTenantField = MilvusTenantHelper.resolveEffectiveTenantField(
                 null, tenantFieldName, properties.getTenantFieldName());
         // 多租户安全防线：若处于租户隔离上下文，强制将租户字段纳入出参以便后置严格验权
-        boolean removeTenantField = false;
         String tenantId = !TenantContextHolder.isIgnoreTenant() ? TenantContextHolder.getTenantId() : null;
-        if (StringUtils.hasText(tenantId)) {
-            if (fields != null && !fields.isEmpty() && !fields.contains("*")) {
-                if (!fields.contains(effectiveTenantField)) {
-                    fields = new ArrayList<>(fields);
-                    fields.add(effectiveTenantField);
-                    removeTenantField = true;
-                }
-            }
-        }
+        TenantProjection projection = resolveTenantProjection(fields, tenantId, effectiveTenantField);
 
-        final List<String> finalFields = fields;
-        final boolean needRemoveTenant = removeTenantField;
         return execute("按主键点查", c -> {
             var getReqBuilder = GetReq.builder()
                     .collectionName(collectionName)
                     .ids(Collections.singletonList(id));
-            if (finalFields != null && !finalFields.isEmpty()) {
-                getReqBuilder.outputFields(finalFields);
+            if (projection.outputFields() != null && !projection.outputFields().isEmpty()) {
+                getReqBuilder.outputFields(projection.outputFields());
             }
             var resp = c.get(getReqBuilder.build());
             if (resp != null && resp.getGetResults() != null && !resp.getGetResults().isEmpty()) {
                 Map<String, Object> entity = resp.getGetResults().get(0).getEntity();
-                if (entity != null && StringUtils.hasText(tenantId)) {
-                    Object entityTenant = entity.get(effectiveTenantField);
-                    // 严格越权防线：租户字段缺失或与当前租户不匹配一律视为无权读取并返回 null
-                    if (entityTenant == null || !tenantId.trim().equals(String.valueOf(entityTenant).trim())) {
-                        return null;
-                    }
-                    if (needRemoveTenant) {
-                        entity.remove(effectiveTenantField);
-                    }
+                if (!passesTenantGuardAndStrip(entity, tenantId, effectiveTenantField, projection.removeTenantField())) {
+                    return null;
                 }
                 return entity;
             }
@@ -2166,43 +2148,22 @@ public class MilvusTemplate {
         String effectiveTenantField = MilvusTenantHelper.resolveEffectiveTenantField(
                 null, tenantFieldName, properties.getTenantFieldName());
         // 多租户安全防线：若处于租户隔离上下文，强制将租户字段纳入出参以便后置严格验权
-        boolean removeTenantField = false;
         String tenantId = !TenantContextHolder.isIgnoreTenant() ? TenantContextHolder.getTenantId() : null;
-        if (StringUtils.hasText(tenantId)) {
-            if (fields != null && !fields.isEmpty() && !fields.contains("*")) {
-                if (!fields.contains(effectiveTenantField)) {
-                    fields = new ArrayList<>(fields);
-                    fields.add(effectiveTenantField);
-                    removeTenantField = true;
-                }
-            }
-        }
+        TenantProjection projection = resolveTenantProjection(fields, tenantId, effectiveTenantField);
 
-        final List<String> finalFields = fields;
-        final boolean needRemoveTenant = removeTenantField;
         return execute("按主键批量点查", c -> {
             var getReqBuilder = GetReq.builder()
                     .collectionName(collectionName)
                     .ids((List<Object>) ids);
-            if (finalFields != null && !finalFields.isEmpty()) {
-                getReqBuilder.outputFields(finalFields);
+            if (projection.outputFields() != null && !projection.outputFields().isEmpty()) {
+                getReqBuilder.outputFields(projection.outputFields());
             }
             var resp = c.get(getReqBuilder.build());
             if (resp != null && resp.getGetResults() != null && !resp.getGetResults().isEmpty()) {
                 List<Map<String, Object>> list = new ArrayList<>(resp.getGetResults().size());
                 for (var r : resp.getGetResults()) {
                     Map<String, Object> entity = r.getEntity();
-                    if (entity != null) {
-                        if (StringUtils.hasText(tenantId)) {
-                            Object entityTenant = entity.get(effectiveTenantField);
-                            // 严格越权防线：租户字段缺失或与当前租户不匹配一律跳过
-                            if (entityTenant == null || !tenantId.trim().equals(String.valueOf(entityTenant).trim())) {
-                                continue;
-                            }
-                            if (needRemoveTenant) {
-                                entity.remove(effectiveTenantField);
-                            }
-                        }
+                    if (passesTenantGuardAndStrip(entity, tenantId, effectiveTenantField, projection.removeTenantField())) {
                         list.add(entity);
                     }
                 }
@@ -2362,13 +2323,7 @@ public class MilvusTemplate {
      * @param batchSize      每批切片大小 (小于等于 0 时采用配置默认值)
      */
     public void insertBatch(String collectionName, List<Map<String, Object>> data, String partitionName, int batchSize) {
-        if (data == null || data.isEmpty()) {
-            return;
-        }
-        int effectiveBatchSize = resolveBatchSize(batchSize);
-        RetryUtil.RetryConfig retryConfig = resolveRetryConfig();
-        BatchSliceUtil.forEachSlice(data, effectiveBatchSize, slice ->
-                RetryUtil.execute(() -> insert(collectionName, slice, partitionName), retryConfig));
+        executeBatch(data, batchSize, slice -> insert(collectionName, slice, partitionName));
     }
 
     /**
@@ -2412,13 +2367,7 @@ public class MilvusTemplate {
      * @param <T>           实体泛型
      */
     public <T> void insertBatchEntities(List<T> entities, String partitionName, int batchSize) {
-        if (entities == null || entities.isEmpty()) {
-            return;
-        }
-        int effectiveBatchSize = resolveBatchSize(batchSize);
-        RetryUtil.RetryConfig retryConfig = resolveRetryConfig();
-        BatchSliceUtil.forEachSlice(entities, effectiveBatchSize, slice ->
-                RetryUtil.execute(() -> insertEntities(slice, partitionName), retryConfig));
+        executeBatch(entities, batchSize, slice -> insertEntities(slice, partitionName));
     }
 
     /**
@@ -2451,13 +2400,7 @@ public class MilvusTemplate {
      * @param batchSize      每批切片大小 (小于等于 0 时采用配置默认值)
      */
     public void upsertBatch(String collectionName, List<Map<String, Object>> data, String partitionName, int batchSize) {
-        if (data == null || data.isEmpty()) {
-            return;
-        }
-        int effectiveBatchSize = resolveBatchSize(batchSize);
-        RetryUtil.RetryConfig retryConfig = resolveRetryConfig();
-        BatchSliceUtil.forEachSlice(data, effectiveBatchSize, slice ->
-                RetryUtil.execute(() -> upsert(collectionName, slice, partitionName), retryConfig));
+        executeBatch(data, batchSize, slice -> upsert(collectionName, slice, partitionName));
     }
 
     /**
@@ -2490,13 +2433,7 @@ public class MilvusTemplate {
      * @param <T>           实体泛型
      */
     public <T> void upsertBatchEntities(List<T> entities, String partitionName, int batchSize) {
-        if (entities == null || entities.isEmpty()) {
-            return;
-        }
-        int effectiveBatchSize = resolveBatchSize(batchSize);
-        RetryUtil.RetryConfig retryConfig = resolveRetryConfig();
-        BatchSliceUtil.forEachSlice(entities, effectiveBatchSize, slice ->
-                RetryUtil.execute(() -> upsertEntities(slice, partitionName), retryConfig));
+        executeBatch(entities, batchSize, slice -> upsertEntities(slice, partitionName));
     }
 
     /**
@@ -2518,6 +2455,54 @@ public class MilvusTemplate {
      */
     public <T> void upsertBatchEntities(List<T> entities) {
         upsertBatchEntities(entities, null, 0);
+    }
+
+    private <E> void executeBatch(List<E> items, int batchSize, Consumer<List<E>> batchAction) {
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+        int effectiveBatchSize = resolveBatchSize(batchSize);
+        RetryUtil.RetryConfig retryConfig = resolveRetryConfig();
+        BatchSliceUtil.forEachSlice(items, effectiveBatchSize, slice ->
+                RetryUtil.execute(() -> batchAction.accept(slice), retryConfig));
+    }
+
+    private static TenantProjection resolveTenantProjection(List<String> fields,
+                                                            String tenantId,
+                                                            String tenantField) {
+        if (StringUtils.hasText(tenantId)
+                && fields != null
+                && !fields.isEmpty()
+                && !fields.contains("*")
+                && !fields.contains(tenantField)) {
+            List<String> adjusted = new ArrayList<>(fields);
+            adjusted.add(tenantField);
+            return new TenantProjection(adjusted, true);
+        }
+        return new TenantProjection(fields, false);
+    }
+
+    private static boolean passesTenantGuardAndStrip(Map<String, Object> row,
+                                                     String tenantId,
+                                                     String tenantField,
+                                                     boolean removeTenantField) {
+        if (row == null) {
+            return false;
+        }
+        if (StringUtils.hasText(tenantId)) {
+            Object rowTenant = row.get(tenantField);
+            // 严格越权防线：租户字段缺失或与当前租户不匹配一律拦截
+            if (rowTenant == null || !tenantId.trim().equals(String.valueOf(rowTenant).trim())) {
+                return false;
+            }
+            if (removeTenantField) {
+                row.remove(tenantField);
+            }
+        }
+        return true;
+    }
+
+    private record TenantProjection(List<String> outputFields, boolean removeTenantField) {
     }
 
     private int resolveBatchSize(int batchSize) {
@@ -2672,24 +2657,19 @@ public class MilvusTemplate {
         String safeFilter = MilvusTenantHelper.weaveEntityTenantFilter(
                 expr, metadata, properties.getTenantFieldName(), false);
         int effectiveBatchSize = resolveBatchSize(batchSize);
-        List<String> effectiveOutFields = (outputFields != null && !outputFields.isEmpty())
+        List<String> requestedOutFields = (outputFields != null && !outputFields.isEmpty())
                 ? new ArrayList<>(outputFields)
                 : Collections.singletonList("*");
         String tenantId = !TenantContextHolder.isIgnoreTenant() ? TenantContextHolder.getTenantId() : null;
         String tenantField = MilvusTenantHelper.resolveEffectiveTenantField(
                 metadata, null, properties.getTenantFieldName());
-        boolean removeTenantField = false;
-        if (StringUtils.hasText(tenantId) && !effectiveOutFields.contains("*") && !effectiveOutFields.contains(tenantField)) {
-            effectiveOutFields.add(tenantField);
-            removeTenantField = true;
-        }
-        final boolean needRemoveTenant = removeTenantField;
+        TenantProjection projection = resolveTenantProjection(requestedOutFields, tenantId, tenantField);
         String effectiveDb = resolveCurrentDatabase();
 
         QueryIteratorReq.QueryIteratorReqBuilder<?, ?> builder = QueryIteratorReq.builder()
                 .collectionName(collectionName)
                 .batchSize(effectiveBatchSize)
-                .outputFields(effectiveOutFields)
+                .outputFields(projection.outputFields())
                 .consistencyLevel(properties.getConsistencyLevel().getNativeLevel());
 
         if (StringUtils.hasText(effectiveDb)) {
@@ -2711,16 +2691,7 @@ public class MilvusTemplate {
                     List<Map<String, Object>> batch = new ArrayList<>(records.size());
                     for (QueryResultsWrapper.RowRecord record : records) {
                         Map<String, Object> map = record.getFieldValues();
-                        if (map != null) {
-                            if (StringUtils.hasText(tenantId)) {
-                                Object rowTenant = map.get(tenantField);
-                                if (rowTenant == null || !tenantId.trim().equals(String.valueOf(rowTenant).trim())) {
-                                    continue;
-                                }
-                                if (needRemoveTenant) {
-                                    map.remove(tenantField);
-                                }
-                            }
+                        if (passesTenantGuardAndStrip(map, tenantId, tenantField, projection.removeTenantField())) {
                             batch.add(map);
                         }
                     }

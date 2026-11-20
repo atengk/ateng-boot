@@ -1,5 +1,6 @@
 package io.github.atengk.boot.milvus.customizer;
 
+import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
 import io.milvus.v2.client.ConnectConfig;
 
 /**
@@ -13,9 +14,10 @@ import io.milvus.v2.client.ConnectConfig;
 public interface MilvusClientCustomizer {
 
     /**
-     * 定制底层 Milvus 客户端连接配置
+     * 定制底层 Milvus 客户端连接配置构建器
      *
-     * @param connectConfig 已填充默认属性的连接配置对象
+     * @param builder    已填充默认属性的连接配置构建器
+     * @param properties 当前 Milvus 配置属性
      */
-    void customize(ConnectConfig connectConfig);
+    void customize(ConnectConfig.ConnectConfigBuilder<?, ?> builder, AtengMilvusProperties properties);
 }

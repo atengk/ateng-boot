@@ -199,7 +199,7 @@ flowchart TB
 4. **并发与虚拟线程防 Carrier Pinning 治理**：
    - `MilvusDatabaseClientManager` 基于 `ConcurrentHashMap` 无锁缓存多库客户端视图，全模块零 `synchronized` 块；`MilvusEmbeddingStore` 集合懒初始化采用 `ReentrantLock` 替代监视器锁，严格遵循 [ADR-0029](./0029-virtual-threads-and-adaptive-async-runtime.md) 在 JDK 21+ 虚拟线程运行时杜绝载体线程钉死。
 5. **`MilvusClientCustomizer` 非破坏性 SPI 与精细化批量重试配置**：
-   - 新增 `@FunctionalInterface` 扩展点 `MilvusClientCustomizer`，在默认 `ConnectConfig` 装配完毕后按序回调定制（SSL、超时、KeepAlive），避免覆写整个 `MilvusClientV2` Bean；
+   - 新增 `@FunctionalInterface` 扩展点 `MilvusClientCustomizer`（`customize(ConnectConfig.ConnectConfigBuilder<?, ?>, AtengMilvusProperties)`），在构建 `ConnectConfig` 时按序回调定制（SSL、超时、KeepAlive），避免覆写整个 `MilvusClientV2` Bean；
    - 将分批大小、重试次数与初始退避延迟收敛至强类型配置（`batch-size: 1000`、`max-retries: 3`、`retry-delay: 200ms` 及 `Duration rpcDeadline: 30s`）。
 6. **多向量与稀疏向量强类型检索闭环（`search` / `searchSparse`）**：
    - 补齐指定向量列名 `annsField` 的强类型实体检索重载 `search(Class<T>, String annsField, List<Float>, ...)` 与稀疏检索重载 `searchSparse(Class<T>, String annsField, Map<Long, Float>, ...)`，全面贯通 `SampleMultimodalEntity` 与 `ateng-boot-sample-milvus` 9 大领域控制器双模全真回归沙箱。

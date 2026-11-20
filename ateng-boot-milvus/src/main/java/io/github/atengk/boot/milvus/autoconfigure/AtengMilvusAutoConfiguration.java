@@ -211,11 +211,10 @@ public class AtengMilvusAutoConfiguration {
             builder.password(properties.getPassword());
         }
 
-        ConnectConfig connectConfig = builder.build();
         if (customizers != null) {
-            customizers.orderedStream().forEach(customizer -> customizer.customize(connectConfig));
+            customizers.orderedStream().forEach(customizer -> customizer.customize(builder, properties));
         }
-        return connectConfig;
+        return builder.build();
     }
 
     private static String resolveDefaultDatabase(ConnectConfig connectConfig, AtengMilvusProperties properties) {

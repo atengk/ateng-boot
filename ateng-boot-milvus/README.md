@@ -9,7 +9,7 @@
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **基础装配** | 客户端连接与多库动态路由 | `AtengMilvusAutoConfiguration`<br>`ManagedMilvusClientV2`<br>`MilvusDatabaseClientManager`<br>`MilvusDynamicRpcInterceptor` | `ateng.boot.milvus.enabled`<br>`ateng.boot.milvus.uri`<br>`ateng.boot.milvus.host`<br>`ateng.boot.milvus.port`<br>`ateng.boot.milvus.token`<br>`ateng.boot.milvus.username`<br>`ateng.boot.milvus.password`<br>`ateng.boot.milvus.database`<br>`ateng.boot.milvus.secure` | 单共享 `ManagedChannel` 按每次 RPC 动态注入单一 `dbname` 头；`MilvusTemplate#getClient()` / `getProperties()` / `resolveCurrentDatabase()` | `AtengMilvusAutoConfigurationTest`<br>`AtengMilvusResilientChannelTest`<br>`MilvusTemplateBasicTest` |
-| **通道与超时** | gRPC 通道治理与连接定制 SPI | `MilvusClientCustomizer`<br>`AtengMilvusProperties` | `ateng.boot.milvus.connect-timeout`<br>`ateng.boot.milvus.keep-alive-time`<br>`ateng.boot.milvus.keep-alive-timeout`<br>`ateng.boot.milvus.idle-timeout`<br>`ateng.boot.milvus.rpc-deadline` | `MilvusClientCustomizer#customize(ConnectConfig)` 无损调整连接配置；默认建连 `10s`、保活 `55s/20s`、空闲 `24h`、单次 RPC 超时 `30s` | `AtengMilvusAutoConfigurationTest`<br>`AtengMilvusPropertiesTest` |
+| **通道与超时** | gRPC 通道治理与连接定制 SPI | `MilvusClientCustomizer`<br>`AtengMilvusProperties` | `ateng.boot.milvus.connect-timeout`<br>`ateng.boot.milvus.keep-alive-time`<br>`ateng.boot.milvus.keep-alive-timeout`<br>`ateng.boot.milvus.idle-timeout`<br>`ateng.boot.milvus.rpc-deadline` | ``MilvusClientCustomizer#customize(ConnectConfig.ConnectConfigBuilder<?, ?>, AtengMilvusProperties)`` 无损调整连接配置；默认建连 `10s`、保活 `55s/20s`、空闲 `24h`、单次 RPC 超时 `30s` | `AtengMilvusAutoConfigurationTest`<br>`AtengMilvusPropertiesTest` |
 | **可观测探针** | 云原生健康探针与版本探测 | `MilvusHealthIndicator`<br>`MilvusTemplate` | `management.health.milvus.enabled` | `testConnection()` / `getServerVersion()`，向 Actuator `/actuator/health` 上报 `UP/DOWN`、数据库与一致级别 | `MilvusHealthIndicatorTest`<br>`MilvusLifecycleController` |
 | **异常与枚举** | 因果异常转译与三级一致性 | `MilvusException`<br>`MilvusResultCode`<br>`MilvusExceptionTranslator`<br>`MilvusConsistencyLevel` | `ateng.boot.milvus.consistency-level` | `MilvusConsistencyLevel` 实现 `IBaseEnum<String>`（`STRONG`/`BOUNDED`/`EVENTUALLY`，`fromValue`）；`translate(...)` 100% 保留原始 `cause` 链 | `MilvusResultCodeAndExceptionTest`<br>`AtengMilvusPropertiesTest` |
 | **声明式映射** | 实体元数据与动态字段映射 | `@MilvusCollection`<br>`@MilvusId`<br>`@MilvusVector`<br>`@MilvusField`<br>`@MilvusPartitionKey`<br>`@MilvusDynamic` | - | `@MilvusCollection`（`name`/`description`/`enableDynamicField`/`numShards`/`ttlSeconds`/`mmap`/`replicaNumber`）；`@MilvusId`（`autoId`/`maxLength`）；`@MilvusVector`（`dimension`/`metricType`/`indexType`）；`@MilvusField`（`dataType`/`indexType`/`indexName`/`tenantField`）；`@MilvusPartitionKey`（`tenantField`）；`@MilvusDynamic`（`$meta` 扩展列双向编解码，配合 `MilvusEntityMetadata`/`MilvusEntityConverter`） | `MilvusEntityMetadataTest`<br>`MilvusEntityConverterTest`<br>`MilvusLifecycleAndRoutingTest` |
@@ -26,7 +26,7 @@
 | **游标遍历** | 受管游标流式拉取防 OOM | `MilvusTemplate` | `ateng.boot.milvus.batch-size` | `streamingQuery` / `streamingQueryEntities`，基于 `QueryIterator` 突破 `16384` 分页上限并在 `finally` 确定性关流 | `MilvusTemplateAdvancedOperationsTest`<br>`MilvusAdvancedSearchController` |
 | **SaaS 多租户** | 租户隔离列与物理分区正交协同 | `MilvusTenantHelper`<br>`TenantContextHolder` | `ateng.boot.milvus.tenant-field-name`<br>`ateng.boot.milvus.tenant-database-routing` | `weaveTenantFilter` / `weaveEntityTenantFilter` / `resolveEffectiveTenantField` / `fillRecordTenantField` / `fillEntityTenantField`；区分 `tenantField` 隔离列与 `@MilvusPartitionKey` 物理分区键 | `MilvusTenantHelperTest`<br>`MilvusTenantController` |
 | **原生穿透** | 原生驱动逃逸回调 | `MilvusTemplate` | - | `execute(String operation, Function<MilvusClientV2, T>)`，统一异常转译且保留原始 `cause` | `MilvusTemplateBasicTest` |
-| **LangChain4j** | `EmbeddingStore` 条件装配桥接 | `MilvusEmbeddingStore`<br>`MilvusLangChain4jAutoConfiguration`<br>`MilvusFilterMapper` | `ateng.boot.milvus.langchain4j.enabled`<br>`ateng.boot.milvus.langchain4j.collection-name`<br>`ateng.boot.milvus.langchain4j.vector-field-name`<br>`ateng.boot.milvus.langchain4j.id-field-name`<br>`ateng.boot.milvus.langchain4j.text-field-name`<br>`ateng.boot.milvus.langchain4j.tenant-field-name`<br>`ateng.boot.milvus.langchain4j.partition-name`<br>`ateng.boot.milvus.langchain4j.dimension`<br>`ateng.boot.milvus.langchain4j.metric-type`<br>`ateng.boot.milvus.langchain4j.index-type`<br>`ateng.boot.milvus.langchain4j.auto-create-collection`<br>`ateng.boot.milvus.langchain4j.consistency-level` | 实现 `EmbeddingStore<TextSegment>`；支持 `MilvusFilterMapper#map(Filter)` 表达式递归映射、`ReentrantLock` 并发防卫初始化 | `MilvusEmbeddingStoreTest`<br>`MilvusFilterMapperTest`<br>`MilvusLangChain4jAutoConfigurationTest` |
+| **LangChain4j** | `EmbeddingStore` 条件装配桥接 | `MilvusEmbeddingStore`<br>`MilvusLangChain4jAutoConfiguration`<br>`MilvusFilterMapper` | `ateng.boot.milvus.langchain4j.enabled`<br>`ateng.boot.milvus.langchain4j.collection-name`<br>`ateng.boot.milvus.langchain4j.vector-field-name`<br>`ateng.boot.milvus.langchain4j.id-field-name`<br>`ateng.boot.milvus.langchain4j.text-field-name`<br>`ateng.boot.milvus.langchain4j.tenant-field-name`<br>`ateng.boot.milvus.langchain4j.partition-name`<br>`ateng.boot.milvus.langchain4j.dimension`<br>`ateng.boot.milvus.langchain4j.metric-type`<br>`ateng.boot.milvus.langchain4j.index-type`<br>`ateng.boot.milvus.langchain4j.auto-create-collection`<br>`ateng.boot.milvus.langchain4j.consistency-level` | 实现 `EmbeddingStore<TextSegment>`；支持 `MilvusFilterMapper#map(Filter)` 表达式递归映射、`ReentrantLock` 并发防卫初始化、`isInitialized()` / `resetInitialized()` | `MilvusEmbeddingStoreTest`<br>`MilvusFilterMapperTest`<br>`MilvusLangChain4jAutoConfigurationTest` |
 
 ---
 
@@ -560,7 +560,7 @@ try {
 ```
 
 #### 核心机制与边界说明
-- **正交设计**：`SampleDocumentEntity` 同时使用 `@MilvusPartitionKey` 标记业务分类 `category` 进行哈希分区路由，并用 `@MilvusField(name = "tenant_id", tenantField = true)` 声明独立租户隔离列；仅当需要按租户直接物理分区且不按类目分区时，才标记 `@MilvusPartitionKey(tenantField = true)`；
+- **正交设计**：`SampleDocumentEntity` 同时使用 `@MilvusPartitionKey` 标记业务分类 `category` 进行哈希分区路由，并声明独立租户隔离列 `tenant_id`（框架按规则自动识别，若使用自定义列名也可显式标注 `@MilvusField(name = "...", tenantField = true)`）；仅当需要按租户直接物理分区且不按类目分区时，才标记 `@MilvusPartitionKey(tenantField = true)`；
 - **防运算符逃逸**：`MilvusTenantHelper.weaveTenantFilter` 将原始表达式整体括号化后再 `and` 拼接租户等值条件，杜绝外部传入 `or` 条件绕过租户隔离；配合 `TenantContextHolder.setIgnoreTenant(true)` 可执行受控超管跨租户查询。
 
 ---
@@ -575,9 +575,9 @@ try {
 ```java
 @Bean
 public MilvusClientCustomizer customMilvusClientCustomizer() {
-    return connectConfig -> {
-        connectConfig.setRpcDeadlineMs(TimeUnit.SECONDS.toMillis(45));
-        connectConfig.setKeepAliveWithoutCalls(true);
+    return (builder, properties) -> {
+        builder.rpcDeadlineMs(TimeUnit.SECONDS.toMillis(45));
+        builder.keepAliveWithoutCalls(true);
     };
 }
 ```
