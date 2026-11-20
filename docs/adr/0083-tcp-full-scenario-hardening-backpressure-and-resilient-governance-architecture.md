@@ -92,3 +92,12 @@ flowchart TD
 2. **网络攻防就绪**：IP 防火墙与流量整形有效防御恶意探测、CC 拒绝服务攻击与突发流量占满带宽；
 3. **门面语义完备**：跨微服务节点的分组组播填补了分布式协同拼图；
 4. **架构风格纯粹**：样例工程严格遵循非 Web Starter 的零 Controller 准则，提供真实生产可复用的示范代码。
+
+---
+
+## 补充加固注记 (Incremental Evolution Note)
+
+在后续全面体检加固中，围绕虚拟线程安全与双端门面对称性补充确立以下实现约束：
+- **并发原语无 Pinning**：服务端、客户端、注册表与连接/关联状态控制临界区全面使用 `ReentrantLock` 替代 `synchronized`，适配 JDK 21+ 虚拟线程运行时；
+- **关联时间轮可重入生命周期**：`TcpRequestCorrelationManager` 实现 `DisposableBean`/`AutoCloseable`，在 `stop()`/`close()` 后按需触发延迟重建 `HashedWheelTimer`，防止多轮启停或测试容器复用产生永久失效锁死；
+- **多端口会话隔离与排他门面**：`TcpSession` 增加 `serverName`（默认 `"default"`）归属隔离；`TcpSessionManager` 新增 `getSessionsByServer`、`closeSessionsByServer`、`getGroupsBySession`、`getAllGroups` 及空组原子清理；`TcpServerTemplate` 新增 `broadcastToServer`、`broadcastExcept`、`sendToGroupExcept` 与强类型 `requestAsync(..., Class<T>)`、`requestToDeviceAsync(..., Class<T>)`，并统一由 `TcpServerRegistry`/`TcpClientRegistry` 承担 `register` / `unregister` / `contains` 对称契约。

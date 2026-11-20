@@ -1,6 +1,6 @@
 # ateng-boot-sample-tcp 工业物联网与车联网双模长连接体验工程
 
-> 专注于演示与自验 `ateng-boot-tcp` 核心特性在工业物联网与车联网场景下的双模协同，集成 `ateng-boot-web` 对外暴露 5 大高内聚 HTTP 控制域（服务端、客户端、会话、协议、治理）共 25 个交互端点，同时保留无 Web 容器纯净端到端验证能力。
+> 专注于演示与自验 `ateng-boot-tcp` 核心特性在工业物联网与车联网场景下的双模协同，集成 `ateng-boot-web` 对外暴露 5 大高内聚 HTTP 控制域（服务端、客户端、会话、协议、治理）共 32 个交互端点，同时保留无 Web 容器纯净端到端验证能力。
 
 ---
 
@@ -53,10 +53,14 @@
 | **查看指定服务端详情** | `TcpServerController` | `GET /sample/tcp/server/detail` | `curl -X GET "http://localhost:8080/sample/tcp/server/detail?serverName=tls-gateway"` |
 | **服务端全网预警广播** | `TcpServerController` | `POST /sample/tcp/server/broadcast` | `curl -X POST "http://localhost:8080/sample/tcp/server/broadcast" -H "Content-Type: application/json" -d '{"message":"WEATHER_ALERT_TYPHOON","cluster":false}'` |
 | **车队分组定向组播** | `TcpServerController` | `POST /sample/tcp/server/group-send` | `curl -X POST "http://localhost:8080/sample/tcp/server/group-send" -H "Content-Type: application/json" -d '{"group":"FLEET-ALPHA","message":"FLEET_DISPATCH_ORDER_001","cluster":false}'` |
+| **按端口归属定向广播** | `TcpServerController` | `POST /sample/tcp/server/port-broadcast` | `curl -X POST "http://localhost:8080/sample/tcp/server/port-broadcast" -H "Content-Type: application/json" -d '{"serverName":"default","message":"PORT_DEFAULT_NOTICE"}'` |
+| **服务端全局排他广播** | `TcpServerController` | `POST /sample/tcp/server/broadcast-except` | `curl -X POST "http://localhost:8080/sample/tcp/server/broadcast-except" -H "Content-Type: application/json" -d '{"message":"EXCEPT_BROADCAST_NOTICE","excludedSessionIds":["YOUR_EXCLUDED_SESSION_ID"]}'` |
+| **车队分组排他组播** | `TcpServerController` | `POST /sample/tcp/server/group-send-except` | `curl -X POST "http://localhost:8080/sample/tcp/server/group-send-except" -H "Content-Type: application/json" -d '{"group":"FLEET-ALPHA","message":"GROUP_EXCEPT_NOTICE","excludedSessionIds":["YOUR_EXCLUDED_SESSION_ID"]}'` |
 | **查看受管客户端实例** | `TcpClientController` | `GET /sample/tcp/client/list` | `curl -X GET "http://localhost:8080/sample/tcp/client/list"` |
 | **客户端推流 (mTLS JSON / HEX)** | `TcpClientController` | `POST /sample/tcp/client/send` | `curl -X POST "http://localhost:8080/sample/tcp/client/send" -H "Content-Type: application/json" -d '{"clientName":"tls-client","payloadType":"JSON","command":"HEARTBEAT","content":"TLS_SECURE_HEARTBEAT"}'` |
 | **客户端同步 RPC 交互** | `TcpClientController` | `POST /sample/tcp/client/request` | `curl -X POST "http://localhost:8080/sample/tcp/client/request" -H "Content-Type: application/json" -d '{"clientName":"default","command":"HEARTBEAT","timeoutMillis":3000,"asyncMode":false}'` |
 | **客户端异步非阻塞 RPC** | `TcpClientController` | `POST /sample/tcp/client/request-async` | `curl -X POST "http://localhost:8080/sample/tcp/client/request-async" -H "Content-Type: application/json" -d '{"clientName":"tls-client","command":"HEARTBEAT","timeoutMillis":3000,"asyncMode":true}'` |
+| **客户端强类型异步 RPC** | `TcpClientController` | `POST /sample/tcp/client/request-async-typed` | `curl -X POST "http://localhost:8080/sample/tcp/client/request-async-typed" -H "Content-Type: application/json" -d '{"clientName":"default","command":"HEARTBEAT","timeoutMillis":3000,"asyncMode":true}'` |
 | **手动断开命名客户端** | `TcpClientController` | `POST /sample/tcp/client/disconnect` | `curl -X POST "http://localhost:8080/sample/tcp/client/disconnect?clientName=binary-client"` |
 | **手动重连命名客户端** | `TcpClientController` | `POST /sample/tcp/client/reconnect` | `curl -X POST "http://localhost:8080/sample/tcp/client/reconnect?clientName=binary-client"` |
 | **按车队筛选在线会话** | `TcpSessionController` | `GET /sample/tcp/session/list` | `curl -X GET "http://localhost:8080/sample/tcp/session/list?group=FLEET-ALPHA"` |
@@ -74,8 +78,11 @@
 | **集群桥接定向 / 分组 / 广播** | `TcpGovernanceController` | `POST /sample/tcp/governance/cluster-broadcast` | `curl -X POST "http://localhost:8080/sample/tcp/governance/cluster-broadcast" -H "Content-Type: application/json" -d '{"mode":"GROUP","target":"FLEET-ALPHA","message":"CLUSTER_GROUP_NOTICE"}'` |
 | **动态调优全局流量整形限速** | `TcpGovernanceController` | `POST /sample/tcp/governance/traffic-shaping` | `curl -X POST "http://localhost:8080/sample/tcp/governance/traffic-shaping" -H "Content-Type: application/json" -d '{"serverName":"default","writeLimitBytesPerSec":5242880,"readLimitBytesPerSec":5242880}'` |
 | **SPI 审计 / 报文拦截探针** | `TcpGovernanceController` | `POST /sample/tcp/governance/spi-probe` | `curl -X POST "http://localhost:8080/sample/tcp/governance/spi-probe" -H "Content-Type: application/json" -d '{"mode":"AUDIT_RPC","note":"SAMPLE_AUDIT_VERIFY"}'` |
+| **查询已注册命令字路由** | `TcpGovernanceController` | `GET /sample/tcp/governance/routes` | `curl -X GET "http://localhost:8080/sample/tcp/governance/routes"` |
+| **运行期热插拔动态路由** | `TcpGovernanceController` | `POST /sample/tcp/governance/dynamic-route/register` | `curl -X POST "http://localhost:8080/sample/tcp/governance/dynamic-route/register" -H "Content-Type: application/json" -d '{"command":"DYNAMIC_WEB_PROBE","note":"Web 热插拔路由验证"}'` |
+| **运行期热注销动态路由** | `TcpGovernanceController` | `DELETE /sample/tcp/governance/dynamic-route/{command}` | `curl -X DELETE "http://localhost:8080/sample/tcp/governance/dynamic-route/DYNAMIC_WEB_PROBE"` |
 
-预期 `Result<T>` 典型响应示例（提取自 `SampleTcpWebControllerTest` 实测接口）：
+预期 `Result<T>` 典型响应示例（全量字段严格对齐 `SampleTcpWebControllerTest` 实测与 VO 契约）：
 
 - **查看 `tls-gateway` mTLS 服务端详情**（`GET /sample/tcp/server/detail?serverName=tls-gateway`）：
   ```json
@@ -91,7 +98,28 @@
       "framingMode": "LENGTH_FIELD",
       "sslEnabled": true,
       "clientAuth": "NEED",
-      "activeConnections": 1
+      "activeConnections": 1,
+      "ipFilterEnabled": false,
+      "whitelist": [],
+      "blacklist": [],
+      "trafficShapingEnabled": false
+    },
+    "success": true
+  }
+  ```
+- **按端口归属定向广播**（`POST /sample/tcp/server/port-broadcast`）：
+  ```json
+  {
+    "code": 200,
+    "msg": "操作成功",
+    "data": {
+      "scope": "SERVER_PORT",
+      "target": "default",
+      "clusterMode": false,
+      "bridgeType": "LocalTcpClusterBridge",
+      "localSessionCount": 2,
+      "dispatched": true,
+      "payloadSummary": "PORT_DEFAULT_NOTICE"
     },
     "success": true
   }
@@ -102,11 +130,38 @@
     "code": 200,
     "msg": "操作成功",
     "data": {
+      "sessionId": "YOUR_ACTIVE_SESSION_ID",
+      "serverName": "default",
       "deviceId": "VEHICLE-001",
+      "remoteAddress": "/127.0.0.1:58412",
+      "localAddress": "/127.0.0.1:9099",
       "active": true,
       "writable": true,
+      "pendingWriteBytes": "0",
       "backpressurePolicy": "BLOCK_TIMEOUT",
-      "backpressureTimeoutMs": "750"
+      "backpressureTimeoutMs": "750",
+      "connectedAt": "1794391000123",
+      "lastActiveTime": "1794391025480",
+      "closeReason": null,
+      "groups": ["FLEET-ALPHA"],
+      "attributes": {}
+    },
+    "success": true
+  }
+  ```
+- **`@Valid` 上行载荷拦截快速 RPC 错误回执**（`POST /sample/tcp/client/request`，传入 `{"clientName":"default","command":"TELEMETRY_VALIDATED","payload":{"deviceId":"VEHICLE-001","speed":-9.0},"timeoutMillis":3000}`）：
+  ```json
+  {
+    "code": 200,
+    "msg": "操作成功",
+    "data": {
+      "clientName": "default",
+      "command": "TELEMETRY_VALIDATED",
+      "requestId": "YOUR_REQUEST_ID",
+      "asyncMode": false,
+      "responseCommand": "TELEMETRY_VALIDATED",
+      "responseText": "{\"requestId\":\"YOUR_REQUEST_ID\",\"command\":\"TELEMETRY_VALIDATED\",\"status\":\"ERROR\",\"message\":\"speed 不能为负数\"}",
+      "elapsedMs": "4"
     },
     "success": true
   }
@@ -118,8 +173,8 @@
 ## 4. 全真自动化回归命令
 
 样例工程提供**双轨自动化测试守护**：
-1. **Web HTTP 体验与 JSR-303 校验轨道**（[`SampleTcpWebControllerTest`](./src/test/java/io/github/atengk/boot/sample/tcp/SampleTcpWebControllerTest.java)）：依托 `MockMvc` 覆盖 5 大 Controller 全部 25 个端点正/负向断言、`FLEET-ALPHA`/`FLEET-BETA` 双仿真车机、mTLS 双向传输、多端绑定踢线及 Actuator 观测。
-2. **无 Web 纯后台端到端轨道**（[`SampleTcpE2eTest`](./src/test/java/io/github/atengk/boot/sample/tcp/SampleTcpE2eTest.java) + [`Jt808CompositeFrameCodecTest`](./src/test/java/io/github/atengk/boot/sample/tcp/codec/Jt808CompositeFrameCodecTest.java)）：在 `WebEnvironment.NONE` 与 `test` Profile 下验证核心 `ateng-boot-tcp` 在无 Servlet 容器环境中的纯净装配，完整覆盖 13 步端到端长连接、JT/T 808 转义/BCC 校验防伪、全双工 RPC、踢旧留新与断线重连。
+1. **Web HTTP 体验与 JSR-303 校验轨道**（[`SampleTcpWebControllerTest`](./src/test/java/io/github/atengk/boot/sample/tcp/SampleTcpWebControllerTest.java)）：依托 `MockMvc` 覆盖 5 大 Controller 全部 32 个端点正/负向断言、`FLEET-ALPHA`/`FLEET-BETA` 双仿真车机（含 `serverName` 端口隔离、排他广播/组播、`@Valid` 快速错误回执与动态路由热插拔）、mTLS 双向传输、多端绑定踢线及 Actuator 观测。
+2. **无 Web 纯后台端到端轨道**（[`SampleTcpE2eTest`](./src/test/java/io/github/atengk/boot/sample/tcp/SampleTcpE2eTest.java) + [`Jt808CompositeFrameCodecTest`](./src/test/java/io/github/atengk/boot/sample/tcp/codec/Jt808CompositeFrameCodecTest.java)）：在 `WebEnvironment.NONE` 与 `test` Profile 下验证核心 `ateng-boot-tcp` 在无 Servlet 容器环境中的纯净装配，完整覆盖 16 步端到端长连接、JT/T 808 转义/BCC 校验防伪、全双工 RPC、踢旧留新、断线重连、`@Valid` 入站校验拦截、四维上下文（`X-Trace-Id`/`X-Tenant-Id`/`X-User-Id`/`X-Ignore-Tenant`）异步透传及动态 `TcpMessageHandler` 热插拔。
 
 ```bash
 mvn test -pl ateng-boot-tcp,ateng-boot-samples/ateng-boot-sample-tcp -am -T 1C -nsu -B

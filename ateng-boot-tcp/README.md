@@ -10,21 +10,21 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.tcp.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (`*Test` / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **服务端发信与管理** | 多端口服务端注册表 | `TcpServerRegistry`<br>`TcpServer` | `server.*`<br>`servers.<name>.*` | `getServer(String)` / `getRequiredServer(String)` / `getDefaultServer()` / `getAllServers()` / `getActualPort(String)`，支持 `default` 主端口与多协议命名端口隔离运维 | `TcpServerRegistryTest`<br>`TcpMultiPortIntegrationTest`<br>`TcpServerController` |
-| **服务端点对点/广播** | 会话与设备下发、广播、群发与主动关断 | `TcpServerTemplate` | `server.enabled` | `send(String sessionId, Object)` / `sendToDevice(String deviceId, Object)` / `broadcast(Object)` / `sendToGroup(String group, Object)` / `close(String)` / `close(String, CloseReason)` / `closeDevice(String)` / `closeDevice(String, CloseReason)` / `getActiveConnections()` | `TcpServerTemplateTest`<br>`TcpServerController` |
-| **服务端双向 RPC** | 服务端同步与异步请求-应答 | `TcpServerTemplate`<br>`TcpRequestCorrelationManager` | `server.enabled` | `request(String, Object)` / `request(String, Object, Duration)` / `request(String, Object, Class<T>)` / `request(String, Object, Duration, Class<T>)` / `requestToDevice(...)` / `requestAsync(...)` / `requestToDeviceAsync(...)`（默认 10s 超时，返回 `CompletableFuture<TcpPacket>`） | `TcpServerTemplateTest`<br>`TcpProtocolController`<br>`SampleTcpE2eTest` |
-| **集群跨节点分发** | 两级自适应跨节点与分组组播 | `TcpServerTemplate`<br>`TcpClusterBridge` SPI<br>`LocalTcpClusterBridge`<br>`RedisPubSubTcpClusterBridge`<br>`TcpClusterBroadcastMessage` | `cluster.redis.enabled`<br>`cluster.redis.topic` | `sendToCluster(String deviceId, Object)` / `broadcastToCluster(Object)` / `sendGroupToCluster(String group, Object)`；本地直发未命中则经 Redis Pub/Sub 广播，按发射节点 UUID `nodeId` 自动防回环 | `TcpClusterBridgeTest`<br>`TcpGovernanceController` |
-| **多客户端治理** | 命名多客户端注册中心 | `TcpClientRegistry`<br>`TcpClient` | `client.*`<br>`clients.<name>.*` | `getClient(String)` / `getRequiredClient(String)` / `getDefaultClient()` / `getTemplate(String)` / `getRequiredTemplate(String)` / `getDefaultTemplate()` / `getAllClients()` / `getAllTemplates()` | `TcpClientRegistryTest`<br>`TcpMultiClientIntegrationTest`<br>`TcpClientController` |
-| **客户端收发与 RPC** | 客户端推流、全双工 RPC 与生命周期控制 | `TcpClientTemplate`<br>`TcpRequestCorrelationManager` | `client.enabled`<br>`client.request-timeout`<br>`clients.<name>.*` | `send(Object)` / `request(Object)` / `request(Object, Duration)` / `request(Object, Class<T>)` / `request(Object, Class<T>, Duration)` / `requestAsync(Object)` / `requestAsync(Object, Duration)` / `isConnected()` / `reconnect()` / `disconnect()` / `getSession()`（客户端独立关联管理器防回环串包） | `TcpClientTemplateTest`<br>`TcpClientIntegrationTest`<br>`TcpClientController` |
-| **会话与设备治理** | 会话生命周期、属性与分组管理 | `TcpSessionManager` | `server.max-connections` | `register(TcpSession)` / `unregister(String, CloseReason)` / `bind(String sessionId, String deviceId)` / `unbind(String)` / `getSession(String)` / `getSessionByDeviceId(String)` / `getAllSessions()` / `getActiveCount()` / `addToGroup(String, String)` / `removeFromGroup(String, String)` / `getSessionsByGroup(String)`（推荐，旧 `getGroupSessions` 已 `@Deprecated`）/ `closeSession(...)` / `closeDevice(...)` / `closeAllSessions(...)` | `TcpSessionManagerTest`<br>`TcpSessionController`<br>`SampleTcpE2eTest` |
-| **背压与会话控制** | 单会话发送、属性与动态背压策略 | `TcpSession`<br>`BackpressurePolicy` | `write-buffer-low-water-mark`<br>`write-buffer-high-water-mark`<br>`backpressure-policy`<br>`backpressure-timeout` | `isActive()` / `isWritable()` / `getPendingWriteBytes()` / `send(Object)` / `send(Object, BackpressurePolicy, Duration)` / `close(CloseReason)` / `touch()` / `setBackpressurePolicy(BackpressurePolicy)` / **`setBackpressurePolicy(BackpressurePolicy, Duration)`** / 属性上下文 API | `TcpSessionTest`<br>`TcpBackpressureIntegrationTest`<br>`TcpGovernanceController` |
-| **声明式监听路由** | 注解声明监听、命令映射与参数注入 | `@TcpListener`、`@TcpMapping`<br>`@TcpDeviceId`、`@TcpHeader`<br>`TcpDispatcher` | - | 基于 Spring Bean 与方法注解自动绑定路由命令字（`value`/`command`），自动注入 `TcpSession`、`TcpPacket`、`TcpPayload`、`byte[]`、`String`、POJO、`@TcpDeviceId` 与 `@TcpHeader(value/name/required/defaultValue)`；`AsyncContext` 隔离调度并清理 MDC | `TcpDispatcherTest`<br>`TcpAnnotationRouteIntegrationTest`<br>`VehicleTelemetryListener` |
+| **服务端发信与管理** | 多端口服务端注册表 | `TcpServerRegistry`<br>`TcpServer` | `server.*`<br>`servers.<name>.*` | `register(String, TcpServer)` / `unregister(String)` / `contains(String)` / `getServer(String)` / `getRequiredServer(String)`（未命中抛出 `IllegalArgumentException`）/ `getDefaultServer()` / `getAllServers()` / `getActualPort(String)`；同名覆盖前自动停止旧实例，基于 `ReentrantLock` 适配虚拟线程 | `TcpServerRegistryTest`<br>`TcpMultiPortIntegrationTest`<br>`TcpServerController` |
+| **服务端点对点/广播** | 会话与设备下发、广播、排他与端口定向 | `TcpServerTemplate` | `server.enabled` | `send(String, Object)` / `sendToDevice(String, Object)` / `broadcast(Object)` / `broadcastToServer(String, Object)` / `broadcastExcept(Object, Collection<String>)` / `sendToGroup(String, Object)` / `sendToGroupExcept(String, Object, Collection<String>)` / `close(...)` / `closeDevice(...)` / `getActiveConnections()` | `TcpServerTemplateTest`<br>`TcpServerController` |
+| **服务端双向 RPC** | 服务端同步与强类型异步请求-应答 | `TcpServerTemplate`<br>`TcpRequestCorrelationManager` | `server.enabled` | `request(String, Object, [Duration], [Class<T>])` / `requestToDevice(...)` / `requestAsync(String, Object, [Duration], [Class<T>])` / `requestToDeviceAsync(...)`（默认 10s 超时，`DisposableBean` 自动销毁，停机重启后 `HashedWheelTimer` 按需懒重建）；暴露 `getSessionManager()` / `getCorrelationManager()` / `getClusterBridge()` | `TcpServerTemplateTest`<br>`TcpRequestCorrelationManagerTest`<br>`TcpProtocolController`<br>`SampleTcpE2eTest` |
+| **集群跨节点分发** | 两级自适应跨节点与分组组播 | `TcpServerTemplate`<br>`TcpClusterBridge` SPI<br>`LocalTcpClusterBridge`<br>`RedisPubSubTcpClusterBridge`<br>`TcpClusterBroadcastMessage` | `cluster.redis.enabled`<br>`cluster.redis.topic` | `sendToCluster(String, Object)` / `broadcastToCluster(Object)` / `sendGroupToCluster(String, Object)`；本地直发未命中经 Redis Pub/Sub 广播并携带 `contextHeaders` 四维上下文快照，按发射节点 UUID `nodeId` 自动防回环 | `TcpClusterBridgeTest`<br>`TcpGovernanceController` |
+| **多客户端治理** | 命名多客户端注册中心 | `TcpClientRegistry`<br>`TcpClient` | `client.*`<br>`clients.<name>.*` | `register(String, TcpClient, [TcpClientTemplate])` / `unregister(String)` / `contains(String)` / `getClient(String)` / `getRequiredClient(String)` / `getDefaultClient()` / `getTemplate(String)` / `getRequiredTemplate(String)` / `getDefaultTemplate()` / `getAllClients()` / `getAllTemplates()`（`getRequired*` 未命中抛 `IllegalArgumentException`） | `TcpClientRegistryTest`<br>`TcpMultiClientIntegrationTest`<br>`TcpClientController` |
+| **客户端收发与 RPC** | 客户端推流、对称 RPC 与生命周期控制 | `TcpClientTemplate`<br>`TcpRequestCorrelationManager` | `client.enabled`<br>`client.request-timeout`<br>`clients.<name>.*` | `send(Object)` / `request(Object, [Duration])` / `request(Object, [Duration], Class<T>)`（同时兼容 `request(Object, Class<T>, Duration)`）/ `requestAsync(Object, [Duration], [Class<T>])` / `isConnected()` / `reconnect()` / `disconnect()` / `getChannel()` / `getSession()` / `getClient()` / `getCorrelationManager()`（`ReentrantLock` 并发与独立关联池防串包） | `TcpClientTemplateTest`<br>`TcpClientIntegrationTest`<br>`TcpClientController` |
+| **会话与设备治理** | 会话隔离、属性与分组生命周期管理 | `TcpSessionManager`<br>`TcpSession` | `server.max-connections` | `TcpSession(..., serverName, ...)` 默认 `"default"`；`register` / `unregister` / `bind` / `unbind` / `getSession(String)` / `getSessionByDeviceId(String)` / `getAllSessions()` / `getActiveCount()` / `getSessionsByServer(String)` / `closeSessionsByServer(String, CloseReason)` / `addToGroup` / `removeFromGroup`（空组自动原子回收）/ `getGroupsBySession(String)` / `getAllGroups()` / `getSessionsByGroup(String)`（旧 `getGroupSessions` 已 `@Deprecated`）/ `closeSession` / `closeDevice` / `closeAllSessions` | `TcpSessionManagerTest`<br>`TcpSessionController`<br>`SampleTcpE2eTest` |
+| **背压与会话控制** | 单会话发送、属性与动态背压策略 | `TcpSession`<br>`BackpressurePolicy` | `write-buffer-low-water-mark`<br>`write-buffer-high-water-mark`<br>`backpressure-policy`<br>`backpressure-timeout` | `getServerName()` / `setServerName(String)` / `isActive()` / `isWritable()` / `getPendingWriteBytes()` / `send(Object)` / `send(Object, BackpressurePolicy, Duration)` / `close(CloseReason)` / `touch()` / `setBackpressurePolicy(BackpressurePolicy)` / `setBackpressurePolicy(BackpressurePolicy, Duration)` / 属性上下文 API | `TcpSessionTest`<br>`TcpBackpressureIntegrationTest`<br>`TcpGovernanceController` |
+| **声明式监听与校验** | 注解监听、JSR-303 校验与四维上下文透传 | `@TcpListener`、`@TcpMapping`<br>`@TcpDeviceId`、`@TcpHeader`<br>`TcpDispatcher` | - | 绑定 `@Qualifier("taskExecutor")`（单 `Executor` 兜底），提供 `getBusinessExecutor()`；自动注入 `TcpSession`、`TcpPacket`、`TcpPayload`、`byte[]`、`String`、POJO、`@TcpDeviceId` 与 `@TcpHeader`；支持 `@Valid`/`@Validated`（`ValidatorUtil`）入站校验拦截并返回 `"status":"ERROR"` 快速回执（保留分隔符帧对称性）；通过 `MessageContextPropagator` 异步还原与清理四维上下文 | `TcpDispatcherTest`<br>`TcpAnnotationRouteIntegrationTest`<br>`VehicleTelemetryListener`<br>`SampleTcpE2eTest` |
 | **载荷与帧模型** | 堆内存安全载荷与结构化数据包 | `TcpPayload`<br>`TcpPacket` | - | `TcpPayload`: `empty()` / `of(...)` / `fromHex(String)` / `fromJson(Object)` / `asBytes()` / `getBytes()` / `asHex()` / `asText()` / `asString()` / `asJson(Class<T>)`；`TcpPacket`: 携带 `command`、`deviceId`、`requestId`、`payload`、`headers` 及工厂 `of(...)` / `ofJson(...)` / `ofText(...)` / `ofBytes(...)` | `TcpPayloadTest`<br>`TcpPacketTest` |
 | **粘包拆包与释放** | 多模式切片解码、对称编码与防泄漏 | `TcpFramingDecoderFactory`<br>`TcpPayloadCodecHandler`<br>`FramingMode` | `framing.mode`<br>`framing.delimiter`<br>`framing.strip-delimiter`<br>`framing.fixed-length`<br>`framing.length-field.*`<br>`framing.max-frame-length` | 支持 `NONE`、`DELIMITER`、`FIXED_LENGTH`、`LENGTH_FIELD`；`LENGTH_FIELD` 自动装配出站 `LengthFieldPrepender` 对称加头，`DELIMITER` 出站自动补齐分隔符；`finally` 确定性释放入站 `ByteBuf` | `TcpFramingDecoderFactoryTest`<br>`TcpPayloadCodecHandlerTest` |
 | **工业校验与 Sample 协议示例** | 国标校验码原语与 `[Sample 级扩展]` 组合模式 | `ChecksumUtil`（Starter 原语）<br>`Jt808CompositeFrameCodec`（**Sample 级扩展**）<br>`Jt808RouteKeyExtractor`（**Sample 级扩展**） | - | Starter 提供 `ChecksumUtil`（`calculateXor`/`verifyXor`、`calculateCrc16Modbus`/`verifyCrc16Modbus`、`calculateCrc16Ccitt`/`verifyCrc16Ccitt`、`calculateCrc32`/`verifyCrc32`、`escapeJt808`/`unescapeJt808`、`toHexString`/`fromHexString`）；`Jt808*` 为 `ateng-boot-sample-tcp` 基于原语自组演示，非 Starter 内置黑盒 | `ChecksumUtilTest`<br>`Jt808CompositeFrameCodecTest`<br>`TcpProtocolController` |
-| **核心 SPI 与提取器** | 路由、关联号、通道定制、拦截与处理器扩展 | `TcpRouteKeyExtractor`<br>`JsonRouteKeyExtractor`<br>`BinaryOffsetRouteKeyExtractor`<br>`CompositeRouteKeyExtractor`<br>`TcpCorrelationIdExtractor`<br>`TcpChannelCustomizer`<br>`TcpMessageHandler<T>`<br>`TcpPacketFilter` | - | 支持全 `@Bean` 可插拔接管：多提取器自动聚合为有序 `CompositeRouteKeyExtractor`；`BinaryOffsetRouteKeyExtractor` 支持 `HEX`/`HEX_PREFIX`/`INTEGER`/`ASCII`；`TcpChannelCustomizer` 支持按 `role` (`SERVER`/`CLIENT`) 与 `name` 定向定制；`TcpPacketFilter` 支持有序双向拦截短路 | `TcpRouteKeyExtractorTest`<br>`TcpDispatcherTest`<br>`TcpPacketFilterHandlerTest`<br>`TcpGovernanceController` |
+| **核心 SPI 与动态路由** | 路由、关联号、通道定制、拦截与热插拔处理器 | `TcpRouteKeyExtractor`<br>`JsonRouteKeyExtractor`<br>`BinaryOffsetRouteKeyExtractor`<br>`CompositeRouteKeyExtractor`<br>`TcpCorrelationIdExtractor`<br>`TcpChannelCustomizer`<br>`TcpMessageHandler<T>`<br>`TcpPacketFilter` | - | 支持全 `@Bean` 可插拔接管：多提取器自动聚合为有序 `CompositeRouteKeyExtractor`；`BinaryOffsetRouteKeyExtractor` 支持 `HEX`/`HEX_PREFIX`/`INTEGER`/`ASCII`；`TcpChannelCustomizer` 支持按 `role`/`name` 定制；`TcpPacketFilter` 双向拦截；`TcpDispatcher` 支持 `registerHandler(TcpMessageHandler<?>)` / `unregisterHandler(String)` / `getRegisteredCommands()` 运行期热插拔 | `TcpRouteKeyExtractorTest`<br>`TcpDispatcherTest`<br>`TcpPacketFilterHandlerTest`<br>`TcpGovernanceController` |
 | **网络安全与流量整形** | mTLS 双向认证、IP 防火墙与令牌桶限速 | `TcpSslContextFactory`<br>`TcpIpFilterHandler`<br>`ClientAuth` | `ssl.*`<br>`ip-filter.*`<br>`traffic-shaping.*` | 支持 `PKCS12` 密钥库与 `ClientAuth`（`NONE`/`WANT`/`NEED`）；IP 过滤在握手首位拦截（白名单非空切换严格白名单）；支持全局/单通道字节限速及运行时动态调参 `configure(write, read)` 与停机 `release()` | `TcpSslContextFactoryTest`<br>`TcpTlsIntegrationTest`<br>`TcpIpFilterIntegrationTest`<br>`TcpTrafficShapingIntegrationTest` |
-| **韧性与生命周期** | 心跳保活、空闲断连、退避重连与停机排空 | `TcpServer` / `TcpClient`<br>`SmartLifecycle` | `idle.*`（`reader-idle-time` / `writer-idle-time` / `all-idle-time` / `auto-close`）<br>`heartbeat.*`<br>`reconnect.*`<br>`drain-timeout` | 客户端定时心跳与指数退避重连（`max-attempts: 0` 表示无限尝试）；服务端监测读写/全空闲触发 `TcpSessionIdleEvent`；停机阶段按“解绑监听 → `drain-timeout` 排空 RPC → 释放会话与线程池”执行 | `TcpHeartbeatIntegrationTest`<br>`TcpClientIntegrationTest`<br>`TcpGracefulShutdownTest` |
+| **韧性与生命周期** | 心跳保活、空闲断连、退避重连与停机排空 | `TcpServer` / `TcpClient`<br>`SmartLifecycle` | `idle.*`（`reader-idle-time` / `writer-idle-time` / `all-idle-time` / `auto-close`）<br>`heartbeat.*`（含 `response-payload`）<br>`reconnect.*`<br>`drain-timeout` | 客户端定时心跳与可配置 `response-payload` 静默消费 + 指数退避重连（`max-attempts: 0` 表示无限尝试）；服务端基于毫秒精度 `IdleStateHandler` 触发 `TcpSessionIdleEvent`；停机阶段按“解绑监听 → `drain-timeout` 排空 RPC → 释放会话与线程池”执行，`TcpRequestCorrelationManager` 支持 `DisposableBean` 与重建复用 | `TcpClientIntegrationTest`<br>`TcpMultiClientIntegrationTest`<br>`TcpGracefulShutdownTest` |
 | **枚举、异常与领域事件** | 强类型枚举、因果异常与 Spring 事件总线 | `CloseReason`、`TcpException`、`TcpBackpressureException`、`TcpTimeoutException`<br>6 个领域事件 | - | `TcpBackpressureException` 默认错误码 `SERVICE_UNAVAILABLE`，其余为 `INTERNAL_SERVER_ERROR`（均保留 `cause`）；自动发布连接/绑定/关闭/空闲/可写性/IP 拦截事件 | `TcpExceptionTest`<br>`TcpSessionManagerTest`<br>`VehicleTelemetryScenarioService` |
 | **观测与强类型配置** | Actuator 端点、Micrometer 度量与属性绑定 | `TcpActuatorEndpoint`<br>`TcpMetricsCollector`<br>`AtengTcpProperties` 等 12 个 `*Properties` | `management.endpoints.web.exposure.include=tcp` | 暴露 `/actuator/tcp` 与 `/actuator/tcp/{deviceId}`；采集 7 项 `ateng.tcp.*` 指标；配置全量采用 `Duration` / `DataSize` 强类型映射 | `TcpObservabilityIntegrationTest`<br>`AtengTcpPropertiesTest` |
 
@@ -36,17 +36,41 @@
 
 `ateng-boot-tcp` 是面向物联网接入、智能硬件网关与微服务间高性能二进制/文本长连接通信的核心 Starter：
 - **零 Web 强依赖，底座纯粹**：基于 JDK 17、Spring Boot `3.3.13` 与 Netty `4.1.x` 构建，Actuator、Micrometer、Spring Data Redis 均为可选依赖（`<optional>true</optional>`），纯控制台/后台守护进程可依托 `WebEnvironment.NONE` 无缝运行。
-- **服务端/客户端双模对称**：服务端统一通过 `TcpServerRegistry` 与 `TcpServerTemplate` 治理多端口与海量设备会话，客户端通过 `TcpClientRegistry` 与 `TcpClientTemplate` 管理多目标外部连接。
-- **全链路线程隔离与异常可追溯**：入站分发通过 `TcpDispatcher` 将执行从 Netty EventLoop 解耦至受管异步线程池（依托 `ateng-boot-core` 的 `AsyncContext` 透传 MDC `traceId` 并清理现场）；底层统一抛出保留因果链的 `TcpException` 家族。
+- **服务端/客户端双模对称**：服务端统一通过 `TcpServerRegistry` 与 `TcpServerTemplate` 治理多端口与海量设备会话（全对称支持按端口定向广播与排他组播），客户端通过 `TcpClientRegistry` 与 `TcpClientTemplate` 管理多目标外部连接。
+- **全链路线程隔离、四维透传与虚拟线程防 Pinning**：入站分发通过 `TcpDispatcher`（优先绑定 `@Qualifier("taskExecutor")` 受管线程池）将执行从 Netty EventLoop 解耦，依托 `ateng-boot-core` 的 `MessageContextPropagator` 透传 `X-Trace-Id` / `X-Tenant-Id` / `X-User-Id` / `X-Ignore-Tenant` 四维上下文并清理现场；关键并发控制全面采用 `ReentrantLock` 适配 JDK 21+ 虚拟线程，底层统一抛出保留因果链的 `TcpException` 家族。
 
 ### 1.2 Maven 依赖引入
 
-版本已在根 `pom.xml` / `ateng-boot-bom` 统一纳管，业务模块无需显式指定 `<version>`：
+**方式一（推荐）：在 `<dependencyManagement>` 引入 `ateng-boot-bom` 统一纳管版本后免配 `<version>`**：
+
+```xml
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-bom</artifactId>
+            <version>1.2.0</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+
+<dependencies>
+    <dependency>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot-tcp</artifactId>
+    </dependency>
+</dependencies>
+```
+
+**方式二：独立引入（显式声明 `<version>`）**：
 
 ```xml
 <dependency>
     <groupId>io.github.atengk</groupId>
     <artifactId>ateng-boot-tcp</artifactId>
+    <version>1.2.0</version>
 </dependency>
 ```
 
@@ -160,7 +184,7 @@ flowchart TD
         S1["TcpIpFilterHandler\n(握手首位 CIDR 白/黑名单阻断)"]
         S2["SslHandler\n(可选 TLS / 双向 mTLS 校验)"]
         S3["GlobalTrafficShapingHandler / ChannelTrafficShapingHandler\n(可选全局/通道带宽整形)"]
-        S4["IdleStateHandler\n(reader-idle-time / writer-idle-time / all-idle-time)"]
+        S4["IdleStateHandler\n(毫秒级精度 reader/writer/all-idle-time)"]
         S5["FrameDecoder / FrameEncoder\n(DELIMITER / FIXED_LENGTH / LENGTH_FIELD 对称编解码)"]
         S6["TcpPayloadCodecHandler\n(ByteBuf → TcpPayload 堆转译，finally 绝对释放直接内存)"]
         S7["TcpPacketFilterHandler\n(Ordered TcpPacketFilter 双向拦截链)"]
@@ -168,12 +192,12 @@ flowchart TD
         S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8
     end
 
-    subgraph RuntimeAndCluster["分发路由、异步隔离与集群桥接"]
+    subgraph RuntimeAndCluster["分发路由、四维上下文隔离与集群桥接"]
         direction TB
-        D1["TcpDispatcher\n(CompositeRouteKeyExtractor + AsyncContext MDC 透传至受管线程池)"]
-        D2["@TcpListener / @TcpMapping 方法 或 TcpMessageHandler<T> SPI"]
-        C1["TcpRequestCorrelationManager\n(HashedWheelTimer 挂起 Future 超时扫描，Server/Client 严格隔离)"]
-        C2["TcpClusterBridge\n(LocalTcpClusterBridge / RedisPubSubTcpClusterBridge nodeId 防回环)"]
+        D1["TcpDispatcher\n(@Qualifier taskExecutor + @Valid 校验 + MessageContextPropagator 四维透传)"]
+        D2["@TcpListener / @TcpMapping 方法 或 TcpMessageHandler<T> SPI (支持热插拔)"]
+        C1["TcpRequestCorrelationManager\n(可重入 HashedWheelTimer 超时扫描，Server/Client 物理隔离)"]
+        C2["TcpClusterBridge\n(LocalTcpClusterBridge / RedisPubSubTcpClusterBridge 携带四维上下文 + nodeId 防回环)"]
         D1 --> D2
     end
 
@@ -184,9 +208,9 @@ flowchart TD
 
 ### 核心设计不变量 (Invariants)
 1. **直接内存零泄漏不变量**：入站 `ByteBuf` 在 `TcpPayloadCodecHandler` 中即时复制转换为堆内不可变载荷载体 `TcpPayload`，并在 `finally` 中通过 `ReferenceCountUtil.release()` 确定性释放；上层业务与监听器永远只接触安全的 `TcpPayload` / `TcpPacket`。
-2. **服务端 / 客户端关联管理器物理隔离**：客户端自动装配（`TcpClientAutoConfiguration`）会为每个客户端实例创建独立的 `TcpRequestCorrelationManager`，绝不与服务端容器的 `TcpRequestCorrelationManager` 混用，彻底消除同进程回环通信时客户端应答误唤醒服务端 RPC 或反向截胡风险。
-3. **EventLoop 线程纯净与四维上下文透传**：`TcpDispatcher` 在 Netty I/O 线程仅完成路由键提取与 MDC `traceId` 快照捕获（即刻 `MDC.remove` 清理防止 I/O 线程污染），随后借助 `AsyncContext.wrap(task)` 投递至受管业务线程池（若未注册受管 `Executor` 则回退 `ForkJoinPool.commonPool()`）。
-4. **严格配置语义与零幽灵 API**：`TcpIdleProperties` 严格使用 `reader-idle-time` / `writer-idle-time` / `all-idle-time` 键名（拒绝任何缩写错误别名）；多客户端严格经由 `TcpClientRegistry.getRequiredClient` / `getRequiredTemplate` 获取实例（不存在静态/路由幽灵方法）。
+2. **服务端 / 客户端关联管理器物理隔离与可重入生命周期**：客户端自动装配（`TcpClientAutoConfiguration`）会为每个客户端实例创建独立的 `TcpRequestCorrelationManager`，绝不与服务端容器的 `TcpRequestCorrelationManager` 混用，彻底消除同进程回环通信时客户端应答误唤醒服务端 RPC 或反向截胡风险；`TcpRequestCorrelationManager` 实现 `DisposableBean`/`AutoCloseable` 并在 `stop()`/`close()` 之后支持按需懒重建时间轮，适配重复启停测试与热重载场景。
+3. **EventLoop 线程纯净、四维上下文透传与虚拟线程无 Pinning**：`TcpDispatcher` 在 Netty I/O 线程仅执行路由键提取与前置快照（零 MDC 线程局部残留），优先绑定 `@Qualifier("taskExecutor")`（单 `Executor` 兜底）并借助 `MessageContextPropagator.runInContext` 异步还原与清理 `<TraceId, TenantId, UserId, IgnoreTenant>` 四维上下文；入站 `@Valid`/`@Validated` 校验失败即阻断进入业务方法并回写 `"status":"ERROR"` 快速 RPC 回执（保留 `DELIMITER` 等分帧对称编码）。服务端/客户端与注册表并发临界区统一采用 `ReentrantLock` 替代 `synchronized`，杜绝 JDK 21+ 虚拟线程 Carrier Pinning。
+4. **严格配置语义与对称注册/检索契约**：`TcpIdleProperties` 严格使用 `reader-idle-time` / `writer-idle-time` / `all-idle-time` 键名（毫秒级精度）与 `TcpHeartbeatProperties.response-payload`（默认 `"PONG"`）；`TcpServerRegistry` 与 `TcpClientRegistry` 均对称提供 `register` / `unregister` / `contains`，`getRequired*` 未命中一律抛出 `IllegalArgumentException`（不存在静态/路由幽灵方法）。
 5. **契约与传输实体隔离（Zero-Entity-Leakage）**：`TcpSession` 与 Netty `Channel` 等底层运行时句柄仅在框架与 Service 内部流转，对外 HTTP / 控制面统一映射为不可变 VO，入参统一执行 JSR-303 校验。
 
 ---
@@ -241,27 +265,29 @@ TcpServer defaultServer = tcpServerRegistry.getDefaultServer();
 int actualPort = defaultServer.getActualPort();
 
 // 2. 将底层服务端状态投影为只读视图 VO（严禁向 Web 层暴露 TcpServer/Channel 实体）
+TcpServerProperties props = server.getProperties();
+TcpIpFilterProperties ipFilter = props.getIpFilter();
 TcpServerInfoVO serverView = new TcpServerInfoVO(
         "binary-jt808",
         server.isRunning(),
-        server.getProperties().getHost(),
-        server.getProperties().getPort(),
+        props.getHost(),
+        props.getPort(),
         server.getActualPort(),
-        server.getProperties().getFraming().getMode().name(),
-        server.getProperties().getSsl().isEnabled(),
-        server.getProperties().getSsl().getClientAuth().name(),
-        sessionManager.getActiveCount(),
-        server.getProperties().getIpFilter().isEnabled(),
-        List.copyOf(server.getProperties().getIpFilter().getWhitelist()),
-        List.copyOf(server.getProperties().getIpFilter().getBlacklist()),
-        server.getGlobalTrafficShapingHandler() != null
+        props.getFraming().getMode().name(),
+        props.getSsl().isEnabled(),
+        props.getSsl().getClientAuth() != null ? props.getSsl().getClientAuth().name() : "NONE",
+        server.getSessionManager().getActiveCount(),
+        ipFilter != null && ipFilter.isEnabled(),
+        ipFilter != null && ipFilter.getWhitelist() != null ? new ArrayList<>(ipFilter.getWhitelist()) : Collections.emptyList(),
+        ipFilter != null && ipFilter.getBlacklist() != null ? new ArrayList<>(ipFilter.getBlacklist()) : Collections.emptyList(),
+        props.getTrafficShaping() != null && props.getTrafficShaping().isEnabled()
 );
 ```
 
 #### 核心机制与边界防御
 - **`port: 0` 随机端口支持**：测试或临时多实例可将 `port` 设为 `0`，绑定就绪后通过 `server.getActualPort()` 或 `tcpServerRegistry.getActualPort(name)` 获取操作系统分配的实际监听端口。
-- **资源隔离与容量守卫**：每个服务端实例持有独立的 `bossThreads`（默认 `1`）、`workerThreads`（默认 `0` 表示 Netty 自动采用 CPU 核数 * 2）及独立 Pipeline 编排；超过 `max-connections`（默认 `10000`）时在建链阶段直接拒绝关闭，防止句柄耗尽。
-- **注册表查询语义**：`getServer(name)` 未命中返回 `null`，`getRequiredServer(name)` 未命中直接抛出明确的 `TcpException` Fail-Fast。
+- **资源隔离、虚拟线程并发与容量守卫**：每个服务端实例持有独立的 `bossThreads`（默认 `1`）、`workerThreads`（默认 `0` 表示 Netty 自动采用 CPU 核数 * 2）及独立 Pipeline 编排，内部生命周期临界区全面使用 `ReentrantLock` 避免 JDK 21+ 虚拟线程 Pinning；超过 `max-connections`（默认 `10000`）时在建链阶段直接拒绝关闭，防止句柄耗尽。
+- **注册表对称增删与查询语义**：`TcpServerRegistry` 对称提供 `register(name, server)`（覆盖同名运行中旧实例前会主动执行安全 `stop()`）、`unregister(name)` 与 `contains(name)`；`getServer(name)` 未命中返回 `null`，`getRequiredServer(name)` 未命中直接抛出明确的 `IllegalArgumentException` Fail-Fast。
 
 ---
 
@@ -305,7 +331,8 @@ sessionManager.closeDevice(request.getDeviceId(), CloseReason.KICK_OUT);
 
 #### 核心机制与边界防御
 - **“踢旧留新”并发置换**：调用 `sessionManager.bind(sessionId, deviceId)` 时，若目标 `deviceId` 已存在旧活跃会话，内部同步切断旧物理通道（触发 `CloseReason.KICK_OUT` 与 `TcpSessionClosedEvent`），确保单硬件标识仅绑定最新通道，根治僵尸会话抢占指令问题。
-- **分组维护规范**：`addToGroup(group, sessionId)` / `removeFromGroup(group, sessionId)` 均以**会话主键 `sessionId`** 为元素索引；检索分组会话优先调用 `getSessionsByGroup(group)`（`getGroupSessions(group)` 已标记 `@Deprecated(since = "1.2.0")`），未命中兜底返回空集合（严禁 `null`）。
+- **多端口会话归属隔离**：每个 `TcpSession` 默认携带归属服务端标识 `serverName`（默认 `"default"`），支持通过 `sessionManager.getSessionsByServer(serverName)` 精确检索某端口下全部活跃会话，并在指定端口动态下线或排空时调用 `sessionManager.closeSessionsByServer(serverName, reason)` 定向清理。
+- **分组维护与空组回收规范**：`addToGroup(group, sessionId)` / `removeFromGroup(group, sessionId)` 均以**会话主键 `sessionId`** 为元素索引；移除至空时自动原子回收空分组键避免长期运行内存膨胀。支持 `getGroupsBySession(sessionId)` 逆向检索会话所属全部分组与 `getAllGroups()` 全景枚举；检索分组会话优先调用 `getSessionsByGroup(group)`（`getGroupSessions(group)` 已标记 `@Deprecated(since = "1.2.0")`），未命中兜底返回空集合（严禁 `null`）。
 
 ---
 
@@ -340,14 +367,17 @@ TcpPacket packet = TcpPacket.builder()
 VehicleControlAck ack = tcpServerTemplate.requestToDevice(
         deviceId, packet, Duration.ofSeconds(3), VehicleControlAck.class);
 
-// 2. 全网广播（仅当前节点）与本地分组群发
+// 2. 全网广播、按监听端口定向广播与排他广播/组播（提取自 TcpEndpointConsoleService）
 tcpServerTemplate.broadcast(body);
+tcpServerTemplate.broadcastToServer(serverName, body);
+tcpServerTemplate.broadcastExcept(body, request.getExcludedSessionIds());
 tcpServerTemplate.sendToGroup(request.getGroup(), body);
+tcpServerTemplate.sendToGroupExcept(request.getGroup(), body, request.getExcludedSessionIds());
 ```
 
 #### 核心机制与边界防御
-- **时间轮超时与泄漏防御**：`TcpServerTemplate` 默认 RPC 超时为 `10s`，可通过 `Duration` 重载精确控制单次请求超时；在途请求注册在 `TcpRequestCorrelationManager` 内部由 `HashedWheelTimer` 调度超时清理，超时后抛出 `TcpTimeoutException` 并立即摘除挂起 Future。
-- **异步非阻塞重载**：高并发吞吐场景应优先使用 `requestAsync(sessionId, payload, timeout)` / `requestToDeviceAsync(deviceId, payload, timeout)`，返回 `CompletableFuture<TcpPacket>` 避免阻塞调用方工作线程。
+- **可重入时间轮超时与泄漏防御**：`TcpServerTemplate` 默认 RPC 超时为 `10s`，可通过 `Duration` 重载精确控制单次请求超时；在途请求注册在 `TcpRequestCorrelationManager`（实现 `DisposableBean`/`AutoCloseable`）内部由 `HashedWheelTimer` 调度超时清理，超时后抛出 `TcpTimeoutException` 并立即摘除挂起 Future；停机或调用 `close()` 后若再次触发 `register()` 将按需懒重建时间轮，支持单测或热重载反复启停。
+- **异步与强类型异步重载**：高并发吞吐场景应优先使用 `requestAsync(sessionId, payload, [timeout])` / `requestToDeviceAsync(deviceId, payload, [timeout])` 及强类型解码重载 `requestAsync(..., [timeout], Class<T>)` / `requestToDeviceAsync(..., [timeout], Class<T>)`，避免阻塞调用方工作线程；门面同时暴露 `getSessionManager()`、`getCorrelationManager()` 与 `getClusterBridge()` 便于进阶协同治理。
 
 ---
 
@@ -376,10 +406,10 @@ ateng:
             enabled: true
             client-auth: NEED
             key-store: ${SAMPLE_TCP_SERVER_KEY_STORE:classpath:certs/server.p12}
-            key-store-password: ${SAMPLE_TCP_SERVER_KEY_PASSWORD:123456}
+            key-store-password: ${SAMPLE_TCP_SERVER_KEY_PASSWORD:YOUR_KEY_STORE_PASSWORD}
             key-store-type: PKCS12
             trust-store: ${SAMPLE_TCP_SERVER_TRUST_STORE:classpath:certs/server-truststore.p12}
-            trust-store-password: ${SAMPLE_TCP_SERVER_TRUST_PASSWORD:123456}
+            trust-store-password: ${SAMPLE_TCP_SERVER_TRUST_PASSWORD:YOUR_TRUST_STORE_PASSWORD}
             trust-store-type: PKCS12
       clients:
         tls-client:
@@ -389,10 +419,10 @@ ateng:
           ssl:
             enabled: true
             key-store: ${SAMPLE_TCP_CLIENT_KEY_STORE:classpath:certs/client.p12}
-            key-store-password: ${SAMPLE_TCP_CLIENT_KEY_PASSWORD:123456}
+            key-store-password: ${SAMPLE_TCP_CLIENT_KEY_PASSWORD:YOUR_KEY_STORE_PASSWORD}
             key-store-type: PKCS12
             trust-store: ${SAMPLE_TCP_CLIENT_TRUST_STORE:classpath:certs/client-truststore.p12}
-            trust-store-password: ${SAMPLE_TCP_CLIENT_TRUST_PASSWORD:123456}
+            trust-store-password: ${SAMPLE_TCP_CLIENT_TRUST_PASSWORD:YOUR_TRUST_STORE_PASSWORD}
             trust-store-type: PKCS12
 ```
 
@@ -449,14 +479,26 @@ if (!template.isConnected()) {
             "TCP 客户端当前未建立活跃连接: clientName=" + clientName);
 }
 
-// 2. 同步 RPC 与异步非阻塞 RPC 调用，底层使用客户端隔离关联池
+// 2. 同步 RPC 与强类型异步非阻塞 RPC 调用，底层使用客户端隔离关联池
 TcpPacket syncResponse = template.request(packet, Duration.ofMillis(request.getTimeoutMillis()));
 
 CompletableFuture<TcpClientRpcVO> asyncResult = template
-        .requestAsync(packet, Duration.ofMillis(request.getTimeoutMillis()))
-        .handle((response, ex) -> {
+        .requestAsync(packet, Duration.ofMillis(request.getTimeoutMillis()), Map.class)
+        .handle((responseMap, ex) -> {
             if (ex == null) {
-                return toRpcVO(request, reqId, response, System.currentTimeMillis() - start, true);
+                String respCmd = responseMap != null && responseMap.get("command") != null
+                        ? String.valueOf(responseMap.get("command"))
+                        : null;
+                String respJson = responseMap != null ? JsonUtil.toJsonString(responseMap) : null;
+                return new TcpClientRpcVO(
+                        request.getClientName(),
+                        request.getCommand(),
+                        reqId,
+                        true,
+                        respCmd,
+                        respJson,
+                        System.currentTimeMillis() - start
+                );
             }
             Throwable cause = ex instanceof CompletionException && ex.getCause() != null ? ex.getCause() : ex;
             if (cause instanceof TcpTimeoutException || cause instanceof TimeoutException) {
@@ -473,8 +515,9 @@ client.reconnect();
 ```
 
 #### 核心机制与边界防御
-- **命名路由边界**：`ateng.boot.tcp.client` 固定注册名称为 `default`，`ateng.boot.tcp.clients.<name>` 注册对应命名实例；请始终使用 `TcpClientRegistry.getRequiredTemplate(name)` / `getRequiredClient(name)`，勿自行持有并绕过注册表生命周期管理。
-- **确定性断开状态**：`TcpClient.disconnect()` 在非 Netty EventLoop 线程调用时会同步等待底层通道关闭完结，返回后 `isConnected()` 确定性为 `false`。
+- **命名路由与对称生命周期边界**：`ateng.boot.tcp.client` 固定注册名称为 `default`，`ateng.boot.tcp.clients.<name>` 注册对应命名实例；`TcpClientRegistry` 对称提供 `register(name, client, [template])`、`unregister(name)` 与 `contains(name)`（未命中时 `getRequiredClient` / `getRequiredTemplate` 抛出 `IllegalArgumentException`）。请始终通过注册表调度客户端实例，勿绕过注册表自行持有并破坏生命周期销毁。
+- **对称强类型 RPC 重载与隔离释放**：`TcpClientTemplate` 提供与服务端门面参数序一致的 `request(payload, timeout, Class<T>)` 与 `requestAsync(payload, [timeout], Class<T>)` 强类型重载（同时向后兼容保留旧 `request(payload, Class<T>, timeout)`）。每个客户端持有独立关联管理器；若客户端与关联池绑定由 `TcpClientAutoConfiguration` 创建，容器销毁阶段会自动执行 `DisposableBean.destroy()` 回收时间轮与待处理请求。
+- **确定性断开状态与虚拟线程安全**：`TcpClient` 与注册表并发控制均采用 `ReentrantLock`；`disconnect()` 在非 Netty EventLoop 线程调用时会同步等待底层通道关闭完结，返回后 `isConnected()` 确定性为 `false`。
 
 ---
 
@@ -499,6 +542,7 @@ ateng:
           enabled: true
           interval: 20s
           payload: "{\"command\":\"HEARTBEAT\"}"
+          response-payload: "PONG"
         reconnect:
           enabled: true
           initial-interval: 500ms
@@ -512,21 +556,21 @@ ateng:
 ```java
 // 构建具备 LENGTH_FIELD 对称帧切片与指数退避自愈重连能力的客户端配置
 TcpClientProperties properties = new TcpClientProperties();
-properties.setEnabled(true);
 properties.setHost(host);
 properties.setPort(port);
+properties.getReconnect().setEnabled(enableReconnect);
+if (enableReconnect) {
+    properties.getReconnect().setInitialInterval(Duration.ofMillis(200));
+    properties.getReconnect().setMaxInterval(Duration.ofSeconds(1));
+    properties.getReconnect().setMaxAttempts(5);
+}
 properties.getFraming().setMode(FramingMode.LENGTH_FIELD);
-properties.getReconnect().setEnabled(true);
-properties.getReconnect().setInitialInterval(Duration.ofMillis(200));
-properties.getReconnect().setMaxInterval(Duration.ofSeconds(1));
-properties.getReconnect().setMultiplier(2.0);
-properties.getReconnect().setMaxAttempts(5);
 ```
 
 #### 核心机制与边界防御
 - **对称帧编解码保障**：`FramingMode.LENGTH_FIELD`（默认 `offset=0, length=4, adjustment=0, initialBytesToStrip=4`）由 `TcpFramingDecoderFactory` 自动在客户端与服务端同时装配入站 `LengthFieldBasedFrameDecoder` 与出站 `LengthFieldPrepender`；`FramingMode.DELIMITER` 入站按 `delimiter`（默认 `\r\n`）切片、出站由 `TcpPayloadCodecHandler` 自动补齐。超限帧直接触发解码异常熔断。
-- **指数退避自愈重连**：断线或建链失败后按 `initialInterval * multiplier^n` 调度后台重连，上限收敛于 `maxInterval` 与 `maxAttempts`（默认 `0` 表示无限重试）；`SmartLifecycle` 停止期自动禁止重连以免停机挂起。
-- **服务端空闲检测与客户端心跳协同**：服务端配置 `idle.reader-idle-time`（如 `60s`）结合 `auto-close: true` 自动踢除假死会话，客户端按略短间隔（如 `20s`）上行心跳帧防 NAT 超时静默断链。
+- **指数退避自愈重连**：断线或建链失败后按 `initialInterval * multiplier^n` 调度后台重连，上限收敛于 `maxInterval` 与 `maxAttempts`（默认 `0` 表示无限重试）；`SmartLifecycle` 停止期自动禁止重连以免停机挂起；显式调用 `TcpClient.reconnect()` 时依托 `ateng-boot-core` 的 `RetryUtil` 执行有界退避重试。
+- **毫秒级服务端空闲检测与客户端心跳回执协同**：服务端与客户端 `IdleStateHandler` 均以毫秒精度（`Duration.toMillis()`）构建，全面支持亚秒级保活探测与快速测试；客户端收到匹配 `heartbeat.response-payload`（默认 `"PONG"`）的心跳应答帧时将在通道层静默消费，不再透传污染业务路由。
 
 ---
 
@@ -610,10 +654,24 @@ public Map<String, Object> onJt808LocationReport(TcpSession session, TcpPacket p
             "status", "SUCCESS"
     );
 }
+// 3. 声明式监听搭配 @Valid JSR-303 参数前置校验与四维上下文透传（提取自 VehicleTelemetryListener.java）
+@TcpMapping(command = "TELEMETRY_VALIDATED")
+public Map<String, Object> onValidatedTelemetry(TcpSession session, @Valid ValidatedTelemetryCommand command) {
+    Map<String, Object> contextSnapshot = scenarioService.captureAndRecordCurrentContext();
+    Map<String, Object> ack = new LinkedHashMap<>();
+    ack.put("command", "TELEMETRY_VALIDATED_ACK");
+    ack.put("status", "SUCCESS");
+    ack.put("deviceId", command.getDeviceId());
+    ack.put("speed", command.getSpeed());
+    ack.putAll(contextSnapshot);
+    return ack;
+}
 ```
 
 #### 核心机制与边界防御
 - **多提取器自动有序组合**：Spring 容器中存在一个或多个 `TcpRouteKeyExtractor` Bean 时，`AtengTcpAutoConfiguration` 自动将它们包装为按 `@Order` 排序的 `CompositeRouteKeyExtractor`；未自定义 Bean 时默认启用 `JsonRouteKeyExtractor`（依次探测 `command`、`action`、`cmd`、`msgType`、`type`、`code`）。纯固定二进制偏移协议可直接注册 Starter 内置 `BinaryOffsetRouteKeyExtractor`。
+- **受管线程池优先绑定与四维上下文透传**：`TcpDispatcher` 优先解析并绑定 Core 受管 `@Qualifier("taskExecutor")` Bean（无该限定 Bean 且容器仅存唯一 `Executor` 时自动兜底，可通过 `getBusinessExecutor()` 核验）；投递异步工作线程前借助 `MessageContextPropagator.runInContext` 自动从报文扩展头（`X-Trace-Id` / `X-Tenant-Id` / `X-User-Id` / `X-Ignore-Tenant`）还原四维上下文并在 `finally` 确定性清理，确保 Netty I/O 线程零上下文残留。
+- **`@Valid`/`@Validated` 前置防卫与快速 RPC 错误回执**：监听方法参数标注 `@Valid` 或 `@Validated` 时，`TcpDispatcher` 自动调用 `ateng-boot-core` 的 `ValidatorUtil.validate` 执行 Fail-Fast 校验；若校验不通过或路由处理抛错且报文携带 `requestId`，框架立即回写包含 `command`、`requestId`、`"status":"ERROR"` 与 `message` 的 JSON 应答帧（并透传会话 `FramingMode` 以保持 `DELIMITER` 等分隔符对称性），避免 RPC 调用方无谓干等至超时。
 - **常用工业校验码工具 (`ChecksumUtil`)**：内置 `calculateXor`/`verifyXor`、`calculateCrc16Modbus`/`verifyCrc16Modbus`、`calculateCrc16Ccitt`/`verifyCrc16Ccitt`、`calculateCrc32`/`verifyCrc32`、`escapeJt808`/`unescapeJt808`、`toHexString`/`fromHexString` 原语，篡改帧会在 `verify*` 校验失败时快速 fail-fast 阻断。
 
 ---
@@ -644,7 +702,7 @@ switch (request.getMode()) {
 ```
 
 #### 核心机制与边界防御
-- **两级命中优化与防回环**：`sendToCluster(deviceId, payload)` 优先检查本机 `TcpSessionManager`，命中则零序列化直发本机连接并返回；未命中时经 `RedisPubSubTcpClusterBridge` 序列化为 `TcpClusterBroadcastMessage`（携带节点唯一 `nodeId` 与 `PACKET` 载荷）发往 Redis Pub/Sub 频道，本节点收到回流广播时比对 `nodeId` 一致立即静默丢弃。
+- **两级命中优化与防回环**：`sendToCluster(deviceId, payload)` 优先检查本机 `TcpSessionManager`，命中则零序列化直发本机连接并返回；未命中时经 `RedisPubSubTcpClusterBridge` 序列化为 `TcpClusterBroadcastMessage`（携带节点唯一 `nodeId`、`PACKET` 载荷与四维上下文 `contextHeaders`）发往 Redis Pub/Sub 频道；接收节点解析回流广播时，同 `nodeId` 立即静默丢弃，跨节点消息则通过 `MessageContextPropagator.runInContext` 还原四维上下文投递并在 `finally` 清理现场。
 - **双模无缝退化**：当未引入 Redis 或 `ateng.boot.tcp.cluster.redis.enabled=false` 时，自动兜底注册 `LocalTcpClusterBridge`，保证全集群 API 在单机离线与 CI 环境下无需修改业务代码即可跑通。
 
 ---
@@ -807,11 +865,12 @@ public class SampleTcpPacketFilter implements TcpPacketFilter {
 }
 ```
 
-#### 2. 函数式强类型消息处理器 (`TcpMessageHandler<T>`)
+#### 2. 函数式强类型消息处理器 (`TcpMessageHandler<T>`) 与运行期热插拔
 
-提取自 [`SampleAuditMessageHandler.java`](../ateng-boot-samples/ateng-boot-sample-tcp/src/main/java/io/github/atengk/boot/sample/tcp/spi/SampleAuditMessageHandler.java)，适合高性能无反射协议指令接管（可与 `@TcpListener` 共存）：
+提取自 [`SampleAuditMessageHandler.java`](../ateng-boot-samples/ateng-boot-sample-tcp/src/main/java/io/github/atengk/boot/sample/tcp/spi/SampleAuditMessageHandler.java) 与 [`TcpGovernanceConsoleService.java`](../ateng-boot-samples/ateng-boot-sample-tcp/src/main/java/io/github/atengk/boot/sample/tcp/service/TcpGovernanceConsoleService.java)，适合高性能无反射协议指令接管与运行期动态命令路由热插拔（可与 `@TcpListener` 共存）：
 
 ```java
+// 静态 Spring Bean 形式装配
 @Component
 @RequiredArgsConstructor
 public class SampleAuditMessageHandler implements TcpMessageHandler<Map<String, Object>> {
@@ -841,6 +900,11 @@ public class SampleAuditMessageHandler implements TcpMessageHandler<Map<String, 
         }
     }
 }
+
+// 运行期动态注册、枚举与热注销（提取自 TcpGovernanceConsoleService）
+tcpDispatcher.registerHandler(dynamicHandler);
+Set<String> commands = tcpDispatcher.getRegisteredCommands();
+boolean removed = tcpDispatcher.unregisterHandler(command);
 ```
 
 #### 3. Netty 通道初始化编排定制器 (`TcpChannelCustomizer`, `Ordered`)
@@ -931,7 +995,7 @@ public class SampleTcpCorrelationIdExtractor implements TcpCorrelationIdExtracto
   1. 解除服务端 `ServerSocket` 端口监听并关闭客户端自动重连调度，不再接收新流量；
   2. 进入 `drain-timeout`（默认 `5s`）排空窗口，轮询 `correlationManager.hasPendingRequests()` 等待在途 RPC 应答；
   3. 注销存量会话（标记 `CloseReason.SERVER_SHUTDOWN`）、释放流量整形线程（`release()`）并优雅关闭 EventLoop 线程池。
-- **Netty EventLoop 防阻塞底线**：切勿在 `TcpPacketFilter`、`@TcpMapping`（未配受管 `Executor` 时）或通道回调中直接发起阻塞同步等待，防止 EventLoop 线程死锁。
+- **Netty EventLoop 防阻塞与虚拟线程无 Pinning 底线**：切勿在 `TcpPacketFilter` 或通道回调中直接发起阻塞同步等待，业务监听器默认自动隔离至 `@Qualifier("taskExecutor")` 异步执行；核心生命周期与关联超时管理内部并发临界区统一采用 `ReentrantLock` 适配 JDK 21+ 虚拟线程。
 
 ---
 
@@ -1007,7 +1071,7 @@ public class SampleTcpCorrelationIdExtractor implements TcpCorrelationIdExtracto
 
 ### 6.5 场景样例工程导览 (`ateng-boot-sample-tcp`)
 
-完整的双模自洽体验工程位于 [ateng-boot-sample-tcp](../ateng-boot-samples/ateng-boot-sample-tcp)，对外暴露 5 大领域 Controller 并提供双轨自动化回归测试：
+完整的双模自洽体验工程位于 [ateng-boot-sample-tcp](../ateng-boot-samples/ateng-boot-sample-tcp)，对外暴露 5 大领域 Controller 共 32 个 HTTP 端点并提供双轨自动化回归测试（含 16 步无 Web 端到端链路验证）：
 
 - **服务端控制域**：[`TcpServerController.java`](../ateng-boot-samples/ateng-boot-sample-tcp/src/main/java/io/github/atengk/boot/sample/tcp/controller/TcpServerController.java)（`/sample/tcp/server/*`）
 - **客户端控制域**：[`TcpClientController.java`](../ateng-boot-samples/ateng-boot-sample-tcp/src/main/java/io/github/atengk/boot/sample/tcp/controller/TcpClientController.java)（`/sample/tcp/client/*`）
@@ -1086,6 +1150,7 @@ public class SampleTcpCorrelationIdExtractor implements TcpCorrelationIdExtracto
 | `client*.heartbeat.enabled` | `boolean` | `false` | 客户端是否开启定时主动心跳包发送 |
 | `client*.heartbeat.interval` | `Duration` | `30s` | 客户端发送保活心跳包的固定间隔 |
 | `client*.heartbeat.payload` | `String` | `"PING"` | 客户端心跳发送默认载荷内容 |
+| `client*.heartbeat.response-payload` | `String` | `"PONG"` | 客户端静默消费的心跳应答匹配载荷（配置为空白时安全回退 `"PONG"`） |
 | `client*.reconnect.enabled` | `boolean` | `true` | 客户端断线后是否开启指数退避后台自愈重连 |
 | `client*.reconnect.initial-interval` | `Duration` | `1s` | 首次重连退避初始等待时间 |
 | `client*.reconnect.max-interval` | `Duration` | `30s` | 指数退避最大间隔上限 |

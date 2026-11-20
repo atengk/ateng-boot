@@ -90,3 +90,13 @@ flowchart TD
 
 ### 妥协与边界
 - 样例工程引入 `ateng-boot-web` 后仅作用于标配 `<maven.deploy.skip>true</maven.deploy.skip>` 且被 `-DskipSamples` 隔离的非分发测试沙箱模块，`ateng-boot-tcp` Starter 本身保持 100% 纯净无 Web 传输依赖。
+
+---
+
+## 补充演进注记 (Incremental Evolution Note)
+
+在 `ateng-boot-tcp` 与 `ateng-boot-sample-tcp` 深度校准阶段，进一步补充落地以下生产契约与体验闭环：
+1. **Dispatcher 线程池优先级与四维上下文闭环**：`TcpDispatcher` 优先绑定 Core `@Qualifier("taskExecutor")`（单 `Executor` 兜底）并通过 `MessageContextPropagator.runInContext` 实现 `<TraceId, TenantId, UserId, IgnoreTenant>` 异步透传与确定性清理（Netty I/O 线程零残留）；`RedisPubSubTcpClusterBridge` 同步透传 `contextHeaders`。
+2. **`@Valid`/`@Validated` 前置防卫与快速 RPC 错误回执**：监听入参声明 `@Valid`/`@Validated` 时在调度阶段基于 `ValidatorUtil.validate` Fail-Fast 拦截，并在携带 `requestId` 时回写 `"status":"ERROR"` 快速应答（透传 `FramingMode` 保持分隔符帧对称性）。
+3. **运行期动态路由与亚秒心跳精度**：`TcpDispatcher` 开放 `registerHandler` / `unregisterHandler` / `getRegisteredCommands` 运行期动态热插拔接口；服务端与客户端 `IdleStateHandler` 统一收敛至毫秒级精度（`Duration.toMillis()`），`TcpHeartbeatProperties` 补齐可配 `response-payload`（默认 `"PONG"`）；`TcpClientTemplate` 同步/异步 RPC 参数序与服务端门面对齐（兼容保留历史重载）。
+4. **双端文档与 32 端点双轨升级**：`ateng-boot-sample-tcp` 扩展至 32 个 HTTP 端点与 16 步 `WebEnvironment.NONE` 纯后台端到端验收，并与 `ateng-boot-tcp/README.md` 完成 1:1 五维逆向校准。
