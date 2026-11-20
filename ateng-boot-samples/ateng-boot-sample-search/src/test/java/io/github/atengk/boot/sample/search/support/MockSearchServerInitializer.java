@@ -59,9 +59,33 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
 
     public static class ElasticMockDispatcher extends Dispatcher {
 
+        private final java.util.Map<String, String> tenantDocStore = new java.util.concurrent.ConcurrentHashMap<>();
+
+        private static String stripQuery(String path) {
+            int q = path.indexOf('?');
+            return q >= 0 ? path.substring(0, q) : path;
+        }
+
+        private static String extractDocId(String cleanPath) {
+            int idx = cleanPath.indexOf("/_doc/");
+            if (idx < 0) {
+                return null;
+            }
+            String after = cleanPath.substring(idx + 6);
+            int slash = after.indexOf('/');
+            return slash >= 0 ? after.substring(0, slash) : after;
+        }
+
+        private static String extractIndexName(String cleanPath) {
+            String trimmed = cleanPath.startsWith("/") ? cleanPath.substring(1) : cleanPath;
+            int slash = trimmed.indexOf('/');
+            return slash >= 0 ? trimmed.substring(0, slash) : trimmed;
+        }
+
         @Override
         public MockResponse dispatch(RecordedRequest request) {
             String path = request.getPath() != null ? request.getPath() : "";
+            String cleanPath = stripQuery(path);
             String method = request.getMethod() != null ? request.getMethod() : "GET";
             String body = request.getBody() != null ? request.getBody().readUtf8() : "";
 
@@ -146,6 +170,36 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
 
             // 2.3 条件清理 deleteByQuery
             if (path.contains("/_delete_by_query")) {
+                String requestedTenant = extractFilterTenantValue(body);
+                boolean hasTenantLogEntries = tenantDocStore.keySet().stream().anyMatch(k -> k.startsWith("LOG_TENANT_"));
+                if (requestedTenant != null && hasTenantLogEntries) {
+                    long deletedCount = 0L;
+                    java.util.Iterator<java.util.Map.Entry<String, String>> it = tenantDocStore.entrySet().iterator();
+                    while (it.hasNext()) {
+                        java.util.Map.Entry<String, String> entry = it.next();
+                        if (entry.getKey().startsWith("LOG_TENANT_")
+                                && requestedTenant.equals(extractStoredTenantValue(entry.getValue()))) {
+                            it.remove();
+                            deletedCount++;
+                        }
+                    }
+                    return jsonResponse(200, """
+                            {
+                              "took": 5,
+                              "timed_out": false,
+                              "total": %d,
+                              "deleted": %d,
+                              "batches": 1,
+                              "version_conflicts": 0,
+                              "noops": 0,
+                              "retries": { "bulk": 0, "search": 0 },
+                              "throttled_millis": 0,
+                              "requests_per_second": -1.0,
+                              "throttled_until_millis": 0,
+                              "failures": []
+                            }
+                            """.formatted(deletedCount, deletedCount));
+                }
                 return jsonResponse(200, """
                         {
                           "took": 5,
@@ -166,6 +220,47 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
 
             // 2.4 轻量计数 count
             if (path.contains("/_count")) {
+                if (body.contains("P_TENANT_") || body.contains("LOG_TENANT_")) {
+                    String matchedDoc = null;
+                    for (java.util.Map.Entry<String, String> entry : tenantDocStore.entrySet()) {
+                        if (body.contains("\"" + entry.getKey() + "\"")) {
+                            matchedDoc = entry.getValue();
+                            break;
+                        }
+                    }
+                    long countVal = 0L;
+                    if (matchedDoc != null) {
+                        String tenantMarker = extractStoredTenantValue(matchedDoc);
+                        if (tenantMarker != null && body.contains("\"value\":\"" + tenantMarker + "\"")) {
+                            countVal = 1L;
+                        }
+                    }
+                    return jsonResponse(200, """
+                            {
+                              "count": %d,
+                              "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 }
+                            }
+                            """.formatted(countVal));
+                }
+                String requestedTenant = extractFilterTenantValue(body);
+                if (requestedTenant != null
+                        && (body.contains("/api/tenant-a/audit") || body.contains("/api/v1/tenant-a/orders"))) {
+                    long countVal = 0L;
+                    for (java.util.Map.Entry<String, String> entry : tenantDocStore.entrySet()) {
+                        if (entry.getKey().startsWith("LOG_TENANT_")
+                                && requestedTenant.equals(extractStoredTenantValue(entry.getValue()))
+                                && ((body.contains("/api/tenant-a/audit") && entry.getValue().contains("/api/tenant-a/audit"))
+                                || (body.contains("/api/v1/tenant-a/orders") && entry.getValue().contains("/api/v1/tenant-a/orders")))) {
+                            countVal++;
+                        }
+                    }
+                    return jsonResponse(200, """
+                            {
+                              "count": %d,
+                              "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 }
+                            }
+                            """.formatted(countVal));
+                }
                 return jsonResponse(200, """
                         {
                           "count": 42,
@@ -403,6 +498,31 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
 
             // 6. 单文档获取 Get
             if (method.equals("GET") && (path.contains("/_doc/") || path.contains("/product_index/"))) {
+                String docId = extractDocId(cleanPath);
+                String indexName = extractIndexName(cleanPath);
+                if (docId != null && (docId.startsWith("P_TENANT_") || docId.startsWith("LOG_TENANT_"))) {
+                    String storedJson = tenantDocStore.get(docId);
+                    if (storedJson == null) {
+                        return jsonResponse(404, """
+                                {
+                                  "_index": "%s",
+                                  "_id": "%s",
+                                  "found": false
+                                }
+                                """.formatted(indexName, docId));
+                    }
+                    return jsonResponse(200, """
+                            {
+                              "_index": "%s",
+                              "_id": "%s",
+                              "_version": 1,
+                              "_seq_no": 1,
+                              "_primary_term": 1,
+                              "found": true,
+                              "_source": %s
+                            }
+                            """.formatted(indexName, docId, storedJson));
+                }
                 return jsonResponse(200, """
                         {
                           "_index": "product_index",
@@ -434,36 +554,87 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
 
             // 7. 单文档写入 Index (PUT/POST)
             if ((method.equals("PUT") || method.equals("POST")) && (path.contains("/_doc/") || path.contains("/access_log_") || path.contains("/product_index"))) {
+                String docId = extractDocId(cleanPath);
+                String indexName = extractIndexName(cleanPath);
+                if (docId != null && (docId.startsWith("P_TENANT_") || docId.startsWith("LOG_TENANT_")) && !body.isBlank()) {
+                    tenantDocStore.put(docId, body);
+                }
+                String resolvedId = docId != null ? docId : "P001";
+                String resolvedIndex = !indexName.isBlank() ? indexName : "product_index";
                 return jsonResponse(201, """
                         {
-                          "_index": "product_index",
-                          "_id": "P001",
+                          "_index": "%s",
+                          "_id": "%s",
                           "_version": 1,
                           "result": "created",
                           "_seq_no": 1,
                           "_primary_term": 1,
                           "_shards": { "total": 1, "successful": 1, "failed": 0 }
                         }
-                        """);
+                        """.formatted(resolvedIndex, resolvedId));
             }
 
             // 8. 单文档删除 Delete
             if (method.equals("DELETE") && (path.contains("/_doc/") || path.contains("/product_index"))) {
+                String docId = extractDocId(cleanPath);
+                String indexName = extractIndexName(cleanPath);
+                if (docId != null && (docId.startsWith("P_TENANT_") || docId.startsWith("LOG_TENANT_"))) {
+                    tenantDocStore.remove(docId);
+                }
+                String resolvedId = docId != null ? docId : "P001";
+                String resolvedIndex = !indexName.isBlank() ? indexName : "product_index";
                 return jsonResponse(200, """
                         {
-                          "_index": "product_index",
-                          "_id": "P001",
+                          "_index": "%s",
+                          "_id": "%s",
                           "_version": 2,
                           "result": "deleted",
                           "_seq_no": 2,
                           "_primary_term": 1,
                           "_shards": { "total": 1, "successful": 1, "failed": 0 }
                         }
-                        """);
+                        """.formatted(resolvedIndex, resolvedId));
             }
 
             // 默认兜底响应
             return jsonResponse(200, "{\"acknowledged\":true}");
+        }
+
+        private String extractStoredTenantValue(String json) {
+            if (json == null || json.isBlank()) {
+                return null;
+            }
+            for (String field : new String[]{"\"tenantId\":\"", "\"tenant_id\":\""}) {
+                int idx = json.indexOf(field);
+                if (idx >= 0) {
+                    int start = idx + field.length();
+                    int end = json.indexOf('"', start);
+                    if (end > start) {
+                        return json.substring(start, end);
+                    }
+                }
+            }
+            return null;
+        }
+
+        private String extractFilterTenantValue(String queryJson) {
+            if (queryJson == null || queryJson.isBlank()) {
+                return null;
+            }
+            for (String field : new String[]{"\"tenantId\":", "\"tenant_id\":"}) {
+                int fieldIdx = queryJson.indexOf(field);
+                if (fieldIdx >= 0) {
+                    int valueIdx = queryJson.indexOf("\"value\":\"", fieldIdx + field.length());
+                    if (valueIdx >= 0) {
+                        int start = valueIdx + "\"value\":\"".length();
+                        int end = queryJson.indexOf('"', start);
+                        if (end > start) {
+                            return queryJson.substring(start, end);
+                        }
+                    }
+                }
+            }
+            return null;
         }
 
         private MockResponse jsonResponse(int status, String json) {

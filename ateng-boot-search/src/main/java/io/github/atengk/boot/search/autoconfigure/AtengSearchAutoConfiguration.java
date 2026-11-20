@@ -3,8 +3,10 @@ package io.github.atengk.boot.search.autoconfigure;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.search.actuator.SearchHealthIndicator;
+import io.github.atengk.boot.search.annotation.IgnoreTenant;
 import io.github.atengk.boot.search.bulk.BulkListener;
 import io.github.atengk.boot.search.bulk.SearchBulkProcessor;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.search.driver.ElasticsearchClientDriver;
 import io.github.atengk.boot.search.metrics.SearchMetrics;
 import io.github.atengk.boot.search.properties.AtengSearchProperties;
@@ -14,8 +16,14 @@ import io.github.atengk.boot.search.spi.SearchInterceptor;
 import io.github.atengk.boot.search.template.SearchTemplate;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
+import org.aopalliance.intercept.MethodInterceptor;
+import org.springframework.aop.Advisor;
+import org.springframework.aop.support.ComposablePointcut;
+import org.springframework.aop.support.DefaultPointcutAdvisor;
+import org.springframework.aop.support.annotation.AnnotationMatchingPointcut;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
@@ -26,6 +34,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Role;
+import org.springframework.core.Ordered;
 
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
@@ -129,6 +139,42 @@ public class AtengSearchAutoConfiguration {
         public SearchMetrics searchMetrics(MeterRegistry meterRegistry) {
             log.info("Auto-configuring SearchMetrics for Micrometer performance monitoring");
             return new SearchMetrics(meterRegistry);
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass({Advisor.class, MethodInterceptor.class})
+    static class SearchIgnoreTenantAopConfiguration {
+
+        @Bean
+        @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+        @ConditionalOnMissingBean(name = "searchIgnoreTenantAdvisor")
+        public static Advisor searchIgnoreTenantAdvisor() {
+            ComposablePointcut pointcut = new ComposablePointcut(
+                    new AnnotationMatchingPointcut(IgnoreTenant.class, true))
+                    .union(new AnnotationMatchingPointcut(null, IgnoreTenant.class, true));
+            MethodInterceptor interceptor = invocation -> {
+                try {
+                    return TenantContextHolder.runWithoutTenant(() -> {
+                        try {
+                            return invocation.proceed();
+                        } catch (Throwable t) {
+                            throw new CheckedExceptionWrapper(t);
+                        }
+                    });
+                } catch (CheckedExceptionWrapper wrapper) {
+                    throw wrapper.getCause();
+                }
+            };
+            DefaultPointcutAdvisor advisor = new DefaultPointcutAdvisor(pointcut, interceptor);
+            advisor.setOrder(Ordered.HIGHEST_PRECEDENCE + 100);
+            return advisor;
+        }
+
+        private static final class CheckedExceptionWrapper extends RuntimeException {
+            private CheckedExceptionWrapper(Throwable cause) {
+                super(cause);
+            }
         }
     }
 }

@@ -2,8 +2,8 @@ package io.github.atengk.boot.search.template;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.Conflicts;
-import co.elastic.clients.elasticsearch._types.ElasticsearchException;
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping;
+import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch.core.ReindexResponse;
 import co.elastic.clients.elasticsearch.indices.CreateIndexResponse;
 import co.elastic.clients.elasticsearch.indices.DeleteIndexResponse;
@@ -20,6 +20,7 @@ import io.github.atengk.boot.search.exception.SearchException;
 import io.github.atengk.boot.search.query.SearchQuery;
 import io.github.atengk.boot.search.util.SearchExceptionClassifier;
 import io.github.atengk.boot.search.util.SearchMetadataHelper;
+import io.github.atengk.boot.search.util.SearchTenantHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.elasticsearch.client.ResponseException;
@@ -424,13 +425,20 @@ public class SearchIndexOperations {
         if (sourceIndex.trim().equals(targetIndex.trim())) {
             throw new IllegalArgumentException("sourceIndex and targetIndex must not be the same: [" + sourceIndex + "]");
         }
+        SearchTenantHelper.rejectCrossTenantQueryFilter(
+                filterQuery != null ? filterQuery.getQuery() : null,
+                searchTemplate.getProperties(),
+                SearchTenantHelper.resolveObjectMapper(searchTemplate.getSearchEngineClient())
+        );
+        Query effectiveSourceQuery = searchTemplate.wrapTenantFilterIfNecessary(
+                filterQuery != null ? filterQuery.getQuery() : null, null);
         return searchTemplate.executeObserved("indices.reindex", targetIndex, null, null, filterQuery, false, () -> {
             try {
                 ReindexResponse response = getClient().reindex(b -> {
                     b.source(s -> {
                         s.index(sourceIndex);
-                        if (filterQuery != null && filterQuery.getQuery() != null) {
-                            s.query(filterQuery.getQuery());
+                        if (effectiveSourceQuery != null) {
+                            s.query(effectiveSourceQuery);
                         }
                         return s;
                     });

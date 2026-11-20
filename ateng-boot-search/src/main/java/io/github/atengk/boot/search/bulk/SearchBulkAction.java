@@ -72,4 +72,19 @@ public class SearchBulkAction implements Serializable {
      * 估算序列化字节容量
      */
     private final long estimatedBytes;
+
+    /**
+     * 入队时捕获的实体类类型（用于异步刷盘阶段的多租户 @IgnoreTenant 判定，可能为 null）
+     */
+    private final Class<?> entityClass;
+
+    /**
+     * 入队时捕获的调用线程租户标识（可能为 null）
+     */
+    private final String tenantId;
+
+    /**
+     * 入队时是否触发忽略租户标志
+     */
+    private final boolean ignoreTenant;
 }

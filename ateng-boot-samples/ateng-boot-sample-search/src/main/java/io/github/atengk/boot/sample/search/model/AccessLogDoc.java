@@ -29,5 +29,7 @@ public class AccessLogDoc {
 
     private String clientIp;
 
+    private String tenantId;
+
     private LocalDateTime timestamp;
 }

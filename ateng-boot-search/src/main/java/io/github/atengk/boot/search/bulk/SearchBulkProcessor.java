@@ -1,7 +1,9 @@
 package io.github.atengk.boot.search.bulk;
 
 import co.elastic.clients.elasticsearch.core.BulkRequest;
+import com.fasterxml.jackson.databind.JsonNode;
 import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.search.enums.SearchResultCode;
@@ -9,6 +11,7 @@ import io.github.atengk.boot.search.exception.SearchException;
 import io.github.atengk.boot.search.model.SearchBulkResult;
 import io.github.atengk.boot.search.template.SearchTemplate;
 import io.github.atengk.boot.search.util.SearchMetadataHelper;
+import io.github.atengk.boot.search.util.SearchTenantHelper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.context.SmartLifecycle;
@@ -152,16 +155,21 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
      */
     public <T> SearchBulkProcessor add(String index, T doc) {
         Objects.requireNonNull(doc, "document must not be null");
+        Class<?> entityClass = doc instanceof Map<?, ?> ? null : doc.getClass();
         String targetIndex = StringUtils.hasText(index) ? index : SearchMetadataHelper.resolveIndexName(doc.getClass());
         String docId = SearchMetadataHelper.resolveDocumentId(doc);
         String routing = SearchMetadataHelper.resolveRouting(doc);
+        Object payload = prepareTenantWritePayload(doc, entityClass);
         return addAction(SearchBulkAction.builder()
                 .type(SearchBulkAction.ActionType.INDEX)
                 .index(targetIndex)
                 .id(docId)
                 .routing(routing)
-                .document(doc)
-                .estimatedBytes(estimateDocSize(doc))
+                .document(payload)
+                .estimatedBytes(estimateDocSize(payload))
+                .entityClass(entityClass)
+                .tenantId(TenantContextHolder.getTenantId())
+                .ignoreTenant(TenantContextHolder.isIgnoreTenant())
                 .build());
     }
 
@@ -217,19 +225,24 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
      */
     public <T> SearchBulkProcessor update(String index, T partialDoc) {
         Objects.requireNonNull(partialDoc, "partialDoc must not be null");
+        Class<?> entityClass = partialDoc instanceof Map<?, ?> ? null : partialDoc.getClass();
         String targetIndex = StringUtils.hasText(index) ? index : SearchMetadataHelper.resolveIndexName(partialDoc.getClass());
         String docId = SearchMetadataHelper.resolveDocumentId(partialDoc);
         if (!StringUtils.hasText(docId)) {
             throw new IllegalArgumentException("Document ID must not be null or blank for update action");
         }
         String routing = SearchMetadataHelper.resolveRouting(partialDoc);
+        Object payload = prepareTenantWritePayload(partialDoc, entityClass);
         return addAction(SearchBulkAction.builder()
                 .type(SearchBulkAction.ActionType.UPDATE)
                 .index(targetIndex)
                 .id(docId)
                 .routing(routing)
-                .document(partialDoc)
-                .estimatedBytes(estimateDocSize(partialDoc))
+                .document(payload)
+                .estimatedBytes(estimateDocSize(payload))
+                .entityClass(entityClass)
+                .tenantId(TenantContextHolder.getTenantId())
+                .ignoreTenant(TenantContextHolder.isIgnoreTenant())
                 .build());
     }
 
@@ -254,20 +267,37 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
      */
     public <T> SearchBulkProcessor upsert(String index, T doc) {
         Objects.requireNonNull(doc, "doc must not be null");
+        Class<?> entityClass = doc instanceof Map<?, ?> ? null : doc.getClass();
         String targetIndex = StringUtils.hasText(index) ? index : SearchMetadataHelper.resolveIndexName(doc.getClass());
         String docId = SearchMetadataHelper.resolveDocumentId(doc);
         if (!StringUtils.hasText(docId)) {
             throw new IllegalArgumentException("Document ID must not be null or blank for upsert action");
         }
         String routing = SearchMetadataHelper.resolveRouting(doc);
+        Object payload = prepareTenantWritePayload(doc, entityClass);
         return addAction(SearchBulkAction.builder()
                 .type(SearchBulkAction.ActionType.UPSERT)
                 .index(targetIndex)
                 .id(docId)
                 .routing(routing)
-                .document(doc)
-                .estimatedBytes(estimateDocSize(doc))
+                .document(payload)
+                .estimatedBytes(estimateDocSize(payload))
+                .entityClass(entityClass)
+                .tenantId(TenantContextHolder.getTenantId())
+                .ignoreTenant(TenantContextHolder.isIgnoreTenant())
                 .build());
+    }
+
+    private Object prepareTenantWritePayload(Object doc, Class<?> entityClass) {
+        if (doc == null || searchTemplate == null) {
+            return doc;
+        }
+        return SearchTenantHelper.preparePayloadForWrite(
+                doc,
+                entityClass,
+                searchTemplate.getProperties(),
+                SearchTenantHelper.resolveObjectMapper(searchTemplate.getSearchEngineClient())
+        );
     }
 
     /**
@@ -280,7 +310,7 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
     public SearchBulkProcessor delete(String id, Class<?> clazz) {
         Objects.requireNonNull(clazz, "clazz must not be null");
         String targetIndex = SearchMetadataHelper.resolveIndexName(clazz);
-        return delete(targetIndex, id);
+        return doDelete(targetIndex, clazz, id);
     }
 
     /**
@@ -291,6 +321,10 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
      * @return 当前处理器实例
      */
     public SearchBulkProcessor delete(String index, String id) {
+        return doDelete(index, null, id);
+    }
+
+    private SearchBulkProcessor doDelete(String index, Class<?> entityClass, String id) {
         if (!StringUtils.hasText(index)) {
             throw new IllegalArgumentException("index must not be null or blank for delete action");
         }
@@ -302,6 +336,9 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
                 .index(index)
                 .id(id)
                 .estimatedBytes(64L)
+                .entityClass(entityClass)
+                .tenantId(TenantContextHolder.getTenantId())
+                .ignoreTenant(TenantContextHolder.isIgnoreTenant())
                 .build());
     }
 
@@ -417,6 +454,20 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
                 acquired = true;
             }
             listener.beforeBulk(executionId, batch.size());
+            List<SearchTemplate.BulkOwnershipTarget> targets = new ArrayList<>();
+            for (SearchBulkAction action : batch) {
+                if (action == null || !StringUtils.hasText(action.getId())) {
+                    continue;
+                }
+                if (action.isIgnoreTenant() || SearchMetadataHelper.hasIgnoreTenant(action.getEntityClass())) {
+                    continue;
+                }
+                if (StringUtils.hasText(action.getTenantId())) {
+                    targets.add(new SearchTemplate.BulkOwnershipTarget(
+                            action.getIndex(), action.getId(), action.getRouting(), action.getTenantId().trim()));
+                }
+            }
+            searchTemplate.verifyBatchOwnershipIfStrict(targets);
             BulkRequest bulkRequest = buildBulkRequest(batch);
             SearchBulkResult result = searchTemplate.executeBulk(bulkRequest, batch.size(), true);
             listener.afterBulk(executionId, batch.size(), result);
@@ -509,6 +560,9 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
         if (doc instanceof Number || doc instanceof Boolean) {
             return 16L;
         }
+        if (doc instanceof JsonNode jsonNode) {
+            return estimateJsonNodeSize(jsonNode);
+        }
         if (doc instanceof Map<?, ?> map) {
             long size = 32L;
             for (Map.Entry<?, ?> entry : map.entrySet()) {
@@ -535,6 +589,35 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
         } catch (Exception e) {
             return 128L;
         }
+    }
+
+    private long estimateJsonNodeSize(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return 8L;
+        }
+        if (node.isTextual()) {
+            return node.asText().length() + 16L;
+        }
+        if (node.isNumber() || node.isBoolean()) {
+            return 16L;
+        }
+        if (node.isObject()) {
+            long size = 32L;
+            var fields = node.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> entry = fields.next();
+                size += entry.getKey().length() + estimateJsonNodeSize(entry.getValue()) + 16L;
+            }
+            return size;
+        }
+        if (node.isArray()) {
+            long size = 16L;
+            for (JsonNode item : node) {
+                size += estimateJsonNodeSize(item);
+            }
+            return size;
+        }
+        return 32L;
     }
 
     /**

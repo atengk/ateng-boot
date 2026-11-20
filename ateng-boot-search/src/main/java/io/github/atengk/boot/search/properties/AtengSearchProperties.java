@@ -1,6 +1,7 @@
 package io.github.atengk.boot.search.properties;
 
 import io.github.atengk.boot.search.enums.SearchEngineType;
+import io.github.atengk.boot.search.enums.TenantIsolationMode;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
@@ -150,6 +151,11 @@ public class AtengSearchProperties {
          * 多租户字段名（默认 tenant_id）
          */
         private String column = "tenant_id";
+
+        /**
+         * 多租户行级隔离策略模式（默认 STRICT 严格读写闭环）
+         */
+        private TenantIsolationMode isolationMode = TenantIsolationMode.STRICT;
     }
 
     @Data

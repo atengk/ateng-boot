@@ -155,6 +155,7 @@ class SampleSearchIntegrationTest {
                   "id": { "type": "keyword" },
                   "path": { "type": "keyword" },
                   "clientIp": { "type": "keyword" },
+                  "tenantId": { "type": "keyword" },
                   "timestamp": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||strict_date_optional_time||epoch_millis" }
                 }
               }
@@ -546,5 +547,85 @@ class SampleSearchIntegrationTest {
         assertThat(searchMetrics.getBulkTimer()).isNotNull();
         searchTemplate.search(SearchQueryBuilder.create().matchAll().build(), ProductDoc.class);
         assertThat(searchMetrics.getQueryTimer().count()).isGreaterThanOrEqualTo(1L);
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void cleanupTenantContext() {
+        io.github.atengk.boot.core.context.TenantContextHolder.clear();
+    }
+
+    @Test
+    @DisplayName("18. 多租户写入自动注入、STRICT 防 IDOR 点查/点删改拦截与 AccessLogDoc 租户隔离闭环")
+    void testMultiTenantReadWriteAndAntiIdorIsolation() {
+        String tenantProductId = "P_TENANT_A";
+        String tenantLogId = "LOG_TENANT_A";
+
+        // 1. tenant-corp-a 写入不显式传 tenantId 的商品与访问日志，自动安全注入并可读回
+        io.github.atengk.boot.core.context.TenantContextHolder.runWithTenant("tenant-corp-a", () -> {
+            ProductDoc product = ProductDoc.builder()
+                    .id(tenantProductId)
+                    .title("多租户专属终端")
+                    .brand("Apple")
+                    .price(new BigDecimal("5999.00"))
+                    .stock(10)
+                    .status("ON_SALE")
+                    .createTime(LocalDateTime.now())
+                    .build();
+            productCatalogScenario.saveProduct(product);
+
+            AccessLogDoc accessLog = AccessLogDoc.builder()
+                    .id(tenantLogId)
+                    .path("/api/tenant-a/audit")
+                    .clientIp("10.0.0.1")
+                    .timestamp(LocalDateTime.now())
+                    .build();
+            logAnalyticsScenario.recordAccessLog(accessLog);
+
+            if (isLocalProfileActive()) {
+                searchTemplate.indices().refresh("product_index");
+                searchTemplate.indices().refresh("access_log_*");
+            }
+
+            ProductDoc readOwnedProduct = productCatalogScenario.getProduct(tenantProductId, "Apple");
+            assertThat(readOwnedProduct).isNotNull();
+            assertThat(readOwnedProduct.getTenantId()).isEqualTo("tenant-corp-a");
+
+            AccessLogDoc readOwnedLog = searchTemplate.getById(AccessLogDoc.class, tenantLogId);
+            assertThat(readOwnedLog).isNotNull();
+            assertThat(readOwnedLog.getTenantId()).isEqualTo("tenant-corp-a");
+            assertThat(productCatalogScenario.existsProduct(tenantProductId, "Apple")).isTrue();
+        });
+
+        // 2. tenant-corp-b 尝试跨租户点查/探测/篡改更新/删除/条件清理 -> 全链路防 IDOR 阻断
+        io.github.atengk.boot.core.context.TenantContextHolder.runWithTenant("tenant-corp-b", () -> {
+            assertThat(productCatalogScenario.getProduct(tenantProductId, "Apple")).isNull();
+            assertThat(searchTemplate.getById(AccessLogDoc.class, tenantLogId)).isNull();
+            assertThat(productCatalogScenario.existsProduct(tenantProductId, "Apple")).isFalse();
+            assertThat(logAnalyticsScenario.countLogsByPath("/api/tenant-a/audit")).isZero();
+            assertThat(logAnalyticsScenario.purgeHistoricalLogsBefore(LocalDateTime.now().plusMinutes(5))).isZero();
+
+            assertThatThrownBy(() -> productCatalogScenario.updateStockPartial(tenantProductId, "Apple", 1))
+                    .isInstanceOf(io.github.atengk.boot.search.exception.SearchException.class)
+                    .extracting(e -> ((io.github.atengk.boot.search.exception.SearchException) e).getResultCode())
+                    .isEqualTo(io.github.atengk.boot.search.enums.SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+
+            assertThatThrownBy(() -> productCatalogScenario.deleteProduct(tenantProductId, "Apple"))
+                    .isInstanceOf(io.github.atengk.boot.search.exception.SearchException.class)
+                    .extracting(e -> ((io.github.atengk.boot.search.exception.SearchException) e).getResultCode())
+                    .isEqualTo(io.github.atengk.boot.search.enums.SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        });
+
+        // 3. 归属租户 A 确认日志仍可读且 count/deleteByQuery 条件清理闭环生效，最后删除商品并确认上下文无残留
+        io.github.atengk.boot.core.context.TenantContextHolder.runWithTenant("tenant-corp-a", () -> {
+            assertThat(logAnalyticsScenario.countLogsByPath("/api/tenant-a/audit")).isGreaterThanOrEqualTo(1L);
+            assertThat(logAnalyticsScenario.purgeHistoricalLogsBefore(LocalDateTime.now().plusMinutes(5))).isGreaterThanOrEqualTo(1L);
+            if (isLocalProfileActive()) {
+                searchTemplate.indices().refresh("access_log_*");
+            }
+            assertThat(logAnalyticsScenario.countLogsByPath("/api/tenant-a/audit")).isZero();
+            assertThat(searchTemplate.getById(AccessLogDoc.class, tenantLogId)).isNull();
+            assertThat(searchTemplate.deleteById(ProductDoc.class, tenantProductId, "Apple")).isTrue();
+        });
+        assertThat(io.github.atengk.boot.core.context.TenantContextHolder.getTenantId()).isNull();
     }
 }

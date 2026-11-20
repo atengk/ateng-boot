@@ -46,6 +46,7 @@ import java.util.List;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -151,6 +152,7 @@ class SampleSearchWebControllerTest {
                   "id": { "type": "keyword" },
                   "path": { "type": "keyword" },
                   "clientIp": { "type": "keyword" },
+                  "tenantId": { "type": "keyword" },
                   "timestamp": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||strict_date_optional_time||epoch_millis" }
                 }
               }
@@ -748,5 +750,167 @@ class SampleSearchWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(200)))
                 .andExpect(jsonPath("$.data", equalTo(true)));
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void cleanupThreadTenantContext() {
+        io.github.atengk.boot.core.context.TenantContextHolder.clear();
+    }
+
+    @Test
+    @DisplayName("5.1 X-Tenant-Id 请求头透传、读写多租户隔离、防跨租户 IDOR 阻断与线程零残留")
+    void test50_multiTenantHeaderIsolationAndAntiIdor() throws Exception {
+        String tenantProductId = "P_TENANT_WEB_A";
+        String tenantLogId = "LOG_TENANT_WEB_A";
+        // 注意 MockSearchServer 按 P_TENANT_/LOG_TENANT_ 前缀识别，上述 ID 已匹配前缀
+
+        // 1. 租户 A 通过 HTTP 头写入商品（DTO 不传 tenantId）并校验自动注入与读回
+        ProductSaveRequest saveReq = ProductSaveRequest.builder()
+                .id(tenantProductId)
+                .title("租户A专享手机")
+                .brand("Apple")
+                .category("手机")
+                .price(new BigDecimal("6999.00"))
+                .stock(20)
+                .status("ON_SALE")
+                .build();
+
+        mockMvc.perform(post("/sample/search/product/save")
+                        .header("X-Tenant-Id", "tenant_corp_a")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(saveReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(tenantProductId)));
+        org.assertj.core.api.Assertions.assertThat(io.github.atengk.boot.core.context.TenantContextHolder.getTenantId()).isNull();
+
+        if (isLocalProfileActive()) {
+            searchTemplate.indices().refresh("product_index");
+        }
+
+        // 2. 租户 A 写入审计日志（AccessLogDoc tenantId 自动注入）
+        AccessLogRecordRequest logReq = AccessLogRecordRequest.builder()
+                .id(tenantLogId)
+                .path("/api/v1/tenant-a/orders")
+                .clientIp("10.10.1.8")
+                .timestamp(LocalDateTime.now())
+                .build();
+        mockMvc.perform(post("/sample/search/log/record")
+                        .header("X-Tenant-Id", "tenant_corp_a")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(logReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(tenantLogId)));
+        org.assertj.core.api.Assertions.assertThat(io.github.atengk.boot.core.context.TenantContextHolder.getTenantId()).isNull();
+
+        if (isLocalProfileActive()) {
+            searchTemplate.indices().refresh("access_log_*");
+        }
+
+        // 3. 租户 A 同租户点查命中且携带注入的 tenantId
+        mockMvc.perform(get("/sample/search/product/get")
+                        .header("X-Tenant-Id", "tenant_corp_a")
+                        .param("id", tenantProductId)
+                        .param("brand", "Apple"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.id", equalTo(tenantProductId)))
+                .andExpect(jsonPath("$.data.tenantId", equalTo("tenant_corp_a")));
+        org.assertj.core.api.Assertions.assertThat(io.github.atengk.boot.core.context.TenantContextHolder.getTenantId()).isNull();
+
+        // 4. 租户 B 跨租户点查返回 null，exists 返回 false
+        mockMvc.perform(get("/sample/search/product/get")
+                        .header("X-Tenant-Id", "tenant_corp_b")
+                        .param("id", tenantProductId)
+                        .param("brand", "Apple"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data").doesNotExist());
+
+        mockMvc.perform(get("/sample/search/product/exists")
+                        .header("X-Tenant-Id", "tenant_corp_b")
+                        .param("id", tenantProductId)
+                        .param("brand", "Apple"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(false)));
+
+        // 5. 租户 B 尝试局部更新或物理删除租户 A 商品 -> 触发 60017 SEARCH_TENANT_ACCESS_DENIED 拦截
+        ProductPartialUpdateRequest tamperStockReq = ProductPartialUpdateRequest.builder()
+                .id(tenantProductId)
+                .brand("Apple")
+                .stock(1)
+                .build();
+        mockMvc.perform(post("/sample/search/product/update-stock")
+                        .header("X-Tenant-Id", "tenant_corp_b")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(tamperStockReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(60017)));
+        org.assertj.core.api.Assertions.assertThat(io.github.atengk.boot.core.context.TenantContextHolder.getTenantId()).isNull();
+
+        mockMvc.perform(delete("/sample/search/product/delete")
+                        .header("X-Tenant-Id", "tenant_corp_b")
+                        .param("id", tenantProductId)
+                        .param("brand", "Apple"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(60017)));
+        org.assertj.core.api.Assertions.assertThat(io.github.atengk.boot.core.context.TenantContextHolder.getTenantId()).isNull();
+
+        // 6. AccessLogDoc 多租户统计与 deleteByQuery 条件清理闭环（租户 B 无法计数或误删，租户 A 正常清理）
+        mockMvc.perform(get("/sample/search/log/count")
+                        .header("X-Tenant-Id", "tenant_corp_a")
+                        .param("path", "/api/v1/tenant-a/orders"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", not(equalTo("0"))));
+
+        mockMvc.perform(get("/sample/search/log/count")
+                        .header("X-Tenant-Id", "tenant_corp_b")
+                        .param("path", "/api/v1/tenant-a/orders"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo("0")));
+
+        AccessLogPurgeRequest purgeReq = AccessLogPurgeRequest.builder()
+                .cutoffTime(LocalDateTime.now().plusMinutes(5))
+                .build();
+        mockMvc.perform(post("/sample/search/log/purge")
+                        .header("X-Tenant-Id", "tenant_corp_b")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(purgeReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo("0")));
+
+        mockMvc.perform(post("/sample/search/log/purge")
+                        .header("X-Tenant-Id", "tenant_corp_a")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(purgeReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", not(equalTo("0"))));
+
+        if (isLocalProfileActive()) {
+            searchTemplate.indices().refresh("access_log_*");
+        }
+
+        mockMvc.perform(get("/sample/search/log/count")
+                        .header("X-Tenant-Id", "tenant_corp_a")
+                        .param("path", "/api/v1/tenant-a/orders"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo("0")));
+
+        // 7. 租户 A 清理自身商品测试数据，保证双模沙箱洁净
+        mockMvc.perform(delete("/sample/search/product/delete")
+                        .header("X-Tenant-Id", "tenant_corp_a")
+                        .param("id", tenantProductId)
+                        .param("brand", "Apple"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(true)));
+        org.assertj.core.api.Assertions.assertThat(io.github.atengk.boot.core.context.TenantContextHolder.getTenantId()).isNull();
     }
 }

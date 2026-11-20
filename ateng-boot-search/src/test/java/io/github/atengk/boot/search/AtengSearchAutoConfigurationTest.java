@@ -16,6 +16,7 @@ import org.springframework.context.annotation.Configuration;
 import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 搜索自动装配与条件守卫测试
@@ -24,6 +25,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @since 2026-10-25
  */
 class AtengSearchAutoConfigurationTest {
+
+    @org.junit.jupiter.api.AfterEach
+    void cleanupTenantContext() {
+        io.github.atengk.boot.core.context.TenantContextHolder.clear();
+    }
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(AtengSearchAutoConfiguration.class));
@@ -38,7 +44,40 @@ class AtengSearchAutoConfigurationTest {
             io.github.atengk.boot.search.properties.AtengSearchProperties props =
                     context.getBean(io.github.atengk.boot.search.properties.AtengSearchProperties.class);
             assertThat(props.getConnectionRequestTimeout()).isEqualTo(java.time.Duration.ofSeconds(3));
+            assertThat(props.getMultiTenancy().getIsolationMode())
+                    .isEqualTo(io.github.atengk.boot.search.enums.TenantIsolationMode.STRICT);
+            assertThat(io.github.atengk.boot.search.enums.SearchResultCode.SEARCH_TENANT_ACCESS_DENIED.getCode())
+                    .isEqualTo(60017);
         });
+    }
+
+    @Test
+    @DisplayName("测试 TenantIsolationMode 枚举配置绑定与 @IgnoreTenant 方法级 AOP 豁免")
+    void testTenantIsolationModeAndIgnoreTenantMethodAdvisor() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        org.springframework.boot.autoconfigure.aop.AopAutoConfiguration.class,
+                        AtengSearchAutoConfiguration.class
+                ))
+                .withPropertyValues("ateng.boot.search.multi-tenancy.isolation-mode=filter-only")
+                .withUserConfiguration(IgnoreTenantMethodServiceConfiguration.class)
+                .run(context -> {
+                    io.github.atengk.boot.search.properties.AtengSearchProperties props =
+                            context.getBean(io.github.atengk.boot.search.properties.AtengSearchProperties.class);
+                    assertThat(props.getMultiTenancy().getIsolationMode())
+                            .isEqualTo(io.github.atengk.boot.search.enums.TenantIsolationMode.FILTER_ONLY);
+
+                    IgnoreTenantSampleService service = context.getBean(IgnoreTenantSampleService.class);
+                    io.github.atengk.boot.core.context.TenantContextHolder.runWithTenant("tenant_east", () -> {
+                        assertThat(io.github.atengk.boot.core.context.TenantContextHolder.isIgnoreTenant()).isFalse();
+                        assertThat(service.readAcrossTenants()).isTrue();
+                        assertThat(io.github.atengk.boot.core.context.TenantContextHolder.isIgnoreTenant()).isFalse();
+                        assertThatThrownBy(service::throwCheckedFailure)
+                                .isExactlyInstanceOf(IOException.class)
+                                .hasMessage("checked boom");
+                        assertThat(io.github.atengk.boot.core.context.TenantContextHolder.isIgnoreTenant()).isFalse();
+                    });
+                });
     }
 
     @Test
@@ -279,6 +318,26 @@ class AtengSearchAutoConfigurationTest {
                     TRACE.add("after-1");
                 }
             };
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class IgnoreTenantMethodServiceConfiguration {
+        @Bean
+        public IgnoreTenantSampleService ignoreTenantSampleService() {
+            return new IgnoreTenantSampleService();
+        }
+    }
+
+    static class IgnoreTenantSampleService {
+        @io.github.atengk.boot.search.annotation.IgnoreTenant
+        public boolean readAcrossTenants() {
+            return io.github.atengk.boot.core.context.TenantContextHolder.isIgnoreTenant();
+        }
+
+        @io.github.atengk.boot.search.annotation.IgnoreTenant
+        public void throwCheckedFailure() throws IOException {
+            throw new IOException("checked boom");
         }
     }
 }

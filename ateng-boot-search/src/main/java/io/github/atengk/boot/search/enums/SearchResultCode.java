@@ -92,7 +92,12 @@ public enum SearchResultCode implements IResultCode {
     /**
      * 搜索引擎操作超时
      */
-    SEARCH_TIMEOUT_ERROR(60016, "搜索引擎操作超时");
+    SEARCH_TIMEOUT_ERROR(60016, "搜索引擎操作超时"),
+
+    /**
+     * 跨租户越权访问或租户标识篡改被拒绝
+     */
+    SEARCH_TENANT_ACCESS_DENIED(60017, "跨租户越权访问或租户标识篡改被拒绝");
 
     private final Integer code;
     private final String msg;

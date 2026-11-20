@@ -26,6 +26,8 @@ import co.elastic.clients.elasticsearch.core.search.Hit;
 import co.elastic.clients.json.JsonpUtils;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
 import co.elastic.clients.transport.endpoints.BooleanResponse;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.search.bulk.SearchBulkProcessor;
@@ -50,6 +52,7 @@ import io.github.atengk.boot.search.spi.SearchInterceptor;
 import io.github.atengk.boot.search.spi.SearchInvocationContext;
 import io.github.atengk.boot.search.util.SearchExceptionClassifier;
 import io.github.atengk.boot.search.util.SearchMetadataHelper;
+import io.github.atengk.boot.search.util.SearchTenantHelper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
 
@@ -58,9 +61,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
@@ -164,6 +170,15 @@ public class SearchTemplate {
      */
     public SearchEngineClient getSearchEngineClient() {
         return searchEngineClient;
+    }
+
+    /**
+     * 获取搜索引擎配置属性对象
+     *
+     * @return AtengSearchProperties
+     */
+    public AtengSearchProperties getProperties() {
+        return properties;
     }
 
     // ==================== 1. 文档索引 (Index / Replace) ====================
@@ -274,11 +289,17 @@ public class SearchTemplate {
 
         String documentId = SearchMetadataHelper.resolveDocumentId(document);
         String routing = SearchMetadataHelper.resolveRouting(document);
+        Class<?> entityClass = document instanceof Map<?, ?> ? null : document.getClass();
 
-        return executeObserved("index", index, document.getClass(), routing, null, false, () -> {
+        return executeObserved("index", index, entityClass, routing, null, false, () -> {
             try {
+                Object payload = SearchTenantHelper.preparePayloadForWrite(
+                        document, entityClass, properties, SearchTenantHelper.resolveObjectMapper(searchEngineClient));
+                if (StringUtils.hasText(documentId)) {
+                    verifySingleDocOwnershipIfStrict(index, entityClass, documentId, routing, true);
+                }
                 IndexResponse response = getClient().index(builder -> {
-                    builder.index(index).document(document);
+                    builder.index(index).document(payload);
                     if (StringUtils.hasText(documentId)) {
                         builder.id(documentId);
                     }
@@ -434,6 +455,29 @@ public class SearchTemplate {
 
         return executeObserved("getById", index, clazz, routing, null, false, () -> {
             try {
+                String currentTenantId = SearchTenantHelper.resolveActiveTenantId(properties, clazz);
+                if (currentTenantId != null && SearchTenantHelper.isStrictMode(properties)) {
+                    String tenantColumn = SearchTenantHelper.resolveTenantColumn(properties);
+                    ObjectMapper clientMapper = SearchTenantHelper.resolveObjectMapper(searchEngineClient);
+                    GetResponse<ObjectNode> response = getClient().get(builder -> {
+                        builder.index(index).id(id);
+                        if (StringUtils.hasText(routing)) {
+                            builder.routing(routing);
+                        }
+                        return builder;
+                    }, ObjectNode.class);
+                    if (response.found() && response.source() != null) {
+                        if (!SearchTenantHelper.isOwnedByTenant(response.source(), tenantColumn, currentTenantId)) {
+                            log.debug("Blocked cross-tenant getById on index [{}] id [{}] for tenant [{}]", index, id, currentTenantId);
+                            return null;
+                        }
+                        T entity = SearchTenantHelper.convertSourceNode(response.source(), clazz, clientMapper);
+                        return buildGetSearchHit(response.id(), response.index(), entity,
+                                response.seqNo(), response.primaryTerm(), response.version(), response.routing());
+                    }
+                    return null;
+                }
+
                 GetResponse<T> response = getClient().get(builder -> {
                     builder.index(index).id(id);
                     if (StringUtils.hasText(routing)) {
@@ -442,15 +486,8 @@ public class SearchTemplate {
                     return builder;
                 }, clazz);
                 if (response.found() && response.source() != null) {
-                    return SearchHit.<T>builder()
-                            .id(response.id())
-                            .index(response.index())
-                            .content(response.source())
-                            .seqNo(response.seqNo())
-                            .primaryTerm(response.primaryTerm())
-                            .version(response.version())
-                            .routing(response.routing())
-                            .build();
+                    return buildGetSearchHit(response.id(), response.index(), response.source(),
+                            response.seqNo(), response.primaryTerm(), response.version(), response.routing());
                 }
                 return null;
             } catch (Exception e) {
@@ -467,17 +504,24 @@ public class SearchTemplate {
         });
     }
 
-    /**
-     * 根据多个文档 ID 批量查询文档实体列表（可变长参数）
-     * <p>
-     * 自动从实体类提取 @SearchIndex 索引名；底层基于 _mget 批量端点单次往返检索；
-     * 严格遵循空安全不变量，自动过滤未命中项，保底返回纯净的 List（不含 null 元素）。
-     *
-     * @param clazz 实体类类型
-     * @param ids   文档 ID 可变参数
-     * @param <T>   实体类型
-     * @return 命中文档实体列表，若全部未命中或参数为空则返回空集合（非 null）
-     */
+    private static <T> SearchHit<T> buildGetSearchHit(String id,
+                                                      String index,
+                                                      T content,
+                                                      Long seqNo,
+                                                      Long primaryTerm,
+                                                      Long version,
+                                                      String routing) {
+        return SearchHit.<T>builder()
+                .id(id)
+                .index(index)
+                .content(content)
+                .seqNo(seqNo)
+                .primaryTerm(primaryTerm)
+                .version(version)
+                .routing(routing)
+                .build();
+    }
+
     /**
      * 根据多个文档 ID 批量查询文档实体列表（可变长参数）
      * <p>
@@ -642,6 +686,35 @@ public class SearchTemplate {
 
     private <T> List<SearchHit<T>> executeDoGetHitsByIds(String index, Class<T> clazz, List<String> idList, String routing) {
         try {
+            String currentTenantId = SearchTenantHelper.resolveActiveTenantId(properties, clazz);
+            if (currentTenantId != null && SearchTenantHelper.isStrictMode(properties)) {
+                String tenantColumn = SearchTenantHelper.resolveTenantColumn(properties);
+                ObjectMapper clientMapper = SearchTenantHelper.resolveObjectMapper(searchEngineClient);
+                MgetResponse<ObjectNode> response = getClient().mget(b -> {
+                    b.index(index).ids(idList);
+                    if (StringUtils.hasText(routing)) {
+                        b.routing(routing);
+                    }
+                    return b;
+                }, ObjectNode.class);
+                if (response == null || CollectionUtil.isEmpty(response.docs())) {
+                    return Collections.emptyList();
+                }
+                List<SearchHit<T>> hits = new ArrayList<>(response.docs().size());
+                for (MultiGetResponseItem<ObjectNode> item : response.docs()) {
+                    if (item.isResult()) {
+                        GetResult<ObjectNode> getResult = item.result();
+                        if (getResult.found() && getResult.source() != null
+                                && SearchTenantHelper.isOwnedByTenant(getResult.source(), tenantColumn, currentTenantId)) {
+                            T entity = SearchTenantHelper.convertSourceNode(getResult.source(), clazz, clientMapper);
+                            hits.add(buildGetSearchHit(getResult.id(), getResult.index(), entity,
+                                    getResult.seqNo(), getResult.primaryTerm(), getResult.version(), getResult.routing()));
+                        }
+                    }
+                }
+                return hits;
+            }
+
             MgetResponse<T> response = getClient().mget(b -> {
                 b.index(index).ids(idList);
                 if (StringUtils.hasText(routing)) {
@@ -657,15 +730,8 @@ public class SearchTemplate {
                 if (item.isResult()) {
                     GetResult<T> getResult = item.result();
                     if (getResult.found() && getResult.source() != null) {
-                        hits.add(SearchHit.<T>builder()
-                                .id(getResult.id())
-                                .index(getResult.index())
-                                .content(getResult.source())
-                                .seqNo(getResult.seqNo())
-                                .primaryTerm(getResult.primaryTerm())
-                                .version(getResult.version())
-                                .routing(getResult.routing())
-                                .build());
+                        hits.add(buildGetSearchHit(getResult.id(), getResult.index(), getResult.source(),
+                                getResult.seqNo(), getResult.primaryTerm(), getResult.version(), getResult.routing()));
                     }
                 }
             }
@@ -761,6 +827,21 @@ public class SearchTemplate {
 
         return executeObserved("existsById", index, clazz, routing, null, false, () -> {
             try {
+                boolean strictTenant = SearchTenantHelper.isTenantEnforcementActive(properties, clazz)
+                        && SearchTenantHelper.isStrictMode(properties);
+                if (strictTenant) {
+                    Query idQuery = Query.of(q -> q.ids(ids -> ids.values(id)));
+                    Query scopedQuery = wrapTenantFilterIfNecessary(idQuery, clazz);
+                    CountResponse response = getClient().count(builder -> {
+                        builder.index(index).query(scopedQuery);
+                        if (StringUtils.hasText(routing)) {
+                            builder.routing(routing);
+                        }
+                        return builder;
+                    });
+                    return response.count() > 0;
+                }
+
                 BooleanResponse response = getClient().exists(builder -> {
                     builder.index(index).id(id);
                     if (StringUtils.hasText(routing)) {
@@ -837,7 +918,7 @@ public class SearchTemplate {
      * @return 是否成功更新
      */
     public boolean update(String index, String id, Map<String, Object> partialDoc, boolean docAsUpsert, OccVersion occVersion) {
-        return doUpdate(index, id, null, partialDoc, docAsUpsert, occVersion);
+        return doUpdate(index, null, id, null, partialDoc, docAsUpsert, occVersion);
     }
 
     /**
@@ -894,7 +975,7 @@ public class SearchTemplate {
     public boolean update(Class<?> clazz, String id, Map<String, Object> partialDoc, boolean docAsUpsert, OccVersion occVersion) {
         Objects.requireNonNull(clazz, "clazz must not be null");
         String index = SearchMetadataHelper.resolveIndexName(clazz);
-        return update(index, id, partialDoc, docAsUpsert, occVersion);
+        return doUpdate(index, clazz, id, null, partialDoc, docAsUpsert, occVersion);
     }
 
     /**
@@ -938,7 +1019,7 @@ public class SearchTemplate {
     public boolean update(Class<?> clazz, String id, String routing, Map<String, Object> partialDoc, boolean docAsUpsert, OccVersion occVersion) {
         Objects.requireNonNull(clazz, "clazz must not be null");
         String index = SearchMetadataHelper.resolveIndexName(clazz);
-        return update(index, id, routing, partialDoc, docAsUpsert, occVersion);
+        return doUpdate(index, clazz, id, routing, partialDoc, docAsUpsert, occVersion);
     }
 
     /**
@@ -966,7 +1047,7 @@ public class SearchTemplate {
      * @return 是否成功更新
      */
     public boolean update(String index, String id, String routing, Map<String, Object> partialDoc, boolean docAsUpsert, OccVersion occVersion) {
-        return doUpdate(index, id, routing, partialDoc, docAsUpsert, occVersion);
+        return doUpdate(index, null, id, routing, partialDoc, docAsUpsert, occVersion);
     }
 
     /**
@@ -1012,7 +1093,7 @@ public class SearchTemplate {
      * @return 是否成功更新
      */
     public <T> boolean update(String index, String id, T partialDoc, boolean docAsUpsert, OccVersion occVersion) {
-        return doUpdate(index, id, null, partialDoc, docAsUpsert, occVersion);
+        return doUpdate(index, null, id, null, partialDoc, docAsUpsert, occVersion);
     }
 
     /**
@@ -1071,7 +1152,13 @@ public class SearchTemplate {
         return update(index, documentId, partialDoc, docAsUpsert, occVersion);
     }
 
-    private <T> boolean doUpdate(String index, String id, String routing, T partialDoc, boolean docAsUpsert, OccVersion occVersion) {
+    private <T> boolean doUpdate(String index,
+                                 Class<?> explicitEntityClass,
+                                 String id,
+                                 String routing,
+                                 T partialDoc,
+                                 boolean docAsUpsert,
+                                 OccVersion occVersion) {
         if (!StringUtils.hasText(index)) {
             throw new IllegalArgumentException("Index must not be blank");
         }
@@ -1081,14 +1168,21 @@ public class SearchTemplate {
         Objects.requireNonNull(partialDoc, "partialDoc must not be null");
 
         String resolvedRouting = StringUtils.hasText(routing) ? routing : SearchMetadataHelper.resolveRouting(partialDoc);
-        Class<?> entityClass = partialDoc instanceof Map<?, ?> ? null : partialDoc.getClass();
+        Class<?> entityClass = explicitEntityClass != null
+                ? explicitEntityClass
+                : (partialDoc instanceof Map<?, ?> ? null : partialDoc.getClass());
 
         return executeObserved("update", index, entityClass, resolvedRouting, null, false, () -> {
             try {
+                Object payload = SearchTenantHelper.preparePayloadForWrite(
+                        partialDoc, entityClass, properties, SearchTenantHelper.resolveObjectMapper(searchEngineClient));
+                if (!verifySingleDocOwnershipIfStrict(index, entityClass, id, resolvedRouting, docAsUpsert)) {
+                    return false;
+                }
                 UpdateResponse<Void> response = getClient().update(builder -> {
                     builder.index(index)
                             .id(id)
-                            .doc(partialDoc)
+                            .doc(payload)
                             .docAsUpsert(docAsUpsert);
                     if (StringUtils.hasText(resolvedRouting)) {
                         builder.routing(resolvedRouting);
@@ -1152,7 +1246,7 @@ public class SearchTemplate {
                     "Routing key is required for document entity [" + clazz.getSimpleName() + "] annotated with @SearchRouting. Use deleteById with routing parameter.");
         }
         String index = SearchMetadataHelper.resolveIndexName(clazz);
-        return deleteById(index, id, routing);
+        return doDeleteById(index, clazz, id, routing);
     }
 
     /**
@@ -1175,6 +1269,10 @@ public class SearchTemplate {
      * @return 是否成功删除（若文档不存在则返回 false）
      */
     public boolean deleteById(String index, String id, String routing) {
+        return doDeleteById(index, null, id, routing);
+    }
+
+    private boolean doDeleteById(String index, Class<?> entityClass, String id, String routing) {
         if (!StringUtils.hasText(index)) {
             throw new IllegalArgumentException("Index must not be blank");
         }
@@ -1182,8 +1280,11 @@ public class SearchTemplate {
             throw new IllegalArgumentException("Document id must not be blank");
         }
 
-        return executeObserved("deleteById", index, null, routing, null, false, () -> {
+        return executeObserved("deleteById", index, entityClass, routing, null, false, () -> {
             try {
+                if (!verifySingleDocOwnershipIfStrict(index, entityClass, id, routing, false)) {
+                    return false;
+                }
                 DeleteResponse response = getClient().delete(builder -> {
                     builder.index(index).id(id);
                     if (StringUtils.hasText(routing)) {
@@ -1205,6 +1306,46 @@ public class SearchTemplate {
                         "Failed to delete document [id=" + id + "] from index [" + index + "]: " + e.getMessage(), e);
             }
         });
+    }
+
+    private boolean verifySingleDocOwnershipIfStrict(String index,
+                                                     Class<?> entityClass,
+                                                     String id,
+                                                     String routing,
+                                                     boolean allowMissing) {
+        if (!SearchTenantHelper.isStrictMode(properties)) {
+            return true;
+        }
+        String currentTenantId = SearchTenantHelper.resolveActiveTenantId(properties, entityClass);
+        if (currentTenantId == null) {
+            return true;
+        }
+        String tenantColumn = SearchTenantHelper.resolveTenantColumn(properties);
+        try {
+            GetResponse<ObjectNode> ownershipResp = getClient().get(builder -> {
+                builder.index(index).id(id).sourceIncludes(tenantColumn);
+                if (StringUtils.hasText(routing)) {
+                    builder.routing(routing);
+                }
+                return builder;
+            }, ObjectNode.class);
+            if (!ownershipResp.found() || ownershipResp.source() == null) {
+                return allowMissing;
+            }
+            if (!SearchTenantHelper.isOwnedByTenant(ownershipResp.source(), tenantColumn, currentTenantId)) {
+                throw new SearchException(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED,
+                        "Cross-tenant mutation blocked on index [" + index + "] id [" + id + "] for tenant [" + currentTenantId + "]");
+            }
+            return true;
+        } catch (SearchException se) {
+            throw se;
+        } catch (Exception e) {
+            if (SearchExceptionClassifier.isNotFound(e)) {
+                return allowMissing;
+            }
+            throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                    "Failed to verify tenant ownership on index [" + index + "] id [" + id + "]: " + e.getMessage(), e);
+        }
     }
 
     /**
@@ -1258,6 +1399,8 @@ public class SearchTemplate {
     private long executeDoDeleteByQuery(String index, SearchQuery query, Class<?> clazz) {
         try {
             Query baseQuery = query != null ? query.getQuery() : null;
+            SearchTenantHelper.rejectCrossTenantQueryFilter(
+                    baseQuery, clazz, properties, SearchTenantHelper.resolveObjectMapper(searchEngineClient));
             Query effectiveQuery = wrapTenantFilterIfNecessary(baseQuery, clazz);
             Query finalQuery = effectiveQuery != null ? effectiveQuery : Query.of(q -> q.matchAll(m -> m));
 
@@ -1404,9 +1547,22 @@ public class SearchTemplate {
      * @throws SearchBulkException 当任一文档删除失败时抛出
      */
     public SearchBulkResult deleteBatch(Class<?> clazz, Collection<String> ids) {
+        return deleteBatch(clazz, ids, null);
+    }
+
+    /**
+     * 根据主键 ID 集合与分片路由键批量删除文档（严格快速失败模式）
+     *
+     * @param clazz   实体类类型（用于解析索引名）
+     * @param ids     待删除的文档 ID 集合
+     * @param routing 分片路由键（可为 null）
+     * @return 批量操作结果模型（全量成功时返回）
+     * @throws SearchBulkException 当任一文档删除失败时抛出
+     */
+    public SearchBulkResult deleteBatch(Class<?> clazz, Collection<String> ids, String routing) {
         Objects.requireNonNull(clazz, "clazz must not be null");
         String index = SearchMetadataHelper.resolveIndexName(clazz);
-        return deleteBatch(index, ids);
+        return doBulkDelete(index, clazz, ids, routing, false);
     }
 
     /**
@@ -1418,7 +1574,20 @@ public class SearchTemplate {
      * @throws SearchBulkException 当任一文档删除失败时抛出
      */
     public SearchBulkResult deleteBatch(String index, Collection<String> ids) {
-        return doBulkDelete(index, ids, false);
+        return deleteBatch(index, ids, null);
+    }
+
+    /**
+     * 根据主键 ID 集合与分片路由键批量从指定索引删除文档（严格快速失败模式）
+     *
+     * @param index   目标索引名
+     * @param ids     待删除的文档 ID 集合
+     * @param routing 分片路由键（可为 null）
+     * @return 批量操作结果模型（全量成功时返回）
+     * @throws SearchBulkException 当任一文档删除失败时抛出
+     */
+    public SearchBulkResult deleteBatch(String index, Collection<String> ids, String routing) {
+        return doBulkDelete(index, null, ids, routing, false);
     }
 
     /**
@@ -1429,9 +1598,21 @@ public class SearchTemplate {
      * @return 批量操作结果模型
      */
     public SearchBulkResult deleteBatchLenient(Class<?> clazz, Collection<String> ids) {
+        return deleteBatchLenient(clazz, ids, null);
+    }
+
+    /**
+     * 根据主键 ID 集合与分片路由键批量删除文档（宽容模式）
+     *
+     * @param clazz   实体类类型（用于解析索引名）
+     * @param ids     待删除的文档 ID 集合
+     * @param routing 分片路由键（可为 null）
+     * @return 批量操作结果模型
+     */
+    public SearchBulkResult deleteBatchLenient(Class<?> clazz, Collection<String> ids, String routing) {
         Objects.requireNonNull(clazz, "clazz must not be null");
         String index = SearchMetadataHelper.resolveIndexName(clazz);
-        return deleteBatchLenient(index, ids);
+        return doBulkDelete(index, clazz, ids, routing, true);
     }
 
     /**
@@ -1442,7 +1623,19 @@ public class SearchTemplate {
      * @return 批量操作结果模型
      */
     public SearchBulkResult deleteBatchLenient(String index, Collection<String> ids) {
-        return doBulkDelete(index, ids, true);
+        return deleteBatchLenient(index, ids, null);
+    }
+
+    /**
+     * 根据主键 ID 集合与分片路由键批量从指定索引删除文档（宽容模式）
+     *
+     * @param index   目标索引名
+     * @param ids     待删除的文档 ID 集合
+     * @param routing 分片路由键（可为 null）
+     * @return 批量操作结果模型
+     */
+    public SearchBulkResult deleteBatchLenient(String index, Collection<String> ids, String routing) {
+        return doBulkDelete(index, null, ids, routing, true);
     }
 
     private <T> SearchBulkResult doBulkIndex(String index, Collection<T> documents, boolean lenient) {
@@ -1456,15 +1649,25 @@ public class SearchTemplate {
         }
 
         int validItemCount = 0;
+        ObjectMapper clientMapper = SearchTenantHelper.resolveObjectMapper(searchEngineClient);
+        List<BulkOwnershipTarget> ownershipTargets = new ArrayList<>();
         for (T doc : documents) {
             if (doc == null) {
                 continue;
             }
+            Class<?> docClass = doc instanceof Map<?, ?> ? null : doc.getClass();
             String docIndex = StringUtils.hasText(index) ? index : SearchMetadataHelper.resolveIndexName(doc.getClass());
             String docId = SearchMetadataHelper.resolveDocumentId(doc);
             String routing = SearchMetadataHelper.resolveRouting(doc);
+            Object payload = SearchTenantHelper.preparePayloadForWrite(doc, docClass, properties, clientMapper);
+            if (StringUtils.hasText(docId)) {
+                String resolvedTenantId = SearchTenantHelper.resolveActiveTenantId(properties, docClass);
+                if (resolvedTenantId != null) {
+                    ownershipTargets.add(new BulkOwnershipTarget(docIndex, docId, routing, resolvedTenantId));
+                }
+            }
             bulkBuilder.operations(op -> op.index(idx -> {
-                idx.index(docIndex).document(doc);
+                idx.index(docIndex).document(payload);
                 if (StringUtils.hasText(docId)) {
                     idx.id(docId);
                 }
@@ -1480,6 +1683,7 @@ public class SearchTemplate {
             return emptyBulkResult();
         }
 
+        verifyBatchOwnershipIfStrict(ownershipTargets);
         return executeBulk(bulkBuilder.build(), validItemCount, lenient);
     }
 
@@ -1494,20 +1698,28 @@ public class SearchTemplate {
         }
 
         int validItemCount = 0;
+        ObjectMapper clientMapper = SearchTenantHelper.resolveObjectMapper(searchEngineClient);
+        List<BulkOwnershipTarget> ownershipTargets = new ArrayList<>();
         for (T doc : partialDocs) {
             if (doc == null) {
                 continue;
             }
+            Class<?> docClass = doc instanceof Map<?, ?> ? null : doc.getClass();
             String docIndex = StringUtils.hasText(index) ? index : SearchMetadataHelper.resolveIndexName(doc.getClass());
             String docId = SearchMetadataHelper.resolveDocumentId(doc);
             String routing = SearchMetadataHelper.resolveRouting(doc);
             if (!StringUtils.hasText(docId)) {
                 throw new IllegalArgumentException("Cannot update document without an ID in batch update. Ensure @SearchId is configured on the entity.");
             }
+            Object payload = SearchTenantHelper.preparePayloadForWrite(doc, docClass, properties, clientMapper);
+            String resolvedTenantId = SearchTenantHelper.resolveActiveTenantId(properties, docClass);
+            if (resolvedTenantId != null) {
+                ownershipTargets.add(new BulkOwnershipTarget(docIndex, docId, routing, resolvedTenantId));
+            }
             bulkBuilder.operations(op -> op.update(u -> {
                 u.index(docIndex)
                         .id(docId)
-                        .action(a -> a.doc(doc).docAsUpsert(docAsUpsert));
+                        .action(a -> a.doc(payload).docAsUpsert(docAsUpsert));
                 if (StringUtils.hasText(routing)) {
                     u.routing(routing);
                 }
@@ -1520,30 +1732,121 @@ public class SearchTemplate {
             return emptyBulkResult();
         }
 
+        verifyBatchOwnershipIfStrict(ownershipTargets);
         return executeBulk(bulkBuilder.build(), validItemCount, lenient);
     }
 
-    private SearchBulkResult doBulkDelete(String index, Collection<String> ids, boolean lenient) {
+    private SearchBulkResult doBulkDelete(String index,
+                                          Class<?> entityClass,
+                                          Collection<String> ids,
+                                          String routing,
+                                          boolean lenient) {
         Objects.requireNonNull(index, "index must not be null");
         if (CollectionUtil.isEmpty(ids)) {
             return emptyBulkResult();
         }
 
-        BulkRequest.Builder bulkBuilder = new BulkRequest.Builder().index(index);
-        int validItemCount = 0;
-        for (String id : ids) {
-            if (!StringUtils.hasText(id)) {
-                continue;
-            }
-            bulkBuilder.operations(op -> op.delete(d -> d.index(index).id(id)));
-            validItemCount++;
-        }
-
-        if (validItemCount == 0) {
+        List<String> validIds = ids.stream().filter(StringUtils::hasText).toList();
+        if (validIds.isEmpty()) {
             return emptyBulkResult();
         }
 
-        return executeBulk(bulkBuilder.build(), validItemCount, lenient);
+        String resolvedTenantId = SearchTenantHelper.resolveActiveTenantId(properties, entityClass);
+        if (resolvedTenantId != null) {
+            List<BulkOwnershipTarget> ownershipTargets = new ArrayList<>(validIds.size());
+            for (String id : validIds) {
+                ownershipTargets.add(new BulkOwnershipTarget(index, id, routing, resolvedTenantId));
+            }
+            verifyBatchOwnershipIfStrict(ownershipTargets);
+        }
+
+        BulkRequest.Builder bulkBuilder = new BulkRequest.Builder().index(index);
+        for (String id : validIds) {
+            bulkBuilder.operations(op -> op.delete(d -> {
+                d.index(index).id(id);
+                if (StringUtils.hasText(routing)) {
+                    d.routing(routing);
+                }
+                return d;
+            }));
+        }
+
+        return executeBulk(bulkBuilder.build(), validIds.size(), lenient);
+    }
+
+    /**
+     * STRICT 模式下批量写入/更新/删除前通过 {@code _mget} 仅拉取租户字段执行跨租户所有权预检
+     *
+     * @param targets 待预检的显式 ID 目标列表
+     */
+    public void verifyBatchOwnershipIfStrict(List<BulkOwnershipTarget> targets) {
+        if (CollectionUtil.isEmpty(targets) || !SearchTenantHelper.isStrictMode(properties)) {
+            return;
+        }
+        record BatchGroupKey(String tenantId, String index, String routing) {
+        }
+        Map<BatchGroupKey, Set<String>> groupedIds = new LinkedHashMap<>();
+        for (BulkOwnershipTarget target : targets) {
+            if (target == null
+                    || !StringUtils.hasText(target.index())
+                    || !StringUtils.hasText(target.id())
+                    || !StringUtils.hasText(target.tenantId())) {
+                continue;
+            }
+            String normalizedRouting = StringUtils.hasText(target.routing()) ? target.routing() : null;
+            BatchGroupKey key = new BatchGroupKey(target.tenantId().trim(), target.index(), normalizedRouting);
+            groupedIds.computeIfAbsent(key, k -> new LinkedHashSet<>()).add(target.id());
+        }
+        if (groupedIds.isEmpty()) {
+            return;
+        }
+
+        String tenantColumn = SearchTenantHelper.resolveTenantColumn(properties);
+        for (Map.Entry<BatchGroupKey, Set<String>> entry : groupedIds.entrySet()) {
+            BatchGroupKey key = entry.getKey();
+            List<String> ids = new ArrayList<>(entry.getValue());
+            try {
+                MgetResponse<ObjectNode> ownershipResp = getClient().mget(b -> {
+                    b.index(key.index()).ids(ids).sourceIncludes(tenantColumn);
+                    if (StringUtils.hasText(key.routing())) {
+                        b.routing(key.routing());
+                    }
+                    return b;
+                }, ObjectNode.class);
+                if (ownershipResp != null && CollectionUtil.isNotEmpty(ownershipResp.docs())) {
+                    for (MultiGetResponseItem<ObjectNode> item : ownershipResp.docs()) {
+                        if (item.isResult() && item.result().found()) {
+                            GetResult<ObjectNode> foundItem = item.result();
+                            if (!SearchTenantHelper.isOwnedByTenant(foundItem.source(), tenantColumn, key.tenantId())) {
+                                throw new SearchException(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED,
+                                        "Cross-tenant batch mutation blocked on index [" + key.index() + "] id ["
+                                                + foundItem.id() + "] for tenant [" + key.tenantId() + "]");
+                            }
+                        }
+                    }
+                }
+            } catch (SearchException se) {
+                throw se;
+            } catch (Exception e) {
+                if (SearchExceptionClassifier.isNotFound(e)) {
+                    log.debug("Index [{}] not found during strict batch ownership check; skipping batch group", key.index());
+                    continue;
+                }
+                throw new SearchException(SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
+                        "Failed to verify batch tenant ownership on index [" + key.index() + "]: " + e.getMessage(), e);
+            }
+        }
+    }
+
+    /**
+     * 批量操作所有权预检目标描述符
+     *
+     * @param index    目标索引名
+     * @param id       文档 ID
+     * @param routing  分片路由键（可为 null）
+     * @param tenantId 期望归属的租户标识
+     */
+    public record BulkOwnershipTarget(String index, String id, String routing, String tenantId) {
     }
 
     /**
@@ -1954,19 +2257,13 @@ public class SearchTemplate {
         }
     }
 
-    private Query wrapTenantFilterIfNecessary(Query baseQuery, Class<?> clazz) {
-        if (!properties.getMultiTenancy().isEnabled()) {
-            return baseQuery;
-        }
-        if (TenantContextHolder.isIgnoreTenant() || SearchMetadataHelper.hasIgnoreTenant(clazz)) {
-            return baseQuery;
-        }
-        String tenantId = TenantContextHolder.getTenantId();
-        if (!StringUtils.hasText(tenantId)) {
+    Query wrapTenantFilterIfNecessary(Query baseQuery, Class<?> clazz) {
+        String tenantId = SearchTenantHelper.resolveActiveTenantId(properties, clazz);
+        if (tenantId == null) {
             return baseQuery;
         }
 
-        String tenantColumn = properties.getMultiTenancy().getColumn();
+        String tenantColumn = SearchTenantHelper.resolveTenantColumn(properties);
         Query tenantFilter = Query.of(q -> q.term(t -> t.field(tenantColumn).value(FieldValue.of(tenantId))));
 
         // 若原 query 为 BoolQuery，直接追加到 filter；否则包装为外层 BoolQuery

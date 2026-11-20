@@ -82,8 +82,7 @@ class SearchTemplateMockServerTest {
     @AfterEach
     void tearDown() throws IOException {
         MDC.clear();
-        TenantContextHolder.setTenantId((String) null);
-        TenantContextHolder.setIgnoreTenant(false);
+        TenantContextHolder.clear();
         if (driver != null) {
             driver.close();
         }
@@ -3069,5 +3068,316 @@ class SearchTemplateMockServerTest {
             templateLogger.detachAppender(listAppender);
             listAppender.stop();
         }
+    }
+
+    @io.github.atengk.boot.search.annotation.SearchIndex("record_order_idx")
+    record RecordOrder(
+            @io.github.atengk.boot.search.annotation.SearchId String id,
+            String title,
+            String tenant_id
+    ) {
+    }
+
+    @Test
+    @DisplayName("测试写入与局部更新阶段多租户自动注入（POJO/Record/Map）及跨租户篡改快速失败")
+    void testTenantWriteInjectionAndTamperingFailFast() throws Exception {
+        TenantContextHolder.setTenantId("tenant_a");
+
+        // 1. 无 tenant_id 字段的 POJO 写入自动注入 tenant_id（STRICT 下显式 ID 先查归属）
+        mockWebServer.enqueue(esResponse(404, "{\"_index\":\"user_idx\",\"_id\":\"101\",\"found\":false}"));
+        mockWebServer.enqueue(esResponse(201, "{\"_index\":\"user_idx\",\"_id\":\"101\",\"_version\":1,\"result\":\"created\",\"_seq_no\":1,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        searchTemplate.save(UserDoc.builder().id(101L).username("alice").build());
+        mockWebServer.takeRequest(); // pre-check GET
+        RecordedRequest pojoReq = mockWebServer.takeRequest();
+        assertThat(pojoReq.getBody().readUtf8()).contains("\"tenant_id\":\"tenant_a\"");
+
+        // 2. 不可变 Record (tenant_id=null) 写入自动注入 tenant_id
+        mockWebServer.enqueue(esResponse(404, "{\"_index\":\"record_order_idx\",\"_id\":\"R-1\",\"found\":false}"));
+        mockWebServer.enqueue(esResponse(201, "{\"_index\":\"record_order_idx\",\"_id\":\"R-1\",\"_version\":1,\"result\":\"created\",\"_seq_no\":1,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        searchTemplate.save(new RecordOrder("R-1", "order-1", null));
+        mockWebServer.takeRequest(); // pre-check GET
+        RecordedRequest recordReq = mockWebServer.takeRequest();
+        assertThat(recordReq.getBody().readUtf8()).contains("\"tenant_id\":\"tenant_a\"");
+
+        // 3. Map 局部更新自动注入 tenant_id（STRICT 模式下先核验归属再发送 _update）
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"101\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_a\"}}"));
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"101\",\"_version\":2,\"result\":\"updated\",\"_seq_no\":2,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        searchTemplate.update("user_idx", "101", Map.of("username", "alice-2"));
+        mockWebServer.takeRequest(); // pre-check GET
+        RecordedRequest mapUpdateReq = mockWebServer.takeRequest();
+        assertThat(mapUpdateReq.getBody().readUtf8()).contains("\"tenant_id\":\"tenant_a\"");
+
+        // 4. 批量索引与批量更新自动注入 tenant_id（STRICT 下显式 ID 先发 _mget 预检）
+        mockWebServer.enqueue(esResponse(200, "{\"docs\":[{\"_index\":\"record_order_idx\",\"_id\":\"R-2\",\"found\":false}]}"));
+        mockWebServer.enqueue(esResponse(200, "{\"took\":1,\"errors\":false,\"items\":[{\"index\":{\"_index\":\"record_order_idx\",\"_id\":\"R-2\",\"status\":201,\"result\":\"created\"}}]}"));
+        searchTemplate.indexBatch(List.of(new RecordOrder("R-2", "order-2", null)));
+        mockWebServer.takeRequest(); // pre-check _mget
+        RecordedRequest bulkIdxReq = mockWebServer.takeRequest();
+        assertThat(bulkIdxReq.getBody().readUtf8()).contains("\"tenant_id\":\"tenant_a\"");
+
+        // 5. 跨租户篡改（携带 tenant_b）在单写入、局部更新、批量写入及 BulkProcessor 入口全部立即 Fail-Fast（零 HTTP 请求发出）
+        int requestCountBeforeTamper = mockWebServer.getRequestCount();
+        assertThatThrownBy(() -> searchTemplate.save(new RecordOrder("R-3", "tamper", "tenant_b")))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        assertThatThrownBy(() -> searchTemplate.update("user_idx", "101", Map.of("tenant_id", "tenant_b", "username", "hacker")))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        assertThatThrownBy(() -> searchTemplate.indexBatch(List.of(new RecordOrder("R-4", "ok", "tenant_a"), new RecordOrder("R-5", "tamper", "tenant_b"))))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        assertThatThrownBy(() -> searchTemplate.updateBatch(List.of(new RecordOrder("R-6", "tamper", "tenant_b"))))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        try (io.github.atengk.boot.search.bulk.SearchBulkProcessor processor = searchTemplate.newBulkProcessorBuilder().build()) {
+            assertThatThrownBy(() -> processor.add(new RecordOrder("R-7", "tamper", "tenant_b")))
+                    .isInstanceOf(SearchException.class)
+                    .extracting(e -> ((SearchException) e).getResultCode())
+                    .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        }
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(requestCountBeforeTamper);
+
+        // 6. @IgnoreTenant 实体（含 Map 局部更新重载）与 runWithoutTenant 豁免写入，不注入也不拦截
+        mockWebServer.enqueue(esResponse(201, "{\"_index\":\"global_dict_idx\",\"_id\":\"D-1\",\"_version\":1,\"result\":\"created\",\"_seq_no\":1,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        searchTemplate.save(IgnoredTenantDoc.builder().code("D-1").name("dict").build());
+        RecordedRequest ignoredEntityReq = mockWebServer.takeRequest();
+        assertThat(ignoredEntityReq.getBody().readUtf8()).doesNotContain("\"tenant_id\"");
+
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"global_dict_idx\",\"_id\":\"D-1\",\"_version\":2,\"result\":\"updated\",\"_seq_no\":2,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        assertThat(searchTemplate.update(IgnoredTenantDoc.class, "D-1", Map.of("name", "dict-v2"))).isTrue();
+        RecordedRequest ignoredUpdateReq = mockWebServer.takeRequest();
+        assertThat(ignoredUpdateReq.getPath()).contains("/global_dict_idx/_update/D-1");
+        assertThat(ignoredUpdateReq.getBody().readUtf8()).doesNotContain("\"tenant_id\"");
+
+        mockWebServer.enqueue(esResponse(201, "{\"_index\":\"record_order_idx\",\"_id\":\"R-8\",\"_version\":1,\"result\":\"created\",\"_seq_no\":1,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        TenantContextHolder.runWithoutTenant(() -> searchTemplate.save(new RecordOrder("R-8", "admin-write", "tenant_b")));
+        RecordedRequest bypassReq = mockWebServer.takeRequest();
+        assertThat(bypassReq.getBody().readUtf8()).contains("\"tenant_id\":\"tenant_b\"");
+
+        // 7. STRICT 模式显式 ID save / updateBatch / SearchBulkProcessor.delete 对已存在他租户文档拦截且不发送 PUT/_bulk
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"202\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_b\"}}"));
+        int beforeCrossSave = mockWebServer.getRequestCount();
+        assertThatThrownBy(() -> searchTemplate.save(UserDoc.builder().id(202L).username("overwrite-attempt").build()))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(beforeCrossSave + 1);
+        assertThat(mockWebServer.takeRequest().getMethod()).isEqualTo("GET");
+
+        mockWebServer.enqueue(esResponse(200, "{\"docs\":[{\"_index\":\"record_order_idx\",\"_id\":\"R-9\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_b\"}}]}"));
+        int beforeCrossUpdateBatch = mockWebServer.getRequestCount();
+        assertThatThrownBy(() -> searchTemplate.updateBatch(List.of(new RecordOrder("R-9", "hijack", "tenant_a"))))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(beforeCrossUpdateBatch + 1);
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_mget");
+
+        mockWebServer.enqueue(esResponse(200, "{\"docs\":[{\"_index\":\"user_idx\",\"_id\":\"303\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_b\"}}]}"));
+        java.util.concurrent.atomic.AtomicReference<Throwable> bulkFailure = new java.util.concurrent.atomic.AtomicReference<>();
+        int beforeCrossBulkDelete = mockWebServer.getRequestCount();
+        try (io.github.atengk.boot.search.bulk.SearchBulkProcessor processor = searchTemplate.newBulkProcessorBuilder()
+                .listener(new io.github.atengk.boot.search.bulk.BulkListener() {
+                    @Override
+                    public void afterBulk(long executionId, int actionCount, Throwable failure) {
+                        bulkFailure.set(failure);
+                    }
+                })
+                .build()) {
+            processor.delete("303", UserDoc.class);
+            processor.flush();
+        }
+        assertThat(bulkFailure.get()).isInstanceOf(SearchException.class);
+        assertThat(((SearchException) bulkFailure.get()).getResultCode()).isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(beforeCrossBulkDelete + 1);
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_mget");
+    }
+
+    @Test
+    @DisplayName("测试 STRICT 模式点查、批量主键检索与 existsById 降级 _count 防跨租户 IDOR 探测及 FILTER_ONLY 放行")
+    void testStrictPointGetAndExistsAntiIdor() throws Exception {
+        TenantContextHolder.setTenantId("tenant_a");
+
+        // 1. STRICT: getById / getHitById 跨租户(tenant_b)与缺失租户列返回 null，同租户(tenant_a)正常返回
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"101\",\"_version\":1,\"_seq_no\":3,\"_primary_term\":1,\"found\":true,\"_source\":{\"id\":101,\"username\":\"bob\",\"tenant_id\":\"tenant_b\"}}"));
+        assertThat(searchTemplate.getById(UserDoc.class, "101")).isNull();
+        mockWebServer.takeRequest();
+
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"103\",\"_version\":1,\"_seq_no\":4,\"_primary_term\":1,\"found\":true,\"_source\":{\"id\":103,\"username\":\"orphan\"}}"));
+        assertThat(searchTemplate.getHitById(UserDoc.class, "103")).isNull();
+        mockWebServer.takeRequest();
+
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"102\",\"_version\":1,\"_seq_no\":5,\"_primary_term\":1,\"found\":true,\"_source\":{\"id\":102,\"username\":\"alice\",\"tenant_id\":\"tenant_a\"}}"));
+        SearchHit<UserDoc> ownedHit = searchTemplate.getHitById(UserDoc.class, "102");
+        assertThat(ownedHit).isNotNull();
+        assertThat(ownedHit.getContent().getUsername()).isEqualTo("alice");
+        assertThat(ownedHit.getSeqNo()).isEqualTo(5L);
+        mockWebServer.takeRequest();
+
+        // 2. STRICT: getHitsByIds 自动剔除他租户与无归属文档，仅保留同租户
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "docs": [
+                    {"_index":"user_idx","_id":"101","_version":1,"_seq_no":1,"_primary_term":1,"found":true,"_source":{"id":101,"username":"bob","tenant_id":"tenant_b"}},
+                    {"_index":"user_idx","_id":"102","_version":1,"_seq_no":2,"_primary_term":1,"found":true,"_source":{"id":102,"username":"alice","tenant_id":"tenant_a"}},
+                    {"_index":"user_idx","_id":"103","_version":1,"_seq_no":3,"_primary_term":1,"found":true,"_source":{"id":103,"username":"orphan"}}
+                  ]
+                }
+                """));
+        List<SearchHit<UserDoc>> mgetHits = searchTemplate.getHitsByIds(UserDoc.class, List.of("101", "102", "103"));
+        assertThat(mgetHits).hasSize(1);
+        assertThat(mgetHits.get(0).getId()).isEqualTo("102");
+        mockWebServer.takeRequest();
+
+        // 3. STRICT: existsById 降级为带 ids + tenant_id 过滤的 _count 探测并保留 routing
+        mockWebServer.enqueue(esResponse(200, "{\"count\":0,\"_shards\":{\"total\":1,\"successful\":1,\"skipped\":0,\"failed\":0}}"));
+        assertThat(searchTemplate.existsById(UserDoc.class, "101")).isFalse();
+        RecordedRequest countDeniedReq = mockWebServer.takeRequest();
+        assertThat(countDeniedReq.getMethod()).isEqualTo("POST");
+        assertThat(countDeniedReq.getPath()).isEqualTo("/user_idx/_count");
+        String countBody = countDeniedReq.getBody().readUtf8();
+        assertThat(countBody).contains("\"ids\":{\"values\":[\"101\"]}");
+        assertThat(countBody).contains("\"term\":{\"tenant_id\":{\"value\":\"tenant_a\"}}");
+
+        mockWebServer.enqueue(esResponse(200, "{\"count\":1,\"_shards\":{\"total\":1,\"successful\":1,\"skipped\":0,\"failed\":0}}"));
+        assertThat(searchTemplate.existsById(RoutedOrderDoc.class, "O1", "route-1")).isTrue();
+        RecordedRequest routedCountReq = mockWebServer.takeRequest();
+        assertThat(routedCountReq.getPath()).contains("/_count").contains("routing=route-1");
+
+        // 4. @IgnoreTenant / runWithoutTenant 保持轻量 HEAD 与原样放行
+        mockWebServer.enqueue(new MockResponse().setResponseCode(200).setHeader("X-Elastic-Product", "Elasticsearch"));
+        assertThat(searchTemplate.existsById(IgnoredTenantDoc.class, "D-1")).isTrue();
+        assertThat(mockWebServer.takeRequest().getMethod()).isEqualTo("HEAD");
+
+        mockWebServer.enqueue(new MockResponse().setResponseCode(200).setHeader("X-Elastic-Product", "Elasticsearch"));
+        assertThat(TenantContextHolder.runWithoutTenant(() -> searchTemplate.existsById(UserDoc.class, "101"))).isTrue();
+        assertThat(mockWebServer.takeRequest().getMethod()).isEqualTo("HEAD");
+
+        // 5. FILTER_ONLY 模式：点查不做跨租户过滤，existsById 保留 HEAD
+        AtengSearchProperties filterOnlyProps = new AtengSearchProperties();
+        filterOnlyProps.getMultiTenancy().setIsolationMode(io.github.atengk.boot.search.enums.TenantIsolationMode.FILTER_ONLY);
+        SearchTemplate filterOnlyTemplate = new SearchTemplate(driver, filterOnlyProps);
+
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"101\",\"_version\":1,\"_seq_no\":3,\"_primary_term\":1,\"found\":true,\"_source\":{\"id\":101,\"username\":\"bob\",\"tenant_id\":\"tenant_b\"}}"));
+        assertThat(filterOnlyTemplate.getById(UserDoc.class, "101")).isNotNull();
+        mockWebServer.takeRequest();
+
+        mockWebServer.enqueue(new MockResponse().setResponseCode(200).setHeader("X-Elastic-Product", "Elasticsearch"));
+        assertThat(filterOnlyTemplate.existsById(UserDoc.class, "101")).isTrue();
+        assertThat(mockWebServer.takeRequest().getMethod()).isEqualTo("HEAD");
+    }
+
+    @Test
+    @DisplayName("测试 STRICT 模式点删改 _source 裁剪核验防越权、OCC/Routing 保留及 reindex 租户边界保护")
+    void testStrictPointWriteDeleteAntiIdorAndReindexBoundary() throws Exception {
+        TenantContextHolder.setTenantId("tenant_a");
+
+        // 1. STRICT update 归属他租户 -> 前置 GET _source_includes 命中 tenant_b，拦截抛 SEARCH_TENANT_ACCESS_DENIED，不发 _update
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"routed_order_idx\",\"_id\":\"O-1\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_b\"}}"));
+        RoutedOrderDoc updateDoc = RoutedOrderDoc.builder().orderId("O-1").tenantId("route-1").description("PAID").build();
+        assertThatThrownBy(() -> searchTemplate.update(updateDoc, false, io.github.atengk.boot.search.model.OccVersion.of(7L, 2L)))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        RecordedRequest preGetUpdate = mockWebServer.takeRequest();
+        assertThat(preGetUpdate.getMethod()).isEqualTo("GET");
+        assertThat(preGetUpdate.getPath()).contains("_source_includes=tenant_id").contains("routing=route-1");
+
+        // 2. STRICT update (docAsUpsert=false) 文档不存在 -> 返回 false，不发 _update
+        mockWebServer.enqueue(esResponse(404, "{\"_index\":\"routed_order_idx\",\"_id\":\"O-404\",\"found\":false}"));
+        RoutedOrderDoc missingDoc = RoutedOrderDoc.builder().orderId("O-404").tenantId("route-1").description("PAID").build();
+        assertThat(searchTemplate.update(missingDoc, false, (io.github.atengk.boot.search.model.OccVersion) null)).isFalse();
+        mockWebServer.takeRequest();
+
+        // 3. STRICT update 同租户校验通过 -> 放行原始 _update 并完整保留 OccVersion 与 routing 及租户列注入
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"routed_order_idx\",\"_id\":\"O-1\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_a\"}}"));
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"routed_order_idx\",\"_id\":\"O-1\",\"_version\":8,\"result\":\"updated\",\"_seq_no\":8,\"_primary_term\":2,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        assertThat(searchTemplate.update(updateDoc, false, io.github.atengk.boot.search.model.OccVersion.of(7L, 2L))).isTrue();
+        mockWebServer.takeRequest(); // pre-check GET
+        RecordedRequest actualUpdateReq = mockWebServer.takeRequest();
+        assertThat(actualUpdateReq.getPath()).contains("/_update/O-1").contains("if_seq_no=7").contains("if_primary_term=2").contains("routing=route-1");
+        assertThat(actualUpdateReq.getBody().readUtf8()).contains("\"tenant_id\":\"tenant_a\"");
+
+        // 4. STRICT deleteById 归属他租户 -> 前置 GET 拦截抛 SEARCH_TENANT_ACCESS_DENIED
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"routed_order_idx\",\"_id\":\"O-2\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_b\"}}"));
+        assertThatThrownBy(() -> searchTemplate.deleteById(RoutedOrderDoc.class, "O-2", "route-2"))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        RecordedRequest preGetDel = mockWebServer.takeRequest();
+        assertThat(preGetDel.getPath()).contains("_source_includes=tenant_id").contains("routing=route-2");
+
+        // 5. STRICT deleteById 不存在返回 false；同租户校验通过放行 DELETE 并保留 routing
+        mockWebServer.enqueue(esResponse(404, "{\"_index\":\"routed_order_idx\",\"_id\":\"O-404\",\"found\":false}"));
+        assertThat(searchTemplate.deleteById(RoutedOrderDoc.class, "O-404", "route-1")).isFalse();
+        mockWebServer.takeRequest();
+
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"routed_order_idx\",\"_id\":\"O-1\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_a\"}}"));
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"routed_order_idx\",\"_id\":\"O-1\",\"_version\":2,\"result\":\"deleted\",\"_seq_no\":2,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        assertThat(searchTemplate.deleteById(RoutedOrderDoc.class, "O-1", "route-1")).isTrue();
+        mockWebServer.takeRequest(); // pre-check GET
+        RecordedRequest actualDelReq = mockWebServer.takeRequest();
+        assertThat(actualDelReq.getMethod()).isEqualTo("DELETE");
+        assertThat(actualDelReq.getPath()).contains("routing=route-1");
+
+        // 6. STRICT deleteBatch: 前置 mget _source 裁剪检测到他租户文档立即拦截抛异常，同租户与未命中则放行 bulk
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "docs": [
+                    {"_index":"user_idx","_id":"1","found":true,"_source":{"tenant_id":"tenant_a"}},
+                    {"_index":"user_idx","_id":"2","found":true,"_source":{"tenant_id":"tenant_b"}}
+                  ]
+                }
+                """));
+        assertThatThrownBy(() -> searchTemplate.deleteBatch(UserDoc.class, List.of("1", "2")))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        RecordedRequest mgetPreDel = mockWebServer.takeRequest();
+        assertThat(mgetPreDel.getPath()).contains("/_mget").contains("_source_includes=tenant_id");
+
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "docs": [
+                    {"_index":"user_idx","_id":"1","found":true,"_source":{"tenant_id":"tenant_a"}},
+                    {"_index":"user_idx","_id":"999","found":false}
+                  ]
+                }
+                """));
+        mockWebServer.enqueue(esResponse(200, "{\"took\":1,\"errors\":false,\"items\":[{\"delete\":{\"_index\":\"user_idx\",\"_id\":\"1\",\"status\":200,\"result\":\"deleted\"}},{\"delete\":{\"_index\":\"user_idx\",\"_id\":\"999\",\"status\":404,\"result\":\"not_found\"}}]}"));
+        SearchBulkResult bulkDelRes = searchTemplate.deleteBatch(UserDoc.class, List.of("1", "999"));
+        assertThat(bulkDelRes.getSuccessCount()).isEqualTo(2);
+        mockWebServer.takeRequest(); // mget
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_bulk");
+
+        // 7. FILTER_ONLY 模式下点删改直通，不发前置核验 GET
+        AtengSearchProperties filterOnlyProps = new AtengSearchProperties();
+        filterOnlyProps.getMultiTenancy().setIsolationMode(io.github.atengk.boot.search.enums.TenantIsolationMode.FILTER_ONLY);
+        SearchTemplate filterOnlyTemplate = new SearchTemplate(driver, filterOnlyProps);
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"2\",\"_version\":2,\"result\":\"deleted\",\"_seq_no\":2,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        assertThat(filterOnlyTemplate.deleteById(UserDoc.class, "2")).isTrue();
+        assertThat(mockWebServer.takeRequest().getMethod()).isEqualTo("DELETE");
+
+        // 8. reindex 自动注入租户边界过滤；携带跨租户过滤条件时在 STRICT 下阻断
+        mockWebServer.enqueue(esResponse(200, "{\"took\":5,\"timed_out\":false,\"total\":3,\"created\":3,\"updated\":0,\"deleted\":0,\"batches\":1,\"version_conflicts\":0,\"noops\":0,\"failures\":[]}"));
+        assertThat(searchTemplate.indices().reindex("order_v1", "order_v2")).isTrue();
+        RecordedRequest reindexReq = mockWebServer.takeRequest();
+        assertThat(reindexReq.getBody().readUtf8()).contains("\"term\":{\"tenant_id\":{\"value\":\"tenant_a\"}}");
+
+        SearchQuery crossTenantReindexQuery = SearchQueryBuilder.create().term("tenant_id", "tenant_b").build();
+        assertThatThrownBy(() -> searchTemplate.indices().reindex("order_v1", "order_v2", crossTenantReindexQuery))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+
+        // 9. deleteByQuery 携带跨租户过滤条件在 STRICT 下同样立即拦截，且 @IgnoreTenant 实体放行
+        assertThatThrownBy(() -> searchTemplate.deleteByQuery(crossTenantReindexQuery, UserDoc.class))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
     }
 }
