@@ -337,9 +337,11 @@ class TcpClientIntegrationTest {
         );
         assertThat(resp2.getPayload().asString()).contains("RESTART_RPC_OK");
 
-        // 3. 基于虚拟线程调度并发调用 start / stop / reconnect 验证 ReentrantLock 互斥与防 Pinning 安全性
+        // 3. 在 JDK 21+ 上基于虚拟线程（JDK 17 回退平台线程）并发调用 start / stop / reconnect 验证 ReentrantLock 互斥与防 Pinning 安全性
         org.springframework.core.task.SimpleAsyncTaskExecutor executor = new org.springframework.core.task.SimpleAsyncTaskExecutor("test-tcp-vt-");
-        executor.setVirtualThreads(true);
+        if (Runtime.version().feature() >= 21) {
+            executor.setVirtualThreads(true);
+        }
         try {
             java.util.concurrent.CountDownLatch startLatch = new java.util.concurrent.CountDownLatch(1);
             java.util.concurrent.CountDownLatch doneLatch = new java.util.concurrent.CountDownLatch(5);
