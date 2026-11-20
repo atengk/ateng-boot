@@ -12,6 +12,7 @@ import io.github.atengk.boot.tcp.spi.TcpChannelCustomizer;
 import io.github.atengk.boot.tcp.spi.TcpPacketFilter;
 import io.github.atengk.boot.tcp.template.TcpClientTemplate;
 import io.netty.bootstrap.Bootstrap;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -134,5 +135,22 @@ public class TcpClientAutoConfiguration {
         }
 
         return registry;
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(name = "tcpClientCorrelationDisposable")
+    public DisposableBean tcpClientCorrelationDisposable(ObjectProvider<TcpClientRegistry> clientRegistryProvider) {
+        return () -> {
+            TcpClientRegistry registry = clientRegistryProvider.getIfAvailable();
+            if (registry == null) {
+                return;
+            }
+            for (TcpClient client : registry.getAllClients().values()) {
+                TcpRequestCorrelationManager cm = client.getCorrelationManager();
+                if (cm != null) {
+                    cm.close();
+                }
+            }
+        };
     }
 }

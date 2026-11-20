@@ -332,12 +332,16 @@ class SampleTcpWebControllerTest {
         mockMvc.perform(get("/sample/tcp/session/list").param("group", FleetSimulationRunner.GROUP_ALPHA))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data[*].deviceId", hasItem(FleetSimulationRunner.DEVICE_ALPHA_001)));
+                .andExpect(jsonPath("$.data[*].deviceId", hasItem(FleetSimulationRunner.DEVICE_ALPHA_001)))
+                .andExpect(jsonPath("$.data[0].serverName").value("default"))
+                .andExpect(jsonPath("$.data[0].groups", hasItem(FleetSimulationRunner.GROUP_ALPHA)));
 
         mockMvc.perform(get("/sample/tcp/session/detail").param("deviceId", FleetSimulationRunner.DEVICE_ALPHA_001))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.session.deviceId").value(FleetSimulationRunner.DEVICE_ALPHA_001))
+                .andExpect(jsonPath("$.data.session.serverName").value("default"))
+                .andExpect(jsonPath("$.data.session.groups", hasItem(FleetSimulationRunner.GROUP_ALPHA)))
                 .andExpect(jsonPath("$.data.session.active").value(true))
                 .andExpect(jsonPath("$.data.telemetry.online").value(true));
 
@@ -359,6 +363,10 @@ class SampleTcpWebControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200))
                     .andExpect(jsonPath("$.data[*].deviceId", hasItem(FleetSimulationRunner.DEVICE_ALPHA_001)));
+
+            mockMvc.perform(get("/sample/tcp/session/detail").param("deviceId", FleetSimulationRunner.DEVICE_ALPHA_001))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.session.groups", hasItem("FLEET-TEMP-AUDIT")));
         } finally {
             SessionGroupRequest leaveReq = SessionGroupRequest.builder()
                     .deviceId(FleetSimulationRunner.DEVICE_ALPHA_001)

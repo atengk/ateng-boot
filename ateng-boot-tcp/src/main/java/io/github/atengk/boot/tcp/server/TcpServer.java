@@ -35,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Netty TCP 服务端生命周期管理引擎
@@ -58,6 +59,7 @@ public class TcpServer implements SmartLifecycle {
     private final List<TcpChannelCustomizer> channelCustomizers;
     private final ApplicationEventPublisher eventPublisher;
     private final TcpMetricsCollector metricsCollector;
+    private final ReentrantLock lifecycleLock = new ReentrantLock();
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -142,208 +144,222 @@ public class TcpServer implements SmartLifecycle {
     /**
      * 启动 TCP 服务端并绑定监听端口
      */
-    public synchronized void start() {
-        if (running) {
-            return;
-        }
-
-        bossGroup = new NioEventLoopGroup(properties.getBossThreads());
-        workerGroup = properties.getWorkerThreads() > 0
-                ? new NioEventLoopGroup(properties.getWorkerThreads())
-                : new NioEventLoopGroup();
-
-        this.sslContext = TcpSslContextFactory.buildServerSslContext(properties.getSsl());
-        TcpIpFilterHandler ipFilterHandler = (properties.getIpFilter() != null && properties.getIpFilter().isEnabled())
-                ? new TcpIpFilterHandler(properties.getIpFilter(), eventPublisher)
-                : null;
-
-        TcpTrafficShapingProperties tsProps = properties.getTrafficShaping();
-        if (tsProps != null && tsProps.isEnabled()) {
-            long gWrite = tsProps.getGlobalWriteLimit() != null ? tsProps.getGlobalWriteLimit().toBytes() : 0;
-            long gRead = tsProps.getGlobalReadLimit() != null ? tsProps.getGlobalReadLimit().toBytes() : 0;
-            long checkInterval = tsProps.getCheckInterval() != null ? tsProps.getCheckInterval().toMillis() : 1000L;
-            long maxTime = tsProps.getMaxTime() != null ? tsProps.getMaxTime().toMillis() : 15000L;
-
-            if (gWrite > 0 || gRead > 0) {
-                this.globalTrafficShapingHandler = new GlobalTrafficShapingHandler(
-                        workerGroup, gWrite, gRead, checkInterval, maxTime);
-            }
-        }
-
-        TcpServerChannelHandler serverHandler = new TcpServerChannelHandler(
-                properties, sessionManager, correlationManager, dispatcher, eventPublisher, metricsCollector);
-        TcpPacketFilterHandler filterHandler = !packetFilters.isEmpty() ? new TcpPacketFilterHandler(packetFilters) : null;
-
+    public void start() {
+        lifecycleLock.lock();
         try {
-            int lowWaterMark = (int) (properties.getWriteBufferLowWaterMark() != null ? properties.getWriteBufferLowWaterMark().toBytes() : 32 * 1024);
-            int highWaterMark = (int) (properties.getWriteBufferHighWaterMark() != null ? properties.getWriteBufferHighWaterMark().toBytes() : 64 * 1024);
+            if (running) {
+                return;
+            }
 
-            ServerBootstrap bootstrap = new ServerBootstrap();
-            bootstrap.group(bossGroup, workerGroup)
-                    .channel(NioServerSocketChannel.class)
-                    .option(ChannelOption.SO_BACKLOG, properties.getSoBacklog())
-                    .childOption(ChannelOption.TCP_NODELAY, properties.isTcpNodelay())
-                    .childOption(ChannelOption.SO_KEEPALIVE, properties.isSoKeepalive())
-                    .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(lowWaterMark, highWaterMark))
-                    .childHandler(new ChannelInitializer<SocketChannel>() {
-                        @Override
-                        protected void initChannel(SocketChannel ch) {
-                            ChannelPipeline pipeline = ch.pipeline();
+            bossGroup = new NioEventLoopGroup(properties.getBossThreads());
+            workerGroup = properties.getWorkerThreads() > 0
+                    ? new NioEventLoopGroup(properties.getWorkerThreads())
+                    : new NioEventLoopGroup();
 
-                            // 0. 网络层 IP 访问控制防火墙（纳秒级首位拦截，零直接内存分配）
-                            if (ipFilterHandler != null) {
-                                pipeline.addLast("ipFilter", ipFilterHandler);
-                            }
+            this.sslContext = TcpSslContextFactory.buildServerSslContext(properties.getSsl());
+            TcpIpFilterHandler ipFilterHandler = (properties.getIpFilter() != null && properties.getIpFilter().isEnabled())
+                    ? new TcpIpFilterHandler(properties.getIpFilter(), eventPublisher)
+                    : null;
 
-                            // 1. TLS/mTLS 链路加密
-                            if (sslContext != null) {
-                                pipeline.addLast("sslHandler", sslContext.newHandler(ch.alloc()));
-                            }
+            TcpTrafficShapingProperties tsProps = properties.getTrafficShaping();
+            if (tsProps != null && tsProps.isEnabled()) {
+                long gWrite = tsProps.getGlobalWriteLimit() != null ? tsProps.getGlobalWriteLimit().toBytes() : 0;
+                long gRead = tsProps.getGlobalReadLimit() != null ? tsProps.getGlobalReadLimit().toBytes() : 0;
+                long checkInterval = tsProps.getCheckInterval() != null ? tsProps.getCheckInterval().toMillis() : 1000L;
+                long maxTime = tsProps.getMaxTime() != null ? tsProps.getMaxTime().toMillis() : 15000L;
 
-                            // 2. 全局与单连接网络带宽流量整形（限速与削峰填谷）
-                            if (globalTrafficShapingHandler != null) {
-                                pipeline.addLast("globalTrafficShaping", globalTrafficShapingHandler);
-                            }
-                            if (tsProps != null && tsProps.isEnabled()) {
-                                long cWrite = tsProps.getChannelWriteLimit() != null ? tsProps.getChannelWriteLimit().toBytes() : 0;
-                                long cRead = tsProps.getChannelReadLimit() != null ? tsProps.getChannelReadLimit().toBytes() : 0;
-                                if (cWrite > 0 || cRead > 0) {
-                                    long checkInterval = tsProps.getCheckInterval() != null ? tsProps.getCheckInterval().toMillis() : 1000L;
-                                    long maxTime = tsProps.getMaxTime() != null ? tsProps.getMaxTime().toMillis() : 15000L;
-                                    pipeline.addLast("channelTrafficShaping",
-                                            new ChannelTrafficShapingHandler(cWrite, cRead, checkInterval, maxTime));
+                if (gWrite > 0 || gRead > 0) {
+                    this.globalTrafficShapingHandler = new GlobalTrafficShapingHandler(
+                            workerGroup, gWrite, gRead, checkInterval, maxTime);
+                }
+            }
+
+            TcpServerChannelHandler serverHandler = new TcpServerChannelHandler(
+                    this.name, properties, sessionManager, correlationManager, dispatcher, eventPublisher, metricsCollector);
+            TcpPacketFilterHandler filterHandler = !packetFilters.isEmpty() ? new TcpPacketFilterHandler(packetFilters) : null;
+
+            try {
+                int lowWaterMark = (int) (properties.getWriteBufferLowWaterMark() != null ? properties.getWriteBufferLowWaterMark().toBytes() : 32 * 1024);
+                int highWaterMark = (int) (properties.getWriteBufferHighWaterMark() != null ? properties.getWriteBufferHighWaterMark().toBytes() : 64 * 1024);
+
+                ServerBootstrap bootstrap = new ServerBootstrap();
+                bootstrap.group(bossGroup, workerGroup)
+                        .channel(NioServerSocketChannel.class)
+                        .option(ChannelOption.SO_BACKLOG, properties.getSoBacklog())
+                        .childOption(ChannelOption.TCP_NODELAY, properties.isTcpNodelay())
+                        .childOption(ChannelOption.SO_KEEPALIVE, properties.isSoKeepalive())
+                        .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(lowWaterMark, highWaterMark))
+                        .childHandler(new ChannelInitializer<SocketChannel>() {
+                            @Override
+                            protected void initChannel(SocketChannel ch) {
+                                ChannelPipeline pipeline = ch.pipeline();
+
+                                // 0. 网络层 IP 访问控制防火墙（纳秒级首位拦截，零直接内存分配）
+                                if (ipFilterHandler != null) {
+                                    pipeline.addLast("ipFilter", ipFilterHandler);
+                                }
+
+                                // 1. TLS/mTLS 链路加密
+                                if (sslContext != null) {
+                                    pipeline.addLast("sslHandler", sslContext.newHandler(ch.alloc()));
+                                }
+
+                                // 2. 全局与单连接网络带宽流量整形（限速与削峰填谷）
+                                if (globalTrafficShapingHandler != null) {
+                                    pipeline.addLast("globalTrafficShaping", globalTrafficShapingHandler);
+                                }
+                                if (tsProps != null && tsProps.isEnabled()) {
+                                    long cWrite = tsProps.getChannelWriteLimit() != null ? tsProps.getChannelWriteLimit().toBytes() : 0;
+                                    long cRead = tsProps.getChannelReadLimit() != null ? tsProps.getChannelReadLimit().toBytes() : 0;
+                                    if (cWrite > 0 || cRead > 0) {
+                                        long checkInterval = tsProps.getCheckInterval() != null ? tsProps.getCheckInterval().toMillis() : 1000L;
+                                        long maxTime = tsProps.getMaxTime() != null ? tsProps.getMaxTime().toMillis() : 15000L;
+                                        pipeline.addLast("channelTrafficShaping",
+                                                new ChannelTrafficShapingHandler(cWrite, cRead, checkInterval, maxTime));
+                                    }
+                                }
+
+                                // 3. 空闲心跳检测处理器
+                                Duration r = properties.getIdle().getReaderIdleTime();
+                                Duration w = properties.getIdle().getWriterIdleTime();
+                                Duration a = properties.getIdle().getAllIdleTime();
+                                if (!r.isZero() || !w.isZero() || !a.isZero()) {
+                                    pipeline.addLast("idleStateHandler",
+                                            new IdleStateHandler((int) r.toSeconds(), (int) w.toSeconds(), (int) a.toSeconds()));
+                                }
+
+                                // 4. 粘包拆包解码器与对称出站定界符属性绑定
+                                if (properties.getFraming().getMode() == io.github.atengk.boot.tcp.enums.FramingMode.DELIMITER) {
+                                    byte[] delim = TcpFramingDecoderFactory.resolveDelimiterBytes(properties.getFraming());
+                                    ch.attr(TcpPayloadCodecHandler.DELIMITER_KEY).set(delim);
+                                }
+                                ChannelHandler frameDecoder = TcpFramingDecoderFactory.createFrameDecoder(properties.getFraming());
+                                if (frameDecoder != null) {
+                                    pipeline.addLast("frameDecoder", frameDecoder);
+                                }
+                                ChannelHandler frameEncoder = TcpFramingDecoderFactory.createFrameEncoder(properties.getFraming());
+                                if (frameEncoder != null) {
+                                    pipeline.addLast("frameEncoder", frameEncoder);
+                                }
+
+                                // 5. 安全堆内存转译与直接内存释放闭环
+                                pipeline.addLast("payloadCodec", TcpPayloadCodecHandler.INSTANCE);
+
+                                // 6. 报文过滤器链
+                                if (filterHandler != null) {
+                                    pipeline.addLast("packetFilter", filterHandler);
+                                }
+
+                                // 7. 服务端连接通道生命周期处理器
+                                pipeline.addLast("serverHandler", serverHandler);
+
+                                // 8. 执行通道定制逃生舱
+                                for (TcpChannelCustomizer customizer : channelCustomizers) {
+                                    customizer.customize(ch, "SERVER", name);
                                 }
                             }
+                        });
 
-                            // 3. 空闲心跳检测处理器
-                            Duration r = properties.getIdle().getReaderIdleTime();
-                            Duration w = properties.getIdle().getWriterIdleTime();
-                            Duration a = properties.getIdle().getAllIdleTime();
-                            if (!r.isZero() || !w.isZero() || !a.isZero()) {
-                                pipeline.addLast("idleStateHandler",
-                                        new IdleStateHandler((int) r.toSeconds(), (int) w.toSeconds(), (int) a.toSeconds()));
-                            }
+                ChannelFuture future = bootstrap.bind(properties.getHost(), properties.getPort()).sync();
+                serverChannel = future.channel();
 
-                            // 4. 粘包拆包解码器与对称出站定界符属性绑定
-                            if (properties.getFraming().getMode() == io.github.atengk.boot.tcp.enums.FramingMode.DELIMITER) {
-                                byte[] delim = TcpFramingDecoderFactory.resolveDelimiterBytes(properties.getFraming());
-                                ch.attr(TcpPayloadCodecHandler.DELIMITER_KEY).set(delim);
-                            }
-                            ChannelHandler frameDecoder = TcpFramingDecoderFactory.createFrameDecoder(properties.getFraming());
-                            if (frameDecoder != null) {
-                                pipeline.addLast("frameDecoder", frameDecoder);
-                            }
-                            ChannelHandler frameEncoder = TcpFramingDecoderFactory.createFrameEncoder(properties.getFraming());
-                            if (frameEncoder != null) {
-                                pipeline.addLast("frameEncoder", frameEncoder);
-                            }
+                if (serverChannel.localAddress() instanceof InetSocketAddress) {
+                    this.actualPort = ((InetSocketAddress) serverChannel.localAddress()).getPort();
+                } else {
+                    this.actualPort = properties.getPort();
+                }
 
-                            // 5. 安全堆内存转译与直接内存释放闭环
-                            pipeline.addLast("payloadCodec", TcpPayloadCodecHandler.INSTANCE);
+                this.running = true;
+                log.info("ateng-boot-tcp 服务端 [{}] 成功启动并监听: host={}, port={}, actualPort={}",
+                        this.name, properties.getHost(), properties.getPort(), this.actualPort);
 
-                            // 6. 报文过滤器链
-                            if (filterHandler != null) {
-                                pipeline.addLast("packetFilter", filterHandler);
-                            }
-
-                            // 7. 服务端连接通道生命周期处理器
-                            pipeline.addLast("serverHandler", serverHandler);
-
-                            // 8. 执行通道定制逃生舱
-                            for (TcpChannelCustomizer customizer : channelCustomizers) {
-                                customizer.customize(ch, "SERVER", name);
-                            }
-                        }
-                    });
-
-            ChannelFuture future = bootstrap.bind(properties.getHost(), properties.getPort()).sync();
-            serverChannel = future.channel();
-
-            if (serverChannel.localAddress() instanceof InetSocketAddress) {
-                this.actualPort = ((InetSocketAddress) serverChannel.localAddress()).getPort();
-            } else {
-                this.actualPort = properties.getPort();
+            } catch (Exception ex) {
+                stop();
+                throw new IllegalStateException("启动 TCP 服务端 [" + this.name + "] 失败: host=" + properties.getHost() + ", port=" + properties.getPort(), ex);
             }
-
-            this.running = true;
-            log.info("ateng-boot-tcp 服务端 [{}] 成功启动并监听: host={}, port={}, actualPort={}",
-                    this.name, properties.getHost(), properties.getPort(), this.actualPort);
-
-        } catch (Exception ex) {
-            stop();
-            throw new IllegalStateException("启动 TCP 服务端 [" + this.name + "] 失败: host=" + properties.getHost() + ", port=" + properties.getPort(), ex);
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
+            }
         }
     }
 
     /**
-     * 平滑停止 TCP 服务端并注销全部会话
+     * 平滑停止 TCP 服务端并按当前服务端逻辑名称定向注销关联会话
      */
-    public synchronized void stop() {
-        if (!running && serverChannel == null && bossGroup == null && workerGroup == null) {
-            return;
-        }
-
-        log.info("正在平滑关闭 TCP 服务端 [{}]: port={}...", this.name, actualPort);
-
-        // 第 1 阶段：解除端口监听（关闭 Boss Channel），拒绝新的 TCP 连接
-        if (serverChannel != null) {
-            try {
-                serverChannel.close().syncUninterruptibly();
-            } catch (Exception ex) {
-                log.warn("关闭服务端 ServerSocket 异常", ex);
+    public void stop() {
+        lifecycleLock.lock();
+        try {
+            if (!running && serverChannel == null && bossGroup == null && workerGroup == null) {
+                return;
             }
-            serverChannel = null;
-        }
 
-        // 第 2 阶段：开启受管等待窗口，排空在途传输与未完成的 RPC Future
-        long drainTimeoutMillis = properties.getDrainTimeout() != null ? properties.getDrainTimeout().toMillis() : 5000L;
-        if (drainTimeoutMillis > 0 && correlationManager != null && correlationManager.hasPendingRequests()) {
-            log.info("TCP 服务端 [{}] 进入受管排空窗口期 (timeout={}ms)，等待在途请求完成...", this.name, drainTimeoutMillis);
-            long deadline = System.currentTimeMillis() + drainTimeoutMillis;
-            while (correlationManager.hasPendingRequests() && System.currentTimeMillis() < deadline) {
+            log.info("正在平滑关闭 TCP 服务端 [{}]: port={}...", this.name, actualPort);
+
+            // 第 1 阶段：解除端口监听（关闭 Boss Channel），拒绝新的 TCP 连接
+            if (serverChannel != null) {
                 try {
-                    Thread.sleep(50);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
+                    serverChannel.close().syncUninterruptibly();
+                } catch (Exception ex) {
+                    log.warn("关闭服务端 ServerSocket 异常", ex);
+                }
+                serverChannel = null;
+            }
+
+            // 第 2 阶段：开启受管等待窗口，排空在途传输与未完成的 RPC Future
+            long drainTimeoutMillis = properties.getDrainTimeout() != null ? properties.getDrainTimeout().toMillis() : 5000L;
+            if (drainTimeoutMillis > 0 && correlationManager != null && correlationManager.hasPendingRequests()) {
+                log.info("TCP 服务端 [{}] 进入受管排空窗口期 (timeout={}ms)，等待在途请求完成...", this.name, drainTimeoutMillis);
+                long deadline = System.currentTimeMillis() + drainTimeoutMillis;
+                while (correlationManager.hasPendingRequests() && System.currentTimeMillis() < deadline) {
+                    try {
+                        Thread.sleep(50);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
                 }
             }
-        }
 
-        // 第 3 阶段：平滑注销存量会话，优雅关闭 Netty EventLoopGroup
-        try {
-            sessionManager.closeAllSessions(CloseReason.SERVER_SHUTDOWN);
-            if (correlationManager != null) {
-                correlationManager.close();
-            }
-        } catch (Exception ex) {
-            log.warn("注销存量客户端会话异常", ex);
-        }
-
-        // 释放全局流量整形处理器
-        if (globalTrafficShapingHandler != null) {
+            // 第 3 阶段：仅平滑注销归属当前服务端端口的存量会话，防止误杀同进程其他端口连接
             try {
-                globalTrafficShapingHandler.release();
+                sessionManager.closeSessionsByServer(this.name, CloseReason.SERVER_SHUTDOWN);
+                if (correlationManager != null) {
+                    correlationManager.failAll(new IllegalStateException("TCP 服务端 [" + this.name + "] 正在平滑关闭"));
+                }
             } catch (Exception ex) {
-                log.warn("释放全局流量整形处理器异常", ex);
-            } finally {
-                globalTrafficShapingHandler = null;
+                log.warn("注销存量客户端会话异常", ex);
+            }
+
+            // 释放全局流量整形处理器
+            if (globalTrafficShapingHandler != null) {
+                try {
+                    globalTrafficShapingHandler.release();
+                } catch (Exception ex) {
+                    log.warn("释放全局流量整形处理器异常", ex);
+                } finally {
+                    globalTrafficShapingHandler = null;
+                }
+            }
+
+            // 释放 Netty 线程池
+            long drainMillis = properties.getDrainTimeout() != null ? properties.getDrainTimeout().toMillis() : 5000L;
+            if (workerGroup != null) {
+                workerGroup.shutdownGracefully(50, drainMillis, TimeUnit.MILLISECONDS).syncUninterruptibly();
+                workerGroup = null;
+            }
+            if (bossGroup != null) {
+                bossGroup.shutdownGracefully(50, drainMillis, TimeUnit.MILLISECONDS).syncUninterruptibly();
+                bossGroup = null;
+            }
+
+            this.running = false;
+            log.info("TCP 服务端 [{}] 已平滑安全停止", this.name);
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
             }
         }
-
-        // 释放 Netty 线程池
-        long drainMillis = properties.getDrainTimeout() != null ? properties.getDrainTimeout().toMillis() : 5000L;
-        if (workerGroup != null) {
-            workerGroup.shutdownGracefully(50, drainMillis, TimeUnit.MILLISECONDS).syncUninterruptibly();
-            workerGroup = null;
-        }
-        if (bossGroup != null) {
-            bossGroup.shutdownGracefully(50, drainMillis, TimeUnit.MILLISECONDS).syncUninterruptibly();
-            bossGroup = null;
-        }
-
-        this.running = false;
-        log.info("TCP 服务端 [{}] 已平滑安全停止", this.name);
     }
 
     /**

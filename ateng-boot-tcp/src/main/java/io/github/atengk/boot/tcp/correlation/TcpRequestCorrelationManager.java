@@ -11,6 +11,7 @@ import io.netty.util.Timeout;
 import io.netty.util.concurrent.DefaultThreadFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.DisposableBean;
 
 import java.time.Duration;
 import java.util.Map;
@@ -19,6 +20,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * TCP 全双工请求-响应 RPC 相关性管理器
@@ -30,7 +32,7 @@ import java.util.concurrent.TimeUnit;
  * @author Ateng
  * @since 2026-10-26
  */
-public class TcpRequestCorrelationManager implements AutoCloseable {
+public class TcpRequestCorrelationManager implements DisposableBean, AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(TcpRequestCorrelationManager.class);
 
@@ -61,18 +63,19 @@ public class TcpRequestCorrelationManager implements AutoCloseable {
     };
 
     private final ConcurrentMap<String, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
-    private final HashedWheelTimer timer;
+    private final ReentrantLock timerLock = new ReentrantLock();
+    private volatile HashedWheelTimer timer;
+    private volatile boolean closed = false;
     private volatile int maxPendingRequests = 10000;
     private volatile TcpCorrelationIdExtractor correlationIdExtractor = DEFAULT_EXTRACTOR;
     private volatile TcpMetricsCollector metricsCollector;
 
     public TcpRequestCorrelationManager() {
-        this(new HashedWheelTimer(new DefaultThreadFactory("Netty-Correlation-Timer", true)), 10000);
+        this(createDefaultTimer(), 10000, null);
     }
 
     public TcpRequestCorrelationManager(TcpMetricsCollector metricsCollector) {
-        this();
-        this.metricsCollector = metricsCollector;
+        this(createDefaultTimer(), 10000, metricsCollector);
     }
 
     public TcpRequestCorrelationManager(HashedWheelTimer timer, int maxPendingRequests) {
@@ -83,6 +86,29 @@ public class TcpRequestCorrelationManager implements AutoCloseable {
         this.timer = Objects.requireNonNull(timer, "timer 不能为空");
         this.maxPendingRequests = maxPendingRequests > 0 ? maxPendingRequests : 10000;
         this.metricsCollector = metricsCollector;
+    }
+
+    private static HashedWheelTimer createDefaultTimer() {
+        return new HashedWheelTimer(new DefaultThreadFactory("Netty-Correlation-Timer", true));
+    }
+
+    private HashedWheelTimer ensureActiveTimer() {
+        HashedWheelTimer current = this.timer;
+        if (!closed && current != null) {
+            return current;
+        }
+        timerLock.lock();
+        try {
+            if (closed || this.timer == null) {
+                this.timer = createDefaultTimer();
+                this.closed = false;
+            }
+            return this.timer;
+        } finally {
+            if (timerLock.isHeldByCurrentThread()) {
+                timerLock.unlock();
+            }
+        }
     }
 
     /**
@@ -106,7 +132,7 @@ public class TcpRequestCorrelationManager implements AutoCloseable {
 
         CompletableFuture<TcpPacket> future = new CompletableFuture<>();
 
-        Timeout timeoutTask = timer.newTimeout(t -> {
+        Timeout timeoutTask = ensureActiveTimer().newTimeout(t -> {
             PendingRequest removed = pendingRequests.remove(requestId);
             if (removed != null && !removed.future.isDone()) {
                 log.warn("TCP 请求等待对端应答超时，自动清理挂起句柄: requestId={}, timeout={}", requestId, timeout);
@@ -261,15 +287,29 @@ public class TcpRequestCorrelationManager implements AutoCloseable {
     }
 
     @Override
+    public void destroy() {
+        close();
+    }
+
+    @Override
     public void close() {
-        for (PendingRequest pending : pendingRequests.values()) {
-            pending.timeoutTask.cancel();
-            pending.future.completeExceptionally(new TcpException("TCP 通信底座已关闭，终止等待对端应答: requestId=" + pending.requestId));
-        }
-        pendingRequests.clear();
+        timerLock.lock();
         try {
-            timer.stop();
-        } catch (Exception ignored) {
+            failAll(new TcpException("TCP 通信底座已关闭，终止等待对端应答"));
+            this.closed = true;
+            HashedWheelTimer current = this.timer;
+            if (current != null) {
+                try {
+                    current.stop();
+                } catch (Exception ex) {
+                    log.warn("停止 TCP 请求相关性时间轮异常", ex);
+                }
+                this.timer = null;
+            }
+        } finally {
+            if (timerLock.isHeldByCurrentThread()) {
+                timerLock.unlock();
+            }
         }
     }
 

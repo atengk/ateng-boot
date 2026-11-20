@@ -283,4 +283,100 @@ class TcpClientIntegrationTest {
         clientTemplate.reconnect();
         assertThat(clientTemplate.isConnected()).isTrue();
     }
+
+    @Test
+    @DisplayName("验证服务端与客户端热重启 (stop -> start) 后全双工 RPC 时间轮自动可用，且并发启停重连线程安全")
+    void testRestartPreservesFullDuplexRpcAndConcurrentLifecycle() throws Exception {
+        TcpChannelCustomizer serverCustomizer = ch -> ch.pipeline().addLast(new SimpleChannelInboundHandler<TcpPayload>() {
+            @Override
+            protected void channelRead0(ChannelHandlerContext ctx, TcpPayload msg) {
+                String reqJson = msg.asString();
+                if (reqJson.contains("\"requestId\"")) {
+                    String reqId = clientCorrelationManager.getCorrelationIdExtractor().extract(reqJson);
+                    if (reqId != null) {
+                        ctx.writeAndFlush("{\"requestId\":\"" + reqId + "\",\"result\":\"RESTART_RPC_OK\"}\n");
+                    }
+                }
+            }
+        });
+
+        initServerAndClient(List.of(serverCustomizer), Collections.emptyList());
+
+        // 1. 客户端 stop -> start 热重启后发起全双工 RPC
+        client.stop();
+        assertThat(client.isRunning()).isFalse();
+        client.start();
+        long deadlineClient = System.currentTimeMillis() + 3000;
+        while (!client.isConnected() && System.currentTimeMillis() < deadlineClient) {
+            Thread.sleep(30);
+        }
+        assertThat(client.isConnected()).isTrue();
+
+        String reqId1 = IdUtil.fastSimpleUUID();
+        TcpPacket resp1 = clientTemplate.request(
+                TcpPacket.of("PING", reqId1, TcpPayload.of("{\"requestId\":\"" + reqId1 + "\",\"command\":\"PING\"}\n")),
+                Duration.ofSeconds(3)
+        );
+        assertThat(resp1.getPayload().asString()).contains("RESTART_RPC_OK");
+
+        // 2. 服务端 stop -> start 热重启后（同端口）客户端重连并发起全双工 RPC
+        int boundPort = server.getActualPort();
+        server.stop();
+        assertThat(server.isRunning()).isFalse();
+        server.getProperties().setPort(boundPort);
+        server.start();
+        assertThat(server.isRunning()).isTrue();
+
+        client.reconnect();
+        assertThat(client.isConnected()).isTrue();
+
+        String reqId2 = IdUtil.fastSimpleUUID();
+        TcpPacket resp2 = clientTemplate.request(
+                TcpPacket.of("PING", reqId2, TcpPayload.of("{\"requestId\":\"" + reqId2 + "\",\"command\":\"PING\"}\n")),
+                Duration.ofSeconds(3)
+        );
+        assertThat(resp2.getPayload().asString()).contains("RESTART_RPC_OK");
+
+        // 3. 基于虚拟线程调度并发调用 start / stop / reconnect 验证 ReentrantLock 互斥与防 Pinning 安全性
+        org.springframework.core.task.SimpleAsyncTaskExecutor executor = new org.springframework.core.task.SimpleAsyncTaskExecutor("test-tcp-vt-");
+        executor.setVirtualThreads(true);
+        try {
+            java.util.concurrent.CountDownLatch startLatch = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.CountDownLatch doneLatch = new java.util.concurrent.CountDownLatch(5);
+            java.util.List<Throwable> errors = new CopyOnWriteArrayList<>();
+            java.util.List<Runnable> actions = java.util.List.of(
+                    () -> client.stop(),
+                    () -> client.start(),
+                    () -> {
+                        try {
+                            client.reconnect();
+                        } catch (Exception ignored) {
+                            // 并发 stop 窗口下 reconnect 可能抛出连接失败异常，锁互斥不应死锁或 Pinning
+                        }
+                    },
+                    () -> client.start(),
+                    () -> server.start()
+            );
+            for (Runnable action : actions) {
+                executor.execute(() -> {
+                    try {
+                        startLatch.await();
+                        action.run();
+                    } catch (Throwable ex) {
+                        errors.add(ex);
+                    } finally {
+                        doneLatch.countDown();
+                    }
+                });
+            }
+            startLatch.countDown();
+            assertThat(doneLatch.await(15, TimeUnit.SECONDS)).isTrue();
+            assertThat(errors).isEmpty();
+            client.stop();
+            client.start();
+            assertThat(client.isConnected()).isTrue();
+        } finally {
+            executor.close();
+        }
+    }
 }

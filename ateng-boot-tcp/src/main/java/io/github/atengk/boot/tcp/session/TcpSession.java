@@ -39,6 +39,7 @@ public class TcpSession {
     private final SocketAddress localAddress;
     private final long connectedAt;
 
+    private volatile String serverName = "default";
     private volatile String deviceId;
     private volatile long lastActiveTime;
     private volatile CloseReason closeReason;
@@ -48,7 +49,19 @@ public class TcpSession {
     private final ConcurrentMap<String, Object> attributes = new ConcurrentHashMap<>();
 
     public TcpSession(String sessionId, Channel channel) {
+        this(sessionId, "default", channel);
+    }
+
+    /**
+     * 构建携带所属服务端名称的 TCP 会话契约
+     *
+     * @param sessionId  会话唯一标识
+     * @param serverName 归属服务端名称（为空时默认 "default"）
+     * @param channel    底层 Netty 通道
+     */
+    public TcpSession(String sessionId, String serverName, Channel channel) {
         this.sessionId = sessionId;
+        this.serverName = (serverName != null && !serverName.isBlank()) ? serverName.trim() : "default";
         this.channel = channel;
         this.remoteAddress = channel != null ? channel.remoteAddress() : null;
         this.localAddress = channel != null ? channel.localAddress() : null;
@@ -219,6 +232,24 @@ public class TcpSession {
 
     public String getSessionId() {
         return sessionId;
+    }
+
+    /**
+     * 获取当前会话归属的服务端逻辑名称（默认 {@code "default"}）
+     *
+     * @return 服务端名称
+     */
+    public String getServerName() {
+        return serverName;
+    }
+
+    /**
+     * 设置当前会话归属的服务端逻辑名称（为空白时回退 {@code "default"}）
+     *
+     * @param serverName 服务端名称
+     */
+    public void setServerName(String serverName) {
+        this.serverName = (serverName != null && !serverName.isBlank()) ? serverName.trim() : "default";
     }
 
     public String getDeviceId() {

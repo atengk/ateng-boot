@@ -8,6 +8,7 @@ import org.springframework.util.Assert;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * TCP 多端口多协议服务端注册表
@@ -28,10 +29,11 @@ public class TcpServerRegistry implements SmartLifecycle {
     public static final String DEFAULT_SERVER_NAME = "default";
 
     private final Map<String, TcpServer> servers = new ConcurrentHashMap<>();
+    private final ReentrantLock lifecycleLock = new ReentrantLock();
     private volatile boolean running = false;
 
     /**
-     * 注册 TCP 服务端实例
+     * 注册 TCP 服务端实例（若存在同名不同引用的运行中旧实例，将自动平滑停止旧实例以防资源泄漏）
      *
      * @param name   服务端唯一名称
      * @param server 服务端实例
@@ -39,9 +41,41 @@ public class TcpServerRegistry implements SmartLifecycle {
     public void register(String name, TcpServer server) {
         Assert.hasText(name, "服务端名称不能为空");
         Assert.notNull(server, "服务端实例不能为空");
-        servers.put(name, server);
+        TcpServer previous = servers.put(name, server);
+        if (previous != null && previous != server && previous.isRunning()) {
+            log.info("检测到同名 TCP 服务端覆盖注册，正在平滑停止旧实例: name={}", name);
+            previous.stop();
+        }
         log.info("已注册 TCP 服务端实例: name={}, host={}, port={}",
                 name, server.getProperties().getHost(), server.getProperties().getPort());
+    }
+
+    /**
+     * 注销并移除指定名称的 TCP 服务端实例（若处于运行态将自动平滑停止）
+     *
+     * @param name 服务端名称
+     * @return 被移除的服务端实例，不存在时返回 null
+     */
+    public TcpServer unregister(String name) {
+        if (name == null) {
+            return null;
+        }
+        TcpServer removed = servers.remove(name);
+        if (removed != null && removed.isRunning()) {
+            log.info("注销 TCP 服务端实例，正在平滑停止: name={}", name);
+            removed.stop();
+        }
+        return removed;
+    }
+
+    /**
+     * 判断是否已注册指定名称的 TCP 服务端实例
+     *
+     * @param name 服务端名称
+     * @return true 表示存在
+     */
+    public boolean contains(String name) {
+        return name != null && servers.containsKey(name);
     }
 
     /**
@@ -100,33 +134,47 @@ public class TcpServerRegistry implements SmartLifecycle {
     }
 
     @Override
-    public synchronized void start() {
-        if (running) {
-            return;
-        }
-        log.info("正在启动 TCP 服务端注册表，共纳管 {} 个服务端实例...", servers.size());
-        for (Map.Entry<String, TcpServer> entry : servers.entrySet()) {
-            TcpServer server = entry.getValue();
-            if (!server.isRunning()) {
-                server.start();
+    public void start() {
+        lifecycleLock.lock();
+        try {
+            if (running) {
+                return;
+            }
+            log.info("正在启动 TCP 服务端注册表，共纳管 {} 个服务端实例...", servers.size());
+            for (Map.Entry<String, TcpServer> entry : servers.entrySet()) {
+                TcpServer server = entry.getValue();
+                if (!server.isRunning()) {
+                    server.start();
+                }
+            }
+            this.running = true;
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
             }
         }
-        this.running = true;
     }
 
     @Override
-    public synchronized void stop() {
-        if (!running) {
-            return;
-        }
-        log.info("正在停止 TCP 服务端注册表，关闭全部 {} 个服务端实例...", servers.size());
-        for (Map.Entry<String, TcpServer> entry : servers.entrySet()) {
-            TcpServer server = entry.getValue();
-            if (server.isRunning()) {
-                server.stop();
+    public void stop() {
+        lifecycleLock.lock();
+        try {
+            if (!running) {
+                return;
+            }
+            log.info("正在停止 TCP 服务端注册表，关闭全部 {} 个服务端实例...", servers.size());
+            for (Map.Entry<String, TcpServer> entry : servers.entrySet()) {
+                TcpServer server = entry.getValue();
+                if (server.isRunning()) {
+                    server.stop();
+                }
+            }
+            this.running = false;
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
             }
         }
-        this.running = false;
     }
 
     @Override

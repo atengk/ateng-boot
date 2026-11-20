@@ -16,6 +16,7 @@ import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import org.springframework.beans.factory.DisposableBean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -181,5 +182,31 @@ class TcpRequestCorrelationManagerTest {
         Timer timer = meterRegistry.find(TcpMetricsCollector.METRIC_REQUEST_DURATION).timer();
         assertThat(timer).isNotNull();
         assertThat(timer.count()).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("验证实现 DisposableBean 且在 close/destroy 后支持惰性安全重建 HashedWheelTimer")
+    void testDisposableBeanDestroyAndLazyTimerRebuildAfterClose() throws Exception {
+        assertThat(correlationManager).isInstanceOf(DisposableBean.class);
+
+        CompletableFuture<TcpPacket> pendingBeforeDestroy = correlationManager.register("REQ-BEFORE-DESTROY", Duration.ofSeconds(5));
+        ((DisposableBean) correlationManager).destroy();
+
+        assertThatThrownBy(pendingBeforeDestroy::join)
+                .isInstanceOf(Exception.class)
+                .hasCauseInstanceOf(TcpException.class);
+        assertThat(correlationManager.getPendingCount()).isEqualTo(0);
+
+        // destroy/close 后再次 register 应惰性重建时间轮而非抛出 cannot be started once stopped
+        CompletableFuture<TcpPacket> reopened = correlationManager.register("REQ-AFTER-DESTROY", Duration.ofSeconds(3));
+        assertThat(correlationManager.complete("REQ-AFTER-DESTROY",
+                TcpPacket.of("ECHO", "REQ-AFTER-DESTROY", TcpPayload.of("REBUILT_OK")))).isTrue();
+        assertThat(reopened.get(1, TimeUnit.SECONDS).getPayload().asString()).isEqualTo("REBUILT_OK");
+
+        // 重建后的时间轮仍具备超时驱动能力
+        CompletableFuture<TcpPacket> timeoutAfterRebuild = correlationManager.register("REQ-AFTER-TIMEOUT", Duration.ofMillis(80));
+        assertThatThrownBy(timeoutAfterRebuild::join)
+                .isInstanceOf(Exception.class)
+                .hasCauseInstanceOf(TcpTimeoutException.class);
     }
 }

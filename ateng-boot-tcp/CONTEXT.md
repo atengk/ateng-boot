@@ -13,11 +13,11 @@ _Avoid_: TcpServerHelper, SocketServerUtil, NettyServerService
 _Avoid_: TcpClientHelper, SocketClientUtil, NettyClientManager
 
 **TCP Session (TCP 会话)**:
-统一封装底层 Netty Channel、唯一会话标识（`sessionId`）、通道属性上下文（`AttributeMap`）、创建与最近活跃时间戳的领域会话契约。
+统一封装底层 Netty Channel、唯一会话标识（`sessionId`）、归属服务端标识（`serverName`）、业务设备标识（`deviceId`）、通道属性上下文（`AttributeMap`）及创建与最近活跃时间戳的领域会话契约。
 _Avoid_: ChannelContext, SocketWrapper, NettyChannelHolder
 
 **TCP Session Manager (TCP 会话管理器)**:
-专职负责 TCP 会话的注册、注销、生命周期维护，以及业务设备标识（`deviceId`）与会话多维双向映射绑定的管理底座。
+专职负责 TCP 会话的注册、注销、按服务端定向清理、业务设备标识（`deviceId`）双向映射绑定，以及逻辑分组（自动回收空分组键）与逆向分组检索的管理底座。
 _Avoid_: ConnectionManager, SessionRegistry, ChannelMap
 
 **TCP Listener (声明式 TCP 监听器)**:
@@ -29,7 +29,7 @@ _Avoid_: SocketListener, TcpConsumer, ChannelConsumer
 _Avoid_: PacketProcessor, ChannelHandler, InboundInterceptor
 
 **Dual-Mode Architecture (双模网络架构)**:
-TCP Server 与 TCP Client 拥有独立装配开关、配置命名空间与生命周期管理的协同运行架构。
+TCP Server 与 TCP Client 拥有独立装配开关、配置命名空间与基于 `ReentrantLock` 无虚拟线程 Pinning 的生命周期协同运行架构。
 _Avoid_: 混部网络, 通用Socket, 客户端服务端融合
 
 **TCP Packet (TCP 帧报文模型)**:
@@ -53,15 +53,15 @@ _Avoid_: CommandParser, ActionResolver, OpCodeFinder
 _Avoid_: 强制下线, 顶号处理, 连接覆盖
 
 **Request-Response Correlation (请求-响应关联匹配)**:
-基于唯一请求关联号（`requestId`）与有界 Future 映射池，在全双工 TCP 通道中实现异步回包精准唤醒调用方的闭环协同范式。
+基于唯一请求关联号（`requestId`）、可重入 `HashedWheelTimer` 时间轮与有界 Future 映射池，在全双工 TCP 通道中实现同步/异步强类型回包精准唤醒调用方且支持实例重复启停的闭环协同范式。
 _Avoid_: 伪同步, 同步等待锁, 轮询回执
 
 **Named TCP Client (命名 TCP 客户端)**:
-在多目标外部服务拓扑中，通过唯一逻辑名称隔离配置、网络通道与生命周期，并由 `TcpClientRegistry` 统一检索调用（`getRequiredClient` / `getRequiredTemplate`）的受管客户端实例（`clients.<name>`）。
+在多目标外部服务拓扑中，通过唯一逻辑名称隔离配置、网络通道与生命周期，并由 `TcpClientRegistry` 统一支持对称注册（`register`）、注销停止（`unregister`）、存在性判定（`contains`）与检索调用（`getRequiredClient` / `getRequiredTemplate`）的受管客户端实例（`clients.<name>`）。
 _Avoid_: 动态数据源, 多连接通道, 客户端池, TcpClientTemplate.use(), getClientRegistry()
 
 **Graceful Draining (平滑停机排空)**:
-在 Spring 容器生命周期停止（`SmartLifecycle`）阶段，按序执行拒绝新接入、等待在途请求处理完成、平滑注销存量连接并释放 EventLoop 线程资源的停机机制。
+在 Spring 容器生命周期停止（`SmartLifecycle`）阶段，按序执行拒绝新接入、等待在途请求处理完成、按服务端定向或全局平滑注销存量连接并释放 EventLoop 线程资源的停机机制。
 _Avoid_: 停机钩子, 暴力关闭, 强制断链
 
 **Frame Length Guard (帧长度安全守卫)**:
@@ -77,7 +77,7 @@ _Avoid_: 连接限流, 握手拦截, 端口防御
 _Avoid_: 双向SSL, 客户端密钥认证, 强加密握手
 
 **TCP Server Registry (TCP 多端口服务端注册表)**:
-在同一服务实例内同时纳管主端口（`default`）与命名多端口（`servers.<name>`），支持各自独立装配分帧规则、空闲超时与 SSL/TLS 证书并由 `TcpServerRegistry`（`getRequiredServer` / `getDefaultServer`）统一调度生命周期的多端口多协议服务端拓扑。
+在同一服务实例内同时纳管主端口（`default`）与命名多端口（`servers.<name>`），支持各自独立装配分帧规则、空闲超时与 SSL/TLS 证书并由 `TcpServerRegistry` 对称执行注册（`register`）、注销停止（`unregister`）、存在性判定（`contains`）与检索调度（`getRequiredServer` / `getDefaultServer`）的多端口多协议服务端拓扑。
 _Avoid_: 多网卡监听, 端口多路复用, 混部服务
 
 **Heartbeat Keep-Alive (心跳保活与空闲检测)**:

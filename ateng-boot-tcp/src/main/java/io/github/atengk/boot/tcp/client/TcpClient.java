@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Netty TCP 客户端连接通道与生命周期管理引擎
@@ -63,6 +64,7 @@ public class TcpClient implements SmartLifecycle {
     private volatile boolean running = false;
     private final AtomicInteger reconnectAttempts = new AtomicInteger(0);
     private final AtomicBoolean reconnecting = new AtomicBoolean(false);
+    private final ReentrantLock lifecycleLock = new ReentrantLock();
 
     public TcpClient(TcpClientProperties properties,
                      List<TcpPacketFilter> packetFilters,
@@ -128,133 +130,147 @@ public class TcpClient implements SmartLifecycle {
     }
 
     @Override
-    public synchronized void start() {
-        if (running) {
-            return;
-        }
-
-        workerGroup = new NioEventLoopGroup();
-        bootstrap = new Bootstrap();
-
-        this.sslContext = TcpSslContextFactory.buildClientSslContext(properties.getSsl());
-        TcpPacketFilterHandler filterHandler = !packetFilters.isEmpty() ? new TcpPacketFilterHandler(packetFilters) : null;
-        TcpClientChannelHandler clientHandler = new TcpClientChannelHandler(this, properties, correlationManager, dispatcher, eventPublisher, metricsCollector);
-
-        int lowWaterMark = (int) (properties.getWriteBufferLowWaterMark() != null ? properties.getWriteBufferLowWaterMark().toBytes() : 32 * 1024);
-        int highWaterMark = (int) (properties.getWriteBufferHighWaterMark() != null ? properties.getWriteBufferHighWaterMark().toBytes() : 64 * 1024);
-
-        bootstrap.group(workerGroup)
-                .channel(NioSocketChannel.class)
-                .option(ChannelOption.TCP_NODELAY, properties.isTcpNodelay())
-                .option(ChannelOption.SO_KEEPALIVE, properties.isSoKeepalive())
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, (int) properties.getConnectTimeout().toMillis())
-                .option(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(lowWaterMark, highWaterMark))
-                .handler(new ChannelInitializer<SocketChannel>() {
-                    @Override
-                    protected void initChannel(SocketChannel ch) {
-                        ChannelPipeline pipeline = ch.pipeline();
-
-                        // 0. TLS/mTLS 链路加密
-                        if (sslContext != null) {
-                            pipeline.addLast("sslHandler", sslContext.newHandler(ch.alloc(), properties.getHost(), properties.getPort()));
-                        }
-
-                        // 1. 心跳探测
-                        if (properties.getHeartbeat().isEnabled()) {
-                            int interval = (int) properties.getHeartbeat().getInterval().toSeconds();
-                            pipeline.addLast("idleStateHandler", new IdleStateHandler(0, interval, 0));
-                        }
-
-                        // 2. 粘包拆包解码器与对称出站定界符属性绑定
-                        if (properties.getFraming().getMode() == io.github.atengk.boot.tcp.enums.FramingMode.DELIMITER) {
-                            byte[] delim = TcpFramingDecoderFactory.resolveDelimiterBytes(properties.getFraming());
-                            ch.attr(TcpPayloadCodecHandler.DELIMITER_KEY).set(delim);
-                        }
-                        ChannelHandler frameDecoder = TcpFramingDecoderFactory.createFrameDecoder(properties.getFraming());
-                        if (frameDecoder != null) {
-                            pipeline.addLast("frameDecoder", frameDecoder);
-                        }
-                        ChannelHandler frameEncoder = TcpFramingDecoderFactory.createFrameEncoder(properties.getFraming());
-                        if (frameEncoder != null) {
-                            pipeline.addLast("frameEncoder", frameEncoder);
-                        }
-
-                        // 3. 载荷转译与内存回收
-                        pipeline.addLast("payloadCodec", TcpPayloadCodecHandler.INSTANCE);
-
-                        // 4. 报文过滤器链
-                        if (filterHandler != null) {
-                            pipeline.addLast("packetFilter", filterHandler);
-                        }
-
-                        // 5. 客户端通道生命周期与 RPC 关联处理器
-                        pipeline.addLast("clientHandler", clientHandler);
-
-                        // 6. 通道定制逃生舱
-                        for (TcpChannelCustomizer customizer : channelCustomizers) {
-                            customizer.customize(ch, "CLIENT", name);
-                        }
-                    }
-                });
-
-        this.running = true;
-
+    public void start() {
+        lifecycleLock.lock();
         try {
-            doConnectSync();
-            log.info("ateng-boot-tcp 客户端 [{}] 成功启动并连接至服务端: host={}, port={}", this.name, properties.getHost(), properties.getPort());
-        } catch (Exception ex) {
-            if (properties.getReconnect().isEnabled()) {
-                log.warn("ateng-boot-tcp 客户端 [{}] 初次连接未就绪 (host={}, port={})，已自动进入后台指数退避自愈守护: {}",
-                        this.name, properties.getHost(), properties.getPort(), ex.getMessage());
-                scheduleReconnect();
-            } else {
-                stop();
-                throw new IllegalStateException("启动 TCP 客户端连接失败: host=" + properties.getHost() + ", port=" + properties.getPort(), ex);
+            if (running) {
+                return;
+            }
+
+            workerGroup = new NioEventLoopGroup();
+            bootstrap = new Bootstrap();
+
+            this.sslContext = TcpSslContextFactory.buildClientSslContext(properties.getSsl());
+            TcpPacketFilterHandler filterHandler = !packetFilters.isEmpty() ? new TcpPacketFilterHandler(packetFilters) : null;
+            TcpClientChannelHandler clientHandler = new TcpClientChannelHandler(this, properties, correlationManager, dispatcher, eventPublisher, metricsCollector);
+
+            int lowWaterMark = (int) (properties.getWriteBufferLowWaterMark() != null ? properties.getWriteBufferLowWaterMark().toBytes() : 32 * 1024);
+            int highWaterMark = (int) (properties.getWriteBufferHighWaterMark() != null ? properties.getWriteBufferHighWaterMark().toBytes() : 64 * 1024);
+
+            bootstrap.group(workerGroup)
+                    .channel(NioSocketChannel.class)
+                    .option(ChannelOption.TCP_NODELAY, properties.isTcpNodelay())
+                    .option(ChannelOption.SO_KEEPALIVE, properties.isSoKeepalive())
+                    .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, (int) properties.getConnectTimeout().toMillis())
+                    .option(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(lowWaterMark, highWaterMark))
+                    .handler(new ChannelInitializer<SocketChannel>() {
+                        @Override
+                        protected void initChannel(SocketChannel ch) {
+                            ChannelPipeline pipeline = ch.pipeline();
+
+                            // 0. TLS/mTLS 链路加密
+                            if (sslContext != null) {
+                                pipeline.addLast("sslHandler", sslContext.newHandler(ch.alloc(), properties.getHost(), properties.getPort()));
+                            }
+
+                            // 1. 心跳探测
+                            if (properties.getHeartbeat().isEnabled()) {
+                                int interval = (int) properties.getHeartbeat().getInterval().toSeconds();
+                                pipeline.addLast("idleStateHandler", new IdleStateHandler(0, interval, 0));
+                            }
+
+                            // 2. 粘包拆包解码器与对称出站定界符属性绑定
+                            if (properties.getFraming().getMode() == io.github.atengk.boot.tcp.enums.FramingMode.DELIMITER) {
+                                byte[] delim = TcpFramingDecoderFactory.resolveDelimiterBytes(properties.getFraming());
+                                ch.attr(TcpPayloadCodecHandler.DELIMITER_KEY).set(delim);
+                            }
+                            ChannelHandler frameDecoder = TcpFramingDecoderFactory.createFrameDecoder(properties.getFraming());
+                            if (frameDecoder != null) {
+                                pipeline.addLast("frameDecoder", frameDecoder);
+                            }
+                            ChannelHandler frameEncoder = TcpFramingDecoderFactory.createFrameEncoder(properties.getFraming());
+                            if (frameEncoder != null) {
+                                pipeline.addLast("frameEncoder", frameEncoder);
+                            }
+
+                            // 3. 载荷转译与内存回收
+                            pipeline.addLast("payloadCodec", TcpPayloadCodecHandler.INSTANCE);
+
+                            // 4. 报文过滤器链
+                            if (filterHandler != null) {
+                                pipeline.addLast("packetFilter", filterHandler);
+                            }
+
+                            // 5. 客户端通道生命周期与 RPC 关联处理器
+                            pipeline.addLast("clientHandler", clientHandler);
+
+                            // 6. 通道定制逃生舱
+                            for (TcpChannelCustomizer customizer : channelCustomizers) {
+                                customizer.customize(ch, "CLIENT", name);
+                            }
+                        }
+                    });
+
+            this.running = true;
+
+            try {
+                doConnectSync();
+                log.info("ateng-boot-tcp 客户端 [{}] 成功启动并连接至服务端: host={}, port={}", this.name, properties.getHost(), properties.getPort());
+            } catch (Exception ex) {
+                if (properties.getReconnect().isEnabled()) {
+                    log.warn("ateng-boot-tcp 客户端 [{}] 初次连接未就绪 (host={}, port={})，已自动进入后台指数退避自愈守护: {}",
+                            this.name, properties.getHost(), properties.getPort(), ex.getMessage());
+                    scheduleReconnect();
+                } else {
+                    stop();
+                    throw new IllegalStateException("启动 TCP 客户端连接失败: host=" + properties.getHost() + ", port=" + properties.getPort(), ex);
+                }
+            }
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
             }
         }
     }
 
     @Override
-    public synchronized void stop() {
-        if (!running) {
-            return;
-        }
-        // 第 1 阶段：标记停止状态，暂停重连调度
-        this.running = false;
-        log.info("正在平滑关闭 TCP 客户端 [{}]...", this.name);
+    public void stop() {
+        lifecycleLock.lock();
+        try {
+            if (!running) {
+                return;
+            }
+            // 第 1 阶段：标记停止状态，暂停重连调度
+            this.running = false;
+            this.reconnecting.set(false);
+            log.info("正在平滑关闭 TCP 客户端 [{}]...", this.name);
 
-        // 第 2 阶段：开启受管排空窗口期，排空未完成的挂起 RPC Future
-        long drainTimeoutMillis = 3000L;
-        if (correlationManager != null && correlationManager.hasPendingRequests()) {
-            log.info("TCP 客户端 [{}] 进入受管排空窗口期 (timeout={}ms)，等待未决请求完成...", this.name, drainTimeoutMillis);
-            long deadline = System.currentTimeMillis() + drainTimeoutMillis;
-            while (correlationManager.hasPendingRequests() && System.currentTimeMillis() < deadline) {
-                try {
-                    Thread.sleep(50);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
+            // 第 2 阶段：开启受管排空窗口期，排空未完成的挂起 RPC Future
+            long drainTimeoutMillis = 3000L;
+            if (correlationManager != null && correlationManager.hasPendingRequests()) {
+                log.info("TCP 客户端 [{}] 进入受管排空窗口期 (timeout={}ms)，等待未决请求完成...", this.name, drainTimeoutMillis);
+                long deadline = System.currentTimeMillis() + drainTimeoutMillis;
+                while (correlationManager.hasPendingRequests() && System.currentTimeMillis() < deadline) {
+                    try {
+                        Thread.sleep(50);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
                 }
             }
-        }
 
-        // 第 3 阶段：安全关闭通道与线程池
-        try {
-            if (correlationManager != null) {
-                correlationManager.failAll(new IllegalStateException("TCP 客户端 [" + this.name + "] 正在平滑关闭"));
-            }
-            if (channel != null && channel.isOpen()) {
-                channel.close().syncUninterruptibly();
-            }
-            if (correlationManager != null) {
-                correlationManager.close();
+            // 第 3 阶段：补偿中止在途请求并安全关闭通道与线程池（不永久关闭 correlationManager 以支持后续热重启）
+            try {
+                if (correlationManager != null) {
+                    correlationManager.failAll(new IllegalStateException("TCP 客户端 [" + this.name + "] 正在平滑关闭"));
+                }
+                if (channel != null && channel.isOpen()) {
+                    channel.close().syncUninterruptibly();
+                }
+                this.channel = null;
+                this.session = null;
+            } finally {
+                if (workerGroup != null) {
+                    workerGroup.shutdownGracefully(50, 2000, TimeUnit.MILLISECONDS).syncUninterruptibly();
+                    workerGroup = null;
+                }
+                log.info("ateng-boot-tcp 客户端 [{}] 已平滑安全关闭", this.name);
             }
         } finally {
-            if (workerGroup != null) {
-                workerGroup.shutdownGracefully(50, 2000, TimeUnit.MILLISECONDS).syncUninterruptibly();
-                workerGroup = null;
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
             }
-            log.info("ateng-boot-tcp 客户端 [{}] 已平滑安全关闭", this.name);
         }
     }
 
@@ -298,10 +314,16 @@ public class TcpClient implements SmartLifecycle {
         long delayMs = (long) (initialDelayMs * Math.pow(multiplier, Math.max(0, attempt - 1)));
         delayMs = Math.min(delayMs, maxDelayMs);
 
+        EventLoopGroup currentGroup = this.workerGroup;
+        if (currentGroup == null || currentGroup.isShuttingDown()) {
+            reconnecting.set(false);
+            return;
+        }
+
         log.warn("TCP 客户端将在 {}ms 后尝试第 {} 次自愈重连: host={}, port={}...",
                 delayMs, attempt, properties.getHost(), properties.getPort());
 
-        workerGroup.schedule(() -> {
+        currentGroup.schedule(() -> {
             try {
                 if (!running || isConnected()) {
                     reconnecting.set(false);
@@ -330,29 +352,36 @@ public class TcpClient implements SmartLifecycle {
     /**
      * 手动触发同步重连（依托 Core 模块 RetryUtil 进行有界重试防卫）
      */
-    public synchronized void reconnect() {
-        if (channel != null && channel.isOpen()) {
-            channel.close().syncUninterruptibly();
-        }
-        reconnectAttempts.set(0);
-        int maxAttempts = properties.getReconnect().getMaxAttempts() > 0 ? properties.getReconnect().getMaxAttempts() : 3;
-        RetryUtil.RetryConfig retryConfig = RetryUtil.RetryConfig.builder()
-                .maxAttempts(maxAttempts)
-                .delay(properties.getReconnect().getInitialInterval())
-                .multiplier(properties.getReconnect().getMultiplier())
-                .maxDelay(properties.getReconnect().getMaxInterval())
-                .build();
-
-        RetryUtil.execute(() -> {
-            try {
-                doConnectSync();
-            } catch (Exception e) {
-                if (e instanceof RuntimeException re) {
-                    throw re;
-                }
-                throw new IllegalStateException("TCP 重连失败: " + e.getMessage(), e);
+    public void reconnect() {
+        lifecycleLock.lock();
+        try {
+            if (channel != null && channel.isOpen()) {
+                channel.close().syncUninterruptibly();
             }
-        }, retryConfig);
+            reconnectAttempts.set(0);
+            int maxAttempts = properties.getReconnect().getMaxAttempts() > 0 ? properties.getReconnect().getMaxAttempts() : 3;
+            RetryUtil.RetryConfig retryConfig = RetryUtil.RetryConfig.builder()
+                    .maxAttempts(maxAttempts)
+                    .delay(properties.getReconnect().getInitialInterval())
+                    .multiplier(properties.getReconnect().getMultiplier())
+                    .maxDelay(properties.getReconnect().getMaxInterval())
+                    .build();
+
+            RetryUtil.execute(() -> {
+                try {
+                    doConnectSync();
+                } catch (Exception e) {
+                    if (e instanceof RuntimeException re) {
+                        throw re;
+                    }
+                    throw new IllegalStateException("TCP 重连失败: " + e.getMessage(), e);
+                }
+            }, retryConfig);
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
+            }
+        }
     }
 
     void onConnected(Channel ch, TcpSession sess) {

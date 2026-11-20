@@ -378,8 +378,10 @@ public class TcpEndpointConsoleService {
         Map<String, Object> safeAttrs = new LinkedHashMap<>();
         session.getAttributes().forEach((k, v) -> safeAttrs.put(k, v != null ? String.valueOf(v) : null));
         Long timeoutMs = session.getBackpressureTimeout() != null ? session.getBackpressureTimeout().toMillis() : null;
+        List<String> groups = List.copyOf(sessionManager.getGroupsBySession(session.getSessionId()));
         return new TcpSessionInfoVO(
                 session.getSessionId(),
+                session.getServerName(),
                 session.getDeviceId(),
                 session.getRemoteAddress() != null ? session.getRemoteAddress().toString() : null,
                 session.getLocalAddress() != null ? session.getLocalAddress().toString() : null,
@@ -391,6 +393,7 @@ public class TcpEndpointConsoleService {
                 session.getConnectedAt(),
                 session.getLastActiveTime(),
                 session.getCloseReason() != null ? session.getCloseReason().name() : null,
+                groups,
                 Collections.unmodifiableMap(safeAttrs)
         );
     }

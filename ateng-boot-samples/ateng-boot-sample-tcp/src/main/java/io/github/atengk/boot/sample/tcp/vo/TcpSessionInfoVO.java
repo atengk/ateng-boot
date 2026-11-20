@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.tcp.vo;
 
 import java.io.Serializable;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -11,6 +12,7 @@ import java.util.Map;
  */
 public record TcpSessionInfoVO(
         String sessionId,
+        String serverName,
         String deviceId,
         String remoteAddress,
         String localAddress,
@@ -22,5 +24,6 @@ public record TcpSessionInfoVO(
         long connectedAt,
         long lastActiveTime,
         String closeReason,
+        List<String> groups,
         Map<String, Object> attributes
 ) implements Serializable {}

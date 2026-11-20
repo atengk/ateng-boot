@@ -32,6 +32,7 @@ public class TcpServerChannelHandler extends ChannelDuplexHandler {
 
     private static final Logger log = LoggerFactory.getLogger(TcpServerChannelHandler.class);
 
+    private final String serverName;
     private final TcpServerProperties properties;
     private final TcpSessionManager sessionManager;
     private final TcpRequestCorrelationManager correlationManager;
@@ -42,14 +43,14 @@ public class TcpServerChannelHandler extends ChannelDuplexHandler {
     public TcpServerChannelHandler(TcpServerProperties properties,
                                    TcpSessionManager sessionManager,
                                    ApplicationEventPublisher eventPublisher) {
-        this(properties, sessionManager, null, null, eventPublisher, null);
+        this("default", properties, sessionManager, null, null, eventPublisher, null);
     }
 
     public TcpServerChannelHandler(TcpServerProperties properties,
                                    TcpSessionManager sessionManager,
                                    TcpRequestCorrelationManager correlationManager,
                                    ApplicationEventPublisher eventPublisher) {
-        this(properties, sessionManager, correlationManager, null, eventPublisher, null);
+        this("default", properties, sessionManager, correlationManager, null, eventPublisher, null);
     }
 
     public TcpServerChannelHandler(TcpServerProperties properties,
@@ -57,7 +58,7 @@ public class TcpServerChannelHandler extends ChannelDuplexHandler {
                                    TcpRequestCorrelationManager correlationManager,
                                    TcpDispatcher dispatcher,
                                    ApplicationEventPublisher eventPublisher) {
-        this(properties, sessionManager, correlationManager, dispatcher, eventPublisher, null);
+        this("default", properties, sessionManager, correlationManager, dispatcher, eventPublisher, null);
     }
 
     public TcpServerChannelHandler(TcpServerProperties properties,
@@ -66,6 +67,17 @@ public class TcpServerChannelHandler extends ChannelDuplexHandler {
                                    TcpDispatcher dispatcher,
                                    ApplicationEventPublisher eventPublisher,
                                    TcpMetricsCollector metricsCollector) {
+        this("default", properties, sessionManager, correlationManager, dispatcher, eventPublisher, metricsCollector);
+    }
+
+    public TcpServerChannelHandler(String serverName,
+                                   TcpServerProperties properties,
+                                   TcpSessionManager sessionManager,
+                                   TcpRequestCorrelationManager correlationManager,
+                                   TcpDispatcher dispatcher,
+                                   ApplicationEventPublisher eventPublisher,
+                                   TcpMetricsCollector metricsCollector) {
+        this.serverName = (serverName != null && !serverName.isBlank()) ? serverName.trim() : "default";
         this.properties = properties;
         this.sessionManager = sessionManager;
         this.correlationManager = correlationManager;
@@ -85,7 +97,7 @@ public class TcpServerChannelHandler extends ChannelDuplexHandler {
         }
 
         String sessionId = IdUtil.fastSimpleUUID();
-        TcpSession session = new TcpSession(sessionId, ctx.channel());
+        TcpSession session = new TcpSession(sessionId, serverName, ctx.channel());
         if (properties != null) {
             session.setBackpressurePolicy(properties.getBackpressurePolicy());
             session.setBackpressureTimeout(properties.getBackpressureTimeout());

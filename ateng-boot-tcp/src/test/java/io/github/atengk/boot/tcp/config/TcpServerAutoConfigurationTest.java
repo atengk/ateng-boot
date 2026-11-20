@@ -1,5 +1,8 @@
 package io.github.atengk.boot.tcp.config;
 
+import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
+import io.github.atengk.boot.tcp.model.TcpPacket;
+import io.github.atengk.boot.tcp.model.TcpPayload;
 import io.github.atengk.boot.tcp.server.TcpServer;
 import io.github.atengk.boot.tcp.session.TcpSessionManager;
 import io.github.atengk.boot.tcp.template.TcpServerTemplate;
@@ -9,6 +12,10 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -53,6 +60,21 @@ class TcpServerAutoConfigurationTest {
             TcpServer tcpServer = context.getBean(TcpServer.class);
             assertThat(tcpServer.isRunning()).isTrue();
             assertThat(tcpServer.getActualPort()).isGreaterThan(0);
+
+            // 验证单次停机重启不销毁共享 TcpRequestCorrelationManager，仅在容器销毁时触发 destroy()
+            TcpRequestCorrelationManager correlationManager = context.getBean(TcpRequestCorrelationManager.class);
+            tcpServer.stop();
+            tcpServer.start();
+            assertThat(tcpServer.isRunning()).isTrue();
+
+            CompletableFuture<TcpPacket> future = correlationManager.register("REQ-REBOOT", Duration.ofSeconds(2));
+            assertThat(correlationManager.complete("REQ-REBOOT",
+                    TcpPacket.of("ACK", "REQ-REBOOT", TcpPayload.of("OK")))).isTrue();
+            assertThat(future.get(1, TimeUnit.SECONDS).getPayload().asString()).isEqualTo("OK");
+
+            CompletableFuture<TcpPacket> pendingOnClose = correlationManager.register("REQ-ON-CLOSE", Duration.ofSeconds(10));
+            context.close();
+            assertThat(pendingOnClose.isCompletedExceptionally()).isTrue();
         });
     }
 
