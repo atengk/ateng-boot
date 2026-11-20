@@ -209,4 +209,50 @@ class TcpRequestCorrelationManagerTest {
                 .isInstanceOf(Exception.class)
                 .hasCauseInstanceOf(TcpTimeoutException.class);
     }
+
+    @Test
+    @DisplayName("验证高并发下 register 与 close 交叉执行不抛 IllegalStateException 且关闭后零残留挂起句柄")
+    void testConcurrentRegisterAndCloseNoRaceOrLeak() throws Exception {
+        org.springframework.core.task.SimpleAsyncTaskExecutor executor = new org.springframework.core.task.SimpleAsyncTaskExecutor("test-corr-race-");
+        try {
+            int workerCount = 6;
+            int rounds = 40;
+            java.util.concurrent.CountDownLatch startLatch = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.CountDownLatch doneLatch = new java.util.concurrent.CountDownLatch(workerCount);
+            java.util.List<Throwable> unexpectedErrors = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+            for (int w = 0; w < workerCount; w++) {
+                final int workerId = w;
+                executor.execute(() -> {
+                    try {
+                        startLatch.await();
+                        for (int r = 0; r < rounds; r++) {
+                            if (workerId % 2 == 0) {
+                                String reqId = "RACE-" + workerId + "-" + r;
+                                CompletableFuture<TcpPacket> future = correlationManager.register(reqId, Duration.ofSeconds(2));
+                                correlationManager.complete(reqId, TcpPacket.of("ACK", reqId, TcpPayload.of("OK")));
+                                if (!future.isDone()) {
+                                    future.cancel(false);
+                                }
+                            } else {
+                                correlationManager.close();
+                            }
+                        }
+                    } catch (Throwable ex) {
+                        unexpectedErrors.add(ex);
+                    } finally {
+                        doneLatch.countDown();
+                    }
+                });
+            }
+
+            startLatch.countDown();
+            assertThat(doneLatch.await(15, TimeUnit.SECONDS)).isTrue();
+            assertThat(unexpectedErrors).isEmpty();
+            correlationManager.close();
+            assertThat(correlationManager.getPendingCount()).isEqualTo(0);
+        } finally {
+            executor.close();
+        }
+    }
 }

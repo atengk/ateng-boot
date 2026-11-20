@@ -469,5 +469,30 @@ class TcpClientIntegrationTest {
         }
         assertThat(clientDownstreamMessages).contains("BIZ_AFTER_PONG");
         assertThat(clientDownstreamMessages).doesNotContain("PONG");
+
+        // 4. 验证 JSON 载荷心跳识别：
+        // 4a. 文本配置 PONG 可识别无 requestId 的 {"command":"PONG"} 心跳回执，但不误吞 {"command":"ECHO","status":"PONG"} 业务报文
+        clientDownstreamMessages.clear();
+        clientProps.getHeartbeat().setResponsePayload("PONG");
+        serverSession.send("{\"command\":\"PONG\"}\n");
+        serverSession.send("{\"command\":\"ECHO\",\"status\":\"PONG\"}\n");
+        long waitJsonToken = System.currentTimeMillis() + 2000;
+        while (!clientDownstreamMessages.contains("{\"command\":\"ECHO\",\"status\":\"PONG\"}") && System.currentTimeMillis() < waitJsonToken) {
+            Thread.sleep(20);
+        }
+        assertThat(clientDownstreamMessages).contains("{\"command\":\"ECHO\",\"status\":\"PONG\"}");
+        assertThat(clientDownstreamMessages).doesNotContain("{\"command\":\"PONG\"}");
+
+        // 4b. JSON 格式 responsePayload 支持忽略键序与空白的结构化等价匹配
+        clientDownstreamMessages.clear();
+        clientProps.getHeartbeat().setResponsePayload("{\"type\":\"HEARTBEAT\",\"status\":\"PONG\"}");
+        serverSession.send("  { \"status\" : \"PONG\" , \"type\" : \"HEARTBEAT\" }  \n");
+        serverSession.send("BIZ_AFTER_JSON_HB\n");
+        long waitJsonStruct = System.currentTimeMillis() + 2000;
+        while (!clientDownstreamMessages.contains("BIZ_AFTER_JSON_HB") && System.currentTimeMillis() < waitJsonStruct) {
+            Thread.sleep(20);
+        }
+        assertThat(clientDownstreamMessages).contains("BIZ_AFTER_JSON_HB");
+        assertThat(clientDownstreamMessages).noneMatch(msg -> msg.contains("HEARTBEAT"));
     }
 }

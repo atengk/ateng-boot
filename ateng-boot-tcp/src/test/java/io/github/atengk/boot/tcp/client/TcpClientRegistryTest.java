@@ -132,4 +132,51 @@ class TcpClientRegistryTest {
         cm1.close();
         ctx.close();
     }
+
+    @Test
+    @DisplayName("验证同名覆盖注册严格先停旧客户端再纳管新客户端与模板")
+    void testOverrideStopsOldClientBeforeExposingNewClient() {
+        TcpClientRegistry registry = new TcpClientRegistry();
+        GenericApplicationContext ctx = new GenericApplicationContext();
+        ctx.refresh();
+        TcpClientProperties props = new TcpClientProperties();
+        props.setHost("127.0.0.1");
+        props.setPort(19992);
+        TcpRequestCorrelationManager cm = new TcpRequestCorrelationManager();
+
+        java.util.concurrent.atomic.AtomicReference<TcpClient> clientSeenDuringStop = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<TcpClientTemplate> templateSeenDuringStop = new java.util.concurrent.atomic.AtomicReference<>();
+
+        TcpClient oldClient = new TcpClient("partnerB", props, Collections.emptyList(), Collections.emptyList(), ctx, cm, null) {
+            private volatile boolean mockRunning = true;
+
+            @Override
+            public void stop() {
+                clientSeenDuringStop.set(registry.getClient("partnerB"));
+                templateSeenDuringStop.set(registry.getTemplate("partnerB"));
+                mockRunning = false;
+            }
+
+            @Override
+            public boolean isRunning() {
+                return mockRunning;
+            }
+        };
+        TcpClientTemplate oldTemplate = new TcpClientTemplate(oldClient, props, cm);
+
+        TcpClient newClient = new TcpClient("partnerB", props, Collections.emptyList(), Collections.emptyList(), ctx, cm, null);
+        TcpClientTemplate newTemplate = new TcpClientTemplate(newClient, props, cm);
+
+        registry.register("partnerB", oldClient, oldTemplate);
+        registry.register("partnerB", newClient, newTemplate);
+
+        assertThat(clientSeenDuringStop.get()).isSameAs(oldClient);
+        assertThat(templateSeenDuringStop.get()).isSameAs(oldTemplate);
+        assertThat(oldClient.isRunning()).isFalse();
+        assertThat(registry.getRequiredClient("partnerB")).isSameAs(newClient);
+        assertThat(registry.getRequiredTemplate("partnerB")).isSameAs(newTemplate);
+
+        cm.close();
+        ctx.close();
+    }
 }

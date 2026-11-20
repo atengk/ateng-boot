@@ -1,6 +1,8 @@
 package io.github.atengk.boot.tcp.client;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.enums.CloseReason;
 import io.github.atengk.boot.tcp.event.TcpChannelWritabilityChangedEvent;
@@ -207,8 +209,72 @@ public class TcpClientChannelHandler extends ChannelDuplexHandler {
         }
         String configured = properties.getHeartbeat().getResponsePayload();
         String expected = (configured != null && !configured.isBlank()) ? configured.trim() : "PONG";
+        if (!isJsonText(expected) && msg instanceof TcpPacket packet
+                && (packet.getRequestId() == null || packet.getRequestId().isBlank())
+                && packet.getCommand() != null
+                && expected.equalsIgnoreCase(packet.getCommand().trim())) {
+            return true;
+        }
         String actual = extractInboundText(msg);
-        return actual != null && expected.equalsIgnoreCase(actual.trim());
+        if (actual == null || actual.isBlank()) {
+            return false;
+        }
+        String trimmedActual = actual.trim();
+        if (expected.equalsIgnoreCase(trimmedActual)) {
+            return true;
+        }
+        if (isJsonText(expected)) {
+            return isJsonText(trimmedActual) && jsonEquals(expected, trimmedActual);
+        }
+        return isJsonText(trimmedActual) && matchesJsonHeartbeatToken(trimmedActual, expected);
+    }
+
+    private static boolean isJsonText(String text) {
+        return (text.startsWith("{") && text.endsWith("}")) || (text.startsWith("[") && text.endsWith("]"));
+    }
+
+    private static boolean jsonEquals(String expectedJson, String actualJson) {
+        try {
+            JsonNode expectedNode = JsonUtil.parseObject(expectedJson, JsonNode.class);
+            JsonNode actualNode = JsonUtil.parseObject(actualJson, JsonNode.class);
+            return expectedNode != null && expectedNode.equals(actualNode);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean matchesJsonHeartbeatToken(String actualJson, String expectedToken) {
+        if (!actualJson.startsWith("{")) {
+            return false;
+        }
+        try {
+            JsonNode node = JsonUtil.parseObject(actualJson, JsonNode.class);
+            if (node == null || !node.isObject()) {
+                return false;
+            }
+            // 携带有效 requestId 的 RPC 报文不应被静默当作心跳消费
+            JsonNode requestIdNode = node.get("requestId");
+            if (requestIdNode != null && !requestIdNode.isNull() && !requestIdNode.asText("").isBlank()) {
+                return false;
+            }
+            // 优先检查标准路由/类型键；若报文显式携带路由键但值不匹配，避免误吞业务消息
+            for (String routeKey : new String[]{"command", "cmd", "type", "action"}) {
+                JsonNode routeNode = node.get(routeKey);
+                if (routeNode != null && routeNode.isTextual()) {
+                    return expectedToken.equalsIgnoreCase(routeNode.asText().trim());
+                }
+            }
+            for (String fallbackKey : new String[]{"heartbeat", "status", "payload", "message"}) {
+                JsonNode fallbackNode = node.get(fallbackKey);
+                if (fallbackNode != null && fallbackNode.isTextual()
+                        && expectedToken.equalsIgnoreCase(fallbackNode.asText().trim())) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private static String extractInboundText(Object msg) {

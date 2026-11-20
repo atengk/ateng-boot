@@ -33,7 +33,7 @@ public class TcpServerRegistry implements SmartLifecycle {
     private volatile boolean running = false;
 
     /**
-     * 注册 TCP 服务端实例（若存在同名不同引用的运行中旧实例，将自动平滑停止旧实例以防资源泄漏）
+     * 注册 TCP 服务端实例（若存在同名不同引用的运行中旧实例，将先受控平滑停止旧实例后再纳管新实例，防止端口与线程池泄漏）
      *
      * @param name   服务端唯一名称
      * @param server 服务端实例
@@ -41,13 +41,21 @@ public class TcpServerRegistry implements SmartLifecycle {
     public void register(String name, TcpServer server) {
         Assert.hasText(name, "服务端名称不能为空");
         Assert.notNull(server, "服务端实例不能为空");
-        TcpServer previous = servers.put(name, server);
-        if (previous != null && previous != server && previous.isRunning()) {
-            log.info("检测到同名 TCP 服务端覆盖注册，正在平滑停止旧实例: name={}", name);
-            previous.stop();
+        lifecycleLock.lock();
+        try {
+            TcpServer existing = servers.get(name);
+            if (existing != null && existing != server && existing.isRunning()) {
+                log.info("检测到同名 TCP 服务端覆盖注册，正在平滑停止旧实例: name={}", name);
+                existing.stop();
+            }
+            servers.put(name, server);
+            log.info("已注册 TCP 服务端实例: name={}, host={}, port={}",
+                    name, server.getProperties().getHost(), server.getProperties().getPort());
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
+            }
         }
-        log.info("已注册 TCP 服务端实例: name={}, host={}, port={}",
-                name, server.getProperties().getHost(), server.getProperties().getPort());
     }
 
     /**
@@ -60,12 +68,19 @@ public class TcpServerRegistry implements SmartLifecycle {
         if (name == null) {
             return null;
         }
-        TcpServer removed = servers.remove(name);
-        if (removed != null && removed.isRunning()) {
-            log.info("注销 TCP 服务端实例，正在平滑停止: name={}", name);
-            removed.stop();
+        lifecycleLock.lock();
+        try {
+            TcpServer removed = servers.remove(name);
+            if (removed != null && removed.isRunning()) {
+                log.info("注销 TCP 服务端实例，正在平滑停止: name={}", name);
+                removed.stop();
+            }
+            return removed;
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
+            }
         }
-        return removed;
     }
 
     /**

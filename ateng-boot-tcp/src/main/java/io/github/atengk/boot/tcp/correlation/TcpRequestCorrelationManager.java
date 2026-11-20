@@ -92,25 +92,6 @@ public class TcpRequestCorrelationManager implements DisposableBean, AutoCloseab
         return new HashedWheelTimer(new DefaultThreadFactory("Netty-Correlation-Timer", true));
     }
 
-    private HashedWheelTimer ensureActiveTimer() {
-        HashedWheelTimer current = this.timer;
-        if (!closed && current != null) {
-            return current;
-        }
-        timerLock.lock();
-        try {
-            if (closed || this.timer == null) {
-                this.timer = createDefaultTimer();
-                this.closed = false;
-            }
-            return this.timer;
-        } finally {
-            if (timerLock.isHeldByCurrentThread()) {
-                timerLock.unlock();
-            }
-        }
-    }
-
     /**
      * 向关联池注册等待响应的请求
      *
@@ -126,30 +107,43 @@ public class TcpRequestCorrelationManager implements DisposableBean, AutoCloseab
         if (timeout.isNegative() || timeout.isZero()) {
             throw new IllegalArgumentException("timeout 必须大于 0");
         }
-        if (pendingRequests.size() >= maxPendingRequests) {
-            throw new TcpException("待处理 TCP RPC 请求数量达到上限 [" + maxPendingRequests + "], 触发过载熔断保护");
-        }
 
         CompletableFuture<TcpPacket> future = new CompletableFuture<>();
+        Timeout timeoutTask;
+        PendingRequest pending;
 
-        Timeout timeoutTask = ensureActiveTimer().newTimeout(t -> {
-            PendingRequest removed = pendingRequests.remove(requestId);
-            if (removed != null && !removed.future.isDone()) {
-                log.warn("TCP 请求等待对端应答超时，自动清理挂起句柄: requestId={}, timeout={}", requestId, timeout);
-                removed.future.completeExceptionally(
-                        new TcpTimeoutException("TCP 请求等待对端应答超时: requestId=" + requestId + ", timeout=" + timeout)
-                );
+        // 将时间轮惰性重建、newTimeout 投递与 pendingRequests 写入置于同一把 timerLock 内，消除与 close() 的并发竞态
+        timerLock.lock();
+        try {
+            if (pendingRequests.size() >= maxPendingRequests) {
+                throw new TcpException("待处理 TCP RPC 请求数量达到上限 [" + maxPendingRequests + "], 触发过载熔断保护");
             }
-        }, timeout.toMillis(), TimeUnit.MILLISECONDS);
-
-        PendingRequest pending = new PendingRequest(requestId, future, timeoutTask);
-        pendingRequests.put(requestId, pending);
+            if (closed || this.timer == null) {
+                this.timer = createDefaultTimer();
+                this.closed = false;
+            }
+            timeoutTask = this.timer.newTimeout(t -> {
+                PendingRequest removed = pendingRequests.remove(requestId);
+                if (removed != null && !removed.future.isDone()) {
+                    log.warn("TCP 请求等待对端应答超时，自动清理挂起句柄: requestId={}, timeout={}", requestId, timeout);
+                    removed.future.completeExceptionally(
+                            new TcpTimeoutException("TCP 请求等待对端应答超时: requestId=" + requestId + ", timeout=" + timeout)
+                    );
+                }
+            }, timeout.toMillis(), TimeUnit.MILLISECONDS);
+            pending = new PendingRequest(requestId, future, timeoutTask);
+            pendingRequests.put(requestId, pending);
+        } finally {
+            if (timerLock.isHeldByCurrentThread()) {
+                timerLock.unlock();
+            }
+        }
 
         // 调用方主动 cancel 时自动清理映射表与定时任务
         future.whenComplete((res, ex) -> {
             if (future.isCancelled()) {
                 timeoutTask.cancel();
-                pendingRequests.remove(requestId);
+                pendingRequests.remove(requestId, pending);
             }
         });
 

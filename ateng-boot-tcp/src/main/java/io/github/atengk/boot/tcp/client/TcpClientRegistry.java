@@ -45,7 +45,7 @@ public class TcpClientRegistry implements SmartLifecycle {
     }
 
     /**
-     * 注册 TCP 客户端实例及其对应操作门面（若存在同名不同引用的运行中旧实例，将自动平滑停止旧实例）
+     * 注册 TCP 客户端实例及其对应操作门面（若存在同名不同引用的运行中旧实例，将先受控平滑停止旧实例后再纳管新实例）
      *
      * @param name     客户端名称
      * @param client   客户端实例
@@ -54,18 +54,26 @@ public class TcpClientRegistry implements SmartLifecycle {
     public void register(String name, TcpClient client, TcpClientTemplate template) {
         Assert.hasText(name, "客户端名称不能为空");
         Assert.notNull(client, "客户端实例不能为空");
-        TcpClient previous = clients.put(name, client);
-        if (template != null) {
-            templates.put(name, template);
-        } else {
-            templates.remove(name);
+        lifecycleLock.lock();
+        try {
+            TcpClient existing = clients.get(name);
+            if (existing != null && existing != client && existing.isRunning()) {
+                log.info("检测到同名 TCP 客户端覆盖注册，正在平滑停止旧实例: name={}", name);
+                existing.stop();
+            }
+            clients.put(name, client);
+            if (template != null) {
+                templates.put(name, template);
+            } else {
+                templates.remove(name);
+            }
+            log.info("已注册 TCP 客户端实例: name={}, host={}, port={}",
+                    name, client.getProperties().getHost(), client.getProperties().getPort());
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
+            }
         }
-        if (previous != null && previous != client && previous.isRunning()) {
-            log.info("检测到同名 TCP 客户端覆盖注册，正在平滑停止旧实例: name={}", name);
-            previous.stop();
-        }
-        log.info("已注册 TCP 客户端实例: name={}, host={}, port={}",
-                name, client.getProperties().getHost(), client.getProperties().getPort());
     }
 
     /**
@@ -78,13 +86,20 @@ public class TcpClientRegistry implements SmartLifecycle {
         if (name == null) {
             return null;
         }
-        templates.remove(name);
-        TcpClient removed = clients.remove(name);
-        if (removed != null && removed.isRunning()) {
-            log.info("注销 TCP 客户端实例，正在平滑停止: name={}", name);
-            removed.stop();
+        lifecycleLock.lock();
+        try {
+            templates.remove(name);
+            TcpClient removed = clients.remove(name);
+            if (removed != null && removed.isRunning()) {
+                log.info("注销 TCP 客户端实例，正在平滑停止: name={}", name);
+                removed.stop();
+            }
+            return removed;
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
+            }
         }
-        return removed;
     }
 
     /**

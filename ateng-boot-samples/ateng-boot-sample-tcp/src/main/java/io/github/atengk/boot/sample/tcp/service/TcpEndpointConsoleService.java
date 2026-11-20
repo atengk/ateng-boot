@@ -197,9 +197,17 @@ public class TcpEndpointConsoleService {
         if (sessions == null || sessions.isEmpty()) {
             return 0;
         }
-        java.util.Set<String> excludedSet = (excludedSessionIds == null || excludedSessionIds.isEmpty())
-                ? Collections.emptySet()
-                : new java.util.HashSet<>(excludedSessionIds);
+        java.util.Set<String> excludedSet;
+        if (excludedSessionIds == null || excludedSessionIds.isEmpty()) {
+            excludedSet = Collections.emptySet();
+        } else {
+            excludedSet = new java.util.HashSet<>(excludedSessionIds.size());
+            for (String excludedId : excludedSessionIds) {
+                if (StringUtils.hasText(excludedId)) {
+                    excludedSet.add(excludedId);
+                }
+            }
+        }
         int count = 0;
         for (TcpSession session : sessions) {
             if (session != null && session.isActive()
@@ -257,13 +265,10 @@ public class TcpEndpointConsoleService {
      * @return RPC 响应回执视图
      */
     public TcpClientRpcVO requestSync(ClientRpcRequest request) {
-        TcpClientTemplate template = requireConnectedClientTemplate(request.getClientName());
-        String reqId = StringUtils.hasText(request.getRequestId()) ? request.getRequestId() : IdUtil.fastSimpleUUID();
-        TcpPacket packet = buildClientRpcPacket(request, reqId);
-        long start = System.currentTimeMillis();
+        ClientRpcContext rpc = prepareClientRpc(request);
         try {
-            TcpPacket response = template.request(packet, Duration.ofMillis(request.getTimeoutMillis()));
-            return toRpcVO(request, reqId, response, System.currentTimeMillis() - start, false);
+            TcpPacket response = rpc.template().request(rpc.packet(), Duration.ofMillis(request.getTimeoutMillis()));
+            return toRpcVO(request, rpc.reqId(), response, System.currentTimeMillis() - rpc.startTime(), false);
         } catch (TcpTimeoutException ex) {
             throw new BusinessException(CommonResultCode.SERVICE_UNAVAILABLE,
                     "TCP 客户端上行 RPC 等待应答超时: command=" + request.getCommand(), ex);
@@ -280,14 +285,11 @@ public class TcpEndpointConsoleService {
      * @return 异步回执 Future
      */
     public CompletableFuture<TcpClientRpcVO> requestAsync(ClientRpcRequest request) {
-        TcpClientTemplate template = requireConnectedClientTemplate(request.getClientName());
-        String reqId = StringUtils.hasText(request.getRequestId()) ? request.getRequestId() : IdUtil.fastSimpleUUID();
-        TcpPacket packet = buildClientRpcPacket(request, reqId);
-        long start = System.currentTimeMillis();
-        return template.requestAsync(packet, Duration.ofMillis(request.getTimeoutMillis()))
+        ClientRpcContext rpc = prepareClientRpc(request);
+        return rpc.template().requestAsync(rpc.packet(), Duration.ofMillis(request.getTimeoutMillis()))
                 .handle((response, ex) -> {
                     if (ex == null) {
-                        return toRpcVO(request, reqId, response, System.currentTimeMillis() - start, true);
+                        return toRpcVO(request, rpc.reqId(), response, System.currentTimeMillis() - rpc.startTime(), true);
                     }
                     throw translateAsyncRpcException(ex, request.getCommand());
                 });
@@ -301,11 +303,8 @@ public class TcpEndpointConsoleService {
      */
     @SuppressWarnings("rawtypes")
     public CompletableFuture<TcpClientRpcVO> requestAsyncTyped(ClientRpcRequest request) {
-        TcpClientTemplate template = requireConnectedClientTemplate(request.getClientName());
-        String reqId = StringUtils.hasText(request.getRequestId()) ? request.getRequestId() : IdUtil.fastSimpleUUID();
-        TcpPacket packet = buildClientRpcPacket(request, reqId);
-        long start = System.currentTimeMillis();
-        return template.requestAsync(packet, Duration.ofMillis(request.getTimeoutMillis()), Map.class)
+        ClientRpcContext rpc = prepareClientRpc(request);
+        return rpc.template().requestAsync(rpc.packet(), Duration.ofMillis(request.getTimeoutMillis()), Map.class)
                 .handle((responseMap, ex) -> {
                     if (ex == null) {
                         String respCmd = responseMap != null && responseMap.get("command") != null
@@ -315,15 +314,25 @@ public class TcpEndpointConsoleService {
                         return new TcpClientRpcVO(
                                 request.getClientName(),
                                 request.getCommand(),
-                                reqId,
+                                rpc.reqId(),
                                 true,
                                 respCmd,
                                 respJson,
-                                System.currentTimeMillis() - start
+                                System.currentTimeMillis() - rpc.startTime()
                         );
                     }
                     throw translateAsyncRpcException(ex, request.getCommand());
                 });
+    }
+
+    private ClientRpcContext prepareClientRpc(ClientRpcRequest request) {
+        TcpClientTemplate template = requireConnectedClientTemplate(request.getClientName());
+        String reqId = StringUtils.hasText(request.getRequestId()) ? request.getRequestId() : IdUtil.fastSimpleUUID();
+        TcpPacket packet = buildClientRpcPacket(request, reqId);
+        return new ClientRpcContext(template, reqId, packet, System.currentTimeMillis());
+    }
+
+    private record ClientRpcContext(TcpClientTemplate template, String reqId, TcpPacket packet, long startTime) {
     }
 
     private BusinessException translateAsyncRpcException(Throwable ex, String command) {

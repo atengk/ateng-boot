@@ -500,13 +500,7 @@ CompletableFuture<TcpClientRpcVO> asyncResult = template
                         System.currentTimeMillis() - start
                 );
             }
-            Throwable cause = ex instanceof CompletionException && ex.getCause() != null ? ex.getCause() : ex;
-            if (cause instanceof TcpTimeoutException || cause instanceof TimeoutException) {
-                throw new BusinessException(CommonResultCode.SERVICE_UNAVAILABLE,
-                        "TCP 客户端异步上行 RPC 等待应答超时: command=" + request.getCommand(), cause);
-            }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
-                    "TCP 客户端异步上行 RPC 调用失败: " + cause.getMessage(), cause);
+            throw translateAsyncRpcException(ex, request.getCommand());
         });
 
 // 3. 显式断开与重连控制

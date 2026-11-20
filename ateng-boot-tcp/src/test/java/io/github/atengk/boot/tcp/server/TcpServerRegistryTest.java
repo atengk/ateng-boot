@@ -94,4 +94,41 @@ class TcpServerRegistryTest {
         assertThat(registry.unregister(null)).isNull();
         eventContext.close();
     }
+
+    @Test
+    @DisplayName("验证同名覆盖注册严格先平滑停止旧实例再纳管新实例")
+    void testOverrideStopsOldServerBeforeExposingNewServer() {
+        TcpServerRegistry registry = new TcpServerRegistry();
+        GenericApplicationContext eventContext = new GenericApplicationContext();
+        eventContext.refresh();
+
+        java.util.concurrent.atomic.AtomicReference<TcpServer> observedDuringOldStop = new java.util.concurrent.atomic.AtomicReference<>();
+        TcpServerProperties props = new TcpServerProperties();
+        props.setHost("127.0.0.1");
+        props.setPort(0);
+
+        TcpServer oldServer = new TcpServer("gw", props, new TcpSessionManager(), null, null, Collections.emptyList(), Collections.emptyList(), eventContext) {
+            private volatile boolean mockRunning = true;
+
+            @Override
+            public void stop() {
+                observedDuringOldStop.set(registry.getServer("gw"));
+                mockRunning = false;
+            }
+
+            @Override
+            public boolean isRunning() {
+                return mockRunning;
+            }
+        };
+        TcpServer newServer = new TcpServer("gw", props, new TcpSessionManager(), null, null, Collections.emptyList(), Collections.emptyList(), eventContext);
+
+        registry.register("gw", oldServer);
+        registry.register("gw", newServer);
+
+        assertThat(observedDuringOldStop.get()).isSameAs(oldServer);
+        assertThat(oldServer.isRunning()).isFalse();
+        assertThat(registry.getServer("gw")).isSameAs(newServer);
+        eventContext.close();
+    }
 }
