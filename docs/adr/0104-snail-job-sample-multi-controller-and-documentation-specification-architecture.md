@@ -84,6 +84,14 @@ flowchart TD
 - 完善 `ateng-boot-job-snail/CONTEXT.md`：补充 5 大专职 Controller、4 大强类型请求 DTO 与 5 大响应 VO 领域术语及 `_Avoid_` 反模式词表；
 - 在 [ADR-0076](./0076-snail-job-dual-engine-production-hardening-and-resilient-distributed-architecture.md) 第 13 节显式补充演进注记（`Superseding Note`），并同步维护 `CONTEXT-MAP.md` 与 `docs/adr/README.md` 索引看板。
 
+### 6. 双擎深水区演进与样例实测增量同步
+- **场景处理器与体验端点扩展**：
+  - `SnailJobTriggerController` 新增 `POST /trigger/local-retry`（演示独立 `@AtengSnailJob(retryCount=2, retryInterval="25ms", alertEnabled=true, alertSuppressThreshold=1)` 的 `StandaloneLocalRetryJobHandler`，含瞬态异常自动自愈与 `@Valid` 参数 Fail-Fast 零重试）及 `POST /trigger/tenant/parallel`（演示 `TenantJobHandler#tenantParallelBatchJob` 受管并发多租户背压与 `BatchFailureHandler` 失败采集）；
+  - `SnailJobRetryController` 新增 `POST /retry/refund`（演示 `@AtengSnailRetry(value = "orderRefundRetry")` 别名单注解闭环）及 `POST /retry/legacy-compat`（演示 `@AtengSnailRetry` 与 `@Retryable` 混用时显式 `@Retryable` 优先兼容策略）；
+  - `SnailJobAdminController` 补充 `POST /admin/jobs/{jobId}/status`、`POST /admin/jobs/{jobId}/enable` 与 `POST /admin/jobs/{jobId}/disable` 对称任务启停运维端点。
+- **样例工程纯净化与并发对齐**：彻底清除 `OrderReconciliationJobHandler` 与 `LogisticsBatchJobHandler` 中的 `setFaultInjected` 可变有状态切换桩（改由纯入参无状态驱动）；`LogisticsBatchJobHandler` 接入 `shardingBatchTemplate.withFailFast(false)` + `BatchFailureHandler<Long>` + `ReentrantLock` 保护死信切片队列；`application-local.example.yml` 补充 `spring.data.redis.*` 与 `ateng.boot.job.snail.retry.*` 双模配置示例。
+- **双轨自动化测试基线演进**：Starter 扩展至 `20` 个测试类 **190** 项单元测试（新增 `RedisSnailRetryContextStoreTest` 及各模块边界/并发/防退化断言）；Sample 扩展至 **42** 项端到端与契约测试（`SampleJobSnailIntegrationTest` **17** 项 + `SampleJobSnailWebControllerTest` **25** 项），全套五维 Starter 文档与四段式 Sample 体验卡 1:1 逆向同步提取。
+
 ---
 
 ## 后果与权衡 (Consequences)

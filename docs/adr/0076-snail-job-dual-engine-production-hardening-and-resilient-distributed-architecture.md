@@ -155,8 +155,21 @@ flowchart TD
 
 > **演进注记 (Superseding Note)**：本节关于“移除 Sample Web Controller、仅保留非 Web `ScenarioService`”的局部样例形态约定，已由全局 [工业级文档与样例工程标准规范](../agents/documentation-specification.md) 与 [ADR-0104](./0104-snail-job-sample-multi-controller-and-documentation-specification-architecture.md) 正式取代（`Superseded by ADR-0104`）——现行 `ateng-boot-sample-job-snail` 已统一引入 `ateng-boot-web` 并按业务能力领域拆分为 5 大高内聚 `@RestController` 暴露体验端点。
 
+### 14. 独立单注解扫描注册与方法级本地退避重试/告警粒度覆写
+- **独立注解一键闭环**：新增 `AtengSnailJobScanner`（实现 Job `Scanner` SPI，覆盖独立方法/类级 `@AtengSnailJob` 及其 MapReduce 执行器，同任务名冲突 Fail-Fast）与 `AtengSnailRetryScanner` + `AtengSnailRetryPointcutAdvisor` + `AtengSnailRetryInterceptor`（实现 Retry `Scanner` SPI，同时向后兼容混用场景下显式 `@Retryable` 优先）。
+- **方法级瞬态重试与告警覆写**：`@AtengSnailJob` 扩展 `value`/`name` 别名、`method`、`retryCount`、`retryInterval`、`alertEnabled` 与 `alertSuppressThreshold`。其中本地退避重试仅针对业务执行期瞬态异常生效，对 JSR-303 校验、JSON 反序列化、`maxPayloadSize` 超限、看门狗超时与 `GracefulDrain` 停机拒绝强制 0 次快速失败；告警抑制支持方法级覆写全局阈值或单任务静音。
+
+### 15. Redis Fail-Open 重试现场集群化与虚拟线程防 Pinning 并发重构
+- **集群共享快照与安全序列化**：在保留 `InMemorySnailRetryContextStore`（`ReentrantLock` 保护访问序淘汰，容量由 `retry.in-memory-max-size=10000` 控制）的同时，新增基于 `StringRedisTemplate` 的 `RedisSnailRetryContextStore`（键前缀 `ateng:boot:job:snail:retry:ctx:`，TTL 绑定 `retry.context-ttl=24h`）；通过可序列化扁平载荷 `RetryContextSnapshotPayload` 规避 `AsyncContext.ContextSnapshot` 私有构造器直接反序列化风险，并在 Redis 故障时自动 Fail-Open 降级读写内置有界内存存储。
+- **全模块虚拟线程安全（ADR-0029）**：全面清零 `synchronized` 块与 `ForkJoinPool.commonPool()`，统一迁移为显式 `ReentrantLock` + `finally` 释放与 Core 受管线程池 `taskExecutor`（配置开关 `managed-pool-enabled`），`AtengSnailJobAutoConfiguration` 按 `@Qualifier("taskExecutor")` 解析并在关闭/缺失时采用调用线程安全退化执行，杜绝 JDK 21+ 虚拟线程 Carrier Pinning。
+
+### 16. 并发批处理模板扩展、非阻塞缓存健康探针与调度内核收口
+- **批处理与多租户能力对称扩展**：在 `SnailShardingBatchTemplate` 与 `SnailMyBatisStreamingTemplate` 引入不可变派生配置视图（`withFailFast`、`withProgressLogInterval`、`withMaxConcurrency`）、独立函数式回调 SPI `BatchFailureHandler<K>`（全局 `@Bean` 与调用方局部回调互不重复触发）及 `BatchExecutionResult.MAX_FAILED_ITEMS = 500` 有界截断；在 `TenantJobTemplate` 新增 `executeForEachTenantWithResult` 与基于 `Semaphore` 背压的 `executeForEachTenantParallel`。
+- **双轨 `maxPayloadSize` 防线**：`max-payload-size`（默认 `1MB`）在调度切面/脱机入口执行入参 UTF-8 字节 Fail-Fast 拦截，并在 `SnailJobLogbackAppender` 执行日志镜像 UTF-8 安全截断。
+- **非阻塞去反射健康探针与统一支撑内核**：`SnailJobHealthIndicator` 彻底移除易脆的 `GrpcChannel` 私有字段反射，改为依托 `ReentrantLock` 保护的 `health-cache-ttl`（默认 `10s`）缓存与受管并行有界 Socket 探活（`health-probe-timeout=800ms`），多活节点至少 1 个可达返回 `UP`（透出 `degraded` 标记与在线/离线节点清单），全失联返回 `DOWN`；`SnailJobInvocationSupport` 集中收口 `SnailJobEndpoint` 与 `SnailJobTestHelper` 的执行器发现、多参数绑定与前置校验。
+
 ---
 
 ## 结论与后续演进
 
-本架构决策经过全场景对标与两轮前沿决策审问，确立了清晰的契约、防线与验收标准，完整闭环了 SnailJob 调度与协同重试双擎生产级加固方案。
+本架构决策经过全场景对标、深水区并发安全加固与多轮审查闭环，确立了完整的双擎契约、高并发护栏与验收标准。
