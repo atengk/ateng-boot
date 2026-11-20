@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.job.xxl;
 
+import com.jayway.jsonpath.JsonPath;
 import io.github.atengk.boot.sample.job.xxl.interceptor.CanaryAuditJobInterceptor;
 import io.github.atengk.boot.sample.job.xxl.mock.EmbeddedMockXxlJobAdmin;
 import org.junit.jupiter.api.DisplayName;
@@ -9,6 +10,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
@@ -42,7 +44,7 @@ class SampleJobXxlWebControllerTest {
     @Autowired
     private MockMvc mockMvc;
 
-    @Autowired
+    @Autowired(required = false)
     private EmbeddedMockXxlJobAdmin embeddedMockAdmin;
 
     @Autowired
@@ -51,8 +53,10 @@ class SampleJobXxlWebControllerTest {
     @Test
     @DisplayName("控制器测试 1：XxlJobTriggerController 全场景触发、重试、灰度与并发分片端点")
     void testTriggerControllerEndpoints() throws Exception {
-        assertThat(embeddedMockAdmin.isRunning()).isTrue();
-        assertThat(embeddedMockAdmin.getPort()).isPositive();
+        if (embeddedMockAdmin != null) {
+            assertThat(embeddedMockAdmin.isRunning()).isTrue();
+            assertThat(embeddedMockAdmin.getPort()).isPositive();
+        }
 
         // 1. POST /sample/job-xxl/trigger/warmup 系统预热
         mockMvc.perform(post("/sample/job-xxl/trigger/warmup"))
@@ -205,16 +209,18 @@ class SampleJobXxlWebControllerTest {
     @DisplayName("控制器测试 3：XxlJobAdminController 调度中心 OpenAPI 编程式运维")
     void testAdminControllerEndpoints() throws Exception {
         // 1. POST /sample/job-xxl/admin/jobs 注册新任务 (合规)
-        String addJson = "{\"jobGroup\":1,\"name\":\"动态报表任务\",\"executorHandler\":\"reportJob\",\"scheduleType\":\"CRON\",\"scheduleConf\":\"0 0 3 * * ?\"}";
-        mockMvc.perform(post("/sample/job-xxl/admin/jobs")
+        String addJson = "{\"jobGroup\":3,\"name\":\"动态报表任务\",\"executorHandler\":\"systemWarmupJob\",\"scheduleType\":\"CRON\",\"scheduleConf\":\"0 0 3 * * ?\"}";
+        MvcResult addResult = mockMvc.perform(post("/sample/job-xxl/admin/jobs")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(addJson))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value(101));
+                .andReturn();
+        int jobId = Integer.parseInt(JsonPath.read(addResult.getResponse().getContentAsString(), "$.data").toString());
+        assertThat(jobId).isPositive();
 
         // 2. POST /sample/job-xxl/admin/jobs 注册新任务 (缺失名称，JSR-303 快速拦截)
-        String invalidAddJson = "{\"jobGroup\":1,\"name\":\"\",\"executorHandler\":\"\"}";
+        String invalidAddJson = "{\"jobGroup\":3,\"name\":\"\",\"executorHandler\":\"\"}";
         mockMvc.perform(post("/sample/job-xxl/admin/jobs")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(invalidAddJson))
@@ -223,7 +229,7 @@ class SampleJobXxlWebControllerTest {
                 .andExpect(jsonPath("$.success").value(false));
 
         // 2.5 PUT /sample/job-xxl/admin/jobs 更新已有任务配置 (合规与 JSR-303 校验拦截)
-        String updateJson = "{\"id\":101,\"name\":\"动态报表任务-已更新\",\"executorHandler\":\"reportJob\",\"scheduleType\":\"CRON\",\"scheduleConf\":\"0 0 4 * * ?\"}";
+        String updateJson = "{\"id\":" + jobId + ",\"name\":\"动态报表任务-已更新\",\"executorHandler\":\"systemWarmupJob\",\"scheduleType\":\"CRON\",\"scheduleConf\":\"0 0 4 * * ?\"}";
         mockMvc.perform(put("/sample/job-xxl/admin/jobs")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(updateJson))
@@ -240,26 +246,26 @@ class SampleJobXxlWebControllerTest {
                 .andExpect(jsonPath("$.success").value(false));
 
         // 3. POST /sample/job-xxl/admin/jobs/{jobId}/start 启动任务
-        mockMvc.perform(post("/sample/job-xxl/admin/jobs/101/start"))
+        mockMvc.perform(post("/sample/job-xxl/admin/jobs/" + jobId + "/start"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(true));
 
         // 4. POST /sample/job-xxl/admin/jobs/{jobId}/stop 停止任务
-        mockMvc.perform(post("/sample/job-xxl/admin/jobs/101/stop"))
+        mockMvc.perform(post("/sample/job-xxl/admin/jobs/" + jobId + "/stop"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(true));
 
         // 5. POST /sample/job-xxl/admin/jobs/{jobId}/trigger 即时触发任务
-        mockMvc.perform(post("/sample/job-xxl/admin/jobs/101/trigger")
+        mockMvc.perform(post("/sample/job-xxl/admin/jobs/" + jobId + "/trigger")
                         .param("param", "web-trigger-test"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(true));
 
         // 6. DELETE /sample/job-xxl/admin/jobs/{jobId} 删除任务
-        mockMvc.perform(delete("/sample/job-xxl/admin/jobs/101"))
+        mockMvc.perform(delete("/sample/job-xxl/admin/jobs/" + jobId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(true));

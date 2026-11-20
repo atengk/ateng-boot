@@ -60,7 +60,7 @@ public class AdminJobAddRequestDTO implements Serializable {
     private String executorParam;
 
     /**
-     * 转换为官方 OpenAPI 请求实体
+     * 转换并补齐官方 OpenAPI 请求实体必填默认值
      *
      * @return 官方 JobAddRequest
      */
@@ -68,10 +68,16 @@ public class AdminJobAddRequestDTO implements Serializable {
         JobAddRequest req = new JobAddRequest();
         req.setJobGroup(this.jobGroup);
         req.setName(this.name);
+        req.setAuthor("Ateng");
         req.setExecutorHandler(this.executorHandler);
         req.setScheduleType(this.scheduleType);
         req.setScheduleConf(this.scheduleConf);
         req.setExecutorParam(this.executorParam);
+        req.setGlueType("BEAN");
+        req.setGlueRemark("GLUE代码初始化");
+        req.setExecutorRouteStrategy("FIRST");
+        req.setMisfireStrategy("DO_NOTHING");
+        req.setExecutorBlockStrategy("SERIAL_EXECUTION");
         return req;
     }
 }
