@@ -10,6 +10,7 @@ import io.github.atengk.boot.tcp.route.TcpDispatcher;
 import io.github.atengk.boot.tcp.route.TcpRouteKeyExtractor;
 import io.netty.bootstrap.Bootstrap;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -61,7 +62,9 @@ public class AtengTcpAutoConfiguration {
     @ConditionalOnMissingBean
     public TcpDispatcher tcpDispatcher(ApplicationContext applicationContext,
                                        TcpRouteKeyExtractor routeKeyExtractor,
-                                       ObjectProvider<Executor> businessExecutorProvider) {
-        return new TcpDispatcher(applicationContext, routeKeyExtractor, businessExecutorProvider.getIfAvailable());
+                                       @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
+                                       ObjectProvider<Executor> fallbackExecutorProvider) {
+        Executor executor = taskExecutorProvider.getIfAvailable(fallbackExecutorProvider::getIfUnique);
+        return new TcpDispatcher(applicationContext, routeKeyExtractor, executor);
     }
 }

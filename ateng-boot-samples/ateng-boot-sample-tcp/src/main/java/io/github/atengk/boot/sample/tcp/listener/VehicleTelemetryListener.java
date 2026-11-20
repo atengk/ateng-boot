@@ -1,7 +1,10 @@
 package io.github.atengk.boot.sample.tcp.listener;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.sample.tcp.codec.Jt808CompositeFrameCodec;
 import io.github.atengk.boot.sample.tcp.model.LocationReportPacket;
+import io.github.atengk.boot.sample.tcp.model.ValidatedTelemetryCommand;
 import io.github.atengk.boot.sample.tcp.service.VehicleTelemetryScenarioService;
 import io.github.atengk.boot.tcp.annotation.TcpDeviceId;
 import io.github.atengk.boot.tcp.annotation.TcpListener;
@@ -9,10 +12,13 @@ import io.github.atengk.boot.tcp.annotation.TcpMapping;
 import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.session.TcpSession;
 import io.github.atengk.boot.tcp.session.TcpSessionManager;
+import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -138,5 +144,26 @@ public class VehicleTelemetryListener {
                 "command", "HEARTBEAT_ACK",
                 "timestamp", System.currentTimeMillis()
         );
+    }
+
+    /**
+     * 演示携带 @Valid JSR-303 校验约束与四维上下文透传的遥测指令端点
+     *
+     * @param session 当前 TCP 会话
+     * @param command 经过 {@code @Valid} 前置拦截校验的指令载荷
+     * @return 执行回执与活跃四维上下文快照
+     */
+    @TcpMapping(command = "TELEMETRY_VALIDATED")
+    public Map<String, Object> onValidatedTelemetry(TcpSession session, @Valid ValidatedTelemetryCommand command) {
+        Map<String, Object> contextSnapshot = scenarioService.captureAndRecordCurrentContext();
+        log.info("接收到已通过 @Valid 校验的遥测指令: deviceId={}, speed={}, context={}",
+                command.getDeviceId(), command.getSpeed(), contextSnapshot);
+        Map<String, Object> ack = new LinkedHashMap<>();
+        ack.put("command", "TELEMETRY_VALIDATED_ACK");
+        ack.put("status", "SUCCESS");
+        ack.put("deviceId", command.getDeviceId());
+        ack.put("speed", command.getSpeed());
+        ack.putAll(contextSnapshot);
+        return ack;
     }
 }

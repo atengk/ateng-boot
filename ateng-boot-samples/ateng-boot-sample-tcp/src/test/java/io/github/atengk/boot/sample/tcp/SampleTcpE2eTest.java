@@ -1,5 +1,8 @@
 package io.github.atengk.boot.sample.tcp;
 
+import io.github.atengk.boot.core.constant.MessageHeaderConstants;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.sample.tcp.model.LocationReportPacket;
 import io.github.atengk.boot.sample.tcp.model.VehicleControlAck;
 import io.github.atengk.boot.sample.tcp.model.VehicleParamQueryAck;
@@ -7,15 +10,24 @@ import io.github.atengk.boot.sample.tcp.model.VehicleStatusVO;
 import io.github.atengk.boot.sample.tcp.service.VehicleTelemetryScenarioService;
 import io.github.atengk.boot.sample.tcp.simulator.VehicleSimulator;
 import io.github.atengk.boot.tcp.actuator.TcpActuatorEndpoint;
+import io.github.atengk.boot.tcp.model.TcpPacket;
+import io.github.atengk.boot.tcp.model.TcpPayload;
+import io.github.atengk.boot.tcp.route.TcpDispatcher;
 import io.github.atengk.boot.tcp.server.TcpServer;
+import io.github.atengk.boot.tcp.session.TcpSession;
+import io.github.atengk.boot.tcp.spi.TcpMessageHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -41,6 +53,9 @@ class SampleTcpE2eTest {
     @Autowired
     private VehicleTelemetryScenarioService scenarioService;
 
+    @Autowired
+    private TcpDispatcher tcpDispatcher;
+
     @Autowired(required = false)
     private TcpActuatorEndpoint tcpActuatorEndpoint;
 
@@ -51,20 +66,26 @@ class SampleTcpE2eTest {
 
     @AfterEach
     void tearDown() {
-        if (sim1 != null) {
-            sim1.stop();
-        }
-        if (sim2 != null) {
-            sim2.stop();
-        }
-        if (simDuplicate != null) {
-            simDuplicate.stop();
-        }
-        if (simRecon != null) {
-            simRecon.stop();
-        }
-        if (scenarioService != null) {
-            scenarioService.reset();
+        try {
+            if (sim1 != null) {
+                sim1.stop();
+            }
+            if (sim2 != null) {
+                sim2.stop();
+            }
+            if (simDuplicate != null) {
+                simDuplicate.stop();
+            }
+            if (simRecon != null) {
+                simRecon.stop();
+            }
+            if (scenarioService != null) {
+                scenarioService.reset();
+            }
+        } finally {
+            MDC.clear();
+            TenantContextHolder.clear();
+            UserContextHolder.clear();
         }
     }
 
@@ -224,5 +245,70 @@ class SampleTcpE2eTest {
 
         // 验证客户端后台指数退避守护进程自动重连恢复
         await().until(simRecon::isConnected);
+
+        // 14. 验证 @Valid 校验拦截与 RPC 异常快速 ERROR 回执（未进入监听器方法体）
+        int countBeforeInvalid = scenarioService.getValidatedTelemetryCount();
+        String invalidReqId = "REQ-VALID-ERR-001";
+        simRecon.sendCustomCommand("TELEMETRY_VALIDATED", invalidReqId, Map.of("speed", -10.5));
+        await().until(() -> simRecon.getRpcReply(invalidReqId) != null);
+        Map<String, Object> errReply = simRecon.getRpcReply(invalidReqId);
+        assertThat(errReply).containsEntry("requestId", invalidReqId)
+                .containsEntry("command", "TELEMETRY_VALIDATED")
+                .containsEntry("status", "ERROR");
+        assertThat(String.valueOf(errReply.get("message"))).contains("speed");
+        assertThat(scenarioService.getValidatedTelemetryCount()).isEqualTo(countBeforeInvalid);
+
+        // 15. 验证合法上行 @Valid 指令与四维上下文（X-Trace-Id / X-Tenant-Id / X-User-Id / X-Ignore-Tenant）透传闭环
+        String validReqId = "REQ-VALID-CTX-002";
+        simRecon.sendCustomCommand("TELEMETRY_VALIDATED", validReqId, Map.of(
+                "speed", 72.5,
+                "headers", Map.of(
+                        MessageHeaderConstants.TRACE_ID, "e2e-trace-777",
+                        MessageHeaderConstants.TENANT_ID, "e2e-tenant-888",
+                        MessageHeaderConstants.USER_ID, "e2e-user-999",
+                        MessageHeaderConstants.IGNORE_TENANT, "true"
+                )
+        ));
+        await().until(() -> simRecon.getRpcReply(validReqId) != null);
+        Map<String, Object> okReply = simRecon.getRpcReply(validReqId);
+        assertThat(okReply)
+                .containsEntry("command", "TELEMETRY_VALIDATED_ACK")
+                .containsEntry("status", "SUCCESS")
+                .containsEntry("traceId", "e2e-trace-777")
+                .containsEntry("tenantId", "e2e-tenant-888")
+                .containsEntry("userId", "e2e-user-999")
+                .containsEntry("ignoreTenant", true);
+        assertThat(scenarioService.getLastObservedContext())
+                .containsEntry("traceId", "e2e-trace-777")
+                .containsEntry("tenantId", "e2e-tenant-888")
+                .containsEntry("userId", "e2e-user-999")
+                .containsEntry("ignoreTenant", true);
+
+        // 16. 验证运行期动态处理器热插拔与注销对称闭环
+        CountDownLatch dynLatch = new CountDownLatch(1);
+        AtomicReference<String> dynTenantObserved = new AtomicReference<>();
+        tcpDispatcher.registerHandler(new TcpMessageHandler<String>() {
+            @Override
+            public String getCommand() {
+                return "E2E_DYNAMIC_HOTPLUG";
+            }
+
+            @Override
+            public void handle(TcpSession session, String payload, TcpPacket packet) {
+                dynTenantObserved.set(TenantContextHolder.getTenantId());
+                dynLatch.countDown();
+            }
+        });
+        try {
+            assertThat(tcpDispatcher.getRegisteredCommands()).contains("E2E_DYNAMIC_HOTPLUG");
+            simRecon.sendCustomCommand("E2E_DYNAMIC_HOTPLUG", null, Map.of(
+                    "headers", Map.of(MessageHeaderConstants.TENANT_ID, "hotplug-tenant-1")
+            ));
+            assertThat(dynLatch.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(dynTenantObserved.get()).isEqualTo("hotplug-tenant-1");
+        } finally {
+            assertThat(tcpDispatcher.unregisterHandler("E2E_DYNAMIC_HOTPLUG")).isTrue();
+            assertThat(tcpDispatcher.getRegisteredCommands()).doesNotContain("E2E_DYNAMIC_HOTPLUG");
+        }
     }
 }

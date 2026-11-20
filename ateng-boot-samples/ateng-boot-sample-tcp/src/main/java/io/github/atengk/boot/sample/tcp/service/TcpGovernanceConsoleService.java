@@ -5,6 +5,7 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.sample.tcp.dto.ClusterDispatchRequest;
+import io.github.atengk.boot.sample.tcp.dto.DynamicRouteRequest;
 import io.github.atengk.boot.sample.tcp.dto.SessionBackpressureRequest;
 import io.github.atengk.boot.sample.tcp.dto.SpiProbeRequest;
 import io.github.atengk.boot.sample.tcp.dto.TrafficShapingAdjustRequest;
@@ -24,6 +25,7 @@ import io.github.atengk.boot.tcp.exception.TcpException;
 import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.model.TcpPayload;
 import io.github.atengk.boot.tcp.properties.AtengTcpProperties;
+import io.github.atengk.boot.tcp.route.TcpDispatcher;
 import io.github.atengk.boot.tcp.route.TcpRouteKeyExtractor;
 import io.github.atengk.boot.tcp.server.TcpServer;
 import io.github.atengk.boot.tcp.server.TcpServerRegistry;
@@ -37,6 +39,7 @@ import io.github.atengk.boot.tcp.template.TcpServerTemplate;
 import io.netty.handler.traffic.GlobalTrafficShapingHandler;
 import io.netty.handler.traffic.TrafficCounter;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -75,6 +78,7 @@ public class TcpGovernanceConsoleService {
     private final ObjectProvider<List<TcpMessageHandler<?>>> messageHandlersProvider;
     private final ObjectProvider<List<TcpCorrelationIdExtractor>> correlationExtractorsProvider;
     private final ObjectProvider<List<TcpRouteKeyExtractor>> routeKeyExtractorsProvider;
+    private final ObjectProvider<TcpDispatcher> tcpDispatcherProvider;
 
     /**
      * 汇总全量 SPI 组件装配清单、流量整形快照、集群桥接模式与 Actuator 运维探针数据
@@ -303,5 +307,70 @@ public class TcpGovernanceConsoleService {
             }
         }
         return names;
+    }
+
+    /**
+     * 查询当前 {@link TcpDispatcher} 已注册的全部命令字集合（有序列表）
+     *
+     * @return 命令字列表（保底非空集合）
+     */
+    public List<String> listRegisteredRoutes() {
+        TcpDispatcher dispatcher = tcpDispatcherProvider.getIfAvailable();
+        if (dispatcher == null) {
+            return Collections.emptyList();
+        }
+        return new ArrayList<>(dispatcher.getRegisteredCommands());
+    }
+
+    /**
+     * 运行期编程式热插拔注册动态 SPI 处理器，并自动附带四维上下文观测与 RPC 回执响应
+     *
+     * @param request 动态路由请求参数
+     * @return 注册后的最新路由命令字列表
+     */
+    public List<String> registerDynamicRoute(DynamicRouteRequest request) {
+        if (request == null || !StringUtils.hasText(request.getCommand())) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "动态路由命令字 command 不能为空");
+        }
+        TcpDispatcher dispatcher = tcpDispatcherProvider.getIfAvailable();
+        if (dispatcher == null) {
+            throw new BusinessException(CommonResultCode.SERVICE_UNAVAILABLE, "TcpDispatcher 未装配，无法注册动态路由");
+        }
+        String command = request.getCommand().trim();
+        dispatcher.registerHandler(new TcpMessageHandler<String>() {
+            @Override
+            public String getCommand() {
+                return command;
+            }
+
+            @Override
+            public void handle(TcpSession session, String payload, TcpPacket packet) {
+                governanceState.recordAuditPing(packet != null ? packet.getRequestId() : null, command + ":" + MDC.get("traceId"));
+                if (packet != null && StringUtils.hasText(packet.getRequestId()) && session != null && session.isActive()) {
+                    Map<String, Object> ack = new LinkedHashMap<>();
+                    ack.put("requestId", packet.getRequestId());
+                    ack.put("command", command);
+                    ack.put("status", "DYNAMIC_OK");
+                    ack.put("note", request.getNote() != null ? request.getNote() : "");
+                    ack.putAll(VehicleTelemetryScenarioService.snapshotCurrentContext());
+                    session.send(TcpPacket.of(command, packet.getRequestId(), TcpPayload.fromJson(ack)));
+                }
+            }
+        });
+        return listRegisteredRoutes();
+    }
+
+    /**
+     * 运行期注销动态 SPI 路由处理器
+     *
+     * @param command 业务命令字
+     * @return true 表示成功移除；false 表示命令字未注册
+     */
+    public boolean unregisterDynamicRoute(String command) {
+        TcpDispatcher dispatcher = tcpDispatcherProvider.getIfAvailable();
+        if (dispatcher == null) {
+            return false;
+        }
+        return dispatcher.unregisterHandler(command);
     }
 }

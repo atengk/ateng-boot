@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.tcp.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.tcp.dto.ClusterDispatchRequest;
+import io.github.atengk.boot.sample.tcp.dto.DynamicRouteRequest;
 import io.github.atengk.boot.sample.tcp.dto.SessionBackpressureRequest;
 import io.github.atengk.boot.sample.tcp.dto.SpiProbeRequest;
 import io.github.atengk.boot.sample.tcp.dto.TrafficShapingAdjustRequest;
@@ -15,11 +16,15 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 /**
  * TCP 全链路治理、SPI 可观测性、背压流控与集群桥接控制器
@@ -95,5 +100,39 @@ public class TcpGovernanceController {
     public Result<TcpSpiProbeVO> probeSpi(@Valid @RequestBody SpiProbeRequest request) {
         log.info("[HTTP-GOVERNANCE] 执行 SPI 治理链路探针: mode={}, note={}", request.getMode(), request.getNote());
         return Result.success(governanceConsoleService.probeSpi(request));
+    }
+
+    /**
+     * 查询当前分发器（TcpDispatcher）已注册的全部命令字路由清单
+     *
+     * @return 已注册命令字列表
+     */
+    @GetMapping("/routes")
+    public Result<List<String>> listRegisteredRoutes() {
+        return Result.success(governanceConsoleService.listRegisteredRoutes());
+    }
+
+    /**
+     * 运行期热插拔注册动态 SPI 消息处理器
+     *
+     * @param request 动态路由注册参数
+     * @return 注册后的最新路由命令字列表
+     */
+    @PostMapping("/dynamic-route/register")
+    public Result<List<String>> registerDynamicRoute(@Valid @RequestBody DynamicRouteRequest request) {
+        log.info("[HTTP-GOVERNANCE] 热注册动态路由: command={}, note={}", request.getCommand(), request.getNote());
+        return Result.success(governanceConsoleService.registerDynamicRoute(request));
+    }
+
+    /**
+     * 运行期热注销指定命令字的动态 SPI 消息处理器
+     *
+     * @param command 目标业务命令字
+     * @return true 表示注销成功；false 表示未找到对应动态处理器
+     */
+    @DeleteMapping("/dynamic-route/{command}")
+    public Result<Boolean> unregisterDynamicRoute(@PathVariable("command") String command) {
+        log.info("[HTTP-GOVERNANCE] 热注销动态路由: command={}", command);
+        return Result.success(governanceConsoleService.unregisterDynamicRoute(command));
     }
 }

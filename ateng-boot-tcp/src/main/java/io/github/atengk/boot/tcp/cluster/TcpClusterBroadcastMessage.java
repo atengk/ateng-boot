@@ -1,5 +1,6 @@
 package io.github.atengk.boot.tcp.cluster;
 
+import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.model.TcpPayload;
 import lombok.Getter;
@@ -75,6 +76,11 @@ public class TcpClusterBroadcastMessage implements Serializable {
     private Map<String, Object> packetHeaders;
 
     /**
+     * 跨节点透传的四维上下文头字典（X-Trace-Id / X-Tenant-Id / X-User-Id / X-Ignore-Tenant）
+     */
+    private Map<String, Object> contextHeaders;
+
+    /**
      * 消息产生的时间戳
      */
     private long timestamp = System.currentTimeMillis();
@@ -83,6 +89,17 @@ public class TcpClusterBroadcastMessage implements Serializable {
         TcpClusterBroadcastMessage message = new TcpClusterBroadcastMessage();
         message.setDeviceId(deviceId);
         message.setSourceNodeId(sourceNodeId);
+
+        Map<String, Object> capturedContext = new LinkedHashMap<>();
+        MessageContextPropagator.inject(capturedContext, deviceId);
+        if (payload instanceof TcpPacket packet && packet.getHeaders() != null && !packet.getHeaders().isEmpty()) {
+            for (Map.Entry<String, Object> entry : packet.getHeaders().entrySet()) {
+                if (entry.getKey() != null && entry.getValue() != null) {
+                    capturedContext.putIfAbsent(entry.getKey(), entry.getValue());
+                }
+            }
+        }
+        message.setContextHeaders(capturedContext);
 
         if (payload instanceof byte[] bytes) {
             message.setPayloadType("BYTES");

@@ -1,5 +1,7 @@
 package io.github.atengk.boot.sample.tcp.service;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.sample.tcp.model.LocationReportPacket;
 import io.github.atengk.boot.sample.tcp.model.VehicleControlAck;
@@ -18,6 +20,7 @@ import io.github.atengk.boot.tcp.session.TcpSessionManager;
 import io.github.atengk.boot.tcp.template.TcpServerTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
@@ -29,6 +32,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 车联网车载长连接全业务场景协同与管控服务
@@ -51,6 +56,8 @@ public class VehicleTelemetryScenarioService {
 
     private final ConcurrentMap<String, VehicleState> vehicleStore = new ConcurrentHashMap<>();
     private final List<String> eventLogs = new CopyOnWriteArrayList<>();
+    private final AtomicInteger validatedTelemetryCount = new AtomicInteger(0);
+    private final AtomicReference<Map<String, Object>> lastObservedContext = new AtomicReference<>(Collections.emptyMap());
 
     public VehicleTelemetryScenarioService(TcpServerTemplate tcpServerTemplate,
                                           TcpSessionManager sessionManager) {
@@ -234,11 +241,57 @@ public class VehicleTelemetryScenarioService {
     }
 
     /**
+     * 读取当前执行线程的四维上下文只读快照（未包含业务逻辑修改，供多模块复用）
+     *
+     * @return 只读四维上下文快照字典（非 null）
+     */
+    public static Map<String, Object> snapshotCurrentContext() {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("traceId", MDC.get("traceId"));
+        snapshot.put("tenantId", TenantContextHolder.getTenantId());
+        snapshot.put("userId", UserContextHolder.get());
+        snapshot.put("ignoreTenant", TenantContextHolder.isIgnoreTenant());
+        return Collections.unmodifiableMap(snapshot);
+    }
+
+    /**
+     * 捕获并记录监听器线程当前生效的四维上下文快照
+     *
+     * @return 只读上下文快照字典（非 null）
+     */
+    public Map<String, Object> captureAndRecordCurrentContext() {
+        validatedTelemetryCount.incrementAndGet();
+        Map<String, Object> immutable = snapshotCurrentContext();
+        lastObservedContext.set(immutable);
+        return immutable;
+    }
+
+    /**
+     * 获取最近一次监听器接收到的四维上下文快照（保底非空集合）
+     *
+     * @return 四维上下文快照
+     */
+    public Map<String, Object> getLastObservedContext() {
+        return lastObservedContext.get();
+    }
+
+    /**
+     * 获取通过 @Valid 校验并成功进入遥测处理逻辑的次数
+     *
+     * @return 成功处理计数
+     */
+    public int getValidatedTelemetryCount() {
+        return validatedTelemetryCount.get();
+    }
+
+    /**
      * 重置并清空所有内存状态与事件日志（用于测试夹具或重置场景）
      */
     public void reset() {
         vehicleStore.clear();
         eventLogs.clear();
+        validatedTelemetryCount.set(0);
+        lastObservedContext.set(Collections.emptyMap());
         log.info("[SCENARIO] 车辆遥测管控服务内部状态已重置清空");
     }
 

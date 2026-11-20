@@ -18,9 +18,12 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -47,6 +50,7 @@ public class VehicleSimulator {
     private final List<String> receivedFleetAlerts = new CopyOnWriteArrayList<>();
     private final List<String> executedCommands = new CopyOnWriteArrayList<>();
     private final List<String> receivedAcks = new CopyOnWriteArrayList<>();
+    private final ConcurrentMap<String, Map<String, Object>> rpcRepliesByRequestId = new ConcurrentHashMap<>();
     private final AtomicBoolean autoReplyParamQuery = new AtomicBoolean(true);
 
     private TcpClient tcpClient;
@@ -265,6 +269,9 @@ public class VehicleSimulator {
                     if (packet.getRequestId() == null && map.get("requestId") != null) {
                         packet.setRequestId(map.get("requestId").toString());
                     }
+                    if (packet.getRequestId() != null) {
+                        rpcRepliesByRequestId.put(packet.getRequestId(), Collections.unmodifiableMap(new LinkedHashMap<>(map)));
+                    }
                 }
             } catch (Exception ex) {
                 log.warn("车机终端模拟器解析报文元数据异常: {}", ex.getMessage());
@@ -378,6 +385,42 @@ public class VehicleSimulator {
 
     public List<String> getReceivedAcks() {
         return Collections.unmodifiableList(receivedAcks);
+    }
+
+    /**
+     * 发送自定义 JSON 指令并携带可选 requestId 与扩展字段
+     *
+     * @param command   业务命令字
+     * @param requestId 请求关联流水号
+     * @param body      报文附加属性
+     */
+    public void sendCustomCommand(String command, String requestId, Map<String, Object> body) {
+        Map<String, Object> payloadMap = new LinkedHashMap<>();
+        payloadMap.put("command", command);
+        payloadMap.put("deviceId", deviceId);
+        if (requestId != null) {
+            payloadMap.put("requestId", requestId);
+        }
+        if (body != null && !body.isEmpty()) {
+            payloadMap.putAll(body);
+        }
+        TcpPacket packet = TcpPacket.builder()
+                .command(command)
+                .requestId(requestId)
+                .deviceId(deviceId)
+                .payload(TcpPayload.fromJson(payloadMap))
+                .build();
+        sendPacket(packet);
+    }
+
+    /**
+     * 查询指定 requestId 对应的服务端回执报文字典（无匹配返回 null）
+     *
+     * @param requestId 关联流水号
+     * @return 回执字典
+     */
+    public Map<String, Object> getRpcReply(String requestId) {
+        return requestId != null ? rpcRepliesByRequestId.get(requestId) : null;
     }
 
     public TcpClient getTcpClient() {

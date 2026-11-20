@@ -1,11 +1,13 @@
 package io.github.atengk.boot.sample.tcp;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.sample.tcp.dto.ClientRpcRequest;
 import io.github.atengk.boot.sample.tcp.dto.ClientSendRequest;
 import io.github.atengk.boot.sample.tcp.dto.ClusterDispatchRequest;
+import io.github.atengk.boot.sample.tcp.dto.DynamicRouteRequest;
 import io.github.atengk.boot.sample.tcp.dto.GroupSendRequest;
 import io.github.atengk.boot.sample.tcp.dto.Jt808FrameDecodeRequest;
 import io.github.atengk.boot.sample.tcp.dto.Jt808FrameEncodeRequest;
@@ -50,6 +52,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -652,5 +655,89 @@ class SampleTcpWebControllerTest {
         mockMvc.perform(get("/actuator/health"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("UP"));
+
+        // 验证 @Valid 上行载荷校验异常快速 ERROR 回执与四维上下文透传
+        ClientRpcRequest invalidRpc = ClientRpcRequest.builder()
+                .clientName("default")
+                .command("TELEMETRY_VALIDATED")
+                .payload(Map.of("deviceId", FleetSimulationRunner.DEVICE_ALPHA_001, "speed", -9.0))
+                .timeoutMillis(3000L)
+                .build();
+        mockMvc.perform(post("/sample/tcp/client/request")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRpc)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.responseText", containsString("\"command\":\"TELEMETRY_VALIDATED\"")))
+                .andExpect(jsonPath("$.data.responseText", containsString("\"status\":\"ERROR\"")))
+                .andExpect(jsonPath("$.data.responseText", containsString("speed")));
+
+        ClientRpcRequest validCtxRpc = ClientRpcRequest.builder()
+                .clientName("default")
+                .command("TELEMETRY_VALIDATED")
+                .payload(Map.of(
+                        "deviceId", FleetSimulationRunner.DEVICE_ALPHA_001,
+                        "speed", 88.5,
+                        "headers", Map.of(
+                                MessageHeaderConstants.TRACE_ID, "web-trace-555",
+                                MessageHeaderConstants.TENANT_ID, "web-tenant-666",
+                                MessageHeaderConstants.USER_ID, "web-user-777",
+                                MessageHeaderConstants.IGNORE_TENANT, "true"
+                        )
+                ))
+                .timeoutMillis(3000L)
+                .build();
+        mockMvc.perform(post("/sample/tcp/client/request")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(validCtxRpc)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.responseText", containsString("web-trace-555")))
+                .andExpect(jsonPath("$.data.responseText", containsString("web-tenant-666")))
+                .andExpect(jsonPath("$.data.responseText", containsString("web-user-777")))
+                .andExpect(jsonPath("$.data.responseText", containsString("\"ignoreTenant\":true")));
+
+        // 验证动态 SPI 处理器运行期热插拔、四维上下文传递与安全注销
+        DynamicRouteRequest dynRoute = DynamicRouteRequest.builder()
+                .command("DYNAMIC_WEB_PROBE")
+                .note("Web 热插拔路由验证")
+                .build();
+        try {
+            mockMvc.perform(post("/sample/tcp/governance/dynamic-route/register")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(dynRoute)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data", hasItem("DYNAMIC_WEB_PROBE")));
+
+            mockMvc.perform(get("/sample/tcp/governance/routes"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data", hasItem("DYNAMIC_WEB_PROBE")));
+
+            ClientRpcRequest dynRpc = ClientRpcRequest.builder()
+                    .clientName("default")
+                    .command("DYNAMIC_WEB_PROBE")
+                    .payload(Map.of(
+                            "headers", Map.of(
+                                    MessageHeaderConstants.TRACE_ID, "dyn-trace-101",
+                                    MessageHeaderConstants.TENANT_ID, "dyn-tenant-202"
+                            )
+                    ))
+                    .timeoutMillis(3000L)
+                    .build();
+            mockMvc.perform(post("/sample/tcp/client/request")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(dynRpc)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.responseText", containsString("DYNAMIC_OK")))
+                    .andExpect(jsonPath("$.data.responseText", containsString("dyn-tenant-202")));
+        } finally {
+            mockMvc.perform(delete("/sample/tcp/governance/dynamic-route/DYNAMIC_WEB_PROBE"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
+        }
     }
 }

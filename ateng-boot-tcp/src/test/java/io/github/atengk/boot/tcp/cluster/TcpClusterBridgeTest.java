@@ -1,5 +1,8 @@
 package io.github.atengk.boot.tcp.cluster;
 
+import io.github.atengk.boot.core.constant.MessageHeaderConstants;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.model.TcpPayload;
@@ -8,17 +11,23 @@ import io.github.atengk.boot.tcp.session.TcpSession;
 import io.github.atengk.boot.tcp.session.TcpSessionManager;
 import io.github.atengk.boot.tcp.template.TcpServerTemplate;
 import io.netty.channel.embedded.EmbeddedChannel;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.slf4j.MDC;
 import org.springframework.data.redis.connection.DefaultMessage;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
 
 /**
@@ -28,6 +37,13 @@ import static org.mockito.Mockito.verify;
  * @since 2026-10-26
  */
 class TcpClusterBridgeTest {
+
+    @AfterEach
+    void cleanupContext() {
+        MDC.clear();
+        TenantContextHolder.clear();
+        UserContextHolder.clear();
+    }
 
     @Test
     @DisplayName("LocalTcpClusterBridge 本地直发成功与未命中降级")
@@ -247,5 +263,80 @@ class TcpClusterBridgeTest {
         // group 为 null 时防御
         boolean nullGroupSent = template.sendGroupToCluster(null, "FAIL_MSG");
         assertThat(nullGroupSent).isFalse();
+    }
+
+    @Test
+    @DisplayName("验证跨节点集群广播透传四维上下文并在接收处理后无条件清理恢复现场")
+    void testRedisPubSubPropagatesAndCleansUpFourDimensionalContext() {
+        TcpSessionManager sessionManager = new TcpSessionManager();
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        TcpClusterProperties clusterProperties = new TcpClusterProperties();
+        clusterProperties.getRedis().setEnabled(true);
+        clusterProperties.getRedis().setTopic("test:ctx:topic");
+
+        RedisPubSubTcpClusterBridge bridge = new RedisPubSubTcpClusterBridge(sessionManager, redisTemplate, clusterProperties);
+
+        // 1. 在节点 A 线程设置四维上下文，构造跨节点广播消息并序列化
+        MDC.put("traceId", "trace-cluster-999");
+        TenantContextHolder.setTenantId("tenant-alpha");
+        TenantContextHolder.setIgnoreTenant(true);
+        UserContextHolder.set("user-admin-01");
+
+        TcpClusterBroadcastMessage outboundMsg = TcpClusterBroadcastMessage.ofGroup("GRP-CTX", "node-source-A", "CTX_PAYLOAD");
+        assertThat(outboundMsg.getContextHeaders())
+                .containsEntry(MessageHeaderConstants.TRACE_ID, "trace-cluster-999")
+                .containsEntry(MessageHeaderConstants.TENANT_ID, "tenant-alpha")
+                .containsEntry(MessageHeaderConstants.USER_ID, "user-admin-01")
+                .containsEntry(MessageHeaderConstants.IGNORE_TENANT, "true");
+
+        String wireJson = JsonUtil.toJsonString(outboundMsg);
+
+        // 2. 模拟节点 B（先预设完全不同的工作线程原始现场，再验证执行中激活、执行后恢复且另一场景零残留）
+        EmbeddedChannel ch = new EmbeddedChannel();
+        TcpSession spySession = Mockito.spy(new TcpSession("ses-ctx-1", ch));
+        AtomicReference<String> observedTrace = new AtomicReference<>();
+        AtomicReference<String> observedTenant = new AtomicReference<>();
+        AtomicReference<String> observedUser = new AtomicReference<>();
+        AtomicBoolean observedIgnore = new AtomicBoolean(false);
+
+        doAnswer(invocation -> {
+            observedTrace.set(MDC.get("traceId"));
+            observedTenant.set(TenantContextHolder.getTenantId());
+            observedUser.set(UserContextHolder.get());
+            observedIgnore.set(TenantContextHolder.isIgnoreTenant());
+            return invocation.callRealMethod();
+        }).when(spySession).send(any());
+
+        sessionManager.register(spySession);
+        sessionManager.addToGroup("GRP-CTX", "ses-ctx-1");
+
+        // 场景 A：空现场接收线程，执行中激活远端四维上下文，执行后零残留
+        MDC.clear();
+        TenantContextHolder.clear();
+        UserContextHolder.clear();
+
+        bridge.onMessage(new DefaultMessage("test:ctx:topic".getBytes(StandardCharsets.UTF_8), wireJson.getBytes(StandardCharsets.UTF_8)), null);
+
+        assertThat(observedTrace.get()).isEqualTo("trace-cluster-999");
+        assertThat(observedTenant.get()).isEqualTo("tenant-alpha");
+        assertThat(observedUser.get()).isEqualTo("user-admin-01");
+        assertThat(observedIgnore.get()).isTrue();
+        assertThat(MDC.get("traceId")).isNull();
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+        assertThat(TenantContextHolder.isIgnoreTenant()).isFalse();
+        assertThat(UserContextHolder.get()).isNull();
+
+        // 场景 B：有预设原始现场的工作线程，执行后精确恢复原始现场
+        MDC.put("traceId", "prev-trace");
+        TenantContextHolder.setTenantId("prev-tenant");
+        UserContextHolder.set("prev-user");
+        TenantContextHolder.setIgnoreTenant(false);
+
+        bridge.onMessage(new DefaultMessage("test:ctx:topic".getBytes(StandardCharsets.UTF_8), wireJson.getBytes(StandardCharsets.UTF_8)), null);
+
+        assertThat(MDC.get("traceId")).isEqualTo("prev-trace");
+        assertThat(TenantContextHolder.getTenantId()).isEqualTo("prev-tenant");
+        assertThat(UserContextHolder.get()).isEqualTo("prev-user");
+        assertThat(TenantContextHolder.isIgnoreTenant()).isFalse();
     }
 }

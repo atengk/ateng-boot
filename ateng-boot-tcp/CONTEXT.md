@@ -21,11 +21,11 @@ _Avoid_: ChannelContext, SocketWrapper, NettyChannelHolder
 _Avoid_: ConnectionManager, SessionRegistry, ChannelMap
 
 **TCP Listener (声明式 TCP 监听器)**:
-基于方法注解声明式监听特定业务命令字（Command）、自动执行载荷反序列化与线程池异步派发的消费契约（`@TcpListener` / `@TcpMapping`）。
+基于方法注解声明式监听特定业务命令字（Command）、自动执行载荷反序列化、JSR-303 `@Valid`/`@Validated` 前置校验、四维上下文（`X-Trace-Id` / `X-Tenant-Id` / `X-User-Id` / `X-Ignore-Tenant`）异步透传零残留还原与 Core 受管 `taskExecutor` 隔离派发（含 RPC 异常快速错误回执）的消费契约（`@TcpListener` / `@TcpMapping`）。
 _Avoid_: SocketListener, TcpConsumer, ChannelConsumer
 
 **TCP Message Handler (TCP 消息处理器 SPI)**:
-面向复杂工业协议解析、高性能流水线或全报文原始流拦截的高性能函数式处理接口（`TcpMessageHandler<T>`）。
+面向复杂工业协议解析、高性能流水线、运行期动态路由热插拔（`registerHandler` / `unregisterHandler`）或全报文原始流拦截的高性能函数式处理接口（`TcpMessageHandler<T>`）。
 _Avoid_: PacketProcessor, ChannelHandler, InboundInterceptor
 
 **Dual-Mode Architecture (双模网络架构)**:
