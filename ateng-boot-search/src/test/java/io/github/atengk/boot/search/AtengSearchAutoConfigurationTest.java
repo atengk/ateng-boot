@@ -118,6 +118,10 @@ class AtengSearchAutoConfigurationTest {
                             context.getBean(io.github.atengk.boot.search.properties.AtengSearchProperties.class);
                     assertThat(props.getMultiTenancy().getIsolationMode())
                             .isEqualTo(io.github.atengk.boot.search.enums.TenantIsolationMode.FILTER_ONLY);
+                    assertThat(props.getMultiTenancy().getIsolationMode().getCode()).isEqualTo("FILTER_ONLY");
+                    assertThat(io.github.atengk.boot.core.util.EnumUtil.fromCode(
+                            io.github.atengk.boot.search.enums.TenantIsolationMode.class, "STRICT"))
+                            .contains(io.github.atengk.boot.search.enums.TenantIsolationMode.STRICT);
 
                     IgnoreTenantSampleService service = context.getBean(IgnoreTenantSampleService.class);
                     io.github.atengk.boot.core.context.TenantContextHolder.runWithTenant("tenant_east", () -> {

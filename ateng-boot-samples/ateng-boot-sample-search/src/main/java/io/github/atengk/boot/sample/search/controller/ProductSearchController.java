@@ -266,7 +266,7 @@ public class ProductSearchController {
      * Point-In-Time (PIT) 一致性快照深度分页全量遍历
      */
     @GetMapping("/pit-pages")
-    public Result<List<ProductResponse>> searchWithPitTraversal(@RequestParam(defaultValue = "2") int size) {
+    public Result<List<ProductResponse>> searchWithPitTraversal(@RequestParam(defaultValue = "2") @Min(1) int size) {
         List<SearchHit<ProductDoc>> hits = productScenario.searchWithPitTraversal(size);
         return Result.success(SearchSampleConvertHelper.toHitResponseList(hits));
     }

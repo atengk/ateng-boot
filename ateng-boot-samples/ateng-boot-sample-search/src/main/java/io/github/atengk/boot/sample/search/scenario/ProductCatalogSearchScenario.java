@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.search.scenario;
 import co.elastic.clients.elasticsearch._types.query_dsl.ChildScoreMode;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.sample.search.dto.ProductResponse;
+import io.github.atengk.boot.sample.search.dto.SearchSampleConvertHelper;
 import io.github.atengk.boot.sample.search.model.ProductDoc;
 import io.github.atengk.boot.search.enums.SearchHybridMode;
 import io.github.atengk.boot.search.model.HybridSearchOptions;
@@ -23,7 +24,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 /**
  * 电商商品多维检索与高阶搜索业务场景组件
@@ -295,16 +295,7 @@ public class ProductCatalogSearchScenario {
                 .highlight("title", "description")
                 .build();
         SearchPage<ProductResponse> page = searchTemplate.search(query, ProductDoc.class, ProductResponse.class);
-        return page.getHits().stream().map(hit -> {
-            ProductResponse vo = hit.getContent();
-            if (vo != null) {
-                vo.setScore(hit.getScore());
-                if (hit.getSortValues() != null) {
-                    vo.setSortValues(new ArrayList<>(hit.getSortValues()));
-                }
-            }
-            return vo;
-        }).filter(Objects::nonNull).toList();
+        return SearchSampleConvertHelper.toVoResponseList(page.getHits());
     }
 
     /**

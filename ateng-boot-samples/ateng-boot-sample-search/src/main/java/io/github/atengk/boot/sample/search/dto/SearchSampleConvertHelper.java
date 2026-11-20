@@ -103,8 +103,27 @@ public final class SearchSampleConvertHelper {
         if (hit == null || hit.getSource() == null) {
             return null;
         }
-        ProductResponse response = hit.map(SearchSampleConvertHelper::toResponse).getContent();
-        if (response != null) {
+        return enrichHitMetadata(hit, hit.map(SearchSampleConvertHelper::toResponse).getContent());
+    }
+
+    /**
+     * 将已经过视图投影的命中集合补充命中元信息（相关性得分与排序游标）
+     *
+     * @param hits 视图投影命中集合
+     * @return 展示响应列表
+     */
+    public static List<ProductResponse> toVoResponseList(List<SearchHit<ProductResponse>> hits) {
+        if (hits == null || hits.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return hits.stream()
+                .map(hit -> hit == null ? null : enrichHitMetadata(hit, hit.getContent()))
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toList());
+    }
+
+    private static ProductResponse enrichHitMetadata(SearchHit<?> hit, ProductResponse response) {
+        if (response != null && hit != null) {
             response.setScore(hit.getScore());
             if (hit.getSortValues() != null) {
                 response.setSortValues(new ArrayList<>(hit.getSortValues()));

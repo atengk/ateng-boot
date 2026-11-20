@@ -539,6 +539,15 @@ class SampleSearchWebControllerTest {
     }
 
     @Test
+    @DisplayName("1.16.3b Point-In-Time (PIT) 快照分页 size 非法入参 Fail-Fast 校验")
+    void test16_3b_searchWithPitTraversalValidation() throws Exception {
+        mockMvc.perform(get("/sample/search/product/pit-pages")
+                        .param("size", "0"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", not(200)));
+    }
+
+    @Test
     @DisplayName("1.16.4 _msearch 批量异构检索")
     void test16_4_batchMultiSearch() throws Exception {
         io.github.atengk.boot.sample.search.dto.ProductMultiSearchRequest request =

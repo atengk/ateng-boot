@@ -8,6 +8,7 @@ import co.elastic.clients.elasticsearch._types.OpType;
 import co.elastic.clients.elasticsearch._types.Refresh;
 import co.elastic.clients.elasticsearch._types.Result;
 import co.elastic.clients.elasticsearch._types.Script;
+import co.elastic.clients.elasticsearch._types.SortOptions;
 import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.aggregations.Aggregate;
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
@@ -2855,17 +2856,12 @@ public class SearchTemplate {
 
     private <T> List<SearchPage<T>> doMsearch(String defaultIndex, List<SearchQuery> queries, Class<T> clazz, boolean populateHighlights) {
         try {
-            boolean isOpenSearch = SearchEngineDialect.isOpenSearch(searchEngineClient.getEngineType());
             List<RequestItem> requestItems = new ArrayList<>(queries.size());
             for (SearchQuery query : queries) {
                 String targetIndex = CollectionUtil.isNotEmpty(query.getIndices())
                         ? String.join(",", query.getIndices())
                         : defaultIndex;
-                Query baseQuery = wrapTenantFilterIfNecessary(query.getQuery(), clazz);
-                List<KnnSearch> effectiveKnn = enrichKnnWithTenantFilter(query.getKnnSearches(), clazz);
-                Query finalQuery = SearchEngineDialect.adaptKnnQuery(
-                        searchEngineClient.getEngineType(), baseQuery, effectiveKnn);
-                SourceConfig sourceConfig = query.toSourceConfig();
+                PreparedSearchSpec spec = prepareSearchSpec(query, clazz, false, null, null, null);
 
                 RequestItem item = RequestItem.of(ri -> ri
                         .header(h -> {
@@ -2876,19 +2872,19 @@ public class SearchTemplate {
                             return h;
                         })
                         .body(b -> {
-                            if (finalQuery != null) {
-                                b.query(finalQuery);
+                            if (spec.finalQuery() != null) {
+                                b.query(spec.finalQuery());
                             }
                             if (query.isTrackTotalHits()) {
                                 b.trackTotalHits(tth -> tth.enabled(true));
                             }
-                            b.from(query.getFrom());
-                            b.size(query.getSize());
-                            if (CollectionUtil.isNotEmpty(query.getSearchAfter())) {
-                                b.searchAfter(query.getSearchAfter().stream().map(FieldValue::of).toList());
+                            b.from(spec.from());
+                            b.size(spec.size());
+                            if (CollectionUtil.isNotEmpty(spec.searchAfterValues())) {
+                                b.searchAfter(spec.searchAfterValues());
                             }
-                            if (CollectionUtil.isNotEmpty(query.getSorts())) {
-                                b.sort(query.getSorts());
+                            if (CollectionUtil.isNotEmpty(spec.sorts())) {
+                                b.sort(spec.sorts());
                             }
                             if (query.getHighlight() != null) {
                                 b.highlight(query.getHighlight());
@@ -2905,11 +2901,11 @@ public class SearchTemplate {
                             if (CollectionUtil.isNotEmpty(query.getSuggesters())) {
                                 b.suggest(s -> s.suggesters(query.getSuggesters()));
                             }
-                            if (sourceConfig != null) {
-                                b.source(sourceConfig);
+                            if (spec.sourceConfig() != null) {
+                                b.source(spec.sourceConfig());
                             }
-                            if (!isOpenSearch && CollectionUtil.isNotEmpty(effectiveKnn)) {
-                                b.knn(effectiveKnn);
+                            if (!spec.openSearch() && CollectionUtil.isNotEmpty(spec.effectiveKnn())) {
+                                b.knn(spec.effectiveKnn());
                             }
                             return b;
                         })
@@ -3077,22 +3073,23 @@ public class SearchTemplate {
             throw new SearchPaginationExceededException(windowSize, maxWindow);
         }
 
+        HybridVectorSpec vectorSpec = new HybridVectorSpec(vectorField, vector, k, numCandidates);
         return executeObserved("hybridSearch", index, clazz, baseTextQuery.getRouting(), baseTextQuery, false, () -> {
             if (mode == SearchHybridMode.NATIVE_RRF) {
-                return executeNativeRrfHybridSearch(index, baseTextQuery, vectorField, vector, k, numCandidates,
+                return executeNativeRrfHybridSearch(index, baseTextQuery, vectorSpec,
                         resolvedOptions, topK, windowSize, clazz);
             }
-            return executeClientHybridSearch(index, baseTextQuery, vectorField, vector, k, numCandidates,
+            return executeClientHybridSearch(index, baseTextQuery, vectorSpec,
                     resolvedOptions, mode, topK, windowSize, clazz);
         });
     }
 
+    private record HybridVectorSpec(String vectorField, List<Float> vector, int k, int numCandidates) {
+    }
+
     private <T> SearchPage<T> executeNativeRrfHybridSearch(String index,
                                                            SearchQuery baseTextQuery,
-                                                           String vectorField,
-                                                           List<Float> vector,
-                                                           int k,
-                                                           int numCandidates,
+                                                           HybridVectorSpec vectorSpec,
                                                            HybridSearchOptions options,
                                                            int topK,
                                                            int windowSize,
@@ -3107,7 +3104,9 @@ public class SearchTemplate {
         try {
             Query scopedQuery = wrapTenantFilterIfNecessary(baseTextQuery.getQuery(), clazz);
             SearchQuery knnBranch = SearchQueryBuilder.create()
-                    .knn(vectorField, vector, Math.max(k, windowSize), Math.max(numCandidates, Math.max(k, windowSize)),
+                    .knn(vectorSpec.vectorField(), vectorSpec.vector(),
+                            Math.max(vectorSpec.k(), windowSize),
+                            Math.max(vectorSpec.numCandidates(), Math.max(vectorSpec.k(), windowSize)),
                             options.getKnnFilter())
                     .build();
             List<KnnSearch> scopedKnn = enrichKnnWithTenantFilter(knnBranch.getKnnSearches(), clazz);
@@ -3150,10 +3149,7 @@ public class SearchTemplate {
 
     private <T> SearchPage<T> executeClientHybridSearch(String index,
                                                         SearchQuery baseTextQuery,
-                                                        String vectorField,
-                                                        List<Float> vector,
-                                                        int k,
-                                                        int numCandidates,
+                                                        HybridVectorSpec vectorSpec,
                                                         HybridSearchOptions options,
                                                         SearchHybridMode mode,
                                                         int topK,
@@ -3176,7 +3172,9 @@ public class SearchTemplate {
                 true
         );
         SearchQuery knnSpec = SearchQueryBuilder.create()
-                .knn(vectorField, vector, Math.max(k, windowSize), Math.max(numCandidates, Math.max(k, windowSize)),
+                .knn(vectorSpec.vectorField(), vectorSpec.vector(),
+                        Math.max(vectorSpec.k(), windowSize),
+                        Math.max(vectorSpec.numCandidates(), Math.max(vectorSpec.k(), windowSize)),
                         options.getKnnFilter())
                 .build();
         SearchQuery knnBranch = baseTextQuery.deriveBranch(
@@ -3632,19 +3630,64 @@ public class SearchTemplate {
                 () -> executeDoSearch(index, query, clazz, isSearchAfter, sortValues, overrideSize, pit));
     }
 
+    private record PreparedSearchSpec(
+            boolean openSearch,
+            Query finalQuery,
+            List<KnnSearch> effectiveKnn,
+            SourceConfig sourceConfig,
+            int from,
+            int size,
+            List<FieldValue> searchAfterValues,
+            List<SortOptions> sorts
+    ) {
+    }
+
+    private PreparedSearchSpec prepareSearchSpec(SearchQuery query,
+                                                 Class<?> clazz,
+                                                 boolean isSearchAfter,
+                                                 List<String> sortValues,
+                                                 Integer overrideSize,
+                                                 SearchPointInTime pit) {
+        // 组装多租户隐式过滤（含 kNN 预过滤租户隔离）
+        Query baseQuery = wrapTenantFilterIfNecessary(query.getQuery(), clazz);
+        List<KnnSearch> effectiveKnn = enrichKnnWithTenantFilter(query.getKnnSearches(), clazz);
+        boolean isOpenSearch = SearchEngineDialect.isOpenSearch(searchEngineClient.getEngineType());
+        Query finalQuery = SearchEngineDialect.adaptKnnQuery(
+                searchEngineClient.getEngineType(), baseQuery, effectiveKnn);
+        SourceConfig sourceConfig = query.toSourceConfig();
+
+        int from = isSearchAfter ? 0 : query.getFrom();
+        int size = isSearchAfter
+                ? (overrideSize != null && overrideSize > 0 ? overrideSize : query.getSize())
+                : query.getSize();
+
+        List<FieldValue> searchAfterValues = null;
+        if (isSearchAfter) {
+            if (sortValues != null && !sortValues.isEmpty()) {
+                searchAfterValues = sortValues.stream().map(FieldValue::of).toList();
+            }
+        } else if (CollectionUtil.isNotEmpty(query.getSearchAfter())) {
+            searchAfterValues = query.getSearchAfter().stream().map(FieldValue::of).toList();
+        }
+
+        List<SortOptions> sorts = null;
+        if (CollectionUtil.isNotEmpty(query.getSorts())) {
+            sorts = query.getSorts();
+        } else if (isSearchAfter) {
+            // searchAfter 强制要求至少有一个确定的排序规则（PIT 默认使用 _shard_doc，普通 searchAfter 保底 _id）
+            String fallbackSortField = pit != null ? "_shard_doc" : "_id";
+            sorts = List.of(SortOptions.of(s -> s.field(f -> f.field(fallbackSortField).order(SortOrder.Asc))));
+        }
+
+        return new PreparedSearchSpec(isOpenSearch, finalQuery, effectiveKnn, sourceConfig,
+                from, size, searchAfterValues, sorts);
+    }
+
     private <T> SearchResponse<T> executeDoSearch(String index, SearchQuery query, Class<T> clazz,
                                                   boolean isSearchAfter, List<String> sortValues, Integer overrideSize,
                                                   SearchPointInTime pit) {
         try {
-            // 组装多租户隐式过滤（含 kNN 预过滤租户隔离）
-            Query baseQuery = wrapTenantFilterIfNecessary(query.getQuery(), clazz);
-            List<KnnSearch> effectiveKnn = enrichKnnWithTenantFilter(query.getKnnSearches(), clazz);
-
-            // 当底层引擎为 OpenSearch 时，由方言适配器将 top-level knn 转译为 Query DSL 原生 knn 语法
-            boolean isOpenSearch = SearchEngineDialect.isOpenSearch(searchEngineClient.getEngineType());
-            final Query finalQuery = SearchEngineDialect.adaptKnnQuery(
-                    searchEngineClient.getEngineType(), baseQuery, effectiveKnn);
-            final SourceConfig sourceConfig = query.toSourceConfig();
+            PreparedSearchSpec spec = prepareSearchSpec(query, clazz, isSearchAfter, sortValues, overrideSize, pit);
 
             SearchResponse<T> response = getClient().search(b -> {
                 if (pit != null) {
@@ -3658,8 +3701,8 @@ public class SearchTemplate {
                 } else {
                     b.index(index);
                 }
-                if (finalQuery != null) {
-                    b.query(finalQuery);
+                if (spec.finalQuery() != null) {
+                    b.query(spec.finalQuery());
                 }
                 if (pit == null && StringUtils.hasText(query.getRouting())) {
                     b.routing(query.getRouting());
@@ -3668,30 +3711,16 @@ public class SearchTemplate {
                     b.trackTotalHits(tth -> tth.enabled(true));
                 }
 
-                // 分页配置
-                if (isSearchAfter) {
-                    b.from(0);
-                    b.size(overrideSize != null && overrideSize > 0 ? overrideSize : query.getSize());
-                    if (sortValues != null && !sortValues.isEmpty()) {
-                        List<FieldValue> fvs = sortValues.stream().map(FieldValue::of).toList();
-                        b.searchAfter(fvs);
-                    }
-                } else {
-                    b.from(query.getFrom());
-                    b.size(query.getSize());
-                    if (CollectionUtil.isNotEmpty(query.getSearchAfter())) {
-                        List<FieldValue> fvs = query.getSearchAfter().stream().map(FieldValue::of).toList();
-                        b.searchAfter(fvs);
-                    }
+                // 分页与深游标配置
+                b.from(spec.from());
+                b.size(spec.size());
+                if (CollectionUtil.isNotEmpty(spec.searchAfterValues())) {
+                    b.searchAfter(spec.searchAfterValues());
                 }
 
                 // 排序规则
-                if (CollectionUtil.isNotEmpty(query.getSorts())) {
-                    b.sort(query.getSorts());
-                } else if (isSearchAfter) {
-                    // searchAfter 强制要求至少有一个确定的排序规则（PIT 默认使用 _shard_doc，普通 searchAfter 保底 _id）
-                    String fallbackSortField = pit != null ? "_shard_doc" : "_id";
-                    b.sort(s -> s.field(f -> f.field(fallbackSortField).order(SortOrder.Asc)));
+                if (CollectionUtil.isNotEmpty(spec.sorts())) {
+                    b.sort(spec.sorts());
                 }
 
                 // 高亮配置
@@ -3705,8 +3734,8 @@ public class SearchTemplate {
                 }
 
                 // _source 裁剪配置
-                if (sourceConfig != null) {
-                    b.source(sourceConfig);
+                if (spec.sourceConfig() != null) {
+                    b.source(spec.sourceConfig());
                 }
 
                 // 聚合配置
@@ -3725,8 +3754,8 @@ public class SearchTemplate {
                 }
 
                 // kNN 向量检索（仅 Elasticsearch 模式下设置 top-level knn 参数，OpenSearch 模式已在 query 中融合）
-                if (!isOpenSearch && CollectionUtil.isNotEmpty(effectiveKnn)) {
-                    b.knn(effectiveKnn);
+                if (!spec.openSearch() && CollectionUtil.isNotEmpty(spec.effectiveKnn())) {
+                    b.knn(spec.effectiveKnn());
                 }
 
                 return b;
@@ -4017,33 +4046,27 @@ public class SearchTemplate {
         int startedInterceptors = 0;
         R result;
         try {
-            if (context != null) {
-                for (SearchInterceptor interceptor : interceptors) {
-                    interceptor.beforeExecute(context);
-                    startedInterceptors++;
-                }
-            }
-            result = action.get();
-        } catch (Throwable t) {
-            outcome = "ERROR";
-            if (context != null && startedInterceptors > 0) {
-                for (int i = startedInterceptors - 1; i >= 0; i--) {
-                    try {
-                        interceptors.get(i).onError(context, t);
-                    } catch (Throwable ignored) {
-                        log.warn("SearchInterceptor.onError threw exception: {}", ignored.getMessage());
+            try {
+                if (context != null) {
+                    for (SearchInterceptor interceptor : interceptors) {
+                        interceptor.beforeExecute(context);
+                        startedInterceptors++;
                     }
                 }
+                result = action.get();
+            } catch (Throwable t) {
+                outcome = "ERROR";
+                if (context != null && startedInterceptors > 0) {
+                    for (int i = startedInterceptors - 1; i >= 0; i--) {
+                        try {
+                            interceptors.get(i).onError(context, t);
+                        } catch (Throwable ignored) {
+                            log.warn("SearchInterceptor.onError threw exception: {}", ignored.getMessage());
+                        }
+                    }
+                }
+                throw t;
             }
-            long elapsedNanos = System.nanoTime() - startNanos;
-            if (searchMetrics != null) {
-                searchMetrics.recordDuration(operation, bulkMetric, outcome, elapsedNanos);
-            }
-            logSlowQueryIfNecessary(operation, index, query, outcome, elapsedNanos);
-            throw t;
-        }
-
-        try {
             if (context != null) {
                 for (int i = startedInterceptors - 1; i >= 0; i--) {
                     interceptors.get(i).afterExecute(context, result);
