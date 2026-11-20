@@ -515,6 +515,32 @@ class SnailRetryAspectAndTemplateTest {
         assertThat(retryContextStore.get("orderPayScene:orderPayScene_ORD-DL-999")).isNull();
     }
 
+    @Test
+    @DisplayName("测试 reportManualRetry 在无 RetrySiteSnapshot 上下文时自动补齐并清理 MANUAL_REPORT 阶段标识")
+    void testReportManualRetryInitializesAndCleansStage() {
+        Report mockReport = Mockito.mock(Report.class);
+        Mockito.when(mockReport.report(Mockito.eq("manualScene"), Mockito.eq("TargetService"), Mockito.any()))
+                .thenAnswer(inv -> {
+                    assertThat(com.aizuda.snailjob.client.core.intercepter.RetrySiteSnapshot.getStage())
+                            .isEqualTo(com.aizuda.snailjob.client.core.intercepter.RetrySiteSnapshot.EnumStage.MANUAL_REPORT.getStage());
+                    return true;
+                });
+
+        Report fallbackReport = Mockito.mock(Report.class);
+        SnailRetryTemplate tpl = new SnailRetryTemplate(
+                simpleObjectProvider(fallbackReport),
+                mockReport,
+                new SnailJobProperties(),
+                retryContextStore
+        );
+
+        com.aizuda.snailjob.client.core.intercepter.RetrySiteSnapshot.removeStage();
+        boolean result = tpl.reportManualRetry("manualScene", "TargetService", new Object[]{"ARG-1"}, null, null);
+        assertThat(result).isTrue();
+        assertThat(com.aizuda.snailjob.client.core.intercepter.RetrySiteSnapshot.getStage()).isNull();
+        Mockito.verifyNoInteractions(fallbackReport);
+    }
+
     private static <T> ObjectProvider<T> simpleObjectProvider(T instance) {
         return new ObjectProvider<>() {
             @Override

@@ -100,8 +100,8 @@ mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-job-snail -Dspring-
 
 | 序号 | 场景说明 | HTTP 方法与路径 | 一键体验 `curl` 命令 |
 | :--- | :--- | :--- | :--- |
-| 29 | 编程式向调度中心新增调度任务（`@Valid AdminJobSaveDTO`） | `POST /sample/job-snail/admin/jobs` | `curl -X POST http://localhost:8080/sample/job-snail/admin/jobs -H "Content-Type: application/json" -d '{"jobName":"dailySettlementJob","executorInfo":"billSettlementJob","triggerType":1,"triggerInterval":"0 0 2 * * ?","routeKey":1,"description":"每日跨商户账单结算"}'` |
-| 30 | 编程式更新调度中心任务配置（需携带 `id`） | `PUT /sample/job-snail/admin/jobs` | `curl -X PUT http://localhost:8080/sample/job-snail/admin/jobs -H "Content-Type: application/json" -d '{"id":1001,"jobName":"dailySettlementJob","executorInfo":"billSettlementJob","triggerType":1,"triggerInterval":"0 0 3 * * ?","routeKey":1,"description":"每日跨商户账单结算更新"}'` |
+| 29 | 编程式向调度中心新增调度任务（`@Valid AdminJobSaveDTO`） | `POST /sample/job-snail/admin/jobs` | `curl -X POST http://localhost:8080/sample/job-snail/admin/jobs -H "Content-Type: application/json" -d '{"jobName":"dailySettlementJob","executorInfo":"billSettlementJob","triggerType":3,"triggerInterval":"0 0 2 * * ?","routeKey":4,"description":"每日跨商户账单结算"}'` |
+| 30 | 编程式更新调度中心任务配置（需携带 `id`） | `PUT /sample/job-snail/admin/jobs` | `curl -X PUT http://localhost:8080/sample/job-snail/admin/jobs -H "Content-Type: application/json" -d '{"id":1001,"jobName":"dailySettlementJob","executorInfo":"billSettlementJob","triggerType":3,"triggerInterval":"0 0 3 * * ?","routeKey":4,"description":"每日跨商户账单结算更新"}'` |
 | 31 | 查询指定任务 ID 元数据详情 | `GET /sample/job-snail/admin/jobs/{jobId}` | `curl -X GET http://localhost:8080/sample/job-snail/admin/jobs/1001` |
 | 32 | 即时手动触发指定调度任务 | `POST /sample/job-snail/admin/jobs/{jobId}/trigger` | `curl -X POST http://localhost:8080/sample/job-snail/admin/jobs/1001/trigger` |
 | 33 | 切换指定调度任务运行状态码（`0=禁用`、`1=启用`） | `POST /sample/job-snail/admin/jobs/{jobId}/status` | `curl -X POST "http://localhost:8080/sample/job-snail/admin/jobs/1001/status?status=1"` |
@@ -135,7 +135,7 @@ mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-job-snail -Dspring-
 
 ### 4.1 定向构建与离线全真测试（CI 默认模式）
 
-在仓库根目录执行阶梯二协同准出命令，联动验证 Starter 单元测试（**190** 项，`20` 个测试类）与 Sample 场景测试（**42** 项，合计 **232** 项）：
+在仓库根目录执行阶梯二协同准出命令，联动验证 Starter 单元测试（**197** 项，`21` 个测试类）与 Sample 场景测试（**42** 项，合计 **239** 项）：
 
 ```bash
 mvn test -pl ateng-boot-job-snail,ateng-boot-samples/ateng-boot-sample-job-snail -am -T 1C -nsu -B

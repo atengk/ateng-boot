@@ -28,12 +28,13 @@
 | **`SnailLocalWatchdog` & `GracefulDrainStateMachine`**<br>`...snail.watchdog` / `...drain` | 本地硬超时看门狗：`startWatch(thread, timeout, metadata)`、`getGracePeriod()`、`getFallbackHandlers()`、`destroy()`（`WatchdogSession`：`cancel()` / `isTimedOut()` / `isCancelled()`）；平滑停机排空状态机（`SmartLifecycle`，`phase=Integer.MAX_VALUE`）：`isDraining()`、`setDraining(boolean)`、`incrementInFlightJob()` / `decrementInFlightJob()` / `getInFlightJobCount()`、`incrementInFlightRetry()` / `decrementInFlightRetry()` / `getInFlightRetryCount()`、`getTotalInFlightCount()`、`start()`、`stop()` / `stop(Runnable)`、`destroy()`、`isRunning()`、`getPhase()`、`isAutoStartup()` | [第 2 章](#2-核心架构与设计不变量)<br>[第 9 章](#9-生产扩展接管与核心非功能边界) |
 | **`SnailJobEndpoint` / `SnailJobHealthIndicator` / `SnailJobMetricsBinder`**<br>`...actuator` / `...metrics` | 运维管控、健康探针与观测指标：`SnailJobEndpoint`（`GET /actuator/snailjobs`、`GET /actuator/snailjobs/{name}`、`POST /actuator/snailjobs/{jobName}`、`POST /actuator/snailjobs`）；`SnailJobHealthIndicator#health()`（`ReentrantLock` TTL 缓存 + 受管并发有界 Socket 探活，多活节点至少 1 个可达返回 `UP` 并透出 `degraded` 与在线/离线列表，无 `GrpcChannel` 反射）；`SnailJobMetricsBinder`（`bindTo`、`recordJobExecution`、`recordRetryExecution`、`getRegistry`） | [第 9 章](#9-生产扩展接管与核心非功能边界) |
 | **`SnailJobLogbackAppender` & `Registrar`**<br>`...snail.log` | SLF4J 日志无感镜像扩展：`isTaskActive()`、`attachToRootLogger()`、`detachFromRootLogger()`、`setMaxPayloadBytes(long)`、`getMaxPayloadBytes()`、`setMirrorConsumer(Consumer)`；`SnailJobLogbackAppenderRegistrar`（`getAppender()`、`afterSingletonsInstantiated()`、`destroy()`） | [第 2 章](#2-核心架构与设计不变量) |
+| **`AtengSnailJobAutoConfiguration` & `SnailJobInternalSupport`**<br>`...autoconfigure` / `...support` | 防御性自动装配与内部共享支撑：`AtengSnailJobAutoConfiguration`（绑定 `taskExecutor`、全量同步 `openapi` 至官方属性、按 `job.enabled` / `retry.enabled` / 类路径条件装配全部双擎组件与默认 Bean）；`SnailJobInternalSupport`（解析主机节点、构建执行元数据与默认原生类型兜底）；`SnailRetryFailureTracker`（本地/远端重试连续失败隔离追踪器） | [第 2 章](#2-核心架构与设计不变量)<br>[第 10 章](#10-完整-yaml-配置属性清单) |
 
 ### 0.2 增强注解与枚举契约
 
 | 注解 / 枚举 | 核心属性与可选值 | 默认值 | 作用说明 |
 | :--- | :--- | :--- | :--- |
-| **`@AtengSnailJob`**<br>(`METHOD`, `TYPE`) | `value` / `name`（互为 `@AliasFor` 别名）、`method`（类级执行方法名）、`timeout`（如 `"500ms"` / `"30s"`）、`tenantMode`（`JobTenantMode`）、`alert`（旧告警开关）、`alertEnabled`（方法级告警开关）、`alertSuppressThreshold`（方法级告警抑制阈值）、`retryCount`（方法级本地退避重试次数）、`retryInterval`（本地退避间隔 `Duration`）、`fallbackMethod`（同 Bean 超时降级方法名） | `value=""`, `name=""`, `method="jobExecute"`, `timeout=""`, `tenantMode=IGNORE`, `alert=true`, `alertEnabled=true`, `alertSuppressThreshold=-1`, `retryCount=0`, `retryInterval="1s"`, `fallbackMethod=""` | 既可独立声明执行器并由 `AtengSnailJobScanner` 自动注册，也可增强原生 `@JobExecutor` / MapReduce 切片注解；提供看门狗硬超时降级、瞬态本地退避重试、方法级告警覆写与多租户沙箱 |
+| **`@AtengSnailJob`**<br>(`METHOD`, `TYPE`) | `value` / `name`（互为 `@AliasFor` 别名）、`method`（类级执行方法名）、`timeout`（如 `"500ms"` / `"30s"`）、`tenantMode`（`JobTenantMode`）、`alert`（旧告警开关）、`alertEnabled`（方法级告警开关）、`alertSuppressThreshold`（方法级告警抑制阈值）、`retryCount`（方法级本地退避重试次数）、`retryInterval`（本地退避间隔 `Duration`，留空走 `job.default-retry-interval`）、`fallbackMethod`（同 Bean 超时降级方法名） | `value=""`, `name=""`, `method="jobExecute"`, `timeout=""`, `tenantMode=IGNORE`, `alert=true`, `alertEnabled=true`, `alertSuppressThreshold=-1`, `retryCount=0`, `retryInterval=""`, `fallbackMethod=""` | 既可独立声明执行器并由 `AtengSnailJobScanner` 自动注册，也可增强原生 `@JobExecutor` / MapReduce 切片注解；提供看门狗硬超时降级、瞬态本地退避重试、方法级告警覆写与多租户沙箱 |
 | **`@AtengSnailRetry`**<br>(`METHOD`, `TYPE`) | `scene` / `value`（互为 `@AliasFor` 别名）、`idempotentSpel`（SpEL 幂等表达式）、`idempotentId`（生成器类）、`retryCompleteCallback`（完成/死信回调类）、`bizNo`（SpEL 业务单号）、`retryStrategy`（`RetryType`）、`localTimes`、`localInterval`、`isThrowException`、`include`、`exclude`、`tenantMode` | `scene=""`, `value=""`, `retryStrategy=LOCAL_REMOTE`, `localTimes=3`, `localInterval=2`, `isThrowException=true`, `idempotentId=SpelIdempotentIdGenerator.class`, `retryCompleteCallback=SnailRetryDeadLetterCallback.class`, `tenantMode=PARAM` | 既可独立单注解完成服务端注册（`AtengSnailRetryScanner`）与 AOP 重试闭环（`AtengSnailRetryPointcutAdvisor`），也可兼容 `@Retryable` 混用（显式 `@Retryable` 优先生效） |
 | **`JobTenantMode`** | `IGNORE`（平台全局忽略租户限制）、`PARAM`（从调度入参或 DTO 提取 `tenantId`）、`ITERATE`（交由 `TenantJobTemplate` 逐租户独立事务沙箱或并发背压遍历） | 调度默认 `IGNORE`<br>重试默认 `PARAM` | 显式划定多租户数据权限边界，杜绝串租户或越权扫描 |
 
@@ -41,7 +42,7 @@
 
 | 类别 | 标识 / 接口 / 指标名 | 核心契约与默认行为 | 扩展 / 消费方式 |
 | :--- | :--- | :--- | :--- |
-| **配置前缀** | `ateng.boot.job.snail.*`（40 项强类型属性） | 顶层核心：`enabled`、`server`、`group`、`namespace`、`token`、`port`、`timeout`、`drain-timeout`、`default-job-timeout`、`watchdog-grace-period`、`log-mirror-enabled`、`managed-pool-enabled`、`max-payload-size`、`health-cache-ttl`、`health-probe-timeout`；嵌套分域：`job.*`（4 项）、`retry.*`（6 项）、`batch.*`（4 项）、`openapi.*`（8 项）、`alert.*`（3 项） | 全量类型、默认值与模板详见 [第 10 章](#10-完整-yaml-配置属性清单) |
+| **配置前缀** | `ateng.boot.job.snail.*`（41 项强类型属性） | 顶层核心：`enabled`、`server`、`group`、`namespace`、`token`、`port`、`timeout`、`drain-timeout`、`default-job-timeout`、`watchdog-grace-period`、`log-mirror-enabled`、`managed-pool-enabled`、`max-payload-size`、`health-cache-ttl`、`health-probe-timeout`；嵌套分域：`job.*`（5 项）、`retry.*`（6 项）、`batch.*`（4 项）、`openapi.*`（8 项）、`alert.*`（3 项） | 全量类型、默认值与模板详见 [第 10 章](#10-完整-yaml-配置属性清单) |
 | **SPI 接口 (6 个)** | `SnailJobInterceptor`<br>`JobTimeoutFallbackHandler`<br>`TenantListProvider`<br>`SnailRetryContextStore`<br>`BatchFailureHandler<K>`<br>`RetryCompleteCallback`（默认 `SnailRetryDeadLetterCallback`） | 所有 SPI 与内置 `@Bean` 均支持 Spring 注入与 `@Order` 排序或 `@ConditionalOnMissingBean` 接管（其中 `BatchFailureHandler` 与 `SnailRetryContextStore` 支持全局默认 Bean 与局部/条件覆盖） | 注册为 Spring Bean 即可无感生效，详见 [第 9 章](#9-生产扩展接管与核心非功能边界) |
 | **领域事件 (3 类)** | `SnailJobAlertEvent`（`INITIAL_FAILURE` / `FAILURE_SUMMARY` / `RECOVERY`）<br>`SnailJobTimeoutEvent`<br>`SnailRetryDeadLetterEvent` | 故障首报、防风暴聚合、恢复自愈、硬看门狗超时中断与重试最大次数死信均广播标准 `ApplicationEvent` | 使用 `@EventListener` 消费对接外部工单/审计系统 |
 | **Micrometer 指标** | `ateng.job.snail.job.execution`<br>`ateng.job.snail.retry.execution`<br>`ateng.job.snail.job.inflight`<br>`ateng.job.snail.retry.inflight` | Tag 维度：`job` / `scene`、`status`（`SUCCESS` / `FAILURE` / `SKIPPED`）、`tenant`；发布 `P50 / P95 / P99` 耗时百分位 | 接入 Prometheus / Grafana 自动采集 |
@@ -63,12 +64,22 @@
   - `io.github.atengk:ateng-boot-notification`：激活 `SnailJobAlertAggregator` 向协同群聊机器人推送高危故障与恢复通知卡片；
   - `io.github.atengk:ateng-boot-mybatis-plus`：激活 `SnailMyBatisStreamingTemplate` MyBatis 游标流式分片消费。
 
-在业务微服务 `pom.xml` 中引入（版本由根 `pom.xml` / `ateng-boot-bom` 统管，无需声明 `<version>`）：
+在已导入 `ateng-boot-bom` 的业务微服务 `pom.xml` 中无需声明版本号即可直接引入：
 
 ```xml
 <dependency>
     <groupId>io.github.atengk</groupId>
     <artifactId>ateng-boot-job-snail</artifactId>
+</dependency>
+```
+
+若未统一导入 BOM，也可独立显式声明当前稳定版本：
+
+```xml
+<dependency>
+    <groupId>io.github.atengk</groupId>
+    <artifactId>ateng-boot-job-snail</artifactId>
+    <version>1.2.0</version>
 </dependency>
 ```
 
@@ -207,6 +218,7 @@ ateng:
         job:
           enabled: true
           context-aspect-enabled: true
+          default-retry-interval: 1s
 ```
 
 **真实 Sample 源码实现**（摘自 [`UserSyncParam.java`](../ateng-boot-samples/ateng-boot-sample-job-snail/src/main/java/io/github/atengk/boot/sample/job/snail/dto/UserSyncParam.java)、[`ParamValidationJobHandler.java`](../ateng-boot-samples/ateng-boot-sample-job-snail/src/main/java/io/github/atengk/boot/sample/job/snail/handler/ParamValidationJobHandler.java) 与 [`StandaloneLocalRetryJobHandler.java`](../ateng-boot-samples/ateng-boot-sample-job-snail/src/main/java/io/github/atengk/boot/sample/job/snail/handler/StandaloneLocalRetryJobHandler.java)）：
@@ -283,7 +295,7 @@ public ExecuteResult userSyncJob(JobArgs args) {
 **核心机制与边界说明**：
 - **独立注解一键注册**：仅声明 `@AtengSnailJob(name = "...")` 或 `@AtengSnailJob("...")` 即可由 `AtengSnailJobScanner` 扫描生成 `JobExecutorInfo`（留空回退方法名），类级注解默认调度方法为 `method = "jobExecute"`，并对跨方法同名任务在启动期 Fail-Fast 报错阻断；若方法已共存原生 `@JobExecutor` 则幂等让渡由原生扫描接管。
 - **双轨 `maxPayloadSize` 与两道校验防线**：入口侧在进入拦截链前后对调度原始 JSON 载荷校验 `ateng.boot.job.snail.max-payload-size`（默认 `1MB`）超限抛出 `BusinessException(400)`；切面按形参自动反序列化 DTO 并对 `@Valid` / `@Validated` 形参执行 JSR-303 Fail-Fast；若调度入参携带 `traceId` 或 `userId` 字段，自动同步绑定至 MDC 与 `UserContextHolder`。
-- **方法级本地退避重试与快速失败边界**：当 `@AtengSnailJob(retryCount > 0)` 时，仅对**业务执行期瞬态异常**按 `retryInterval` 执行方法级退避重试（若触发中断则恢复中断标记立即退出）；对于参数校验失败、JSON 解析错误、`maxPayloadSize` 超限、看门狗超时、节点治理暂停或停机排空拒绝，强制执行 **0 次重试（Fail-Fast）**。
+- **方法级本地退避重试与快速失败边界**：当 `@AtengSnailJob(retryCount > 0)` 时，仅对**业务执行期瞬态异常**按 `retryInterval` 执行方法级退避重试（注解留空时自动回退 `ateng.boot.job.snail.job.default-retry-interval`，默认 `1s`；若触发中断则恢复中断标记立即退出）；对于参数校验失败、JSON 解析错误、`maxPayloadSize` 超限、看门狗超时、节点治理暂停或停机排空拒绝，强制执行 **0 次重试（Fail-Fast）**。
 
 ### 3.2 本地硬超时看门狗与同 Bean `fallbackMethod` 就地降级补偿
 
@@ -576,6 +588,9 @@ ateng:
 public String executeWithProgrammaticRetry(String orderId) {
     return retryTemplate.executeWithIdempotent("orderPayRetry", orderId, "BIZ-" + orderId, () -> {
         log.info("[RetryDemoService] 编程式重试闭包执行中, orderId={}", orderId);
+        if ("FAIL_PROG".equals(orderId)) {
+            throw new IllegalStateException("编程式支付通道连接池耗尽 [orderId: " + orderId + "]");
+        }
         return "SUCCESS:" + orderId;
     });
 }
@@ -814,7 +829,7 @@ public class SampleAuditJobInterceptor implements SnailJobInterceptor {
         Object[] args = context.getArgs();
 
         // 1. 金丝雀灰度特征检查：若任务名称为 vipChannelProbeJob 或参数携带 canary-bypass，触发优雅跳过
-        boolean isCanaryBypass = "vipChannelProbeJob".equals(jobName) || "canaryBypassJob".equals(jobName);
+        boolean isCanaryBypass = "vipChannelProbeJob".equals(jobName);
         if (!isCanaryBypass && args != null) {
             for (Object arg : args) {
                 if (arg instanceof String s && s.contains("canary-bypass")) {
@@ -1021,7 +1036,7 @@ public SnailJobTestResult executeTenantScoped(String tenantId) {
 ```
 
 **核心机制与边界说明**：
-- `SnailJobTestHelper` 与 `SnailJobEndpoint` 共同委托底层 [`SnailJobInvocationSupport`](./src/main/java/io/github/atengk/boot/job/snail/support/SnailJobInvocationSupport.java)，统一扫描容器内原生 `@JobExecutor` / `@Retryable` 与独立 `@AtengSnailJob` / `@AtengSnailRetry` 执行器；脱网调用前置执行 `SnailJobRuntimeGovernor` 暂停拦截、`maxPayloadSize` 字节校验与 `@Valid` JSR-303 校验（JSON 解析异常显式抛语义异常），并确定性组装及还原四维上下文（`MDC traceId`、`TenantContextHolder`、`UserContextHolder` 与 `SnailJobContextHolder`），实现 CI 100% 离线毫秒级自洽回归。
+- `SnailJobTestHelper` 与 `SnailJobEndpoint` 共同委托底层 [`SnailJobInvocationSupport`](./src/main/java/io/github/atengk/boot/job/snail/support/SnailJobInvocationSupport.java)，统一扫描容器内原生 `@JobExecutor` / `@Retryable` 与独立 `@AtengSnailJob` / `@AtengSnailRetry` 执行器；统一执行 `maxPayloadSize` 字节校验与 `@Valid` JSR-303 校验（JSON 解析异常显式抛语义异常），并确定性组装及还原四维上下文（`MDC traceId`、`TenantContextHolder`、`UserContextHolder` 与 `SnailJobContextHolder`）。其中，`SnailJobEndpoint` 运维手动触发会前置拦截暂停任务并显式返回失败（`503`），而 `SnailJobTestHelper` 在目标 Bean 被 AOP 代理时交由 `SnailJobContextAspect` 忠实返回 `[SKIPPED]` 跳过态（脱网裸对象测试则同样前置抛出 `BusinessException` 拦截），实现 CI 100% 离线毫秒级自洽回归。
 
 ---
 
@@ -1160,7 +1175,7 @@ public class SnailJobDomainEventListener {
 
 ## 10. 完整 YAML 配置属性清单
 
-所有 `40` 项属性收敛于 `ateng.boot.job.snail.*`（对应 [`SnailJobProperties.java`](./src/main/java/io/github/atengk/boot/job/snail/properties/SnailJobProperties.java)），时间统一使用 `java.time.Duration`，容量统一使用 `org.springframework.util.unit.DataSize`：
+所有 `41` 项属性收敛于 `ateng.boot.job.snail.*`（对应 [`SnailJobProperties.java`](./src/main/java/io/github/atengk/boot/job/snail/properties/SnailJobProperties.java)），时间统一使用 `java.time.Duration`，容量统一使用 `org.springframework.util.unit.DataSize`：
 
 | 配置键路径 | 类型 | 默认值 | 核心说明与条件装配影响 |
 | :--- | :--- | :--- | :--- |
@@ -1183,6 +1198,7 @@ public class SnailJobDomainEventListener {
 | `ateng.boot.job.snail.job.context-aspect-enabled` | `boolean` | `true` | 是否启用 `SnailJobContextAspect` 切面（停用则同时关闭参数校验/拦截器/看门狗/方法级重试） |
 | `ateng.boot.job.snail.job.batch-template-enabled` | `boolean` | `true` | 是否装配 `SnailShardingBatchTemplate` / `SnailMyBatisStreamingTemplate` |
 | `ateng.boot.job.snail.job.tenant-template-enabled` | `boolean` | `true` | 是否装配 `TenantJobTemplate` 多租户顺序/并发沙箱模板 |
+| `ateng.boot.job.snail.job.default-retry-interval` | `Duration` | `1s` | 方法级本地退避重试默认间隔（当 `@AtengSnailJob#retryInterval()` 留空时生效） |
 | `ateng.boot.job.snail.retry.enabled` | `boolean` | `true` | 是否启用分布式协同重试、独立 `@AtengSnailRetry` 扫描与 `SnailRetryTemplate` |
 | `ateng.boot.job.snail.retry.context-aspect-enabled` | `boolean` | `true` | 是否启用 `SnailRetryContextAspect` 远程四维快照保存与跨节点还原切面 |
 | `ateng.boot.job.snail.retry.context-ttl` | `Duration` | `24h` | 重试四维上下文快照持久化有效期（作用于 `RedisSnailRetryContextStore` 与内存惰性淘汰） |
@@ -1232,6 +1248,7 @@ ateng:
           context-aspect-enabled: true
           batch-template-enabled: true
           tenant-template-enabled: true
+          default-retry-interval: 1s
         retry:
           enabled: true
           context-aspect-enabled: true
@@ -1282,7 +1299,7 @@ ateng:
 
 ### 11.2 自动化双轨全真回归验证矩阵
 
-通过阶梯二定向联调回归命令即可在 100% 离线自洽模式下同步验证 **Starter 单元测试**（`20` 个测试类、**190** 项用例）与 **Sample 端到端/Web 契约测试**（`SampleJobSnailIntegrationTest` **17** 项 + `SampleJobSnailWebControllerTest` **25** 项 = **42** 项，合计 **232** 项全绿）：
+通过阶梯二定向联调回归命令即可在 100% 离线自洽模式下同步验证 **Starter 单元测试**（`21` 个测试类、**197** 项用例）与 **Sample 端到端/Web 契约测试**（`SampleJobSnailIntegrationTest` **17** 项 + `SampleJobSnailWebControllerTest` **25** 项 = **42** 项，合计 **239** 项全绿）：
 
 ```bash
 mvn test -pl ateng-boot-job-snail,ateng-boot-samples/ateng-boot-sample-job-snail -am -T 1C -nsu -B

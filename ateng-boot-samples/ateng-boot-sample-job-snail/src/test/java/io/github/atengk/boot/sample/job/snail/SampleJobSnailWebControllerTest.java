@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.job.snail;
 
+import com.jayway.jsonpath.JsonPath;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
@@ -23,9 +24,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -68,6 +73,13 @@ class SampleJobSnailWebControllerTest {
     @Autowired
     private SnailRetryContextStore retryContextStore;
 
+    @Autowired
+    private Environment environment;
+
+    private boolean isLocalProfile() {
+        return environment.acceptsProfiles(Profiles.of("local"));
+    }
+
     @AfterEach
     void tearDown() {
         SnailJobContextHolder.clear();
@@ -81,7 +93,6 @@ class SampleJobSnailWebControllerTest {
         retryDemoService.resetAttemptCount();
         logisticsBatchJobHandler.clearDeadLetterBatches();
         archiveJobHandler.reset();
-        SnailJobTestHelper.clear();
     }
 
     // =========================================================================
@@ -389,64 +400,99 @@ class SampleJobSnailWebControllerTest {
     @Test
     @DisplayName("4.1 调度中心任务管理 OpenAPI (新增/更新/查询/即时触发/删除/JSR-303 防卫)")
     void testAdminJobOperations() throws Exception {
+        boolean isMock = Mockito.mockingDetails(adminTemplate).isMock();
+        String jobName = isMock ? "orderSyncJob" : "orderSyncJob-" + System.currentTimeMillis();
+        String json = "{\"jobName\":\"" + jobName + "\",\"executorInfo\":\"systemWarmupJob\",\"triggerType\":3,\"triggerInterval\":\"0/30 * * * * ?\",\"description\":\"test job\"}";
+
         // 新增任务
-        String json = "{\"jobName\":\"orderSyncJob\",\"executorInfo\":\"syncHandler\",\"triggerType\":1,\"triggerInterval\":\"0/30 * * * * ?\",\"description\":\"test job\"}";
-        mockMvc.perform(post("/sample/job-snail/admin/jobs")
+        MvcResult addResult = mockMvc.perform(post("/sample/job-snail/admin/jobs")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value(1001));
+                .andReturn();
+        long jobId = Long.parseLong(String.valueOf((Object) JsonPath.read(addResult.getResponse().getContentAsString(), "$.data")));
+        assertThat(jobId).isPositive();
 
-        // 更新任务 (必须携带 id)
-        String updateJson = "{\"id\":1001,\"jobName\":\"orderSyncJob\",\"executorInfo\":\"syncHandler\",\"triggerType\":1,\"triggerInterval\":\"0/45 * * * * ?\",\"routeKey\":1,\"description\":\"updated job\"}";
-        mockMvc.perform(put("/sample/job-snail/admin/jobs")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(updateJson))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value(true));
+        boolean deleted = false;
+        try {
+            // 更新任务 (必须携带 id)
+            String updateJson = "{\"id\":" + jobId + ",\"jobName\":\"" + jobName + "\",\"executorInfo\":\"systemWarmupJob\",\"triggerType\":3,\"triggerInterval\":\"0/45 * * * * ?\",\"routeKey\":4,\"description\":\"updated job\"}";
+            mockMvc.perform(put("/sample/job-snail/admin/jobs")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(updateJson))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
 
-        // 新增任务 JSR-303 校验失败 & 更新缺 id 快速失败
-        mockMvc.perform(post("/sample/job-snail/admin/jobs")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"jobName\":\"\"}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code", not(200)));
+            // 新增任务 JSR-303 校验失败 & 更新缺 id 快速失败
+            mockMvc.perform(post("/sample/job-snail/admin/jobs")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"jobName\":\"\"}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code", not(200)));
 
-        mockMvc.perform(put("/sample/job-snail/admin/jobs")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(json))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code", not(200)));
+            mockMvc.perform(put("/sample/job-snail/admin/jobs")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code", not(200)));
 
-        // 非法路径参数 jobId=0 快速失败
-        mockMvc.perform(get("/sample/job-snail/admin/jobs/0"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code", not(200)));
+            // 非法路径参数 jobId=0 快速失败
+            mockMvc.perform(get("/sample/job-snail/admin/jobs/0"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code", not(200)));
 
-        // 查询任务详情
-        mockMvc.perform(get("/sample/job-snail/admin/jobs/1001"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.jobName").value("mockSystemWarmupJob"));
+            // 查询任务详情
+            String expectedName = isMock ? "mockSystemWarmupJob" : jobName;
+            mockMvc.perform(get("/sample/job-snail/admin/jobs/" + jobId))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.jobName").value(expectedName));
 
-        // 即时触发任务
-        mockMvc.perform(post("/sample/job-snail/admin/jobs/1001/trigger"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value(true));
+            // 即时触发任务
+            mockMvc.perform(post("/sample/job-snail/admin/jobs/" + jobId + "/trigger"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
 
-        // 删除任务
-        mockMvc.perform(delete("/sample/job-snail/admin/jobs/1001"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value(true));
+            // 停用并删除任务（SnailJob 要求任务处于停用状态才允许删除）
+            if (!isMock) {
+                mockMvc.perform(post("/sample/job-snail/admin/jobs/" + jobId + "/disable"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.code").value(200))
+                        .andExpect(jsonPath("$.data").value(true));
+            }
+            mockMvc.perform(delete("/sample/job-snail/admin/jobs/" + jobId))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
+            deleted = true;
+        } finally {
+            if (!deleted && isLocalProfile()) {
+                try {
+                    adminTemplate.disableJob(jobId);
+                } catch (Exception ignored) {
+                }
+                try {
+                    adminTemplate.deleteJob(jobId);
+                } catch (Exception ignored) {
+                }
+            }
+        }
     }
 
     @Test
     @DisplayName("4.2 调度中心工作流 DAG OpenAPI (触发/启停/查询批次/删除)")
     void testAdminWorkflowOperations() throws Exception {
+        if (!Mockito.mockingDetails(adminTemplate).isMock()) {
+            // 真实 SnailJob 服务端未内置固定工作流 ID 时，验证不存在批次查询能安全返回错误响应不伪造数据
+            mockMvc.perform(get("/sample/job-snail/admin/workflows/batch/999999999"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code", not(200)));
+            return;
+        }
+
         // 即时触发工作流
         mockMvc.perform(post("/sample/job-snail/admin/workflows/2001/trigger"))
                 .andExpect(status().isOk())
@@ -503,6 +549,14 @@ class SampleJobSnailWebControllerTest {
     @Test
     @DisplayName("4.3 调度中心重试任务运维 OpenAPI (查询/触发/更新状态)")
     void testAdminRetryOperations() throws Exception {
+        if (!Mockito.mockingDetails(adminTemplate).isMock()) {
+            // 真实 SnailJob 服务端未内置固定重试记录 ID 时，验证查询不存在重试任务安全返回错误响应
+            mockMvc.perform(get("/sample/job-snail/admin/retry/999999999"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code", not(200)));
+            return;
+        }
+
         // 查询重试任务
         mockMvc.perform(get("/sample/job-snail/admin/retry/888"))
                 .andExpect(status().isOk())
@@ -603,25 +657,48 @@ class SampleJobSnailWebControllerTest {
     @Test
     @DisplayName("4.5 调度中心任务状态切换 OpenAPI (updateJobStatus / enable / disable)")
     void testAdminJobStatusOperations() throws Exception {
-        mockMvc.perform(post("/sample/job-snail/admin/jobs/1001/status")
-                        .param("status", "1"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value(true));
+        boolean isMock = Mockito.mockingDetails(adminTemplate).isMock();
+        long targetJobId = 1001L;
+        if (!isMock) {
+            String createJson = "{\"jobName\":\"statusToggleJob-" + System.currentTimeMillis()
+                    + "\",\"executorInfo\":\"systemWarmupJob\",\"triggerType\":3,\"triggerInterval\":\"0/30 * * * * ?\",\"description\":\"status toggle test\"}";
+            MvcResult addRes = mockMvc.perform(post("/sample/job-snail/admin/jobs")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(createJson))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andReturn();
+            targetJobId = Long.parseLong(String.valueOf((Object) JsonPath.read(addRes.getResponse().getContentAsString(), "$.data")));
+        }
 
-        mockMvc.perform(post("/sample/job-snail/admin/jobs/1001/enable"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value(true));
+        try {
+            mockMvc.perform(post("/sample/job-snail/admin/jobs/" + targetJobId + "/status")
+                            .param("status", "1"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
 
-        mockMvc.perform(post("/sample/job-snail/admin/jobs/1001/disable"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value(true));
+            mockMvc.perform(post("/sample/job-snail/admin/jobs/" + targetJobId + "/enable"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
 
-        mockMvc.perform(post("/sample/job-snail/admin/jobs/1001/status")
-                        .param("status", "-1"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code", not(200)));
+            mockMvc.perform(post("/sample/job-snail/admin/jobs/" + targetJobId + "/disable"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
+
+            mockMvc.perform(post("/sample/job-snail/admin/jobs/" + targetJobId + "/status")
+                            .param("status", "-1"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code", not(200)));
+        } finally {
+            if (!isMock) {
+                try {
+                    adminTemplate.deleteJob(targetJobId);
+                } catch (Exception ignored) {
+                }
+            }
+        }
     }
 }

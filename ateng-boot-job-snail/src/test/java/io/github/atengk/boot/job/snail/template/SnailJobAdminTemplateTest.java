@@ -498,4 +498,26 @@ class SnailJobAdminTemplateTest {
             plainAsyncExecutor.close();
         }
     }
+
+    @Test
+    @DisplayName("测试 addJob 与 addJobByBizId 在 groupName 缺失时自动回填默认组名")
+    void testAutoPopulateDefaultGroupName() {
+        SnailJobProperties groupProps = new SnailJobProperties();
+        groupProps.setGroup("auto-filled-group");
+        SnailJobAdminTemplate groupedTemplate = new SnailJobAdminTemplate(jobClient, retryClient, groupProps);
+
+        JobRequest req = new JobRequest();
+        req.setJobName("jobWithoutGroup");
+        when(jobClient.addJob(any(JobRequest.class))).thenReturn(new Result<>(5001L));
+
+        assertThat(groupedTemplate.addJob(req)).isEqualTo(5001L);
+        assertThat(req.getGroupName()).isEqualTo("auto-filled-group");
+
+        JobBizIdApiRequest bizReq = new JobBizIdApiRequest();
+        bizReq.setBizId("BIZ-5002");
+        when(jobClient.addJobByBizId(any(JobBizIdApiRequest.class))).thenReturn(new Result<>(5002L));
+
+        assertThat(groupedTemplate.addJobByBizId(bizReq)).isEqualTo(5002L);
+        assertThat(bizReq.getGroupName()).isEqualTo("auto-filled-group");
+    }
 }

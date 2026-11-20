@@ -27,7 +27,6 @@ import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
-import io.github.atengk.boot.core.util.ValidatorUtil;
 import io.github.atengk.boot.job.snail.alert.SnailJobAlertAggregator;
 import io.github.atengk.boot.job.snail.annotation.AtengSnailJob;
 import io.github.atengk.boot.job.snail.context.SnailJobContext;
@@ -40,12 +39,11 @@ import io.github.atengk.boot.job.snail.interceptor.SnailJobInterceptor;
 import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
 import io.github.atengk.boot.job.snail.model.ShardingContext;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
+import io.github.atengk.boot.job.snail.support.SnailJobInvocationSupport;
 import io.github.atengk.boot.job.snail.watchdog.JobTimeoutFallbackHandler;
 import io.github.atengk.boot.job.snail.watchdog.SnailJobExecutionMetadata;
 import io.github.atengk.boot.job.snail.watchdog.SnailLocalWatchdog;
-import jakarta.validation.Constraint;
 import jakarta.validation.ConstraintViolationException;
-import jakarta.validation.Valid;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
@@ -62,11 +60,9 @@ import org.springframework.core.annotation.Order;
 import org.springframework.util.ReflectionUtils;
 import org.springframework.util.StringUtils;
 
-import java.lang.annotation.Annotation;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -78,7 +74,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import org.springframework.util.unit.DataSize;
 
 /**
  * SnailJob 调度任务上下文、链路追踪、形参注入与受管超时看门狗切面
@@ -361,7 +356,8 @@ public class SnailJobContextAspect {
         JobContext nativeJobContext = null;
         try {
             nativeJobContext = JobContextManager.getJobContext();
-        } catch (Throwable ignored) {
+        } catch (Throwable ex) {
+            log.trace("[SnailJobContextAspect] 读取原生 JobContext 失败（脱网或无上下文场景）: {}", ex.getMessage());
         }
         snailJobContext.setNativeJobContext(nativeJobContext);
 
@@ -713,7 +709,7 @@ public class SnailJobContextAspect {
     }
 
     /**
-     * 对已绑定的任务实参执行 JSR-303 格式校验与 Fail-Fast 防卫
+     * 对已绑定的任务实参执行 JSR-303 格式校验与 Fail-Fast 防卫（委托共享支撑统一执行）
      *
      * @param target       目标业务 Bean 实例
      * @param method       被调度的业务方法
@@ -722,74 +718,21 @@ public class SnailJobContextAspect {
      * @param jobName      任务名称
      */
     protected void validateParameters(Object target, Method method, Parameter[] parameters, Object[] resolvedArgs, String jobName) {
-        if (parameters == null || parameters.length == 0) {
-            return;
-        }
-
-        for (int i = 0; i < parameters.length; i++) {
-            Parameter param = parameters[i];
-            Object arg = (resolvedArgs != null && i < resolvedArgs.length) ? resolvedArgs[i] : null;
-            if (JobArgs.class.isAssignableFrom(param.getType()) 
-                    || JobContext.class.isAssignableFrom(param.getType()) 
-                    || MapHandler.class.isAssignableFrom(param.getType())
-                    || SnailJobContext.class.isAssignableFrom(param.getType())
-                    || ShardingContext.class.isAssignableFrom(param.getType())) {
-                continue;
-            }
-
-            boolean shouldValidate = shouldValidateParameter(param);
-            if (shouldValidate) {
-                Class<?>[] groups = resolveValidationGroups(param);
-                if (arg == null) {
-                    String errorMsg = "JSR-303 参数校验失败: 任务参数 [" + param.getName() + "] 不能为空";
-                    throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(), errorMsg);
-                }
-                try {
-                    ValidatorUtil.validate(arg, groups);
-                } catch (BusinessException be) {
-                    String errorMsg = "JSR-303 参数校验失败: " + be.getMessage();
-                    throw new BusinessException(be.getCode(), errorMsg, be);
-                }
-            }
-        }
+        SnailJobInvocationSupport.validateParameters(parameters, resolvedArgs);
     }
 
     /**
      * 判断形参是否需要执行 JSR-303 格式校验
      */
     protected boolean shouldValidateParameter(Parameter param) {
-        if (param.isAnnotationPresent(Valid.class)) {
-            return true;
-        }
-        for (Annotation ann : param.getAnnotations()) {
-            String name = ann.annotationType().getName();
-            if ("org.springframework.validation.annotation.Validated".equals(name)) {
-                return true;
-            }
-            if (ann.annotationType().isAnnotationPresent(Constraint.class)) {
-                return true;
-            }
-        }
-        return false;
+        return SnailJobInvocationSupport.shouldValidateParameter(param);
     }
 
     /**
      * 从形参注解中提取校验分组
      */
     protected Class<?>[] resolveValidationGroups(Parameter param) {
-        for (Annotation ann : param.getAnnotations()) {
-            if ("org.springframework.validation.annotation.Validated".equals(ann.annotationType().getName())) {
-                try {
-                    Method valueMethod = ann.annotationType().getMethod("value");
-                    Object val = valueMethod.invoke(ann);
-                    if (val instanceof Class<?>[] classes) {
-                        return classes;
-                    }
-                } catch (Exception ignored) {
-                }
-            }
-        }
-        return new Class<?>[0];
+        return SnailJobInvocationSupport.resolveValidationGroups(param);
     }
 
     /**
@@ -812,7 +755,8 @@ public class SnailJobContextAspect {
                         if (res != null) {
                             return String.valueOf(res);
                         }
-                    } catch (Exception ignored) {
+                    } catch (Exception ex) {
+                        log.trace("[SnailJobContextAspect] 反射抽取属性 {} 失败: {}", getterName, ex.getMessage());
                     }
                 }
             } else if (arg instanceof String str && str.trim().startsWith("{") && str.trim().endsWith("}")) {
@@ -828,7 +772,8 @@ public class SnailJobContextAspect {
                             }
                         }
                     }
-                } catch (Exception ignored) {
+                } catch (Exception ex) {
+                    log.trace("[SnailJobContextAspect] 解析 JSON 字符串抽取属性失败: {}", ex.getMessage());
                 }
             }
         }
@@ -843,25 +788,13 @@ public class SnailJobContextAspect {
     }
 
     /**
-     * 校验调度入参原始 JSON/文本是否超出 {@code maxPayloadSize} 上限
+     * 校验调度入参原始 JSON/文本是否超出 {@code maxPayloadSize} 上限（委托共享支撑统一执行）
      *
      * @param rawParam 原始入参文本
      * @param jobName  任务名称
      */
     protected void enforceMaxPayloadSize(String rawParam, String jobName) {
-        if (!StringUtils.hasLength(rawParam) || properties == null) {
-            return;
-        }
-        DataSize limit = properties.getMaxPayloadSize();
-        if (limit == null || limit.toBytes() <= 0) {
-            return;
-        }
-        int payloadBytes = rawParam.getBytes(StandardCharsets.UTF_8).length;
-        if (payloadBytes > limit.toBytes()) {
-            throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
-                    "SnailJob 任务 [" + jobName + "] 入参载荷超出 maxPayloadSize 限制 ("
-                            + payloadBytes + " bytes > " + limit.toBytes() + " bytes)");
-        }
+        SnailJobInvocationSupport.enforceMaxPayloadSize(this.properties, rawParam, jobName);
     }
 
     /**
@@ -916,7 +849,8 @@ public class SnailJobContextAspect {
                             return jsonNode.get("trace_id").asText();
                         }
                     }
-                } catch (Exception ignored) {
+                } catch (Exception ex) {
+                    log.trace("[SnailJobContextAspect] 解析入参 traceId JSON 失败: {}", ex.getMessage());
                 }
             }
             if (trimmed.contains("traceId=") || trimmed.contains("trace_id=")) {
@@ -954,7 +888,8 @@ public class SnailJobContextAspect {
                             return jsonNode.get("user").asText();
                         }
                     }
-                } catch (Exception ignored) {
+                } catch (Exception ex) {
+                    log.trace("[SnailJobContextAspect] 解析入参 traceId JSON 失败: {}", ex.getMessage());
                 }
             }
         }
@@ -978,7 +913,8 @@ public class SnailJobContextAspect {
                             return jsonNode.get("tenant_id").asText();
                         }
                     }
-                } catch (Exception ignored) {
+                } catch (Exception ex) {
+                    log.trace("[SnailJobContextAspect] 解析入参 traceId JSON 失败: {}", ex.getMessage());
                 }
             }
             if (trimmed.contains("tenantId=") || trimmed.contains("tenant_id=")) {
@@ -1524,14 +1460,21 @@ public class SnailJobContextAspect {
     }
 
     protected Duration resolveRetryInterval(AtengSnailJob atengSnailJob) {
-        if (atengSnailJob == null || !StringUtils.hasText(atengSnailJob.retryInterval())) {
-            return Duration.ofSeconds(1);
+        if (atengSnailJob != null && StringUtils.hasText(atengSnailJob.retryInterval())) {
+            Duration interval = parseDuration(atengSnailJob.retryInterval());
+            if (interval == null || interval.isNegative()) {
+                throw new IllegalArgumentException("retryInterval 不能为负数: " + atengSnailJob.retryInterval());
+            }
+            return interval;
         }
-        Duration interval = parseDuration(atengSnailJob.retryInterval());
-        if (interval == null || interval.isNegative()) {
-            throw new IllegalArgumentException("retryInterval 不能为负数: " + atengSnailJob.retryInterval());
+        if (properties != null && properties.getJob() != null && properties.getJob().getDefaultRetryInterval() != null) {
+            Duration configured = properties.getJob().getDefaultRetryInterval();
+            if (configured.isNegative()) {
+                throw new IllegalArgumentException("defaultRetryInterval 不能为负数: " + configured);
+            }
+            return configured;
         }
-        return interval;
+        return Duration.ofSeconds(1);
     }
 
     private boolean isNonRetryableThrowable(Throwable t) {

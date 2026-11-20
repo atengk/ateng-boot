@@ -2,7 +2,6 @@ package io.github.atengk.boot.job.snail.autoconfigure;
 
 import com.aizuda.snailjob.client.common.config.SnailJobProperties.ServerConfig;
 import com.aizuda.snailjob.client.core.Scanner;
-import com.aizuda.snailjob.client.core.callback.complete.RetryCompleteCallback;
 import com.aizuda.snailjob.client.core.intercepter.SnailRetryInterceptor;
 import com.aizuda.snailjob.client.core.openapi.RetryOpenApiClientV2;
 import com.aizuda.snailjob.client.core.strategy.LocalRetryStrategies;
@@ -480,14 +479,23 @@ public class AtengSnailJobAutoConfiguration {
         @Bean
         @ConditionalOnMissingBean
         public SnailRetryTemplate snailRetryTemplate(
+                @Qualifier("syncReport") ObjectProvider<com.aizuda.snailjob.client.core.Report> syncReportProvider,
+                @Qualifier("asyncReport") ObjectProvider<com.aizuda.snailjob.client.core.Report> asyncReportProvider,
                 ObjectProvider<com.aizuda.snailjob.client.core.Report> reportProvider,
                 SnailJobProperties properties,
                 ObjectProvider<SnailRetryContextStore> contextStoreProvider) {
-            return new SnailRetryTemplate(reportProvider, properties, contextStoreProvider.getIfAvailable());
+            com.aizuda.snailjob.client.core.Report preferredReport = syncReportProvider.getIfAvailable();
+            if (preferredReport == null) {
+                preferredReport = asyncReportProvider.getIfAvailable();
+            }
+            if (preferredReport == null) {
+                preferredReport = reportProvider.orderedStream().findFirst().orElse(null);
+            }
+            return new SnailRetryTemplate(reportProvider, preferredReport, properties, contextStoreProvider.getIfAvailable());
         }
 
         @Bean
-        @ConditionalOnMissingBean(RetryCompleteCallback.class)
+        @ConditionalOnMissingBean(SnailRetryDeadLetterCallback.class)
         public SnailRetryDeadLetterCallback snailRetryDeadLetterCallback(
                 ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider,
                 ObjectProvider<SnailRetryContextStore> contextStoreProvider) {

@@ -594,7 +594,9 @@ public class SnailShardingBatchTemplate {
             ID chunkEndId = idExtractor.apply(chunk.get(chunkSize - 1));
 
             try {
-                semaphore.acquire();
+                if (!semaphore.tryAcquire(5, TimeUnit.MINUTES)) {
+                    throw new IllegalStateException("并发批处理获取背压信号量超时 (时限: 5分钟)");
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 log.warn("[SnailShardingBatchTemplate] 等待并发许可被中断", e);
@@ -602,23 +604,29 @@ public class SnailShardingBatchTemplate {
             }
 
             List<T> immutableChunk = Collections.unmodifiableList(chunk);
-            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> parentContext.runWithContext(() -> {
-                try {
-                    batchConsumer.accept(immutableChunk);
-                    long currentSuccess = successCount.addAndGet(chunkSize);
-                    emitProgressIfNeeded(processed, currentSuccess, failCount.get(), currentBatch, startTime, nextProgressThreshold);
-                } catch (Throwable t) {
-                    long currentFail = failCount.addAndGet(chunkSize);
-                    FailedBatch<ID> failed = new FailedBatch<>(chunkStartId, chunkEndId, null, currentBatch, chunkSize, t);
-                    recordFailedBatch(failedBatches, failedLock, truncated, this.maxFailedItems, failed);
-                    notifyFailureHandler(failed, failureHandler);
-                    firstError.compareAndSet(null, t);
-                    log.error("[SnailShardingBatchTemplate] 并发批处理子任务执行异常 [批次: {}]: {}", currentBatch, t.getMessage(), t);
-                    emitProgressIfNeeded(processed, successCount.get(), currentFail, currentBatch, startTime, nextProgressThreshold);
-                } finally {
-                    semaphore.release();
-                }
-            }), executor);
+            CompletableFuture<Void> future;
+            try {
+                future = CompletableFuture.runAsync(() -> parentContext.runWithContext(() -> {
+                    try {
+                        batchConsumer.accept(immutableChunk);
+                        long currentSuccess = successCount.addAndGet(chunkSize);
+                        emitProgressIfNeeded(processed, currentSuccess, failCount.get(), currentBatch, startTime, nextProgressThreshold);
+                    } catch (Throwable t) {
+                        long currentFail = failCount.addAndGet(chunkSize);
+                        FailedBatch<ID> failed = new FailedBatch<>(chunkStartId, chunkEndId, null, currentBatch, chunkSize, t);
+                        recordFailedBatch(failedBatches, failedLock, truncated, this.maxFailedItems, failed);
+                        notifyFailureHandler(failed, failureHandler);
+                        firstError.compareAndSet(null, t);
+                        log.error("[SnailShardingBatchTemplate] 并发批处理子任务执行异常 [批次: {}]: {}", currentBatch, t.getMessage(), t);
+                        emitProgressIfNeeded(processed, successCount.get(), currentFail, currentBatch, startTime, nextProgressThreshold);
+                    } finally {
+                        semaphore.release();
+                    }
+                }), executor);
+            } catch (Throwable submitError) {
+                semaphore.release();
+                throw submitError;
+            }
 
             futures.add(future);
 
@@ -736,30 +744,39 @@ public class SnailShardingBatchTemplate {
                 Integer shardIndex = (sharding != null) ? sharding.getShardIndex() : null;
 
                 try {
-                    semaphore.acquire();
+                    if (!semaphore.tryAcquire(5, TimeUnit.MINUTES)) {
+                        throw new IllegalStateException("分片并发批处理获取背压信号量超时 (时限: 5分钟)");
+                    }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                    log.warn("[SnailShardingBatchTemplate] 等待分片并发许可被中断", e);
                     break;
                 }
 
                 List<T> immutableChunk = Collections.unmodifiableList(matchedChunk);
-                CompletableFuture<Void> future = CompletableFuture.runAsync(() -> parentContext.runWithContext(() -> {
-                    try {
-                        batchConsumer.accept(immutableChunk);
-                        long currentSuccess = successCount.addAndGet(matchedSize);
-                        emitProgressIfNeeded(processed, currentSuccess, failCount.get(), currentBatch, startTime, nextProgressThreshold);
-                    } catch (Throwable t) {
-                        long currentFail = failCount.addAndGet(matchedSize);
-                        FailedBatch<Long> failed = new FailedBatch<>(chunkStartId, chunkEndId, shardIndex, currentBatch, matchedSize, t);
-                        recordFailedBatch(failedBatches, failedLock, truncated, this.maxFailedItems, failed);
-                        notifyFailureHandler(failed, failureHandler);
-                        firstError.compareAndSet(null, t);
-                        log.error("[SnailShardingBatchTemplate] 分片并发切片执行异常 [批次: {}]: {}", currentBatch, t.getMessage(), t);
-                        emitProgressIfNeeded(processed, successCount.get(), currentFail, currentBatch, startTime, nextProgressThreshold);
-                    } finally {
-                        semaphore.release();
-                    }
-                }), executor);
+                CompletableFuture<Void> future;
+                try {
+                    future = CompletableFuture.runAsync(() -> parentContext.runWithContext(() -> {
+                        try {
+                            batchConsumer.accept(immutableChunk);
+                            long currentSuccess = successCount.addAndGet(matchedSize);
+                            emitProgressIfNeeded(processed, currentSuccess, failCount.get(), currentBatch, startTime, nextProgressThreshold);
+                        } catch (Throwable t) {
+                            long currentFail = failCount.addAndGet(matchedSize);
+                            FailedBatch<Long> failed = new FailedBatch<>(chunkStartId, chunkEndId, shardIndex, currentBatch, matchedSize, t);
+                            recordFailedBatch(failedBatches, failedLock, truncated, this.maxFailedItems, failed);
+                            notifyFailureHandler(failed, failureHandler);
+                            firstError.compareAndSet(null, t);
+                            log.error("[SnailShardingBatchTemplate] 分片并发切片执行异常 [批次: {}]: {}", currentBatch, t.getMessage(), t);
+                            emitProgressIfNeeded(processed, successCount.get(), currentFail, currentBatch, startTime, nextProgressThreshold);
+                        } finally {
+                            semaphore.release();
+                        }
+                    }), executor);
+                } catch (Throwable submitError) {
+                    semaphore.release();
+                    throw submitError;
+                }
 
                 futures.add(future);
             }
@@ -824,7 +841,8 @@ public class SnailShardingBatchTemplate {
         log.info("{}", msg);
         try {
             SnailJobLog.LOCAL.info(msg);
-        } catch (Throwable ignored) {
+        } catch (Throwable ex) {
+            log.trace("[SnailShardingBatchTemplate] 写入 SnailJob 本地进度日志失败（非阻塞忽略）: {}", ex.getMessage());
         }
     }
 
@@ -865,22 +883,30 @@ public class SnailShardingBatchTemplate {
         }
     }
 
-    @SuppressWarnings("unchecked")
     protected <K> void notifyFailureHandler(FailedBatch<K> failed, BatchFailureHandler<K> explicitHandler) {
+        notifyFailureHandler(failed, explicitHandler, this.defaultFailureHandler, "SnailShardingBatchTemplate");
+    }
+
+    @SuppressWarnings("unchecked")
+    protected static <K> void notifyFailureHandler(
+            FailedBatch<K> failed,
+            BatchFailureHandler<K> explicitHandler,
+            BatchFailureHandler<?> defaultHandler,
+            String templateName) {
         if (failed == null) {
             return;
         }
         BatchFailureHandler<K> target = explicitHandler != null
                 ? explicitHandler
-                : (BatchFailureHandler<K>) this.defaultFailureHandler;
+                : (BatchFailureHandler<K>) defaultHandler;
         if (target == null) {
             return;
         }
         try {
             target.onFailure(failed);
         } catch (Throwable ex) {
-            log.warn("[SnailShardingBatchTemplate] BatchFailureHandler 回调执行异常，已隔离防止影响主链路 [Batch: {}]: {}",
-                    failed.batchIndex(), ex.getMessage(), ex);
+            log.warn("[{}] BatchFailureHandler 回调执行异常，已隔离防止影响主链路 [Batch: {}, CursorStart: {}]: {}",
+                    templateName, failed.batchIndex(), failed.cursorStart(), ex.getMessage(), ex);
         }
     }
 

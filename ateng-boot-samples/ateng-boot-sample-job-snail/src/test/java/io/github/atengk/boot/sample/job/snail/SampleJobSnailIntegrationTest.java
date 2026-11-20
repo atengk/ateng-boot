@@ -36,9 +36,13 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.health.Health;
+import org.springframework.boot.actuate.health.Status;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 
 import java.math.BigDecimal;
 import java.util.Map;
@@ -53,6 +57,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * @since 2026-11-11
  */
 @SpringBootTest(classes = SampleJobSnailApplication.class)
+@AutoConfigureMockMvc
 @Import(SampleJobSnailTestConfig.class)
 class SampleJobSnailIntegrationTest {
 
@@ -113,6 +118,9 @@ class SampleJobSnailIntegrationTest {
     @Autowired
     private ApplicationContext applicationContext;
 
+    @Autowired
+    private Environment environment;
+
     @AfterEach
     void tearDown() {
         SnailJobContextHolder.clear();
@@ -130,7 +138,6 @@ class SampleJobSnailIntegrationTest {
         logisticsBatchJobHandler.clearDeadLetterBatches();
         auditJobInterceptor.reset();
         runtimeGovernor.resumeAll();
-        SnailJobTestHelper.clear();
     }
 
     @Test
@@ -246,9 +253,11 @@ class SampleJobSnailIntegrationTest {
         String res2 = retryDemoService.executeWithProgrammaticRetry("ORD-2002");
         assertThat(res2).isEqualTo("SUCCESS:ORD-2002");
 
-        // 7.4 手动上报（脱网环境保底返回 true）
+        // 7.4 手动上报（脱网环境保底返回 true；local 联调若服务端未配置场景则返回 false 且不应抛异常）
         boolean reported = retryDemoService.reportFailedOrder("ORD-3003");
-        assertThat(reported).isTrue();
+        if (!environment.acceptsProfiles(Profiles.of("local"))) {
+            assertThat(reported).isTrue();
+        }
     }
 
     @Test
@@ -437,6 +446,9 @@ class SampleJobSnailIntegrationTest {
         Health health = healthIndicator.health();
         assertThat(health).isNotNull();
         assertThat(health.getDetails()).containsKey("server");
+        if (environment.acceptsProfiles(Profiles.of("local"))) {
+            assertThat(health.getStatus()).isEqualTo(Status.UP);
+        }
 
         // 14.2 SnailJob 运维端点概览
         Map<String, Object> overview = snailJobEndpoint.listJobs();
@@ -487,8 +499,16 @@ class SampleJobSnailIntegrationTest {
         RetryableScanner nativeScanner = new RetryableScanner();
         nativeScanner.setApplicationContext(applicationContext);
         RetryableRegistrar registrar = new RetryableRegistrar();
-        registrar.registerRetryHandler(nativeScanner.doScan());
-        registrar.registerRetryHandler(atengSnailRetryScanner.doScan());
+        for (var info : nativeScanner.doScan()) {
+            if (RetryerInfoCache.get(info.getScene(), info.getExecutorClassName()) == null) {
+                registrar.registerRetryHandler(info);
+            }
+        }
+        for (var info : atengSnailRetryScanner.doScan()) {
+            if (RetryerInfoCache.get(info.getScene(), info.getExecutorClassName()) == null) {
+                registrar.registerRetryHandler(info);
+            }
+        }
 
         String demoClass = RetryDemoService.class.getName();
         assertThat(RetryerInfoCache.get("orderPayRetry", demoClass)).isNotNull();

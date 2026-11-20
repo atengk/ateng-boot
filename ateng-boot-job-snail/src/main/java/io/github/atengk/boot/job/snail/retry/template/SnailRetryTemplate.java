@@ -1,6 +1,7 @@
 package io.github.atengk.boot.job.snail.retry.template;
 
 import com.aizuda.snailjob.client.core.Report;
+import com.aizuda.snailjob.client.core.intercepter.RetrySiteSnapshot;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.TenantContextHolder;
@@ -45,11 +46,12 @@ public class SnailRetryTemplate {
     private static final long DEFAULT_BACKOFF_MS = 200L;
 
     private final ObjectProvider<Report> reportProvider;
+    private final Report preferredReport;
     private final SnailJobProperties properties;
     private final SnailRetryContextStore contextStore;
 
     public SnailRetryTemplate() {
-        this(null, null, null);
+        this((ObjectProvider<Report>) null, null, null);
     }
 
     public SnailRetryTemplate(ObjectProvider<Report> reportProvider, SnailJobProperties properties) {
@@ -60,7 +62,24 @@ public class SnailRetryTemplate {
             ObjectProvider<Report> reportProvider,
             SnailJobProperties properties,
             SnailRetryContextStore contextStore) {
+        this(reportProvider, null, properties, contextStore);
+    }
+
+    /**
+     * 全参数构造器（支持显式指定优先 {@link Report} 实现，避免 {@code asyncReport}/{@code syncReport} 双 Bean 歧义）
+     *
+     * @param reportProvider  上报客户端提供者（可为 null）
+     * @param preferredReport 显式优选的上报客户端实例（可为 null）
+     * @param properties      SnailJob 配置属性
+     * @param contextStore    重试上下文持久化存储
+     */
+    public SnailRetryTemplate(
+            ObjectProvider<Report> reportProvider,
+            Report preferredReport,
+            SnailJobProperties properties,
+            SnailRetryContextStore contextStore) {
         this.reportProvider = reportProvider;
+        this.preferredReport = preferredReport;
         this.properties = properties;
         this.contextStore = contextStore != null ? contextStore : SnailRetryContextRegistry.getStore();
     }
@@ -238,17 +257,43 @@ public class SnailRetryTemplate {
             }
         }
 
-        Report report = reportProvider != null ? reportProvider.getIfAvailable() : null;
+        Report report = resolveReport();
         if (report != null) {
+            Integer previousStage = RetrySiteSnapshot.getStage();
+            if (previousStage == null) {
+                RetrySiteSnapshot.setStage(RetrySiteSnapshot.EnumStage.MANUAL_REPORT.getStage());
+            }
             try {
                 return report.report(scene, targetClassName, params != null ? params : new Object[0]);
             } catch (Throwable t) {
                 log.error("通过 SnailJob Report 门面上报异常 [Scene: {}, Target: {}]: {}", scene, targetClassName, t.getMessage(), t);
                 return false;
+            } finally {
+                if (previousStage == null) {
+                    RetrySiteSnapshot.removeStage();
+                }
             }
         } else {
             log.debug("未装配 SnailJob Report 实例，进入离线自洽模拟上报 [Scene: {}, Target: {}]", scene, targetClassName);
             return true;
+        }
+    }
+
+    private Report resolveReport() {
+        if (this.preferredReport != null) {
+            return this.preferredReport;
+        }
+        if (this.reportProvider == null) {
+            return null;
+        }
+        try {
+            Report unique = this.reportProvider.getIfUnique();
+            if (unique != null) {
+                return unique;
+            }
+            return this.reportProvider.orderedStream().findFirst().orElseGet(this.reportProvider::getIfAvailable);
+        } catch (UnsupportedOperationException ex) {
+            return this.reportProvider.getIfAvailable();
         }
     }
 

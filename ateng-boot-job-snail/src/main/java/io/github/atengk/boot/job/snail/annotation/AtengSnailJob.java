@@ -73,9 +73,9 @@ public @interface AtengSnailJob {
     int retryCount() default 0;
 
     /**
-     * 方法级本地重试退避间隔（支持 100ms、1s 等标准 Duration 格式，默认为 1s）
+     * 方法级本地重试退避间隔（支持 100ms、1s 等标准 Duration 格式；留空则回退 {@code ateng.boot.job.snail.job.default-retry-interval}，默认 1s）
      */
-    String retryInterval() default "1s";
+    String retryInterval() default "";
 
     /**
      * 超时降级就地补偿方法名称（定义于同一 Spring Bean 内）

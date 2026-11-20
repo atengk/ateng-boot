@@ -123,6 +123,7 @@ public class SnailJobAdminTemplate {
      */
     public Long addJob(JobRequest request) {
         Assert.notNull(request, "JobRequest 不能为 null");
+        ensureGroupName(request);
         return execute(() -> requireJobClient().addJob(request), "新增定时任务");
     }
 
@@ -134,6 +135,7 @@ public class SnailJobAdminTemplate {
      */
     public Boolean updateJob(JobRequest request) {
         Assert.notNull(request, "JobRequest 不能为 null");
+        ensureGroupName(request);
         return execute(() -> requireJobClient().updateJob(request), "更新定时任务 (id=" + request.getId() + ")");
     }
 
@@ -444,6 +446,7 @@ public class SnailJobAdminTemplate {
      */
     public Long addJobByBizId(JobBizIdApiRequest request) {
         Assert.notNull(request, "JobBizIdApiRequest 不能为 null");
+        ensureGroupName(request);
         return execute(() -> requireJobClient().addJobByBizId(request), "按 BizId 新增任务 (bizId=" + request.getBizId() + ")");
     }
 
@@ -455,6 +458,7 @@ public class SnailJobAdminTemplate {
      */
     public Boolean updateJobByBizId(JobBizIdApiRequest request) {
         Assert.notNull(request, "JobBizIdApiRequest 不能为 null");
+        ensureGroupName(request);
         return execute(() -> requireJobClient().updateJobByBizId(request), "按 BizId 更新任务 (bizId=" + request.getBizId() + ")");
     }
 
@@ -880,6 +884,51 @@ public class SnailJobAdminTemplate {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("SnailJob OpenAPI 操作 [" + operationName + "] 请求被中断", ie);
         }
+    }
+
+    private void ensureGroupName(JobRequest request) {
+        if (request == null || StringUtils.hasText(request.getGroupName())) {
+            return;
+        }
+        String defaultGroup = resolveDefaultGroupName();
+        if (StringUtils.hasText(defaultGroup)) {
+            request.setGroupName(defaultGroup);
+        }
+    }
+
+    private void ensureGroupName(JobBizIdApiRequest request) {
+        if (request == null || StringUtils.hasText(request.getGroupName())) {
+            return;
+        }
+        String defaultGroup = resolveDefaultGroupName();
+        if (StringUtils.hasText(defaultGroup)) {
+            request.setGroupName(defaultGroup);
+        }
+    }
+
+    private String resolveDefaultGroupName() {
+        if (this.properties != null && StringUtils.hasText(this.properties.getGroup())) {
+            return this.properties.getGroup().trim();
+        }
+        try {
+            com.aizuda.snailjob.client.common.config.SnailJobProperties nativeProps =
+                    com.aizuda.snailjob.common.core.context.SnailSpringContext.getBean(
+                            com.aizuda.snailjob.client.common.config.SnailJobProperties.class);
+            if (nativeProps != null && StringUtils.hasText(nativeProps.getGroup())) {
+                return nativeProps.getGroup().trim();
+            }
+        } catch (Throwable ex) {
+            log.trace("读取原生 SnailJobProperties 默认 group 失败: {}", ex.getMessage());
+        }
+        try {
+            String appName = io.github.atengk.boot.core.util.SpringUtil.getProperty("spring.application.name");
+            if (StringUtils.hasText(appName)) {
+                return appName.trim();
+            }
+        } catch (Throwable ex) {
+            log.trace("读取 spring.application.name 默认 group 失败: {}", ex.getMessage());
+        }
+        return null;
     }
 
     private Executor resolveEffectiveExecutor() {

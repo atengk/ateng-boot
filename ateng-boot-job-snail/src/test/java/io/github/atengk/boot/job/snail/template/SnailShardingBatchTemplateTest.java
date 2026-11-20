@@ -19,6 +19,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -360,46 +361,51 @@ class SnailShardingBatchTemplateTest {
         List<FailedBatch<Long>> explicitCaptured = new CopyOnWriteArrayList<>();
         BatchFailureHandler<Long> globalHandler = globalCaptured::add;
 
-        SnailShardingBatchTemplate managedTemplate = new SnailShardingBatchTemplate(
-                Executors.newFixedThreadPool(2), 2, 2, false, false, 100, 500, globalHandler);
+        java.util.concurrent.ExecutorService testExecutor = Executors.newFixedThreadPool(2);
+        try {
+            SnailShardingBatchTemplate managedTemplate = new SnailShardingBatchTemplate(
+                    testExecutor, 2, 2, false, false, 100, 500, globalHandler);
 
-        List<Long> mockDb = List.of(1L, 2L, 3L, 4L);
+            List<Long> mockDb = List.of(1L, 2L, 3L, 4L);
 
-        // 1. 未传显式回调：由全局默认 SPI 兜底触发
-        BatchExecutionResult<Long> fallbackResult = managedTemplate.executeStep(
-                0L,
-                2,
-                false,
-                (lastId, size) -> mockDb.stream().filter(id -> id > lastId).limit(size).toList(),
-                id -> id,
-                chunk -> {
-                    if (chunk.contains(1L)) {
-                        throw new IllegalStateException("global fallback error");
+            // 1. 未传显式回调：由全局默认 SPI 兜底触发
+            BatchExecutionResult<Long> fallbackResult = managedTemplate.executeStep(
+                    0L,
+                    2,
+                    false,
+                    (lastId, size) -> mockDb.stream().filter(id -> id > lastId).limit(size).toList(),
+                    id -> id,
+                    chunk -> {
+                        if (chunk.contains(1L)) {
+                            throw new IllegalStateException("global fallback error");
+                        }
                     }
-                }
-        );
-        assertThat(fallbackResult.getFailCount()).isEqualTo(2);
-        assertThat(globalCaptured).hasSize(1);
-        assertThat(globalCaptured.get(0).cursorStart()).isEqualTo(1L);
+            );
+            assertThat(fallbackResult.getFailCount()).isEqualTo(2);
+            assertThat(globalCaptured).hasSize(1);
+            assertThat(globalCaptured.get(0).cursorStart()).isEqualTo(1L);
 
-        // 2. 传入显式回调：显式回调优先触发，全局默认 SPI 不重复触发
-        BatchExecutionResult<Long> overrideResult = managedTemplate.executeStep(
-                0L,
-                2,
-                false,
-                (lastId, size) -> mockDb.stream().filter(id -> id > lastId).limit(size).toList(),
-                id -> id,
-                chunk -> {
-                    if (chunk.contains(3L)) {
-                        throw new IllegalStateException("explicit override error");
-                    }
-                },
-                explicitCaptured::add
-        );
-        assertThat(overrideResult.getFailCount()).isEqualTo(2);
-        assertThat(explicitCaptured).hasSize(1);
-        assertThat(explicitCaptured.get(0).cursorStart()).isEqualTo(3L);
-        assertThat(globalCaptured).hasSize(1);
+            // 2. 传入显式回调：显式回调优先触发，全局默认 SPI 不重复触发
+            BatchExecutionResult<Long> overrideResult = managedTemplate.executeStep(
+                    0L,
+                    2,
+                    false,
+                    (lastId, size) -> mockDb.stream().filter(id -> id > lastId).limit(size).toList(),
+                    id -> id,
+                    chunk -> {
+                        if (chunk.contains(3L)) {
+                            throw new IllegalStateException("explicit override error");
+                        }
+                    },
+                    explicitCaptured::add
+            );
+            assertThat(overrideResult.getFailCount()).isEqualTo(2);
+            assertThat(explicitCaptured).hasSize(1);
+            assertThat(explicitCaptured.get(0).cursorStart()).isEqualTo(3L);
+            assertThat(globalCaptured).hasSize(1);
+        } finally {
+            testExecutor.shutdownNow();
+        }
     }
 
     @Test
@@ -508,6 +514,32 @@ class SnailShardingBatchTemplateTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("streaming chunk error");
         assertThat(captured).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("并发提交异常: RejectedExecutionException 发生时信号量许可与主链失败感知正常")
+    void testParallelSubmitFailureReleasesSemaphorePermit() {
+        AtomicInteger attempts = new AtomicInteger(0);
+        Executor rejectingOnFirst = task -> {
+            if (attempts.incrementAndGet() == 1) {
+                throw new java.util.concurrent.RejectedExecutionException("simulated queue full");
+            }
+            task.run();
+        };
+
+        SnailShardingBatchTemplate rejectingTemplate = new SnailShardingBatchTemplate(
+                rejectingOnFirst, 2, 1, false, true, 100, 500, null);
+        List<Long> mockDb = List.of(1L, 2L);
+
+        assertThatThrownBy(() -> rejectingTemplate.executeStepParallel(
+                0L,
+                1,
+                1,
+                (lastId, size) -> mockDb.stream().filter(id -> id > lastId).limit(size).toList(),
+                id -> id,
+                chunk -> {
+                }
+        )).isInstanceOf(java.util.concurrent.RejectedExecutionException.class);
     }
 
     /**

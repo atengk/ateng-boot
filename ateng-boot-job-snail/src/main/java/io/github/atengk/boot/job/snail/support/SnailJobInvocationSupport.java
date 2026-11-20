@@ -15,6 +15,7 @@ import com.aizuda.snailjob.client.job.core.dto.MapArgs;
 import com.aizuda.snailjob.client.job.core.dto.MergeReduceArgs;
 import com.aizuda.snailjob.client.job.core.dto.ReduceArgs;
 import com.aizuda.snailjob.client.job.core.dto.ShardingJobArgs;
+import com.aizuda.snailjob.common.core.model.JobContext;
 import com.aizuda.snailjob.model.dto.ExecuteResult;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
@@ -506,6 +507,31 @@ public final class SnailJobInvocationSupport {
                         + "]，实际为 [" + explicitParam.getClass().getSimpleName() + "]");
     }
 
+    /**
+     * 对已绑定的任务实参批量执行 JSR-303 格式校验与 Fail-Fast 防卫（自动跳过框架运行时上下文形参）
+     *
+     * @param parameters   方法形参定义数组
+     * @param resolvedArgs 已绑定的实参列表
+     */
+    public static void validateParameters(Parameter[] parameters, Object[] resolvedArgs) {
+        if (parameters == null || parameters.length == 0) {
+            return;
+        }
+        for (int i = 0; i < parameters.length; i++) {
+            Parameter param = parameters[i];
+            Class<?> type = param.getType();
+            if (JobArgs.class.isAssignableFrom(type)
+                    || JobContext.class.isAssignableFrom(type)
+                    || MapHandler.class.isAssignableFrom(type)
+                    || SnailJobContext.class.isAssignableFrom(type)
+                    || ShardingContext.class.isAssignableFrom(type)) {
+                continue;
+            }
+            Object arg = (resolvedArgs != null && i < resolvedArgs.length) ? resolvedArgs[i] : null;
+            validateSingleParameter(param, arg);
+        }
+    }
+
     private static void validateSingleParameter(Parameter param, Object arg) {
         if (!shouldValidateParameter(param)) {
             return;
@@ -522,7 +548,13 @@ public final class SnailJobInvocationSupport {
         }
     }
 
-    private static boolean shouldValidateParameter(Parameter param) {
+    /**
+     * 判断形参是否需要执行 JSR-303 格式校验
+     *
+     * @param param 方法形参元数据
+     * @return true 表示需要校验
+     */
+    public static boolean shouldValidateParameter(Parameter param) {
         if (param.isAnnotationPresent(Valid.class)) {
             return true;
         }
@@ -538,7 +570,13 @@ public final class SnailJobInvocationSupport {
         return false;
     }
 
-    private static Class<?>[] resolveValidationGroups(Parameter param) {
+    /**
+     * 从形参注解中提取校验分组
+     *
+     * @param param 方法形参元数据
+     * @return 校验分组数组，无分组返回空数组
+     */
+    public static Class<?>[] resolveValidationGroups(Parameter param) {
         for (Annotation ann : param.getAnnotations()) {
             if ("org.springframework.validation.annotation.Validated".equals(ann.annotationType().getName())) {
                 try {
@@ -547,7 +585,8 @@ public final class SnailJobInvocationSupport {
                     if (groups instanceof Class<?>[] classArray) {
                         return classArray;
                     }
-                } catch (Exception ignored) {
+                } catch (Exception ex) {
+                    log.trace("[SnailJobInvocationSupport] 提取 @Validated 分组失败，回退默认分组: {}", ex.getMessage());
                 }
             }
         }

@@ -14,6 +14,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -357,30 +358,39 @@ public class SnailMyBatisStreamingTemplate extends SnailShardingBatchTemplate {
             int batchIndex = batchCount.incrementAndGet();
 
             try {
-                semaphore.acquire();
+                if (!semaphore.tryAcquire(5, TimeUnit.MINUTES)) {
+                    throw new IllegalStateException("游标并发批处理获取背压信号量超时 (时限: 5分钟)");
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                log.warn("[SnailMyBatisStreamingTemplate] 等待并发许可被中断", e);
                 return;
             }
 
             List<T> immutableBatch = Collections.unmodifiableList(batch);
-            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> parentContext.runWithContext(() -> {
-                try {
-                    batchConsumer.accept(immutableBatch);
-                    long currentSuccess = successCount.addAndGet(size);
-                    emitProgressIfNeeded(processed, currentSuccess, failCount.get(), batchIndex, startTime, nextProgressThreshold);
-                } catch (Throwable t) {
-                    long currentFail = failCount.addAndGet(size);
-                    FailedBatch<Integer> failed = new FailedBatch<>(batchIndex, batchIndex, null, batchIndex, size, t);
-                    recordFailedBatch(failedBatches, failedLock, truncated, getMaxFailedItems(), failed);
-                    notifyFailureHandler(failed, failureHandler);
-                    firstError.compareAndSet(null, t);
-                    log.error("[SnailMyBatisStreamingTemplate] 游标并发切片异常 [批次: {}]: {}", batchIndex, t.getMessage(), t);
-                    emitProgressIfNeeded(processed, successCount.get(), currentFail, batchIndex, startTime, nextProgressThreshold);
-                } finally {
-                    semaphore.release();
-                }
-            }), executor);
+            CompletableFuture<Void> future;
+            try {
+                future = CompletableFuture.runAsync(() -> parentContext.runWithContext(() -> {
+                    try {
+                        batchConsumer.accept(immutableBatch);
+                        long currentSuccess = successCount.addAndGet(size);
+                        emitProgressIfNeeded(processed, currentSuccess, failCount.get(), batchIndex, startTime, nextProgressThreshold);
+                    } catch (Throwable t) {
+                        long currentFail = failCount.addAndGet(size);
+                        FailedBatch<Integer> failed = new FailedBatch<>(batchIndex, batchIndex, null, batchIndex, size, t);
+                        recordFailedBatch(failedBatches, failedLock, truncated, getMaxFailedItems(), failed);
+                        notifyFailureHandler(failed, failureHandler);
+                        firstError.compareAndSet(null, t);
+                        log.error("[SnailMyBatisStreamingTemplate] 游标并发切片异常 [批次: {}]: {}", batchIndex, t.getMessage(), t);
+                        emitProgressIfNeeded(processed, successCount.get(), currentFail, batchIndex, startTime, nextProgressThreshold);
+                    } finally {
+                        semaphore.release();
+                    }
+                }), executor);
+            } catch (Throwable submitError) {
+                semaphore.release();
+                throw submitError;
+            }
 
             futures.add(future);
         };

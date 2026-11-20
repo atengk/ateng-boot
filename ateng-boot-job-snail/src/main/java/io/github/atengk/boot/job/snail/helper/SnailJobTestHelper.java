@@ -235,6 +235,8 @@ public class SnailJobTestHelper implements ApplicationContextAware, DisposableBe
             log.info(">>>>>> [SnailJob脱网单测] 开始触发任务 [jobName: {}, param: {}, shard: {}/{}, tenant: {}]",
                     jobName, param, shardIndex, shardTotal, tenantId);
 
+            // 若目标 Bean 已被 Spring AOP 代理且容器内存在调度切面，暂停拦截交由 SnailJobContextAspect 处理
+            // 以忠实还原生产运行态（返回 [SKIPPED] 成功结果）；脱网裸对象测试则前置拦截抛出 BusinessException(503)
             boolean aspectHandlesGovernor = AopUtils.isAopProxy(target) && getBeanIfPresent(SnailJobContextAspect.class) != null;
             if (!aspectHandlesGovernor) {
                 SnailJobInvocationSupport.enforceGovernorNotPaused(governor, jobName);

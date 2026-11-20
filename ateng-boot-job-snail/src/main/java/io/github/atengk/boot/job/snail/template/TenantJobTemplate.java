@@ -365,23 +365,9 @@ public class TenantJobTemplate {
         return valid;
     }
 
-    @SuppressWarnings("unchecked")
     private void notifyFailureHandler(FailedBatch<String> failed, BatchFailureHandler<String> explicitHandler) {
-        if (failed == null) {
-            return;
-        }
-        BatchFailureHandler<String> target = explicitHandler != null
-                ? explicitHandler
-                : (BatchFailureHandler<String>) this.defaultFailureHandler;
-        if (target == null) {
-            return;
-        }
-        try {
-            target.onFailure(failed);
-        } catch (Throwable ex) {
-            log.warn("[TenantJobTemplate] BatchFailureHandler 回调执行异常，已隔离 [Tenant: {}]: {}",
-                    failed.cursorStart(), ex.getMessage(), ex);
-        }
+        SnailShardingBatchTemplate.notifyFailureHandler(
+                failed, explicitHandler, this.defaultFailureHandler, "TenantJobTemplate");
     }
 
     private void logSummary(

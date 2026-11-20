@@ -15,7 +15,6 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -34,7 +33,7 @@ import java.util.concurrent.locks.ReentrantLock;
 public class LogisticsBatchJobHandler {
 
     private final SnailShardingBatchTemplate shardingBatchTemplate;
-    private final List<FailedBatch<Long>> deadLetterBatches = new CopyOnWriteArrayList<>();
+    private final List<FailedBatch<Long>> deadLetterBatches = new ArrayList<>();
     private final ReentrantLock deadLetterLock = new ReentrantLock();
 
     /**

@@ -220,7 +220,8 @@ public class SnailJobHealthIndicator implements HealthIndicator {
                 host = clean.substring(0, colonIdx).trim();
                 try {
                     port = Integer.parseInt(clean.substring(colonIdx + 1).trim());
-                } catch (NumberFormatException ignored) {
+                } catch (NumberFormatException ex) {
+                    log.trace("[SnailJobHealthIndicator] 解析节点端口失败 [{}]，回退默认端口 {}: {}", clean, DEFAULT_SERVER_PORT, ex.getMessage());
                     port = DEFAULT_SERVER_PORT;
                 }
             }
@@ -251,7 +252,8 @@ public class SnailJobHealthIndicator implements HealthIndicator {
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(host, port), timeoutMs);
             return true;
-        } catch (Exception ignored) {
+        } catch (Exception ex) {
+            log.debug("[SnailJobHealthIndicator] 节点探测不可达 [{}:{}]: {}", host, port, ex.getMessage());
             return false;
         }
     }

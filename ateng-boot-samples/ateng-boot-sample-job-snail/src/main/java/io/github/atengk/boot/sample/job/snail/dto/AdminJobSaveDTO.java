@@ -26,12 +26,16 @@ public class AdminJobSaveDTO implements Serializable {
     @Serial
     private static final long serialVersionUID = 1L;
 
-    public static final int TRIGGER_TYPE_CRON = 1;
+    public static final int TRIGGER_TYPE_SCHEDULED_TIME = 2;
     public static final int TRIGGER_TYPE_FIXED_RATE = 2;
-    public static final int TRIGGER_TYPE_FIXED_DELAY = 3;
-    public static final int ROUTE_KEY_ROUND_ROBIN = 1;
+    public static final int TRIGGER_TYPE_CRON = 3;
+    public static final int TRIGGER_TYPE_FIXED_DELAY = 2;
+    public static final int TRIGGER_TYPE_POINT_IN_TIME = 5;
+    public static final int ROUTE_KEY_CONSISTENT_HASH = 1;
     public static final int ROUTE_KEY_RANDOM = 2;
-    public static final int ROUTE_KEY_BROADCAST = 3;
+    public static final int ROUTE_KEY_LRU = 3;
+    public static final int ROUTE_KEY_ROUND_ROBIN = 4;
+    public static final int ROUTE_KEY_BROADCAST = 4;
 
     /**
      * 调度任务 ID (更新任务时必填)
@@ -52,7 +56,7 @@ public class AdminJobSaveDTO implements Serializable {
     private String executorInfo;
 
     /**
-     * 触发类型 ({@value #TRIGGER_TYPE_CRON}: CRON, {@value #TRIGGER_TYPE_FIXED_RATE}: FIXED_RATE, {@value #TRIGGER_TYPE_FIXED_DELAY}: FIXED_DELAY)
+     * 触发类型 ({@value #TRIGGER_TYPE_SCHEDULED_TIME}: 固定周期/秒, {@value #TRIGGER_TYPE_CRON}: CRON, {@value #TRIGGER_TYPE_POINT_IN_TIME}: 指定时间)
      */
     @Min(value = 1, message = "触发类型必须大于 0")
     private Integer triggerType;
@@ -64,7 +68,7 @@ public class AdminJobSaveDTO implements Serializable {
     private String triggerInterval;
 
     /**
-     * 执行器路由策略 ({@value #ROUTE_KEY_ROUND_ROBIN}: 轮询, {@value #ROUTE_KEY_RANDOM}: 随机, {@value #ROUTE_KEY_BROADCAST}: 广播)
+     * 执行器路由策略 ({@value #ROUTE_KEY_CONSISTENT_HASH}: 一致性Hash, {@value #ROUTE_KEY_RANDOM}: 随机, {@value #ROUTE_KEY_LRU}: LRU, {@value #ROUTE_KEY_ROUND_ROBIN}: 轮询)
      */
     @Min(value = 1, message = "路由策略必须大于 0")
     private Integer routeKey;
@@ -87,7 +91,16 @@ public class AdminJobSaveDTO implements Serializable {
         request.setTriggerType(this.triggerType != null ? this.triggerType : TRIGGER_TYPE_CRON);
         request.setTriggerInterval(this.triggerInterval);
         request.setRouteKey(this.routeKey != null ? this.routeKey : ROUTE_KEY_ROUND_ROBIN);
-        request.setDescription(this.description);
+        request.setTaskType(1);
+        request.setExecutorType(1);
+        request.setBlockStrategy(1);
+        request.setExecutorTimeout(60);
+        request.setMaxRetryTimes(0);
+        request.setRetryInterval(1);
+        request.setParallelNum(1);
+        request.setJobStatus(1);
+        request.setArgsType(1);
+        request.setDescription(this.description != null ? this.description : "");
         return request;
     }
 }

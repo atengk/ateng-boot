@@ -27,6 +27,7 @@ import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper.SnailJobTestRes
 import io.github.atengk.boot.job.snail.interceptor.SnailJobExecutionContext;
 import io.github.atengk.boot.job.snail.interceptor.SnailJobInterceptor;
 import io.github.atengk.boot.job.snail.model.ShardingContext;
+import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
 import io.github.atengk.boot.job.snail.watchdog.JobTimeoutFallbackHandler;
 import io.github.atengk.boot.job.snail.watchdog.SnailJobExecutionMetadata;
 import jakarta.validation.Valid;
@@ -577,6 +578,29 @@ class SnailJobContextAspectTest {
         assertThat(Thread.currentThread().isInterrupted()).isFalse();
     }
 
+    @Test
+    @DisplayName("测试 @AtengSnailJob 留空 retryInterval 回退读取 job.default-retry-interval 配置")
+    void testBlankRetryIntervalFallsBackToPropertiesDefault() {
+        new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+                .withConfiguration(org.springframework.boot.autoconfigure.AutoConfigurations.of(
+                        org.springframework.boot.autoconfigure.aop.AopAutoConfiguration.class,
+                        AtengSnailJobAutoConfiguration.class
+                ))
+                .withPropertyValues("ateng.boot.job.snail.job.default-retry-interval=15ms")
+                .withBean(StandaloneGovernanceJobService.class)
+                .run(ctx -> {
+                    StandaloneGovernanceJobService proxyService = ctx.getBean(StandaloneGovernanceJobService.class);
+                    SnailJobProperties props = ctx.getBean(SnailJobProperties.class);
+                    assertThat(props.getJob().getDefaultRetryInterval()).isEqualTo(Duration.ofMillis(15));
+
+                    proxyService.reset();
+                    ExecuteResult result = proxyService.defaultIntervalFallbackJob(new JobArgs());
+                    assertThat(result.getStatus()).isEqualTo(1);
+                    assertThat(result.getResult()).isEqualTo("default-interval-recovered");
+                    assertThat(proxyService.getAttemptCount()).isEqualTo(2);
+                });
+    }
+
     @TestConfiguration
     @EnableAspectJAutoProxy
     static class TestJobConfig {
@@ -856,6 +880,14 @@ class SnailJobContextAspectTest {
         @AtengSnailJob(name = "negativeRetryIntervalJob", retryCount = 1, retryInterval = "-10ms")
         public ExecuteResult negativeRetryIntervalJob(JobArgs args) {
             return ExecuteResult.success();
+        }
+
+        @AtengSnailJob(name = "defaultIntervalFallbackJob", retryCount = 1)
+        public ExecuteResult defaultIntervalFallbackJob(JobArgs args) {
+            if (attemptCount.incrementAndGet() == 1) {
+                throw new IllegalStateException("transient failure for default interval test");
+            }
+            return ExecuteResult.success("default-interval-recovered");
         }
 
         @AtengSnailJob(name = "swallowInterruptNoFallbackJob", timeout = "60ms")

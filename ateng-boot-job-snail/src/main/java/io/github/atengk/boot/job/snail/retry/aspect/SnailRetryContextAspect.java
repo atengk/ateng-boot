@@ -378,7 +378,8 @@ public class SnailRetryContextAspect {
                         null,
                         method.getName()
                 ));
-            } catch (Throwable ignored) {
+            } catch (Throwable ex) {
+                log.trace("[SnailRetryContextAspect] SpEL 幂等键生成失败，降级使用参数哈希生成器: {}", ex.getMessage());
             }
         }
         try {
@@ -389,7 +390,8 @@ public class SnailRetryContextAspect {
                     null,
                     method.getName()
             ));
-        } catch (Throwable ignored) {
+        } catch (Throwable ex) {
+            log.trace("[SnailRetryContextAspect] 参数哈希幂等键生成失败，跳过细粒度键: {}", ex.getMessage());
             return null;
         }
     }

@@ -151,6 +151,11 @@ public class SnailJobProperties {
          * 是否启用 TenantJobTemplate 多租户隔离遍历执行门面
          */
         private boolean tenantTemplateEnabled = true;
+
+        /**
+         * 方法级本地退避重试默认间隔（当 {@code @AtengSnailJob#retryInterval()} 留空时生效，默认 1s）
+         */
+        private Duration defaultRetryInterval = Duration.ofSeconds(1);
     }
 
     /**
