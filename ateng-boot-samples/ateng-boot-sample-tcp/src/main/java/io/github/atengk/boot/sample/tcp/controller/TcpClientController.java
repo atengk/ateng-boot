@@ -89,6 +89,20 @@ public class TcpClientController {
                 .exceptionally(ex -> handleAsyncRpcFailure(ex, request.getClientName(), request.getCommand()));
     }
 
+    /**
+     * 通过指定命名客户端向上行服务端发起强类型异步非阻塞 RPC 请求（验证 {@code TcpClientTemplate.requestAsync(..., Class)}）
+     *
+     * @param request RPC 请求参数
+     * @return 强类型解码转换后的异步包装结果
+     */
+    @PostMapping("/request-async-typed")
+    public CompletableFuture<Result<TcpClientRpcVO>> requestAsyncTyped(@Valid @RequestBody ClientRpcRequest request) {
+        log.info("[HTTP-CLIENT] 客户端强类型异步 RPC: clientName={}, command={}", request.getClientName(), request.getCommand());
+        return endpointConsoleService.requestAsyncTyped(request)
+                .thenApply(Result::success)
+                .exceptionally(ex -> handleAsyncRpcFailure(ex, request.getClientName(), request.getCommand()));
+    }
+
     private Result<TcpClientRpcVO> handleAsyncRpcFailure(Throwable ex, String clientName, String command) {
         Throwable cause = ex instanceof CompletionException && ex.getCause() != null ? ex.getCause() : ex;
         log.warn("[HTTP-CLIENT] 客户端异步 RPC 执行异常: clientName={}, command={}, error={}",

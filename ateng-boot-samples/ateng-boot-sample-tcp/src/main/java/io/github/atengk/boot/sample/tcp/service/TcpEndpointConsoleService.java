@@ -6,8 +6,11 @@ import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.sample.tcp.dto.ClientRpcRequest;
 import io.github.atengk.boot.sample.tcp.dto.ClientSendRequest;
+import io.github.atengk.boot.sample.tcp.dto.GroupExceptSendRequest;
 import io.github.atengk.boot.sample.tcp.dto.GroupSendRequest;
 import io.github.atengk.boot.sample.tcp.dto.ServerBroadcastRequest;
+import io.github.atengk.boot.sample.tcp.dto.ServerExceptBroadcastRequest;
+import io.github.atengk.boot.sample.tcp.dto.ServerPortBroadcastRequest;
 import io.github.atengk.boot.sample.tcp.dto.SessionBindRequest;
 import io.github.atengk.boot.sample.tcp.dto.SessionGroupRequest;
 import io.github.atengk.boot.sample.tcp.dto.SessionKickRequest;
@@ -144,6 +147,70 @@ public class TcpEndpointConsoleService {
     }
 
     /**
+     * 按归属服务端监听端口（serverName）定向广播消息
+     *
+     * @param request 端口定向广播请求
+     * @return 分发回执视图
+     */
+    public TcpDispatchResultVO broadcastToServer(ServerPortBroadcastRequest request) {
+        String serverName = request.getServerName().trim();
+        if (!tcpServerRegistry.contains(serverName)) {
+            throw new BusinessException(CommonResultCode.NOT_FOUND, "未找到 TCP 服务端实例: " + serverName);
+        }
+        Map<String, Object> body = buildBroadcastEnvelope("SERVER_PORT_BROADCAST", request.getMessage());
+        body.put("serverName", serverName);
+        int hitCount = sessionManager.getSessionsByServer(serverName).size();
+        tcpServerTemplate.broadcastToServer(serverName, body);
+        return new TcpDispatchResultVO("SERVER_PORT", serverName, false, resolveClusterBridgeType(), hitCount, true, request.getMessage());
+    }
+
+    /**
+     * 执行排除指定会话集合的全局排他广播
+     *
+     * @param request 排他广播请求
+     * @return 分发回执视图
+     */
+    public TcpDispatchResultVO broadcastExcept(ServerExceptBroadcastRequest request) {
+        Map<String, Object> body = buildBroadcastEnvelope("SERVER_BROADCAST_EXCEPT", request.getMessage());
+        Collection<TcpSession> allSessions = sessionManager.getAllSessions();
+        int targetCount = countNonExcludedActiveSessions(allSessions, request.getExcludedSessionIds());
+        tcpServerTemplate.broadcastExcept(body, request.getExcludedSessionIds());
+        return new TcpDispatchResultVO("BROADCAST_EXCEPT", "*", false, resolveClusterBridgeType(), targetCount, true, request.getMessage());
+    }
+
+    /**
+     * 执行排除指定会话集合的业务分组排他组播
+     *
+     * @param request 排他组播请求
+     * @return 分发回执视图
+     */
+    public TcpDispatchResultVO sendToGroupExcept(GroupExceptSendRequest request) {
+        Map<String, Object> body = buildBroadcastEnvelope("FLEET_ALERT_EXCEPT", request.getMessage());
+        body.put("group", request.getGroup());
+        Collection<TcpSession> groupSessions = sessionManager.getSessionsByGroup(request.getGroup());
+        int targetCount = countNonExcludedActiveSessions(groupSessions, request.getExcludedSessionIds());
+        tcpServerTemplate.sendToGroupExcept(request.getGroup(), body, request.getExcludedSessionIds());
+        return new TcpDispatchResultVO("GROUP_EXCEPT", request.getGroup(), false, resolveClusterBridgeType(), targetCount, true, request.getMessage());
+    }
+
+    private int countNonExcludedActiveSessions(Collection<TcpSession> sessions, Collection<String> excludedSessionIds) {
+        if (sessions == null || sessions.isEmpty()) {
+            return 0;
+        }
+        java.util.Set<String> excludedSet = (excludedSessionIds == null || excludedSessionIds.isEmpty())
+                ? Collections.emptySet()
+                : new java.util.HashSet<>(excludedSessionIds);
+        int count = 0;
+        for (TcpSession session : sessions) {
+            if (session != null && session.isActive()
+                    && (excludedSet.isEmpty() || !excludedSet.contains(session.getSessionId()))) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
      * 查询所有已装配的 TCP 客户端实例运行快照
      *
      * @return 客户端只读视图列表
@@ -222,14 +289,51 @@ public class TcpEndpointConsoleService {
                     if (ex == null) {
                         return toRpcVO(request, reqId, response, System.currentTimeMillis() - start, true);
                     }
-                    Throwable cause = ex instanceof CompletionException && ex.getCause() != null ? ex.getCause() : ex;
-                    if (cause instanceof TcpTimeoutException || cause instanceof TimeoutException) {
-                        throw new BusinessException(CommonResultCode.SERVICE_UNAVAILABLE,
-                                "TCP 客户端异步上行 RPC 等待应答超时: command=" + request.getCommand(), cause);
-                    }
-                    throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
-                            "TCP 客户端异步上行 RPC 调用失败: " + cause.getMessage(), cause);
+                    throw translateAsyncRpcException(ex, request.getCommand());
                 });
+    }
+
+    /**
+     * 使用指定客户端模板发起强类型异步非阻塞 RPC 请求（验证 {@code TcpClientTemplate.requestAsync(..., Class)}）
+     *
+     * @param request RPC 请求
+     * @return 强类型解码后的异步回执视图
+     */
+    @SuppressWarnings("rawtypes")
+    public CompletableFuture<TcpClientRpcVO> requestAsyncTyped(ClientRpcRequest request) {
+        TcpClientTemplate template = requireConnectedClientTemplate(request.getClientName());
+        String reqId = StringUtils.hasText(request.getRequestId()) ? request.getRequestId() : IdUtil.fastSimpleUUID();
+        TcpPacket packet = buildClientRpcPacket(request, reqId);
+        long start = System.currentTimeMillis();
+        return template.requestAsync(packet, Duration.ofMillis(request.getTimeoutMillis()), Map.class)
+                .handle((responseMap, ex) -> {
+                    if (ex == null) {
+                        String respCmd = responseMap != null && responseMap.get("command") != null
+                                ? String.valueOf(responseMap.get("command"))
+                                : null;
+                        String respJson = responseMap != null ? JsonUtil.toJsonString(responseMap) : null;
+                        return new TcpClientRpcVO(
+                                request.getClientName(),
+                                request.getCommand(),
+                                reqId,
+                                true,
+                                respCmd,
+                                respJson,
+                                System.currentTimeMillis() - start
+                        );
+                    }
+                    throw translateAsyncRpcException(ex, request.getCommand());
+                });
+    }
+
+    private BusinessException translateAsyncRpcException(Throwable ex, String command) {
+        Throwable cause = ex instanceof CompletionException && ex.getCause() != null ? ex.getCause() : ex;
+        if (cause instanceof TcpTimeoutException || cause instanceof TimeoutException) {
+            return new BusinessException(CommonResultCode.SERVICE_UNAVAILABLE,
+                    "TCP 客户端异步上行 RPC 等待应答超时: command=" + command, cause);
+        }
+        return new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                "TCP 客户端异步上行 RPC 调用失败: " + cause.getMessage(), cause);
     }
 
     /**

@@ -15,6 +15,8 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -211,6 +213,35 @@ public class TcpServerTemplate {
     }
 
     /**
+     * 向指定会话发起全双工异步强类型 RPC 请求（默认 10s 超时）
+     *
+     * @param sessionId    会话唯一标识
+     * @param payload      报文载荷
+     * @param responseType 响应目标类型
+     * @param <T>          响应强类型
+     * @return 强类型异步响应 Future
+     */
+    public <T> CompletableFuture<T> requestAsync(String sessionId, Object payload, Class<T> responseType) {
+        return requestAsync(sessionId, payload, Duration.ofSeconds(10), responseType);
+    }
+
+    /**
+     * 向指定会话发起全双工异步强类型 RPC 请求并在指定超时窗口内等待响应
+     *
+     * @param sessionId    会话唯一标识
+     * @param payload      报文载荷
+     * @param timeout      超时时长
+     * @param responseType 响应目标类型
+     * @param <T>          响应强类型
+     * @return 强类型异步响应 Future
+     */
+    public <T> CompletableFuture<T> requestAsync(String sessionId, Object payload, Duration timeout, Class<T> responseType) {
+        Objects.requireNonNull(responseType, "responseType 不能为空");
+        return requestAsync(sessionId, payload, timeout)
+                .thenApply(responsePacket -> TcpClientTemplate.castResponse(responsePacket, responseType));
+    }
+
+    /**
      * 向指定业务设备标识发起全双工同步请求并等待对端应答（默认 10s 超时）
      *
      * @param deviceId 业务设备唯一编号
@@ -308,22 +339,65 @@ public class TcpServerTemplate {
     }
 
     /**
+     * 向指定业务设备标识发起全双工异步强类型 RPC 请求（默认 10s 超时）
+     *
+     * @param deviceId     业务设备唯一编号
+     * @param payload      报文载荷
+     * @param responseType 响应目标类型
+     * @param <T>          响应强类型
+     * @return 强类型异步响应 Future
+     */
+    public <T> CompletableFuture<T> requestToDeviceAsync(String deviceId, Object payload, Class<T> responseType) {
+        return requestToDeviceAsync(deviceId, payload, Duration.ofSeconds(10), responseType);
+    }
+
+    /**
+     * 向指定业务设备标识发起全双工异步强类型 RPC 请求并在指定超时窗口内等待响应
+     *
+     * @param deviceId     业务设备唯一编号
+     * @param payload      报文载荷
+     * @param timeout      超时时长
+     * @param responseType 响应目标类型
+     * @param <T>          响应强类型
+     * @return 强类型异步响应 Future
+     */
+    public <T> CompletableFuture<T> requestToDeviceAsync(String deviceId, Object payload, Duration timeout, Class<T> responseType) {
+        Objects.requireNonNull(responseType, "responseType 不能为空");
+        return requestToDeviceAsync(deviceId, payload, timeout)
+                .thenApply(responsePacket -> TcpClientTemplate.castResponse(responsePacket, responseType));
+    }
+
+    /**
      * 向当前所有在线的活跃会话进行全局广播
      *
      * @param payload 报文载荷
      */
     public void broadcast(Object payload) {
-        Object msg = wrapPayload(payload);
-        Collection<TcpSession> sessions = sessionManager.getAllSessions();
-        for (TcpSession session : sessions) {
-            if (session.isActive()) {
-                try {
-                    session.send(msg);
-                } catch (Exception ex) {
-                    log.warn("向会话广播消息失败: sessionId={}", session.getSessionId(), ex);
-                }
-            }
+        sendToSessions(sessionManager.getAllSessions(), payload, Collections.emptySet(), "全量广播");
+    }
+
+    /**
+     * 向归属指定服务端端口（serverName）的所有在线活跃会话定向广播
+     *
+     * @param serverName 服务端实例名称（为空或空白时安全返回）
+     * @param payload    报文载荷
+     */
+    public void broadcastToServer(String serverName, Object payload) {
+        if (serverName == null || serverName.isBlank()) {
+            return;
         }
+        sendToSessions(sessionManager.getSessionsByServer(serverName), payload, Collections.emptySet(),
+                "服务端端口 [" + serverName + "] 定向广播");
+    }
+
+    /**
+     * 向当前所有在线的活跃会话进行全局排他广播（自动跳过被排除的会话集合）
+     *
+     * @param payload            报文载荷
+     * @param excludedSessionIds 需跳过的会话 ID 集合
+     */
+    public void broadcastExcept(Object payload, Collection<String> excludedSessionIds) {
+        sendToSessions(sessionManager.getAllSessions(), payload, normalizeExcludedIds(excludedSessionIds), "全局排他广播");
     }
 
     /**
@@ -333,20 +407,61 @@ public class TcpServerTemplate {
      * @param payload 报文载荷
      */
     public void sendToGroup(String group, Object payload) {
-        if (group == null) {
+        if (group == null || group.isBlank()) {
+            return;
+        }
+        sendToSessions(sessionManager.getSessionsByGroup(group), payload, Collections.emptySet(), "分组 [" + group + "] 组播");
+    }
+
+    /**
+     * 向指定业务逻辑分组的所有在线会话进行排他组播（自动跳过被排除的会话集合）
+     *
+     * @param group              分组名称
+     * @param payload            报文载荷
+     * @param excludedSessionIds 需跳过的会话 ID 集合
+     */
+    public void sendToGroupExcept(String group, Object payload, Collection<String> excludedSessionIds) {
+        if (group == null || group.isBlank()) {
+            return;
+        }
+        sendToSessions(sessionManager.getSessionsByGroup(group), payload,
+                normalizeExcludedIds(excludedSessionIds), "分组 [" + group + "] 排他组播");
+    }
+
+    private void sendToSessions(Collection<TcpSession> sessions,
+                                Object payload,
+                                Set<String> excludedSessionIds,
+                                String sceneLabel) {
+        if (sessions == null || sessions.isEmpty()) {
             return;
         }
         Object msg = wrapPayload(payload);
-        Set<TcpSession> sessions = sessionManager.getSessionsByGroup(group);
         for (TcpSession session : sessions) {
-            if (session.isActive()) {
-                try {
-                    session.send(msg);
-                } catch (Exception ex) {
-                    log.warn("向分组 [{}] 会话组播消息失败: sessionId={}", group, session.getSessionId(), ex);
-                }
+            if (session == null || !session.isActive()) {
+                continue;
+            }
+            if (!excludedSessionIds.isEmpty() && excludedSessionIds.contains(session.getSessionId())) {
+                continue;
+            }
+            try {
+                session.send(msg);
+            } catch (Exception ex) {
+                log.warn("向会话执行{}失败: sessionId={}", sceneLabel, session.getSessionId(), ex);
             }
         }
+    }
+
+    private static Set<String> normalizeExcludedIds(Collection<String> excludedSessionIds) {
+        if (excludedSessionIds == null || excludedSessionIds.isEmpty()) {
+            return Collections.emptySet();
+        }
+        Set<String> excluded = new HashSet<>(excludedSessionIds.size());
+        for (String id : excludedSessionIds) {
+            if (id != null && !id.isBlank()) {
+                excluded.add(id);
+            }
+        }
+        return excluded;
     }
 
     /**
@@ -418,6 +533,15 @@ public class TcpServerTemplate {
      */
     public TcpRequestCorrelationManager getCorrelationManager() {
         return correlationManager;
+    }
+
+    /**
+     * 获取跨节点集群桥接器实例（未开启集群桥接时可能为 null）
+     *
+     * @return 集群桥接器实例
+     */
+    public TcpClusterBridge getClusterBridge() {
+        return clusterBridge;
     }
 
     private TcpPacket toTcpPacket(Object payload) {

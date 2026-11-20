@@ -1,11 +1,19 @@
 package io.github.atengk.boot.tcp.template;
 
+import io.github.atengk.boot.tcp.cluster.LocalTcpClusterBridge;
+import io.github.atengk.boot.tcp.cluster.TcpClusterBridge;
 import io.github.atengk.boot.tcp.model.TcpPayload;
 import io.github.atengk.boot.tcp.session.TcpSession;
 import io.github.atengk.boot.tcp.session.TcpSessionManager;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -258,6 +266,110 @@ class TcpServerTemplateTest {
             assertThat(devResult).isEqualTo("DEVICE_OK");
         } finally {
             executor.shutdownNow();
+            correlationManager.close();
+        }
+    }
+
+    @Test
+    @DisplayName("验证 broadcastToServer 按服务端端口定向广播且不污染其他端口")
+    void testBroadcastToServerIsolation() {
+        TcpSessionManager manager = new TcpSessionManager();
+        TcpServerTemplate template = new TcpServerTemplate(manager);
+
+        EmbeddedChannel chA1 = new EmbeddedChannel();
+        TcpSession sA1 = new TcpSession("SES-A1", "gateway-a", chA1);
+        EmbeddedChannel chA2 = new EmbeddedChannel();
+        TcpSession sA2 = new TcpSession("SES-A2", "gateway-a", chA2);
+        EmbeddedChannel chB1 = new EmbeddedChannel();
+        TcpSession sB1 = new TcpSession("SES-B1", "gateway-b", chB1);
+
+        manager.register(sA1);
+        manager.register(sA2);
+        manager.register(sB1);
+
+        template.broadcastToServer("gateway-a", "PORT_A_NOTICE");
+
+        assertThat((Object) chA1.readOutbound()).isEqualTo("PORT_A_NOTICE");
+        assertThat((Object) chA2.readOutbound()).isEqualTo("PORT_A_NOTICE");
+        assertThat((Object) chB1.readOutbound()).isNull();
+
+        template.broadcastToServer(null, "NOOP");
+        template.broadcastToServer(" ", "NOOP");
+    }
+
+    @Test
+    @DisplayName("验证 broadcastExcept 与 sendToGroupExcept 精确跳过排除会话")
+    void testBroadcastExceptAndSendToGroupExcept() {
+        TcpSessionManager manager = new TcpSessionManager();
+        TcpServerTemplate template = new TcpServerTemplate(manager);
+
+        EmbeddedChannel ch1 = new EmbeddedChannel();
+        TcpSession s1 = new TcpSession("SES-1", ch1);
+        EmbeddedChannel ch2 = new EmbeddedChannel();
+        TcpSession s2 = new TcpSession("SES-2", ch2);
+        EmbeddedChannel ch3 = new EmbeddedChannel();
+        TcpSession s3 = new TcpSession("SES-3", ch3);
+
+        manager.register(s1);
+        manager.register(s2);
+        manager.register(s3);
+        manager.addToGroup("ROOM_X", "SES-1");
+        manager.addToGroup("ROOM_X", "SES-2");
+
+        template.broadcastExcept("GLOBAL_EXCEPT", List.of("SES-2"));
+        assertThat((Object) ch1.readOutbound()).isEqualTo("GLOBAL_EXCEPT");
+        assertThat((Object) ch2.readOutbound()).isNull();
+        assertThat((Object) ch3.readOutbound()).isEqualTo("GLOBAL_EXCEPT");
+
+        template.sendToGroupExcept("ROOM_X", "GROUP_EXCEPT", List.of("SES-1"));
+        assertThat((Object) ch1.readOutbound()).isNull();
+        assertThat((Object) ch2.readOutbound()).isEqualTo("GROUP_EXCEPT");
+        assertThat((Object) ch3.readOutbound()).isNull();
+    }
+
+    @Test
+    @DisplayName("验证强类型异步 requestAsync / requestToDeviceAsync 与 getClusterBridge 访问器")
+    void testTypedAsyncRpcAndClusterBridgeAccessor() throws Exception {
+        TcpSessionManager manager = new TcpSessionManager();
+        io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager correlationManager =
+                new io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager();
+        TcpClusterBridge clusterBridge = new LocalTcpClusterBridge(manager);
+        TcpServerTemplate template = new TcpServerTemplate(manager, correlationManager, clusterBridge);
+
+        assertThat(template.getClusterBridge()).isSameAs(clusterBridge);
+
+        EmbeddedChannel channel = new EmbeddedChannel();
+        TcpSession session = new TcpSession("SES-ASYNC-1", channel);
+        manager.register(session);
+        manager.bind("SES-ASYNC-1", "DEV-ASYNC-1");
+
+        try {
+            CompletableFuture<String> sessFuture1 = template.requestAsync("SES-ASYNC-1", "CMD_1", String.class);
+            io.github.atengk.boot.tcp.model.TcpPacket out1 = channel.readOutbound();
+            correlationManager.complete(out1.getRequestId(),
+                    io.github.atengk.boot.tcp.model.TcpPacket.of("ACK", out1.getRequestId(), TcpPayload.of("ASYNC_STR_OK\n")));
+            assertThat(sessFuture1.get(2, TimeUnit.SECONDS)).isEqualTo("ASYNC_STR_OK");
+
+            CompletableFuture<Map> sessFuture2 =
+                    template.requestAsync("SES-ASYNC-1", "CMD_2", Duration.ofSeconds(3), Map.class);
+            io.github.atengk.boot.tcp.model.TcpPacket out2 = channel.readOutbound();
+            correlationManager.complete(out2.getRequestId(),
+                    io.github.atengk.boot.tcp.model.TcpPacket.of("ACK", out2.getRequestId(), TcpPayload.of("{\"code\":200}")));
+            assertThat(sessFuture2.get(2, TimeUnit.SECONDS)).containsEntry("code", 200);
+
+            CompletableFuture<String> devFuture1 = template.requestToDeviceAsync("DEV-ASYNC-1", "CMD_3", String.class);
+            io.github.atengk.boot.tcp.model.TcpPacket out3 = channel.readOutbound();
+            correlationManager.complete(out3.getRequestId(),
+                    io.github.atengk.boot.tcp.model.TcpPacket.of("ACK", out3.getRequestId(), TcpPayload.of("DEV_ASYNC_OK")));
+            assertThat(devFuture1.get(2, TimeUnit.SECONDS)).isEqualTo("DEV_ASYNC_OK");
+
+            CompletableFuture<Map> devFuture2 =
+                    template.requestToDeviceAsync("DEV-ASYNC-1", "CMD_4", Duration.ofSeconds(3), Map.class);
+            io.github.atengk.boot.tcp.model.TcpPacket out4 = channel.readOutbound();
+            correlationManager.complete(out4.getRequestId(),
+                    io.github.atengk.boot.tcp.model.TcpPacket.of("ACK", out4.getRequestId(), TcpPayload.of("{\"status\":\"OK\"}")));
+            assertThat(devFuture2.get(2, TimeUnit.SECONDS)).containsEntry("status", "OK");
+        } finally {
             correlationManager.close();
         }
     }

@@ -379,4 +379,95 @@ class TcpClientIntegrationTest {
             executor.close();
         }
     }
+
+    @Test
+    @DisplayName("验证毫秒级心跳保活（250ms）与自定义 response-payload 静默消费不穿透下游业务")
+    void testMillisecondHeartbeatAndCustomResponsePayload() throws Exception {
+        CountDownLatch pingReceivedLatch = new CountDownLatch(2);
+        List<String> serverReceivedPings = new CopyOnWriteArrayList<>();
+
+        TcpServerProperties serverProps = new TcpServerProperties();
+        serverProps.setPort(0);
+        serverProps.getFraming().setMode(FramingMode.DELIMITER);
+        serverProps.getFraming().setDelimiter("\n");
+
+        sessionManager = new TcpSessionManager();
+        serverCorrelationManager = new TcpRequestCorrelationManager();
+        server = new TcpServer(
+                serverProps,
+                sessionManager,
+                serverCorrelationManager,
+                Collections.emptyList(),
+                List.of((TcpChannelCustomizer) ch -> ch.pipeline().addLast(new SimpleChannelInboundHandler<TcpPayload>() {
+                    @Override
+                    protected void channelRead0(ChannelHandlerContext ctx, TcpPayload msg) {
+                        String text = msg.asString().trim();
+                        if ("CUSTOM_HB_PING".equals(text)) {
+                            serverReceivedPings.add(text);
+                            ctx.writeAndFlush("CUSTOM_HB_PONG\n");
+                            pingReceivedLatch.countDown();
+                        }
+                    }
+                })),
+                null
+        );
+        server.start();
+        int port = server.getActualPort();
+
+        List<String> clientDownstreamMessages = new CopyOnWriteArrayList<>();
+        CountDownLatch bizMsgLatch = new CountDownLatch(1);
+
+        TcpClientProperties clientProps = new TcpClientProperties();
+        clientProps.setEnabled(true);
+        clientProps.setHost("127.0.0.1");
+        clientProps.setPort(port);
+        clientProps.getFraming().setMode(FramingMode.DELIMITER);
+        clientProps.getFraming().setDelimiter("\n");
+        clientProps.getHeartbeat().setEnabled(true);
+        clientProps.getHeartbeat().setInterval(Duration.ofMillis(250));
+        clientProps.getHeartbeat().setPayload("CUSTOM_HB_PING");
+        clientProps.getHeartbeat().setResponsePayload("CUSTOM_HB_PONG");
+
+        clientCorrelationManager = new TcpRequestCorrelationManager();
+        client = new TcpClient(
+                clientProps,
+                Collections.emptyList(),
+                List.of((TcpChannelCustomizer) ch -> ch.pipeline().addLast(new SimpleChannelInboundHandler<TcpPayload>() {
+                    @Override
+                    protected void channelRead0(ChannelHandlerContext ctx, TcpPayload msg) {
+                        clientDownstreamMessages.add(msg.asString().trim());
+                        if ("BIZ_HELLO".equals(msg.asString().trim())) {
+                            bizMsgLatch.countDown();
+                        }
+                    }
+                })),
+                null,
+                clientCorrelationManager
+        );
+        client.start();
+
+        // 1. 亚秒级 250ms 心跳应在 2s 内至少触发 2 次（若按旧实现 toSeconds() 截断为 0 则永不触发）
+        assertThat(pingReceivedLatch.await(2, TimeUnit.SECONDS)).isTrue();
+        assertThat(serverReceivedPings).hasSizeGreaterThanOrEqualTo(2);
+
+        // 2. 向客户端发送业务报文，确认业务报文到达下游而 CUSTOM_HB_PONG 被静默消费未穿透
+        serverCorrelationManager = server.getCorrelationManager();
+        TcpSession serverSession = sessionManager.getAllSessions().iterator().next();
+        serverSession.send("BIZ_HELLO\n");
+        assertThat(bizMsgLatch.await(2, TimeUnit.SECONDS)).isTrue();
+        assertThat(clientDownstreamMessages).containsExactly("BIZ_HELLO");
+        assertThat(clientDownstreamMessages).doesNotContain("CUSTOM_HB_PONG");
+
+        // 3. 验证 responsePayload 为空白时安全回退消费默认 "PONG"
+        clientDownstreamMessages.clear();
+        clientProps.getHeartbeat().setResponsePayload("   ");
+        serverSession.send("PONG\n");
+        serverSession.send("BIZ_AFTER_PONG\n");
+        long waitAfterPong = System.currentTimeMillis() + 2000;
+        while (!clientDownstreamMessages.contains("BIZ_AFTER_PONG") && System.currentTimeMillis() < waitAfterPong) {
+            Thread.sleep(20);
+        }
+        assertThat(clientDownstreamMessages).contains("BIZ_AFTER_PONG");
+        assertThat(clientDownstreamMessages).doesNotContain("PONG");
+    }
 }

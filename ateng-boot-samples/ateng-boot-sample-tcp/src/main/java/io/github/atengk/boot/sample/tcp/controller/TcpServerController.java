@@ -1,8 +1,11 @@
 package io.github.atengk.boot.sample.tcp.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.tcp.dto.GroupExceptSendRequest;
 import io.github.atengk.boot.sample.tcp.dto.GroupSendRequest;
 import io.github.atengk.boot.sample.tcp.dto.ServerBroadcastRequest;
+import io.github.atengk.boot.sample.tcp.dto.ServerExceptBroadcastRequest;
+import io.github.atengk.boot.sample.tcp.dto.ServerPortBroadcastRequest;
 import io.github.atengk.boot.sample.tcp.service.TcpEndpointConsoleService;
 import io.github.atengk.boot.sample.tcp.vo.TcpDispatchResultVO;
 import io.github.atengk.boot.sample.tcp.vo.TcpServerInfoVO;
@@ -81,5 +84,43 @@ public class TcpServerController {
     public Result<TcpDispatchResultVO> sendToGroup(@Valid @RequestBody GroupSendRequest request) {
         log.info("[HTTP-SERVER] 触发车队组播: group={}, cluster={}", request.getGroup(), request.getCluster());
         return Result.success(endpointConsoleService.sendToGroup(request));
+    }
+
+    /**
+     * 向归属指定监听端口（serverName）的所有在线终端定向广播
+     *
+     * @param request 端口定向广播请求参数
+     * @return 分发回执视图
+     */
+    @PostMapping("/port-broadcast")
+    public Result<TcpDispatchResultVO> broadcastToServer(@Valid @RequestBody ServerPortBroadcastRequest request) {
+        log.info("[HTTP-SERVER] 触发按端口定向广播: serverName={}, message={}", request.getServerName(), request.getMessage());
+        return Result.success(endpointConsoleService.broadcastToServer(request));
+    }
+
+    /**
+     * 向除指定排除会话外的所有在线终端执行排他广播
+     *
+     * @param request 排他广播请求参数
+     * @return 分发回执视图
+     */
+    @PostMapping("/broadcast-except")
+    public Result<TcpDispatchResultVO> broadcastExcept(@Valid @RequestBody ServerExceptBroadcastRequest request) {
+        log.info("[HTTP-SERVER] 触发全局排他广播: excludedCount={}",
+                request.getExcludedSessionIds() != null ? request.getExcludedSessionIds().size() : 0);
+        return Result.success(endpointConsoleService.broadcastExcept(request));
+    }
+
+    /**
+     * 向指定车队分组中除排除会话外的终端执行排他组播
+     *
+     * @param request 排他组播请求参数
+     * @return 分发回执视图
+     */
+    @PostMapping("/group-send-except")
+    public Result<TcpDispatchResultVO> sendToGroupExcept(@Valid @RequestBody GroupExceptSendRequest request) {
+        log.info("[HTTP-SERVER] 触发分组排他组播: group={}, excludedCount={}",
+                request.getGroup(), request.getExcludedSessionIds() != null ? request.getExcludedSessionIds().size() : 0);
+        return Result.success(endpointConsoleService.sendToGroupExcept(request));
     }
 }

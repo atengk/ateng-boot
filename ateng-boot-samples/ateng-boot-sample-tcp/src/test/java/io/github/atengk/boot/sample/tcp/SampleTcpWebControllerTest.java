@@ -8,10 +8,13 @@ import io.github.atengk.boot.sample.tcp.dto.ClientRpcRequest;
 import io.github.atengk.boot.sample.tcp.dto.ClientSendRequest;
 import io.github.atengk.boot.sample.tcp.dto.ClusterDispatchRequest;
 import io.github.atengk.boot.sample.tcp.dto.DynamicRouteRequest;
+import io.github.atengk.boot.sample.tcp.dto.GroupExceptSendRequest;
 import io.github.atengk.boot.sample.tcp.dto.GroupSendRequest;
 import io.github.atengk.boot.sample.tcp.dto.Jt808FrameDecodeRequest;
 import io.github.atengk.boot.sample.tcp.dto.Jt808FrameEncodeRequest;
 import io.github.atengk.boot.sample.tcp.dto.ServerBroadcastRequest;
+import io.github.atengk.boot.sample.tcp.dto.ServerExceptBroadcastRequest;
+import io.github.atengk.boot.sample.tcp.dto.ServerPortBroadcastRequest;
 import io.github.atengk.boot.sample.tcp.dto.SessionBackpressureRequest;
 import io.github.atengk.boot.sample.tcp.dto.SessionBindRequest;
 import io.github.atengk.boot.sample.tcp.dto.SessionGroupRequest;
@@ -219,6 +222,89 @@ class SampleTcpWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.code").value(not(200)));
+
+        // 按端口定向广播（default）与缺失实例 404 防御
+        ServerPortBroadcastRequest portReq = ServerPortBroadcastRequest.builder()
+                .serverName("default")
+                .message("DEFAULT_PORT_NOTICE")
+                .build();
+        mockMvc.perform(post("/sample/tcp/server/port-broadcast")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(portReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.scope").value("SERVER_PORT"))
+                .andExpect(jsonPath("$.data.target").value("default"));
+
+        ServerPortBroadcastRequest invalidPortReq = ServerPortBroadcastRequest.builder()
+                .serverName("")
+                .message("INVALID")
+                .build();
+        mockMvc.perform(post("/sample/tcp/server/port-broadcast")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidPortReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value(not(200)));
+
+        ServerPortBroadcastRequest unknownPortReq = ServerPortBroadcastRequest.builder()
+                .serverName("non-existent-server")
+                .message("UNKNOWN_PORT")
+                .build();
+        mockMvc.perform(post("/sample/tcp/server/port-broadcast")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(unknownPortReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value(404));
+
+        // 排他广播与分组排他组播
+        String alphaSessionId = sessionManager.getSessionByDeviceId(FleetSimulationRunner.DEVICE_ALPHA_001).getSessionId();
+        ServerExceptBroadcastRequest exceptReq = ServerExceptBroadcastRequest.builder()
+                .message("EXCEPT_BROADCAST_NOTICE")
+                .excludedSessionIds(java.util.List.of(alphaSessionId))
+                .build();
+        mockMvc.perform(post("/sample/tcp/server/broadcast-except")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(exceptReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.scope").value("BROADCAST_EXCEPT"))
+                .andExpect(jsonPath("$.data.dispatched").value(true));
+
+        ServerExceptBroadcastRequest invalidExceptReq = ServerExceptBroadcastRequest.builder()
+                .message("")
+                .build();
+        mockMvc.perform(post("/sample/tcp/server/broadcast-except")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidExceptReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value(not(200)));
+
+        GroupExceptSendRequest groupExceptReq = GroupExceptSendRequest.builder()
+                .group(FleetSimulationRunner.GROUP_ALPHA)
+                .message("GROUP_EXCEPT_NOTICE")
+                .excludedSessionIds(java.util.List.of(alphaSessionId))
+                .build();
+        mockMvc.perform(post("/sample/tcp/server/group-send-except")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(groupExceptReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.scope").value("GROUP_EXCEPT"))
+                .andExpect(jsonPath("$.data.localSessionCount").value(0));
+
+        GroupExceptSendRequest invalidGroupExceptReq = GroupExceptSendRequest.builder()
+                .group("")
+                .message("INVALID")
+                .build();
+        mockMvc.perform(post("/sample/tcp/server/group-send-except")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidGroupExceptReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value(not(200)));
     }
 
     @Test
@@ -289,6 +375,19 @@ class SampleTcpWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.asyncMode").value(true))
+                .andExpect(jsonPath("$.data.responseText", containsString("HEARTBEAT_ACK")));
+
+        // 强类型异步非阻塞 RPC（验证 TcpClientTemplate.requestAsync(..., Duration, Class<T>)）
+        MvcResult typedAsyncRes = mockMvc.perform(post("/sample/tcp/client/request-async-typed")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(asyncRpc)))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(typedAsyncRes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.asyncMode").value(true))
+                .andExpect(jsonPath("$.data.responseCommand").value("HEARTBEAT_ACK"))
                 .andExpect(jsonPath("$.data.responseText", containsString("HEARTBEAT_ACK")));
 
         // 手动断开与显式重连恢复（在 binary-client 上验证后恢复在线态）

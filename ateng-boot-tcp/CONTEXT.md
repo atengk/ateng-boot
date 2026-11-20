@@ -5,11 +5,11 @@
 ## Language
 
 **TCP Server Template (TCP 服务端门面)**:
-面向服务端业务场景，提供单播（指定会话或设备）、全局广播、分组组播与同步等待应答的对称操作门面（`TcpServerTemplate`）。
+面向服务端业务场景，提供单播（指定会话或设备）、全局广播、按服务端端口定向广播（`broadcastToServer`）、排他广播/组播（`broadcastExcept` / `sendToGroupExcept`）、分组组播及同步/异步强类型请求-响应（Request-Response）等待调用的对称操作门面（`TcpServerTemplate`）。
 _Avoid_: TcpServerHelper, SocketServerUtil, NettyServerService
 
 **TCP Client Template (TCP 客户端门面)**:
-面向客户端主动发信、长连接状态监控、连接池化管理与请求-响应（Request-Response）同步等待调用的对称操作门面（`TcpClientTemplate`）。
+面向客户端主动发信、长连接状态监控、自愈重连与同步/异步强类型请求-响应（Request-Response）等待调用的对称操作门面（`TcpClientTemplate`）。
 _Avoid_: TcpClientHelper, SocketClientUtil, NettyClientManager
 
 **TCP Session (TCP 会话)**:
@@ -81,7 +81,7 @@ _Avoid_: 双向SSL, 客户端密钥认证, 强加密握手
 _Avoid_: 多网卡监听, 端口多路复用, 混部服务
 
 **Heartbeat Keep-Alive (心跳保活与空闲检测)**:
-服务端基于 Netty `IdleStateHandler` 与 `TcpIdleProperties`（`reader-idle-time` / `writer-idle-time` / `all-idle-time`）监测读写空闲并触发 `TcpSessionIdleEvent`，客户端则依据 `TcpHeartbeatProperties` 定时发送主动保活 Ping 帧以协同维持长连接活性并剔除假死会话。
+服务端基于毫秒级精度 Netty `IdleStateHandler` 与 `TcpIdleProperties`（`reader-idle-time` / `writer-idle-time` / `all-idle-time`）监测读写空闲并触发 `TcpSessionIdleEvent`，客户端则依据 `TcpHeartbeatProperties`（`interval` / `payload` / `response-payload`）定时发送主动保活帧并静默消费匹配回执，以协同维持长连接活性并剔除假死会话。
 _Avoid_: reader-idle, writer-idle, all-idle, 盲发心跳, 死循环保活
 
 **Exponential Backoff Reconnect (指数退避自愈重连)**:

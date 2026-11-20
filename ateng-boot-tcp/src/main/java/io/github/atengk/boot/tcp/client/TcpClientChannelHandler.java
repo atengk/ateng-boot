@@ -177,13 +177,14 @@ public class TcpClientChannelHandler extends ChannelDuplexHandler {
 
     @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
-        if (evt instanceof IdleStateEvent) {
-            IdleStateEvent idleEvent = (IdleStateEvent) evt;
+        if (evt instanceof IdleStateEvent idleEvent) {
             if (idleEvent.state() == IdleState.WRITER_IDLE || idleEvent.state() == IdleState.ALL_IDLE) {
-                if (properties.getHeartbeat().isEnabled()) {
+                if (properties != null && properties.getHeartbeat() != null && properties.getHeartbeat().isEnabled()) {
                     String ping = properties.getHeartbeat().getPayload();
-                    log.debug("TCP 客户端触发写空闲心跳，发送探测包: payload={}", ping);
-                    ctx.writeAndFlush(ping);
+                    if (ping != null && !ping.isEmpty()) {
+                        log.debug("TCP 客户端触发写空闲心跳，发送探测包: payload={}", ping);
+                        ctx.writeAndFlush(ping);
+                    }
                 }
             }
         }
@@ -201,17 +202,29 @@ public class TcpClientChannelHandler extends ChannelDuplexHandler {
     }
 
     private boolean isHeartbeatResponse(Object msg) {
-        if (!properties.getHeartbeat().isEnabled()) {
+        if (properties == null || properties.getHeartbeat() == null || !properties.getHeartbeat().isEnabled()) {
             return false;
         }
-        if (msg instanceof TcpPayload) {
-            String text = ((TcpPayload) msg).asString();
-            return "PONG".equalsIgnoreCase(text != null ? text.trim() : "");
+        String configured = properties.getHeartbeat().getResponsePayload();
+        String expected = (configured != null && !configured.isBlank()) ? configured.trim() : "PONG";
+        String actual = extractInboundText(msg);
+        return actual != null && expected.equalsIgnoreCase(actual.trim());
+    }
+
+    private static String extractInboundText(Object msg) {
+        if (msg instanceof TcpPayload payload) {
+            return payload.asString();
         }
-        if (msg instanceof String) {
-            return "PONG".equalsIgnoreCase(((String) msg).trim());
+        if (msg instanceof TcpPacket packet && packet.getPayload() != null) {
+            return packet.getPayload().asString();
         }
-        return false;
+        if (msg instanceof byte[] bytes) {
+            return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        }
+        if (msg instanceof String str) {
+            return str;
+        }
+        return null;
     }
 
     private TcpPacket toTcpPacket(Object msg) {

@@ -29,4 +29,9 @@ public class TcpHeartbeatProperties {
      * 心跳请求载荷内容（默认 "PING"）
      */
     private String payload = "PING";
+
+    /**
+     * 服务端返回的心跳应答匹配载荷内容（默认 "PONG"，配置为空白时安全兼容 "PONG"）
+     */
+    private String responsePayload = "PONG";
 }

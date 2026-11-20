@@ -219,13 +219,16 @@ public class TcpServer implements SmartLifecycle {
                                     }
                                 }
 
-                                // 3. 空闲心跳检测处理器
+                                // 3. 空闲心跳检测处理器（毫秒级精度构建，兼容亚秒级探测配置）
                                 Duration r = properties.getIdle().getReaderIdleTime();
                                 Duration w = properties.getIdle().getWriterIdleTime();
                                 Duration a = properties.getIdle().getAllIdleTime();
-                                if (!r.isZero() || !w.isZero() || !a.isZero()) {
+                                long rMs = r != null ? Math.max(0L, r.toMillis()) : 0L;
+                                long wMs = w != null ? Math.max(0L, w.toMillis()) : 0L;
+                                long aMs = a != null ? Math.max(0L, a.toMillis()) : 0L;
+                                if (rMs > 0L || wMs > 0L || aMs > 0L) {
                                     pipeline.addLast("idleStateHandler",
-                                            new IdleStateHandler((int) r.toSeconds(), (int) w.toSeconds(), (int) a.toSeconds()));
+                                            new IdleStateHandler(rMs, wMs, aMs, TimeUnit.MILLISECONDS));
                                 }
 
                                 // 4. 粘包拆包解码器与对称出站定界符属性绑定

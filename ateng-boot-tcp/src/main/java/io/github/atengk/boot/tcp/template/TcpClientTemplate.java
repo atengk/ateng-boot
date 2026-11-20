@@ -137,6 +137,19 @@ public class TcpClientTemplate {
      * @return 对端响应对象
      */
     public <T> T request(Object payload, Class<T> responseType, Duration timeout) {
+        return request(payload, timeout, responseType);
+    }
+
+    /**
+     * 发起全双工同步请求并在指定超时窗口内等待强类型对端应答（与 {@link TcpServerTemplate} 参数顺序对称）
+     *
+     * @param payload      请求报文
+     * @param timeout      超时时长
+     * @param responseType 响应目标类型
+     * @param <T>          响应强类型
+     * @return 对端响应对象
+     */
+    public <T> T request(Object payload, Duration timeout, Class<T> responseType) {
         Objects.requireNonNull(responseType, "responseType 不能为空");
         TcpPacket responsePacket = timeout != null ? request(payload, timeout) : request(payload);
         return castResponse(responsePacket, responseType);
@@ -236,6 +249,33 @@ public class TcpClientTemplate {
         }
 
         return future;
+    }
+
+    /**
+     * 发起全双工异步强类型 RPC 请求（使用默认 requestTimeout）
+     *
+     * @param payload      请求报文
+     * @param responseType 响应目标类型
+     * @param <T>          响应强类型
+     * @return 强类型响应 Future
+     */
+    public <T> CompletableFuture<T> requestAsync(Object payload, Class<T> responseType) {
+        Objects.requireNonNull(responseType, "responseType 不能为空");
+        return requestAsync(payload).thenApply(responsePacket -> castResponse(responsePacket, responseType));
+    }
+
+    /**
+     * 发起全双工异步强类型 RPC 请求并在指定超时窗口内等待响应
+     *
+     * @param payload      请求报文
+     * @param timeout      超时时长
+     * @param responseType 响应目标类型
+     * @param <T>          响应强类型
+     * @return 强类型响应 Future
+     */
+    public <T> CompletableFuture<T> requestAsync(Object payload, Duration timeout, Class<T> responseType) {
+        Objects.requireNonNull(responseType, "responseType 不能为空");
+        return requestAsync(payload, timeout).thenApply(responsePacket -> castResponse(responsePacket, responseType));
     }
 
     /**

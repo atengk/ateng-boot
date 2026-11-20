@@ -26,6 +26,7 @@ import org.springframework.context.SmartLifecycle;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -163,10 +164,14 @@ public class TcpClient implements SmartLifecycle {
                                 pipeline.addLast("sslHandler", sslContext.newHandler(ch.alloc(), properties.getHost(), properties.getPort()));
                             }
 
-                            // 1. 心跳探测
-                            if (properties.getHeartbeat().isEnabled()) {
-                                int interval = (int) properties.getHeartbeat().getInterval().toSeconds();
-                                pipeline.addLast("idleStateHandler", new IdleStateHandler(0, interval, 0));
+                            // 1. 心跳探测（毫秒级精度构建，杜绝亚秒级周期被整秒截断归零）
+                            if (properties.getHeartbeat() != null && properties.getHeartbeat().isEnabled()) {
+                                Duration interval = properties.getHeartbeat().getInterval();
+                                long intervalMillis = interval != null ? Math.max(0L, interval.toMillis()) : 0L;
+                                if (intervalMillis > 0L) {
+                                    pipeline.addLast("idleStateHandler",
+                                            new IdleStateHandler(0L, intervalMillis, 0L, TimeUnit.MILLISECONDS));
+                                }
                             }
 
                             // 2. 粘包拆包解码器与对称出站定界符属性绑定
