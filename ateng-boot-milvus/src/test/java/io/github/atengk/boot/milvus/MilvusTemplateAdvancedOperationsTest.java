@@ -19,6 +19,9 @@ import io.milvus.response.QueryResultsWrapper;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.service.vector.request.HybridSearchReq;
 import io.milvus.v2.service.vector.request.QueryIteratorReq;
+import io.milvus.v2.service.vector.request.data.FloatVec;
+import io.milvus.v2.service.vector.request.data.SparseFloatVec;
+import io.milvus.v2.service.vector.request.ranker.WeightedRanker;
 import io.milvus.v2.service.vector.response.SearchResp;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -31,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -42,6 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -300,5 +305,134 @@ class MilvusTemplateAdvancedOperationsTest {
         assertThat(iterCaptor.getValue().getExpr()).isEqualTo("(category == 'AI') and (org_code == 'org_beta')");
         assertThat(collected).hasSize(1);
         assertThat(collected.get(0).getId()).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("streamingQuery - 缺省批次大小绑定 AtengMilvusProperties.batchSize 且显式参数优先覆盖")
+    void testStreamingQueryUsesConfiguredBatchSizeAndAllowsExplicitOverride() {
+        QueryIterator mockIterator = mock(QueryIterator.class);
+        when(client.queryIterator(any(QueryIteratorReq.class))).thenReturn(mockIterator);
+        when(mockIterator.next()).thenReturn(List.of());
+
+        properties.setBatchSize(250);
+
+        template.streamingQuery("big_collection", null, batch -> {
+        });
+        template.streamingQueryEntities(HybridDoc.class, null, batch -> {
+        });
+        template.streamingQuery("big_collection", null, 50, batch -> {
+        });
+
+        ArgumentCaptor<QueryIteratorReq> captor = ArgumentCaptor.forClass(QueryIteratorReq.class);
+        verify(client, org.mockito.Mockito.times(3)).queryIterator(captor.capture());
+        List<QueryIteratorReq> reqs = captor.getAllValues();
+        assertThat(reqs.get(0).getBatchSize()).isEqualTo(250);
+        assertThat(reqs.get(1).getBatchSize()).isEqualTo(250);
+        assertThat(reqs.get(2).getBatchSize()).isEqualTo(50);
+    }
+
+    @Test
+    @DisplayName("MilvusHybridSearchRequest#validate - 对非法集合、空通道、空向量、非正 topK 与权重路数不匹配前置 Fail-Fast 且不穿透驱动")
+    void testHybridSearchRequestValidateFailFast() {
+        AnnSearch validDense = AnnSearch.of("denseVector", List.of(0.1f, 0.2f, 0.3f), 10);
+        AnnSearch validDense2 = AnnSearch.of("denseVector2", List.of(0.4f, 0.5f, 0.6f), 10);
+
+        // 1. 空集合名 / Map 类型未指定集合名
+        MilvusHybridSearchRequest<Object> emptyColReq = MilvusHybridSearchRequest.builder()
+                .addSearch(validDense)
+                .topK(5);
+        assertThatThrownBy(emptyColReq::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("collectionName");
+        assertThatThrownBy(() -> template.hybridSearch(emptyColReq))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        MilvusHybridSearchRequest<Map<String, Object>> mapWithoutColReq = MilvusHybridSearchRequest.<Map<String, Object>>builder()
+                .entityClass((Class) Map.class)
+                .addSearch(validDense)
+                .topK(5);
+        assertThatThrownBy(mapWithoutColReq::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("collectionName");
+
+        // 2. 空子检索列表
+        MilvusHybridSearchRequest<HybridDoc> emptySearchesReq = MilvusHybridSearchRequest.of(HybridDoc.class)
+                .topK(5);
+        assertThatThrownBy(emptySearchesReq::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("searchRequests");
+        assertThatThrownBy(() -> template.hybridSearch(emptySearchesReq))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // 3. 子检索向量为空（null / 空稠密向量 / 空稀疏向量 / 子检索 topK <= 0）
+        MilvusHybridSearchRequest<HybridDoc> nullVecReq = MilvusHybridSearchRequest.of(HybridDoc.class)
+                .addSearch(AnnSearch.builder().vectorFieldName("denseVector").topK(5).build())
+                .topK(5);
+        assertThatThrownBy(nullVecReq::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("vector");
+
+        MilvusHybridSearchRequest<HybridDoc> emptyDenseVecReq = MilvusHybridSearchRequest.of(HybridDoc.class)
+                .addSearch(AnnSearch.builder().vectorFieldName("denseVector").vector(new FloatVec(List.of())).topK(5).build())
+                .topK(5);
+        assertThatThrownBy(emptyDenseVecReq::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("vector");
+
+        MilvusHybridSearchRequest<HybridDoc> emptySparseVecReq = MilvusHybridSearchRequest.of(HybridDoc.class)
+                .addSearch(AnnSearch.builder().vectorFieldName("sparseVector").vector(new SparseFloatVec(new TreeMap<>())).topK(5).build())
+                .topK(5);
+        assertThatThrownBy(emptySparseVecReq::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("vector");
+
+        MilvusHybridSearchRequest<HybridDoc> badSubTopKReq = MilvusHybridSearchRequest.of(HybridDoc.class)
+                .addSearch(AnnSearch.of("denseVector", List.of(0.1f, 0.2f, 0.3f), 0))
+                .topK(5);
+        assertThatThrownBy(badSubTopKReq::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("topK");
+
+        // 4. 全局 topK <= 0
+        MilvusHybridSearchRequest<HybridDoc> badTopKReq = MilvusHybridSearchRequest.of(HybridDoc.class)
+                .addSearch(validDense)
+                .topK(0);
+        assertThatThrownBy(badTopKReq::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("topK");
+        assertThatThrownBy(() -> template.hybridSearch(badTopKReq))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // 5. WeightedRanker 权重数量与子检索通道数量不匹配（2 路 vs 1 个权重，或 1 路 vs 2 个权重，或 null 权重）
+        MilvusHybridSearchRequest<HybridDoc> mismatchMoreSearches = MilvusHybridSearchRequest.of(HybridDoc.class)
+                .searches(validDense, validDense2)
+                .weighted(1.0f)
+                .topK(5);
+        assertThatThrownBy(mismatchMoreSearches::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("WeightedRanker");
+        assertThatThrownBy(() -> template.hybridSearch(mismatchMoreSearches))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        MilvusHybridSearchRequest<HybridDoc> mismatchMoreWeights = MilvusHybridSearchRequest.of(HybridDoc.class)
+                .searches(validDense)
+                .weighted(0.7f, 0.3f)
+                .topK(5);
+        assertThatThrownBy(mismatchMoreWeights::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("WeightedRanker");
+        assertThatThrownBy(() -> template.hybridSearch(mismatchMoreWeights))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        MilvusHybridSearchRequest<HybridDoc> nullWeightsRanker = MilvusHybridSearchRequest.of(HybridDoc.class)
+                .searches(validDense)
+                .ranker(new WeightedRanker(null))
+                .topK(5);
+        assertThatThrownBy(nullWeightsRanker::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("WeightedRanker");
+
+        // 确认上述任何异常场景均未穿透触发底层远程 hybridSearch
+        verify(client, never()).hybridSearch(any(HybridSearchReq.class));
     }
 }

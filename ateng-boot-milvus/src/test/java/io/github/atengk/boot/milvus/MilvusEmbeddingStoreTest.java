@@ -7,8 +7,10 @@ import dev.langchain4j.store.embedding.EmbeddingMatch;
 import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
 import dev.langchain4j.store.embedding.EmbeddingSearchResult;
 import dev.langchain4j.store.embedding.filter.comparison.IsEqualTo;
+import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.milvus.context.MilvusContextHolder;
 import io.github.atengk.boot.milvus.langchain4j.MilvusEmbeddingStore;
 import io.github.atengk.boot.milvus.model.MilvusHit;
 import io.github.atengk.boot.milvus.template.MilvusTemplate;
@@ -17,10 +19,16 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -29,7 +37,10 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -59,6 +70,7 @@ class MilvusEmbeddingStoreTest {
     @AfterEach
     void tearDown() {
         TenantContextHolder.clear();
+        MilvusContextHolder.clear();
     }
 
     @Test
@@ -192,5 +204,98 @@ class MilvusEmbeddingStoreTest {
         store.ensureCollectionExists();
 
         verify(template).createCollectionAndIndex(eq("rag_kb"), eq("vector"), eq(3), any(), any());
+    }
+
+    @Test
+    @DisplayName("ensureCollectionExists - ReentrantLock 并发互斥防 Pinning 且仅初始化一次")
+    void testConcurrentEnsureCollectionExistsWithoutSynchronizedPinning() throws Exception {
+        Method ensureMethod = MilvusEmbeddingStore.class.getMethod("ensureCollectionExists");
+        assertThat(Modifier.isSynchronized(ensureMethod.getModifiers())).isFalse();
+
+        when(template.resolveCurrentDatabase()).thenReturn("default");
+        when(template.hasCollection("rag_kb")).thenReturn(false);
+
+        AtomicInteger createCalls = new AtomicInteger(0);
+        doAnswer(inv -> {
+            Thread.sleep(30);
+            createCalls.incrementAndGet();
+            return null;
+        }).when(template).createCollectionAndIndex(eq("rag_kb"), eq("vector"), eq(3), any(), any());
+
+        int threads = 8;
+        ThreadPoolTaskExecutor pool = new ThreadPoolTaskExecutor();
+        pool.setCorePoolSize(threads);
+        pool.setMaxPoolSize(threads);
+        pool.setThreadFactory(new NamedThreadFactory("milvus-store-test-"));
+        pool.initialize();
+        CountDownLatch startGate = new CountDownLatch(1);
+        CountDownLatch doneGate = new CountDownLatch(threads);
+        AtomicInteger errors = new AtomicInteger(0);
+        try {
+            for (int i = 0; i < threads; i++) {
+                pool.execute(() -> {
+                    try {
+                        startGate.await();
+                        store.ensureCollectionExists();
+                    } catch (Throwable t) {
+                        errors.incrementAndGet();
+                    } finally {
+                        doneGate.countDown();
+                    }
+                });
+            }
+            startGate.countDown();
+            assertThat(doneGate.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(errors.get()).isZero();
+            assertThat(createCalls.get()).isEqualTo(1);
+            verify(template, times(1)).hasCollection("rag_kb");
+        } finally {
+            pool.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("ensureCollectionExists - 多库切换自动按需建表与 resetInitialized 对称重置")
+    void testMultiDatabaseInitializationAndReset() {
+        when(template.hasCollection("rag_kb")).thenReturn(false);
+
+        // 1. db_alpha 首次触发初始化，再次调用命中缓存不重复探测
+        when(template.resolveCurrentDatabase()).thenReturn("db_alpha");
+        store.ensureCollectionExists();
+        store.ensureCollectionExists();
+        assertThat(store.isInitialized()).isTrue();
+        verify(template, times(1)).createCollectionAndIndex(eq("rag_kb"), eq("vector"), eq(3), any(), any());
+
+        // 2. 切换至 db_beta 后自动为新库补建同名集合
+        when(template.resolveCurrentDatabase()).thenReturn("db_beta");
+        assertThat(store.isInitialized()).isFalse();
+        store.ensureCollectionExists();
+        assertThat(store.isInitialized()).isTrue();
+        verify(template, times(2)).createCollectionAndIndex(eq("rag_kb"), eq("vector"), eq(3), any(), any());
+
+        // 3. 调用 resetInitialized 后允许重新触发初始化探测
+        store.resetInitialized();
+        assertThat(store.isInitialized()).isFalse();
+        store.ensureCollectionExists();
+        verify(template, times(3)).createCollectionAndIndex(eq("rag_kb"), eq("vector"), eq(3), any(), any());
+    }
+
+    @Test
+    @DisplayName("ensureCollectionExists - 初始化异常时释放锁且不写入缓存以便后续自愈")
+    void testEnsureCollectionExistsFailureReleasesLockAndRetries() {
+        when(template.resolveCurrentDatabase()).thenReturn("db_retry");
+        when(template.hasCollection("rag_kb")).thenReturn(false);
+        doThrow(new BusinessException("建表 RPC 瞬态超时"))
+                .doNothing()
+                .when(template).createCollectionAndIndex(eq("rag_kb"), eq("vector"), eq(3), any(), any());
+
+        assertThatThrownBy(() -> store.ensureCollectionExists())
+                .isInstanceOf(BusinessException.class);
+        assertThat(store.isInitialized()).isFalse();
+
+        // 第二次调用能够成功获取锁并完成自愈
+        store.ensureCollectionExists();
+        assertThat(store.isInitialized()).isTrue();
+        verify(template, times(2)).createCollectionAndIndex(eq("rag_kb"), eq("vector"), eq(3), any(), any());
     }
 }

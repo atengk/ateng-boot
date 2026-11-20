@@ -1,6 +1,9 @@
 package io.github.atengk.boot.sample.milvus.controller;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.milvus.model.AnnSearch;
 import io.github.atengk.boot.milvus.model.MilvusHit;
 import io.github.atengk.boot.milvus.model.MilvusHybridSearchRequest;
@@ -12,6 +15,7 @@ import io.github.atengk.boot.sample.milvus.vo.DocumentHitVo;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.util.StringUtils;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -52,13 +56,28 @@ public class MilvusHybridController {
             hybridReq.addSearch(AnnSearch.of("vector", request.getSecondaryVector(), request.getTopK()));
         }
 
-        if ("WEIGHTED".equalsIgnoreCase(request.getRankerType()) && request.getWeights() != null && !request.getWeights().isEmpty()) {
-            hybridReq.weighted(request.getWeights());
+        if ("WEIGHTED".equalsIgnoreCase(request.getRankerType())) {
+            BusinessAssert.notEmpty(request.getWeights(), "WEIGHTED 重排模式下 weights 不能为空");
+            try {
+                hybridReq.weighted(request.getWeights());
+            } catch (IllegalArgumentException ex) {
+                throw new BusinessException(CommonResultCode.BAD_REQUEST, ex.getMessage(), ex);
+            }
+        } else if (!StringUtils.hasText(request.getRankerType()) || "RRF".equalsIgnoreCase(request.getRankerType())) {
+            int rrfK = request.getRrfK() != null ? request.getRrfK() : 60;
+            BusinessAssert.isTrue(rrfK > 0, "RRF 重排参数 rrfK 必须大于 0");
+            hybridReq.rrf(rrfK);
         } else {
-            hybridReq.rrf(request.getRrfK() != null ? request.getRrfK() : 60);
+            throw new BusinessException(CommonResultCode.BAD_REQUEST,
+                    "不支持的混合检索重排算法类型: " + request.getRankerType());
         }
 
-        List<MilvusHit<SampleDocumentEntity>> hits = milvusTemplate.hybridSearch(hybridReq);
+        List<MilvusHit<SampleDocumentEntity>> hits;
+        try {
+            hits = milvusTemplate.hybridSearch(hybridReq);
+        } catch (IllegalArgumentException ex) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, ex.getMessage(), ex);
+        }
         List<DocumentHitVo> voList = hits.stream()
                 .map(DocumentConverter::toHitVo)
                 .collect(Collectors.toList());

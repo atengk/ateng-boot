@@ -97,12 +97,6 @@ import java.util.stream.Collectors;
 public class MilvusTemplate {
 
     public static final int DEFAULT_BATCH_SIZE = 1000;
-    private static final RetryUtil.RetryConfig DEFAULT_RETRY_CONFIG = RetryUtil.RetryConfig.builder()
-            .maxAttempts(3)
-            .delay(Duration.ofMillis(200))
-            .multiplier(2.0)
-            .maxDelay(Duration.ofSeconds(2))
-            .build();
 
     private final MilvusClientV2 client;
     private final AtengMilvusProperties properties;
@@ -2182,15 +2176,16 @@ public class MilvusTemplate {
      * @param collectionName 集合名称
      * @param data           字典数据列表
      * @param partitionName  物理分区名称 (可为 null)
-     * @param batchSize      每批切片大小 (默认 1000)
+     * @param batchSize      每批切片大小 (小于等于 0 时采用配置默认值)
      */
     public void insertBatch(String collectionName, List<Map<String, Object>> data, String partitionName, int batchSize) {
         if (data == null || data.isEmpty()) {
             return;
         }
-        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        int effectiveBatchSize = resolveBatchSize(batchSize);
+        RetryUtil.RetryConfig retryConfig = resolveRetryConfig();
         BatchSliceUtil.forEachSlice(data, effectiveBatchSize, slice ->
-                RetryUtil.execute(() -> insert(collectionName, slice, partitionName), DEFAULT_RETRY_CONFIG));
+                RetryUtil.execute(() -> insert(collectionName, slice, partitionName), retryConfig));
     }
 
     /**
@@ -2205,24 +2200,24 @@ public class MilvusTemplate {
     }
 
     /**
-     * 分批切片写入字典数据 (指定分区与默认切片大小 1000)
+     * 分批切片写入字典数据 (指定分区与配置缺省切片大小)
      *
      * @param collectionName 集合名称
      * @param data           字典数据列表
      * @param partitionName  物理分区名称 (可为 null)
      */
     public void insertBatch(String collectionName, List<Map<String, Object>> data, String partitionName) {
-        insertBatch(collectionName, data, partitionName, DEFAULT_BATCH_SIZE);
+        insertBatch(collectionName, data, partitionName, 0);
     }
 
     /**
-     * 分批切片写入字典数据 (默认分区与默认切片大小 1000)
+     * 分批切片写入字典数据 (默认分区与配置缺省切片大小)
      *
      * @param collectionName 集合名称
      * @param data           字典数据列表
      */
     public void insertBatch(String collectionName, List<Map<String, Object>> data) {
-        insertBatch(collectionName, data, null, DEFAULT_BATCH_SIZE);
+        insertBatch(collectionName, data, null, 0);
     }
 
     /**
@@ -2230,16 +2225,17 @@ public class MilvusTemplate {
      *
      * @param entities      实体列表
      * @param partitionName 物理分区名称 (可为 null)
-     * @param batchSize     每批切片大小 (默认 1000)
+     * @param batchSize     每批切片大小 (小于等于 0 时采用配置默认值)
      * @param <T>           实体泛型
      */
     public <T> void insertBatchEntities(List<T> entities, String partitionName, int batchSize) {
         if (entities == null || entities.isEmpty()) {
             return;
         }
-        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        int effectiveBatchSize = resolveBatchSize(batchSize);
+        RetryUtil.RetryConfig retryConfig = resolveRetryConfig();
         BatchSliceUtil.forEachSlice(entities, effectiveBatchSize, slice ->
-                RetryUtil.execute(() -> insertEntities(slice, partitionName), DEFAULT_RETRY_CONFIG));
+                RetryUtil.execute(() -> insertEntities(slice, partitionName), retryConfig));
     }
 
     /**
@@ -2254,13 +2250,13 @@ public class MilvusTemplate {
     }
 
     /**
-     * 分批切片写入业务实体数据 (默认分区与默认切片大小 1000)
+     * 分批切片写入业务实体数据 (默认分区与配置缺省切片大小)
      *
      * @param entities 实体列表
      * @param <T>      实体泛型
      */
     public <T> void insertBatchEntities(List<T> entities) {
-        insertBatchEntities(entities, null, DEFAULT_BATCH_SIZE);
+        insertBatchEntities(entities, null, 0);
     }
 
     /**
@@ -2269,15 +2265,16 @@ public class MilvusTemplate {
      * @param collectionName 集合名称
      * @param data           字典数据列表
      * @param partitionName  物理分区名称 (可为 null)
-     * @param batchSize      每批切片大小 (默认 1000)
+     * @param batchSize      每批切片大小 (小于等于 0 时采用配置默认值)
      */
     public void upsertBatch(String collectionName, List<Map<String, Object>> data, String partitionName, int batchSize) {
         if (data == null || data.isEmpty()) {
             return;
         }
-        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        int effectiveBatchSize = resolveBatchSize(batchSize);
+        RetryUtil.RetryConfig retryConfig = resolveRetryConfig();
         BatchSliceUtil.forEachSlice(data, effectiveBatchSize, slice ->
-                RetryUtil.execute(() -> upsert(collectionName, slice, partitionName), DEFAULT_RETRY_CONFIG));
+                RetryUtil.execute(() -> upsert(collectionName, slice, partitionName), retryConfig));
     }
 
     /**
@@ -2292,13 +2289,13 @@ public class MilvusTemplate {
     }
 
     /**
-     * 分批切片覆盖写入字典数据 (默认分区与默认切片大小 1000)
+     * 分批切片覆盖写入字典数据 (默认分区与配置缺省切片大小)
      *
      * @param collectionName 集合名称
      * @param data           字典数据列表
      */
     public void upsertBatch(String collectionName, List<Map<String, Object>> data) {
-        upsertBatch(collectionName, data, null, DEFAULT_BATCH_SIZE);
+        upsertBatch(collectionName, data, null, 0);
     }
 
     /**
@@ -2306,16 +2303,17 @@ public class MilvusTemplate {
      *
      * @param entities      实体列表
      * @param partitionName 物理分区名称 (可为 null)
-     * @param batchSize     每批切片大小 (默认 1000)
+     * @param batchSize     每批切片大小 (小于等于 0 时采用配置默认值)
      * @param <T>           实体泛型
      */
     public <T> void upsertBatchEntities(List<T> entities, String partitionName, int batchSize) {
         if (entities == null || entities.isEmpty()) {
             return;
         }
-        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        int effectiveBatchSize = resolveBatchSize(batchSize);
+        RetryUtil.RetryConfig retryConfig = resolveRetryConfig();
         BatchSliceUtil.forEachSlice(entities, effectiveBatchSize, slice ->
-                RetryUtil.execute(() -> upsertEntities(slice, partitionName), DEFAULT_RETRY_CONFIG));
+                RetryUtil.execute(() -> upsertEntities(slice, partitionName), retryConfig));
     }
 
     /**
@@ -2330,13 +2328,39 @@ public class MilvusTemplate {
     }
 
     /**
-     * 分批切片覆盖写入业务实体数据 (默认分区与默认切片大小 1000)
+     * 分批切片覆盖写入业务实体数据 (默认分区与配置缺省切片大小)
      *
      * @param entities 实体列表
      * @param <T>      实体泛型
      */
     public <T> void upsertBatchEntities(List<T> entities) {
-        upsertBatchEntities(entities, null, DEFAULT_BATCH_SIZE);
+        upsertBatchEntities(entities, null, 0);
+    }
+
+    private int resolveBatchSize(int batchSize) {
+        if (batchSize > 0) {
+            return batchSize;
+        }
+        int configured = properties.getBatchSize();
+        return configured > 0 ? configured : DEFAULT_BATCH_SIZE;
+    }
+
+    private RetryUtil.RetryConfig resolveRetryConfig() {
+        int maxRetries = Math.max(0, properties.getMaxRetries());
+        int maxAttempts = maxRetries + 1;
+        Duration configuredDelay = properties.getRetryDelay();
+        Duration delay = (configuredDelay != null && !configuredDelay.isNegative())
+                ? configuredDelay
+                : Duration.ofMillis(200);
+        Duration maxDelay = delay.compareTo(Duration.ofMillis(200)) > 0
+                ? delay.multipliedBy(10)
+                : Duration.ofSeconds(2);
+        return RetryUtil.RetryConfig.builder()
+                .maxAttempts(maxAttempts)
+                .delay(delay)
+                .multiplier(2.0)
+                .maxDelay(maxDelay)
+                .build();
     }
 
     private void ensurePartitionExists(String collectionName, String partitionName) {
@@ -2372,9 +2396,7 @@ public class MilvusTemplate {
      */
     public <T> List<MilvusHit<T>> hybridSearch(MilvusHybridSearchRequest<T> request) {
         Assert.notNull(request, "MilvusHybridSearchRequest must not be null");
-        Assert.hasText(request.getCollectionName(), "collectionName must not be empty");
-        Assert.notEmpty(request.getSearchRequests(), "searchRequests must not be empty");
-        Assert.isTrue(request.getTopK() > 0, "topK must be positive");
+        request.validate();
 
         String explicitDb = StringUtils.hasText(request.getDatabaseName()) ? request.getDatabaseName().trim() : null;
         String effectiveDb = explicitDb != null ? explicitDb : resolveCurrentDatabase();
@@ -2384,6 +2406,9 @@ public class MilvusTemplate {
         MilvusEntityMetadata metadata = (request.getEntityClass() != null && !Map.class.isAssignableFrom(request.getEntityClass()))
                 ? MilvusEntityMetadata.of(request.getEntityClass())
                 : null;
+
+        String collectionName = request.resolveEffectiveCollectionName();
+        Assert.hasText(collectionName, "collectionName must not be empty");
 
         List<AnnSearchReq> annSearchReqs = new ArrayList<>(request.getSearchRequests().size());
         for (AnnSearch annSearch : request.getSearchRequests()) {
@@ -2398,7 +2423,7 @@ public class MilvusTemplate {
         }
 
         HybridSearchReq.HybridSearchReqBuilder<?, ?> builder = HybridSearchReq.builder()
-                .collectionName(request.getCollectionName())
+                .collectionName(collectionName)
                 .searchRequests(annSearchReqs)
                 .ranker(ranker)
                 .topK(request.getTopK())
@@ -2448,7 +2473,7 @@ public class MilvusTemplate {
      * @param collectionName 集合名称
      * @param expr           过滤表达式
      * @param outputFields   投影字段列表 (为空默认 "*")
-     * @param batchSize      每批游标拉取大小 (默认 1000)
+     * @param batchSize      每批游标拉取大小 (小于等于 0 时采用配置默认值)
      * @param metadata       实体元数据 (可为 null)
      * @param batchConsumer  每批字典数据消费回调
      */
@@ -2463,7 +2488,7 @@ public class MilvusTemplate {
 
         String safeFilter = MilvusTenantHelper.weaveEntityTenantFilter(
                 expr, metadata, properties.getTenantFieldName(), false);
-        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        int effectiveBatchSize = resolveBatchSize(batchSize);
         List<String> effectiveOutFields = (outputFields != null && !outputFields.isEmpty())
                 ? new ArrayList<>(outputFields)
                 : Collections.singletonList("*");
@@ -2543,7 +2568,7 @@ public class MilvusTemplate {
     public void streamingQuery(String collectionName,
                                String expr,
                                Consumer<List<Map<String, Object>>> batchConsumer) {
-        streamingQuery(collectionName, expr, null, DEFAULT_BATCH_SIZE, batchConsumer);
+        streamingQuery(collectionName, expr, null, 0, batchConsumer);
     }
 
     /**
@@ -2596,7 +2621,7 @@ public class MilvusTemplate {
     public <T> void streamingQueryEntities(Class<T> entityClass,
                                            String expr,
                                            Consumer<List<T>> batchConsumer) {
-        streamingQueryEntities(entityClass, expr, DEFAULT_BATCH_SIZE, batchConsumer);
+        streamingQueryEntities(entityClass, expr, 0, batchConsumer);
     }
 
     // =========================================================================

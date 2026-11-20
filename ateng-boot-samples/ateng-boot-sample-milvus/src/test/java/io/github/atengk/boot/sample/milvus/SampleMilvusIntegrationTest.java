@@ -2,7 +2,11 @@ package io.github.atengk.boot.sample.milvus;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.enums.IBaseEnum;
+import io.github.atengk.boot.core.util.EnumUtil;
 import io.github.atengk.boot.milvus.context.MilvusContextHolder;
+import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
+import io.github.atengk.boot.milvus.properties.MilvusConsistencyLevel;
 import io.github.atengk.boot.sample.milvus.dto.AliasAlterDto;
 import io.github.atengk.boot.sample.milvus.dto.AliasCreateDto;
 import io.github.atengk.boot.sample.milvus.dto.DatabaseCreateDto;
@@ -59,6 +63,7 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -100,6 +105,9 @@ class SampleMilvusIntegrationTest {
 
     @Autowired
     private MilvusClientV2 milvusClientV2;
+
+    @Autowired
+    private AtengMilvusProperties milvusProperties;
 
     @BeforeEach
     void setUp() {
@@ -433,6 +441,76 @@ class SampleMilvusIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").isArray());
+
+        int hybridCallsBeforeFailFast = Mockito.mockingDetails(milvusClientV2).isMock()
+                ? (int) Mockito.mockingDetails(milvusClientV2).getInvocations().stream()
+                .filter(inv -> "hybridSearch".equals(inv.getMethod().getName()))
+                .count()
+                : 0;
+
+        // 3. WEIGHTED 权重数量与子检索通道数不匹配时前置 Fail-Fast 拦截 (2 路向量 vs 1 个权重)
+        HybridSearchDto mismatchWeightDto = HybridSearchDto.builder()
+                .vector(List.of(0.1f, 0.2f, 0.3f, 0.4f))
+                .secondaryVector(List.of(0.5f, 0.6f, 0.7f, 0.8f))
+                .topK(5)
+                .rankerType("WEIGHTED")
+                .weights(List.of(1.0f))
+                .build();
+        mockMvc.perform(post("/sample/milvus/hybrid/search")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(mismatchWeightDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        // 4. WEIGHTED 缺少 weights 或非法 rankerType 或空向量前置 Fail-Fast 拦截
+        HybridSearchDto emptyWeightsDto = HybridSearchDto.builder()
+                .vector(List.of(0.1f, 0.2f, 0.3f, 0.4f))
+                .topK(5)
+                .rankerType("WEIGHTED")
+                .weights(Collections.emptyList())
+                .build();
+        mockMvc.perform(post("/sample/milvus/hybrid/search")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(emptyWeightsDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        HybridSearchDto invalidRankerDto = HybridSearchDto.builder()
+                .vector(List.of(0.1f, 0.2f, 0.3f, 0.4f))
+                .topK(5)
+                .rankerType("UNKNOWN")
+                .build();
+        mockMvc.perform(post("/sample/milvus/hybrid/search")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRankerDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        HybridSearchDto emptyVectorDto = HybridSearchDto.builder()
+                .vector(Collections.emptyList())
+                .topK(5)
+                .build();
+        mockMvc.perform(post("/sample/milvus/hybrid/search")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(emptyVectorDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        if (Mockito.mockingDetails(milvusClientV2).isMock()) {
+            long hybridCallsAfterFailFast = Mockito.mockingDetails(milvusClientV2).getInvocations().stream()
+                    .filter(inv -> "hybridSearch".equals(inv.getMethod().getName()))
+                    .count();
+            assertThat(hybridCallsAfterFailFast).isEqualTo(hybridCallsBeforeFailFast);
+        }
+
+        // 5. 校验 Sample 容器中 AtengMilvusProperties 批处理配置与 IBaseEnum 枚举契约装配
+        assertThat(milvusProperties.getBatchSize()).isEqualTo(1000);
+        assertThat(milvusProperties.getMaxRetries()).isEqualTo(3);
+        assertThat(milvusProperties.getRetryDelay()).isEqualTo(Duration.ofMillis(200));
+        assertThat(milvusProperties.getConsistencyLevel()).isEqualTo(MilvusConsistencyLevel.BOUNDED);
+        assertThat((Object) milvusProperties.getConsistencyLevel()).isInstanceOf(IBaseEnum.class);
+        assertThat(EnumUtil.fromCode(MilvusConsistencyLevel.class, "BOUNDED"))
+                .contains(MilvusConsistencyLevel.BOUNDED);
     }
 
     @Test

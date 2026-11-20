@@ -106,6 +106,21 @@ public class AtengMilvusProperties {
     private String tenantFieldName = "tenant_id";
 
     /**
+     * 批量写入与游标流式遍历默认分片大小 (默认 1000)
+     */
+    private int batchSize = 1000;
+
+    /**
+     * 批量写入单批失败时的最大重试次数 (不含首次执行，0 表示不重试，默认 3)
+     */
+    private int maxRetries = 3;
+
+    /**
+     * 批量写入指数退避重试初始等待时长 (默认 200ms)
+     */
+    private Duration retryDelay = Duration.ofMillis(200);
+
+    /**
      * 计算并获取有效的连接端点 URI
      *
      * @return 格式化后的 Milvus 连接 URI

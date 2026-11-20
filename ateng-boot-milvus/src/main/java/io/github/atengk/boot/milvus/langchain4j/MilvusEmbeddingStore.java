@@ -12,11 +12,13 @@ import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import io.github.atengk.boot.milvus.context.MilvusContextHolder;
 import io.github.atengk.boot.milvus.model.MilvusHit;
 import io.github.atengk.boot.milvus.properties.MilvusConsistencyLevel;
 import io.github.atengk.boot.milvus.template.MilvusTemplate;
 import io.github.atengk.boot.milvus.tenant.MilvusTenantHelper;
 import io.milvus.v2.common.IndexParam;
+import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -29,6 +31,9 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Milvus 向量数据库与 LangChain4j EmbeddingStore SPI 适配器
@@ -75,21 +80,62 @@ public class MilvusEmbeddingStore implements EmbeddingStore<TextSegment> {
     @Builder.Default
     private final boolean autoCreateCollection = true;
 
-    @Builder.Default
-    private volatile boolean initialized = false;
+    @Getter(AccessLevel.NONE)
+    private final ReentrantLock initLock = new ReentrantLock();
+
+    @Getter(AccessLevel.NONE)
+    private final Set<String> initializedCollections = ConcurrentHashMap.newKeySet();
 
     /**
-     * 确保集合与索引就绪 (开箱即用平滑自愈)
+     * 判断当前生效逻辑库下的目标集合是否已完成初始化探测
+     *
+     * @return 是否已初始化
      */
-    public synchronized void ensureCollectionExists() {
-        if (!initialized) {
-            if (autoCreateCollection && !template.hasCollection(collectionName)) {
-                log.info("LangChain4j 向量存储: 集合 [{}] 不存在，正在极简初始化 (dim={}, metric={}, index={})",
-                        collectionName, dimension, metricType, indexType);
-                template.createCollectionAndIndex(collectionName, vectorFieldName, dimension, metricType, indexType);
-            }
-            initialized = true;
+    public boolean isInitialized() {
+        return initializedCollections.contains(resolveCollectionKey());
+    }
+
+    /**
+     * 重置全部逻辑库集合初始化状态缓存，允许后续请求重新触发建表与索引探测
+     */
+    public void resetInitialized() {
+        initializedCollections.clear();
+    }
+
+    /**
+     * 确保集合与索引就绪 (开箱即用平滑自愈，基于 ReentrantLock 杜绝 JDK 21+ 虚拟线程 Pinning)
+     */
+    public void ensureCollectionExists() {
+        String collectionKey = resolveCollectionKey();
+        if (initializedCollections.contains(collectionKey)) {
+            return;
         }
+        initLock.lock();
+        try {
+            if (!initializedCollections.contains(collectionKey)) {
+                if (autoCreateCollection && !template.hasCollection(collectionName)) {
+                    log.info("LangChain4j 向量存储: 集合 [{}] (key={}) 不存在，正在极简初始化 (dim={}, metric={}, index={})",
+                            collectionName, collectionKey, dimension, metricType, indexType);
+                    template.createCollectionAndIndex(collectionName, vectorFieldName, dimension, metricType, indexType);
+                }
+                initializedCollections.add(collectionKey);
+            }
+        } finally {
+            if (initLock.isHeldByCurrentThread()) {
+                initLock.unlock();
+            }
+        }
+    }
+
+    private String resolveCollectionKey() {
+        String db = template.resolveCurrentDatabase();
+        if (!StringUtils.hasText(db)) {
+            db = MilvusContextHolder.getDatabase();
+        }
+        if (!StringUtils.hasText(db)) {
+            db = "default";
+        }
+        return db.trim() + ":" + collectionName;
     }
 
     @Override

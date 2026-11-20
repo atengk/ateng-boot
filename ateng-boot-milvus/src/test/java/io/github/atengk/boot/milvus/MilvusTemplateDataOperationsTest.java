@@ -40,6 +40,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -483,5 +484,73 @@ class MilvusTemplateDataOperationsTest {
         verify(client, times(2)).delete(rawDeleteCaptor.capture());
         assertThat(rawDeleteCaptor.getAllValues().get(1).getFilter())
                 .isEqualTo("(status == 1) and (custom_tenant_col == 'org_alpha')");
+    }
+
+    @Test
+    @DisplayName("batchConfig - 配置化 batchSize 与显式传参覆盖优先级验证")
+    void testConfiguredBatchSizeAndExplicitOverride() {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        List<KbDoc> docs = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            Map<String, Object> row = new HashMap<>();
+            row.put("id", (long) i);
+            rows.add(row);
+            docs.add(KbDoc.builder().id((long) i).content("c" + i).vector(List.of(0.1f, 0.2f, 0.3f)).build());
+        }
+
+        when(client.insert(any(InsertReq.class))).thenReturn(InsertResp.builder().build());
+        when(client.upsert(any(UpsertReq.class))).thenReturn(UpsertResp.builder().build());
+
+        properties.setBatchSize(4);
+
+        // 1. 缺省批大小重载遵循 properties.batchSize=4 (10 条 -> 4+4+2 = 3 批)
+        template.insertBatch("kb_doc", rows);
+        verify(client, times(3)).insert(any(InsertReq.class));
+
+        template.upsertBatch("kb_doc", rows);
+        verify(client, times(3)).upsert(any(UpsertReq.class));
+
+        template.upsertBatchEntities(docs);
+        verify(client, times(6)).upsert(any(UpsertReq.class));
+
+        // 2. 显式传入 batchSize=3 优先覆盖配置 (10 条 -> 3+3+3+1 = 4 批)
+        template.insertBatchEntities(docs, 3);
+        verify(client, times(7)).insert(any(InsertReq.class));
+    }
+
+    @Test
+    @DisplayName("maxRetries & retryDelay - 配置化指数退避重试次数与延迟接线验证")
+    void testConfiguredBatchRetryBehavior() {
+        Map<String, Object> row = new HashMap<>();
+        row.put("id", 1L);
+        List<Map<String, Object>> singleRow = List.of(row);
+
+        properties.setBatchSize(10);
+        properties.setRetryDelay(Duration.ofMillis(40));
+
+        // 1. maxRetries=2 (首次 + 2 次重试 = 共 3 次)，第 3 次成功，且退避延迟生效 (40ms + 80ms = 120ms)
+        properties.setMaxRetries(2);
+        when(client.insert(any(InsertReq.class)))
+                .thenThrow(new RuntimeException("transient 1"))
+                .thenThrow(new RuntimeException("transient 2"))
+                .thenReturn(InsertResp.builder().build());
+
+        long startMs = System.currentTimeMillis();
+        template.insertBatch("kb_doc", singleRow);
+        long elapsedMs = System.currentTimeMillis() - startMs;
+        verify(client, times(3)).insert(any(InsertReq.class));
+        assertThat(elapsedMs).isGreaterThanOrEqualTo(90L);
+
+        // 2. maxRetries=1 (首次 + 1 次重试 = 共 2 次)，持续失败后快速终止
+        MilvusClientV2 failClient = mock(MilvusClientV2.class);
+        AtengMilvusProperties failProps = new AtengMilvusProperties();
+        failProps.setMaxRetries(1);
+        failProps.setRetryDelay(Duration.ofMillis(5));
+        MilvusTemplate failTemplate = new MilvusTemplate(failClient, failProps);
+
+        when(failClient.upsert(any(UpsertReq.class))).thenThrow(new RuntimeException("persistent error"));
+        assertThatThrownBy(() -> failTemplate.upsertBatch("kb_doc", singleRow))
+                .isInstanceOf(MilvusException.class);
+        verify(failClient, times(2)).upsert(any(UpsertReq.class));
     }
 }
