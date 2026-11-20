@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS sys_user (
     create_by VARCHAR(64),
     update_by VARCHAR(64),
     version INT DEFAULT 0,
-    deleted INT DEFAULT 0
+    deleted BIGINT DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS tenant_order (
@@ -77,6 +77,18 @@ CREATE TABLE IF NOT EXISTS sys_dept (
     update_time TIMESTAMP,
     create_by VARCHAR(64),
     update_by VARCHAR(64),
-    version INT DEFAULT 0,
-    deleted INT DEFAULT 0
+    deleted BIGINT DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS tenant_voucher (
+    id VARCHAR(64) NOT NULL PRIMARY KEY,
+    voucher_no VARCHAR(64) NOT NULL,
+    title VARCHAR(128) NOT NULL,
+    tenant_id BIGINT NOT NULL,
+    create_time TIMESTAMP,
+    update_time TIMESTAMP,
+    create_by VARCHAR(64),
+    update_by VARCHAR(64),
+    deleted VARCHAR(64) NOT NULL DEFAULT '0',
+    CONSTRAINT uk_tenant_voucher_no_deleted UNIQUE (tenant_id, voucher_no, deleted)
 );

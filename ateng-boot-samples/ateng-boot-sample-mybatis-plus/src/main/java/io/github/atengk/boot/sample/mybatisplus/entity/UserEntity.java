@@ -14,7 +14,7 @@ import lombok.ToString;
 
 /**
  * 系统用户实体对象
- * 继承全要素受管业务实体基类 BaseFullEntity（覆盖五级阶梯体系最高阶、乐观锁、逻辑删除与字段透明加解密）
+ * 继承全要素受管业务实体基类 BaseFullEntity（组合乐观锁、ID 占位软删除与字段透明加解密）
  *
  * @author Ateng
  * @since 2026-10-19

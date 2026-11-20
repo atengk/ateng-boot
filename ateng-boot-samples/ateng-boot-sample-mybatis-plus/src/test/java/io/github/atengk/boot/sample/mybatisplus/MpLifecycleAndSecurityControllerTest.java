@@ -1,10 +1,12 @@
 package io.github.atengk.boot.sample.mybatisplus;
 
 import com.jayway.jsonpath.JsonPath;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.mybatisplus.context.LogicDeleteContextHolder;
 import io.github.atengk.boot.sample.mybatisplus.entity.MemberProfileEntity;
 import io.github.atengk.boot.sample.mybatisplus.model.MemberProfileCreateDTO;
+import io.github.atengk.boot.sample.mybatisplus.model.TenantVoucherCreateDTO;
 import io.github.atengk.boot.sample.mybatisplus.model.UserCreateDTO;
 import io.github.atengk.boot.core.util.JsonUtil;
 import org.junit.jupiter.api.AfterEach;
@@ -55,11 +57,13 @@ class MpLifecycleAndSecurityControllerTest {
     @BeforeEach
     @AfterEach
     void cleanUp() {
+        TenantContextHolder.clear();
         UserContextHolder.clear();
         LogicDeleteContextHolder.clear();
         jdbcTemplate.execute("DELETE FROM sys_user");
         jdbcTemplate.execute("DELETE FROM product_sku");
         jdbcTemplate.execute("DELETE FROM member_profile");
+        jdbcTemplate.execute("DELETE FROM tenant_voucher");
     }
 
     @Test
@@ -198,9 +202,9 @@ class MpLifecycleAndSecurityControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(200)))
                 .andExpect(jsonPath("$.data", equalTo(true)));
-        Integer restoredDeletedVal = jdbcTemplate.queryForObject(
-                "SELECT deleted FROM product_sku WHERE id = ?", Integer.class, deletedSkuId);
-        assertThat(restoredDeletedVal).isEqualTo(0);
+        Long restoredDeletedVal = jdbcTemplate.queryForObject(
+                "SELECT deleted FROM product_sku WHERE id = ?", Long.class, deletedSkuId);
+        assertThat(restoredDeletedVal).isEqualTo(0L);
 
         // 2.5 验证物理硬删除：对 activeSkuId 执行物理 purge，彻底从数据库移除
         mockMvc.perform(post("/sample/mybatis-plus/lifecycle/sku/{id}/purge", activeSkuId))
@@ -276,5 +280,89 @@ class MpLifecycleAndSecurityControllerTest {
                 .andExpect(jsonPath("$.data.roles", empty()))
                 .andExpect(jsonPath("$.data.shippingAddresses", empty()))
                 .andExpect(jsonPath("$.data.extraInfo", equalTo(Map.of())));
+    }
+
+    @Test
+    @DisplayName("5. 验证 BaseGenericLogicEntity<String> + TenantAware<Long> 泛型占位软删除、唯一索引复用与回收站恢复闭环")
+    void shouldSupportStringGenericLogicEntityAndLongTenantEndToEndLifecycle() throws Exception {
+        TenantVoucherCreateDTO dto1 = new TenantVoucherCreateDTO();
+        dto1.setVoucherNo("VCH-2026-001");
+        dto1.setTitle("差旅报销凭证");
+
+        String createResp1 = mockMvc.perform(post("/sample/mybatis-plus/lifecycle/voucher")
+                        .param("tenantId", "1001")
+                        .param("operator", "finance-alice")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(dto1)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.id", notNullValue()))
+                .andExpect(jsonPath("$.data.tenantId", equalTo("1001")))
+                .andExpect(jsonPath("$.data.deleted", equalTo("0")))
+                .andExpect(jsonPath("$.data.createBy", equalTo("finance-alice")))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String voucherId1 = JsonPath.read(createResp1, "$.data.id");
+        assertThat(voucherId1).hasSize(32);
+
+        // 其他数值租户查询应隔离为空
+        mockMvc.perform(get("/sample/mybatis-plus/lifecycle/voucher/list")
+                        .param("tenantId", "1002"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", empty()));
+
+        // 软删除 voucherId1：底层物理列 deleted 必须占位写入 voucherId1 而非字面量 'id'
+        mockMvc.perform(post("/sample/mybatis-plus/lifecycle/voucher/{id}/soft-delete", voucherId1)
+                        .param("tenantId", "1001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", equalTo(true)));
+
+        String dbDeletedVal = jdbcTemplate.queryForObject(
+                "SELECT deleted FROM tenant_voucher WHERE id = ?", String.class, voucherId1);
+        assertThat(dbDeletedVal).isEqualTo(voucherId1);
+
+        // 同租户下使用相同 voucherNo 重建并再次软删，验证 (tenant_id, voucher_no, deleted) 唯一索引零冲突
+        TenantVoucherCreateDTO dto2 = new TenantVoucherCreateDTO();
+        dto2.setVoucherNo("VCH-2026-001");
+        dto2.setTitle("差旅报销凭证（重制版）");
+
+        String createResp2 = mockMvc.perform(post("/sample/mybatis-plus/lifecycle/voucher")
+                        .param("tenantId", "1001")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(dto2)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.deleted", equalTo("0")))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String voucherId2 = JsonPath.read(createResp2, "$.data.id");
+        assertThat(voucherId2).isNotEqualTo(voucherId1);
+
+        mockMvc.perform(post("/sample/mybatis-plus/lifecycle/voucher/{id}/soft-delete", voucherId2)
+                        .param("tenantId", "1001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", equalTo(true)));
+
+        // 穿透回收站可见全部 2 条已删记录
+        mockMvc.perform(get("/sample/mybatis-plus/lifecycle/voucher/recycle-bin")
+                        .param("tenantId", "1001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", hasSize(2)));
+
+        // 恢复 voucherId2 为活跃状态
+        mockMvc.perform(post("/sample/mybatis-plus/lifecycle/voucher/{id}/restore", voucherId2)
+                        .param("tenantId", "1001")
+                        .param("operator", "finance-bob"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id", equalTo(voucherId2)))
+                .andExpect(jsonPath("$.data.deleted", equalTo("0")))
+                .andExpect(jsonPath("$.data.updateBy", equalTo("finance-bob")));
+
+        mockMvc.perform(get("/sample/mybatis-plus/lifecycle/voucher/list")
+                        .param("tenantId", "1001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", hasSize(1)))
+                .andExpect(jsonPath("$.data[0].id", equalTo(voucherId2)));
     }
 }

@@ -1,6 +1,6 @@
 # ateng-boot-mybatis-plus 持久层增强底座
 
-> 提供实体五级阶梯体系、审计自动填充、行级多租户隔离、AST 声明式细粒度数据权限、原生高效批量插入、存储透明加密与视图动态脱敏。
+> 提供正交能力契约与实体双轨继承阶梯、审计自动填充、行级多租户隔离、AST 声明式细粒度数据权限、原生高效批量插入、存储透明加密与视图动态脱敏。
 
 ---
 
@@ -8,13 +8,9 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **实体体系** | 泛型主键实体基类 | `BaseGenericEntity<ID>` | - | 规范实体主键类型定义与强类型 `getId()` / `setId(ID)` | `BaseEntityTest` / `UserDomainIntegrationTest` |
-| **实体体系** | 雪花 ID 主键基类 | `BaseIdEntity` | `ateng.boot.mybatis-plus.snowflake.*` | 标配 64 位 Long 主键与 `@TableId(type = IdType.ASSIGN_ID)` | `BaseEntityTest` / `UserDomainIntegrationTest` |
-| **实体体系** | 时间流转基类 | `BaseTimeEntity` | `ateng.boot.mybatis-plus.audit.*` | 提供 `createTime` (`FieldFill.INSERT`) 与 `updateTime` (`FieldFill.INSERT_UPDATE`) | `BaseEntityTest` / `UserDomainIntegrationTest` |
-| **实体体系** | 四要素全审计业务基类 | `BaseEntity` | `ateng.boot.mybatis-plus.audit.*` | 提供 `createBy`、`updateBy`、`createTime`、`updateTime` 四要素全审计 | `BaseEntityTest` / `TenantOrderDomainIntegrationTest` |
-| **实体体系** | 全要素状态业务基类 | `BaseFullEntity` | `ateng.boot.mybatis-plus.optimistic-locker.*` | 在审计基类上追加 `@Version private Integer version` (乐观锁) 与 `@TableLogic @JsonIgnore private Integer deleted` (逻辑删除) | `BaseEntityTest` / `UserDomainIntegrationTest` |
-| **实体体系** | 唯一索引防冲突占位基类 | `BaseDeleteIdEntity` | - | 继承 `BaseEntity`，`deleted` 为 `BIGINT`（`@TableLogic(value = "0", delval = "id")`）并在软删除时动态以自身雪花主键 ID 占位，彻底杜绝业务组合唯一索引逻辑删除冲突 | `BaseDeleteIdEntityTest` / `SoftDeleteUniqueKeyScenarioTest` / `MpLifecycleAndSecurityControllerTest` |
-| **实体体系** | 多租户实体标记接口 | `TenantEntity` | `ateng.boot.mybatis-plus.tenant.*` | 声明 `getTenantId()` / `setTenantId(String)` 租户标识契约 | `TenantOrderDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
+| **正交契约** | 六大正交能力接口 | `Identifiable<ID>` / `TenantAware<T>` / `TimeAuditable` / `Auditable` / `LogicDeletable<T>` / `Versioned` | - | 解耦具体父类强绑定：`DefaultMetaObjectHandler` 与 `BatchUtil` 面向接口识别自愈，支持 `TenantAware<Long/String>`（Fail-Fast）与泛型主键/软删标记 | `BaseEntityTest` / `DefaultMetaObjectHandlerTest` / `BatchUtilTest` |
+| **泛型阶梯** | 泛型内核五阶实体基类（无 `id` 字段） | `BaseGenericEntity<ID>` -> `BaseGenericTimeEntity<ID>` -> `BaseGenericAuditEntity<ID>` -> `BaseGenericLogicEntity<ID>` -> `BaseGenericFullEntity<ID>` | `ateng.boot.mybatis-plus.audit.*`<br>`ateng.boot.mybatis-plus.optimistic-locker.*` | 不声明物理 `id` 字段，子实体自定 `@TableId` 类型与策略；`BaseGenericLogicEntity<ID>` 标配 `@TableLogic(value = "0", delval = "id") @JsonIgnore private ID deleted`，联合 `AtengSqlInjector` 自动剥离 `String` 占位引号 | `BaseEntityTest` / `AtengSqlInjectorTest` / `BaseLogicEntityAndGenericSoftDeleteTest` / `MpLifecycleAndSecurityControllerTest` |
+| **雪花阶梯** | 64 位雪花主键五阶零泛型基类 | `BaseIdEntity` -> `BaseTimeEntity` -> `BaseEntity` -> `BaseLogicEntity` -> `BaseFullEntity` | `ateng.boot.mybatis-plus.snowflake.*` | 默认标配 `64` 位雪花 `@TableId(type = IdType.ASSIGN_ID) Long id`；`BaseLogicEntity` 统一 `BIGINT` 主键占位软删（无 `version`）；`BaseFullEntity` 继承 `BaseLogicEntity` 并追加 `@Version Integer version`（默认 `0`） | `BaseEntityTest` / `BaseLogicEntityAndGenericSoftDeleteTest` / `UserDomainIntegrationTest` / `SoftDeleteUniqueKeyScenarioTest` |
 | **自动填充** | 防御性审计元数据填充 | `DefaultMetaObjectHandler` | `ateng.boot.mybatis-plus.audit.enabled`<br>`ateng.boot.mybatis-plus.audit.default-operator` | 插入/更新自动提取操作人并填充审计字段，若已显式赋值则绝不覆盖 | `DefaultMetaObjectHandlerTest` / `UserDomainIntegrationTest` / `MpLifecycleAndSecurityControllerTest` |
 | **审计贯通** | 当前操作人上下文提供者 | `CurrentUserProvider` | - | Core 统一操作人 SPI，驱动 `DefaultMetaObjectHandler` 解析操作人字符串/ID | `DefaultMetaObjectHandlerTest` / `UserDomainIntegrationTest` |
 | **多租户隔离** | AST 动态行级多租户拦截器 | `AtengTenantLineInnerInterceptor` | `ateng.boot.mybatis-plus.tenant.enabled`<br>`ateng.boot.mybatis-plus.tenant.column`<br>`ateng.boot.mybatis-plus.tenant.ignore-tables` | 基于 JSqlParser 在 AST 语法树层级改写 SQL，自动拼接 `tenant_id = ?` 条件，支持多表 JOIN 与子查询精准注入 | `AtengTenantLineInnerInterceptorTest` / `TenantOrderDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
@@ -157,15 +153,15 @@ flowchart TD
 
 ---
 
-## 3. 实体五级继承阶梯、生命周期自动填充与逻辑删除闭环
+## 3. 实体双轨继承阶梯、正交能力接口与逻辑删除闭环
 
 > **对应样例控制器**：`MpEntityLifecycleController`（路由前缀 `/sample/mybatis-plus/lifecycle`）  
-> **锚定集成测试**：`MpLifecycleAndSecurityControllerTest`、`SoftDeleteUniqueKeyScenarioTest`、`UserDomainIntegrationTest`
+> **锚定集成测试**：`MpLifecycleAndSecurityControllerTest`、`SoftDeleteUniqueKeyScenarioTest`、`UserDomainIntegrationTest`、`BaseLogicEntityAndGenericSoftDeleteTest`
 
-### 3.1 实体五级阶梯体系与雪花发号桥接 (`BaseGenericEntity` -> `BaseFullEntity`)
+### 3.1 六大正交能力接口与双轨继承阶梯 (`BaseGeneric*` & `BaseIdEntity` -> `BaseFullEntity`)
 
 #### 场景痛点
-在大型工程中，若每个实体类各自手写 `id`、`createTime`、`version`、`deleted` 字段，极易出现字段命名不一、漏配 `@JsonIgnore` 导致逻辑删除位泄露给前端、或多套雪花发号器混用引发时钟回拨冲突。
+在大型工程中，若每个实体类各自手写 `id`、`createTime`、`version`、`deleted` 字段，极易出现字段命名不一、漏配 `@JsonIgnore` 导致逻辑删除位泄露给前端、或强制使用 `Long` 雪花主键无法适配 `String` UUID/编码主键的尴尬；同时，如果多租户接口 `tenantId` 写死为 `String` 且软删除混用 `0/1` 与 `id` 占位两套模型，会导致业务选型分裂与跨租户类型转换陷阱。
 
 #### 本特性配置片段 (`application.yml`)
 ```yaml
@@ -178,25 +174,42 @@ ateng:
         datacenter-id: 1          # 数据中心 ID（0~31，未配置时自适应推导）
 ```
 
-#### 五级实体继承阶梯与选型指南
+#### 双轨继承体系与六大正交能力契约
 ```text
-BaseGenericEntity<ID>          (第 1 阶：泛型主键契约 getId/setId)
-  └── BaseIdEntity             (第 2 阶：64 位 Long 雪花主键 @TableId(type = IdType.ASSIGN_ID))
-        └── BaseTimeEntity     (第 3 阶：时间流转基类 createTime, updateTime)
-              └── BaseEntity   (第 4 阶：四要素全审计业务基类 createBy, updateBy, createTime, updateTime)
-                    ├── BaseFullEntity     (第 5A 阶：标准状态基类，追加 @Version version 与 Integer deleted)
-                    └── BaseDeleteIdEntity (第 5B 阶：唯一键防冲突基类，追加 @Version version 与 Long deleted=id)
+正交能力契约接口（io.github.atengk.boot.mybatisplus.entity.*）
+├── Identifiable<ID>     ── getId() / setId(ID)
+├── TenantAware<T>       ── getTenantId() / setTenantId(T)（原生支持 Long / String，Fail-Fast 校验）
+├── TimeAuditable        ── getCreateTime() / setCreateTime(...) / getUpdateTime() / setUpdateTime(...)
+├── Auditable            ── extends TimeAuditable，追加 getCreateBy() / setCreateBy(...) / getUpdateBy() / setUpdateBy(...)
+├── LogicDeletable<T>    ── getDeleted() / setDeleted(T)
+└── Versioned            ── getVersion() / setVersion(Integer)
+
+双轨平行单继承阶梯（均实现对应正交契约，DefaultMetaObjectHandler 与 BatchUtil 面向接口统一自愈）：
+轨道 A（泛型内核，不声明 id 字段，由子类自定 @TableId 类型与发号策略）：
+BaseGenericEntity<ID>
+  └── BaseGenericTimeEntity<ID>
+        └── BaseGenericAuditEntity<ID>
+              └── BaseGenericLogicEntity<ID>   (deleted 为 ID 类型, delval = "id", 无 version)
+                    └── BaseGenericFullEntity<ID>  (追加 @Version Integer version)
+
+轨道 B（64 位雪花主键零泛型开箱直用）：
+BaseGenericEntity<Long>
+  └── BaseIdEntity               (@TableId(type = IdType.ASSIGN_ID) Long id)
+        └── BaseTimeEntity
+              └── BaseEntity
+                    └── BaseLogicEntity        (Long deleted, delval = "id", 无 version)
+                          └── BaseFullEntity   (统一 Long deleted=id 并追加 @Version Integer version)
 ```
 
-| 业务表类型 | 推荐继承基类 | 內置受管字段与核心行为 |
+| 业务表类型 | 推荐基类 / 接口组合 | 内置受管字段与核心行为 |
 | :--- | :--- | :--- |
-| 自定义主键类型表（如 String 编码主键） | `BaseGenericEntity<ID>` | 泛型 `id` |
-| 中间关联映射表、静态字典表 | `BaseIdEntity` | `Long id`（自动桥接 `DefaultIdentifierGenerator` 2026 纪元雪花算法） |
-| 不可变流水表、系统监控日志表 | `BaseTimeEntity` | `id`, `createTime` (`INSERT`), `updateTime` (`INSERT_UPDATE`) |
-| 常规业务主表（默认首选） | `BaseEntity` | `id`, `createBy`, `updateBy`, `createTime`, `updateTime` |
-| 核心状态流转表（无业务唯一索引软删重建诉求） | `BaseFullEntity` | 追加 `@Version Integer version` 与 `@TableLogic @JsonIgnore Integer deleted` |
-| 含业务唯一索引且需支持多次软删重建的档案表 | `BaseDeleteIdEntity` | 追加 `@Version Integer version` 与 `@TableLogic(value = "0", delval = "id") @JsonIgnore Long deleted` |
-| SaaS 多租户隔离表 | 继承上述任一基类并实现 `TenantEntity` | 强制契约 `getTenantId()` / `setTenantId(String)` |
+| 静态字典表、纯雪花关联表 | `BaseIdEntity` | `Long id`（自动桥接 `DefaultIdentifierGenerator` 2026 纪元雪花算法） |
+| 不可变流水表、系统监控日志表 | `BaseTimeEntity` / `BaseGenericTimeEntity<ID>` | `id`, `createTime` (`INSERT`), `updateTime` (`INSERT_UPDATE`) |
+| 常规业务主表（物理删除 / 无软删需求） | `BaseEntity` / `BaseGenericAuditEntity<ID>` | `id`, `createBy`, `updateBy`, `createTime`, `updateTime` |
+| 需安全占位软删但无需乐观锁表（如 `DeptEntity`） | `BaseLogicEntity` / `BaseGenericLogicEntity<ID>` | 追加 `@TableLogic(value = "0", delval = "id") @JsonIgnore deleted`；`String` 主键自动由 `AtengSqlInjector` 剥离占位引号 |
+| 高并发全要素业务主表（含唯一索引软删 + 乐观锁） | `BaseFullEntity` / `BaseGenericFullEntity<ID>` | 在软删基类上追加 `@Version Integer version`（`BatchUtil.autoHeal` 默认初值 `0`） |
+| SaaS 多租户隔离表 | 任意实体实现 `TenantAware<Long>` 或 `TenantAware<String>` | 强类型 `getTenantId()` / `setTenantId(T)`；`Long` 型遇非数字租户上下文立即 Fail-Fast |
+| 非阶梯体系自定义 POJO + 仅需乐观锁/审计 | 直接实现 `Auditable` / `TimeAuditable` / `Versioned` 等正交接口 | 无需强制绑定实体父类即可获得 `DefaultMetaObjectHandler` 与 `BatchUtil` 零反射自愈 |
 
 #### 实战代码示例（提取自 Sample `UserEntity`）
 ```java
@@ -280,11 +293,12 @@ public class CustomSecurityUserProvider implements CurrentUserProvider {
 
 ---
 
-### 3.3 联合唯一索引防冲突基类与逻辑删除 AST 穿透恢复闭环 (`BaseDeleteIdEntity` & `AtengLogicDeleteInnerInterceptor`)
+### 3.3 主键占位软删除防唯一键冲突与 AST 穿透恢复闭环 (`BaseLogicEntity` / `BaseGenericLogicEntity<ID>` & `AtengLogicDeleteInnerInterceptor`)
 
 #### 场景痛点
 1. **软删除唯一索引冲突死局**：若表上建有 `UNIQUE KEY (sku_code, deleted)` 且 `deleted` 仅取 `0/1`，当同一个商品编码 `SKU-999` 被第二次软删除时，数据库中将出现两条 `('SKU-999', 1)`，直接触发 `Duplicate entry 'SKU-999-1'` 物理唯一键崩溃；
-2. **MyBatis-Plus 逻辑删除不可逆**：官方 `@TableLogic` 在启动预编译期将 `WHERE deleted = 0` 硬编码进 `selectById` 与 `updateById`，导致业务无法通过常规 Service 门面查询回收站数据或将误删数据恢复为 `deleted = 0`。
+2. **`String` 泛型主键 `delval = "id"` 原生引号Bug**：MyBatis-Plus 面对 `String` 类型 `@TableLogic(value = "0", delval = "id")` 字段时会将 `delval` 当作字符串字面量生成 `SET deleted = 'id'`，导致多行同组编码软删再次碰撞；`AtengSqlInjector` 在注入阶段自动拦截剥离 `SET` 子句中的引号还原为裸主键列名（如 `SET deleted=id` 或自定义 `@TableId("custom_pk")` 对应的 `SET deleted=custom_pk`），同时完整保留 `WHERE deleted='0'` 过滤条件；
+3. **MyBatis-Plus 逻辑删除不可逆**：官方 `@TableLogic` 在启动预编译期将 `WHERE deleted = 0` 硬编码进 `selectById` 与 `updateById`，导致业务无法通过常规 Service 门面查询回收站数据或将误删数据恢复为 `deleted = 0`。
 
 #### 本特性配置片段 (`application.yml`)
 ```yaml
@@ -299,15 +313,26 @@ ateng:
           - del_flag
 ```
 
-#### 实战代码示例（提取自 Sample `ProductSkuEntity` 与 `MpEntityLifecycleController`）
+#### 实战代码示例（提取自 Sample `ProductSkuEntity`、`TenantVoucherEntity` 与 `MpEntityLifecycleController`）
 ```java
-// 1. 实体继承 BaseDeleteIdEntity：软删除时自动执行 SET deleted = id（以自身 64 位雪花主键占位）
+// 1A. 64 位雪花全要素实体继承 BaseFullEntity：软删除自动执行 SET deleted = id 且兼具 @Version 乐观锁
 @TableName("product_sku")
-public class ProductSkuEntity extends BaseDeleteIdEntity {
+public class ProductSkuEntity extends BaseFullEntity {
     private String skuCode;
     private String skuName;
     private String category;
     private BigDecimal price;
+}
+
+// 1B. 泛型内核实体继承 BaseGenericLogicEntity<String> 并组合 TenantAware<Long>（无 version 字段）：
+//     @TableId(type = IdType.ASSIGN_UUID) 由实体自主声明，AtengSqlInjector 自动生成 SET deleted=id WHERE ... AND deleted='0'
+@TableName("tenant_voucher")
+public class TenantVoucherEntity extends BaseGenericLogicEntity<String> implements TenantAware<Long> {
+    @TableId(type = IdType.ASSIGN_UUID)
+    private String id;
+    private String voucherNo;
+    private String title;
+    private Long tenantId;
 }
 
 // 2. 循环“上架 -> 软删除 -> 同编码再上架”零冲突 + 穿透查询 + 误删恢复闭环
@@ -531,11 +556,11 @@ ateng:
 
 #### 实战代码示例
 ```java
-// 1. 实体实现 TenantEntity 接口并继承 BaseEntity
+// 1. 实体实现 TenantAware<String>（或 TenantAware<Long>）与 Versioned 接口并继承 BaseEntity
 @Data
 @EqualsAndHashCode(callSuper = true)
 @TableName("sys_tenant_order")
-public class TenantOrderEntity extends BaseEntity implements TenantEntity {
+public class TenantOrderEntity extends BaseEntity implements TenantAware<String>, Versioned {
     private String tenantId;
     private String orderNo;
     private String title;
@@ -1724,7 +1749,7 @@ ateng:
         description = "租户订单交易变更审计",
         includeFields = {"orderStatus", "paymentAmount", "remark"}
 )
-public class TenantOrderEntity extends BaseEntity implements TenantEntity {
+public class TenantOrderEntity extends BaseEntity implements TenantAware<String>, Versioned {
     private String tenantId;
     private String orderNo;
     private String orderStatus;

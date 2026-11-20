@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.Version;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import io.github.atengk.boot.core.util.JsonUtil;
 import lombok.Getter;
 import lombok.Setter;
 import org.junit.jupiter.api.DisplayName;
@@ -15,16 +16,20 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.Field;
 import java.time.LocalDateTime;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 实体阶梯式继承链体系单元测试
- * 覆盖 BaseGenericEntity、BaseIdEntity、BaseTimeEntity、BaseEntity 与 BaseFullEntity 全层级
+ * 持久层正交能力接口与双轨实体继承阶梯单元测试
+ * 覆盖 6 个正交契约接口、BaseGeneric* 泛型阶梯与 BaseIdEntity ~ BaseFullEntity 64 位雪花阶梯
  *
  * @author Ateng
  * @since 2026-10-15
  */
-@DisplayName("实体阶梯式继承链体系测试")
+@DisplayName("持久层正交能力接口与双轨实体阶梯体系测试")
 class BaseEntityTest {
 
     @Getter
@@ -33,6 +38,39 @@ class BaseEntityTest {
         @TableId(type = IdType.INPUT)
         private String id;
         private String name;
+    }
+
+    @Getter
+    @Setter
+    static class CustomGenericTimeEntity extends BaseGenericTimeEntity<String> {
+        @TableId(type = IdType.ASSIGN_UUID)
+        private String id;
+        private String tag;
+    }
+
+    @Getter
+    @Setter
+    static class CustomGenericAuditEntity extends BaseGenericAuditEntity<String> {
+        @TableId(type = IdType.ASSIGN_UUID)
+        private String id;
+        private String title;
+    }
+
+    @Getter
+    @Setter
+    static class CustomGenericLogicEntity extends BaseGenericLogicEntity<String> implements TenantAware<Long> {
+        @TableId(type = IdType.ASSIGN_UUID)
+        private String id;
+        private Long tenantId;
+        private String code;
+    }
+
+    @Getter
+    @Setter
+    static class CustomGenericFullEntity extends BaseGenericFullEntity<String> {
+        @TableId(type = IdType.ASSIGN_UUID)
+        private String id;
+        private String orderNo;
     }
 
     @Getter
@@ -55,197 +93,155 @@ class BaseEntityTest {
 
     @Getter
     @Setter
-    static class TestFullEntity extends BaseFullEntity {
-        private String username;
+    static class TestLogicEntity extends BaseLogicEntity {
+        private String deptName;
     }
 
     @Getter
     @Setter
-    static class TestDeleteIdEntity extends BaseDeleteIdEntity {
-        private String skuCode;
+    static class TestFullEntity extends BaseFullEntity {
+        private String username;
     }
 
     @Test
-    @DisplayName("1. 顶层泛型抽象 BaseGenericEntity 支持非 Long 类型的自定义主键与多态访问")
-    void shouldSupportGenericCustomPrimaryKey() {
-        CustomStringEntity entity = new CustomStringEntity();
-        entity.setId("uuid-string-key-001");
-        entity.setName("测试自定义主键");
+    @DisplayName("1. 正交能力接口契约：Auditable 继承 TimeAuditable，TenantAware 支持 Long 与 String")
+    void shouldDefineOrthogonalContractInterfaces() {
+        assertTrue(TimeAuditable.class.isAssignableFrom(Auditable.class));
 
-        assertEquals("uuid-string-key-001", entity.getId());
-        assertEquals("测试自定义主键", entity.getName());
+        CustomGenericLogicEntity longTenantEntity = new CustomGenericLogicEntity();
+        longTenantEntity.setTenantId(10001L);
+        TenantAware<Long> longTenantAware = longTenantEntity;
+        assertEquals(10001L, longTenantAware.getTenantId());
 
-        // 多态指向顶层泛型基类
-        BaseGenericEntity<String> generic = entity;
-        assertEquals("uuid-string-key-001", generic.getId());
-        generic.setId("new-uuid-002");
-        assertEquals("new-uuid-002", entity.getId());
+        Identifiable<String> identifiable = longTenantEntity;
+        identifiable.setId("str-pk-001");
+        assertEquals("str-pk-001", longTenantEntity.getId());
+
+        LogicDeletable<String> logicDeletable = longTenantEntity;
+        logicDeletable.setDeleted("0");
+        assertEquals("0", longTenantEntity.getDeleted());
     }
 
     @Test
-    @DisplayName("2. 极简主键基类 BaseIdEntity 仅声明雪花长整型 id 与 @TableId 注解")
-    void shouldDefineBaseIdEntityCorrectly() throws NoSuchFieldException {
+    @DisplayName("2. 泛型内核阶梯：BaseGenericEntity ~ BaseGenericFullEntity 完整继承链与注解校验")
+    void shouldDefineGenericEntityLadderCorrectly() throws NoSuchFieldException {
+        assertTrue(Identifiable.class.isAssignableFrom(BaseGenericEntity.class));
+        assertTrue(BaseGenericEntity.class.isAssignableFrom(BaseGenericTimeEntity.class));
+        assertTrue(TimeAuditable.class.isAssignableFrom(BaseGenericTimeEntity.class));
+        assertTrue(BaseGenericTimeEntity.class.isAssignableFrom(BaseGenericAuditEntity.class));
+        assertTrue(Auditable.class.isAssignableFrom(BaseGenericAuditEntity.class));
+        assertTrue(BaseGenericAuditEntity.class.isAssignableFrom(BaseGenericLogicEntity.class));
+        assertTrue(LogicDeletable.class.isAssignableFrom(BaseGenericLogicEntity.class));
+        assertTrue(BaseGenericLogicEntity.class.isAssignableFrom(BaseGenericFullEntity.class));
+        assertTrue(Versioned.class.isAssignableFrom(BaseGenericFullEntity.class));
+
+        // BaseGenericEntity 不固定声明 id 字段，由子类决定 @TableId 策略
+        assertThrows(NoSuchFieldException.class, () -> BaseGenericEntity.class.getDeclaredField("id"));
+        // BaseGenericLogicEntity 不强绑 version
+        assertThrows(NoSuchFieldException.class, () -> BaseGenericLogicEntity.class.getDeclaredField("version"));
+
+        Field deletedField = BaseGenericLogicEntity.class.getDeclaredField("deleted");
+        TableLogic tableLogic = deletedField.getAnnotation(TableLogic.class);
+        assertNotNull(tableLogic);
+        assertEquals("0", tableLogic.value());
+        assertEquals("id", tableLogic.delval());
+        assertNotNull(deletedField.getAnnotation(JsonIgnore.class));
+
+        Field versionField = BaseGenericFullEntity.class.getDeclaredField("version");
+        assertNotNull(versionField.getAnnotation(Version.class));
+        assertEquals(Integer.class, versionField.getType());
+
+        CustomGenericFullEntity entity = new CustomGenericFullEntity();
+        entity.setId("uuid-001");
+        entity.setCreateTime(LocalDateTime.now());
+        entity.setUpdateTime(LocalDateTime.now());
+        entity.setCreateBy("admin");
+        entity.setUpdateBy("admin");
+        entity.setDeleted("0");
+        entity.setVersion(0);
+        entity.setOrderNo("ORD-1");
+        assertEquals("uuid-001", entity.getId());
+        assertEquals("0", entity.getDeleted());
+        assertEquals(0, entity.getVersion());
+    }
+
+    @Test
+    @DisplayName("3. 雪花零泛型阶梯（BaseIdEntity -> BaseTimeEntity -> BaseEntity）契约验证")
+    void shouldDefineSnowflakeAuditLadderCorrectly() throws NoSuchFieldException {
+        assertTrue(BaseGenericEntity.class.isAssignableFrom(BaseIdEntity.class));
+        assertTrue(Identifiable.class.isAssignableFrom(BaseIdEntity.class));
+        assertTrue(BaseIdEntity.class.isAssignableFrom(BaseTimeEntity.class));
+        assertTrue(TimeAuditable.class.isAssignableFrom(BaseTimeEntity.class));
+        assertTrue(BaseTimeEntity.class.isAssignableFrom(BaseEntity.class));
+        assertTrue(Auditable.class.isAssignableFrom(BaseEntity.class));
+
         Field idField = BaseIdEntity.class.getDeclaredField("id");
         TableId tableId = idField.getAnnotation(TableId.class);
         assertNotNull(tableId);
         assertEquals(IdType.ASSIGN_ID, tableId.type());
         assertEquals(Long.class, idField.getType());
 
-        // 验证仅含主键，不包含时间、操作人、版本号或逻辑删除字段
-        assertThrows(NoSuchFieldException.class, () -> BaseIdEntity.class.getDeclaredField("createTime"));
-        assertThrows(NoSuchFieldException.class, () -> BaseIdEntity.class.getDeclaredField("updateTime"));
-        assertThrows(NoSuchFieldException.class, () -> BaseIdEntity.class.getDeclaredField("createBy"));
-        assertThrows(NoSuchFieldException.class, () -> BaseIdEntity.class.getDeclaredField("updateBy"));
-        assertThrows(NoSuchFieldException.class, () -> BaseIdEntity.class.getDeclaredField("version"));
-        assertThrows(NoSuchFieldException.class, () -> BaseIdEntity.class.getDeclaredField("deleted"));
-
-        TestIdOnlyEntity entity = new TestIdOnlyEntity();
-        entity.setId(1001L);
-        entity.setRemark("流水记录");
-        assertEquals(1001L, entity.getId());
-        assertEquals("流水记录", entity.getRemark());
-    }
-
-    @Test
-    @DisplayName("3. 时间审计基类 BaseTimeEntity 声明创建时间与更新时间自动填充")
-    void shouldDefineBaseTimeEntityCorrectly() throws NoSuchFieldException {
-        assertTrue(BaseIdEntity.class.isAssignableFrom(BaseTimeEntity.class));
-
         Field createTimeField = BaseTimeEntity.class.getDeclaredField("createTime");
-        TableField createTimeFieldAnnotation = createTimeField.getAnnotation(TableField.class);
-        assertNotNull(createTimeFieldAnnotation);
-        assertEquals(FieldFill.INSERT, createTimeFieldAnnotation.fill());
-
+        assertEquals(FieldFill.INSERT, createTimeField.getAnnotation(TableField.class).fill());
         Field updateTimeField = BaseTimeEntity.class.getDeclaredField("updateTime");
-        TableField updateTimeFieldAnnotation = updateTimeField.getAnnotation(TableField.class);
-        assertNotNull(updateTimeFieldAnnotation);
-        assertEquals(FieldFill.INSERT_UPDATE, updateTimeFieldAnnotation.fill());
-
-        // 不含操作人、版本号与逻辑删除
-        assertThrows(NoSuchFieldException.class, () -> BaseTimeEntity.class.getDeclaredField("createBy"));
-        assertThrows(NoSuchFieldException.class, () -> BaseTimeEntity.class.getDeclaredField("version"));
-        assertThrows(NoSuchFieldException.class, () -> BaseTimeEntity.class.getDeclaredField("deleted"));
-
-        TestTimeEntity entity = new TestTimeEntity();
-        entity.setId(2001L);
-        LocalDateTime now = LocalDateTime.now();
-        entity.setCreateTime(now);
-        entity.setUpdateTime(now);
-        entity.setDictCode("STATUS_ACTIVE");
-
-        assertEquals(2001L, entity.getId());
-        assertEquals(now, entity.getCreateTime());
-        assertEquals(now, entity.getUpdateTime());
-        assertEquals("STATUS_ACTIVE", entity.getDictCode());
-    }
-
-    @Test
-    @DisplayName("4. 标准业务基类 BaseEntity 声明操作人审计，解耦 version 与 deleted")
-    void shouldDefineBaseEntityCorrectly() throws NoSuchFieldException {
-        assertTrue(BaseTimeEntity.class.isAssignableFrom(BaseEntity.class));
+        assertEquals(FieldFill.INSERT_UPDATE, updateTimeField.getAnnotation(TableField.class).fill());
 
         Field createByField = BaseEntity.class.getDeclaredField("createBy");
-        TableField createByTableField = createByField.getAnnotation(TableField.class);
-        assertNotNull(createByTableField);
-        assertEquals(FieldFill.INSERT, createByTableField.fill());
-        assertEquals(String.class, createByField.getType());
-
+        assertEquals(FieldFill.INSERT, createByField.getAnnotation(TableField.class).fill());
         Field updateByField = BaseEntity.class.getDeclaredField("updateBy");
-        TableField updateByTableField = updateByField.getAnnotation(TableField.class);
-        assertNotNull(updateByTableField);
-        assertEquals(FieldFill.INSERT_UPDATE, updateByTableField.fill());
-        assertEquals(String.class, updateByField.getType());
+        assertEquals(FieldFill.INSERT_UPDATE, updateByField.getAnnotation(TableField.class).fill());
 
-        // 验证 BaseEntity 已彻底切除 version 与 deleted
         assertThrows(NoSuchFieldException.class, () -> BaseEntity.class.getDeclaredField("version"));
         assertThrows(NoSuchFieldException.class, () -> BaseEntity.class.getDeclaredField("deleted"));
-
-        TestBusinessEntity entity = new TestBusinessEntity();
-        entity.setId(3001L);
-        entity.setCreateBy("creator");
-        entity.setUpdateBy("modifier");
-        entity.setTitle("文章标题");
-
-        assertEquals(3001L, entity.getId());
-        assertEquals("creator", entity.getCreateBy());
-        assertEquals("modifier", entity.getUpdateBy());
-        assertEquals("文章标题", entity.getTitle());
     }
 
     @Test
-    @DisplayName("5. 全要素基类 BaseFullEntity 继承 BaseEntity 并挂载 version 乐观锁与 deleted 逻辑删除")
-    void shouldDefineBaseFullEntityCorrectly() throws NoSuchFieldException {
-        assertTrue(BaseEntity.class.isAssignableFrom(BaseFullEntity.class));
+    @DisplayName("4. 常规软删基类 BaseLogicEntity 继承 BaseEntity，采用 Long 占位软删且不含 @Version")
+    void shouldDefineBaseLogicEntityWithoutVersion() throws NoSuchFieldException {
+        assertTrue(BaseEntity.class.isAssignableFrom(BaseLogicEntity.class));
+        assertTrue(LogicDeletable.class.isAssignableFrom(BaseLogicEntity.class));
 
-        // version 字段标配 @Version
-        Field versionField = BaseFullEntity.class.getDeclaredField("version");
-        assertNotNull(versionField.getAnnotation(Version.class));
-        assertEquals(Integer.class, versionField.getType());
+        // 明确不绑定乐观锁
+        assertThrows(NoSuchFieldException.class, () -> BaseLogicEntity.class.getDeclaredField("version"));
 
-        // deleted 字段标配 @TableLogic 与 @JsonIgnore
-        Field deletedField = BaseFullEntity.class.getDeclaredField("deleted");
-        assertNotNull(deletedField.getAnnotation(TableLogic.class));
-        assertNotNull(deletedField.getAnnotation(JsonIgnore.class));
-        assertEquals(Integer.class, deletedField.getType());
-
-        TestFullEntity entity = new TestFullEntity();
-        entity.setId(4001L);
-        LocalDateTime now = LocalDateTime.now();
-        entity.setCreateTime(now);
-        entity.setUpdateTime(now);
-        entity.setCreateBy("full-creator");
-        entity.setUpdateBy("full-modifier");
-        entity.setVersion(1);
-        entity.setDeleted(0);
-        entity.setUsername("admin");
-
-        assertEquals(4001L, entity.getId());
-        assertEquals(now, entity.getCreateTime());
-        assertEquals(now, entity.getUpdateTime());
-        assertEquals("full-creator", entity.getCreateBy());
-        assertEquals("full-modifier", entity.getUpdateBy());
-        assertEquals(1, entity.getVersion());
-        assertEquals(0, entity.getDeleted());
-        assertEquals("admin", entity.getUsername());
-    }
-
-    @Test
-    @DisplayName("6. 唯一索引防冲突基类 BaseDeleteIdEntity 继承 BaseEntity 并挂载 version 与 delval='id' 的 Long deleted")
-    void shouldDefineBaseDeleteIdEntityCorrectly() throws NoSuchFieldException {
-        assertTrue(BaseEntity.class.isAssignableFrom(BaseDeleteIdEntity.class));
-
-        // version 字段标配 @Version
-        Field versionField = BaseDeleteIdEntity.class.getDeclaredField("version");
-        assertNotNull(versionField.getAnnotation(Version.class));
-        assertEquals(Integer.class, versionField.getType());
-
-        // deleted 字段标配 @TableLogic(value = "0", delval = "id") 与 @JsonIgnore，且类型为 Long
-        Field deletedField = BaseDeleteIdEntity.class.getDeclaredField("deleted");
+        Field deletedField = BaseLogicEntity.class.getDeclaredField("deleted");
+        assertEquals(Long.class, deletedField.getType());
         TableLogic tableLogic = deletedField.getAnnotation(TableLogic.class);
         assertNotNull(tableLogic);
         assertEquals("0", tableLogic.value());
         assertEquals("id", tableLogic.delval());
         assertNotNull(deletedField.getAnnotation(JsonIgnore.class));
-        assertEquals(Long.class, deletedField.getType());
 
-        TestDeleteIdEntity entity = new TestDeleteIdEntity();
-        entity.setId(5001L);
-        LocalDateTime now = LocalDateTime.now();
-        entity.setCreateTime(now);
-        entity.setUpdateTime(now);
-        entity.setCreateBy("delete-id-creator");
-        entity.setUpdateBy("delete-id-modifier");
-        entity.setVersion(1);
+        TestLogicEntity entity = new TestLogicEntity();
+        entity.setId(4001L);
         entity.setDeleted(0L);
-        entity.setSkuCode("SKU-1001");
+        entity.setDeptName("研发部");
+        String json = JsonUtil.toJsonString(entity);
+        assertThat(json).contains("deptName").doesNotContain("deleted");
+    }
 
-        assertEquals(5001L, entity.getId());
-        assertEquals(now, entity.getCreateTime());
-        assertEquals(now, entity.getUpdateTime());
-        assertEquals("delete-id-creator", entity.getCreateBy());
-        assertEquals("delete-id-modifier", entity.getUpdateBy());
-        assertEquals(1, entity.getVersion());
+    @Test
+    @DisplayName("5. 全要素基类 BaseFullEntity 继承 BaseLogicEntity 并追加 @Version Integer version")
+    void shouldDefineBaseFullEntityWithVersionAndPlaceholderDeleted() throws NoSuchFieldException {
+        assertTrue(BaseLogicEntity.class.isAssignableFrom(BaseFullEntity.class));
+        assertTrue(Versioned.class.isAssignableFrom(BaseFullEntity.class));
+
+        // deleted 继承自 BaseLogicEntity
+        assertThrows(NoSuchFieldException.class, () -> BaseFullEntity.class.getDeclaredField("deleted"));
+
+        Field versionField = BaseFullEntity.class.getDeclaredField("version");
+        assertNotNull(versionField.getAnnotation(Version.class));
+        assertEquals(Integer.class, versionField.getType());
+
+        TestFullEntity entity = new TestFullEntity();
+        entity.setId(5001L);
+        entity.setDeleted(0L);
+        entity.setVersion(0);
+        entity.setUsername("admin");
+
         assertEquals(0L, entity.getDeleted());
-        assertEquals("SKU-1001", entity.getSkuCode());
+        assertEquals(0, entity.getVersion());
+        String json = JsonUtil.toJsonString(entity);
+        assertThat(json).contains("username").doesNotContain("deleted");
     }
 }

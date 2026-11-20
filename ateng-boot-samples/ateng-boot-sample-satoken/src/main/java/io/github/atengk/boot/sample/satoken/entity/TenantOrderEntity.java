@@ -2,7 +2,7 @@ package io.github.atengk.boot.sample.satoken.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
 import io.github.atengk.boot.mybatisplus.entity.BaseEntity;
-import io.github.atengk.boot.mybatisplus.entity.TenantEntity;
+import io.github.atengk.boot.mybatisplus.entity.TenantAware;
 
 import java.math.BigDecimal;
 
@@ -13,7 +13,7 @@ import java.math.BigDecimal;
  * @since 2026-10-16
  */
 @TableName("sys_tenant_order")
-public class TenantOrderEntity extends BaseEntity implements TenantEntity {
+public class TenantOrderEntity extends BaseEntity implements TenantAware<String> {
 
     private String orderNo;
 

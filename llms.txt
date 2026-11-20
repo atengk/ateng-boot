@@ -35,7 +35,7 @@
 
 ## 数据持久、缓存与检索
 
-- [ateng-boot-mybatis-plus 文档](./ateng-boot-mybatis-plus/README.md) | [上下文词汇表](./ateng-boot-mybatis-plus/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-mybatis-plus/README.md): 实体继承阶梯、审计填充、JSqlParser 行级多租户与 `@DataScope`、`@FieldEncrypt`、原生批量插入/Upsert、游标流式查询与乐观锁重试
+- [ateng-boot-mybatis-plus 文档](./ateng-boot-mybatis-plus/README.md) | [上下文词汇表](./ateng-boot-mybatis-plus/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-mybatis-plus/README.md): 双轨实体继承与正交契约接口、审计填充、JSqlParser 行级多租户与 `@DataScope`、`@FieldEncrypt`、原生批量插入/Upsert、游标流式查询与乐观锁重试
 - [ateng-boot-datasource 文档](./ateng-boot-datasource/README.md) | [上下文词汇表](./ateng-boot-datasource/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-datasource/README.md): SaaS 动态多数据源、主从读写分离、从库故障熔断自愈、三向差量同步与事务假切源守卫
 - [ateng-boot-flyway 文档](./ateng-boot-flyway/README.md) | [上下文词汇表](./ateng-boot-flyway/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-flyway/README.md): Flyway 数据库版本化迁移、生产 `clean` 强守卫、SM4/AES 加密隔离 DDL 凭据、主从锁主库/多源/物理租户建表协同与 MyBatis-Plus 顺序屏障
 - [ateng-boot-redis 文档](./ateng-boot-redis/README.md) | [上下文词汇表](./ateng-boot-redis/CONTEXT.md) | [示例](./ateng-boot-samples/ateng-boot-sample-redis/README.md): Spring Data Redis + Redisson 双核融合、无 `@class` JSON 序列化、`@DistributedLock`、防击穿缓存、L1+L2 两级缓存、延时队列与 Stream

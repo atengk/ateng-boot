@@ -27,7 +27,7 @@
 
 应用启动后，可通过以下 cURL 命令或浏览器直接发起调用体验（各读取端点均内置按需幂等种子数据初始化，零前置准备即可直接调用）：
 
-### 3.1 实体五级阶梯、生命周期自动填充与逻辑删除闭环 (`MpEntityLifecycleController`)
+### 3.1 实体双轨阶梯、正交能力接口、生命周期自动填充与逻辑删除闭环 (`MpEntityLifecycleController`)
 
 | 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
 | :--- | :--- | :--- | :--- |
@@ -42,6 +42,11 @@
 | **商品 SKU 回收站穿透总数统计** | `MpEntityLifecycleController` | `GET /sample/mybatis-plus/lifecycle/sku/recycle-bin/count` | `curl "http://localhost:8080/sample/mybatis-plus/lifecycle/sku/recycle-bin/count"` |
 | **商品 SKU 回收站强类型 VO 分页投影** | `MpEntityLifecycleController` | `GET /sample/mybatis-plus/lifecycle/sku/recycle-bin/vo-page` | `curl "http://localhost:8080/sample/mybatis-plus/lifecycle/sku/recycle-bin/vo-page?current=1&size=10"` |
 | **商品 SKU 彻底物理硬删除粉碎** | `MpEntityLifecycleController` | `POST /sample/mybatis-plus/lifecycle/sku/{id}/purge` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/lifecycle/sku/1/purge"` |
+| **创建泛型 String 主键与 Long 租户凭证** | `MpEntityLifecycleController` | `POST /sample/mybatis-plus/lifecycle/voucher` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/lifecycle/voucher?tenantId=1001&operator=finance-alice" -H "Content-Type: application/json" -d "{\"voucherNo\":\"VCH-2026-001\",\"title\":\"差旅报销凭证\"}"` |
+| **String 主键泛型凭证占位软删除** | `MpEntityLifecycleController` | `POST /sample/mybatis-plus/lifecycle/voucher/{id}/soft-delete` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/lifecycle/voucher/REPLACE_UUID/soft-delete?tenantId=1001"` |
+| **String 主键泛型凭证回收站恢复** | `MpEntityLifecycleController` | `POST /sample/mybatis-plus/lifecycle/voucher/{id}/restore` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/lifecycle/voucher/REPLACE_UUID/restore?tenantId=1001&operator=finance-bob"` |
+| **查询当前数值租户活跃凭证列表** | `MpEntityLifecycleController` | `GET /sample/mybatis-plus/lifecycle/voucher/list` | `curl "http://localhost:8080/sample/mybatis-plus/lifecycle/voucher/list?tenantId=1001"` |
+| **穿透查询数值租户凭证回收站列表** | `MpEntityLifecycleController` | `GET /sample/mybatis-plus/lifecycle/voucher/recycle-bin` | `curl "http://localhost:8080/sample/mybatis-plus/lifecycle/voucher/recycle-bin?tenantId=1001"` |
 
 ### 3.2 字段级透明加解密、视图动态脱敏与受管 JSON 映射 (`MpSecurityAndJsonController`)
 

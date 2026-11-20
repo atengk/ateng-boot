@@ -1,9 +1,10 @@
 package io.github.atengk.boot.mybatisplus.handler;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
-import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.mybatisplus.entity.BaseEntity;
+import io.github.atengk.boot.mybatisplus.entity.TenantAware;
 import org.apache.ibatis.reflection.MetaObject;
 import org.apache.ibatis.reflection.SystemMetaObject;
 import org.junit.jupiter.api.AfterEach;
@@ -31,20 +32,24 @@ class DefaultMetaObjectHandlerTest {
         public void setOrderNo(String orderNo) { this.orderNo = orderNo; }
     }
 
-    static class TenantOrderEntity extends BaseEntity {
+    static class TenantOrderEntity extends BaseEntity implements TenantAware<String> {
         private String orderNo;
         private String tenantId;
 
         public String getOrderNo() { return orderNo; }
         public void setOrderNo(String orderNo) { this.orderNo = orderNo; }
+        @Override
         public String getTenantId() { return tenantId; }
+        @Override
         public void setTenantId(String tenantId) { this.tenantId = tenantId; }
     }
 
-    static class LongTenantOrderEntity extends BaseEntity {
+    static class LongTenantOrderEntity extends BaseEntity implements TenantAware<Long> {
         private Long tenantId;
 
+        @Override
         public Long getTenantId() { return tenantId; }
+        @Override
         public void setTenantId(Long tenantId) { this.tenantId = tenantId; }
     }
 
@@ -265,6 +270,28 @@ class DefaultMetaObjectHandlerTest {
         handler.insertFill(metaObject);
 
         assertNull(entity.getTenantId());
+    }
+
+    @Test
+    @DisplayName("多租户快速失败 Fail-Fast：Long 类型 tenantId 遇到非数字租户上下文立即抛出 IllegalArgumentException")
+    void shouldFailFastWhenLongTenantIdIsNonNumeric() {
+        TenantContextHolder.setTenantId("corp-not-a-number");
+        DefaultMetaObjectHandler handler = new DefaultMetaObjectHandler();
+
+        LongTenantOrderEntity entity = new LongTenantOrderEntity();
+        MetaObject metaObject = SystemMetaObject.forObject(entity);
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> handler.insertFill(metaObject));
+        assertTrue(ex.getMessage().contains("corp-not-a-number"));
+
+        // 未实现 TenantAware 的普通 POJO 降级探测同样遵循 Fail-Fast
+        class PlainLongTenantPojo {
+            private Long tenantId;
+            public Long getTenantId() { return tenantId; }
+            public void setTenantId(Long tenantId) { this.tenantId = tenantId; }
+        }
+        MetaObject pojoMeta = SystemMetaObject.forObject(new PlainLongTenantPojo());
+        assertThrows(IllegalArgumentException.class, () -> handler.insertFill(pojoMeta));
     }
 }
 

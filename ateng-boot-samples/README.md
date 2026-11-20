@@ -12,7 +12,7 @@
 | :--- | :--- | :--- | :---: | :---: |
 | **`ateng-boot-sample-core`** | **通用原语与基础工具底座**<br/>脱敏注解/策略、Jackson 强类型序列化门面、四维上下文快照流转、退避重试与切片分批 | Core / Jackson | **零 DB 依赖** | [查看](./ateng-boot-sample-core/README.md) |
 | **`ateng-boot-sample-web`** | **Web 契约层与全链路追踪**<br/>显式强类型契约、分层参数校验防卫、因果异常脱敏、双向加签验签、自适应限流防抖、操作日志脱敏、TraceFilter 链路流转 | Web / JSR-303 / Jackson | **零 DB 依赖** | [查看](./ateng-boot-sample-web/README.md) |
-| **`ateng-boot-sample-mybatis-plus`** | **持久层增强双领域模型**<br/>实体五级阶梯链、审计自动填充防御、逻辑删除、存储透明加密与内存真明文、行级多租户隔离、AST 数据权限、原生批量操作、双方言 Upsert、防死锁更新、乐观锁 CAS 重试、流式游标、变更 Diff 审计 | MyBatis-Plus / H2 | H2 内存库 | [查看](./ateng-boot-sample-mybatis-plus/README.md) |
+| **`ateng-boot-sample-mybatis-plus`** | **持久层增强双领域模型**<br/>实体双轨阶梯链与正交能力接口、审计自动填充防御、占位软删除（Long/String）、存储透明加密与内存真明文、行级多租户隔离、AST 数据权限、原生批量操作、双方言 Upsert、防死锁更新、乐观锁 CAS 重试、流式游标、变更 Diff 审计 | MyBatis-Plus / H2 | H2 内存库 | [查看](./ateng-boot-sample-mybatis-plus/README.md) |
 | **`ateng-boot-sample-redis`** | **专一 Redis 分布式协同 Demo**<br/>`@DistributedLock` 分布式锁、`@RateLimiter` 接口限流、`@Idempotent` 幂等防重、延时队列 | Redis / Redisson / Web | **零 DB 依赖** | [查看](./ateng-boot-sample-redis/README.md) |
 | **`ateng-boot-sample-excel`** | **专一流式 Excel 处理 Demo**<br/>Apache Fesod 流式导出、`@ExcelSensitive` 导出动态脱敏、导入行级校验与红字批注回写、防呆模板 | Excel / Fesod / Web | **零 DB 依赖** | [查看](./ateng-boot-sample-excel/README.md) |
 | **`ateng-boot-sample-satoken`** | **专一 Sa-Token 鉴权与会话 Demo**<br/>登录注销、路由拦截白名单、方法级 `@SaCheckRole`、审计人/租户全链路自动打通 | Sa-Token / MP / H2 | H2 内存库 | [查看](./ateng-boot-sample-satoken/README.md) |

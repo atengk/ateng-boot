@@ -213,7 +213,7 @@ mvn -pl ateng-boot-samples/ateng-boot-sample-ai spring-boot:run
 
 | 模块坐标 (`ArtifactId`) | 核心能力定位 | 文档与示例 |
 | :--- | :--- | :--- |
-| `ateng-boot-mybatis-plus` | 五级实体继承、审计填充、JSqlParser 行级多租户、`@DataScope` 数据权限、`@FieldEncrypt` 加密、批量插入/Upsert、流式游标与乐观锁重试 | [模块文档](./ateng-boot-mybatis-plus/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-mybatis-plus/README.md) |
+| `ateng-boot-mybatis-plus` | 双轨实体继承与正交契约接口、审计填充、JSqlParser 行级多租户、`@DataScope` 数据权限、`@FieldEncrypt` 加密、批量插入/Upsert、流式游标与乐观锁重试 | [模块文档](./ateng-boot-mybatis-plus/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-mybatis-plus/README.md) |
 | `ateng-boot-datasource` | SaaS 物理多租户分库、主从读写分离、从库故障熔断主动探活自愈、三向差量同步与事务假切源守卫 | [模块文档](./ateng-boot-datasource/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-datasource/README.md) |
 | `ateng-boot-flyway` | Flyway 10.x 数据库版本化迁移、生产 `clean` 强守卫、SM4/AES 隔离 DDL 凭据、主从/静态多库/物理租户建表协同与 MyBatis-Plus 顺序屏障 | [模块文档](./ateng-boot-flyway/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-flyway/README.md) |
 | `ateng-boot-redis` | Spring Data Redis + Redisson 双核融合、无 `@class` JSON 序列化、`@DistributedLock`、防穿透缓存、L1+L2 缓存、延时队列与 Stream | [模块文档](./ateng-boot-redis/README.md) · [示例](./ateng-boot-samples/ateng-boot-sample-redis/README.md) |

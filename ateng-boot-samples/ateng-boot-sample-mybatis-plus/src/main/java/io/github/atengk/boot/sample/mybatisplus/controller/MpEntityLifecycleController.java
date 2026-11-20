@@ -6,9 +6,12 @@ import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.mybatisplus.entity.UserEntity;
 import io.github.atengk.boot.sample.mybatisplus.model.ProductSkuVO;
+import io.github.atengk.boot.sample.mybatisplus.model.TenantVoucherCreateDTO;
+import io.github.atengk.boot.sample.mybatisplus.model.TenantVoucherVO;
 import io.github.atengk.boot.sample.mybatisplus.model.UserCreateDTO;
 import io.github.atengk.boot.sample.mybatisplus.model.UserVO;
 import io.github.atengk.boot.sample.mybatisplus.service.SoftDeleteUniqueKeyScenarioService;
+import io.github.atengk.boot.sample.mybatisplus.service.TenantVoucherService;
 import io.github.atengk.boot.sample.mybatisplus.service.UserService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -25,9 +28,10 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * 实体五级继承阶梯、生命周期自动填充与逻辑删除闭环体验控制器
+ * 实体双轨继承阶梯、正交能力接口、生命周期自动填充与逻辑删除闭环体验控制器
  * 对应模块文档第 3 章，演示雪花发号、DefaultMetaObjectHandler 审计填充、
- * BaseDeleteIdEntity 联合唯一索引防冲突软删除以及 AtengLogicDeleteInnerInterceptor 回收站穿透与恢复闭环。
+ * BaseLogicEntity / BaseFullEntity 联合唯一索引防冲突软删除、BaseGenericLogicEntity&lt;String&gt; + TenantAware&lt;Long&gt; 泛型占位软删除
+ * 以及 AtengLogicDeleteInnerInterceptor 回收站穿透与恢复闭环。
  *
  * @author Ateng
  * @since 2026-11-08
@@ -39,6 +43,7 @@ public class MpEntityLifecycleController {
 
     private final UserService userService;
     private final SoftDeleteUniqueKeyScenarioService softDeleteService;
+    private final TenantVoucherService tenantVoucherService;
 
     /**
      * 创建用户并触发雪花主键发号与审计元数据自动填充
@@ -184,5 +189,73 @@ public class MpEntityLifecycleController {
     @PostMapping("/sku/{id}/purge")
     public Result<Boolean> purgeSkuPhysically(@PathVariable Long id) {
         return Result.success(softDeleteService.purgeSkuPhysically(id));
+    }
+
+    /**
+     * 创建多租户泛型凭证（String UUID 主键 + TenantAware&lt;Long&gt; + String 占位软删除）
+     *
+     * @param dto      创建凭证请求
+     * @param tenantId 数值租户标识
+     * @param operator 操作人标识
+     * @return 凭证视图对象
+     */
+    @PostMapping("/voucher")
+    public Result<TenantVoucherVO> createVoucher(
+            @Valid @RequestBody TenantVoucherCreateDTO dto,
+            @RequestParam Long tenantId,
+            @RequestParam(defaultValue = "voucher-creator") String operator) {
+        return Result.success(tenantVoucherService.createVoucher(dto, tenantId, operator));
+    }
+
+    /**
+     * 按字符串主键逻辑删除多租户凭证（占位写入 id 列值）
+     *
+     * @param id       凭证 UUID 主键
+     * @param tenantId 数值租户标识
+     * @return 是否删除成功
+     */
+    @PostMapping("/voucher/{id}/soft-delete")
+    public Result<Boolean> softDeleteVoucher(
+            @PathVariable String id,
+            @RequestParam Long tenantId) {
+        return Result.success(tenantVoucherService.softDeleteVoucher(id, tenantId));
+    }
+
+    /**
+     * 按字符串主键恢复多租户凭证（还原 deleted = '0'）
+     *
+     * @param id       凭证 UUID 主键
+     * @param tenantId 数值租户标识
+     * @param operator 操作人标识
+     * @return 恢复后的凭证视图对象
+     */
+    @PostMapping("/voucher/{id}/restore")
+    public Result<TenantVoucherVO> restoreVoucher(
+            @PathVariable String id,
+            @RequestParam Long tenantId,
+            @RequestParam(defaultValue = "voucher-restorer") String operator) {
+        return Result.success(tenantVoucherService.restoreVoucher(id, tenantId, operator));
+    }
+
+    /**
+     * 查询当前数值租户下未删除的活跃凭证列表
+     *
+     * @param tenantId 数值租户标识
+     * @return 活跃凭证视图列表
+     */
+    @GetMapping("/voucher/list")
+    public Result<List<TenantVoucherVO>> listActiveVouchers(@RequestParam Long tenantId) {
+        return Result.success(tenantVoucherService.listActiveVouchers(tenantId));
+    }
+
+    /**
+     * 穿透逻辑删除查询当前数值租户下含软删占位的回收站全量凭证列表
+     *
+     * @param tenantId 数值租户标识
+     * @return 全量凭证视图列表
+     */
+    @GetMapping("/voucher/recycle-bin")
+    public Result<List<TenantVoucherVO>> listVoucherRecycleBin(@RequestParam Long tenantId) {
+        return Result.success(tenantVoucherService.listRecycleBinVouchers(tenantId));
     }
 }

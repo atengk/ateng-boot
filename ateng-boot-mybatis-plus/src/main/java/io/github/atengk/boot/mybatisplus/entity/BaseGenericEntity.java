@@ -13,7 +13,7 @@ import java.io.Serializable;
  * @since 2026-10-16
  */
 @ToString
-public abstract class BaseGenericEntity<ID extends Serializable> implements Serializable {
+public abstract class BaseGenericEntity<ID extends Serializable> implements Identifiable<ID>, Serializable {
 
     private static final long serialVersionUID = 1L;
 

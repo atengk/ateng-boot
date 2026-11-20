@@ -1,28 +1,21 @@
 package io.github.atengk.boot.mybatisplus.util;
 
-import com.baomidou.mybatisplus.annotation.IdType;
-import com.baomidou.mybatisplus.annotation.TableId;
-import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
 import io.github.atengk.boot.core.util.CollectionUtil;
-import io.github.atengk.boot.core.util.IdUtil;
-import io.github.atengk.boot.mybatisplus.entity.BaseDeleteIdEntity;
-import io.github.atengk.boot.mybatisplus.entity.BaseEntity;
-import io.github.atengk.boot.mybatisplus.entity.BaseFullEntity;
-import io.github.atengk.boot.mybatisplus.entity.BaseIdEntity;
-import io.github.atengk.boot.mybatisplus.entity.BaseTimeEntity;
-import io.github.atengk.boot.mybatisplus.entity.TenantEntity;
+import io.github.atengk.boot.mybatisplus.entity.Auditable;
+import io.github.atengk.boot.mybatisplus.entity.Identifiable;
+import io.github.atengk.boot.mybatisplus.entity.LogicDeletable;
+import io.github.atengk.boot.mybatisplus.entity.TenantAware;
+import io.github.atengk.boot.mybatisplus.entity.TimeAuditable;
+import io.github.atengk.boot.mybatisplus.entity.Versioned;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 
-import java.lang.reflect.Field;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 原生高性能批量操作门面工具类
@@ -64,11 +57,6 @@ public final class BatchUtil {
      * 全局默认批量切片批次大小，默认 1000
      */
     private static volatile int defaultBatchSize = DEFAULT_BATCH_SIZE;
-
-    /**
-     * 非基类实体主键元数据反射引用缓存（类 -> TableIdMetadata）
-     */
-    private static final Map<Class<?>, TableIdMetadata> TABLE_ID_METADATA_CACHE = new ConcurrentHashMap<>();
 
     private BatchUtil() {
     }
@@ -377,11 +365,11 @@ public final class BatchUtil {
     /**
      * 对单个实体对象执行轻量自愈补偿处理（原地修改实体内存对象）
      * <ol>
-     *   <li>主键自愈：若继承 BaseIdEntity 且 id 为空，自动分配雪花 ID；若为普通实体且标注 ASSIGN_ID，自动通过反射发号回填；</li>
-     *   <li>时间自愈：若继承 BaseTimeEntity 且 createTime/updateTime 为空，自动注入当前系统时钟；</li>
-     *   <li>操作人自愈：若继承 BaseEntity 且 createBy/updateBy 为空，自动从 CurrentUserProvider / UserContextHolder 注入；</li>
-     *   <li>租户自愈：若实现 TenantEntity 且 tenantId 为空且上下文存在租户，自动注入当前租户 ID；</li>
-     *   <li>状态流转自愈：若继承 BaseFullEntity，补全 version=1 与 deleted=0；若继承 BaseDeleteIdEntity，补全 version=1 与 deleted=0L。</li>
+     *   <li>主键自愈：实现 {@link Identifiable} 或标注 {@code @TableId} 时按策略自动发号（跳过 {@code AUTO}/{@code INPUT}）；</li>
+     *   <li>时间自愈：实现 {@link TimeAuditable} 且 {@code createTime}/{@code updateTime} 为空时注入当前时钟；</li>
+     *   <li>操作人自愈：实现 {@link Auditable} 且 {@code createBy}/{@code updateBy} 为空时从上下文注入；</li>
+     *   <li>租户自愈：实现 {@link TenantAware} 且 {@code tenantId} 为空时按泛型（{@code Long}/{@code String}）Fail-Fast 注入；</li>
+     *   <li>状态流转自愈：实现 {@link Versioned} 补全 {@code version=0}；实现 {@link LogicDeletable} 补全未删除默认值（{@code 0L}/{@code 0}/{@code "0"}/{@code false}）。</li>
      * </ol>
      *
      * @param item 待自愈的实体对象
@@ -392,132 +380,67 @@ public final class BatchUtil {
             return;
         }
 
-        // 1. 主键自愈 (Fast-Path: BaseIdEntity -> 反射元数据缓存通道)
-        if (item instanceof BaseIdEntity idEntity) {
-            if (idEntity.getId() == null) {
-                idEntity.setId(IdUtil.getSnowflakeNextId());
-            }
+        // 1. 主键自愈 (Fast-Path: Identifiable -> @TableId 元数据缓存通道)
+        if (item instanceof Identifiable<?> identifiable) {
+            EntityContractHelper.autoAssignId(identifiable);
         } else {
-            healCustomEntityId(item);
+            EntityContractHelper.autoAssignCustomTableId(item);
         }
 
-        // 2. 审计时间自愈 (BaseTimeEntity，仅在 auditEnabled=true 时执行)
+        // 2. 审计时间自愈 (TimeAuditable，仅在 auditEnabled=true 时执行)
         if (auditEnabled) {
-            if (item instanceof BaseTimeEntity timeEntity) {
+            if (item instanceof TimeAuditable timeAuditable) {
                 LocalDateTime now = null;
-                if (timeEntity.getCreateTime() == null) {
+                if (timeAuditable.getCreateTime() == null) {
                     now = LocalDateTime.now();
-                    timeEntity.setCreateTime(now);
+                    timeAuditable.setCreateTime(now);
                 }
-                if (timeEntity.getUpdateTime() == null) {
+                if (timeAuditable.getUpdateTime() == null) {
                     if (now == null) {
                         now = LocalDateTime.now();
                     }
-                    timeEntity.setUpdateTime(now);
+                    timeAuditable.setUpdateTime(now);
                 }
             }
 
-            // 3. 审计操作人自愈 (BaseEntity)
-            if (item instanceof BaseEntity baseEntity) {
+            // 3. 审计操作人自愈 (Auditable)
+            if (item instanceof Auditable auditable) {
                 String operator = null;
-                if (baseEntity.getCreateBy() == null || baseEntity.getCreateBy().isBlank()) {
+                if (auditable.getCreateBy() == null || auditable.getCreateBy().isBlank()) {
                     operator = resolveCurrentUser();
-                    baseEntity.setCreateBy(operator);
+                    auditable.setCreateBy(operator);
                 }
-                if (baseEntity.getUpdateBy() == null || baseEntity.getUpdateBy().isBlank()) {
+                if (auditable.getUpdateBy() == null || auditable.getUpdateBy().isBlank()) {
                     if (operator == null) {
                         operator = resolveCurrentUser();
                     }
-                    baseEntity.setUpdateBy(operator);
+                    auditable.setUpdateBy(operator);
                 }
             }
         }
 
-        // 4. 多租户标识自愈 (TenantEntity)
-        if (item instanceof TenantEntity tenantEntity) {
-            if (tenantEntity.getTenantId() == null || tenantEntity.getTenantId().isBlank()) {
-                String tenantId = TenantContextHolder.getTenantId();
-                if (tenantId != null && !tenantId.isBlank()) {
-                    tenantEntity.setTenantId(tenantId);
-                }
-            }
+        // 4. 多租户标识自愈 (TenantAware<T>)
+        if (item instanceof TenantAware<?> tenantAware) {
+            EntityContractHelper.fillTenantIdIfNull(tenantAware);
         }
 
-        // 5. 乐观锁与逻辑删除标记自愈 (BaseFullEntity 与 BaseDeleteIdEntity)
-        if (item instanceof BaseFullEntity fullEntity) {
-            if (fullEntity.getVersion() == null) {
-                fullEntity.setVersion(1);
-            }
-            if (fullEntity.getDeleted() == null) {
-                fullEntity.setDeleted(0);
-            }
+        // 5. 乐观锁与逻辑删除标记自愈 (Versioned 与 LogicDeletable<T>)
+        if (item instanceof Versioned versioned && versioned.getVersion() == null) {
+            versioned.setVersion(0);
         }
-        if (item instanceof BaseDeleteIdEntity deleteIdEntity) {
-            if (deleteIdEntity.getVersion() == null) {
-                deleteIdEntity.setVersion(1);
-            }
-            if (deleteIdEntity.getDeleted() == null) {
-                deleteIdEntity.setDeleted(0L);
-            }
+        if (item instanceof LogicDeletable<?> logicDeletable) {
+            EntityContractHelper.fillLogicNotDeletedIfNull(logicDeletable);
         }
     }
 
     /**
-     * 针对普通实体通过反射元数据缓存通道自愈主键 ID
-     *
-     * @param item 普通实体对象
-     */
-    private static void healCustomEntityId(Object item) {
-        if (item == null) {
-            return;
-        }
-        TableIdMetadata metadata = TABLE_ID_METADATA_CACHE.computeIfAbsent(item.getClass(), BatchUtil::resolveTableIdMetadata);
-        if (metadata.isAssignable()) {
-            metadata.assignIdIfNull(item);
-        }
-    }
-
-    /**
-     * 解析普通实体的 @TableId 注解元数据并构建不可变缓存对象
-     *
-     * @param clazz 实体类 Class
-     * @return TableIdMetadata 元数据对象
-     */
-    private static TableIdMetadata resolveTableIdMetadata(Class<?> clazz) {
-        Class<?> current = clazz;
-        while (current != null && current != Object.class) {
-            for (Field field : current.getDeclaredFields()) {
-                TableId tableId = field.getAnnotation(TableId.class);
-                if (tableId != null) {
-                    field.setAccessible(true);
-                    Class<?> fieldType = field.getType();
-                    boolean isLong = Long.class.equals(fieldType) || long.class.equals(fieldType);
-                    boolean isString = String.class.equals(fieldType);
-                    IdType type = tableId.type();
-                    boolean assignable = (type == IdType.ASSIGN_ID || type == IdType.NONE) && (isLong || isString);
-                    return new TableIdMetadata(field, assignable, isLong, isString);
-                }
-            }
-            current = current.getSuperclass();
-        }
-        return TableIdMetadata.NON_ASSIGNABLE;
-    }
-
-    /**
-     * 获取实体的唯一主键 ID（支持继承 BaseIdEntity 与标注 @TableId 的普通实体）
+     * 获取实体的唯一主键 ID（支持实现 {@link Identifiable} 与标注 {@code @TableId} 的普通实体）
      *
      * @param item 实体对象
      * @return 主键 ID（实现 Comparable 接口），获取失败或不存在时返回 null
      */
     public static Comparable<?> getEntityId(Object item) {
-        if (item == null) {
-            return null;
-        }
-        if (item instanceof BaseIdEntity idEntity) {
-            return idEntity.getId();
-        }
-        TableIdMetadata metadata = TABLE_ID_METADATA_CACHE.computeIfAbsent(item.getClass(), BatchUtil::resolveTableIdMetadata);
-        return metadata.getId(item);
+        return EntityContractHelper.getEntityId(item);
     }
 
     /**
@@ -594,15 +517,15 @@ public final class BatchUtil {
         if (item == null || !auditEnabled) {
             return;
         }
-        if (item instanceof BaseTimeEntity timeEntity) {
-            timeEntity.setUpdateTime(LocalDateTime.now());
+        if (item instanceof TimeAuditable timeAuditable) {
+            timeAuditable.setUpdateTime(LocalDateTime.now());
         }
-        if (item instanceof BaseEntity baseEntity) {
+        if (item instanceof Auditable auditable) {
             String contextUser = resolveContextUserOrNull();
             if (contextUser != null) {
-                baseEntity.setUpdateBy(contextUser);
-            } else if (baseEntity.getUpdateBy() == null || baseEntity.getUpdateBy().isBlank()) {
-                baseEntity.setUpdateBy(defaultOperator);
+                auditable.setUpdateBy(contextUser);
+            } else if (auditable.getUpdateBy() == null || auditable.getUpdateBy().isBlank()) {
+                auditable.setUpdateBy(defaultOperator);
             }
         }
     }
@@ -630,61 +553,5 @@ public final class BatchUtil {
             user = UserContextHolder.get();
         }
         return (user != null && !user.isBlank()) ? user : null;
-    }
-
-    /**
-     * 普通实体 @TableId 反射元数据缓存项
-     */
-    private static class TableIdMetadata {
-        private static final TableIdMetadata NON_ASSIGNABLE = new TableIdMetadata(null, false, false, false);
-
-        private final Field field;
-        private final boolean assignable;
-        private final boolean isLong;
-        private final boolean isString;
-
-        TableIdMetadata(Field field, boolean assignable, boolean isLong, boolean isString) {
-            this.field = field;
-            this.assignable = assignable;
-            this.isLong = isLong;
-            this.isString = isString;
-        }
-
-        boolean isAssignable() {
-            return assignable;
-        }
-
-        Comparable<?> getId(Object target) {
-            if (field == null || target == null) {
-                return null;
-            }
-            try {
-                Object currentVal = field.get(target);
-                if (currentVal instanceof Comparable<?> comp) {
-                    return comp;
-                }
-                return currentVal != null ? currentVal.toString() : null;
-            } catch (IllegalAccessException ignored) {
-                return null;
-            }
-        }
-
-        void assignIdIfNull(Object target) {
-            if (field == null || target == null) {
-                return;
-            }
-            try {
-                Object currentVal = field.get(target);
-                if (currentVal == null) {
-                    if (isLong) {
-                        field.set(target, IdUtil.getSnowflakeNextId());
-                    } else if (isString) {
-                        field.set(target, IdUtil.getSnowflakeNextIdStr());
-                    }
-                }
-            } catch (IllegalAccessException ignored) {
-                // 防御安全管理器与非法访问
-            }
-        }
     }
 }

@@ -1,5 +1,7 @@
 # 56. 持久层全生命周期闭环、高阶并发加固与全场景样例实装架构决策 (MyBatis-Plus Lifecycle Completeness, Concurrency Hardening & Full-Scenario Sandbox Architecture)
 
+> **演进注记 (Superseding Note)**：本文中涉及“实体五级阶梯链”及 `BaseDeleteIdEntity` 命名的局部表述，已由 [ADR-0109](./0109-mybatis-plus-orthogonal-contracts-and-dual-entity-ladder-architecture.md) 正式演进为正交能力接口与“泛型内核 + 64 位雪花”双实体阶梯体系（原 `BaseDeleteIdEntity` 已由不含乐观锁的 `BaseLogicEntity` 与含乐观锁的 `BaseFullEntity` 替代）。
+
 ## 背景与痛点
 
 在企业级高并发、高可用与高安全持久层架构演进过程中，`ateng-boot-mybatis-plus` 已经确立了实体五级阶梯链、行级多租户隔离、声明式细粒度数据权限、原生多值批量插入与受管游标防 OOM 等工业级能力。但在对标行业前 80%~90% 复杂生产场景与框架“九道代码成熟度防线”时，仍暴露出一系列隐蔽的架构死角与生产隐患：

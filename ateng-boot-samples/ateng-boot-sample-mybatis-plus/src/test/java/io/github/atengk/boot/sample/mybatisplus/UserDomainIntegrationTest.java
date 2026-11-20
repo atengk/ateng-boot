@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * 用户领域模型（sys_user）端到端集成自验测试
  * 覆盖：
- * 1. 实体五级继承阶梯链（BaseFullEntity）全要素生命周期
+ * 1. 实体双轨阶梯链（BaseFullEntity）全要素生命周期
  * 2. 审计自动填充（createBy/updateBy/createTime/updateTime）与显式赋值防御
  * 3. 逻辑删除（@TableLogic 改写 UPDATE 与物理留存）
  * 4. 字段级透明存储加密（@FieldEncrypt 入库密文、出库真明文）
@@ -58,7 +58,7 @@ class UserDomainIntegrationTest {
     }
 
     @Test
-    @DisplayName("1. 验证实体五级阶梯链全要素与审计元数据自动填充")
+    @DisplayName("1. 验证实体双轨阶梯链全要素与审计元数据自动填充")
     void shouldDemonstrateFiveTierEntityHierarchyAndAuditAutoFill() {
         UserContextHolder.set("admin-operator");
 
@@ -74,7 +74,7 @@ class UserDomainIntegrationTest {
 
         UserEntity loaded = userService.getById(user.getId());
         assertThat(loaded.getVersion()).isEqualTo(0); // 乐观锁 (BaseFullEntity)
-        assertThat(loaded.getDeleted()).isEqualTo(0); // 逻辑删除 (BaseFullEntity)
+        assertThat(loaded.getDeleted()).isEqualTo(0L); // 逻辑删除 (BaseFullEntity)
     }
 
     @Test
@@ -96,7 +96,7 @@ class UserDomainIntegrationTest {
     }
 
     @Test
-    @DisplayName("3. 验证逻辑删除：业务查询自动过滤且底层记录物理留存 (deleted=1)")
+    @DisplayName("3. 验证逻辑删除：业务查询自动过滤且底层记录物理留存 (deleted=id 占位)")
     void shouldPerformLogicDeleteAndExcludeFromQueries() {
         UserEntity user = new UserEntity("王五", 28, "wangwu@example.com", "13700137000", 100L);
         userService.save(user);
@@ -110,10 +110,10 @@ class UserDomainIntegrationTest {
         UserEntity queryUser = userService.getById(userId);
         assertThat(queryUser).isNull();
 
-        // 底层 JDBC 物理查询证实物理记录依然存在且 deleted=1
-        Integer deletedVal = jdbcTemplate.queryForObject(
-                "SELECT deleted FROM sys_user WHERE id = ?", Integer.class, userId);
-        assertThat(deletedVal).isEqualTo(1);
+        // 底层 JDBC 物理查询证实物理记录依然存在且 deleted=userId 占位
+        Long deletedVal = jdbcTemplate.queryForObject(
+                "SELECT deleted FROM sys_user WHERE id = ?", Long.class, userId);
+        assertThat(deletedVal).isEqualTo(userId);
     }
 
     @Test

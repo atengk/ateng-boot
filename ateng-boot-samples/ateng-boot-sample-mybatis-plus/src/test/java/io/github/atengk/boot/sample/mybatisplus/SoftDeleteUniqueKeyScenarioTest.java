@@ -24,7 +24,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * 商品 SKU 联合唯一键软删除与误删恢复闭环端到端集成测试
  * 验证：
- * 1. BaseDeleteIdEntity (sku_code, deleted) 联合唯一键在多次逻辑删除场景下零冲突
+ * 1. BaseFullEntity (sku_code, deleted) 联合唯一键结合 delval = "id" 在多次逻辑删除场景下零冲突
  * 2. 正常查询自动过滤已删除记录，穿透查询 (getByIdWithDeleted / listWithDeleted) 穿透获取全量数据
  * 3. 误删恢复 (restoreById) 依托 AST 剥离更新锁死，将 deleted 还原为 0 并自动刷新审计字段
  * 4. 穿透分页 (pageWithDeleted) 的数据与 count 统计准确性

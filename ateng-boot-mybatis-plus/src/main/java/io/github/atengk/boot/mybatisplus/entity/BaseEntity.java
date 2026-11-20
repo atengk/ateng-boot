@@ -16,7 +16,7 @@ import lombok.ToString;
 @Getter
 @Setter
 @ToString(callSuper = true)
-public abstract class BaseEntity extends BaseTimeEntity {
+public abstract class BaseEntity extends BaseTimeEntity implements Auditable {
 
     private static final long serialVersionUID = 1L;
 

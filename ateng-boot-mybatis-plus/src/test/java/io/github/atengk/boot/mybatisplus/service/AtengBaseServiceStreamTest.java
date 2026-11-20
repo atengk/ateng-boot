@@ -12,8 +12,8 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryRequest;
 import io.github.atengk.boot.mybatisplus.dynamicquery.QueryOperator;
 import io.github.atengk.boot.mybatisplus.dynamicquery.annotation.QueryField;
-import io.github.atengk.boot.mybatisplus.entity.BaseDeleteIdEntity;
-import io.github.atengk.boot.mybatisplus.entity.TenantEntity;
+import io.github.atengk.boot.mybatisplus.entity.BaseFullEntity;
+import io.github.atengk.boot.mybatisplus.entity.TenantAware;
 import io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 import io.github.atengk.boot.mybatisplus.service.impl.AtengServiceImpl;
@@ -71,9 +71,7 @@ class AtengBaseServiceStreamTest {
     @AllArgsConstructor
     @EqualsAndHashCode(callSuper = true)
     @TableName("t_stream_service_item")
-    static class TestStreamItemEntity extends BaseDeleteIdEntity implements TenantEntity, Serializable {
-        @TableId
-        private Long id;
+    static class TestStreamItemEntity extends BaseFullEntity implements TenantAware<String>, Serializable {
         private String name;
         private String status;
         private Integer count;

@@ -9,8 +9,8 @@ import com.baomidou.mybatisplus.core.config.GlobalConfig;
 import com.baomidou.mybatisplus.core.incrementer.DefaultIdentifierGenerator;
 import com.baomidou.mybatisplus.core.toolkit.GlobalConfigUtils;
 import io.github.atengk.boot.core.context.UserContextHolder;
-import io.github.atengk.boot.mybatisplus.entity.BaseDeleteIdEntity;
-import io.github.atengk.boot.mybatisplus.entity.TenantEntity;
+import io.github.atengk.boot.mybatisplus.entity.BaseFullEntity;
+import io.github.atengk.boot.mybatisplus.entity.TenantAware;
 import io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 import io.github.atengk.boot.mybatisplus.service.impl.AtengServiceImpl;
@@ -62,9 +62,7 @@ class AtengBaseServiceBatchTest {
     @AllArgsConstructor
     @EqualsAndHashCode(callSuper = true)
     @TableName("t_batch_service_item")
-    static class TestBatchItemEntity extends BaseDeleteIdEntity implements TenantEntity, Serializable {
-        @TableId
-        private Long id;
+    static class TestBatchItemEntity extends BaseFullEntity implements TenantAware<String>, Serializable {
         private String name;
         private String status;
         private Integer count;

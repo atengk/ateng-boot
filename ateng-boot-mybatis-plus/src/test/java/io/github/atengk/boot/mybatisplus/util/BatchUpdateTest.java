@@ -11,7 +11,8 @@ import com.baomidou.mybatisplus.core.metadata.TableInfo;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.core.toolkit.GlobalConfigUtils;
 import io.github.atengk.boot.core.context.UserContextHolder;
-import io.github.atengk.boot.mybatisplus.entity.BaseDeleteIdEntity;
+import io.github.atengk.boot.mybatisplus.entity.BaseIdEntity;
+import io.github.atengk.boot.mybatisplus.entity.BaseLogicEntity;
 import io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector;
 import io.github.atengk.boot.mybatisplus.injector.methods.UpdateBatchSomeColumn;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
@@ -73,7 +74,7 @@ class BatchUpdateTest {
     @Setter
     @ToString(callSuper = true)
     @TableName("t_user_batch_update")
-    static class UserUpdateEntity extends BaseDeleteIdEntity {
+    static class UserUpdateEntity extends BaseLogicEntity {
         private String username;
         private String email;
         private Integer age;
@@ -195,7 +196,7 @@ class BatchUpdateTest {
         u4.setId(1L);
 
         List<UserUpdateEntity> sorted = BatchUtil.sortByIdAscending(List.of(u1, u2, u3, u4));
-        assertThat(sorted).extracting(BaseDeleteIdEntity::getId).containsExactly(1L, 2L, 5L, 8L);
+        assertThat(sorted).extracting(BaseIdEntity::getId).containsExactly(1L, 2L, 5L, 8L);
     }
 
     @Test
@@ -234,7 +235,7 @@ class BatchUpdateTest {
 
         @SuppressWarnings("unchecked")
         List<UserUpdateEntity> result = (List<UserUpdateEntity>) paramMap.get("list");
-        assertThat(result).extracting(BaseDeleteIdEntity::getId).containsExactly(3L, 7L, 9L);
+        assertThat(result).extracting(BaseIdEntity::getId).containsExactly(3L, 7L, 9L);
     }
 
     // ==================== 第三部分：审计自愈断言 ====================

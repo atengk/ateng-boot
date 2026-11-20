@@ -9,7 +9,7 @@ import com.baomidou.mybatisplus.core.incrementer.DefaultIdentifierGenerator;
 import com.baomidou.mybatisplus.core.toolkit.GlobalConfigUtils;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.OptimisticLockerInnerInterceptor;
-import io.github.atengk.boot.mybatisplus.entity.BaseDeleteIdEntity;
+import io.github.atengk.boot.mybatisplus.entity.BaseFullEntity;
 import io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 import io.github.atengk.boot.mybatisplus.service.impl.AtengServiceImpl;
@@ -60,9 +60,7 @@ class AtengBaseServiceOptimisticLockTest {
     @AllArgsConstructor
     @EqualsAndHashCode(callSuper = true)
     @TableName("t_optimistic_service_item")
-    static class TestOptimisticItemEntity extends BaseDeleteIdEntity implements Serializable {
-        @TableId
-        private Long id;
+    static class TestOptimisticItemEntity extends BaseFullEntity implements Serializable {
         private String name;
         private Integer balance;
     }
@@ -99,7 +97,7 @@ class AtengBaseServiceOptimisticLockTest {
                     create_by VARCHAR(64),
                     update_time TIMESTAMP,
                     update_by VARCHAR(64),
-                    version INT DEFAULT 1,
+                    version INT DEFAULT 0,
                     deleted BIGINT DEFAULT 0
                 )
             """);

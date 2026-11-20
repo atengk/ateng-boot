@@ -13,10 +13,10 @@ import com.baomidou.mybatisplus.core.toolkit.GlobalConfigUtils;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.mybatisplus.annotation.ConflictKeys;
-import io.github.atengk.boot.mybatisplus.entity.BaseDeleteIdEntity;
 import io.github.atengk.boot.mybatisplus.entity.BaseEntity;
+import io.github.atengk.boot.mybatisplus.entity.BaseFullEntity;
 import io.github.atengk.boot.mybatisplus.entity.BaseTimeEntity;
-import io.github.atengk.boot.mybatisplus.entity.TenantEntity;
+import io.github.atengk.boot.mybatisplus.entity.TenantAware;
 import io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector;
 import io.github.atengk.boot.mybatisplus.injector.methods.UpsertBatchSomeColumn;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
@@ -74,7 +74,7 @@ class BatchUpsertTest {
     @Setter
     @ToString(callSuper = true)
     @TableName("t_user_mysql_upsert")
-    static class UserMysqlEntity extends BaseDeleteIdEntity implements TenantEntity {
+    static class UserMysqlEntity extends BaseFullEntity implements TenantAware<String> {
         private String username;
         private String email;
         private Integer age;

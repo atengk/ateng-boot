@@ -1,31 +1,75 @@
 # MyBatis-Plus Context
 
-`ateng-boot-mybatis-plus` 为持久层提供标准化实体基类、智能审计填充、多数据库方言自适应拦截器链与分布式主键扩展能力。
+`ateng-boot-mybatis-plus` 为持久层提供正交实体能力接口、双轨标准化实体继承阶梯、智能审计填充、多数据库方言自适应拦截器链与分布式主键扩展能力。
 
 ## Language
 
+**Identifiable**:
+声明强类型主键读写契约的正交实体能力接口，用于抽象实体主键访问与统一自愈发号入口。
+_Avoid_: IdAware, HasId, PrimaryKeyAware
+
+**TenantAware**:
+声明泛型租户标识读写契约的正交多租户能力接口，同时兼容 `Long` 与 `String` 租户类型。
+_Avoid_: TenantEntity, TenantModel, HasTenant
+
+**TimeAuditable**:
+声明创建与修改时间戳读写契约的正交审计能力接口，供轻量时间流转实体直接接入。
+_Avoid_: TimestampAware, HasTimestamps
+
+**Auditable**:
+继承 `TimeAuditable` 并追加创建人与修改人标识读写契约的四要素全审计能力接口。
+_Avoid_: FullAuditable, OperatorAuditable, AuditAware
+
+**LogicDeletable**:
+声明泛型逻辑删除标记读写契约的正交软删能力接口，与实体主键或占位标识类型保持对齐。
+_Avoid_: SoftDeletable, DeleteAware, Deletable
+
+**Versioned**:
+声明 CAS 乐观锁版本号读写契约的正交并发控制能力接口。
+_Avoid_: OptimisticLockable, HasVersion, LockVersioned
+
 **BaseGenericEntity**:
-泛型主键实体抽象顶层基类，允许业务自定义主键类型。
+泛型主键实体抽象顶层基类，实现 `Identifiable` 契约，将主键字段定义与生成策略交由具体业务子类声明。
 _Avoid_: RootEntity, GenericModel
 
+**BaseGenericTimeEntity**:
+泛型主键时间审计实体抽象基类，继承 `BaseGenericEntity` 并实现 `TimeAuditable`，适用于无需操作人审计的自定义主键表。
+_Avoid_: GenericTimeModel, BaseGenericTimestampEntity
+
+**BaseGenericAuditEntity**:
+泛型主键四要素全审计实体抽象基类，继承 `BaseGenericTimeEntity` 并实现 `Auditable`，适用于自定义主键的物理删除业务表。
+_Avoid_: GenericBaseEntity, GenericAuditModel
+
+**BaseGenericLogicEntity**:
+泛型主键占位软删实体抽象基类，继承 `BaseGenericAuditEntity` 并实现 `LogicDeletable`，统一采用主键占位消除复合唯一索引冲突（不含乐观锁版本号）。
+_Avoid_: GenericSoftDeleteEntity, BaseGenericDeleteIdEntity
+
+**BaseGenericFullEntity**:
+泛型主键全要素受管实体抽象基类，继承 `BaseGenericLogicEntity` 并实现 `Versioned`，对称补齐 CAS 乐观锁版本号。
+_Avoid_: GenericFullModel, GenericAllInOneEntity
+
 **BaseIdEntity**:
-标配雪花长整型主键的极简实体抽象基类，适用于关联映射表与无审计日志表。
+标配 64 位雪花长整型主键的极简实体抽象基类，继承 `BaseGenericEntity<Long>`，适用于关联映射表与无审计日志表。
 _Avoid_: IdModel, PrimaryEntity
 
 **BaseTimeEntity**:
-提供雪花主键与自动审计创建/修改时间的实体抽象基类，适用于无需操作人记录的轻量表。
+提供雪花主键与自动审计创建/修改时间的实体抽象基类，继承 `BaseIdEntity` 并实现 `TimeAuditable`，适用于无需操作人记录的轻量表。
 _Avoid_: TimeEntity, TimestampModel
 
 **BaseEntity**:
-主力业务实体抽象基类，提供雪花主键与完整的创建/修改时间及操作人审计字段。
+标准四要素全审计业务实体抽象基类，继承 `BaseTimeEntity` 并实现 `Auditable`，适用于常规物理删除业务表。
 _Avoid_: Model, SuperEntity, CommonEntity, RootEntity
 
+**BaseLogicEntity**:
+常规软删主表默认实体抽象基类，继承 `BaseEntity` 并实现 `LogicDeletable`，采用 `Long` 型自身主键占位软删标记（`delval = "id"`）并标配 `@JsonIgnore`，不强绑乐观锁版本号。
+_Avoid_: BaseDeleteIdEntity, BaseDeleteTimeEntity, SoftDeleteEntity, DeleteModel, TimestampEntity
+
 **BaseFullEntity**:
-全要素受管业务实体抽象基类，在 BaseEntity 基础上追加 CAS 乐观锁版本号与在 JSON 中自动忽略的逻辑删除标记。
+全要素受管业务实体抽象基类，继承 `BaseLogicEntity` 并实现 `Versioned`，兼具 `Long` 型主键占位软删与 CAS 乐观锁版本号，专供高并发状态流转表。
 _Avoid_: FullModel, AllInOneEntity
 
 **DefaultMetaObjectHandler**:
-在实体持久化插入与更新时智能感知字段存在性，并防御性自动填充时间与当前操作人的默认元对象处理器。
+在实体持久化插入与更新时智能感知字段与正交能力接口、执行类型安全多租户填充（不兼容类型快速失败）及防御性审计填充的默认元对象处理器。
 _Avoid_: AuditMetaObjectHandler, FieldFiller, AutoFillHandler, MetaHandler
 
 **PaginationInnerInterceptor**:
@@ -109,12 +153,8 @@ _Avoid_: SuperService, EnhancedService, CustomBaseService
 _Avoid_: SuperServiceImpl, EnhancedServiceImpl
 
 **BatchUtil**:
-批量操作静态门面工具类，提供无侵入的原生多值批量插入切片工具方法。
+面向正交实体能力接口与元数据的批量操作静态门面工具类，提供无侵入的原生多值分批读写与主键正序防死锁自愈能力（版本号默认初始为 `0`）。
 _Avoid_: BatchHelper, BulkUtil
-
-**TenantEntity**:
-可选的租户实体标记接口，提供类型安全的租户读写契约。
-_Avoid_: TenantModel, HasTenant
 
 **OptimisticLockTemplate**:
 基于 core 底座 RetryUtil 实现的乐观锁并发自旋重试模板门面，针对 @Version 并发冲突（更新行数 = 0）提供自动重新加载最新版本实体与自旋退避守护。
@@ -135,10 +175,6 @@ _Avoid_: StatementManager, DynamicSqlManager, SqlRegistry
 **DynamicSqlExecutor**:
 通用编程式动态 SQL 执行门面组件，依托 `SqlSession` 与已注册的 `MappedStatement`，提供免建 Mapper 接口的增删改查以及符合 ADR-0010 规范的标准分页执行能力。
 _Avoid_: UniversalSqlExecutor, CommonDao, DynamicSqlDao
-
-**BaseDeleteIdEntity**:
-针对高频逻辑删除复合唯一索引冲突表设计的受管业务实体抽象基类，继承 BaseEntity，追加乐观锁版本号与以 Snowflake ID 占位删除的 Long 型删除标记（未删除为 0，删除时 `deleted = id`）。
-_Avoid_: BaseDeleteTimeEntity, SoftDeleteEntity, DeleteModel, TimestampEntity
 
 **StreamingQueryTemplate**:
 受管游标流式查询模板门面，结合 MyBatis Cursor 与声明式只读事务，提供逐条流式或分批遍历消费能力，彻底防御堆内存 OOM 与数据库连接池句柄悬挂泄漏。
@@ -272,7 +308,7 @@ _Avoid_: CustomTenantInterceptor, TenantSqlInterceptor
 _Avoid_: SimpleTenantHandler, CustomTenantLineHandler
 
 **AtengSqlInjector**:
-全局增强型 SQL 注入器，自动向持久层 Mapper 注入 `insertBatchSomeColumn`、`upsertBatchSomeColumn`、`updateBatchSomeColumn`、`selectCursor` 及物理硬删除（`deletePhysicallyById` / `deletePhysicallyBatchByIds` / `deletePhysically`）原生高性能方法。
+全局增强型 SQL 注入器，自动向持久层 Mapper 注入 `insertBatchSomeColumn`、`upsertBatchSomeColumn`、`updateBatchSomeColumn`、`selectCursor` 及物理硬删除（`deletePhysicallyById` / `deletePhysicallyBatchByIds` / `deletePhysically`）原生高性能方法，并修正字符型主键下占位软删 `delval = "id"` 的列引用语义。
 _Avoid_: CustomSqlInjector, BatchSqlInjector
 
 **DeletePhysicallyById**:

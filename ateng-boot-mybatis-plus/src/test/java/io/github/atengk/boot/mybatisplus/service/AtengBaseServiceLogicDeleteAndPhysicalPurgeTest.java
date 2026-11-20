@@ -115,8 +115,8 @@ class AtengBaseServiceLogicDeleteAndPhysicalPurgeTest {
                     create_by VARCHAR(64),
                     update_time TIMESTAMP,
                     update_by VARCHAR(64),
-                    version INT DEFAULT 1,
-                    deleted INT DEFAULT 0
+                    version INT DEFAULT 0,
+                    deleted BIGINT DEFAULT 0
                 )
             """);
         }
@@ -234,9 +234,9 @@ class AtengBaseServiceLogicDeleteAndPhysicalPurgeTest {
     @DisplayName("2. 穿透逻辑删除统计、判定与 VO 分页投影：上下文生命周期确定性清理")
     void shouldSupportSymmetricWithDeletedQueriesAndCleanContext() {
         TestPurgeEntity item1 = new TestPurgeEntity(101L, "C001", "活跃记录");
-        item1.setDeleted(0);
+        item1.setDeleted(0L);
         TestPurgeEntity item2 = new TestPurgeEntity(102L, "C002", "已删记录");
-        item2.setDeleted(1);
+        item2.setDeleted(102L);
         purgeMapper.insert(item1);
         purgeMapper.insert(item2);
 
@@ -280,7 +280,7 @@ class AtengBaseServiceLogicDeleteAndPhysicalPurgeTest {
     @DisplayName("3. 数据恢复 CurrentUserProvider SPI 对齐：优先从 SPI 获取操作人，缺省回退 UserContextHolder")
     void shouldPrioritizeCurrentUserProviderOnRestore() throws Exception {
         TestPurgeEntity entity = new TestPurgeEntity(201L, "R001", "待恢复记录");
-        entity.setDeleted(1);
+        entity.setDeleted(201L);
         purgeMapper.insert(entity);
 
         // 3.1 存在 SPI 时，优先提取 SPI 操作人
@@ -298,9 +298,9 @@ class AtengBaseServiceLogicDeleteAndPhysicalPurgeTest {
 
         // 3.2 SPI 返回 null 时，平滑回退至 UserContextHolder
         org.mockito.Mockito.when(mockProvider.getIfAvailable()).thenReturn(() -> null);
-        entity.setDeleted(1);
+        entity.setDeleted(201L);
         try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
-            stmt.execute("UPDATE t_purge_service_item SET deleted = 1 WHERE id = 201");
+            stmt.execute("UPDATE t_purge_service_item SET deleted = 201 WHERE id = 201");
         }
 
         boolean restoredFallback = purgeService.restoreById(201L);
@@ -315,7 +315,7 @@ class AtengBaseServiceLogicDeleteAndPhysicalPurgeTest {
     @DisplayName("3.1 audit.enabled=false 时逻辑删除恢复跳过 update_time 与 update_by 审计填充")
     void shouldSkipAuditFieldsOnRestoreWhenAuditDisabled() throws Exception {
         TestPurgeEntity entity = new TestPurgeEntity(202L, "R002", "关闭审计待恢复记录");
-        entity.setDeleted(1);
+        entity.setDeleted(202L);
         purgeMapper.insert(entity);
 
         io.github.atengk.boot.mybatisplus.util.BatchUtil.setAuditEnabled(false);
@@ -334,13 +334,13 @@ class AtengBaseServiceLogicDeleteAndPhysicalPurgeTest {
     @DisplayName("4. 原生物理硬删除执行验证：无视 @TableLogic，真正从物理表中彻底删除行")
     void shouldPhysicallyDeleteRowsFromDatabase() throws Exception {
         TestPurgeEntity p1 = new TestPurgeEntity(301L, "P001", "记录1");
-        p1.setDeleted(1); // 模拟已经在回收站中的软删除记录
+        p1.setDeleted(301L); // 模拟已经在回收站中的软删除记录
         TestPurgeEntity p2 = new TestPurgeEntity(302L, "P002", "记录2");
-        p2.setDeleted(1);
+        p2.setDeleted(302L);
         TestPurgeEntity p3 = new TestPurgeEntity(303L, "P003", "记录3");
-        p3.setDeleted(0);
+        p3.setDeleted(0L);
         TestPurgeEntity p4 = new TestPurgeEntity(304L, "P004", "记录4");
-        p4.setDeleted(0);
+        p4.setDeleted(0L);
 
         purgeMapper.insert(p1);
         purgeMapper.insert(p2);
@@ -387,11 +387,11 @@ class AtengBaseServiceLogicDeleteAndPhysicalPurgeTest {
 
         // 5.2 预置 3 条已软删除记录（含 1 条不参与恢复的已删除记录，与不存在 ID 混合传入）
         TestPurgeEntity r1 = new TestPurgeEntity(401L, "B001", "批量恢复1");
-        r1.setDeleted(1);
+        r1.setDeleted(401L);
         TestPurgeEntity r2 = new TestPurgeEntity(402L, "B002", "批量恢复2");
-        r2.setDeleted(1);
+        r2.setDeleted(402L);
         TestPurgeEntity r3 = new TestPurgeEntity(403L, "B003", "保留回收站3");
-        r3.setDeleted(1);
+        r3.setDeleted(403L);
         purgeMapper.insert(r1);
         purgeMapper.insert(r2);
         purgeMapper.insert(r3);

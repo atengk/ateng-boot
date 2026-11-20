@@ -11,12 +11,13 @@ import com.baomidou.mybatisplus.core.toolkit.GlobalConfigUtils;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
-import io.github.atengk.boot.mybatisplus.entity.BaseDeleteIdEntity;
 import io.github.atengk.boot.mybatisplus.entity.BaseEntity;
 import io.github.atengk.boot.mybatisplus.entity.BaseFullEntity;
+import io.github.atengk.boot.mybatisplus.entity.BaseGenericLogicEntity;
 import io.github.atengk.boot.mybatisplus.entity.BaseIdEntity;
+import io.github.atengk.boot.mybatisplus.entity.BaseLogicEntity;
 import io.github.atengk.boot.mybatisplus.entity.BaseTimeEntity;
-import io.github.atengk.boot.mybatisplus.entity.TenantEntity;
+import io.github.atengk.boot.mybatisplus.entity.TenantAware;
 import io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 import lombok.Getter;
@@ -95,7 +96,7 @@ class BatchUtilTest {
 
     @Getter
     @Setter
-    static class TestFullAuditEntity extends BaseFullEntity implements TenantEntity {
+    static class TestFullAuditEntity extends BaseFullEntity implements TenantAware<String> {
         private String tenantId;
         private String title;
     }
@@ -104,9 +105,26 @@ class BatchUtilTest {
     @Setter
     @ToString(callSuper = true)
     @TableName("t_batch_heal_order")
-    static class BatchHealOrderEntity extends BaseDeleteIdEntity implements TenantEntity {
+    static class BatchHealOrderEntity extends BaseFullEntity implements TenantAware<String> {
         private String orderNo;
         private String tenantId;
+    }
+
+    @Getter
+    @Setter
+    static class GenericUuidLogicEntity extends BaseGenericLogicEntity<String> implements TenantAware<Long> {
+        @TableId(type = IdType.ASSIGN_UUID)
+        private String id;
+        private Long tenantId;
+        private String code;
+    }
+
+    @Getter
+    @Setter
+    static class GenericInputIdLogicEntity extends BaseGenericLogicEntity<String> {
+        @TableId(type = IdType.INPUT)
+        private String id;
+        private String code;
     }
 
     interface BatchHealOrderMapper extends AtengBaseMapper<BatchHealOrderEntity> {
@@ -305,14 +323,14 @@ class BatchUtilTest {
     }
 
     @Test
-    @DisplayName("8. 多租户与状态字段自愈：TenantEntity 上下文租户注入、BaseFullEntity 与 BaseDeleteIdEntity 默认值注入")
+    @DisplayName("8. 多租户与状态字段自愈：TenantAware<String/Long> 上下文租户注入、BaseLogicEntity 与 BaseFullEntity 默认值注入")
     void shouldAutoHealTenantIdAndStatusFlags() {
         // 上下文无租户时保持 null
         TestFullAuditEntity fullEntity = new TestFullAuditEntity();
         BatchUtil.autoHeal(fullEntity);
         assertThat(fullEntity.getTenantId()).isNull();
-        assertThat(fullEntity.getVersion()).isEqualTo(1);
-        assertThat(fullEntity.getDeleted()).isEqualTo(0);
+        assertThat(fullEntity.getVersion()).isEqualTo(0);
+        assertThat(fullEntity.getDeleted()).isEqualTo(0L);
 
         // 设置上下文租户
         TenantContextHolder.setTenantId("tenant_corp_100");
@@ -320,12 +338,23 @@ class BatchUtilTest {
         BatchUtil.autoHeal(fullEntityWithTenant);
         assertThat(fullEntityWithTenant.getTenantId()).isEqualTo("tenant_corp_100");
 
-        // BaseDeleteIdEntity 默认 version=1, deleted=0L
-        BatchHealOrderEntity deleteIdEntity = new BatchHealOrderEntity();
-        BatchUtil.autoHeal(deleteIdEntity);
-        assertThat(deleteIdEntity.getVersion()).isEqualTo(1);
-        assertThat(deleteIdEntity.getDeleted()).isEqualTo(0L);
-        assertThat(deleteIdEntity.getTenantId()).isEqualTo("tenant_corp_100");
+        // BaseLogicEntity 默认 deleted=0L（无 version 字段）
+        class PlainLogicEntity extends BaseLogicEntity implements TenantAware<String> {
+            private String tenantId;
+            @Override public String getTenantId() { return tenantId; }
+            @Override public void setTenantId(String tenantId) { this.tenantId = tenantId; }
+        }
+        PlainLogicEntity logicEntity = new PlainLogicEntity();
+        BatchUtil.autoHeal(logicEntity);
+        assertThat(logicEntity.getDeleted()).isEqualTo(0L);
+        assertThat(logicEntity.getTenantId()).isEqualTo("tenant_corp_100");
+
+        // BaseFullEntity 默认 version=0, deleted=0L
+        BatchHealOrderEntity fullOrderEntity = new BatchHealOrderEntity();
+        BatchUtil.autoHeal(fullOrderEntity);
+        assertThat(fullOrderEntity.getVersion()).isEqualTo(0);
+        assertThat(fullOrderEntity.getDeleted()).isEqualTo(0L);
+        assertThat(fullOrderEntity.getTenantId()).isEqualTo("tenant_corp_100");
     }
 
     @Test
@@ -358,7 +387,7 @@ class BatchUtilTest {
         assertThat(orders).allMatch(o -> "admin_batch_user".equals(o.getUpdateBy()));
         assertThat(orders).allMatch(o -> o.getCreateTime() != null);
         assertThat(orders).allMatch(o -> o.getUpdateTime() != null);
-        assertThat(orders).allMatch(o -> Integer.valueOf(1).equals(o.getVersion()));
+        assertThat(orders).allMatch(o -> Integer.valueOf(0).equals(o.getVersion()));
         assertThat(orders).allMatch(o -> Long.valueOf(0L).equals(o.getDeleted()));
 
         // 2. 验证 H2 数据库物理记录：总记录数必须精准为 2500
@@ -403,7 +432,7 @@ class BatchUtilTest {
 
         assertThat(entity.getId()).isNotNull();
         assertThat(entity.getTenantId()).isEqualTo("tenant_1");
-        assertThat(entity.getVersion()).isEqualTo(1);
+        assertThat(entity.getVersion()).isEqualTo(0);
         assertThat(entity.getDeleted()).isEqualTo(0L);
         assertThat(entity.getCreateTime()).isNull();
         assertThat(entity.getUpdateTime()).isNull();
@@ -441,5 +470,32 @@ class BatchUtilTest {
         int fallbackAffected = BatchUtil.insertBatch(mockMapper, list, 0);
         assertThat(fallbackAffected).isEqualTo(5);
         assertThat(chunkSizes).containsExactly(2, 2, 1);
+    }
+
+    @Test
+    @DisplayName("11. 泛型阶梯自愈与租户 Fail-Fast：ASSIGN_UUID 发号、INPUT 保留 null、String deleted='0'、Long 租户非法格式快速失败")
+    void shouldHandleGenericLadderAndFailFastLongTenant() {
+        // 1. BaseGenericLogicEntity<String> + ASSIGN_UUID + TenantAware<Long>
+        TenantContextHolder.setTenantId("2048");
+        GenericUuidLogicEntity uuidEntity = new GenericUuidLogicEntity();
+        uuidEntity.setCode("GEN-001");
+        BatchUtil.autoHeal(uuidEntity);
+
+        assertThat(uuidEntity.getId()).isNotBlank().hasSize(32);
+        assertThat(uuidEntity.getTenantId()).isEqualTo(2048L);
+        assertThat(uuidEntity.getDeleted()).isEqualTo("0");
+
+        // 2. @TableId(INPUT) 保持 id=null 不自动发号，但仍补全 deleted="0"
+        GenericInputIdLogicEntity inputEntity = new GenericInputIdLogicEntity();
+        BatchUtil.autoHeal(inputEntity);
+        assertThat(inputEntity.getId()).isNull();
+        assertThat(inputEntity.getDeleted()).isEqualTo("0");
+
+        // 3. TenantAware<Long> 上下文非纯数字时立即 Fail-Fast 抛出 IllegalArgumentException
+        TenantContextHolder.setTenantId("non-numeric-corp");
+        GenericUuidLogicEntity invalidTenantEntity = new GenericUuidLogicEntity();
+        assertThatThrownBy(() -> BatchUtil.autoHeal(invalidTenantEntity))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("non-numeric-corp");
     }
 }

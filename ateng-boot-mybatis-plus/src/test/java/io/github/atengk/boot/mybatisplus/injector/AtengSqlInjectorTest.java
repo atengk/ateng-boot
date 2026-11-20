@@ -183,4 +183,53 @@ class AtengSqlInjectorTest {
         assertThat(msById).isNull();
         assertThat(msByIds).isNull();
     }
+
+    @TableName("sample_string_logic_entity")
+    static class SampleStringLogicEntity extends io.github.atengk.boot.mybatisplus.entity.BaseGenericLogicEntity<String> {
+        @com.baomidou.mybatisplus.annotation.TableId("custom_pk")
+        private String customPk;
+        private String title;
+
+        public String getCustomPk() { return customPk; }
+        public void setCustomPk(String customPk) { this.customPk = customPk; }
+        @Override public String getId() { return customPk; }
+        @Override public void setId(String id) { this.customPk = id; }
+        public String getTitle() { return title; }
+        public void setTitle(String title) { this.title = title; }
+    }
+
+    interface SampleStringLogicMapper extends com.baomidou.mybatisplus.core.mapper.BaseMapper<SampleStringLogicEntity> {
+    }
+
+    @Test
+    @DisplayName("7. 字符串泛型主键占位逻辑删除重写：inspectInject 剥离 SET 子句单引号为裸主键列名并保留 WHERE 过滤引号")
+    void shouldRewriteCharSequenceLogicDeletePlaceholderInInspectInject() {
+        com.baomidou.mybatisplus.core.MybatisConfiguration configuration = new com.baomidou.mybatisplus.core.MybatisConfiguration();
+        com.baomidou.mybatisplus.core.config.GlobalConfig globalConfig = com.baomidou.mybatisplus.core.toolkit.GlobalConfigUtils.defaults();
+        globalConfig.setSqlInjector(new AtengSqlInjector());
+        com.baomidou.mybatisplus.core.toolkit.GlobalConfigUtils.setGlobalConfig(configuration, globalConfig);
+        configuration.addMapper(SampleStringLogicMapper.class);
+
+        String ns = SampleStringLogicMapper.class.getName();
+        MappedStatement msById = configuration.getMappedStatement(ns + ".deleteById");
+        String sqlById = msById.getBoundSql("pk-1").getSql();
+        assertThat(sqlById).contains("deleted=custom_pk");
+        assertThat(sqlById).doesNotContain("deleted='id'");
+        assertThat(sqlById).contains("deleted='0'");
+
+        MappedStatement msByIds = configuration.getMappedStatement(ns + ".deleteByIds");
+        String sqlByIds = msByIds.getBoundSql(java.util.Map.of("coll", List.of("pk-1", "pk-2"))).getSql();
+        assertThat(sqlByIds).contains("deleted=custom_pk");
+        assertThat(sqlByIds).doesNotContain("deleted='id'");
+        assertThat(sqlByIds).contains("deleted='0'");
+
+        MappedStatement msByWrapper = configuration.getMappedStatement(ns + ".delete");
+        com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<SampleStringLogicEntity> wrapper =
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<>();
+        wrapper.eq("title", "hello");
+        String sqlByWrapper = msByWrapper.getBoundSql(java.util.Map.of("ew", wrapper)).getSql();
+        assertThat(sqlByWrapper).contains("deleted=custom_pk");
+        assertThat(sqlByWrapper).doesNotContain("deleted='id'");
+        assertThat(sqlByWrapper).contains("deleted='0'");
+    }
 }

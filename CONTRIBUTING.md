@@ -118,7 +118,7 @@ bash scripts/commit.sh -t feat -s web -m "增强 TraceFilter 链路追踪能力"
 
 1. **显式契约 (Explicit Contract)**：Controller 统一显式声明返回 `Result<T>`；禁止引入 `@ResponseBodyAdvice` 自动拦截包装（参见 [ADR-0002](./docs/adr/0002-explicit-result-contract-no-response-body-advice.md)）。
 2. **防御性装配 (Defensive Autoconfiguration)**：自动装配标配 `@ConditionalOnClass` / `@ConditionalOnProperty` 守卫；Jackson 定制统一通过 `Jackson2ObjectMapperBuilderCustomizer` 注入，严禁覆盖 `ObjectMapper` Bean（参见 [ADR-0005](./docs/adr/0005-jackson-customizer-over-objectmapper-override.md)）。
-3. **空安全与防御断言**：列表/集合查询无匹配时统一返回空集合，严禁返回 `null`；单实体查询无结果时通过 `BusinessAssert.notNull` 前置拦截；`BaseEntity` 的 `deleted` 字段标配 `@JsonIgnore`。
+3. **空安全与防御断言**：列表/集合查询无匹配时统一返回空集合，严禁返回 `null`；单实体查询无结果时通过 `BusinessAssert.notNull` 前置拦截；`LogicDeletable` 实体（`BaseLogicEntity`/`BaseFullEntity` 与 `BaseGenericLogicEntity`/`BaseGenericFullEntity`）的 `deleted` 字段标配 `@JsonIgnore`（参见 [ADR-0109](./docs/adr/0109-mybatis-plus-orthogonal-contracts-and-dual-entity-ladder-architecture.md)）。
 4. **日志与脱敏**：Web 请求统一经由 `TraceFilter` 注入 MDC `traceId`；统一使用受管 SLF4J 日志，严禁在正式代码中使用 `System.out.println` 或裸 `e.printStackTrace()`；全局异常处理对未知根异常强制生产脱敏（参见 [ADR-0004](./docs/adr/0004-http-200-with-business-code-and-exception-masking.md)）。
 5. **部署隔离与 Central 解耦**：非分发模块标配声明 `<maven.deploy.skip>true</maven.deploy.skip>`，且根发布插件协同配置 `<excludeArtifacts>` 排除；发布插件使用 `<waitUntil>validated</waitUntil>` 极速异步解耦（参见 [ADR-0007](./docs/adr/0007-maven-publishing-and-clean-ci-pipeline.md)）。
 6. **文档自驱与单一版本流**：文档接入依赖坚持展示纯净具体版本（如 `0.0.4`）供开发者一键复制即用；发版由 `scripts/release.sh` 内置原生 `sed -i` 原地直接流式修改同步更新文档与 POM，采用单一正式版本流并通过 CI 智能网关识别发版提交短路放行，杜绝冗余构建（参见 [ADR-0008](./docs/adr/0008-automated-release-changelog-and-evergreen-docs.md)）。
