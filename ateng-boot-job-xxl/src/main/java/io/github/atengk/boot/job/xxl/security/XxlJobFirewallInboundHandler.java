@@ -1,5 +1,6 @@
 package io.github.atengk.boot.job.xxl.security;
 
+import io.github.atengk.boot.core.util.CidrMatcher;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandler;
@@ -51,7 +52,10 @@ public class XxlJobFirewallInboundHandler extends ChannelInboundHandlerAdapter {
             List<String> cidrWhitelist,
             String expectedAccessToken,
             BooleanSupplier isDrainingSupplier) {
-        this.cidrMatcher = new CidrMatcher(cidrWhitelist);
+        List<String> validRules = cidrWhitelist != null
+                ? cidrWhitelist.stream().filter(StringUtils::hasText).map(String::trim).toList()
+                : List.of();
+        this.cidrMatcher = validRules.isEmpty() ? null : new CidrMatcher(validRules);
         this.expectedAccessToken = StringUtils.hasText(expectedAccessToken) ? expectedAccessToken.trim() : null;
         this.isDrainingSupplier = isDrainingSupplier != null ? isDrainingSupplier : () -> false;
     }
@@ -74,8 +78,8 @@ public class XxlJobFirewallInboundHandler extends ChannelInboundHandlerAdapter {
             return;
         }
 
-        // 2. CIDR 入站白名单防卫
-        if (!cidrMatcher.isAllowed(clientIp)) {
+        // 2. CIDR 入站白名单防卫（未配置白名单规则时默认不启用网段拦截）
+        if (cidrMatcher != null && !cidrMatcher.matches(clientIp)) {
             log.warn("XXL-Job CIDR 防火墙拦截未授权来源 IP: clientIp={}, uri={}", clientIp, uri);
             sendResponse(ctx, HttpResponseStatus.FORBIDDEN,
                     "{\"code\":403,\"msg\":\"Forbidden: Client IP not allowed by CIDR whitelist\"}");

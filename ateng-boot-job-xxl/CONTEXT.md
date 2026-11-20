@@ -23,8 +23,8 @@ _Avoid_: 执行器包装类, CustomExecutor, JobRunner, SpringExecutorWrapper
 _Avoid_: 内置服务器, NettyServer, HttpReceiver, RpcServer
 
 **XxlJobFirewallInboundHandler (入站安全防火墙处理器)**:
-挂载于执行器 Netty 通信管道最前端的安全防卫处理器，负责执行器排空期新任务拒收、来源 IP 的 CIDR 网段白名单校验与访问令牌前置核验。
-_Avoid_: IP过滤器, 鉴权拦截器, NettyFilter, TokenHandler
+挂载于执行器 Netty 通信管道最前端的安全防卫处理器，负责执行器排空期新任务拒收、基于 Core `CidrMatcher` 的来源 IP CIDR 网段白名单校验与访问令牌前置核验。
+_Avoid_: IP过滤器, 鉴权拦截器, NettyFilter, TokenHandler, job.xxl.security.CidrMatcher
 
 **XxlJobContextAspect (四维上下文与韧性调度切面)**:
 环绕拦截所有受管分布式任务的核心调度切面，统一编排节点静默判定、32 位无锁 MDC `traceId` 注入、操作人与多租户上下文挂载、强类型参数绑定与 JSR-303 校验、切面拦截器责任链、本地硬看门狗、方法级退避重试、两级超时降级与三阶告警度量。

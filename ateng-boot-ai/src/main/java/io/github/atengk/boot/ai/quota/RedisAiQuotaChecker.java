@@ -41,11 +41,6 @@ public class RedisAiQuotaChecker extends DefaultAiQuotaChecker {
     }
 
     @Override
-    public boolean isRedisMode() {
-        return isDistributed();
-    }
-
-    @Override
     public void recordUsage(String tenantId, String modelName, int totalTokensUsed) {
         if (!properties.isEnabled() || TenantContextHolder.isIgnoreTenant()) {
             return;

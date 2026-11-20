@@ -323,7 +323,7 @@ class XxlShardingBatchTemplateTest {
     @Test
     @DisplayName("测试有界失败明细收集与截断标记：超过 1000 条上限时截断以保护 JVM 堆内存")
     void testBoundedFailedItemsAndTruncationFlag() {
-        template.setFailFast(false);
+        XxlShardingBatchTemplate nonFailFastTemplate = template.withFailFast(false);
 
         // 构造 1500 条数据 (id 1~1500)
         List<MockRecord> database = new ArrayList<>();
@@ -332,7 +332,7 @@ class XxlShardingBatchTemplateTest {
         }
 
         // 每批 500 条，共 3 批，全部模拟抛出异常
-        BatchExecutionResult result = template.executeStep(
+        BatchExecutionResult result = nonFailFastTemplate.executeStep(
                 0L,
                 500,
                 (lastId, limit) -> database.stream().filter(r -> r.id > (lastId == null ? 0L : lastId)).limit(limit).toList(),
@@ -355,7 +355,7 @@ class XxlShardingBatchTemplateTest {
     @Test
     @DisplayName("测试失败补偿回调触发与 FailedBatch 模型数据完整性")
     void testFailureHandlerCallbackDispatch() {
-        template.setFailFast(false);
+        XxlShardingBatchTemplate nonFailFastTemplate = template.withFailFast(false);
 
         // 构造 30 条数据，每批 10 条
         List<MockRecord> database = new ArrayList<>();
@@ -365,7 +365,7 @@ class XxlShardingBatchTemplateTest {
 
         List<FailedBatch<MockRecord>> capturedFailedBatches = new ArrayList<>();
 
-        BatchExecutionResult result = template.executeStep(
+        BatchExecutionResult result = nonFailFastTemplate.executeStep(
                 0L,
                 10,
                 (lastId, limit) -> database.stream().filter(r -> r.id > (lastId == null ? 0L : lastId)).limit(limit).toList(),
@@ -401,8 +401,9 @@ class XxlShardingBatchTemplateTest {
     @Test
     @DisplayName("测试流式批处理实时进度打卡与完成百分比计算")
     void testProgressReportingAtStepInterval() {
-        template.setProgressLogInterval(100);
-        assertThat(template.getProgressLogInterval()).isEqualTo(100);
+        XxlShardingBatchTemplate progressTemplate = template.withProgressLogInterval(100);
+        assertThat(progressTemplate.getProgressLogInterval()).isEqualTo(100);
+        assertThat(template.getProgressLogInterval()).isEqualTo(XxlShardingBatchTemplate.DEFAULT_PROGRESS_LOG_INTERVAL);
 
         List<MockRecord> database = new ArrayList<>();
         for (long i = 1; i <= 250; i++) {
@@ -410,7 +411,7 @@ class XxlShardingBatchTemplateTest {
         }
 
         List<MockRecord> consumed = new ArrayList<>();
-        BatchExecutionResult result = template.executeStep(
+        BatchExecutionResult result = progressTemplate.executeStep(
                 0L,
                 50,
                 (lastId, limit) -> database.stream().filter(r -> r.id > (lastId == null ? 0L : lastId)).limit(limit).toList(),
@@ -423,13 +424,13 @@ class XxlShardingBatchTemplateTest {
         assertThat(consumed).hasSize(250);
 
         // 直接测试 reportProgress 输出逻辑（含预估总量百分比计算）
-        template.reportProgress(250, 500L, 250, 0, 5, System.nanoTime() - 100_000_000L);
+        progressTemplate.reportProgress(250, 500L, 250, 0, 5, System.nanoTime() - 100_000_000L);
     }
 
     @Test
     @DisplayName("测试并发批处理下失败补偿回调与有界失败集合并发安全性")
     void testParallelExecutionFailureHandlerAndBoundedFailures() {
-        template.setFailFast(false);
+        XxlShardingBatchTemplate nonFailFastTemplate = template.withFailFast(false);
 
         // 构造 1200 条数据，每批 200 条，共 6 批
         List<MockRecord> database = new ArrayList<>();
@@ -439,7 +440,7 @@ class XxlShardingBatchTemplateTest {
 
         CopyOnWriteArrayList<FailedBatch<MockRecord>> capturedBatches = new CopyOnWriteArrayList<>();
 
-        BatchExecutionResult result = template.executeStepParallel(
+        BatchExecutionResult result = nonFailFastTemplate.executeStepParallel(
                 0L,
                 200,
                 4,
@@ -462,7 +463,7 @@ class XxlShardingBatchTemplateTest {
     @Test
     @DisplayName("测试分片流式批处理结合 ShardingContext 与失败补偿回调")
     void testShardedStepWithFailureHandler() {
-        template.setFailFast(false);
+        XxlShardingBatchTemplate nonFailFastTemplate = template.withFailFast(false);
 
         // 构造 100 条数据 (id 1~100)
         List<MockRecord> database = new ArrayList<>();
@@ -473,7 +474,7 @@ class XxlShardingBatchTemplateTest {
         ShardingContext sharding = new ShardingContext(0, 2); // 偶数 ID
         List<FailedBatch<MockRecord>> capturedBatches = new ArrayList<>();
 
-        BatchExecutionResult result = template.executeShardedStep(
+        BatchExecutionResult result = nonFailFastTemplate.executeShardedStep(
                 sharding,
                 0L,
                 20,

@@ -66,7 +66,7 @@
 | **RAG 自动装配** | 向量知识库自适应装配与单机回退 | `AtengAiRagAutoConfiguration` | `ateng.boot.ai.rag.enabled` | 自动探测并注入外部 `EmbeddingStore`（如 `ateng-boot-milvus`），缺省自动平滑降级单机内存向量库 `InMemoryEmbeddingStore` | `AtengAiRagAutoConfigurationTest` |
 | **知识库检索器** | 统一知识库向量检索器受管 Bean | `ContentRetriever`<br>`EmbeddingStoreContentRetriever` | `ateng.boot.ai.rag.max-results`<br>`ateng.boot.ai.rag.min-score` | 自动根据配置组装 `ContentRetriever` Bean，支持 `@AiAgent(contentRetriever = "...")` 与编程式检索 | `AtengAiRagAutoConfigurationTest` / `RagControllerIntegrationTest` |
 | **文档分块切片** | 原生轻量长文档分块切片门面 | `DocumentSplitter`<br>`RecursiveCharacterSplitter`<br>`MarkdownHeaderSplitter` | `ateng.boot.ai.rag.chunk-size`<br>`ateng.boot.ai.rag.chunk-overlap` | `split(String)` / `split(Resource)` / `split(InputStream)`，支持递归字符分块与 Markdown 语义标题两级分块 | `DocumentSplitterTest` / `RagControllerIntegrationTest` |
-| **Token 预算切片** | Token 预算防溢出智能切片门面 | `TokenCharacterSplitter`<br>`TokenBudgetSplitter` | `ateng.boot.ai.rag.splitter.type: TOKEN`<br>`ateng.boot.ai.rag.splitter.token.max-tokens`<br>`ateng.boot.ai.rag.splitter.token.token-overlap`<br>`ateng.boot.ai.rag.splitter.token.safety-margin` | 基于 Tokenizer 或启发式算法计量 Token，支持安全余量防卫，彻底杜绝下游 Embedding 模型 400 Bad Request 溢出 | `TokenCharacterSplitterTest` |
+| **Token 预算切片** | Token 预算防溢出智能切片门面 | `TokenCharacterSplitter` | `ateng.boot.ai.rag.splitter.type: TOKEN`<br>`ateng.boot.ai.rag.splitter.token.max-tokens`<br>`ateng.boot.ai.rag.splitter.token.token-overlap`<br>`ateng.boot.ai.rag.splitter.token.safety-margin` | 基于 Tokenizer 或启发式算法计量 Token，支持安全余量防卫，彻底杜绝下游 Embedding 模型 400 Bad Request 溢出 | `TokenCharacterSplitterTest` |
 | **父子分级切片** | 宏微双层切片与无外部 KV 上下文还原 | `ParentChildSplitter`<br>`ParentChildResult`<br>`ParentContextAggregator` | `ateng.boot.ai.rag.splitter.type: PARENT_CHILD`<br>`ateng.boot.ai.rag.splitter.parent-child.parent-chunk-size`<br>`ateng.boot.ai.rag.splitter.parent-child.child-chunk-size` | 宏观父分块保证完整长上下文，微观子分块用于高精度向量索引；子分块自包含父文本，检索时自动去重重组宏观上下文 | `ParentChildSplitterTest` |
 | **表格感知切片** | 结构化表格行列感知切分器 | `TableSplitter` | `ateng.boot.ai.rag.splitter.type: TABLE` | `split(String)`，智能解析 Excel/CSV/Markdown 表格，分块时强制下沉表头与列架构描述，防止数据行语义脱节 | `TableSplitterTest` |
 | **检索交叉重排** | 两阶段 Cross-Encoder 语义交叉重排 | `Reranker`<br>`OpenAiCompatibleReranker`<br>`RerankingContentRetriever` | `ateng.boot.ai.rag.rerank.enabled`<br>`ateng.boot.ai.rag.rerank.model-name`<br>`ateng.boot.ai.rag.rerank.top-k`<br>`ateng.boot.ai.rag.rerank.min-score` | `rerank(query, segments, topK)`，对粗排召回结果实施二次精排打分与截断，透明提升 RAG 回答精准度 | `RerankerTest` / `RagControllerIntegrationTest` |
@@ -2253,15 +2253,15 @@ ateng:
       quota:
         # 是否启用多租户配额风控守卫 (默认 true)
         enabled: true
-        # 默认租户单日调用次数上限 (0 表示无限制，兼容别名 default-daily-limit)
+        # 默认租户单日调用次数上限 (0 表示无限制)
         daily-request-limit: 1000
-        # 默认租户单日 Token 消耗上限 (0 表示无限制，兼容别名 default-daily-token-limit)
+        # 默认租户单日 Token 消耗上限 (0 表示无限制)
         daily-token-limit: 500000
-        # 专有租户单日调用次数上限映射 (兼容别名 tenant-daily-limits)
+        # 专有租户单日调用次数上限映射
         tenant-request-limits:
           tenant-free: 50
           tenant-standard: 500
-        # 专有租户单日 Token 消耗上限映射 (兼容别名 tenant-daily-token-limits)
+        # 专有租户单日 Token 消耗上限映射
         tenant-token-limits:
           tenant-free: 50000
           tenant-standard: 200000
@@ -2690,7 +2690,7 @@ public class ParentChildRagService {
 ```
 
 #### 核心机制与边界防御
-1. **Token 预算绝对防溢出 (`TokenCharacterSplitter` / `TokenBudgetSplitter`)**：
+1. **Token 预算绝对防溢出 (`TokenCharacterSplitter`)**：
    - 彻底解决中文多字节、特殊符号与代码导致按字符切片时 Token 膨胀超限的痛点；
    - 兼容 LangChain4j `Tokenizer`（如 `OpenAiTokenizer`）或纯原生轻量 `HeuristicTokenizer` 保底，支持配置 `safetyMargin`（安全余量百分比），在切片边界实施双重滑动窗口防御，确保输出切片 100% 遵守 Token 上限。
 2. **父子分级切片与单机自洽还原 (`ParentChildSplitter` & `ParentContextAggregator`)**：
@@ -3250,15 +3250,15 @@ ateng:
       quota:
         # 是否启用多租户配额风控守卫 (默认 true)
         enabled: true
-        # 默认租户单日调用次数上限 (0 表示无限制，兼容别名 default-daily-limit)
+        # 默认租户单日调用次数上限 (0 表示无限制)
         daily-request-limit: 1000
-        # 默认租户单日 Token 消耗上限 (0 表示无限制，兼容别名 default-daily-token-limit)
+        # 默认租户单日 Token 消耗上限 (0 表示无限制)
         daily-token-limit: 500000
-        # 专有租户单日调用次数上限映射 (兼容别名 tenant-daily-limits)
+        # 专有租户单日调用次数上限映射
         tenant-request-limits:
           tenant-free: 50
           tenant-standard: 500
-        # 专有租户单日 Token 消耗上限映射 (兼容别名 tenant-daily-token-limits)
+        # 专有租户单日 Token 消耗上限映射
         tenant-token-limits:
           tenant-free: 50000
           tenant-standard: 200000

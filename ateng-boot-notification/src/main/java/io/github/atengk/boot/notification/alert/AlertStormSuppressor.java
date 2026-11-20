@@ -11,7 +11,6 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.scheduling.TaskScheduler;
-import org.springframework.scheduling.concurrent.ConcurrentTaskScheduler;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 import java.lang.reflect.Method;
@@ -20,7 +19,6 @@ import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -52,21 +50,6 @@ public class AlertStormSuppressor implements DisposableBean {
                                 NotificationAlertProperties alertProperties,
                                 TaskScheduler taskScheduler) {
         this(notificationTemplate, alertProperties, requireTaskScheduler(taskScheduler), false);
-    }
-
-    /**
-     * 兼容历史 ScheduledExecutorService 构造入参（已过时，建议使用基于 Spring 受管 {@link TaskScheduler} 的构造器）
-     *
-     * @param notificationTemplate 通知操作核心门面
-     * @param alertProperties      告警配置属性
-     * @param scheduler            外部传入调度线程池
-     * @deprecated 请改用 {@link #AlertStormSuppressor(NotificationTemplate, NotificationAlertProperties, TaskScheduler)}
-     */
-    @Deprecated(since = "1.2.0")
-    public AlertStormSuppressor(NotificationTemplate notificationTemplate,
-                                NotificationAlertProperties alertProperties,
-                                ScheduledExecutorService scheduler) {
-        this(notificationTemplate, alertProperties, wrapScheduledExecutor(scheduler), false);
     }
 
     private AlertStormSuppressor(NotificationTemplate notificationTemplate,
@@ -421,11 +404,6 @@ public class AlertStormSuppressor implements DisposableBean {
     private static TaskScheduler requireTaskScheduler(TaskScheduler taskScheduler) {
         BusinessAssert.notNull(taskScheduler, "防告警风暴调度器 TaskScheduler 不能为空");
         return taskScheduler;
-    }
-
-    private static TaskScheduler wrapScheduledExecutor(ScheduledExecutorService scheduler) {
-        BusinessAssert.notNull(scheduler, "调度线程池 ScheduledExecutorService 不能为空");
-        return new ConcurrentTaskScheduler(scheduler);
     }
 
     /**

@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Token 预算防溢出切片器 (TokenCharacterSplitter / TokenBudgetSplitter) 全场景单元测试
+ * Token 预算防溢出切片器 (TokenCharacterSplitter) 全场景单元测试
  *
  * @author Ateng
  * @since 2026-11-05
@@ -156,14 +156,5 @@ class TokenCharacterSplitterTest {
         List<TextSegment> resSegments = splitter.split(resource);
         assertThat(resSegments).isNotEmpty();
         assertThat(resSegments.get(0).text()).contains("Spring Resource");
-    }
-
-    @Test
-    @DisplayName("TokenBudgetSplitter 别名子类语义兼容与完全等价")
-    void testTokenBudgetSplitterAlias() {
-        TokenBudgetSplitter splitter = new TokenBudgetSplitter(100, 20);
-        List<TextSegment> segments = splitter.split("测试 TokenBudgetSplitter 别名等价性");
-        assertThat(segments).hasSize(1);
-        assertThat(segments.get(0).text()).isEqualTo("测试 TokenBudgetSplitter 别名等价性");
     }
 }

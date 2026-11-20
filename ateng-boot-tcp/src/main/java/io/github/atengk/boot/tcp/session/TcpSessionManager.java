@@ -281,10 +281,8 @@ public class TcpSessionManager implements ApplicationEventPublisherAware {
      *
      * @param group 分组名称
      * @return 活跃会话集合（保底非空集合）
-     * @deprecated 请使用规范命名方法 {@link #getSessionsByGroup(String)}
      */
-    @Deprecated(since = "1.2.0")
-    public Set<TcpSession> getGroupSessions(String group) {
+    public Set<TcpSession> getSessionsByGroup(String group) {
         if (group == null) {
             return Collections.emptySet();
         }
@@ -300,16 +298,6 @@ public class TcpSessionManager implements ApplicationEventPublisherAware {
             }
         }
         return Collections.unmodifiableSet(result);
-    }
-
-    /**
-     * 获取指定分组下所有活跃的会话集合（同 {@link #getGroupSessions(String)}）
-     *
-     * @param group 分组名称
-     * @return 活跃会话集合（保底非空集合）
-     */
-    public Set<TcpSession> getSessionsByGroup(String group) {
-        return getGroupSessions(group);
     }
 
     /**

@@ -111,6 +111,7 @@ flowchart TD
   在 `@AtengXxlJob` 中扩充 `retryCount`（默认 `0`）与 `retryInterval`（默认 `"1s"`）。切面在目标方法抛出非超时业务异常时执行受管退避重试；针对 JSR-303 参数校验失败、JSON 反序列化失败以及 `LocalWatchdog` 硬超时强中断（`session.isTimedOut()`）严格实施 **0 次重试立即 Fail-Fast**，且 `timeout` 约束含重试在内的整次调度总生命周期；
 - **`BatchFailureHandler<T>` 函数式 SPI 与无状态派生视图**：
   正式落地 `@FunctionalInterface public interface BatchFailureHandler<T> extends Consumer<FailedBatch<T>>`，遵循“就近显式回调优先、全局 Spring Bean 缺省兜底”策略；`XxlShardingBatchTemplate` 提供 `withFailFast(boolean)` / `withProgressLogInterval(int)` 无状态不可变派生视图（存量 Setter 标记 `@Deprecated` 保持向后兼容），且全模块（`XxlJobAlertAggregator`、`XxlJobTestHelper`、`AtengJobLogFileCleanHelper`、`XxlShardingBatchTemplate`、`XxlMyBatisStreamingTemplate`、`TenantJobTemplate`）100% 采用 `ReentrantLock` 替代 `synchronized` 消除 JDK 21+ 虚拟线程 Carrier Pinning。
+  > **演进注记（#1137）**：`XxlShardingBatchTemplate` 中的 `@Deprecated` 可变 Setter（`setFailFast`、`setProgressLogInterval`）已净切移除并固化为 `final` 不可变字段；执行器防火墙 `CidrMatcher` 收口复用 `io.github.atengk.boot.core.util.CidrMatcher`。
 
 ---
 

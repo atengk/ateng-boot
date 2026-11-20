@@ -98,7 +98,7 @@ _Avoid_: LarkDriver, FeishuRobot, LarkClient
 
 **GenericWebhookNotificationProvider**:
 通用自定义 JSON Webhook 驱动实现，面向开发者自建告警网关或第三方标准化端点，使用 `X-Webhook-Timestamp` 与 `X-Signature-SHA256` 防重放签名头并淘汰明文密钥头。
-_Avoid_: CustomDriver, HttpWebhookProvider
+_Avoid_: CustomDriver, HttpWebhookProvider, HEADER_WEBHOOK_SECRET, X-Webhook-Secret
 
 **NotificationRateLimiter**:
 客户端通道频控器接口，负责单通道发信速率防卫并提供微退避排队能力（`tryAcquire`）。

@@ -112,7 +112,6 @@ class AtengJobLocalAutoConfigurationTest {
                 "ateng.boot.job.local.in-memory-log-capacity=200",
                 "ateng.boot.job.local.max-log-lines-per-execution=25",
                 "ateng.boot.job.local.log-retention=14d",
-                "ateng.boot.job.local.log-retention-days=14",
                 "ateng.boot.job.local.cluster-lock.default-min-hold-time=3s",
                 "ateng.boot.job.local.alert.enabled=true"
         ).run(context -> {
@@ -123,20 +122,8 @@ class AtengJobLocalAutoConfigurationTest {
             assertThat(properties.getInMemoryLogCapacity()).isEqualTo(200);
             assertThat(properties.getMaxLogLinesPerExecution()).isEqualTo(25);
             assertThat(properties.getLogRetention()).isEqualTo(java.time.Duration.ofDays(14));
-            assertThat(properties.getLogRetentionDays()).isEqualTo(14);
             assertThat(properties.getClusterLock().getDefaultMinHoldTime()).isEqualTo(java.time.Duration.ofSeconds(3));
             assertThat(properties.getAlert().isEnabled()).isTrue();
         });
-    }
-
-    @Test
-    @DisplayName("兼容旧配置：仅配置 log-retention-days 时自动同步联动为 Duration logRetention")
-    void testLegacyLogRetentionDaysCompatibility() {
-        contextRunner.withPropertyValues("ateng.boot.job.local.log-retention-days=10")
-                .run(context -> {
-                    JobLocalProperties properties = context.getBean(JobLocalProperties.class);
-                    assertThat(properties.getLogRetentionDays()).isEqualTo(10);
-                    assertThat(properties.getLogRetention()).isEqualTo(java.time.Duration.ofDays(10));
-                });
     }
 }

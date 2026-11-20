@@ -131,15 +131,6 @@ public class DefaultAiQuotaChecker implements AiQuotaChecker {
         return false;
     }
 
-    /**
-     * 判断当前是否工作在 Redis 分布式集群模式 (兼容历史方法)
-     *
-     * @return true 为 Redis 模式，false 为内存模式
-     */
-    public boolean isRedisMode() {
-        return isDistributed();
-    }
-
     protected long getDailyRequestsInternal(String tenantId, String date) {
         TenantDailyUsage usage = getMemoryUsage(tenantId, date);
         return usage.requests.get();

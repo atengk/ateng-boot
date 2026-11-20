@@ -25,14 +25,6 @@ import java.util.Map;
 @Slf4j
 public class GenericWebhookNotificationProvider extends AbstractNotificationProvider {
 
-    /**
-     * 已废弃的明文密钥请求头常量（出于零明文安全合规，驱动不再向网络出站发送该请求头）
-     *
-     * @deprecated 请使用 {@link #HEADER_WEBHOOK_TIMESTAMP} 与 {@link #HEADER_SIGNATURE_SHA256} 进行防重放签名校验
-     */
-    @Deprecated(since = "1.2.0", forRemoval = true)
-    public static final String HEADER_WEBHOOK_SECRET = "X-Webhook-Secret";
-
     public static final String HEADER_WEBHOOK_TIMESTAMP = "X-Webhook-Timestamp";
     public static final String HEADER_SIGNATURE_SHA256 = "X-Signature-SHA256";
 

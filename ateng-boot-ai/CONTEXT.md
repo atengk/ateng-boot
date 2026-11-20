@@ -102,7 +102,7 @@ _Avoid_: TokenCalculator, UsageGuesser, TokenHeuristic
 
 **AiQuotaChecker**:
 多租户与用户级大模型调用额度风控拦截器 SPI 顶层接口，负责在远程模型调用发起前执行调用次数与 Token 配额校验，超额即刻 Fail-Fast 阻断以防巨额账单冲击。
-_Avoid_: QuotaService, RateLimiter, TokenGatekeeper
+_Avoid_: RateLimiter, QuotaService, TokenGatekeeper, isRedisMode
 
 **AiTenantModelResolver**:
 多租户动态模型切源与凭据解析 SPI 顶层接口，支持根据租户上下文动态路由至专有大模型实例或隔离配置。
@@ -117,8 +117,12 @@ _Avoid_: AuditEntry, AiLogItem, TelemetryEvent
 _Avoid_: AuditListener, LogConsumer, TelemetrySink
 
 **DefaultAiQuotaChecker**:
-多租户大模型调用配额风控默认实现类，自适应双模计数（无 Redis 单机并发内存淘汰，有 Redis 分布式天级滑动计数与 TTL 自动失效）。
+多租户大模型调用配额风控单机内存默认实现类，依托并发安全内存结构与跨天滑动清除策略执行调用次数与 Token 限额检查。
 _Avoid_: SimpleQuotaChecker, StandardQuotaService, MemoryQuotaManager
+
+**RedisAiQuotaChecker**:
+继承自 `DefaultAiQuotaChecker` 的多租户大模型调用配额风控 Redis 分布式实现类，依托 `StringRedisTemplate` 原子自增（`INCRBY`）与天级滑动 TTL 支持多 Pod 集群共享风控状态，并在 Redis 不可用时受控回退。
+_Avoid_: DistributedQuotaChecker, RedisQuotaService
 
 **EmbeddingTemplate**:
 统一命令式向量化计算与知识库切片入库门面具体类，提供对称的单文本、批量文本、`TextSegment` 稠密向量计算与 `ingest` 一键入库，自动挂载指数退避重试并平滑处理网络瞬态异常。
@@ -151,6 +155,14 @@ _Avoid_: TokenMemory, TokenSlider, SlidingWindowMemory
 **DocumentSplitter**:
 原生轻量长文本智能切片门面具体类，提供基于字符滑动窗口、换行段落及 Markdown 标题层级的有界重叠（Overlap）切片算法，直接产出 `TextSegment` 并继承元数据，零引入第三方臃肿解析包。
 _Avoid_: TextChunker, DocParser, FileSplitter
+
+**TokenCharacterSplitter**:
+Token 预算防溢出智能文档切片器，基于 LangChain4j `Tokenizer` 或原生 `HeuristicTokenizer` 结合安全余量实施滑动窗口切片，替代已废弃的 `TokenBudgetSplitter`。
+_Avoid_: TokenBudgetSplitter, TokenChunker
+
+**VectorStoreProperties**:
+多向量库统一适配强类型配置属性类（`io.github.atengk.boot.ai.properties.VectorStoreProperties`），统一纳管 `in-memory`、`milvus`、`redis`、`pgvector`、`elasticsearch` 等存储模式与连接参数。
+_Avoid_: rag.store.VectorStoreProperties, EmbeddingStoreConfig
 
 **Reranker**:
 文档检索精排模型 SPI 顶层接口，定义对向量粗排召回候选集进行交叉打分（Cross-Encoder Scoring）与高精排序的规范契约。

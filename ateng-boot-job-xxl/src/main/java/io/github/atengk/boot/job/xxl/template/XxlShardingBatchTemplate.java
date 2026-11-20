@@ -58,8 +58,8 @@ public class XxlShardingBatchTemplate {
     private final int defaultBatchSize;
     private final int defaultMaxConcurrency;
     private final BatchFailureHandler<?> defaultFailureHandler;
-    private volatile boolean failFast = true;
-    private volatile int progressLogInterval = DEFAULT_PROGRESS_LOG_INTERVAL;
+    private final boolean failFast;
+    private final int progressLogInterval;
 
     public XxlShardingBatchTemplate() {
         this(null, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY, DEFAULT_PROGRESS_LOG_INTERVAL, null);
@@ -92,11 +92,14 @@ public class XxlShardingBatchTemplate {
             int defaultMaxConcurrency,
             int progressLogInterval,
             BatchFailureHandler<?> defaultFailureHandler) {
-        this.taskExecutor = taskExecutor;
-        this.defaultBatchSize = defaultBatchSize > 0 ? defaultBatchSize : DEFAULT_BATCH_SIZE;
-        this.defaultMaxConcurrency = defaultMaxConcurrency > 0 ? defaultMaxConcurrency : DEFAULT_MAX_CONCURRENCY;
-        this.progressLogInterval = progressLogInterval > 0 ? progressLogInterval : DEFAULT_PROGRESS_LOG_INTERVAL;
-        this.defaultFailureHandler = defaultFailureHandler;
+        this(
+                taskExecutor,
+                defaultBatchSize > 0 ? defaultBatchSize : DEFAULT_BATCH_SIZE,
+                defaultMaxConcurrency > 0 ? defaultMaxConcurrency : DEFAULT_MAX_CONCURRENCY,
+                progressLogInterval > 0 ? progressLogInterval : DEFAULT_PROGRESS_LOG_INTERVAL,
+                true,
+                defaultFailureHandler
+        );
     }
 
     /**
@@ -149,30 +152,8 @@ public class XxlShardingBatchTemplate {
         return failFast;
     }
 
-    /**
-     * 设置快速失败策略（注意：直接修改共享单例字段存在并发串扰风险）
-     *
-     * @param failFast true 遇异常快速失败；false 收集异常并继续后续切片
-     * @deprecated 请改用无状态不可变派生视图 {@link #withFailFast(boolean)}
-     */
-    @Deprecated(since = "1.2.0")
-    public void setFailFast(boolean failFast) {
-        this.failFast = failFast;
-    }
-
     public int getProgressLogInterval() {
         return progressLogInterval;
-    }
-
-    /**
-     * 设置流式进度日志打卡步长（注意：直接修改共享单例字段存在并发串扰风险）
-     *
-     * @param progressLogInterval 进度输出间隔条数（{@code <= 0} 时关闭自动进度输出）
-     * @deprecated 请改用无状态不可变派生视图 {@link #withProgressLogInterval(int)}
-     */
-    @Deprecated(since = "1.2.0")
-    public void setProgressLogInterval(int progressLogInterval) {
-        this.progressLogInterval = progressLogInterval;
     }
 
     /**

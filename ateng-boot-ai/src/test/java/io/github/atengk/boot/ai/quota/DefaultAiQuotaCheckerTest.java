@@ -56,7 +56,7 @@ class DefaultAiQuotaCheckerTest {
         properties.setDailyRequestLimit(1);
         DefaultAiQuotaChecker checker = new DefaultAiQuotaChecker(properties);
 
-        assertThat(checker.isRedisMode()).isFalse();
+        assertThat(checker.isDistributed()).isFalse();
 
         // 即使连续记录多次也不触发超额熔断
         checker.recordUsage("tenant-01", "model", 100);
@@ -200,7 +200,7 @@ class DefaultAiQuotaCheckerTest {
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
 
         DefaultAiQuotaChecker checker = new RedisAiQuotaChecker(properties, redisTemplate);
-        assertThat(checker.isRedisMode()).isTrue();
+        assertThat(checker.isDistributed()).isTrue();
 
         // 模拟 Redis 当前返回调用次数 2 次
         when(valueOps.get(org.mockito.ArgumentMatchers.contains(":requests"))).thenReturn("2");

@@ -17,8 +17,8 @@ _Avoid_: TcpClientHelper, SocketClientUtil, NettyClientManager
 _Avoid_: ChannelContext, SocketWrapper, NettyChannelHolder
 
 **TCP Session Manager (TCP 会话管理器)**:
-专职负责 TCP 会话的注册、注销、按服务端定向清理、业务设备标识（`deviceId`）双向映射绑定，以及逻辑分组（自动回收空分组键）与逆向分组检索的管理底座。
-_Avoid_: ConnectionManager, SessionRegistry, ChannelMap
+专职负责 TCP 会话的注册、注销、按服务端定向清理、业务设备标识（`deviceId`）双向映射绑定，以及逻辑分组（自动回收空分组键）与逆向分组检索（`getSessionsByGroup`）的管理底座。
+_Avoid_: ConnectionManager, SessionRegistry, ChannelMap, getGroupSessions
 
 **TCP Listener (声明式 TCP 监听器)**:
 基于方法注解声明式监听特定业务命令字（Command）、自动执行载荷反序列化、JSR-303 `@Valid`/`@Validated` 前置校验、四维上下文（`X-Trace-Id` / `X-Tenant-Id` / `X-User-Id` / `X-Ignore-Tenant`）异步透传零残留还原与 Core 受管 `taskExecutor` 隔离派发（含 RPC 异常快速错误回执）的消费契约（`@TcpListener` / `@TcpMapping`）。

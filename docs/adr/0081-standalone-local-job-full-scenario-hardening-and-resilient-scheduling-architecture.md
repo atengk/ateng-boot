@@ -170,3 +170,4 @@ flowchart TD
 - `ScheduledJobTask.toJobInfo()` 为处于 `RUNNING` 状态的任务实时计算并填充 `nextExecutionTime`；
 - 清零 `InMemoryJobLogStorageProvider` 与 `AntiStormJobAlertAggregator` 中的 `synchronized` 关键字，全面切换为 `ReentrantLock`（遵循 `isHeldByCurrentThread()` + `finally` 释放范式）；
 - `JobLocalProperties` 与 `JobContext` 新增单次执行最大日志行数 `maxLogLinesPerExecution`（默认 `500`）与强类型 `Duration logRetention = Duration.ofDays(7)`（保留 `@Deprecated logRetentionDays` 向后兼容并在写入时惰性清理过期记录）。
+  > **演进注记（#1137）**：`JobLocalProperties` 中的 `@Deprecated` 旧整型配置 `logRetentionDays` 及其联动追踪状态已净切移除，统一收口为强类型 `Duration logRetention`。

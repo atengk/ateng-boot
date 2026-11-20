@@ -45,36 +45,6 @@ public class AtengAiQuotaProperties {
      */
     private Map<String, Long> tenantTokenLimits = new LinkedHashMap<>();
 
-    // 兼容历史与文档配置别名方法
-
-    public void setDefaultDailyLimit(long limit) {
-        this.dailyRequestLimit = limit;
-    }
-
-    public long getDefaultDailyLimit() {
-        return this.dailyRequestLimit;
-    }
-
-    public void setDefaultDailyTokenLimit(long limit) {
-        this.dailyTokenLimit = limit;
-    }
-
-    public long getDefaultDailyTokenLimit() {
-        return this.dailyTokenLimit;
-    }
-
-    public void setTenantDailyLimits(Map<String, Long> limits) {
-        if (limits != null) {
-            this.tenantRequestLimits.putAll(limits);
-        }
-    }
-
-    public void setTenantDailyTokenLimits(Map<String, Long> limits) {
-        if (limits != null) {
-            this.tenantTokenLimits.putAll(limits);
-        }
-    }
-
     /**
      * 解析指定租户应生效的单日调用次数上限
      *

@@ -29,7 +29,7 @@
 | **超时降级补偿** | 本地硬超时守护时间轮 | `LocalWatchdog` | `default-job-timeout` | 基于 Netty `HashedWheelTimer` 与受管线程工厂，超限强行中断工作线程并广播 `JobTimeoutEvent` | `LocalWatchdogTest` / `HistoryDataArchiveJobHandler` |
 | **超时降级补偿** | 全局超时降级处理器 SPI | `JobTimeoutFallbackHandler` | - | `void onTimeout(JobExecutionMetadata metadata, Duration elapsed)`，全局超时异步补偿回调 | `LocalWatchdogTest` / `HistoryDataArchiveJobHandler` |
 | **超时降级补偿** | 任务超时领域事件 | `JobTimeoutEvent` | - | Spring 领域事件，携带 `jobId`、`jobHandler`、`timeout`、`elapsed` 耗时元数据 | `LocalWatchdogTest` |
-| **分片流式批处理** | 无状态策略派生视图 | `XxlShardingBatchTemplate` | `batch-size`<br>`progress-log-interval` | `withFailFast(boolean)` / `withProgressLogInterval(int)` 返回不可变派生视图（原 Setter 标 `@Deprecated`），零单例串扰 | `BatchFailureHandlerIntegrationTest` / `ShardingBatchJobHandler` |
+| **分片流式批处理** | 无状态策略派生视图 | `XxlShardingBatchTemplate` | `batch-size`<br>`progress-log-interval` | `withFailFast(boolean)` / `withProgressLogInterval(int)` 返回不可变派生视图，零单例串扰 | `BatchFailureHandlerIntegrationTest` / `ShardingBatchJobHandler` |
 | **分片流式批处理** | 失败切片回调 SPI | `BatchFailureHandler<T>` | - | `@FunctionalInterface extends Consumer<FailedBatch<T>>`，`onFailure(FailedBatch)` 支持全局 Spring Bean 自动装配与“显式优先、全局兜底”两级仲裁 | `BatchFailureHandlerIntegrationTest` / `DeadLetterBatchFailureHandler` |
 | **分片流式批处理** | 步长流式顺序消费 | `XxlShardingBatchTemplate` | `batch-size` | `executeStep(initialId, batchSize, queryFunc, idExtractor, consumer, failureHandler)` 游标拉取 | `XxlShardingBatchTemplateTest` / `ShardingBatchJobHandler` |
 | **分片流式批处理** | 步长逐条流式消费 | `XxlShardingBatchTemplate` | `batch-size` | `executeStepForEach(initialId, batchSize, queryFunc, idExtractor, itemConsumer, failureHandler)` | `XxlShardingBatchTemplateTest` |
@@ -51,8 +51,8 @@
 | **运维端点** | 动态脱网运维触发 | `XxlJobEndpoint` | `enabled` | `POST /actuator/xxljobs/{handler}`，请求体传入 param 与分片参数，在线手动触发 | `XxlJobEndpointTest` / `SampleJobXxlIntegrationTest` |
 | **执行器加固** | 生产增强执行器 | `AtengXxlJobSpringExecutor` | `admin-addresses`<br>`appname`<br>`port`<br>`ip`<br>`address` | 继承官方执行器，装配三阶停机排空、CIDR 防火墙与端口冲突顺延自愈 | `AtengXxlJobSpringExecutorTest` / `SampleJobXxlApplication` |
 | **执行器加固** | 优雅停机状态机 | `AtengXxlJobSpringExecutor.stop()` | `drain-timeout` | 阶段一主动注销（`registryRemove`）-> 阶段二轮询排空 -> 阶段三物理销毁 Netty | `AtengXxlJobSpringExecutorTest` |
-| **安全防火墙** | 入站 CIDR 白名单 | `XxlJobFirewallInboundHandler` | `cidr-whitelist` | 支持单个 IP 与 CIDR 掩码段（如 `192.168.0.0/16`），非白名单入站连接直接阻断 | `XxlJobFirewallTest` / `AtengEmbedServerTest` |
-| **安全防火墙** | 令牌防空鉴权 | `XxlJobFirewallInboundHandler` | `access-token`<br>`require-access-token` | 校验调度请求头中的 AccessToken，支持启动期未配置令牌时 Fail-Fast 快速拦截 | `XxlJobFirewallTest` / `AtengXxlJobAutoConfigurationTest` |
+| **安全防火墙** | 入站 CIDR 白名单 | `XxlJobFirewallInboundHandler` | `cidr-whitelist` | 支持单个 IP 与 CIDR 掩码段（如 `192.168.0.0/16`），非白名单入站连接直接阻断 | `XxlJobFirewallInboundHandlerTest` / `AtengEmbedServerTest` |
+| **安全防火墙** | 令牌防空鉴权 | `XxlJobFirewallInboundHandler` | `access-token`<br>`require-access-token` | 校验调度请求头中的 AccessToken，支持启动期未配置令牌时 Fail-Fast 快速拦截 | `AtengXxlJobSecurityE2ETest` / `AtengXxlJobAutoConfigurationTest` |
 | **告警自愈** | 告警风暴抑制器 | `XxlJobAlertAggregator` | `alert-enabled`<br>`alert-suppress-duration`<br>`alert-suppress-threshold` | 聚合失败异常，首发立即告警 -> 抑制窗口内静默聚合为富文本摘要 -> 成功时自愈恢复 | `XxlJobAlertAggregatorTest` / `OrderReconciliationJobHandler` |
 | **告警自愈** | 告警领域事件 | `XxlJobAlertEvent` | - | Spring 标准领域事件，携带 `alertType` (`INITIAL_FAILURE` / `FAILURE_SUMMARY` / `RECOVERY`)、`failureCount`、`throwable` | `XxlJobAlertAggregatorTest` / `SampleJobXxlIntegrationTest` |
 | **健康探针** | 执行器健康状态检测 | `XxlJobHealthIndicator` | `enabled` | 暴露于 `/actuator/health`，优先读取执行器运行时顺延自愈端口与 IP，上报网络连通性 | `XxlJobEndpointTest` / `SampleJobXxlIntegrationTest` |
@@ -748,7 +748,7 @@ public class ShardingBatchJobHandler {
 
 #### 核心机制与边界防御
 - **主键游标分页**：基于 `WHERE id > :lastId ORDER BY id ASC LIMIT :batchSize` 模式，杜绝深分页 `OFFSET` 性能恶化；
-- **无状态派生视图防串扰**：通过 `withFailFast(boolean)` 与 `withProgressLogInterval(int)` 派生携带独立不可变策略快照的轻量视图实例（原 `setFailFast` / `setProgressLogInterval` 标记 `@Deprecated`），彻底消灭共享单例在高并发调用下的状态篡改；
+- **无状态派生视图防串扰**：通过 `withFailFast(boolean)` 与 `withProgressLogInterval(int)` 派生携带独立不可变策略快照的轻量视图实例，彻底消灭共享单例在高并发调用下的状态篡改；
 - **两级失败回调仲裁**：传入非空 `failureHandler` 时仅执行显式回调；传入 `null` 或省略回调时自动路由至容器全局 `BatchFailureHandler` Bean，单批绝不双重触发；
 - **堆内存防 OOM 与零 Pinning**：基于 `ReentrantLock` 保护的 `BatchExecutionResult` 强制实施 `MAX_FAILED_ITEMS = 1000` 截断防线，溢出置位 `truncatedFailures = true` 同时保留精确 `failCount`。
 

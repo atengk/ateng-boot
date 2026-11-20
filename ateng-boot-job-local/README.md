@@ -939,10 +939,8 @@ ateng:
         in-memory-log-capacity: 100
         # 单次任务执行期间 JobContext.log(...) 允许收集的最大日志行数，默认 500 行
         max-log-lines-per-execution: 500
-        # 历史执行日志默认保留时长（优先推荐强类型 Duration），默认 7d
+        # 历史执行日志默认保留时长（强类型 Duration），默认 7d
         log-retention: 7d
-        # 已废弃兼容字段（请优先使用 log-retention），默认 7 天
-        log-retention-days: 7
         # Actuator 运维端点配置
         actuator:
           # 是否启用 /actuator/localjobs 运维管控端点，默认 true

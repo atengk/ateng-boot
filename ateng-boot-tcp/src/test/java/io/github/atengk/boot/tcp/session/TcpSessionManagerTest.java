@@ -167,15 +167,15 @@ class TcpSessionManagerTest {
         manager.addToGroup("GATEWAY", "S1");
         manager.addToGroup("GATEWAY", "S2");
 
-        assertThat(manager.getGroupSessions("GATEWAY")).containsExactlyInAnyOrder(s1, s2);
-        assertThat(manager.getGroupSessions("NON_EXISTENT")).isEmpty();
+        assertThat(manager.getSessionsByGroup("GATEWAY")).containsExactlyInAnyOrder(s1, s2);
+        assertThat(manager.getSessionsByGroup("NON_EXISTENT")).isEmpty();
 
         manager.removeFromGroup("GATEWAY", "S1");
-        assertThat(manager.getGroupSessions("GATEWAY")).containsExactly(s2);
+        assertThat(manager.getSessionsByGroup("GATEWAY")).containsExactly(s2);
 
         // 会话断开注销时自动清理分组
         manager.unregister("S2", CloseReason.NORMAL);
-        assertThat(manager.getGroupSessions("GATEWAY")).isEmpty();
+        assertThat(manager.getSessionsByGroup("GATEWAY")).isEmpty();
     }
 
     @Test

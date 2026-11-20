@@ -425,8 +425,6 @@ class AlertStormSuppressorTest {
         // 3. 入参 Fail-Fast、调度拒绝回滚活跃窗口以及 resolveDetailUrl 边界情况
         assertThrows(io.github.atengk.boot.core.exception.BusinessException.class,
                 () -> new AlertStormSuppressor(mockTemplate, alertProperties, (org.springframework.scheduling.TaskScheduler) null));
-        assertThrows(io.github.atengk.boot.core.exception.BusinessException.class,
-                () -> new AlertStormSuppressor(mockTemplate, alertProperties, (java.util.concurrent.ScheduledExecutorService) null));
 
         org.springframework.scheduling.TaskScheduler rejectingScheduler = mock(org.springframework.scheduling.TaskScheduler.class);
         when(rejectingScheduler.schedule(any(Runnable.class), any(java.time.Instant.class)))
