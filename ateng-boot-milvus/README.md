@@ -1,6 +1,6 @@
 # ateng-boot-milvus 企业级向量检索与混合查询底座
 
-> 面向生产就绪的 Spring Boot 3 企业级 Milvus 向量数据库与多向量混合检索基础设施 Starter，依托官方原生现代化驱动 `MilvusClientV2` (2.4.4) 构建高内聚三层立体门面 `MilvusTemplate`，支持一键建表预加载、单向量 ANN 相似度检索、稠密/稀疏多向量混合召回与 RRF/加权融合重排、SaaS 多租户物理分区与逻辑安全隔离、突破 16384 offset 的游标流式遍历，以及 LangChain4j `EmbeddingStore` SPI 无缝适配。
+> 面向生产就绪的 Spring Boot 3 企业级 Milvus 向量数据库与多向量混合检索基础设施 Starter，依托官方原生驱动 `milvus-sdk-java` (`MilvusClientV2` 2.4.4) 与单共享 gRPC 通道动态 `dbname` 路由器构建，提供三层立体操作门面 `MilvusTemplate`、POJO/动态字段双模映射、稠密与稀疏向量强类型检索、多路混合召回重排、物理分区生命周期探测与原生 gRPC 显式落盘、SaaS 多租户正交隔离及 LangChain4j `EmbeddingStore` 条件装配适配（设计权衡详见 [ADR-0089](../docs/adr/0089-enterprise-milvus-vector-database-and-hybrid-search-architecture.md)，领域词汇表详见 [CONTEXT.md](./CONTEXT.md)）。
 
 ---
 
@@ -8,47 +8,135 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **基础配置** | 客户端初始化与双核穿透 | `AtengMilvusAutoConfiguration`<br>`MilvusTemplate` | `ateng.boot.milvus.enabled`<br>`ateng.boot.milvus.uri`<br>`ateng.boot.milvus.database` | `getClient()` / `getProperties()` / `testConnection()` / `getServerVersion()`，提供原生客户端双核穿透逃逸舱 | `AtengMilvusAutoConfigurationTest`<br>`MilvusTemplateBasicTest` |
-| **基础配置** | 云原生健康探针 | `MilvusHealthIndicator` | `management.health.milvus.enabled` | 响应 `Health.up()` / `Health.down()`，集成 Spring Boot Actuator 端点 | `MilvusHealthIndicatorTest`<br>`SampleMilvusIntegrationTest` |
-| **基础配置** | 多租户切库自动路由 | `MilvusTemplate`<br>`TenantContextHolder` | `ateng.boot.milvus.tenant-database-routing` | `resolveCurrentDatabase()`，开启切库路由且租户存在时自动切入租户专属 Database | `MilvusLifecycleAndRoutingTest`<br>`MilvusTenantController` |
-| **集合运维** | 实体声明式元数据映射 | `@MilvusCollection`<br>`@MilvusId`<br>`@MilvusVector`<br>`@MilvusPartitionKey`<br>`@MilvusField` | - | 声明集合名称、主键、分区键、标量列与 4~1536 维特征向量，支持多向量、稀疏向量与标量倒排 | `MilvusEntityMetadataTest`<br>`MilvusEntityConverterTest` |
-| **集合运维** | 集合生命周期与属性更新 | `MilvusTemplate` | - | `hasCollection(name)` / `createCollection(name, dim)` / `alterCollection(name, props)` / `dropCollection(name)` / `listCollections()` / `describeCollection(name)`，支持 TTL 与 MMap 动态配置 | `MilvusTemplateLifecycleTest`<br>`MilvusLifecycleAndRoutingTest` |
-| **集合运维** | 集合别名与蓝绿无感发布 | `MilvusTemplate` | - | `createAlias(coll, alias)` / `alterAlias(coll, alias, checkLoaded)` / `dropAlias(alias)` / `listAliases(coll)` / `describeAlias(alias)` / `hasAlias(coll, alias)`，切流前置内存校验防御 | `MilvusAliasLifecycleTest`<br>`MilvusAliasController` |
-| **集合运维** | 内存加载与多副本控制 | `MilvusTemplate` | - | `loadCollection(name, numReplicas)` / `releaseCollection(name)` / `isCollectionLoaded(name)`，管理集合常驻内存与多副本负载均衡 | `MilvusTemplateLifecycleTest`<br>`MilvusLifecycleAndRoutingTest` |
-| **集合运维** | 一键建表多索引原子预加载 | `MilvusTemplate` | - | `createCollectionAndIndex(Class<?>)`，原子完成 Schema、TTL/MMap 属性注入、多向量与标量倒排索引创建并按 replicaNumber 预加载 | `MilvusMultiVectorAndInvertedIndexTest`<br>`MilvusLifecycleController` |
-| **索引运维** | 向量索引生命周期与结构 | `MilvusTemplate` | - | `createIndex(...)` / `dropIndex(...)` / `describeIndex(...)` / `listIndexes(...)`，支持 AUTOINDEX/HNSW/IVF/SPARSE 等算法 | `MilvusTemplateLifecycleTest` |
-| **索引运维** | 标量倒排与排序索引 | `MilvusTemplate`<br>`@MilvusField` | - | `createIndex(coll, field, indexName, indexType)`，为文本标量列建立 INVERTED 倒排索引、TRIE 前缀树或 STL_SORT 标量排序 | `MilvusMultiVectorAndInvertedIndexTest` |
-| **数据操作** | 实体与字典数据极简写入 | `MilvusTemplate` | `ateng.boot.milvus.auto-create-partition` | `insert(collection, data)` / `insertEntities(entities)`，自动绑定多租户字段与时序分区探测 | `MilvusTemplateDataOperationsTest`<br>`MilvusVectorController` |
-| **数据操作** | 动态扩展字段安全兜底 | `@MilvusDynamic`<br>`MilvusEntityConverter` | - | 实体标注 `@MilvusDynamic`（或缺省 `extra`）的 Map 属性在写入时自动扁平化由 `$meta` 捕获，查询反序列化时自动收集未知动态列回填 | `MilvusLifecycleAndRoutingTest`<br>`MilvusMultimodalController` |
-| **数据操作** | 幂等覆盖写入 (Upsert) | `MilvusTemplate` | - | `upsert(collection, data)` / `upsertEntities(entities)`，主键存在则更新，不存在则新增插入 | `MilvusTemplateDataOperationsTest`<br>`MilvusVectorController` |
-| **数据操作** | 批量分批切片摄取 | `MilvusTemplate` | - | `insertBatchEntities(list, size)` / `upsertBatchEntities(list, size)`，结合 `BatchSliceUtil` 与指数退避重试防 OOM 与帧超限 | `MilvusTemplateDataOperationsTest`<br>`MilvusVectorController` |
-| **数据操作** | 主键点查与轻量探测 | `MilvusTemplate` | - | `getById(Class, id)` / `getByIds(Class, ids)` / `existsById(Class, id)`，毫秒级主键直接点查 | `MilvusTemplateDataOperationsTest`<br>`MilvusVectorController` |
-| **数据操作** | 数据安全删除 | `MilvusTemplate` | - | `deleteByIds(Class, ids)` / `deleteByExpr(collection, expr)`，多租户环境下自动织入租户边界过滤 | `MilvusTemplateDataOperationsTest`<br>`MilvusVectorController` |
-| **向量检索** | 单向量高级检索 Fluent 模型 | `MilvusTemplate`<br>`MilvusSearchRequest`<br>`MilvusHit<T>` | `ateng.boot.milvus.consistency-level` | `search(MilvusSearchRequest<T>)`，流式构建向量入参、标量过滤、浅分页 offset、GroupBy 聚合与范围过滤 | `MilvusSearchRequestTest`<br>`MilvusAdvancedSearchController`<br>`MilvusMultimodalController` |
-| **向量检索** | 聚合去重与范围区间检索 | `MilvusSearchRequest` | - | `.groupBy(field)` 规避单文档垄断 TopK；`.range(radius, rangeFilter)` 圈定置信度相似度区间 | `MilvusSearchRequestTest`<br>`MilvusAdvancedSearchController` |
-| **标量查询** | 标量过滤与实体统计 | `MilvusTemplate` | - | `query(Class, expr)` / `count(Class, expr)`，支持标准布尔过滤表达式与聚合统计 | `MilvusTemplateDataOperationsTest`<br>`MilvusVectorController` |
-| **混合检索** | 多向量多路召回与融合重排 | `MilvusTemplate`<br>`MilvusHybridSearchRequest`<br>`AnnSearch`<br>`ReRanker` | - | `hybridSearch(request)`，Fluent 请求构建，支持 RRF 互逆排名与 WEIGHTED 加权打分重排 | `MilvusTemplateAdvancedOperationsTest`<br>`MilvusHybridController`<br>`MilvusMultimodalController` |
-| **全文匹配** | BM25 分词匹配辅助构建 | `MilvusExprHelper` | - | `textMatch(field, query)` / `expr().eq().like().textMatch().build()`，标准化 `TEXT_MATCH` 表达式生成 | `MilvusExprHelperTest` |
-| **游标流式** | 深度遍历突破 16384 限制 | `MilvusTemplate`<br>`QueryIterator` | - | `streamingQuery(collection, expr, batchSize, consumer)` / `streamingQueryEntities(...)`，受管关流与分批拉取 | `MilvusTemplateAdvancedOperationsTest` |
-| **多库运维** | 动态切库与数据库管理 | `MilvusTemplate`<br>`MilvusContextHolder` | - | `useDatabase(db, action)` / `createDatabase(db)` / `dropDatabase(db)` / `listDatabases()`，支持线程级隔离切库 | `MilvusTemplateAdvancedOperationsTest`<br>`MilvusContextHolderTest` |
-| **多租户** | SaaS 租户自动织入与物理隔离 | `MilvusTenantHelper`<br>`@MilvusPartitionKey` | - | `weaveTenantFilter(expr, field, ignore)` / `fillEntityTenantField(entity, metadata)`，防越权防御性括号隔离 | `MilvusTenantHelperTest`<br>`MilvusTenantController` |
-| **生态集成** | LangChain4j EmbeddingStore SPI | `MilvusEmbeddingStore`<br>`MilvusLangChain4jAutoConfiguration` | `ateng.boot.milvus.langchain4j.*` | 适配 `EmbeddingStore<TextSegment>` 标准接口，支持元数据过滤到 Milvus 表达式递归映射 | `MilvusEmbeddingStoreTest`<br>`MilvusFilterMapperTest` |
+| **基础装配** | 客户端连接与多库动态路由 | `AtengMilvusAutoConfiguration`<br>`ManagedMilvusClientV2`<br>`MilvusDatabaseClientManager`<br>`MilvusDynamicRpcInterceptor` | `ateng.boot.milvus.enabled`<br>`ateng.boot.milvus.uri`<br>`ateng.boot.milvus.host`<br>`ateng.boot.milvus.port`<br>`ateng.boot.milvus.token`<br>`ateng.boot.milvus.username`<br>`ateng.boot.milvus.password`<br>`ateng.boot.milvus.database`<br>`ateng.boot.milvus.secure` | 单共享 `ManagedChannel` 按每次 RPC 动态注入单一 `dbname` 头；`MilvusTemplate#getClient()` / `getProperties()` / `resolveCurrentDatabase()` | `AtengMilvusAutoConfigurationTest`<br>`AtengMilvusResilientChannelTest`<br>`MilvusTemplateBasicTest` |
+| **通道与超时** | gRPC 通道治理与连接定制 SPI | `MilvusClientCustomizer`<br>`AtengMilvusProperties` | `ateng.boot.milvus.connect-timeout`<br>`ateng.boot.milvus.keep-alive-time`<br>`ateng.boot.milvus.keep-alive-timeout`<br>`ateng.boot.milvus.idle-timeout`<br>`ateng.boot.milvus.rpc-deadline` | `MilvusClientCustomizer#customize(ConnectConfig)` 无损调整连接配置；默认建连 `10s`、保活 `55s/20s`、空闲 `24h`、单次 RPC 超时 `30s` | `AtengMilvusAutoConfigurationTest`<br>`AtengMilvusPropertiesTest` |
+| **可观测探针** | 云原生健康探针与版本探测 | `MilvusHealthIndicator`<br>`MilvusTemplate` | `management.health.milvus.enabled` | `testConnection()` / `getServerVersion()`，向 Actuator `/actuator/health` 上报 `UP/DOWN`、数据库与一致级别 | `MilvusHealthIndicatorTest`<br>`MilvusLifecycleController` |
+| **异常与枚举** | 因果异常转译与三级一致性 | `MilvusException`<br>`MilvusResultCode`<br>`MilvusExceptionTranslator`<br>`MilvusConsistencyLevel` | `ateng.boot.milvus.consistency-level` | `MilvusConsistencyLevel` 实现 `IBaseEnum<String>`（`STRONG`/`BOUNDED`/`EVENTUALLY`，`fromValue`）；`translate(...)` 100% 保留原始 `cause` 链 | `MilvusResultCodeAndExceptionTest`<br>`AtengMilvusPropertiesTest` |
+| **声明式映射** | 实体元数据与动态字段映射 | `@MilvusCollection`<br>`@MilvusId`<br>`@MilvusVector`<br>`@MilvusField`<br>`@MilvusPartitionKey`<br>`@MilvusDynamic` | - | `@MilvusCollection`（`name`/`description`/`enableDynamicField`/`numShards`/`ttlSeconds`/`mmap`/`replicaNumber`）；`@MilvusId`（`autoId`/`maxLength`）；`@MilvusVector`（`dimension`/`metricType`/`indexType`）；`@MilvusField`（`dataType`/`indexType`/`indexName`/`tenantField`）；`@MilvusPartitionKey`（`tenantField`）；`@MilvusDynamic`（`$meta` 扩展列双向编解码，配合 `MilvusEntityMetadata`/`MilvusEntityConverter`） | `MilvusEntityMetadataTest`<br>`MilvusEntityConverterTest`<br>`MilvusLifecycleAndRoutingTest` |
+| **集合运维** | 集合生命周期与原生落盘 | `MilvusTemplate` | - | `hasCollection` / `createCollection` / `alterCollection` / `dropCollection` / `listCollections` / `describeCollection` / `getCollectionStats` / `loadCollection` / `releaseCollection` / `isCollectionLoaded` / `createCollectionAndIndex` / `flush(String)` / `flush(Class<?>)` / `flush(List<String>)`（原生 gRPC `FlushRequest`） | `MilvusTemplateLifecycleTest`<br>`MilvusLifecycleController` |
+| **物理分区** | 分区管理、探测与弹性补建 | `MilvusTemplate` | `ateng.boot.milvus.auto-create-partition` | `hasPartition` / `createPartition` / `dropPartition` / `listPartitions` / `loadPartitions` / `releasePartitions` / `isPartitionsLoaded(String, List<String>)`；写入缺失分区时受控自动建分区 | `MilvusTemplateLifecycleTest`<br>`MilvusPartitionController` |
+| **索引运维** | 向量与标量倒排索引生命周期 | `MilvusTemplate` | - | `createIndex`（Request / 字段参数 / 4 参标量索引）/ `dropIndex` / `describeIndex` / `listIndexes` / `hasIndex`，支持 `AUTOINDEX`/`HNSW`/`SPARSE_INVERTED_INDEX`/`INVERTED`/`TRIE`/`STL_SORT` | `MilvusMultiVectorAndInvertedIndexTest`<br>`MilvusTemplateLifecycleTest` |
+| **集合别名** | 别名生命周期与蓝绿切流 | `MilvusTemplate` | - | `createAlias` / `alterAlias(..., checkLoaded)` / `dropAlias` / `listAliases` / `describeAlias` / `hasAlias`，切流前置内存加载守卫 | `MilvusAliasLifecycleTest`<br>`MilvusAliasController` |
+| **多逻辑库** | 逻辑数据库运维与线程切库 | `MilvusTemplate`<br>`MilvusContextHolder` | `ateng.boot.milvus.tenant-database-routing` | `hasDatabase` / `listDatabases` / `createDatabase` / `dropDatabase` / `useDatabase(db, Supplier/Runnable)`；`MilvusContextHolder.useDatabase(db)`（`AutoCloseable` `DatabaseScope`） | `MilvusContextHolderTest`<br>`MilvusDatabaseController` |
+| **数据写入删** | 单条、覆盖与分批切片重试 | `MilvusTemplate` | `ateng.boot.milvus.batch-size`<br>`ateng.boot.milvus.max-retries`<br>`ateng.boot.milvus.retry-delay` | `insert` / `insertEntities` / `upsert` / `upsertEntities` / `insertBatch` / `insertBatchEntities` / `upsertBatch` / `upsertBatchEntities` / `deleteById` / `deleteEntities` / `deleteByIds` / `deleteByExpr` / `deleteEntitiesByExpr` | `MilvusTemplateDataOperationsTest`<br>`MilvusVectorController` |
+| **点查与统计** | 主键点查、批量读取与计数 | `MilvusTemplate` | - | `getById` / `getByIds` / `existsById` / `query` / `count`，自动兼容整数与字符主键并织入多租户条件 | `MilvusTemplateDataOperationsTest`<br>`MilvusVectorController` |
+| **向量检索** | 单向量、指定向量列与稀疏检索 | `MilvusTemplate`<br>`MilvusSearchRequest`<br>`MilvusHit<T>` | `ateng.boot.milvus.consistency-level` | `search(SearchReq)` / `search(MilvusSearchRequest<T>)`（浅分页 `offset`、`groupBy`、`range`/`radius`、`roundDecimal`、`consistencyLevel`）/ `search(Class, vector, topK, ...)` / `search(Class, annsField, vector, ...)` / `search(collectionName, ...)` / `searchSparse(Class, annsField, Map<Long, Float>, ...)`；命中支持 `MilvusHit#getField(key)` | `MilvusSearchRequestTest`<br>`MilvusMultiVectorAndInvertedIndexTest`<br>`MilvusAdvancedSearchController`<br>`MilvusMultimodalController` |
+| **混合召回** | 多向量多路召回与重排融合 | `MilvusTemplate`<br>`MilvusHybridSearchRequest`<br>`AnnSearch`<br>`ReRanker` | - | `hybridSearch(HybridSearchReq)` / `hybridSearch(MilvusHybridSearchRequest<T>)`，支持 `AnnSearch` 稠密/稀疏子通道与 `ReRanker.rrf` / `weighted` 融合重排 | `MilvusTemplateAdvancedOperationsTest`<br>`MilvusHybridController`<br>`MilvusMultimodalController` |
+| **表达式构造** | 布尔过滤与 `TEXT_MATCH` 构造 | `MilvusExprHelper` | - | `textMatch` / `eq` / `ne` / `gt` / `gte` / `lt` / `lte` / `in` / `notIn` / `like` / `and` / `or` / `not` / `escape` / `formatValue` / `builder()` | `MilvusExprHelperTest`<br>`MilvusAdvancedSearchController` |
+| **游标遍历** | 受管游标流式拉取防 OOM | `MilvusTemplate` | `ateng.boot.milvus.batch-size` | `streamingQuery` / `streamingQueryEntities`，基于 `QueryIterator` 突破 `16384` 分页上限并在 `finally` 确定性关流 | `MilvusTemplateAdvancedOperationsTest`<br>`MilvusAdvancedSearchController` |
+| **SaaS 多租户** | 租户隔离列与物理分区正交协同 | `MilvusTenantHelper`<br>`TenantContextHolder` | `ateng.boot.milvus.tenant-field-name`<br>`ateng.boot.milvus.tenant-database-routing` | `weaveTenantFilter` / `weaveEntityTenantFilter` / `resolveEffectiveTenantField` / `fillRecordTenantField` / `fillEntityTenantField`；区分 `tenantField` 隔离列与 `@MilvusPartitionKey` 物理分区键 | `MilvusTenantHelperTest`<br>`MilvusTenantController` |
+| **原生穿透** | 原生驱动逃逸回调 | `MilvusTemplate` | - | `execute(String operation, Function<MilvusClientV2, T>)`，统一异常转译且保留原始 `cause` | `MilvusTemplateBasicTest` |
+| **LangChain4j** | `EmbeddingStore` 条件装配桥接 | `MilvusEmbeddingStore`<br>`MilvusLangChain4jAutoConfiguration`<br>`MilvusFilterMapper` | `ateng.boot.milvus.langchain4j.enabled`<br>`ateng.boot.milvus.langchain4j.collection-name`<br>`ateng.boot.milvus.langchain4j.vector-field-name`<br>`ateng.boot.milvus.langchain4j.id-field-name`<br>`ateng.boot.milvus.langchain4j.text-field-name`<br>`ateng.boot.milvus.langchain4j.tenant-field-name`<br>`ateng.boot.milvus.langchain4j.partition-name`<br>`ateng.boot.milvus.langchain4j.dimension`<br>`ateng.boot.milvus.langchain4j.metric-type`<br>`ateng.boot.milvus.langchain4j.index-type`<br>`ateng.boot.milvus.langchain4j.auto-create-collection`<br>`ateng.boot.milvus.langchain4j.consistency-level` | 实现 `EmbeddingStore<TextSegment>`；支持 `MilvusFilterMapper#map(Filter)` 表达式递归映射、`ReentrantLock` 并发防卫初始化 | `MilvusEmbeddingStoreTest`<br>`MilvusFilterMapperTest`<br>`MilvusLangChain4jAutoConfigurationTest` |
 
 ---
 
-## 1. 模块定位与 Maven 坐标
+## 1. 模块定位、Maven 坐标与快速起步
 
-`ateng-boot-milvus` 是面向 Spring Boot 3 的现代化企业级向量数据库 Starter，专注于高维特征向量存储、ANN 相似度计算、多路召回重排与 RAG 基础设施底座支撑：
-- **现代化原生基线**: 采用 Milvus 官方推荐的第二代客户端 `MilvusClientV2` (2.4.4)，彻底抛弃上一代复杂的 ConnectParam / R 包装体系；
-- **三层立体门面**: `MilvusTemplate` 提供实体驱动强类型层、字典结构通用层以及原生驱动穿透层，兼顾业务敏捷与极限性能；
-- **零臃肿与底座优先**: 100% 依托 JDK 17 与 Spring 6，通用重试退避、分批切片与上下文透传收敛复用 `ateng-boot-core`；
-- **BOM 集中纳管**: 依赖及其版本由 `ateng-boot-bom` 统一管理，业务模块声明免配版本号。
+### 1.1 模块核心能力
+`ateng-boot-milvus` 专注企业级高维向量与混合检索存储底座，不捆绑 PDF 解析、分块或大模型调用逻辑（保持轻量零臃肿，详见 [ADR-0089](../docs/adr/0089-enterprise-milvus-vector-database-and-hybrid-search-architecture.md)）：
+- **官方现代主核**：基于 `io.milvus:milvus-sdk-java` (2.4.4) `MilvusClientV2`，单共享通道动态路由逻辑库并提供 `execute` / `getClient()` 原生逃逸通道；
+- **底座原语复用**：重试退避（`RetryUtil`）、分批切片（`BatchSliceUtil`）、JSON 与异常断言统一收敛至 `ateng-boot-core`；
+- **双模驱动映射**：支持注解驱动的强类型 POJO 实体，以及无预定义 Schema 的 `Map<String, Object>` 动态字典写入/查询。
+
+### 1.2 Maven 引入坐标
+
+推荐通过 BOM 统一纳管版本号（业务模块免写 `<version>`）：
+
+```xml
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-bom</artifactId>
+            <version>1.2.0</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+
+<dependencies>
+    <!-- 引入 BOM 后免配版本号 -->
+    <dependency>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot-milvus</artifactId>
+    </dependency>
+</dependencies>
+```
+
+若微服务未导入 `ateng-boot-bom`，可直接显式声明独立版本坐标：
 
 ```xml
 <dependency>
     <groupId>io.github.atengk</groupId>
     <artifactId>ateng-boot-milvus</artifactId>
+    <version>1.2.0</version>
 </dependency>
+```
+
+### 1.3 最小可用起步（1:1 提取自 Sample 实测工程）
+
+#### 最小 YAML 配置
+```yaml
+ateng:
+  boot:
+    milvus:
+      enabled: true
+      uri: http://localhost:19530
+      database: default
+      consistency-level: BOUNDED
+```
+
+#### 强类型集合实体（1:1 提取自 `SampleDocumentEntity`）
+```java
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@MilvusCollection(name = "sample_document", description = "知识库文档向量集合", numShards = 1)
+public class SampleDocumentEntity implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @MilvusId(description = "文档主键ID")
+    private Long id;
+
+    @MilvusPartitionKey(maxLength = 64, description = "分类分区路由键")
+    private String category;
+
+    @MilvusField(name = "tenant_id", maxLength = 64, description = "SaaS多租户标识")
+    @JsonProperty("tenant_id")
+    private String tenantId;
+
+    @MilvusField(name = "title", maxLength = 256, description = "文档标题")
+    private String title;
+
+    @MilvusField(name = "content", maxLength = 4096, description = "正文内容")
+    private String content;
+
+    @MilvusVector(name = "vector", dimension = 4, metricType = IndexParam.MetricType.COSINE, indexType = IndexParam.IndexType.AUTOINDEX, description = "4维稠密向量")
+    private List<Float> vector;
+
+    private Map<String, Object> extra;
+}
+```
+
+#### 极简控制器/服务实战（1:1 提取自 `MilvusLifecycleController` & `MilvusVectorController`）
+```java
+// 1. 一键建表、构建向量索引并预加载至内存（摘自 MilvusLifecycleController#initCollection）
+milvusTemplate.createCollectionAndIndex(SampleDocumentEntity.class);
+
+// 2. 写入强类型实体（摘自 MilvusVectorController#insert）
+SampleDocumentEntity entity = DocumentConverter.toEntity(request);
+milvusTemplate.insertEntities(Collections.singletonList(entity));
+
+// 3. 附带标量过滤的单向量 ANN 检索（摘自 MilvusVectorController#search）
+List<MilvusHit<SampleDocumentEntity>> hits = milvusTemplate.search(
+        SampleDocumentEntity.class,
+        request.getVector(),
+        request.getTopK(),
+        request.getFilterExpr()
+);
 ```
 
 ---
@@ -57,672 +145,475 @@
 
 ```mermaid
 flowchart TD
-    subgraph ClientLayer["调用接入边界 (Controller / Service / Agent / RAG)"]
-        AnnotationEntity["声明式实体<br>@MilvusCollection / @MilvusVector"]
-        DirectTemplate["业务门面调用<br>MilvusTemplate.*"]
-        LangChain4jClient["LangChain4j SPI<br>EmbeddingStore<TextSegment>"]
-        TenantContext["四维上下文<br>TenantContextHolder / MDC"]
+    subgraph ClientLayer["接入与业务调用层"]
+        Entity["实体契约 (@MilvusCollection / @MilvusDynamic)"]
+        Facade["业务调用 (MilvusTemplate.*)"]
+        LC4j["LangChain4j SPI (EmbeddingStore)"]
+        Customizer["连接定制 SPI (MilvusClientCustomizer)"]
     end
 
-    subgraph TemplateCore["ateng-boot-milvus 核心引擎"]
-        Tmpl["统一操作门面<br>MilvusTemplate"]
-        Metadata["反射高速缓存<br>MilvusEntityMetadata"]
-        Converter["双模转换引擎<br>MilvusEntityConverter"]
-        TenantHelper["租户安全防御织入<br>MilvusTenantHelper"]
-        ExprHelper["表达式与BM25构建<br>MilvusExprHelper"]
-        ExceptionTrans["因果异常转译器<br>MilvusExceptionTranslator"]
+    subgraph CoreEngine["ateng-boot-milvus 核心引擎"]
+        Tmpl["统一操作门面 MilvusTemplate"]
+        Meta["元数据缓存 & 编解码<br>MilvusEntityMetadata / Converter"]
+        Tenant["租户防护与表达式工具<br>MilvusTenantHelper / MilvusExprHelper"]
+        ClientMgr["单通道多库路由器 (ConcurrentHashMap)<br>MilvusDatabaseClientManager"]
+        Interceptor["动态 dbname 拦截器<br>MilvusDynamicRpcInterceptor"]
+        ExTrans["因果异常转译 MilvusExceptionTranslator"]
     end
 
-    subgraph NativeDriver["底层官方驱动与外部连接池"]
-        ClientV2["Milvus 官方原生客户端<br>MilvusClientV2"]
-        NativeChannel["gRPC 受管通道<br>(KeepAlive: 55s, Timeout: 5s)"]
+    subgraph DriverLayer["原生驱动与服务端"]
+        ManagedClient["ManagedMilvusClientV2 / MilvusClientV2"]
+        Stub["MilvusServiceBlockingStub (原生 Flush 等)"]
+        Milvus["Milvus 2.4+ 分布式集群"]
     end
 
-    subgraph MilvusCluster["Milvus 2.4+ 分布式集群"]
-        CollectionStore["向量集合与标量存储"]
-        IndexEngine["向量索引引擎 (AUTOINDEX / HNSW)"]
-        PartitionEngine["物理分区与动态路由 (PartitionKey)"]
-        MultiDatabase["多逻辑数据库 (Database)"]
-    end
-
-    AnnotationEntity --> Metadata
-    DirectTemplate --> Tmpl
-    LangChain4jClient --> Tmpl
-    TenantContext -.-> TenantHelper
-
-    Tmpl --> Metadata
-    Tmpl --> Converter
-    Tmpl --> TenantHelper
-    Tmpl --> ExprHelper
-    Tmpl --> ExceptionTrans
-    Tmpl --> ClientV2
-
-    ClientV2 --> NativeChannel
-    NativeChannel --> MilvusCluster
+    Entity --> Meta
+    Facade --> Tmpl
+    LC4j --> Tmpl
+    Customizer --> ManagedClient
+    Tmpl --> Meta
+    Tmpl --> Tenant
+    Tmpl --> ExTrans
+    Tmpl --> ClientMgr
+    ClientMgr --> Interceptor
+    ClientMgr --> ManagedClient
+    ClientMgr --> Stub
+    Interceptor --> Milvus
+    ManagedClient --> Milvus
+    Stub --> Milvus
 ```
 
 ### 核心设计不变量 (Invariants)
-1. **显式强类型契约与双核穿透**: 优先提供实体强类型方法，同时暴露 `getClient()` 逃逸舱，杜绝开发者在遇到非标特定需求时受困于框架限制。
-2. **多租户物理与逻辑双防不变量**: 支持 `@MilvusPartitionKey` 物理分区键硬件路由，结合 `MilvusTenantHelper` 自动给过滤表达式追加严格防御性括号 `(expr) and (tenant_id == '...')`，彻底杜绝越权扫描。
-3. **数据安全与因果链保全**: 底层驱动抛出的 gRPC / Milvus 异常 100% 经由 `MilvusExceptionTranslator` 转译为 `MilvusException` 并严格保留原始 `cause`，严禁吞咽异常。
-4. **确定性生命周期与资源释放**: 游标遍历（`QueryIterator`）与切库上下文（`MilvusContextHolder`）必须且只能在 `try-finally` 或 `try-with-resources` 中安全回收，杜绝句柄悬挂与线程脏读。
+1. **对称门面完备性**：集合、分区、索引、别名、逻辑库、读写删均提供对称操作；批处理默认分片为 `batch-size: 1000` 并结合指数退避重试（`max-retries: 3`、`retry-delay: 200ms`）。
+2. **单通道动态多库路由**：全局维护单一共享 `ManagedChannel`，`MilvusDatabaseClientManager` 通过无锁 `ConcurrentHashMap` 缓存多库视图，由 `MilvusDynamicRpcInterceptor` 在每次 RPC 前剔除旧头并注入当前有效 `dbname`（`MilvusContextHolder` > `tenant-database-routing` > 默认 `database`）。
+3. **虚拟线程零 Carrier Pinning**：全模块零 `synchronized` 块；多库视图与元数据缓存依托 `ConcurrentHashMap`，`MilvusEmbeddingStore` 集合懒初始化锁采用 `ReentrantLock`（遵循 [ADR-0029](../docs/adr/0029-virtual-threads-and-adaptive-async-runtime.md)）。
+4. **物理分区键与租户列正交分离**：通过 `@MilvusField(tenantField = true)` / `@MilvusPartitionKey(tenantField = true)` 与全局 `tenant-field-name: tenant_id` 显式声明租户列，避免业务类目 `@MilvusPartitionKey` 被误识别为租户列。
+5. **100% 因果链保留**：所有底层 gRPC 与 SDK 异常均由 `MilvusExceptionTranslator` 转译为 `MilvusException(MilvusResultCode, message, cause)`。
 
 ---
 
-## 3. 快速起步与最小配置 (Happy Path)
+## 3. 集合、物理分区与多逻辑数据库运维
 
-### 3.1 极简 YAML 配置
+### 3.1 集合生命周期、一键建表与原生 gRPC 显式落盘
+
+#### 专属 YAML 配置
 ```yaml
 ateng:
   boot:
     milvus:
-      enabled: true
       uri: http://localhost:19530
       database: default
-      consistency-level: BOUNDED
+      rpc-deadline: 30s # 单次 gRPC 调用截止超时，包含原生 FlushRequest
+```
+
+#### 实战 Java 代码（提取自 `MilvusLifecycleController` & `SampleDocumentEntity`）
+```java
+// 1. 根据实体注解一键建表、构建全量索引并按 replicaNumber 加载至内存
+milvusTemplate.createCollectionAndIndex(SampleDocumentEntity.class);
+
+// 2. 元数据巡检与内存加载状态探测
+List<String> collections = milvusTemplate.listCollections();
+DescribeCollectionResp desc = milvusTemplate.describeCollection("sample_document");
+boolean loaded = milvusTemplate.isCollectionLoaded("sample_document");
+
+// 3. 显式调整集合属性或按副本数重载
+milvusTemplate.alterCollection("sample_document", Map.of("mmap.enabled", "false"));
+milvusTemplate.releaseCollection("sample_document");
+milvusTemplate.loadCollection("sample_document");
+
+// 4. 显式触发原生 gRPC FlushRequest，将增量缓冲数据封存落盘为不可变 Segment
+milvusTemplate.flush("sample_document");
+// 或基于实体类 / 多集合批量落盘：
+// milvusTemplate.flush(SampleDocumentEntity.class);
+// milvusTemplate.flush(List.of("sample_document", "sample_multimodal"));
+```
+
+#### 核心机制与边界说明
+- `MilvusTemplate#flush` 通过 `MilvusDatabaseClientManager.extractBlockingStub` 获取挂载的 `MilvusServiceBlockingStub` 发送原生 `FlushRequest` 并透传激活的逻辑数据库 `dbName`；若使用未绑定底层存根的外部 `MilvusClientV2`，将 Fail-Fast 抛出 `MilvusResultCode.CLIENT_INIT_FAILED`；
+- Milvus 服务端对 `FlushRequest` 通常内置全局限流策略（例如 `rate=0.1`，即单集合每 10 秒 1 次），生产代码切勿在高频写入循环内逐条调用 `flush`，应仅用于批量导入收口或冷归档封存节点。
+
+---
+
+### 3.2 物理分区运维、全加载探测与按月归档自动建分区
+
+#### 专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    milvus:
+      # 默认 false 严格校验；时序按月归档等场景可显式开启，缺分区时自动补建并重试写入
       auto-create-partition: true
 ```
 
-### 3.2 声明实体模型
+#### 实战 Java 代码（提取自 `MilvusPartitionController` & `SampleArchiveLogEntity`）
 ```java
-package com.example.demo.entity;
+// 注意：SampleArchiveLogEntity 未标注 @MilvusPartitionKey，适用于手动物理分区运维
+milvusTemplate.createCollectionAndIndex(SampleArchiveLogEntity.class);
 
-import io.github.atengk.boot.milvus.annotation.*;
-import io.milvus.v2.common.IndexParam;
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+// 1. 分区创建与枚举
+milvusTemplate.createPartition("sample_archive_log", "part_202611");
+List<String> partitions = milvusTemplate.listPartitions("sample_archive_log");
 
-import java.util.List;
+// 2. 分区级加载、全加载探测与释放
+milvusTemplate.loadPartitions("sample_archive_log", List.of("part_202611"));
+boolean allLoaded = milvusTemplate.isPartitionsLoaded("sample_archive_log", List.of("part_202611"));
+milvusTemplate.releasePartitions("sample_archive_log", List.of("part_202611"));
 
+// 3. 开启 auto-create-partition=true 时，向未创建的新分区写入将自动建分区并重试
+SampleArchiveLogEntity archive = SampleArchiveLogEntity.builder()
+        .id(2001L)
+        .archiveMonth("2026-12")
+        .title("年度审计向量归档")
+        .vector(List.of(0.11f, 0.22f, 0.33f, 0.44f))
+        .build();
+milvusTemplate.insertEntities(List.of(archive), "part_202612");
+```
+
+#### 核心机制与边界说明
+- **Milvus 2.4 互斥硬约束**：服务端明确禁止对已启用 `PartitionKey`（即字段标有 `@MilvusPartitionKey`）的集合执行手动 `createPartition` / `loadPartitions` / `dropPartition`；需手动分区的时序归档集合请勿使用 `@MilvusPartitionKey`；
+- **`isPartitionsLoaded` 严格合取语义**：对传入的集合与非空分区列表执行 Fail-Fast 校验并逐个发起 `GetLoadStateReq`，仅当列表内**全部**物理分区均已到达 `Loaded` 状态时才返回 `true`；且 `loadPartitions` 在服务端属异步任务，紧随其后的探测建议留出状态收敛窗口。
+
+---
+
+### 3.3 集合别名生命周期与零停机蓝绿切流
+
+#### 专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    milvus:
+      uri: http://localhost:19530
+      database: default
+```
+
+#### 实战 Java 代码（提取自 `MilvusAliasController`）
+```java
+// 1. 创建指向初始集合的逻辑别名
+milvusTemplate.createAlias("sample_document", "doc_alias_prod");
+
+// 2. 蓝绿重建新集合并预加载完成后，原子切流（checkLoaded=true 校验目标集合已加载防检索报错）
+milvusTemplate.alterAlias("sample_document_v2", "doc_alias_prod", true);
+
+// 3. 元数据反查与删除
+List<String> aliases = milvusTemplate.listAliases("sample_document_v2");
+DescribeAliasResp detail = milvusTemplate.describeAlias("doc_alias_prod");
+boolean exists = milvusTemplate.hasAlias("sample_document_v2", "doc_alias_prod");
+milvusTemplate.dropAlias("doc_alias_prod");
+```
+
+#### 核心机制与边界说明
+- `alterAlias(collectionName, alias, true)` 会在切流前主动调用 `isCollectionLoaded(collectionName)`，若新集合尚未加载至内存直接阻断切换，防止线上查询瞬断。
+
+---
+
+### 3.4 多逻辑数据库运维与 `MilvusContextHolder` 动态切库
+
+#### 专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    milvus:
+      database: default
+      tenant-database-routing: false # 如需按 TenantContextHolder 自动路由同名独立库可改为 true
+```
+
+#### 实战 Java 代码（提取自 `MilvusDatabaseController`）
+```java
+// 1. 数据库生命周期探测与增删查
+if (!milvusTemplate.hasDatabase("sample_route_db")) {
+    milvusTemplate.createDatabase("sample_route_db");
+}
+List<String> allDbs = milvusTemplate.listDatabases();
+
+// 2. Try-With-Resources 作用域动态切库（嵌套或异常退出后确定性恢复上一层数据库）
+try (MilvusContextHolder.DatabaseScope ignored = MilvusContextHolder.useDatabase("sample_route_db")) {
+    List<MilvusHit<SampleDocumentEntity>> hits = milvusTemplate.search(
+            SampleDocumentEntity.class, queryVector, 5, "id > 0");
+}
+
+// 3. 闭包式临时切库
+milvusTemplate.useDatabase("sample_route_db", () -> milvusTemplate.listCollections());
+
+// 4. 清理临时库
+milvusTemplate.dropDatabase("sample_route_db");
+```
+
+#### 核心机制与边界说明
+- **动态路由优先级**：`MilvusContextHolder.getDatabase()`（显式作用域切库） > `TenantContextHolder.getTenantId()`（仅当 `tenant-database-routing=true` 且非忽略租户） > 全局默认 `ateng.boot.milvus.database`；
+- **单通道元数据注入**：`MilvusDynamicRpcInterceptor` 在发起 RPC 前剔除底层可能缓存的旧 `dbname` 头，写入单一目标 `dbname`，支持任意动态新建库毫秒级无锁切换。
+
+---
+
+## 4. 双模数据操作、高级检索与混合召回
+
+### 4.1 批量切片写删、点查与 `@MilvusDynamic` 动态扩展列
+
+#### 专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    milvus:
+      batch-size: 1000  # 单批写入与流式拉取切片大小
+      max-retries: 3    # 单批失败最大重试次数（0 表示不重试）
+      retry-delay: 200ms # 指数退避重试初始等待时长
+```
+
+#### 实战 Java 代码（提取自 `MilvusVectorController` & `SampleMultimodalEntity`）
+```java
+// 1. 批量插入与幂等覆盖（依托 BatchSliceUtil + RetryUtil 自动切片重试）
+milvusTemplate.insertBatchEntities(entities);
+milvusTemplate.upsertBatchEntities(entities);
+
+// 2. 主键单查、批量点查与轻量存在探测
+SampleDocumentEntity one = milvusTemplate.getById(SampleDocumentEntity.class, 1L);
+List<SampleDocumentEntity> list = milvusTemplate.getByIds(SampleDocumentEntity.class, List.of(1L, 2L));
+boolean exists = milvusTemplate.existsById(SampleDocumentEntity.class, 1L);
+
+// 3. 纯标量查询、统计与按主键/表达式删除
+List<SampleDocumentEntity> queried = milvusTemplate.query(SampleDocumentEntity.class, "category == 'TECH'");
+long count = milvusTemplate.count(SampleDocumentEntity.class, "category == 'TECH'");
+milvusTemplate.deleteById(SampleDocumentEntity.class, 1L);
+milvusTemplate.deleteEntitiesByExpr(SampleDocumentEntity.class, "id == 2");
+```
+
+动态扩展字段只需在实体中标注 `@MilvusDynamic`（或缺省命名为 `extra` 且 `enableDynamicField = true`）：
+
+```java
+@MilvusDynamic
+private Map<String, Object> extra;
+```
+
+#### 核心机制与边界说明
+- `MilvusEntityConverter` 写入时自动将 `@MilvusDynamic` Map 扁平化写入 `$meta`，反序列化时自动把未映射到静态字段的未知扩展列统一回填至该 Map；
+- `upsertBatchEntities` / `insertBatchEntities` 严格按 `batch-size` 切片，防止单帧载荷突破 Milvus gRPC 默认上限；批量或点查无匹配记录保底返回空集合（单对象 `getById` 返回 `null`）。
+
+---
+
+### 4.2 高级 Fluent 检索（GroupBy / Range）与 `MilvusExprHelper`
+
+#### 专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    milvus:
+      consistency-level: BOUNDED # 全局默认有界一致；高敏强读可在请求级别覆盖为 STRONG
+```
+
+#### 实战 Java 代码（提取自 `MilvusAdvancedSearchController`）
+```java
+// 1. GroupBy 去重聚合检索（按 category 分组，每组保留最相似 Top 1）
+MilvusSearchRequest<SampleDocumentEntity> groupByReq = MilvusSearchRequest.<SampleDocumentEntity>builder()
+        .collectionName("sample_document")
+        .entityClass(SampleDocumentEntity.class)
+        .vector(queryVector)
+        .topK(5)
+        .groupByFieldName("category")
+        .consistencyLevel(MilvusConsistencyLevel.STRONG)
+        .build();
+List<MilvusHit<SampleDocumentEntity>> groupHits = milvusTemplate.search(groupByReq);
+
+// 2. Range 置信度区间检索（支持 offset 浅分页与 outputFields 裁剪）
+MilvusSearchRequest<SampleDocumentEntity> rangeReq = MilvusSearchRequest.of(SampleDocumentEntity.class)
+        .vector(queryVector)
+        .topK(10)
+        .offset(0)
+        .radius(0.50)
+        .rangeFilter(0.85)
+        .outputFields(List.of("id", "title", "category"));
+List<MilvusHit<SampleDocumentEntity>> rangeHits = milvusTemplate.search(rangeReq);
+
+// 3. MilvusExprHelper 安全表达式与 BM25 TEXT_MATCH 全文匹配
+String compiledExpr = MilvusExprHelper.builder()
+        .eq("category", "TECH")
+        .like("title", "Milvus%")
+        .gte("id", 1L)
+        .textMatch("content", "Milvus 向量检索")
+        .build();
+MilvusSearchRequest<SampleDocumentEntity> exprReq = MilvusSearchRequest.of(SampleDocumentEntity.class)
+        .vector(queryVector)
+        .topK(5)
+        .expr(compiledExpr);
+List<MilvusHit<SampleDocumentEntity>> exprHits = milvusTemplate.search(exprReq);
+```
+
+#### 核心机制与边界说明
+- `MilvusExprHelper` 自动处理字符串单引号转义并跳过空条件，防止手写字符串拼接注入或语法错位；
+- `MilvusConsistencyLevel` 实现 `IBaseEnum<String>`，可在单次 `MilvusSearchRequest` 上覆盖为 `MilvusConsistencyLevel.STRONG` 保障刚写入即刻召回。
+
+---
+
+### 4.3 多向量、稀疏向量强类型检索与多路混合重排
+
+#### 专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    milvus:
+      uri: http://localhost:19530
+      consistency-level: BOUNDED
+```
+
+#### 实战 Java 代码（提取自 `SampleMultimodalEntity`、`MilvusMultimodalController` & `MilvusHybridController`）
+```java
+// 1. 多模态实体的稠密向量列与稀疏向量列定义（1:1 提取自 SampleMultimodalEntity）
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@MilvusCollection(name = "knowledge_document", description = "知识库文档向量集合")
-public class KnowledgeDocument {
+@MilvusCollection(name = "sample_multimodal", description = "多模态多特征向量集合", ttlSeconds = 604800, mmap = true, replicaNumber = 1)
+public class SampleMultimodalEntity implements Serializable {
 
-    @MilvusId(description = "主键ID")
+    private static final long serialVersionUID = 1L;
+
+    @MilvusId(description = "多模态文档ID")
     private Long id;
-
-    @MilvusPartitionKey(description = "分类分区路由键")
-    private String category;
-
-    @MilvusField(name = "tenant_id", maxLength = 64, description = "租户ID")
-    private String tenantId;
 
     @MilvusField(name = "title", maxLength = 256, description = "文档标题")
     private String title;
 
-    @MilvusField(name = "content", maxLength = 4096, description = "文档正文")
-    private String content;
+    @MilvusField(name = "summary", maxLength = 2048, indexType = IndexParam.IndexType.INVERTED, indexName = "idx_summary_inverted", description = "概要摘要倒排索引")
+    private String summary;
 
-    @MilvusVector(name = "vector", dimension = 4, metricType = IndexParam.MetricType.COSINE)
-    private List<Float> vector;
-}
-```
-
-### 3.3 开箱即用实战
-```java
-@Service
-@RequiredArgsConstructor
-public class KnowledgeService {
-
-    private final MilvusTemplate milvusTemplate;
-
-    public void demo() {
-        // 1. 一键初始化集合、索引并预加载
-        milvusTemplate.createCollectionAndIndex(KnowledgeDocument.class);
-
-        // 2. 写入实体
-        KnowledgeDocument doc = KnowledgeDocument.builder()
-                .id(1L)
-                .category("TECH")
-                .title("Spring Boot 3 Milvus 实战")
-                .content("高性能向量检索最佳实践")
-                .vector(List.of(0.1f, 0.2f, 0.3f, 0.4f))
-                .build();
-        milvusTemplate.insertEntities(List.of(doc));
-
-        // 3. 向量相似度检索 (Top 3)
-        List<MilvusHit<KnowledgeDocument>> hits = milvusTemplate.search(
-                KnowledgeDocument.class,
-                List.of(0.1f, 0.2f, 0.3f, 0.4f),
-                3,
-                "category == 'TECH'"
-        );
-        hits.forEach(hit -> System.out.println("命中ID: " + hit.getId() + ", 得分: " + hit.getScore()));
-    }
-}
-```
-
----
-
-## 4. 核心特性与生产实战范式
-
-### 4.1 集合生命周期运维、蓝绿别名切换与一键建表预加载
-
-#### 实体配置生命周期与存储属性
-```java
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-@MilvusCollection(
-        name = "knowledge_document",
-        description = "企业生产级核心知识库",
-        ttlSeconds = 2592000,              // 数据自动过期 TTL: 30 天自动物理清理
-        mmap = true,                        // 启用内存映射 MMap，显著降低内存开销并依托 OS PageCache
-        replicaNumber = 2,                  // 副本数：生产环境配置 2 副本保障高可用与并发读负载均衡
-        consistencyLevel = ConsistencyLevel.BOUNDED
-)
-public class KnowledgeDocument {
-    // 实体属性...
-}
-```
-
-#### YAML 配置
-```yaml
-ateng:
-  boot:
-    milvus:
-      uri: http://192.168.1.100:19530
-      database: default
-      connect-timeout: 5s
-```
-
-#### 实战 Java 代码
-```java
-// 1. 检查集合是否存在与实体驱动建表
-if (!milvusTemplate.hasCollection("knowledge_document")) {
-    // 实体驱动一键建表：自动提取 Schema、创建集合、建立向量 AUTOINDEX 索引并原子加载至内存
-    milvusTemplate.createCollectionAndIndex(KnowledgeDocument.class);
-}
-
-// 2. 查看集合元数据与加载状态
-DescribeCollectionResp desc = milvusTemplate.describeCollection("knowledge_document");
-boolean isLoaded = milvusTemplate.isCollectionLoaded("knowledge_document");
-
-// 3. 运维管理：显式释放或加载集合
-milvusTemplate.releaseCollection("knowledge_document");
-milvusTemplate.loadCollection("knowledge_document");
-
-// 4. 集合别名 (Alias) 与零停机蓝绿无感切流
-// 创建业务只读别名绑定到 v1 物理集合
-milvusTemplate.createAlias("knowledge_document_v1", "knowledge_alias");
-
-// 别名元数据查看与反查
-DescribeAliasResp aliasResp = milvusTemplate.describeAlias("knowledge_alias");
-String targetCollection = aliasResp.getCollectionName();
-List<String> allAliases = milvusTemplate.listAliases("knowledge_document_v1");
-
-// 当新模型/新全量索引 v2 构建完成后，原子无感切流（默认开启目标集合内存加载前置校验）
-milvusTemplate.alterAlias("knowledge_document_v2", "knowledge_alias");
-
-// 卸载并删除旧别名
-milvusTemplate.dropAlias("knowledge_alias");
-```
-
-#### 底层原理与边界说明
-- Milvus 只有被执行 `load` 加载至内存后方可承接向量相似度检索，否则将抛出集合未加载异常；
-- `createCollectionAndIndex` 封装了 Schema 推导、建表、建索引与内存加载全套流程，具备幂等安全性；
-- **蓝绿切流（Blue-Green Cutover）**：生产建议业务代码全链路面向**别名**访问，当索引重构或模型升级重建集合（v1 -> v2）时，执行 `alterAlias` 可在微秒级完成原子指针重定向，无须重启任何上层服务。
-
----
-
-### 4.2 单向量 CRUD、Fluent 链式检索与高级过滤（GroupBy / Range）
-
-#### YAML 配置
-```yaml
-ateng:
-  boot:
-    milvus:
-      consistency-level: BOUNDED # 默认 BOUNDED，保证百万级高并发读吞吐与微秒级最终一致
-```
-
-#### 实战 Java 代码
-```java
-// 1. 覆盖写入 (Upsert)
-milvusTemplate.upsertEntities(List.of(doc));
-
-// 2. 主键毫秒级点查
-KnowledgeDocument found = milvusTemplate.getById(KnowledgeDocument.class, 1L);
-
-// 3. 标量表达式组合查询
-List<KnowledgeDocument> list = milvusTemplate.query(
-        KnowledgeDocument.class,
-        "category == 'TECH' and id >= 1"
-);
-
-// 4. 基础向量相似度检索 (附带标量过滤)
-List<MilvusHit<KnowledgeDocument>> hits = milvusTemplate.search(
-        KnowledgeDocument.class,
-        queryVector,
-        10,
-        "title like 'Spring%'"
-);
-
-// 5. Fluent 链式高级检索：分页、一致性覆盖、指定返回列
-MilvusSearchRequest<KnowledgeDocument> request = MilvusSearchRequest.of(KnowledgeDocument.class)
-        .vectors(List.of(queryVector))
-        .vectorFieldName("vector")
-        .topK(20)
-        .offset(10) // 标量分页偏移量
-        .filter("category == 'TECH'")
-        .outputFields(List.of("id", "title", "category"))
-        .consistencyLevel(ConsistencyLevel.STRONG); // 单次请求覆盖为强一致性
-List<MilvusHit<KnowledgeDocument>> fluentHits = milvusTemplate.search(request);
-
-// 6. GroupBy 类目去重检索（按 category 分组聚合，每组仅保留最优结果）
-MilvusSearchRequest<KnowledgeDocument> groupByRequest = MilvusSearchRequest.of(KnowledgeDocument.class)
-        .vectors(List.of(queryVector))
-        .topK(10)
-        .groupByFieldName("category");
-List<MilvusHit<KnowledgeDocument>> groupHits = milvusTemplate.search(groupByRequest);
-
-// 7. Range Search 范围阈值搜索（召回余弦相似度分数在 [0.6, 0.9] 之间的样本）
-MilvusSearchRequest<KnowledgeDocument> rangeRequest = MilvusSearchRequest.of(KnowledgeDocument.class)
-        .vectors(List.of(queryVector))
-        .topK(10)
-        .radius(0.6f)       // 最低相似度阈值
-        .rangeFilter(0.9f); // 最高相似度过滤界限
-List<MilvusHit<KnowledgeDocument>> rangeHits = milvusTemplate.search(rangeRequest);
-
-// 8. 按主键删除
-milvusTemplate.deleteEntities(KnowledgeDocument.class, List.of(1L));
-```
-
-#### 底层原理与边界说明
-- Milvus 内部所有更新操作本质为“先软标记删除再插入”，因此高频 Upsert 会占用存储历史分片；
-- 查询出参默认映射强类型实体字段，未定义的额外标量保存在 `hit.getRawData()` 字典中；
-- **GroupBy 语义**：在召回结果集中按照指定标量字段聚合，杜绝单个大类目的同质化数据霸屏，显著提升推荐与搜索结果的多样性；
-- **Range Search 语义**：依据度量类型（MetricType）限定距离或相似度区间，精准过滤置信度过低或完全无意义的候选向量。
-
----
-
-### 4.3 多向量多路混合检索 (ANN Search) 与融合重排
-
-#### 实战 Java 代码
-```java
-// 构建多路召回 Fluent 请求
-MilvusHybridSearchRequest<KnowledgeDocument> request = MilvusHybridSearchRequest.of(KnowledgeDocument.class)
-        .topK(10)
-        // 第一路：标题语义稠密向量通道 (Top 20)
-        .addSearch(AnnSearch.of("vector", titleQueryVec, 20, "category == 'TECH'"))
-        // 第二路：正文语义辅助向量通道 (Top 20)
-        .addSearch(AnnSearch.of("content_vector", contentQueryVec, 20))
-        // 融合算法：互逆排名融合 (RRF k=60) 或 加权融合 ReRanker.weighted(List.of(0.7f, 0.3f))
-        .rrf(60);
-
-// 执行混合检索
-List<MilvusHit<KnowledgeDocument>> results = milvusTemplate.hybridSearch(request);
-```
-
-#### 底层原理与边界说明
-- **RRF (Reciprocal Rank Fusion)**: 依据各路排序位置计算 $\text{Score} = \sum \frac{1}{k + \text{rank}_i}$，对各向量通道度量类型差异具备极高鲁棒性；
-- **WEIGHTED**: 适用于各路打分度量归一化一致的场景，支持自定义通道权重。
-
----
-
-### 4.4 SaaS 多租户隔离防护与租户安全自动织入
-
-#### 实战 Java 代码
-```java
-// 设置当前线程租户上下文
-TenantContextHolder.setTenantId("tenant_corp_alpha");
-try {
-    // 写入时：MilvusTenantHelper 自动提取上下文注入实体的 tenant_id 字段
-    milvusTemplate.insertEntities(List.of(doc));
-
-    // 检索时：无论用户传入何种复杂表达式，系统自动防御性织入括号并绑定租户
-    // 最终执行: (title like 'AI%') and (tenant_id == 'tenant_corp_alpha')
-    List<MilvusHit<KnowledgeDocument>> hits = milvusTemplate.search(
-            KnowledgeDocument.class,
-            queryVec,
-            5,
-            "title like 'AI%'"
-    );
-} finally {
-    // 确定性清理线程上下文，杜绝跨请求脏读污染
-    TenantContextHolder.clear();
-}
-```
-
-#### 底层原理与边界说明
-- 实体若标注 `@MilvusPartitionKey`，Milvus 服务端底层会直接根据租户标识哈希至对应物理分区，避免全表扫描；
-- 逻辑层面，`MilvusTenantHelper` 采用严格防御性括号包裹用户表达式，杜绝 `or` 逻辑运算符破坏租户过滤导致的越权漏洞。
-
----
-
-### 4.5 游标流式遍历 (QueryIterator) 突破 16384 深度翻页限制
-
-#### 实战 Java 代码
-```java
-// 游标遍历全量知识库文档，每次流式拉取 500 条
-milvusTemplate.streamingQueryEntities(
-        KnowledgeDocument.class,
-        "id > 0",
-        500,
-        batch -> {
-            log.info("流式消费分批数据: {} 条", batch.size());
-            // 执行业务批处理逻辑...
-        }
-);
-```
-
-#### 底层原理与边界说明
-- Milvus 对普通 `offset + limit` 查询设有最大 16,384 条的安全上限，超出直接抛错；
-- `streamingQueryEntities` 底层基于 `QueryIteratorReq` 受管游标机制拉取，并在 `finally` 块中强制调用 `iterator.close()`，彻底杜绝连接与句柄泄漏。
-
----
-
-### 4.6 动态切库与多数据库管理
-
-#### 实战 Java 代码
-```java
-// 1. 作用域式动态切库 (AutoCloseable 确保退出代码块后自动恢复默认库)
-try (var ignored = MilvusContextHolder.useDatabase("finance_db")) {
-    milvusTemplate.insertEntities(financeDocs);
-}
-
-// 2. 编程式切库执行
-milvusTemplate.useDatabase("audit_db", () -> {
-    milvusTemplate.insertEntities(auditDocs);
-});
-
-// 3. 数据库生命周期管理
-milvusTemplate.createDatabase("tenant_db_new");
-List<String> dbs = milvusTemplate.listDatabases();
-milvusTemplate.dropDatabase("tenant_db_old");
-```
-
----
-
-### 4.7 多模态以图搜图与商品特征检索实战
-
-#### 业务模型定义
-```java
-package com.example.demo.entity;
-
-import io.github.atengk.boot.milvus.annotation.*;
-import io.milvus.v2.common.IndexParam;
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-
-import java.util.List;
-
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-@MilvusCollection(name = "item_image_features", description = "电商商品视觉特征库")
-public class ItemImageEntity {
-
-    @MilvusId(description = "图片特征唯一ID")
-    private Long id;
-
-    @MilvusField(name = "item_id", description = "关联商品ID")
-    private Long itemId;
-
-    @MilvusPartitionKey(description = "商品一级类目分区键")
-    private String category;
-
-    @MilvusField(name = "image_url", maxLength = 512, description = "图片原始访问URL")
-    private String imageUrl;
-
-    @MilvusVector(dimension = 512, metricType = IndexParam.MetricType.COSINE, indexType = IndexParam.IndexType.HNSW)
-    private List<Float> featureVector;
-}
-```
-
-#### YAML 配置
-```yaml
-ateng:
-  boot:
-    milvus:
-      enabled: true
-      uri: http://localhost:19530
-      database: default
-      consistency-level: BOUNDED
-```
-
-#### 实战 Java 代码
-```java
-@Autowired
-private MilvusTemplate milvusTemplate;
-
-/**
- * 根据上传图片抽取的视觉特征向量检索最相似的 TopK 商品
- *
- * @param queryVector 视觉模型抽取的 512 维特征向量
- * @param category    商品所属分类 (利用 PartitionKey 物理分区加速)
- * @return 相似商品列表 (附带余弦相似度分数)
- */
-public List<MilvusHit<ItemImageEntity>> searchSimilarItems(List<Float> queryVector, String category) {
-    // 1. 初始化集合与 HNSW 向量索引
-    milvusTemplate.createCollectionAndIndex(ItemImageEntity.class);
-
-    // 2. 带物理分区与分类过滤的近邻特征召回
-    String filter = String.format("category == '%s'", category);
-    return milvusTemplate.search(
-            ItemImageEntity.class,
-            queryVector,
-            10, // 召回前 10 个最相似商品
-            filter
-    );
-}
-```
-
----
-
-### 4.8 多向量/稀疏向量映射与标量倒排索引 (Inverted Index)
-
-#### 业务模型定义
-```java
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-@MilvusCollection(name = "sample_multimodal", description = "多模态混合检索实体")
-public class SampleMultimodalEntity {
-
-    @MilvusId(description = "唯一ID")
-    private Long id;
-
-    // 标量倒排索引：在大基数文本或数值上构建 INVERTED 索引，毫秒级加速前置过滤
-    @MilvusField(name = "tag", maxLength = 64, indexType = IndexParam.IndexType.INVERTED, description = "标签倒排索引")
-    private String tag;
-
-    // 通道一：稠密语义向量 (Dense Vector)
-    @MilvusVector(name = "dense_vector", dimension = 4, metricType = IndexParam.MetricType.COSINE)
+    @MilvusVector(name = "dense_vector", dimension = 4, metricType = IndexParam.MetricType.COSINE, indexType = IndexParam.IndexType.AUTOINDEX, description = "4维语义稠密特征向量")
     private List<Float> denseVector;
 
-    // 通道二：稀疏向量 (Sparse Vector / SPLADE / BM25 词频特征)
-    // 稀疏度量强制使用 IP (内积)，底层自动构建 SPARSE_INVERTED_INDEX 索引
-    @MilvusVector(name = "sparse_vector", metricType = IndexParam.MetricType.IP, indexType = IndexParam.IndexType.SPARSE_INVERTED_INDEX)
+    @MilvusVector(name = "sparse_vector", metricType = IndexParam.MetricType.IP, indexType = IndexParam.IndexType.SPARSE_INVERTED_INDEX, description = "BM25关键词稀疏特征向量")
     private Map<Long, Float> sparseVector;
+
+    @MilvusDynamic
+    private Map<String, Object> extra;
 }
+
+// 2. 指定向量列名执行强类型稠密 / 稀疏单路检索
+List<MilvusHit<SampleMultimodalEntity>> denseHits = milvusTemplate.search(
+        SampleMultimodalEntity.class, "dense_vector", denseVec, 3, null);
+
+List<MilvusHit<SampleMultimodalEntity>> sparseHits = milvusTemplate.searchSparse(
+        SampleMultimodalEntity.class, "sparse_vector", Map.of(101L, 0.85f, 202L, 0.45f), 3, null);
+
+// 3. 稠密 + 稀疏多路混合检索与 RRF / Weighted 重排融合
+MilvusHybridSearchRequest<SampleMultimodalEntity> hybridReq = MilvusHybridSearchRequest.of(SampleMultimodalEntity.class)
+        .topK(5)
+        .addSearch(AnnSearch.of("dense_vector", denseVec, 5))
+        .addSearch(AnnSearch.ofSparse("sparse_vector", sparseVec, 5))
+        .rrf(60); // 或 .weighted(0.7f, 0.3f)
+List<MilvusHit<SampleMultimodalEntity>> hybridHits = milvusTemplate.hybridSearch(hybridReq);
 ```
 
-#### 实战 Java 代码
-```java
-// 1. 初始化包含倒排索引、稠密向量与稀疏向量索引的集合
-milvusTemplate.createCollectionAndIndex(SampleMultimodalEntity.class);
-
-// 2. 插入多模态多向量数据 (稀疏向量使用 Map<Long, Float> 表达维度序号与权重)
-SampleMultimodalEntity entity = SampleMultimodalEntity.builder()
-        .id(1001L)
-        .tag("RECOMMEND")
-        .denseVector(List.of(0.1f, 0.2f, 0.3f, 0.4f))
-        .sparseVector(Map.of(15L, 0.85f, 2034L, 0.42f))
-        .build();
-milvusTemplate.insertEntities(List.of(entity));
-
-// 3. 稀疏向量检索召回
-SparseFloatVector querySparse = new SparseFloatVector(Map.of(15L, 1.0f));
-List<MilvusHit<SampleMultimodalEntity>> hits = milvusTemplate.search(
-        SampleMultimodalEntity.class,
-        querySparse,
-        10,
-        "tag == 'RECOMMEND'"
-);
-```
-
-#### 底层原理与边界说明
-- **稀疏向量存储**：Milvus 原生支持 `SparseFloatVector` 与 `Map<Long, Float>`，度量类型必须为 `IP`（Inner Product）；
-- **倒排索引 (INVERTED)**：针对标量字段建立倒排索引，使得复合查询（标量过滤 + 向量检索）能在预过滤阶段直接利用倒排链表定位候选集，比暴力扫描快数十倍。
+#### 核心机制与边界说明
+- 当实体存在多个向量列时，调用 `search(Class, annsField, vector, ...)` 或 `searchSparse(Class, annsField, sparseVector, ...)` 显式绑定目标 `annsField`；
+- 稀疏向量 `Map<Long, Float>` 对应 `SPARSE_FLOAT_VECTOR`，必须使用 `IP`（内积）度量与 `SPARSE_INVERTED_INDEX`；`WEIGHTED` 重排权重长度必须与 `AnnSearch` 子通道个数严格一致。
 
 ---
 
-### 4.9 动态扩展字段 (Dynamic Field) 与租户分库路由
+### 4.4 受管游标流式深度遍历（突破 `16384` 上限）
 
-#### 动态字段模型定义
-```java
-@Data
-@MilvusCollection(name = "knowledge_document", enableDynamicField = true)
-public class KnowledgeDocument {
-
-    @MilvusId
-    private Long id;
-
-    @MilvusVector(dimension = 4)
-    private List<Float> vector;
-
-    // 动态字段扩展槽：无需在 Schema 中显式预定义字段，任意非结构化元数据自动双向序列化
-    private Map<String, Object> extra;
-}
-```
-
-#### YAML 配置
+#### 专属 YAML 配置
 ```yaml
 ateng:
   boot:
     milvus:
-      # 开启基于租户上下文的数据库动态路由
-      tenant-database-routing: true
+      batch-size: 1000
+      rpc-deadline: 30s
 ```
 
-#### 实战 Java 代码
+#### 实战 Java 代码（提取自 `MilvusAdvancedSearchController#streamingQuery`）
 ```java
-// 1. 动态字段写入：写入未在 Schema 中声明的临时属性
-KnowledgeDocument doc = new KnowledgeDocument();
-doc.setId(2001L);
-doc.setVector(List.of(0.1f, 0.2f, 0.3f, 0.4f));
-doc.setExtra(Map.of(
-        "author", "张三",
-        "wordCount", 15200,
-        "isPublished", true
-));
-milvusTemplate.insertEntities(List.of(doc));
-
-// 2. 动态字段过滤查询：直接使用 extra["key"] 语法
-List<KnowledgeDocument> result = milvusTemplate.query(
-        KnowledgeDocument.class,
-        "extra[\"wordCount\"] > 10000 and extra[\"author\"] == '张三'"
+milvusTemplate.streamingQueryEntities(
+        SampleDocumentEntity.class,
+        "id > 0",
+        200,
+        batch -> batch.forEach(doc -> log.info("游标读取文档: id={}, title={}", doc.getId(), doc.getTitle()))
 );
+```
 
-// 3. 多租户分库动态路由：
-TenantContextHolder.setTenantId("corp_fintech");
+#### 核心机制与边界说明
+- Milvus 默认拒绝 `offset + limit > 16384` 的普通分页查询；`streamingQuery` / `streamingQueryEntities` 底层基于 `QueryIterator` 分批游标拉取并在 `finally` 确定性关闭游标，防止全量扫描引发服务端或 JVM OOM。
+
+---
+
+### 4.5 SaaS 多租户正交隔离（`tenantField` vs `@MilvusPartitionKey`）
+
+#### 专属 YAML 配置
+```yaml
+ateng:
+  boot:
+    milvus:
+      tenant-field-name: tenant_id       # 无实体注解时回退的全局租户隔离列名
+      tenant-database-routing: false     # 同库行级隔离模式；置为 true 则同时按租户切库
+```
+
+#### 实战 Java 代码（提取自 `MilvusTenantController`）
+```java
+TenantContextHolder.setTenantId("tenant_corp_alpha");
 try {
-    // 请求自动无感路由至 Milvus 的 "corp_fintech" 数据库！
-    // 真正做到物理级多租户隔离与独立配额管理
-    milvusTemplate.createCollectionAndIndex(KnowledgeDocument.class);
+    // 1. 写入自动提取租户上下文填充实体 tenantField（优先读取 @MilvusField(tenantField = true)）
     milvusTemplate.insertEntities(List.of(doc));
+
+    // 2. 查询/点查/统计/删除自动织入防御性括号条件: (expr) and (tenant_id == 'tenant_corp_alpha')
+    List<MilvusHit<SampleDocumentEntity>> hits = milvusTemplate.search(
+            SampleDocumentEntity.class, queryVector, 5, "category == 'POLICY'");
+    SampleDocumentEntity found = milvusTemplate.getById(SampleDocumentEntity.class, 100L);
 } finally {
     TenantContextHolder.clear();
 }
 ```
 
-#### 底层原理与边界说明
-- **Dynamic Field**：Milvus 服务端原生在集合内部开启 `$meta` JSON 隐式列，`MilvusTemplate` 自动将实体类中的 `extra` 字段与 `$meta` 双向序列化；
-- **租户分库路由**：开启 `tenant-database-routing: true` 后，优先根据当前线程 `TenantContextHolder.getTenantId()` 动态切换目标数据库，若租户上下文为空则平滑回退至全局 `database` 配置。
+#### 核心机制与边界说明
+- **正交设计**：`SampleDocumentEntity` 同时使用 `@MilvusPartitionKey` 标记业务分类 `category` 进行哈希分区路由，并用 `@MilvusField(name = "tenant_id", tenantField = true)` 声明独立租户隔离列；仅当需要按租户直接物理分区且不按类目分区时，才标记 `@MilvusPartitionKey(tenantField = true)`；
+- **防运算符逃逸**：`MilvusTenantHelper.weaveTenantFilter` 将原始表达式整体括号化后再 `and` 拼接租户等值条件，杜绝外部传入 `or` 条件绕过租户隔离；配合 `TenantContextHolder.setIgnoreTenant(true)` 可执行受控超管跨租户查询。
 
 ---
 
-## 5. 生产级扩展与自定义接管 (SPI & Bean 覆盖)
+## 5. 生产扩展接管与核心非功能边界
 
-### 5.1 覆盖默认 `MilvusClientV2`
-框架所有 Bean 均标配 `@ConditionalOnMissingBean`。当需要对接复杂 TLS 证书或特殊 gRPC 拦截器时，可直接声明覆盖：
+### 5.1 扩展接管 (SPI 与 `@ConditionalOnMissingBean`)
+
+#### 方式一：注册 `MilvusClientCustomizer` 无损定制连接参数（推荐）
+无需重造 `MilvusClientV2` 装配链即可安全叠加自定义 SSL、RPC 截止超时或 KeepAlive 参数：
 
 ```java
-@Configuration
-public class CustomMilvusConfig {
-
-    @Bean
-    public MilvusClientV2 milvusClientV2(AtengMilvusProperties properties) {
-        ConnectConfig config = ConnectConfig.builder()
-                .uri(properties.resolveEffectiveUri())
-                .token(properties.getToken())
-                .secure(true)
-                // 自定义 gRPC 通道设置
-                .build();
-        return new MilvusClientV2(config);
-    }
+@Bean
+public MilvusClientCustomizer customMilvusClientCustomizer() {
+    return connectConfig -> {
+        connectConfig.setRpcDeadlineMs(TimeUnit.SECONDS.toMillis(45));
+        connectConfig.setKeepAliveWithoutCalls(true);
+    };
 }
 ```
 
-### 5.2 LangChain4j 标准 SPI 适配与 RAG 上层解耦（可选弱依赖）
+#### 方式二：完全覆盖默认 Bean
+`MilvusClientV2`、`MilvusDatabaseClientManager`、`MilvusTemplate` 与 `MilvusHealthIndicator` 均标注 `@ConditionalOnMissingBean`，业务侧可通过注册自定义 Bean 整体接管。
 
-> [!NOTE]
-> **领域边界澄清**：
-> `ateng-boot-milvus` 定位为面向全场景的纯正**通用向量基础设施底座**（涵盖以图搜图、商品推荐、人脸比对、风控聚类等场景），本身不包含任何文档切块（Splitter）、OCR 或大模型 Prompt 逻辑。
-> 本小节提供的 `MilvusEmbeddingStore` 是基于 `MilvusTemplate` 实现的**标准存储 SPI 弱适配器**（`<optional>true</optional>`），其核心价值在于让上层应用（如 `ateng-boot-ai` 或原生 LangChain4j 业务）在构建 RAG 知识库时，**100% 共享本底座的受管连接池、强类型配置、全链路 Trace 追踪与 SaaS 多租户防越权过滤**，彻底避免引入官方 `langchain4j-milvus` 时产生双重连接池与租户数据穿透漏洞。未引入 `langchain4j` 的纯向量微服务保持 100% 零依赖、零装配。
+#### 方式三：LangChain4j `EmbeddingStore` 弱依赖适配器
+仅当类路径存在 `dev.langchain4j.store.embedding.EmbeddingStore` 且 `ateng.boot.milvus.langchain4j.enabled=true` 时自动装配 `MilvusEmbeddingStore`（复用同一共享通道、多租户过滤与 `MilvusFilterMapper` 表达式递归转换）：
 
-#### YAML 开启配置
 ```yaml
 ateng:
   boot:
     milvus:
       langchain4j:
         enabled: true
-        collection-name: rag_knowledge_base
+        collection-name: langchain4j_embeddings
         dimension: 1536
         metric-type: COSINE
+        index-type: AUTOINDEX
         auto-create-collection: true
 ```
 
-#### 实战 Java 代码
-```java
-@Autowired
-private EmbeddingStore<TextSegment> embeddingStore;
+### 5.2 核心生产边界与非功能语义
 
-public void ragDemo() {
-    TextSegment segment = TextSegment.from("Spring Boot 3 结合 Milvus 构建智能 RAG 检索链路");
-    Embedding embedding = new Embedding(new float[]{0.1f, 0.2f, /* ...1536维... */});
-
-    // 1. 存储向量与文本片段
-    String id = embeddingStore.add(embedding, segment);
-
-    // 2. 语义检索
-    EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
-            .queryEmbedding(embedding)
-            .maxResults(3)
-            .minScore(0.7)
-            .build();
-    EmbeddingSearchResult<TextSegment> result = embeddingStore.search(request);
-}
-```
+| 维度 | 核心边界与防御策略 |
+| :--- | :--- |
+| **读写一致性语义** | `STRONG` 保证写后立即可见但增加同步等待延迟；默认 `BOUNDED` 在吞吐与微秒级近实时间取得平衡；离线召回可选 `EVENTUALLY`。局部点查若受限于 `BOUNDED` 短暂窗口，可在请求级覆盖为 `MilvusConsistencyLevel.STRONG` |
+| **RPC 超时与保活** | `connect-timeout: 10s`、`keep-alive-time: 55s`、`keep-alive-timeout: 20s`、`idle-timeout: 24h`、`rpc-deadline: 30s`，穿透云厂商负载均衡 60 秒空闲断连并防止 gRPC 请求无限挂起 |
+| **虚拟线程安全** | 全模块零 `synchronized` 块；`MilvusDatabaseClientManager` 采用无锁 `ConcurrentHashMap` 缓存多库视图，`MilvusEmbeddingStore` 建表锁采用 `ReentrantLock`，兼容 JDK 21+ 虚拟线程无 Carrier Pinning 风险 |
+| **分批与限流边界** | 批量写删严格按 `batch-size: 1000` 切片并发重试，防单次 gRPC 帧超限；`flush` 受 Milvus 服务端 `RateLimiter` 限制，避免高频调用触发限流 |
+| **空安全与异常处理** | 集合查询与检索无结果保底返回空集合；单对象查询未命中返回 `null`；所有 SDK/gRPC 异常转译为 `MilvusException` 并完整保留 `cause` 链 |
 
 ---
 
-## 6. 核心生产边界与非功能语义
-
-1. **一致性级别与写后即查**:
-   - `STRONG` (强一致): 写入后立即保证所有检索节点可见，但会引起数百毫秒同步等待，仅限极高金融级一致性场景；
-   - `BOUNDED` (有界一致，**框架默认**): 允许微秒级同步延迟，吞吐量提升 3~5 倍，推荐绝大多数生产场景；
-   - `EVENTUALLY` (最终一致): 极限离线批处理与离线向量召回场景首选。
-2. **连接池与 KeepAlive 治理**:
-   - gRPC 长连接默认配置 `keepAliveTime = 55s`，有效穿透云原生负载均衡（如 AWS ALB / NGINX 默认 60s 静默空闲熔断）；
-   - 连接超时默认 `5s`，避免因外部网络抖动导致线程池雪崩。
-3. **分批切片与防 OOM**:
-   - 批量写入推荐使用 `insertBatchEntities`，单批切片默认上限为 1000 条，结合指数退避重试（3 次），严格防止超出 gRPC 默认 4MB 帧大小限制。
-
----
-
-## 7. 完整 YAML 配置属性速查附录
+## 6. 完整 YAML 配置属性清单
 
 ```yaml
 ateng:
@@ -730,45 +621,78 @@ ateng:
     milvus:
       # 是否启用 Milvus 基础设施自动装配 (默认 true)
       enabled: true
-      # 服务端统一连接端点 (优先于 host/port)
-      uri: http://localhost:19530
-      # 目标逻辑数据库名称 (默认 default)
-      database: default
-      # API 访问令牌 (Zilliz Cloud 鉴权或 root:Milvus 认证)
-      token: ""
-      # 认证用户名
-      username: ""
+      # 统一连接端点 URI (若配置则优先于 host/port，如 http://localhost:19530)
+      uri:
+      # 服务端主机地址 (uri 为空时生效，默认 127.0.0.1)
+      host: 127.0.0.1
+      # 服务端端口号 (uri 为空时生效，默认 19530)
+      port: 19530
+      # 认证 Token (支持 API Key 或 "username:password")
+      token:
+      # 认证用户名 (未提供 token 时与 password 组合生效)
+      username:
       # 认证密码
-      password: ""
-      # 是否启用 TLS/SSL 加密传输 (默认 false)
+      password:
+      # 默认逻辑数据库名称 (默认 default)
+      database: default
+      # 是否启用 TLS 链路加密传输 (默认 false)
       secure: false
-      # 检索一致性级别：STRONG, BOUNDED, EVENTUALLY (默认 BOUNDED)
-      consistency-level: BOUNDED
-      # 写入时遇未初始化的物理分区是否自动补建 (默认 true)
-      auto-create-partition: true
-      # gRPC 通道建立超时时间 (默认 5s)
-      connect-timeout: 5s
-      # gRPC KeepAlive 空闲心跳包间隔 (默认 55s，主动防止网络中间件断流)
+      # gRPC 连接建立超时时间 (默认 10s)
+      connect-timeout: 10s
+      # gRPC KeepAlive 保活心跳间隔时间 (默认 55s)
       keep-alive-time: 55s
-      # gRPC KeepAlive 应答超时时间 (默认 20s)
+      # gRPC KeepAlive 保活响应超时阈值 (默认 20s)
       keep-alive-timeout: 20s
-      # 通道空闲回收超时时间 (默认 30s)
-      idle-timeout: 30s
-      # 是否开启基于多租户上下文的数据库动态路由 (默认 false)
-      # 开启后，操作自动路由至当前 TenantContextHolder.getTenantId() 对应的 Milvus Database
+      # gRPC 通道空闲超时阈值 (默认 24h)
+      idle-timeout: 24h
+      # 单次 RPC 执行截止超时阈值 (默认 30s，防止 gRPC 请求无界挂起)
+      rpc-deadline: 30s
+      # 默认读写一致性级别：STRONG / BOUNDED / EVENTUALLY (默认 BOUNDED)
+      consistency-level: BOUNDED
+      # 写入时物理分区不存在是否自动补建 (默认 false；注意与 @MilvusPartitionKey 集合互斥)
+      auto-create-partition: false
+      # 是否开启基于 TenantContextHolder 的逻辑数据库动态路由 (默认 false)
       tenant-database-routing: false
-      # LangChain4j 向量检索 SPI 适配配置
+      # 全局默认 SaaS 多租户隔离列名称 (无实体元数据 tenantField 声明时生效，默认 tenant_id)
+      tenant-field-name: tenant_id
+      # 批量写删与游标流式遍历默认切片大小 (默认 1000)
+      batch-size: 1000
+      # 批量写入单批失败最大重试次数 (不含首次，0 表示不重试，默认 3)
+      max-retries: 3
+      # 批量写入指数退避重试初始等待时长 (默认 200ms)
+      retry-delay: 200ms
+      # LangChain4j EmbeddingStore 可选桥接配置
       langchain4j:
-        # 是否启用 LangChain4j EmbeddingStore 自动装配 (默认 true)
+        # 是否启用 LangChain4j 自动装配 (默认 true)
         enabled: true
-        # 绑定的集合名称 (默认 langchain4j_embeddings)
+        # 知识库向量集合名称 (默认 langchain4j_embeddings)
         collection-name: langchain4j_embeddings
+        # 向量列名称 (默认 vector)
+        vector-field-name: vector
+        # 主键 ID 列名称 (默认 id)
+        id-field-name: id
+        # 文本切片列名称 (默认 text)
+        text-field-name: text
+        # 多租户隔离列名称 (默认 tenant_id)
+        tenant-field-name: tenant_id
+        # 指定物理分区名称 (可选)
+        partition-name:
         # 向量维度 (默认 1536)
         dimension: 1536
-        # 距离度量方式：COSINE, IP, L2 (默认 COSINE)
+        # 距离度量类型 (默认 COSINE)
         metric-type: COSINE
-        # 索引算法类型 (默认 AUTOINDEX)
+        # 向量索引类型 (默认 AUTOINDEX)
         index-type: AUTOINDEX
-        # 集合不存在时是否自动初始化 (默认 true)
+        # 集合不存在时是否自动创建 Schema、索引并加载 (默认 true)
         auto-create-collection: true
+        # 专属读写一致性级别 (可选，默认继承全局配置)
+        consistency-level:
+
+management:
+  health:
+    milvus:
+      # 是否启用 Actuator Milvus 健康探针 (默认 true)
+      enabled: true
 ```
+
+> 完整交互式体验工程、启动命令与全控制器 cURL 清单，请参阅：[ateng-boot-sample-milvus README](../ateng-boot-samples/ateng-boot-sample-milvus/README.md)。

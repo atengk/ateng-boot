@@ -13,8 +13,12 @@ Milvus 官方提供的现代化高层客户端实现，原生支持动态 Schema
 _Avoid_: MilvusServiceClient, MilvusV1Client, MilvusRpcClient
 
 **MilvusConsistencyLevel (读写一致性级别)**:
-控制 Milvus 向量写入与查询可见性的强类型枚举契约，覆盖 STRONG（强一致/写后即查）、BOUNDED（有界时限一致，默认）与 EVENTUALLY（最终一致）。
+实现 `IBaseEnum<String>`（标配 `@JsonValue` 与大小写无关反序列化 `@JsonCreator`）的强类型枚举契约，精准对齐 `milvus-sdk-java` 2.4.4 原生 `ConsistencyLevel` 三级模型：`STRONG`（强一致/写后即查）、`BOUNDED`（有界时限一致，默认）与 `EVENTUALLY`（最终一致）。
 _Avoid_: ConsistencyType, ReadConsistency, WriteLevel
+
+**MilvusClientCustomizer (客户端连接配置定制器 SPI)**:
+面向底层 `ConnectConfig` 的函数式扩展点 SPI（`@FunctionalInterface`），允许业务方注册自定义 Bean 无损调整 RPC 超时、SSL 上下文或 KeepAlive 等参数，而无需整套覆盖 `AtengMilvusAutoConfiguration` 默认装配的 `MilvusClientV2`。
+_Avoid_: MilvusConfigCustomizer, ConnectCustomizer, MilvusClientHook
 
 **MilvusException (向量业务专有异常)**:
 继承自 `BusinessException` 的受管异常类，统一承接底层 gRPC 与 SDK 异常，100% 携带原始因果链（cause）向上抛出。
@@ -29,7 +33,7 @@ _Avoid_: MilvusErrorCode, VectorResultEnum, StatusCode
 _Avoid_: MilvusProbe, MilvusCheck, VectorHealth
 
 **MilvusTenantHelper (多租户防御性织入器)**:
-自动联动 `TenantContextHolder` 的多租户防护组件，为查询自动织入防御性括号表达式 `(${expr}) and (tenant_id == 'xxx')` 防范运算符逃逸，并在写入端自动提取填充租户标识。
+自动联动 `TenantContextHolder` 的多租户防护组件，明确区分“逻辑租户隔离列（`@MilvusField(tenantField = true)` 或 `@MilvusPartitionKey(tenantField = true)`，缺省回退全局 `ateng.boot.milvus.tenant-field-name`）”、“物理哈希分区键（`@MilvusPartitionKey`）”与“租户切库路由（`tenant-database-routing`）”三者正交语义；在查询端自动织入防御性括号表达式 `(${expr}) and (${tenant_field} == 'xxx')` 防范运算符逃逸，并在写入端自动提取填充租户标识。
 _Avoid_: TenantFilter, MilvusTenantUtil, TenantInjector
 
 **MilvusHit (向量检索命中载荷)**:

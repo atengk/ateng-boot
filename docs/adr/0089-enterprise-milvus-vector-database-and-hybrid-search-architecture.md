@@ -1,6 +1,6 @@
 # ADR-0089: 企业级 Milvus 向量数据库、多向量混合检索与 SaaS 租户隔离架构
 
-- **状态**：`Accepted`
+- **状态**：`Accepted`（演进修订于 `2026-11-20`）
 - **日期**：2026-11-04
 - **作者**：Ateng
 - **归属模块**：`ateng-boot-milvus` / `ateng-boot-bom` / `ateng-boot-ai` / `samples`
@@ -14,7 +14,9 @@
   - [ADR-0025: 核心基础底座跨中间件解耦与通用原语下沉架构决策](./0025-core-module-expansion-and-future-proof-middleware-foundations.md)
   - [ADR-0026: 生产级基线加固与底层设施大一统架构决策](./0026-production-hardening-and-foundations-unification.md)
   - [ADR-0028: 示例工程多模块解耦与精准增量集成测试架构决策](./0028-samples-modularization-and-incremental-integration-testing.md)
+  - [ADR-0029: 基于 Spring Boot 3.3 与 JDK 21+ 的自适应虚拟线程异步运行时架构决策](./0029-virtual-threads-and-adaptive-async-runtime.md)
   - [ADR-0040: 云原生全链路可观测性健康探针与 Actuator 生产加固架构决策](./0040-observability-metrics-health-and-cloud-native-architecture.md)
+  - [ADR-0060: 强类型通用枚举契约、出入界双防闭环与 Web 只读字典架构决策](./0060-distributed-enum-contract-and-web-dictionary-architecture.md)
   - [ADR-0087: 基于 LangGraph4j 的认知状态图编排、双模检查点持久化与人机协作 (HITL) 恢复架构决策](./0087-langgraph4j-cognitive-stategraph-and-hitl-architecture.md)
   - [ADR-0088: 企业级 AI 全维可观测审计、SaaS 多租户切源与双模配额风控治理架构](./0088-enterprise-ai-observability-quota-governance-and-production-architecture.md)
 
@@ -25,7 +27,7 @@
 随着大语言模型应用从玩具级对话向企业级真实生产系统（如深度 RAG 检索增强生成、以图搜图、推荐引擎、风控近邻比对）纵深演进，非结构化数据与高维语义向量的存储与检索成为企业级核心基础设施。然而，当前在微服务中集成 Milvus 向量数据库面临以下严峻挑战：
 
 1. **驱动割裂与 API 冗余复杂度**：
-   开源 Milvus Java SDK 存在早期基于建造者的 V1 `MilvusServiceClient` 与现代面向微服务的 V2 `MilvusClientV2` 双套体系。V1 API 充满大量深层嵌套的 `*Param.newBuilder()` 样板代码，缺乏微服务工程开箱即用的高阶操作门面；
+   开源 Milvus Java SDK 存在早期基于建造者的 V1 原生客户端与现代面向微服务的 V2 `MilvusClientV2` 双套体系。V1 API 充满大量深层嵌套的 `*Param.newBuilder()` 样板代码，缺乏微服务工程开箱即用的高阶操作门面；
 2. **多向量混合检索（Hybrid Search）门槛高**：
    单纯的稠密向量（Dense Vector）检索对特定料号、术语缩写容易发生语义漂移，而稀疏向量（Sparse Vector / BM25）倒排匹配缺乏泛化能力。生产环境急需“稠密向量 + 稀疏/关键词”多向量通道召回，并依托 RRF（Reciprocal Rank Fusion）或加权加分（Weighted Ranker）完成重排序，开源生态缺少声明式 Fluent 请求封装；
 3. **职责越界与垃圾桶模块风险**：
@@ -158,8 +160,8 @@ flowchart TB
 - 结合 `RetryUtil` 支持单批次可重试与结构化 `BatchResult` 聚合回执。
 
 ### 决策 9：多级一致性级别与“写后即查”保障（Consistency Level）
-- 配置支持全局 `ateng.boot.milvus.consistency-level`（`STRONG`、`BOUNDED`、`SESSION`、`EVENTUALLY`，默认 `BOUNDED`）；
-- 检索与查询方法重载支持动态传入 `ConsistencyLevel`，在数据写入后的强敏感业务场景支持单次提升为 `STRONG`，彻底杜绝异步日志流带来的幽灵未命中。
+- **[2026-11-20 演进修订]**：受限于 `milvus-sdk-java:2.4.4` 对 `ConsistencyLevel` 的契约定义（仅包含 `STRONG`、`BOUNDED`、`EVENTUALLY`），`MilvusConsistencyLevel` 收敛为实现 `IBaseEnum<String>` 的严格三级枚举（对齐 [ADR-0060](./0060-distributed-enum-contract-and-web-dictionary-architecture.md)），移除虚构 `SESSION` 项，提供 `@JsonValue` 与大小写无关反序列化 `@JsonCreator`，全局默认 `BOUNDED`；
+- 检索与查询方法重载支持动态传入 `MilvusConsistencyLevel`，在数据写入后的强敏感业务场景支持单次提升为 `STRONG`。
 
 ### 决策 10：主键点查与轻量存在性探测门面（Point Lookup & Existence Probe）
 - 极简操作层标配对偶的 `getById(collection, id)`、`getByIds(collection, ids)`、`existsById(collection, id)` 与 `count(collection, expr)`；
@@ -181,7 +183,26 @@ flowchart TB
 
 ### 决策 14：物理分区配置化弹性容错创建（Auto-Create Partition）
 - 提供配置项 `ateng.boot.milvus.auto-create-partition`（默认 false 保持严格校验）；
-- 开启后，在向特定物理分区（如按月归档分区 `p_202611`）插入数据时，若分区不存在由框架原子自动创建并重试，保障时序归档场景高韧性零中断。
+- 开启后，在向特定物理分区（如按月归档分区 `part_202612`）插入数据时，若分区不存在由框架原子自动创建并重试，保障时序归档场景高韧性零中断（注：Milvus 2.4 禁止对声明了 `PartitionKey` 的集合执行手动物理分区操作，故按月归档与手动分区运维须使用未启用 `@MilvusPartitionKey` 的独立集合）。
+
+---
+
+## 3.1 架构演进与生产加固补充决策 (2026-11-20 Evolution)
+
+1. **物理分区键与租户隔离列正交解耦（`tenantField` vs `@MilvusPartitionKey`）**：
+   - 将多租户隔离语义显式解耦为 `@MilvusField(tenantField = true)` / `@MilvusPartitionKey(tenantField = true)`（缺省按 `ateng.boot.milvus.tenant-field-name` 推导），彻底消除“将类目 `@MilvusPartitionKey` 误当成租户列”导致的跨类目串读与无法纯物理分区的冲突。
+2. **单共享 gRPC 通道与动态 `dbname` 元数据多库路由（`MilvusDatabaseClientManager`）**：
+   - 废除每租户/每逻辑库重复创建 `MilvusClientV2` 引发的通道膨胀与 `dbname` 静态绑定缺陷；`AtengMilvusAutoConfiguration` 建立单一共享 gRPC `ManagedChannel`（配置 `keepAliveTime: 55s`、`idleTimeout: 24h`、`rpcDeadline: 30s`），由 `MilvusDynamicRpcInterceptor` 按当前 `MilvusContextHolder` 或 `TenantContextHolder` 在每次 RPC 前剔除旧头并注入单一 `dbname` 元数据；
+   - `ManagedMilvusClientV2` 与 `MilvusDatabaseClientManager` 统一纳管共享通道生命周期与原语提取，支撑 `hasDatabase` 轻量探测及原生 gRPC `FlushRequest`（`flush(String/Class<?>/List<String>)`）透传当前逻辑库上下文并在触发异常时保留原始 `cause` 链。
+3. **物理分区状态精确探测（`isPartitionsLoaded`）**：
+   - `MilvusTemplate#isPartitionsLoaded(String, List<String>)` 对集合名、分区列表及元素执行 Fail-Fast 校验，并按分区逐个执行 `GetLoadStateReq` 探测，全部分区均处于已加载状态方返回 `true`。
+4. **并发与虚拟线程防 Carrier Pinning 治理**：
+   - `MilvusDatabaseClientManager` 基于 `ConcurrentHashMap` 无锁缓存多库客户端视图，全模块零 `synchronized` 块；`MilvusEmbeddingStore` 集合懒初始化采用 `ReentrantLock` 替代监视器锁，严格遵循 [ADR-0029](./0029-virtual-threads-and-adaptive-async-runtime.md) 在 JDK 21+ 虚拟线程运行时杜绝载体线程钉死。
+5. **`MilvusClientCustomizer` 非破坏性 SPI 与精细化批量重试配置**：
+   - 新增 `@FunctionalInterface` 扩展点 `MilvusClientCustomizer`，在默认 `ConnectConfig` 装配完毕后按序回调定制（SSL、超时、KeepAlive），避免覆写整个 `MilvusClientV2` Bean；
+   - 将分批大小、重试次数与初始退避延迟收敛至强类型配置（`batch-size: 1000`、`max-retries: 3`、`retry-delay: 200ms` 及 `Duration rpcDeadline: 30s`）。
+6. **多向量与稀疏向量强类型检索闭环（`search` / `searchSparse`）**：
+   - 补齐指定向量列名 `annsField` 的强类型实体检索重载 `search(Class<T>, String annsField, List<Float>, ...)` 与稀疏检索重载 `searchSparse(Class<T>, String annsField, Map<Long, Float>, ...)`，全面贯通 `SampleMultimodalEntity` 与 `ateng-boot-sample-milvus` 9 大领域控制器双模全真回归沙箱。
 
 ---
 
