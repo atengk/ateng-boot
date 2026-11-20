@@ -81,6 +81,11 @@ public class AtengMilvusProperties {
     private Duration idleTimeout = Duration.ofHours(24);
 
     /**
+     * 单次 RPC 执行超时阈值 (防 gRPC 无界挂起，默认 30s)
+     */
+    private Duration rpcDeadline = Duration.ofSeconds(30);
+
+    /**
      * 默认读写一致性级别
      */
     private MilvusConsistencyLevel consistencyLevel = MilvusConsistencyLevel.BOUNDED;

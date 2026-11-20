@@ -5,6 +5,8 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.milvus.context.MilvusContextHolder;
 import io.github.atengk.boot.sample.milvus.dto.AliasAlterDto;
 import io.github.atengk.boot.sample.milvus.dto.AliasCreateDto;
+import io.github.atengk.boot.sample.milvus.dto.DatabaseCreateDto;
+import io.github.atengk.boot.sample.milvus.dto.DatabaseScopedSearchDto;
 import io.github.atengk.boot.sample.milvus.dto.DocumentBatchInsertDto;
 import io.github.atengk.boot.sample.milvus.dto.DocumentInsertDto;
 import io.github.atengk.boot.sample.milvus.dto.GroupBySearchDto;
@@ -19,6 +21,9 @@ import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.service.collection.response.DescribeCollectionResp;
 import io.milvus.v2.service.collection.response.GetCollectionStatsResp;
 import io.milvus.v2.service.collection.response.ListCollectionsResp;
+import io.milvus.v2.service.database.request.CreateDatabaseReq;
+import io.milvus.v2.service.database.request.DropDatabaseReq;
+import io.milvus.v2.service.database.response.ListDatabasesResp;
 import io.milvus.v2.service.utility.response.DescribeAliasResp;
 import io.milvus.v2.service.utility.response.ListAliasResp;
 import io.milvus.v2.service.vector.request.DeleteReq;
@@ -54,11 +59,14 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.hasItem;
@@ -234,6 +242,23 @@ class SampleMilvusIntegrationTest {
                     .collectionName("sample_document")
                     .build();
             when(client.describeAlias(any())).thenReturn(descAliasResp);
+
+            // 7. 逻辑数据库生命周期运维
+            Set<String> databases = ConcurrentHashMap.newKeySet();
+            databases.add("default");
+            when(client.listDatabases()).thenAnswer(inv -> ListDatabasesResp.builder()
+                    .databaseNames(new ArrayList<>(databases))
+                    .build());
+            Mockito.doAnswer(inv -> {
+                CreateDatabaseReq req = inv.getArgument(0);
+                databases.add(req.getDatabaseName());
+                return null;
+            }).when(client).createDatabase(any(CreateDatabaseReq.class));
+            Mockito.doAnswer(inv -> {
+                DropDatabaseReq req = inv.getArgument(0);
+                databases.remove(req.getDatabaseName());
+                return null;
+            }).when(client).dropDatabase(any(DropDatabaseReq.class));
 
             return client;
         }
@@ -617,7 +642,78 @@ class SampleMilvusIntegrationTest {
 
     @Test
     @Order(8)
-    @DisplayName("8. 测试集合释放与删除终态清理 (MilvusLifecycleController)")
+    @DisplayName("8. 测试多逻辑数据库运维与 AutoCloseable 作用域动态切库检索 (MilvusDatabaseController)")
+    void testDatabaseLifecycleAndScopedRouting() throws Exception {
+        String tempDb = "sample_route_db";
+        boolean dropped = false;
+        try {
+            // 1. 创建临时逻辑数据库
+            DatabaseCreateDto createDto = DatabaseCreateDto.builder()
+                    .databaseName(tempDb)
+                    .build();
+            mockMvc.perform(post("/sample/milvus/database/create")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(createDto)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
+            assertThat(MilvusContextHolder.getDatabase()).isNull();
+
+            // 2. 对称判存与列表验证
+            mockMvc.perform(get("/sample/milvus/database/has")
+                            .param("databaseName", tempDb))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
+
+            mockMvc.perform(get("/sample/milvus/database/list"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data", hasItem(tempDb)));
+
+            // 3. AutoCloseable 作用域切库检索并验证上下文零残留
+            DatabaseScopedSearchDto scopedSearchDto = DatabaseScopedSearchDto.builder()
+                    .databaseName("default")
+                    .vector(List.of(0.1f, 0.2f, 0.3f, 0.4f))
+                    .topK(3)
+                    .filterExpr("id > 0")
+                    .build();
+            mockMvc.perform(post("/sample/milvus/database/search")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(scopedSearchDto)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").isArray());
+            assertThat(MilvusContextHolder.getDatabase()).isNull();
+
+            // 4. 删除临时逻辑数据库并确认不存在
+            mockMvc.perform(delete("/sample/milvus/database/drop")
+                            .param("databaseName", tempDb))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(true));
+            dropped = true;
+
+            mockMvc.perform(get("/sample/milvus/database/has")
+                            .param("databaseName", tempDb))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value(false));
+            assertThat(MilvusContextHolder.getDatabase()).isNull();
+        } finally {
+            if (!dropped) {
+                try {
+                    mockMvc.perform(delete("/sample/milvus/database/drop").param("databaseName", tempDb));
+                } catch (Exception ignored) {
+                }
+            }
+            MilvusContextHolder.clear();
+        }
+    }
+
+    @Test
+    @Order(9)
+    @DisplayName("9. 测试集合释放与删除终态清理 (MilvusLifecycleController)")
     void testLifecycleReleaseAndDrop() throws Exception {
         // 1. 显式释放集合内存
         mockMvc.perform(post("/sample/milvus/lifecycle/collection/release")
@@ -635,8 +731,8 @@ class SampleMilvusIntegrationTest {
     }
 
     @Test
-    @Order(9)
-    @DisplayName("9. 测试多模态多特征向量检索与混合召回 (MilvusMultimodalController)")
+    @Order(10)
+    @DisplayName("10. 测试多模态多特征向量检索与混合召回 (MilvusMultimodalController)")
     void testMultimodalOperations() throws Exception {
         // 1. 初始化多模态集合
         mockMvc.perform(post("/sample/milvus/multimodal/init"))

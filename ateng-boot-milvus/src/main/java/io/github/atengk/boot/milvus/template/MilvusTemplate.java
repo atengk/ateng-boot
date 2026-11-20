@@ -3,6 +3,7 @@ package io.github.atengk.boot.milvus.template;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.BatchSliceUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
+import io.github.atengk.boot.milvus.client.MilvusDatabaseClientManager;
 import io.github.atengk.boot.milvus.context.MilvusContextHolder;
 import io.github.atengk.boot.milvus.exception.MilvusException;
 import io.github.atengk.boot.milvus.exception.MilvusExceptionTranslator;
@@ -105,12 +106,20 @@ public class MilvusTemplate {
 
     private final MilvusClientV2 client;
     private final AtengMilvusProperties properties;
+    private final MilvusDatabaseClientManager clientManager;
 
     public MilvusTemplate(MilvusClientV2 client, AtengMilvusProperties properties) {
+        this(client, properties, null);
+    }
+
+    public MilvusTemplate(MilvusClientV2 client,
+                          AtengMilvusProperties properties,
+                          MilvusDatabaseClientManager clientManager) {
         Assert.notNull(client, "MilvusClientV2 must not be null");
         Assert.notNull(properties, "AtengMilvusProperties must not be null");
         this.client = client;
         this.properties = properties;
+        this.clientManager = clientManager;
     }
 
     /**
@@ -262,7 +271,7 @@ public class MilvusTemplate {
     public void alterCollection(AlterCollectionReq request) {
         Assert.notNull(request, "AlterCollectionReq must not be null");
         Assert.hasText(request.getCollectionName(), "collectionName must not be empty");
-        execute("修改集合配置", c -> {
+        executeWithDatabase(request.getDatabaseName(), "修改集合配置", c -> {
             c.alterCollection(request);
             return null;
         });
@@ -794,6 +803,18 @@ public class MilvusTemplate {
             var resp = c.listDatabases();
             return resp != null && resp.getDatabaseNames() != null ? resp.getDatabaseNames() : Collections.emptyList();
         });
+    }
+
+    /**
+     * 判断指定逻辑数据库是否存在
+     *
+     * @param databaseName 逻辑数据库名称
+     * @return 是否存在
+     */
+    public boolean hasDatabase(String databaseName) {
+        Assert.hasText(databaseName, "databaseName must not be empty");
+        String target = databaseName.trim();
+        return listDatabases().stream().anyMatch(target::equals);
     }
 
     /**
@@ -2339,7 +2360,7 @@ public class MilvusTemplate {
      */
     public SearchResp hybridSearch(HybridSearchReq request) {
         Assert.notNull(request, "HybridSearchReq must not be null");
-        return execute("多向量混合检索", c -> c.hybridSearch(request));
+        return executeWithDatabase(request.getDatabaseName(), "多向量混合检索", c -> c.hybridSearch(request));
     }
 
     /**
@@ -2355,7 +2376,8 @@ public class MilvusTemplate {
         Assert.notEmpty(request.getSearchRequests(), "searchRequests must not be empty");
         Assert.isTrue(request.getTopK() > 0, "topK must be positive");
 
-        String effectiveDb = StringUtils.hasText(request.getDatabaseName()) ? request.getDatabaseName() : resolveCurrentDatabase();
+        String explicitDb = StringUtils.hasText(request.getDatabaseName()) ? request.getDatabaseName().trim() : null;
+        String effectiveDb = explicitDb != null ? explicitDb : resolveCurrentDatabase();
         MilvusConsistencyLevel level = request.getConsistencyLevel() != null ? request.getConsistencyLevel() : properties.getConsistencyLevel();
         BaseRanker ranker = request.getRanker() != null ? request.getRanker() : ReRanker.rrf();
 
@@ -2582,27 +2604,15 @@ public class MilvusTemplate {
     // =========================================================================
 
     /**
-     * 获取当前生效的逻辑数据库名称 (优先自 ThreadLocal 上下文提取，次选多租户切库自动路由，最后回退全局默认配置)
+     * 获取当前生效的逻辑数据库名称 (优先自 ThreadLocal 上下文提取，次选多租户切库自动路由，最后回退全局/定制默认配置)
      *
      * @return 逻辑数据库名称
      */
     public String resolveCurrentDatabase() {
-        // 1. 显式指定的数据库上下文优先级最高
-        String db = MilvusContextHolder.getDatabase();
-        if (StringUtils.hasText(db)) {
-            return db.trim();
-        }
-
-        // 2. 多租户切库自动路由：当配置开启且存在租户上下文时，自动路由至租户专属数据库
-        if (properties.isTenantDatabaseRouting() && !TenantContextHolder.isIgnoreTenant()) {
-            String tenantId = TenantContextHolder.getTenantId();
-            if (StringUtils.hasText(tenantId)) {
-                return tenantId.trim();
-            }
-        }
-
-        // 3. 回退至默认配置数据库
-        return properties.getDatabase();
+        String defaultDb = (clientManager != null && clientManager.ownsClient(client))
+                ? clientManager.getDefaultDatabase()
+                : properties.getDatabase();
+        return MilvusDatabaseClientManager.resolveRuntimeDatabase(defaultDb, properties.isTenantDatabaseRouting());
     }
 
     /**
@@ -2616,16 +2626,8 @@ public class MilvusTemplate {
     public <T> T useDatabase(String databaseName, Supplier<T> action) {
         Assert.hasText(databaseName, "databaseName must not be empty");
         Assert.notNull(action, "action must not be null");
-        String previousDb = MilvusContextHolder.getDatabase();
-        try {
-            MilvusContextHolder.setDatabase(databaseName.trim());
+        try (MilvusContextHolder.DatabaseScope ignored = MilvusContextHolder.useDatabase(databaseName)) {
             return action.get();
-        } finally {
-            if (previousDb != null) {
-                MilvusContextHolder.setDatabase(previousDb);
-            } else {
-                MilvusContextHolder.clearDatabase();
-            }
         }
     }
 
@@ -2657,19 +2659,34 @@ public class MilvusTemplate {
      */
     public <T> T execute(String operation, Function<MilvusClientV2, T> action) {
         Objects.requireNonNull(action, "Action must not be null");
+        String resolvedDb = resolveCurrentDatabase();
+        MilvusClientV2 targetClient = resolveExecutionClient(resolvedDb);
         String currentDb = MilvusContextHolder.getDatabase();
-        if (!StringUtils.hasText(currentDb)) {
-            String resolvedDb = resolveCurrentDatabase();
-            if (StringUtils.hasText(resolvedDb)) {
-                return useDatabase(resolvedDb, () -> executeInternal(operation, action));
+        if (!StringUtils.hasText(currentDb) && StringUtils.hasText(resolvedDb)) {
+            try (MilvusContextHolder.DatabaseScope ignored = MilvusContextHolder.useDatabase(resolvedDb)) {
+                return executeInternal(operation, targetClient, action);
             }
         }
-        return executeInternal(operation, action);
+        return executeInternal(operation, targetClient, action);
     }
 
-    private <T> T executeInternal(String operation, Function<MilvusClientV2, T> action) {
+    private <T> T executeWithDatabase(String explicitDatabase, String operation, Function<MilvusClientV2, T> action) {
+        if (StringUtils.hasText(explicitDatabase)) {
+            return useDatabase(explicitDatabase.trim(), () -> execute(operation, action));
+        }
+        return execute(operation, action);
+    }
+
+    private MilvusClientV2 resolveExecutionClient(String databaseName) {
+        if (clientManager != null && clientManager.ownsClient(client)) {
+            return clientManager.resolveClient(databaseName);
+        }
+        return client;
+    }
+
+    private <T> T executeInternal(String operation, MilvusClientV2 targetClient, Function<MilvusClientV2, T> action) {
         try {
-            return action.apply(client);
+            return action.apply(targetClient);
         } catch (Throwable t) {
             throw MilvusExceptionTranslator.translate(operation, t);
         }

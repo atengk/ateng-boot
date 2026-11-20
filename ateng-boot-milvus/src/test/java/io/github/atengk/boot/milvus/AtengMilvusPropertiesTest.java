@@ -34,6 +34,7 @@ class AtengMilvusPropertiesTest {
         assertThat(properties.getKeepAliveTime()).isEqualTo(Duration.ofSeconds(55));
         assertThat(properties.getKeepAliveTimeout()).isEqualTo(Duration.ofSeconds(20));
         assertThat(properties.getIdleTimeout()).isEqualTo(Duration.ofHours(24));
+        assertThat(properties.getRpcDeadline()).isEqualTo(Duration.ofSeconds(30));
 
         // 默认解析出的 URI
         assertThat(properties.resolveEffectiveUri()).isEqualTo("http://127.0.0.1:19530");

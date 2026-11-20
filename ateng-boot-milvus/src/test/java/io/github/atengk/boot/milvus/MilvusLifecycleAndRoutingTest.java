@@ -8,15 +8,27 @@ import io.github.atengk.boot.milvus.model.MilvusEntityConverter;
 import io.github.atengk.boot.milvus.model.MilvusEntityMetadata;
 import io.github.atengk.boot.milvus.properties.AtengMilvusProperties;
 import io.github.atengk.boot.milvus.template.MilvusTemplate;
+import io.milvus.orm.iterator.QueryIterator;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.common.IndexParam;
 import io.milvus.v2.service.collection.request.AlterCollectionReq;
 import io.milvus.v2.service.collection.request.CreateCollectionReq;
 import io.milvus.v2.service.collection.request.LoadCollectionReq;
+import io.milvus.v2.service.database.response.ListDatabasesResp;
 import io.milvus.v2.service.index.request.CreateIndexReq;
 import io.milvus.v2.service.index.request.ListIndexesReq;
+import io.milvus.v2.service.vector.request.HybridSearchReq;
 import io.milvus.v2.service.vector.request.InsertReq;
+import io.milvus.v2.service.vector.request.QueryIteratorReq;
+import io.milvus.v2.service.vector.request.SearchReq;
+import io.milvus.v2.service.vector.request.data.FloatVec;
 import io.milvus.v2.service.vector.response.InsertResp;
+import io.milvus.v2.service.vector.response.SearchResp;
+import io.github.atengk.boot.milvus.model.AnnSearch;
+import io.github.atengk.boot.milvus.model.MilvusHybridSearchRequest;
+import io.github.atengk.boot.milvus.model.MilvusSearchRequest;
+import io.github.atengk.boot.milvus.exception.MilvusException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -315,5 +327,93 @@ class MilvusLifecycleAndRoutingTest {
 
         // 验证执行完成后现场可靠恢复清空
         assertThat(MilvusContextHolder.getDatabase()).isNull();
+    }
+
+    @Test
+    @DisplayName("hasDatabase & useDatabase(AutoCloseable) - 对称判存与作用域切库")
+    void testHasDatabaseAndAutoCloseableScope() {
+        when(client.listDatabases()).thenReturn(ListDatabasesResp.builder()
+                .databaseNames(List.of("default", "analytics_db"))
+                .build());
+
+        assertThat(template.hasDatabase("analytics_db")).isTrue();
+        assertThat(template.hasDatabase(" analytics_db ")).isTrue();
+        assertThat(template.hasDatabase("missing_db")).isFalse();
+        assertThatThrownBy(() -> template.hasDatabase(" "))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        try (MilvusContextHolder.DatabaseScope ignored = MilvusContextHolder.useDatabase("scoped_db")) {
+            assertThat(template.resolveCurrentDatabase()).isEqualTo("scoped_db");
+        }
+        assertThat(MilvusContextHolder.getDatabase()).isNull();
+    }
+
+    @Test
+    @DisplayName("MilvusSearchRequest / MilvusHybridSearchRequest / streamingQuery - 目标库对齐与上下文零残留")
+    void testSearchHybridAndStreamingDatabaseRoutingAndRestore() {
+        properties.setTenantDatabaseRouting(true);
+        TenantContextHolder.setTenantId("tenant_route_db");
+
+        // 1. MilvusSearchRequest 显式指定 databaseName
+        when(client.search(any(SearchReq.class))).thenAnswer(inv -> {
+            assertThat(MilvusContextHolder.getDatabase()).isEqualTo("search_target_db");
+            return SearchResp.builder().searchResults(Collections.emptyList()).build();
+        });
+        template.search(MilvusSearchRequest.builder()
+                .collectionName("col_a")
+                .databaseName("search_target_db")
+                .vector(List.of(0.1f, 0.2f))
+                .topK(3)
+                .build());
+        assertThat(MilvusContextHolder.getDatabase()).isNull();
+
+        // 2. MilvusHybridSearchRequest 显式指定含空白 databaseName，及异常路径上下文安全复原
+        MilvusContextHolder.setDatabase("outer_db");
+        when(client.hybridSearch(any(HybridSearchReq.class))).thenAnswer(inv -> {
+            HybridSearchReq req = inv.getArgument(0);
+            assertThat(req.getDatabaseName()).isEqualTo("hybrid_target_db");
+            assertThat(MilvusContextHolder.getDatabase()).isEqualTo("hybrid_target_db");
+            throw new RuntimeException("模拟混合检索异常");
+        });
+        assertThatThrownBy(() -> template.hybridSearch(MilvusHybridSearchRequest.of("col_a")
+                .databaseName("  hybrid_target_db  ")
+                .addSearch(AnnSearch.builder()
+                        .vectorFieldName("vector")
+                        .vector(new FloatVec(List.of(0.1f, 0.2f)))
+                        .topK(3)
+                        .build())
+                .topK(3)))
+                .isInstanceOf(MilvusException.class);
+        assertThat(MilvusContextHolder.getDatabase()).isEqualTo("outer_db");
+        MilvusContextHolder.clearDatabase();
+
+        // 2.1 AlterCollectionReq 显式指定 databaseName 时自动激活并复原上下文
+        doAnswer(inv -> {
+            assertThat(MilvusContextHolder.getDatabase()).isEqualTo("alter_target_db");
+            return null;
+        }).when(client).alterCollection(any(AlterCollectionReq.class));
+        template.alterCollection(AlterCollectionReq.builder()
+                .collectionName("col_a")
+                .databaseName(" alter_target_db ")
+                .properties(Collections.singletonMap("mmap.enabled", "true"))
+                .build());
+        assertThat(MilvusContextHolder.getDatabase()).isNull();
+
+        // 3. streamingQuery 在迭代期间激活 resolveCurrentDatabase 并在结束清理
+        QueryIterator iterator = mock(QueryIterator.class);
+        when(iterator.next()).thenAnswer(inv -> {
+            assertThat(MilvusContextHolder.getDatabase()).isEqualTo("tenant_route_db");
+            return Collections.emptyList();
+        });
+        when(client.queryIterator(any(QueryIteratorReq.class))).thenAnswer(inv -> {
+            QueryIteratorReq req = inv.getArgument(0);
+            assertThat(req.getDatabaseName()).isEqualTo("tenant_route_db");
+            assertThat(MilvusContextHolder.getDatabase()).isEqualTo("tenant_route_db");
+            return iterator;
+        });
+        template.streamingQuery("col_a", null, batch -> {
+        });
+        assertThat(MilvusContextHolder.getDatabase()).isNull();
+        verify(iterator).close();
     }
 }
