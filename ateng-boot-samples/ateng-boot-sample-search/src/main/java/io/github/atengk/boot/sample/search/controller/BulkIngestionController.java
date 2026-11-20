@@ -1,18 +1,22 @@
 package io.github.atengk.boot.sample.search.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.search.dto.BulkDeadLetterStatsResponse;
 import io.github.atengk.boot.sample.search.dto.BulkIngestRequest;
+import io.github.atengk.boot.sample.search.dto.BulkRawIngestRequest;
+import io.github.atengk.boot.sample.search.dto.BulkStreamDeleteRequest;
 import io.github.atengk.boot.sample.search.dto.BulkSummaryResponse;
 import io.github.atengk.boot.sample.search.dto.ProductSaveRequest;
 import io.github.atengk.boot.sample.search.dto.SearchSampleConvertHelper;
 import io.github.atengk.boot.sample.search.model.ProductDoc;
 import io.github.atengk.boot.sample.search.scenario.BulkIngestionScenario;
-import io.github.atengk.boot.search.model.SearchBulkFailure;
 import io.github.atengk.boot.search.model.SearchBulkResult;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -72,11 +76,46 @@ public class BulkIngestionController {
     }
 
     /**
+     * 异步流式批量原始映射投递（专用于演示非法字段类型触发局部死信捕获）
+     */
+    @PostMapping("/stream-raw")
+    public Result<Boolean> streamIngestRaw(@RequestBody @Valid BulkRawIngestRequest request) {
+        bulkScenario.streamIngestRaw(request.getId(), request.getRouting(), request.getFields());
+        return Result.success(true);
+    }
+
+    /**
+     * 带分片路由的流式批量删除（非阻塞投递至 SearchBulkProcessor）
+     */
+    @PostMapping("/stream-delete")
+    public Result<Boolean> streamDelete(@RequestBody @Valid BulkStreamDeleteRequest request) {
+        bulkScenario.streamDelete(request.getId(), request.getRouting());
+        return Result.success(true);
+    }
+
+    /**
      * 显式手动排空当前流式批量缓冲区
      */
     @PostMapping("/stream-flush")
     public Result<Boolean> flushStream() {
         bulkScenario.flushStream();
+        return Result.success(true);
+    }
+
+    /**
+     * 查询当前自定义 BulkDeadLetterHandler SPI 死信统计快照
+     */
+    @GetMapping("/dead-letter/stats")
+    public Result<BulkDeadLetterStatsResponse> getDeadLetterStats() {
+        return Result.success(bulkScenario.getDeadLetterStats());
+    }
+
+    /**
+     * 重置当前死信统计计数与近期记录
+     */
+    @DeleteMapping("/dead-letter/stats")
+    public Result<Boolean> resetDeadLetterStats() {
+        bulkScenario.resetDeadLetterStats();
         return Result.success(true);
     }
 

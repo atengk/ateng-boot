@@ -202,6 +202,16 @@ public class AtengSearchProperties {
          * 优雅停机排空最大等待超时时间（默认 10 秒）
          */
         private Duration awaitCloseTimeout = Duration.ofSeconds(10);
+
+        /**
+         * 瞬态异常（429/502/503/504/网络 IOException）最大退避重试次数（默认 2 次，0 表示不重试）
+         */
+        private int maxRetries = 2;
+
+        /**
+         * 瞬态异常指数退避重试初始等待时长（默认 200ms）
+         */
+        private Duration retryBackoff = Duration.ofMillis(200);
     }
 
     @Data

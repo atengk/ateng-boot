@@ -4,7 +4,10 @@ import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.sample.search.dto.AccessLogPurgeRequest;
 import io.github.atengk.boot.sample.search.dto.AccessLogRecordRequest;
 import io.github.atengk.boot.sample.search.dto.AliasSwapRequest;
+import io.github.atengk.boot.sample.search.dto.BulkDeadLetterStatsResponse;
 import io.github.atengk.boot.sample.search.dto.BulkIngestRequest;
+import io.github.atengk.boot.sample.search.dto.BulkRawIngestRequest;
+import io.github.atengk.boot.sample.search.dto.BulkStreamDeleteRequest;
 import io.github.atengk.boot.sample.search.dto.IndexCreateRequest;
 import io.github.atengk.boot.sample.search.dto.IndexTemplateRequest;
 import io.github.atengk.boot.sample.search.dto.ProductBatchGetRequest;
@@ -911,6 +914,127 @@ class SampleSearchWebControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(200)))
                 .andExpect(jsonPath("$.data", equalTo(true)));
+        org.assertj.core.api.Assertions.assertThat(io.github.atengk.boot.core.context.TenantContextHolder.getTenantId()).isNull();
+    }
+
+    @Test
+    @DisplayName("5.2 流式带路由批量删除、混合租户隔离及自定义 BulkDeadLetterHandler 死信统计端点闭环")
+    void test51_streamDeleteRoutingAndDeadLetterStats() throws Exception {
+        String bulkProductId = "P_BULK_TENANT_WEB_A";
+
+        // 1. 重置死信统计
+        mockMvc.perform(delete("/sample/search/bulk/dead-letter/stats"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(true)));
+
+        // 2. 租户 A 通过 stream-add + stream-flush 写入带路由商品并校验可读回
+        ProductSaveRequest streamReq = ProductSaveRequest.builder()
+                .id(bulkProductId)
+                .title("流式多租户专享商品")
+                .brand("Apple")
+                .category("手机")
+                .price(new BigDecimal("4999.00"))
+                .stock(30)
+                .status("ON_SALE")
+                .build();
+        mockMvc.perform(post("/sample/search/bulk/stream-add")
+                        .header("X-Tenant-Id", "tenant_corp_a")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(streamReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", equalTo(true)));
+
+        mockMvc.perform(post("/sample/search/bulk/stream-flush"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)));
+
+        if (isLocalProfileActive()) {
+            searchTemplate.indices().refresh("product_index");
+        }
+
+        mockMvc.perform(get("/sample/search/product/get")
+                        .header("X-Tenant-Id", "tenant_corp_a")
+                        .param("id", bulkProductId)
+                        .param("brand", "Apple"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id", equalTo(bulkProductId)))
+                .andExpect(jsonPath("$.data.tenantId", equalTo("tenant_corp_a")));
+
+        // 3. 租户 B 尝试通过带路由 stream-delete 越权删租户 A 文档 -> flush 触发 STRICT 拦截并记入整批死信统计
+        BulkStreamDeleteRequest deleteReq = BulkStreamDeleteRequest.builder()
+                .id(bulkProductId)
+                .routing("Apple")
+                .build();
+        mockMvc.perform(post("/sample/search/bulk/stream-delete")
+                        .header("X-Tenant-Id", "tenant_corp_b")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(deleteReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", equalTo(true)));
+
+        mockMvc.perform(post("/sample/search/bulk/stream-flush"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/sample/search/product/get")
+                        .header("X-Tenant-Id", "tenant_corp_a")
+                        .param("id", bulkProductId)
+                        .param("brand", "Apple"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id", equalTo(bulkProductId)));
+
+        mockMvc.perform(get("/sample/search/bulk/dead-letter/stats"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.batchFailureCount", not(equalTo("0"))));
+
+        // 4. 租户 A 使用对称 stream-delete 正常清理，随后验证已彻底删除
+        mockMvc.perform(post("/sample/search/bulk/stream-delete")
+                        .header("X-Tenant-Id", "tenant_corp_a")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(deleteReq)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/sample/search/bulk/stream-flush"))
+                .andExpect(status().isOk());
+
+        if (isLocalProfileActive()) {
+            searchTemplate.indices().refresh("product_index");
+        }
+
+        mockMvc.perform(get("/sample/search/product/get")
+                        .header("X-Tenant-Id", "tenant_corp_a")
+                        .param("id", bulkProductId)
+                        .param("brand", "Apple"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").doesNotExist());
+
+        // 5. 触发局部映射异常写入并校验自定义 SPI 记录 itemFailureCount 与失败摘要
+        BulkRawIngestRequest badDocReq = BulkRawIngestRequest.builder()
+                .id("DLQ_BAD_DOC")
+                .routing("Apple")
+                .fields(java.util.Map.of("id", "DLQ_BAD_DOC", "brand", "Apple", "price", "invalid-number"))
+                .build();
+        mockMvc.perform(post("/sample/search/bulk/stream-raw")
+                        .header("X-Tenant-Id", "tenant_corp_a")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JsonUtil.toJsonString(badDocReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", equalTo(true)));
+
+        mockMvc.perform(post("/sample/search/bulk/stream-flush"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/sample/search/bulk/dead-letter/stats"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data.itemFailureCount", not(equalTo("0"))))
+                .andExpect(jsonPath("$.data.recentMessages[0]", containsString("DLQ_BAD_DOC")));
+
+        // 6. 重置统计与线程上下文清理
+        mockMvc.perform(delete("/sample/search/bulk/dead-letter/stats"))
+                .andExpect(status().isOk());
         org.assertj.core.api.Assertions.assertThat(io.github.atengk.boot.core.context.TenantContextHolder.getTenantId()).isNull();
     }
 }

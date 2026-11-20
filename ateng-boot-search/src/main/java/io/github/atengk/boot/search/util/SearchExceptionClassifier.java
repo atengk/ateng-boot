@@ -4,6 +4,7 @@ import co.elastic.clients.elasticsearch._types.ElasticsearchException;
 import io.github.atengk.boot.search.enums.SearchResultCode;
 import org.elasticsearch.client.ResponseException;
 
+import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
@@ -138,7 +139,7 @@ public final class SearchExceptionClassifier {
     }
 
     /**
-     * 判断异常是否属于可重试的瞬态故障（网络抖动、超时、429 限流、502/503/504/408）
+     * 判断异常是否属于可重试的瞬态故障（网络 IOException、超时、429 限流、502/503/504/408）
      *
      * @param t 异常对象
      * @return true 表示属于瞬态可重试故障
@@ -147,7 +148,10 @@ public final class SearchExceptionClassifier {
         if (t == null) {
             return false;
         }
-        return isRateLimited(t) || isTimeout(t) || isConnectError(t);
+        if (isRateLimited(t) || isTimeout(t) || isConnectError(t)) {
+            return true;
+        }
+        return extractStatusCode(t) == -1 && containsExceptionType(t, IOException.class);
     }
 
     /**

@@ -4,6 +4,9 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.search.driver.ElasticsearchClientDriver;
 import io.github.atengk.boot.search.entity.RoutedOrderDoc;
 import io.github.atengk.boot.search.entity.UserDoc;
+import io.github.atengk.boot.search.enums.SearchResultCode;
+import io.github.atengk.boot.search.exception.SearchException;
+import io.github.atengk.boot.search.model.SearchBulkFailureItem;
 import io.github.atengk.boot.search.model.SearchBulkResult;
 import io.github.atengk.boot.search.properties.AtengSearchProperties;
 import io.github.atengk.boot.search.template.SearchTemplate;
@@ -11,26 +14,28 @@ import okhttp3.mockwebserver.Dispatcher;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
+import okhttp3.mockwebserver.SocketPolicy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.util.unit.DataSize;
 
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.Duration;
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -65,8 +70,7 @@ class SearchBulkProcessorTest {
     @AfterEach
     void tearDown() throws IOException {
         MDC.clear();
-        TenantContextHolder.setTenantId((String) null);
-        TenantContextHolder.setIgnoreTenant(false);
+        TenantContextHolder.clear();
 
         if (processor != null) {
             processor.close();
@@ -187,6 +191,7 @@ class SearchBulkProcessorTest {
     @Test
     @DisplayName("测试内存缓冲容量阈值 (bufferSize) 自动触发刷盘")
     void testBufferSizeThresholdTrigger() throws Exception {
+        mockWebServer.enqueue(esResponse(200, successBulkResponseBody()));
         mockWebServer.enqueue(esResponse(200, successBulkResponseBody()));
 
         processor = searchTemplate.newBulkProcessorBuilder()
@@ -385,7 +390,11 @@ class SearchBulkProcessorTest {
                 .maxQueueCapacity(1000)
                 .build();
 
-        ExecutorService threadPool = Executors.newFixedThreadPool(threadCount);
+        ThreadPoolTaskExecutor threadPool = new ThreadPoolTaskExecutor();
+        threadPool.setCorePoolSize(threadCount);
+        threadPool.setMaxPoolSize(threadCount);
+        threadPool.setThreadNamePrefix("bulk-test-producer-");
+        threadPool.initialize();
         CountDownLatch startLatch = new CountDownLatch(1);
         CountDownLatch doneLatch = new CountDownLatch(threadCount);
 
@@ -417,6 +426,7 @@ class SearchBulkProcessorTest {
         boolean clean = processor.awaitClose(Duration.ofSeconds(10));
         assertThat(clean).isTrue();
         assertThat(processor.getQueueSize()).isEqualTo(0);
+        assertThat(processor.getBufferBytes()).isEqualTo(0L);
         assertThat(mockWebServer.getRequestCount()).isGreaterThanOrEqualTo(totalDocs / 25);
     }
 
@@ -458,8 +468,9 @@ class SearchBulkProcessorTest {
     @Test
     @DisplayName("测试批次提取受 buffer-size 容量上限截断约束")
     void testPollBatchBoundedByBufferSize() throws Exception {
-        mockWebServer.enqueue(esResponse(200, successBulkResponseBody()));
-        mockWebServer.enqueue(esResponse(200, successBulkResponseBody()));
+        for (int i = 0; i < 4; i++) {
+            mockWebServer.enqueue(esResponse(200, successBulkResponseBody()));
+        }
 
         processor = searchTemplate.newBulkProcessorBuilder()
                 .batchSize(1000)
@@ -506,5 +517,256 @@ class SearchBulkProcessorTest {
             assertThat(request.getBody().readUtf8()).contains("spring_shutdown_user");
             assertThat(springProcessor.getQueueSize()).isEqualTo(0);
         }
+    }
+
+    @Test
+    @DisplayName("测试对称 delete 路由重载准确透传分片 routing")
+    void testDeleteWithRoutingPropagation() throws Exception {
+        mockWebServer.enqueue(esResponse(200, successBulkResponseBody()));
+
+        processor = searchTemplate.newBulkProcessorBuilder()
+                .batchSize(10)
+                .flushInterval(Duration.ofDays(1))
+                .concurrentRequests(0)
+                .build();
+
+        processor.delete("ORD-1", "route-sh", RoutedOrderDoc.class);
+        processor.delete("custom_idx", "ORD-2", "route-bj");
+        processor.flush();
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).contains("\"_index\":\"routed_order_idx\"").contains("\"_id\":\"ORD-1\"").contains("\"routing\":\"route-sh\"");
+        assertThat(body).contains("\"_index\":\"custom_idx\"").contains("\"_id\":\"ORD-2\"").contains("\"routing\":\"route-bj\"");
+    }
+
+    @Test
+    @DisplayName("测试多线程混合租户与不同 traceId 并发入队不串租户且刷盘透传 X-Trace-Id 并洁净还原")
+    void testConcurrentMixedTenantAndTraceIdIsolation() throws Exception {
+        List<RecordedRequest> capturedRequests = new CopyOnWriteArrayList<>();
+        mockWebServer.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                if (request.getPath() != null && request.getPath().contains("/_mget")) {
+                    return esResponse(200, "{\"docs\":[]}");
+                }
+                capturedRequests.add(request);
+                return esResponse(200, successBulkResponseBody());
+            }
+        });
+
+        AtomicBoolean callbackCleanAfter = new AtomicBoolean(true);
+        processor = searchTemplate.newBulkProcessorBuilder()
+                .batchSize(100)
+                .flushInterval(Duration.ofMillis(80))
+                .concurrentRequests(2)
+                .listener(new BulkListener() {
+                    @Override
+                    public void afterBulk(long executionId, int numberOfActions, SearchBulkResult result) {
+                        callbackCleanAfter.compareAndSet(true, String.valueOf(executionId) != null);
+                    }
+                })
+                .build();
+
+        ThreadPoolTaskExecutor threadPool = new ThreadPoolTaskExecutor();
+        threadPool.setCorePoolSize(2);
+        threadPool.setMaxPoolSize(2);
+        threadPool.setThreadNamePrefix("mixed-tenant-producer-");
+        threadPool.initialize();
+        CountDownLatch latch = new CountDownLatch(2);
+        AtomicReference<Throwable> unexpectedError = new AtomicReference<>();
+
+        threadPool.execute(() -> {
+            try {
+                MDC.put("traceId", "trace-tenant-a");
+                TenantContextHolder.runWithTenant("tenant_a", () -> {
+                    processor.add(UserDoc.builder().id(101L).username("alice").build());
+                    processor.addAction(SearchBulkAction.builder()
+                            .type(SearchBulkAction.ActionType.INDEX)
+                            .index("user_idx")
+                            .id("102")
+                            .document(UserDoc.builder().id(102L).username("alice-direct").build())
+                            .build());
+                });
+            } catch (Throwable t) {
+                unexpectedError.set(t);
+            } finally {
+                MDC.clear();
+                latch.countDown();
+            }
+        });
+
+        threadPool.execute(() -> {
+            try {
+                MDC.put("traceId", "trace-tenant-b");
+                TenantContextHolder.runWithTenant("tenant_b", () -> {
+                    processor.add(UserDoc.builder().id(201L).username("bob").build());
+                    // 跨租户篡改在 addAction 入队时刻即立即 Fail-Fast
+                    assertThatThrownBy(() -> processor.addAction(SearchBulkAction.builder()
+                            .type(SearchBulkAction.ActionType.INDEX)
+                            .index("user_idx")
+                            .id("202")
+                            .document(Map.of("username", "hacker", "tenant_id", "tenant_a"))
+                            .build()))
+                            .isInstanceOf(SearchException.class)
+                            .extracting(e -> ((SearchException) e).getResultCode())
+                            .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+                });
+            } catch (Throwable t) {
+                unexpectedError.set(t);
+            } finally {
+                MDC.clear();
+                latch.countDown();
+            }
+        });
+
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        threadPool.shutdown();
+        assertThat(unexpectedError.get()).isNull();
+
+        boolean drained = processor.awaitClose(Duration.ofSeconds(10));
+        assertThat(drained).isTrue();
+        assertThat(processor.getQueueSize()).isEqualTo(0);
+        assertThat(processor.getBufferBytes()).isEqualTo(0L);
+        assertThat(MDC.get("traceId")).isNull();
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+
+        String allBodies = capturedRequests.stream()
+                .map(r -> r.getBody().readUtf8())
+                .reduce("", String::concat);
+        assertThat(allBodies).contains("\"id\":\"101\"").contains("\"tenant_id\":\"tenant_a\"");
+        assertThat(allBodies).contains("\"id\":\"102\"").contains("\"username\":\"alice-direct\"");
+        assertThat(allBodies).contains("\"id\":\"201\"").contains("\"tenant_id\":\"tenant_b\"");
+        assertThat(allBodies).doesNotContain("hacker");
+        assertThat(capturedRequests)
+                .anyMatch(r -> "trace-tenant-a".equals(r.getHeader("X-Trace-Id"))
+                        || "trace-tenant-b".equals(r.getHeader("X-Trace-Id")));
+    }
+
+    @Test
+    @DisplayName("测试瞬态异常指数退避重试自愈、重试耗尽 onBatchFailure 兜底及 400 致命错不重试")
+    void testTransientRetryExponentialBackoffAndDeadLetterOnExhausted() throws Exception {
+        // 1. 503 -> 429 -> 200 自愈，不触发死信
+        mockWebServer.enqueue(esResponse(503, "{\"error\":\"busy\"}"));
+        mockWebServer.enqueue(esResponse(429, "{\"error\":\"rate_limited\"}"));
+        mockWebServer.enqueue(esResponse(200, successBulkResponseBody()));
+
+        List<Long> batchFailExecutions = new CopyOnWriteArrayList<>();
+        AtomicReference<Throwable> lastBatchError = new AtomicReference<>();
+        AtomicInteger failedActionCount = new AtomicInteger();
+        AtomicInteger listenerErrorCount = new AtomicInteger();
+
+        BulkDeadLetterHandler customDlq = new BulkDeadLetterHandler() {
+            @Override
+            public void onBatchFailure(long executionId, List<SearchBulkAction> actions, Throwable failure) {
+                batchFailExecutions.add(executionId);
+                failedActionCount.set(actions != null ? actions.size() : 0);
+                lastBatchError.set(failure);
+            }
+        };
+
+        processor = searchTemplate.newBulkProcessorBuilder()
+                .batchSize(1)
+                .flushInterval(Duration.ofDays(1))
+                .concurrentRequests(0)
+                .maxRetries(2)
+                .retryBackoff(Duration.ofMillis(30))
+                .listener(new BulkListener() {
+                    @Override
+                    public void afterBulk(long executionId, int numberOfActions, Throwable failure) {
+                        listenerErrorCount.incrementAndGet();
+                    }
+                })
+                .deadLetterHandler(customDlq)
+                .build();
+
+        processor.add(UserDoc.builder().id(1L).username("retry_recover").build());
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(3);
+        assertThat(batchFailExecutions).isEmpty();
+        assertThat(listenerErrorCount.get()).isEqualTo(0);
+
+        // 2. 网络 IOException 断开 x1 -> 200 自愈
+        mockWebServer.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START));
+        mockWebServer.enqueue(esResponse(200, successBulkResponseBody()));
+        processor.add(UserDoc.builder().id(2L).username("io_recover").build());
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(5);
+        assertThat(batchFailExecutions).isEmpty();
+
+        // 3. 503 x3 耗尽 maxRetries=2 -> 触发 BulkListener + BulkDeadLetterHandler.onBatchFailure
+        mockWebServer.enqueue(esResponse(503, "{\"error\":\"down_1\"}"));
+        mockWebServer.enqueue(esResponse(503, "{\"error\":\"down_2\"}"));
+        mockWebServer.enqueue(esResponse(503, "{\"error\":\"down_3\"}"));
+        processor.add(UserDoc.builder().id(3L).username("exhausted").build());
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(8);
+        assertThat(listenerErrorCount.get()).isEqualTo(1);
+        assertThat(batchFailExecutions).hasSize(1);
+        assertThat(failedActionCount.get()).isEqualTo(1);
+        assertThat(lastBatchError.get()).isInstanceOf(SearchException.class);
+
+        // 4. 400 Bad Request 致命错误绝不重试 -> 仅发起 1 次 HTTP 请求，直接进入死信
+        mockWebServer.enqueue(esResponse(400, "{\"error\":{\"type\":\"illegal_argument_exception\",\"reason\":\"bad bulk\"}}"));
+        int beforeFatal = mockWebServer.getRequestCount();
+        processor.add(UserDoc.builder().id(4L).username("fatal_400").build());
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(beforeFatal + 1);
+        assertThat(batchFailExecutions).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("测试 HTTP 200 局部文档失败不重试且精确配对原始 Action 触发 onItemFailure 并恢复条目快照")
+    void testPartialItemFailureDoesNotRetryAndTriggersDeadLetterItemWithActionAndTrace() throws Exception {
+        String partialErrorBody = """
+                {
+                  "took": 5,
+                  "errors": true,
+                  "items": [
+                    { "index": { "_index": "user_idx", "_id": "1", "status": 201, "result": "created" } },
+                    { "index": { "_index": "user_idx", "_id": "2", "status": 400, "error": { "type": "mapper_parsing_exception", "reason": "bad field type" } } }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, "{\"docs\":[]}"));
+        mockWebServer.enqueue(esResponse(200, partialErrorBody));
+
+        List<SearchBulkFailureItem> deadItems = new CopyOnWriteArrayList<>();
+        AtomicReference<String> callbackTrace = new AtomicReference<>();
+        AtomicReference<String> callbackTenant = new AtomicReference<>();
+
+        processor = searchTemplate.newBulkProcessorBuilder()
+                .batchSize(10)
+                .flushInterval(Duration.ofDays(1))
+                .concurrentRequests(0)
+                .maxRetries(2)
+                .retryBackoff(Duration.ofMillis(20))
+                .deadLetterHandler(new BulkDeadLetterHandler() {
+                    @Override
+                    public void onItemFailure(long executionId, SearchBulkFailureItem item) {
+                        deadItems.add(item);
+                        callbackTrace.set(MDC.get("traceId"));
+                        callbackTenant.set(TenantContextHolder.getTenantId());
+                    }
+                })
+                .build();
+
+        MDC.put("traceId", "trace-item-dlq");
+        TenantContextHolder.runWithTenant("tenant_dlq", () -> {
+            processor.add(UserDoc.builder().id(1L).username("ok_user").build());
+            processor.add(UserDoc.builder().id(2L).username("bad_user").build());
+        });
+        MDC.clear();
+
+        // 从无租户、无 traceId 的上下文调用 flush，验证 item 级上下文还原
+        processor.flush();
+
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(2);
+        assertThat(deadItems).hasSize(1);
+        SearchBulkFailureItem dlqItem = deadItems.get(0);
+        assertThat(dlqItem.getAction()).isNotNull();
+        assertThat(dlqItem.getAction().getId()).isEqualTo("2");
+        assertThat(dlqItem.getFailure().getStatus()).isEqualTo(400);
+        assertThat(dlqItem.getFailure().getErrorType()).isEqualTo("mapper_parsing_exception");
+        assertThat(callbackTrace.get()).isEqualTo("trace-item-dlq");
+        assertThat(callbackTenant.get()).isEqualTo("tenant_dlq");
+        assertThat(MDC.get("traceId")).isNull();
+        assertThat(TenantContextHolder.getTenantId()).isNull();
     }
 }

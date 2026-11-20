@@ -271,6 +271,23 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
 
             // 2.5 批量获取 mget
             if (path.contains("/_mget")) {
+                if (body.contains("P_TENANT_") || body.contains("P_BULK_TENANT_")
+                        || body.contains("LOG_TENANT_") || body.contains("DLQ_BAD_DOC")) {
+                    StringBuilder docsJson = new StringBuilder("[");
+                    boolean first = true;
+                    for (java.util.Map.Entry<String, String> entry : tenantDocStore.entrySet()) {
+                        if (body.contains("\"" + entry.getKey() + "\"")) {
+                            if (!first) {
+                                docsJson.append(',');
+                            }
+                            docsJson.append("{\"_index\":\"product_index\",\"_id\":\"").append(entry.getKey())
+                                    .append("\",\"found\":true,\"_source\":").append(entry.getValue()).append('}');
+                            first = false;
+                        }
+                    }
+                    docsJson.append(']');
+                    return jsonResponse(200, "{\"docs\":" + docsJson + "}");
+                }
                 return jsonResponse(200, """
                         {
                           "docs": [
@@ -317,6 +334,18 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
                             }
                             """);
                 }
+                if (body.contains("DLQ_BAD_DOC")) {
+                    return jsonResponse(200, """
+                            {
+                              "took": 5,
+                              "errors": true,
+                              "items": [
+                                { "index": { "_index": "product_index", "_id": "DLQ_BAD_DOC", "status": 400, "error": { "type": "mapper_parsing_exception", "reason": "failed to parse field [price]" } } }
+                              ]
+                            }
+                            """);
+                }
+                syncTenantDocStoreFromBulk(body);
                 return jsonResponse(200, """
                         {
                           "took": 2,
@@ -500,7 +529,7 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
             if (method.equals("GET") && (path.contains("/_doc/") || path.contains("/product_index/"))) {
                 String docId = extractDocId(cleanPath);
                 String indexName = extractIndexName(cleanPath);
-                if (docId != null && (docId.startsWith("P_TENANT_") || docId.startsWith("LOG_TENANT_"))) {
+                if (isTrackedTenantDocId(docId)) {
                     String storedJson = tenantDocStore.get(docId);
                     if (storedJson == null) {
                         return jsonResponse(404, """
@@ -556,7 +585,7 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
             if ((method.equals("PUT") || method.equals("POST")) && (path.contains("/_doc/") || path.contains("/access_log_") || path.contains("/product_index"))) {
                 String docId = extractDocId(cleanPath);
                 String indexName = extractIndexName(cleanPath);
-                if (docId != null && (docId.startsWith("P_TENANT_") || docId.startsWith("LOG_TENANT_")) && !body.isBlank()) {
+                if (isTrackedTenantDocId(docId) && !body.isBlank()) {
                     tenantDocStore.put(docId, body);
                 }
                 String resolvedId = docId != null ? docId : "P001";
@@ -578,7 +607,7 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
             if (method.equals("DELETE") && (path.contains("/_doc/") || path.contains("/product_index"))) {
                 String docId = extractDocId(cleanPath);
                 String indexName = extractIndexName(cleanPath);
-                if (docId != null && (docId.startsWith("P_TENANT_") || docId.startsWith("LOG_TENANT_"))) {
+                if (isTrackedTenantDocId(docId)) {
                     tenantDocStore.remove(docId);
                 }
                 String resolvedId = docId != null ? docId : "P001";
@@ -598,6 +627,45 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
 
             // 默认兜底响应
             return jsonResponse(200, "{\"acknowledged\":true}");
+        }
+
+        private boolean isTrackedTenantDocId(String docId) {
+            return docId != null
+                    && (docId.startsWith("P_TENANT_") || docId.startsWith("P_BULK_TENANT_") || docId.startsWith("LOG_TENANT_"));
+        }
+
+        private void syncTenantDocStoreFromBulk(String ndjsonBody) {
+            if (ndjsonBody == null || ndjsonBody.isBlank()) {
+                return;
+            }
+            String[] lines = ndjsonBody.split("\\R");
+            for (int i = 0; i < lines.length; i++) {
+                String meta = lines[i];
+                if (meta == null || meta.isBlank()) {
+                    continue;
+                }
+                String docId = extractJsonFieldValue(meta, "\"_id\":\"");
+                if (meta.contains("{\"delete\":")) {
+                    if (isTrackedTenantDocId(docId)) {
+                        tenantDocStore.remove(docId);
+                    }
+                } else if (meta.contains("{\"index\":") || meta.contains("{\"update\":")) {
+                    if (i + 1 < lines.length && isTrackedTenantDocId(docId)) {
+                        tenantDocStore.put(docId, lines[i + 1]);
+                    }
+                    i++;
+                }
+            }
+        }
+
+        private String extractJsonFieldValue(String json, String prefix) {
+            int idx = json.indexOf(prefix);
+            if (idx < 0) {
+                return null;
+            }
+            int start = idx + prefix.length();
+            int end = json.indexOf('"', start);
+            return end > start ? json.substring(start, end) : null;
         }
 
         private String extractStoredTenantValue(String json) {

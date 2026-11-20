@@ -142,7 +142,9 @@ public class SearchTemplate {
                 .bufferSize(properties.getBulk().getBufferSize())
                 .concurrentRequests(properties.getBulk().getConcurrentRequests())
                 .maxQueueCapacity(properties.getBulk().getMaxQueueCapacity())
-                .awaitCloseTimeout(properties.getBulk().getAwaitCloseTimeout());
+                .awaitCloseTimeout(properties.getBulk().getAwaitCloseTimeout())
+                .maxRetries(properties.getBulk().getMaxRetries())
+                .retryBackoff(properties.getBulk().getRetryBackoff());
     }
 
     /**

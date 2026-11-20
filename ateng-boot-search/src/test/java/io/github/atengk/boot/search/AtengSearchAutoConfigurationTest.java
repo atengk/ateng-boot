@@ -48,7 +48,59 @@ class AtengSearchAutoConfigurationTest {
                     .isEqualTo(io.github.atengk.boot.search.enums.TenantIsolationMode.STRICT);
             assertThat(io.github.atengk.boot.search.enums.SearchResultCode.SEARCH_TENANT_ACCESS_DENIED.getCode())
                     .isEqualTo(60017);
+            assertThat(props.getBulk().getMaxRetries()).isEqualTo(2);
+            assertThat(props.getBulk().getRetryBackoff()).isEqualTo(java.time.Duration.ofMillis(200));
+            assertThat(context).hasBean("searchBulkTaskScheduler");
+            assertThat(context).hasSingleBean(io.github.atengk.boot.search.bulk.BulkDeadLetterHandler.class);
         });
+    }
+
+    @Test
+    @DisplayName("测试 searchBulkTaskScheduler 不与用户全局 TaskScheduler 冲突且绑定 Core taskExecutor 与自定义 BulkDeadLetterHandler")
+    void testBulkSchedulerNoConflictAndDeadLetterHandlerSpiBinding() {
+        io.github.atengk.boot.search.bulk.BulkDeadLetterHandler customHandler =
+                new io.github.atengk.boot.search.bulk.BulkDeadLetterHandler() {};
+        org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler userScheduler =
+                new org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler();
+        userScheduler.setPoolSize(1);
+        userScheduler.setThreadNamePrefix("app-global-scheduler-");
+        userScheduler.setDaemon(true);
+        userScheduler.initialize();
+        try {
+            new ApplicationContextRunner()
+                    .withConfiguration(AutoConfigurations.of(
+                            io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration.class,
+                            AtengSearchAutoConfiguration.class
+                    ))
+                    .withPropertyValues(
+                            "ateng.boot.search.bulk.max-retries=4",
+                            "ateng.boot.search.bulk.retry-backoff=150ms"
+                    )
+                    .withBean("taskScheduler",
+                            org.springframework.scheduling.TaskScheduler.class,
+                            () -> userScheduler)
+                    .withBean("userCustomDeadLetterHandler",
+                            io.github.atengk.boot.search.bulk.BulkDeadLetterHandler.class,
+                            () -> customHandler)
+                    .run(context -> {
+                        io.github.atengk.boot.search.properties.AtengSearchProperties props =
+                                context.getBean(io.github.atengk.boot.search.properties.AtengSearchProperties.class);
+                        assertThat(props.getBulk().getMaxRetries()).isEqualTo(4);
+                        assertThat(props.getBulk().getRetryBackoff()).isEqualTo(java.time.Duration.ofMillis(150));
+                        assertThat(context.getBean(org.springframework.scheduling.TaskScheduler.class))
+                                .isSameAs(userScheduler);
+                        assertThat(context.getBeanFactory()
+                                .getBeanDefinition("searchBulkTaskScheduler")
+                                .isAutowireCandidate()).isFalse();
+                        assertThat(context).hasBean("searchBulkTaskScheduler");
+                        assertThat(context).hasSingleBean(io.github.atengk.boot.search.bulk.BulkDeadLetterHandler.class);
+                        assertThat(context.getBean(io.github.atengk.boot.search.bulk.BulkDeadLetterHandler.class))
+                                .isSameAs(customHandler);
+                        assertThat(context).hasSingleBean(SearchBulkProcessor.class);
+                    });
+        } finally {
+            userScheduler.shutdown();
+        }
     }
 
     @Test

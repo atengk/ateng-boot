@@ -4,6 +4,7 @@ import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.search.actuator.SearchHealthIndicator;
 import io.github.atengk.boot.search.annotation.IgnoreTenant;
+import io.github.atengk.boot.search.bulk.BulkDeadLetterHandler;
 import io.github.atengk.boot.search.bulk.BulkListener;
 import io.github.atengk.boot.search.bulk.SearchBulkProcessor;
 import io.github.atengk.boot.core.context.TenantContextHolder;
@@ -36,6 +37,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Role;
 import org.springframework.core.Ordered;
+import org.springframework.scheduling.TaskScheduler;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
@@ -53,6 +56,7 @@ import java.util.concurrent.ScheduledExecutorService;
 @AutoConfiguration
 @AutoConfigureAfter(name = {
         "org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration",
+        "io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration",
         "org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration",
         "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration",
         "io.github.atengk.boot.observability.autoconfigure.AtengHealthAutoConfiguration"
@@ -90,25 +94,49 @@ public class AtengSearchAutoConfiguration {
         );
     }
 
+    @Bean(name = "searchBulkTaskScheduler", autowireCandidate = false, destroyMethod = "shutdown")
+    @ConditionalOnMissingBean(name = "searchBulkTaskScheduler")
+    @ConditionalOnProperty(prefix = "ateng.boot.search.bulk", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public ThreadPoolTaskScheduler searchBulkTaskScheduler(AtengSearchProperties properties) {
+        return SearchBulkProcessor.createDefaultTaskScheduler(properties.getBulk().getAwaitCloseTimeout());
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(BulkDeadLetterHandler.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.search.bulk", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public BulkDeadLetterHandler searchBulkDeadLetterHandler() {
+        return BulkDeadLetterHandler.LOGGING;
+    }
+
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean(SearchBulkProcessor.class)
     @ConditionalOnProperty(prefix = "ateng.boot.search.bulk", name = "enabled", havingValue = "true", matchIfMissing = true)
     public SearchBulkProcessor searchBulkProcessor(SearchTemplate searchTemplate,
                                                    AtengSearchProperties properties,
                                                    ObjectProvider<BulkListener> bulkListenerProvider,
+                                                   ObjectProvider<BulkDeadLetterHandler> deadLetterHandlerProvider,
                                                    @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
-                                                   @Qualifier("taskScheduler") ObjectProvider<ScheduledExecutorService> taskSchedulerProvider,
+                                                   @Qualifier("searchBulkTaskScheduler") ObjectProvider<TaskScheduler> searchBulkTaskSchedulerProvider,
+                                                   @Qualifier("taskScheduler") ObjectProvider<ScheduledExecutorService> legacyTaskSchedulerProvider,
                                                    ObjectProvider<ScheduledExecutorService> scheduledExecutorProvider) {
-        log.info("Auto-configuring SearchBulkProcessor with batchSize={}, flushInterval={}, bufferSize={}",
+        log.info("Auto-configuring SearchBulkProcessor with batchSize={}, flushInterval={}, bufferSize={}, maxRetries={}",
                 properties.getBulk().getBatchSize(),
                 properties.getBulk().getFlushInterval(),
-                properties.getBulk().getBufferSize());
+                properties.getBulk().getBufferSize(),
+                properties.getBulk().getMaxRetries());
         SearchBulkProcessor.Builder builder = searchTemplate.newBulkProcessorBuilder();
         bulkListenerProvider.ifAvailable(builder::listener);
+        deadLetterHandlerProvider.ifAvailable(builder::deadLetterHandler);
         taskExecutorProvider.ifAvailable(builder::executor);
-        ScheduledExecutorService scheduler = taskSchedulerProvider.getIfAvailable(scheduledExecutorProvider::getIfAvailable);
-        if (scheduler != null) {
-            builder.scheduler(scheduler);
+        TaskScheduler bulkScheduler = searchBulkTaskSchedulerProvider.getIfAvailable();
+        if (bulkScheduler != null) {
+            builder.taskScheduler(bulkScheduler);
+        } else {
+            ScheduledExecutorService fallbackScheduler =
+                    legacyTaskSchedulerProvider.getIfAvailable(scheduledExecutorProvider::getIfAvailable);
+            if (fallbackScheduler != null) {
+                builder.scheduler(fallbackScheduler);
+            }
         }
         return builder.build();
     }

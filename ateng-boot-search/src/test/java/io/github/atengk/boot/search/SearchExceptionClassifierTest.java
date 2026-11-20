@@ -66,6 +66,7 @@ class SearchExceptionClassifierTest {
         assertThat(SearchExceptionClassifier.isTransient(mockResponseException(504))).isTrue();
         assertThat(SearchExceptionClassifier.isTransient(new java.util.concurrent.TimeoutException("future timed out"))).isTrue();
         assertThat(SearchExceptionClassifier.isTransient(new java.net.UnknownHostException("search-node"))).isTrue();
+        assertThat(SearchExceptionClassifier.isTransient(new java.io.IOException("Connection reset by peer"))).isTrue();
         assertThat(SearchExceptionClassifier.isTransient(mockResponseException(400))).isFalse();
         assertThat(SearchExceptionClassifier.isTransient(mockResponseException(409))).isFalse();
 

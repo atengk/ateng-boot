@@ -628,4 +628,114 @@ class SampleSearchIntegrationTest {
         });
         assertThat(io.github.atengk.boot.core.context.TenantContextHolder.getTenantId()).isNull();
     }
+
+    @Test
+    @DisplayName("19. 流式并发混合租户入库、带分片路由流式删除与 BulkDeadLetterHandler SPI 死信闭环")
+    void testBulkConcurrentMixedTenantRoutedDeleteAndDeadLetter() throws Exception {
+        String idA = "P_BULK_TENANT_A";
+        String idB = "P_BULK_TENANT_B";
+        bulkIngestionScenario.resetDeadLetterStats();
+
+        // 1. 双线程不同租户、不同 traceId 并发投递至同一受管 SearchBulkProcessor 单例
+        org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor pool =
+                new org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor();
+        pool.setCorePoolSize(2);
+        pool.setMaxPoolSize(2);
+        pool.setThreadNamePrefix("sample-mixed-bulk-");
+        pool.initialize();
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(2);
+        java.util.concurrent.atomic.AtomicReference<Throwable> workerError = new java.util.concurrent.atomic.AtomicReference<>();
+
+        pool.execute(() -> {
+            try {
+                org.slf4j.MDC.put("traceId", "sample-trace-bulk-a");
+                io.github.atengk.boot.core.context.TenantContextHolder.runWithTenant("tenant-bulk-a", () ->
+                        bulkIngestionScenario.streamIngest(ProductDoc.builder()
+                                .id(idA)
+                                .title("流式并发租户A商品")
+                                .brand("Apple")
+                                .price(new BigDecimal("1999.00"))
+                                .stock(10)
+                                .status("ON_SALE")
+                                .build()));
+            } catch (Throwable t) {
+                workerError.set(t);
+            } finally {
+                org.slf4j.MDC.clear();
+                latch.countDown();
+            }
+        });
+
+        pool.execute(() -> {
+            try {
+                org.slf4j.MDC.put("traceId", "sample-trace-bulk-b");
+                io.github.atengk.boot.core.context.TenantContextHolder.runWithTenant("tenant-bulk-b", () ->
+                        bulkIngestionScenario.streamIngest(ProductDoc.builder()
+                                .id(idB)
+                                .title("流式并发租户B商品")
+                                .brand("Apple")
+                                .price(new BigDecimal("2999.00"))
+                                .stock(20)
+                                .status("ON_SALE")
+                                .build()));
+            } catch (Throwable t) {
+                workerError.set(t);
+            } finally {
+                org.slf4j.MDC.clear();
+                latch.countDown();
+            }
+        });
+
+        assertThat(latch.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        pool.shutdown();
+        assertThat(workerError.get()).isNull();
+
+        bulkIngestionScenario.flushStream();
+        if (isLocalProfileActive()) {
+            searchTemplate.indices().refresh("product_index");
+        }
+
+        // 2. 各自租户互不可见、己方完整保留注入后的 tenantId
+        io.github.atengk.boot.core.context.TenantContextHolder.runWithTenant("tenant-bulk-a", () -> {
+            ProductDoc ownedA = productCatalogScenario.getProduct(idA, "Apple");
+            assertThat(ownedA).isNotNull();
+            assertThat(ownedA.getTenantId()).isEqualTo("tenant-bulk-a");
+            assertThat(productCatalogScenario.getProduct(idB, "Apple")).isNull();
+        });
+        io.github.atengk.boot.core.context.TenantContextHolder.runWithTenant("tenant-bulk-b", () -> {
+            ProductDoc ownedB = productCatalogScenario.getProduct(idB, "Apple");
+            assertThat(ownedB).isNotNull();
+            assertThat(ownedB.getTenantId()).isEqualTo("tenant-bulk-b");
+            assertThat(productCatalogScenario.getProduct(idA, "Apple")).isNull();
+        });
+
+        // 3. 对称带分片路由流式批量删除与清理验证
+        io.github.atengk.boot.core.context.TenantContextHolder.runWithTenant("tenant-bulk-a", () ->
+                bulkIngestionScenario.streamDelete(idA, "Apple"));
+        io.github.atengk.boot.core.context.TenantContextHolder.runWithTenant("tenant-bulk-b", () ->
+                bulkIngestionScenario.streamDelete(idB, "Apple"));
+        bulkIngestionScenario.flushStream();
+        if (isLocalProfileActive()) {
+            searchTemplate.indices().refresh("product_index");
+        }
+
+        io.github.atengk.boot.core.context.TenantContextHolder.runWithTenant("tenant-bulk-a", () ->
+                assertThat(productCatalogScenario.getProduct(idA, "Apple")).isNull());
+        io.github.atengk.boot.core.context.TenantContextHolder.runWithTenant("tenant-bulk-b", () ->
+                assertThat(productCatalogScenario.getProduct(idB, "Apple")).isNull());
+
+        // 4. 触发局部映射类型冲突验证自定义 BulkDeadLetterHandler SPI 精准捕获
+        io.github.atengk.boot.core.context.TenantContextHolder.runWithTenant("tenant-bulk-a", () ->
+                bulkIngestionScenario.streamIngestRaw("DLQ_BAD_DOC", "Apple",
+                        java.util.Map.of("id", "DLQ_BAD_DOC", "brand", "Apple", "price", "invalid-number")));
+        bulkIngestionScenario.flushStream();
+
+        io.github.atengk.boot.sample.search.dto.BulkDeadLetterStatsResponse dlqStats =
+                bulkIngestionScenario.getDeadLetterStats();
+        assertThat(dlqStats.getItemFailureCount()).isGreaterThanOrEqualTo(1L);
+        assertThat(dlqStats.getRecentMessages()).anyMatch(msg -> msg.contains("DLQ_BAD_DOC"));
+        bulkIngestionScenario.resetDeadLetterStats();
+        assertThat(org.slf4j.MDC.get("traceId")).isNull();
+        assertThat(io.github.atengk.boot.core.context.TenantContextHolder.getTenantId()).isNull();
+    }
 }
