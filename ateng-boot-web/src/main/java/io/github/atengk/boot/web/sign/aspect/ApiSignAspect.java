@@ -32,6 +32,7 @@ import io.github.atengk.boot.core.util.IdUtil;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Method;
+import java.time.Duration;
 import java.util.EnumMap;
 import java.util.Map;
 import java.util.Objects;
@@ -275,8 +276,9 @@ public class ApiSignAspect implements Ordered, DisposableBean {
         if (apiSign != null && apiSign.expireSeconds() > 0) {
             return apiSign.expireSeconds();
         }
-        long globalExpire = webProperties.getSign().getExpireSeconds();
-        return globalExpire > 0 ? globalExpire : 60L;
+        Duration globalExpire = webProperties.getSign().getExpire();
+        long globalExpireSeconds = globalExpire != null ? globalExpire.toSeconds() : 60L;
+        return globalExpireSeconds > 0 ? globalExpireSeconds : 60L;
     }
 
     private String getHeaderAppId() {

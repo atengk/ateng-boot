@@ -96,6 +96,7 @@ flowchart TD
       executor.setConcurrencyLimit(asyncProperties.getConcurrencyLimit());
   }
   ```
+  > **演进注记（#1135）**：`AsyncPoolProperties` 的旧版整型秒级兼容方法（`*KeepAliveSeconds` / `*AwaitTerminationSeconds`）已净切移除，统一收口为强类型 `Duration` 属性（`keepAlive` / `awaitTermination`）。
 - 在 [`AsyncProperties`](../../ateng-boot-core/src/main/java/io/github/atengk/boot/core/properties/AsyncProperties.java) 中新增扩展属性：
   - `virtualThreadNamePrefix`（默认 `ateng-vt-async-`）：专属前缀，在线上 Thread Dump 与 Arthas 中清晰可辨；
   - `concurrencyLimit`（默认 `-1` 表示无界）：当指定正整数（如 64、128）时，直接委托 Spring 内置信号量限制并发执行数，防止下游关系数据库 HikariCP 连接池瞬时耗尽。

@@ -17,8 +17,8 @@ _Avoid_: ThreadPoolMetrics, PoolMonitor, ThreadPoolCollector
 _Avoid_: CountingRejectedHandler, MetricsRejectedHandler, RejectedHandlerWrapper
 
 **ActuatorEndpointSecurityFilter**:
-部署于 Servlet 容器最前沿的高优先级安全守卫过滤器，对 Actuator 基础路径进行前置拦截，白名单端点（health、info、prometheus、pre-stop）免密放行，高危敏感端点（env、beans、heapdump 等）强制核验 X-Actuator-Token 凭据，未授权直接阻断 403/404。
-_Avoid_: EndpointFilter, SecurityInterceptor, ActuatorAuthGuard
+部署于 Servlet 容器最前沿的高优先级安全守卫过滤器，对 Actuator 基础路径进行前置拦截，白名单端点（health、info、prometheus、pre-stop）免密放行，高危敏感端点（env、beans、heapdump 等）基于 Core `CidrMatcher` 与 X-Actuator-Token 凭据核验放行，未授权直接阻断 403/404。
+_Avoid_: EndpointFilter, SecurityInterceptor, ActuatorAuthGuard, observability.security.CidrMatcher
 
 **StorageHealthIndicator**:
 面向 ateng-boot-storage 的专有对象存储探针，弱依赖探测 Local 模式本地目录可写状态与 S3 模式客户端连通性。
@@ -71,10 +71,6 @@ _Avoid_: MetricInterceptor, TimedAspect, MonitorAdvice
 **AtengMetricsRegistryCustomizer**:
 全局度量注册表定制与高基数防爆治理器，基于 `MeterRegistryCustomizer` 与 `MeterFilter` 自动注入应用全局公共标签（`application` 与 `common-tags`）、截断超长标签值（`max-tag-value-length`）、限制单指标最大标签基数（`max-meter-cardinality`）并支持前缀黑名单过滤，防止 Prometheus TSDB 维度爆炸。
 _Avoid_: MetricsFilter, TagLimiter, CardinalityGuard
-
-**CidrMatcher**:
-基于 JDK 17 原生位运算与 InetAddress 构建的零臃肿 IP/CIDR 网段高效匹配器，已下沉至 `ateng-boot-core` 并在本模块保留向后兼容继承类，支持 IPv4 与 IPv6 掩码过滤，无第三方工具包依赖。
-_Avoid_: IpMatcher, SubnetUtil, IpWhiteListUtil, NetworkUtil
 
 **ThreadPoolRejectedEvent**:
 受管线程池发生任务饱和拒绝时由 TrackingRejectedExecutionHandler 发布的 Spring 领域事件，携带拒绝线程池名称、当前活跃线程、队列深度及累计拒绝计数。

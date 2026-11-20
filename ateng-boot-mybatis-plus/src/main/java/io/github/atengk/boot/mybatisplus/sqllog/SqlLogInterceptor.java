@@ -1,6 +1,5 @@
 package io.github.atengk.boot.mybatisplus.sqllog;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.audit.SqlLogModel;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.TenantContextHolder;
@@ -121,16 +120,6 @@ public class SqlLogInterceptor implements Interceptor {
         this.storageProvider = storageProvider;
         this.taskExecutorProvider = taskExecutorProvider;
         this.eventPublisher = eventPublisher;
-    }
-
-    @Deprecated
-    public SqlLogInterceptor(SqlLogProperties properties,
-                             Consumer<String> logConsumer,
-                             SqlLogStorageProvider storageProvider,
-                             ObjectProvider<Executor> taskExecutorProvider,
-                             ApplicationEventPublisher eventPublisher,
-                             ObjectMapper objectMapper) {
-        this(properties, logConsumer, storageProvider, taskExecutorProvider, eventPublisher);
     }
 
     public SqlLogProperties getProperties() {

@@ -14,7 +14,7 @@
 | **安全防御** | HTTP Basic 访问守卫 | `OpenApiGuardFilter`<br>`GuardMode.BASIC` | `guard.mode=BASIC`<br>`guard.basic.username`<br>`guard.basic.password` | `handleBasicAuth`: 响应 HTTP 401 `WWW-Authenticate: Basic`，`MessageDigest.isEqual` 恒定时间防时序攻击 | [OpenApiGuardFilterTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java) |
 | **安全防御** | Sa-Token 会话与角色/权限分级守卫 | `OpenApiGuardFilter`<br>`GuardMode.SATOKEN` | `guard.mode=SATOKEN`<br>`guard.satoken.roles`<br>`guard.satoken.permissions` | `handleSaTokenAuth`: 未登录 401；配置角色/权限时按 **OR 语义**判定（不匹配返回 403），并做瞬态上下文绑定与 `finally` 清理 | [OpenApiGuardFilterTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java)<br>[OpenApiGuardIntegrationTest](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiGuardIntegrationTest.java) |
 | **安全防御** | 静态令牌 (TOKEN) 守卫 | `OpenApiGuardFilter`<br>`GuardMode.TOKEN` | `guard.mode=TOKEN`<br>`guard.token.secret`<br>`guard.token.header-name`<br>`guard.token.allow-query-param`<br>`guard.token.query-param-name` | `handleTokenAuth`: 比对 `X-Doc-Token` 或可选 Query 参数 `?doc-token=...`，恒定时间防时序攻击 | [OpenApiGuardFilterTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java) |
-| **安全防御** | CIDR 白名单与授信反代防伪造 | `OpenApiGuardFilter`<br>`OpenApiCidrMatcher`<br>`GuardMode.IP_WHITELIST` | `guard.mode=IP_WHITELIST`<br>`guard.ip-whitelist.enabled`<br>`guard.ip-whitelist.cidrs`<br>`guard.ip-whitelist.trusted-header`<br>`guard.ip-whitelist.trusted-proxies` | `extractClientIp(HttpServletRequest)`、`matches(String ip)`: 支持 IPv4/IPv6 CIDR 与端口剥离；配置 `trusted-proxies` 后仅授信反代连接才采信转发头 | [OpenApiCidrMatcherTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiCidrMatcherTest.java)<br>[OpenApiGuardFilterTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java) |
+| **安全防御** | CIDR 白名单与授信反代防伪造 | `OpenApiGuardFilter`<br>`io.github.atengk.boot.core.util.CidrMatcher`<br>`GuardMode.IP_WHITELIST` | `guard.mode=IP_WHITELIST`<br>`guard.ip-whitelist.enabled`<br>`guard.ip-whitelist.cidrs`<br>`guard.ip-whitelist.trusted-header`<br>`guard.ip-whitelist.trusted-proxies` | `extractClientIp(HttpServletRequest)`、复用 Core `CidrMatcher.matches(String ip)`（支持 IPv4/IPv6 CIDR 与端口剥离）；配置 `trusted-proxies` 后仅授信反代连接才采信转发头 | [OpenApiGuardFilterTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java) |
 | **安全防御** | 静态资源白名单放行 | `OpenApiGuardFilter` | `guard.mode` | `isStaticResource(String)`: 放行 `.css`、`.js`、`/webjars/`、图标等纯静态资源，避免 UI 样式死锁 | [OpenApiGuardFilterTest](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java) |
 | **契约模型保真** | `IBaseEnum` 与 `@InEnum` 强类型映射 | `OpenApiModelConverter` | 自动装配，`DisposableBean` 对称注销 | `resolve(...)`: 同时探测 `IBaseEnum` 枚举与 DTO/方法参数 `@InEnum`，映射 `integer`/`boolean`/`string` Schema、`enum`、示例与 Markdown 字典；构造期同类去重注册 | [OpenApiModelConverterTest](./src/test/java/io/github/atengk/boot/openapi/converter/OpenApiModelConverterTest.java)<br>[OpenApiSampleEndToEndTest](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiSampleEndToEndTest.java) |
 | **契约模型保真** | `ValidList` 原生数组保真 | `OpenApiModelConverter` | 自动装配 | `resolve(...)`: 拦截 `ValidList<E>` 并转换为原生 `ArraySchema` `[ { item } ]` | [OpenApiModelConverterTest](./src/test/java/io/github/atengk/boot/openapi/converter/OpenApiModelConverterTest.java) |
@@ -708,7 +708,7 @@ mockMvc.perform(get("/docs/export/json").header(StpUtil.getTokenName(), permToke
 
 ### 6.3 CIDR 白名单与授信反向代理节点 (`trusted-proxies`) 防伪造
 
-`OpenApiCidrMatcher` 复用 Core `CidrMatcher` 提供纯数值 IPv4/IPv6 CIDR 位运算（无 DNS 查询挂起风险），并结合授信反代列表严防公网客户端伪造转发头。
+`OpenApiGuardFilter` 直接复用 Core `io.github.atengk.boot.core.util.CidrMatcher` 提供纯数值 IPv4/IPv6 CIDR 位运算（无 DNS 查询挂起风险），并结合授信反代列表严防公网客户端伪造转发头。
 
 #### 1. 专属配置片段
 
@@ -732,11 +732,12 @@ ateng:
 
 #### 2. 实战 Java 示例代码
 
-以下授信反代与伪造阻断验证摘自 [OpenApiGuardIntegrationTest.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiGuardIntegrationTest.java) 与 [OpenApiCidrMatcherTest.java](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiCidrMatcherTest.java)：
+以下授信反代与伪造阻断验证摘自 [OpenApiGuardIntegrationTest.java](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiGuardIntegrationTest.java) 与 [OpenApiGuardFilterTest.java](./src/test/java/io/github/atengk/boot/openapi/guard/OpenApiGuardFilterTest.java)：
 
 ```java
-// 1. 直接使用 OpenApiCidrMatcher 进行无 DNS 阻塞的 IPv4/IPv6 CIDR 匹配
-OpenApiCidrMatcher matcher = new OpenApiCidrMatcher(List.of("10.0.0.0/8", "2001:db8:1::/48"));
+// 1. 直接复用 Core CidrMatcher 进行无 DNS 阻塞的 IPv4/IPv6 CIDR 匹配
+io.github.atengk.boot.core.util.CidrMatcher matcher =
+        new io.github.atengk.boot.core.util.CidrMatcher(List.of("10.0.0.0/8", "2001:db8:1::/48"));
 boolean v4Allowed = matcher.matches("10.10.1.2");       // true
 boolean v6Allowed = matcher.matches("2001:db8:1::42");  // true
 

@@ -181,18 +181,16 @@ class ExcelUtilTest {
     }
 
     @Test
-    @DisplayName("测试 ExcelProperties 配置绑定与向后兼容适配")
+    @DisplayName("测试 ExcelProperties 强类型配置绑定")
     void testExcelPropertiesConfiguration() {
         io.github.atengk.boot.excel.properties.ExcelProperties props = new io.github.atengk.boot.excel.properties.ExcelProperties();
         props.setMaxSyncRows(50000);
-        props.getAsyncExport().setRetentionHours(12);
+        props.getAsyncExport().setRetentionPeriod(java.time.Duration.ofHours(12));
 
         assertEquals(50000, props.getMaxSyncRows());
-        assertEquals(12, props.getAsyncExport().getRetentionHours());
         assertEquals(java.time.Duration.ofHours(12), props.getAsyncExport().getRetentionPeriod());
 
         props.getAsyncExport().setRetentionPeriod(java.time.Duration.ofHours(48));
-        assertEquals(48, props.getAsyncExport().getRetentionHours());
         assertEquals(java.time.Duration.ofHours(48), props.getAsyncExport().getRetentionPeriod());
     }
 }

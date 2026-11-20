@@ -200,6 +200,7 @@ flowchart TD
 ### 12. 增量强化演进不变量 (Hardening & Contract Symmetry Evolution)
 - **BigDecimal 平原十进制防科学计数法 (`WRITE_BIGDECIMAL_AS_PLAIN`)**：通过 `ateng.boot.web.jackson.write-big-decimal-as-plain`（默认 `true`）控制 `JacksonCustomizer` 启用 `JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN`，保证高精度数值不被序列化为科学计数法；
 - **配置项对称命名与别名兼容**：`ateng.boot.web.api-version.header` 兼容 `header-name`、`ateng.boot.web.trace.header` 兼容 `header-name`、`ateng.boot.web.etag.write-weak-etag` 兼容 `write-weak-e-tag`，`RateLimiterProperties` 暴露对称 `key-prefix`（默认 `"rate_limit:"`）；
+> **演进注记（#1135）**：`ateng.boot.web.api-version.header-name`、`WebProperties` 中的非 `Duration`/`DataSize` 数值兼容包装及 `OperateLogStorageProvider#save` 兼容别名已净切移除，统一使用强类型 `Duration`/`DataSize`、`api-version.header` 与 `OperateLogStorageProvider#store`。
 - **停机排空在途请求快照感知**：`TraceFilter` 内建无锁活跃请求计数器并由 `AtengGracefulShutdownHandler` 注入读取，`DrainResult` 对外输出 `inFlightRequestsAtStart` 与 `inFlightRequestsRemaining` 排空指标。
 
 ### 13. 生产防线二次加固演进 (2026-11 防线收敛与契约完备性强化)

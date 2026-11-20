@@ -9,8 +9,8 @@ OpenAPI 3.0 / Swagger 接口契约治理与生产安全配置属性类，以 `at
 _Avoid_: SwaggerProperties, DocProperties, SpringDocProperties
 
 **OpenApiGuardFilter**:
-最高优先级访问守卫 Servlet 过滤器，在生产环境 `enabled=false` 时执行 404 物理切断防御渗透探测，在开启状态下支持 HTTP Basic 认证挑战、Sa-Token 会话凭据与细粒度角色/权限守卫（`401`/`403` 分级拦截）、静态 Token 标头守卫及前置 CIDR / IP 白名单网络防火墙（支持 `trusted-proxies` 授信反代校验），并放行静态前端资源。
-_Avoid_: SwaggerFilter, DocAuthFilter, SecurityGuardFilter
+最高优先级访问守卫 Servlet 过滤器，在生产环境 `enabled=false` 时执行 404 物理切断防御渗透探测，在开启状态下支持 HTTP Basic 认证挑战、Sa-Token 会话凭据与细粒度角色/权限守卫（`401`/`403` 分级拦截）、静态 Token 标头守卫及基于 Core `CidrMatcher` 的前置 CIDR / IP 白名单网络防火墙（支持 `trusted-proxies` 授信反代校验），并放行静态前端资源。
+_Avoid_: SwaggerFilter, DocAuthFilter, SecurityGuardFilter, OpenApiCidrMatcher
 
 **GuardMode**:
 接口文档生产访问守卫模式枚举，定义免密模式（NONE）、HTTP Basic 浏览器原生弹窗模式（BASIC）、Sa-Token 会话凭据桥接模式（SATOKEN）、CIDR/IP 白名单防火墙模式（IP_WHITELIST）与静态令牌标头模式（TOKEN）。
@@ -43,10 +43,6 @@ _Avoid_: DocExportEndpoint, SpecDownloadController, OpenApiDownloadController
 **OpenApiFormat**:
 OpenAPI 离线契约导出格式强类型枚举，定义 JSON（对应 `application/json`）与 YAML（对应 `application/yaml`）两种标准契约格式与 MIME 类型映射。
 _Avoid_: SpecFormat, DocExportFormat, ExportFormatEnum
-
-**OpenApiCidrMatcher**:
-高性能 IP 白名单与无类域间路由（CIDR）网络掩码匹配计算器，原生支持 IPv4 与 IPv6 子网位运算，结合受信任反向代理标头（`trusted-header`）解析客户端真实 IP 并防御公网客户端伪造标头。
-_Avoid_: IpValidator, SubnetUtil, IpWhitelistChecker
 
 **ResultCodeProvider**:
 业务状态码字典扩展点 SPI 接口，允许各业务子模块（如订单、支付、用户等）向系统文档 `Info.description` 动态追加专属状态码字典，支持多错误码体系协同。

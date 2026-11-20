@@ -19,17 +19,17 @@
 | **纯 JDK 图形验证码** | 零字体依赖 SVG/PNG 生成与一次一密受管核验 | `CaptchaTemplate`, `CaptchaResult`, `CaptchaType`, `CaptchaCharType`, `CaptchaRendererType`, `CaptchaStore`, `InMemoryCaptchaStore`, `RedisCaptchaStore`, `RedissonCaptchaStore`, `CaptchaRenderer`, `SvgCaptchaRenderer`, `PngCaptchaRenderer`, `CaptchaProperties`, `AtengCaptchaAutoConfiguration` | `ateng.boot.web.captcha.enabled`, `key-prefix`, `renderer`, `type`, `char-type`, `length`, `math-operators`, `width`, `height`, `expire`, `ignore-case`, `noise-line-count`, `noise-dot-count`, `fail-open`, `in-memory.max-capacity`, `in-memory.clean-interval` | `CaptchaTemplate.generate()`, `generate(CaptchaType)`, `verify(key, code)`, `verifyOrThrow(key, code)`, `invalidate(key)`；`CaptchaStore.save(key, answer, ttl)`, `getAndDelete(key)`, `delete(key)`；`CaptchaRenderer.render(displayText, properties)`；默认零系统字体依赖 `SvgCaptchaRenderer`（纯 `<path>` 轮廓无 `<text>` 防直读），可切 `PngCaptchaRenderer`；支持 `CHAR`（默认剔除 `0/O/o/1/I/l`）与 `MATH`；核验严格一次一密（无论成败原子 `getAndDelete` 销毁）；Redisson $\rightarrow$ Redis $\rightarrow$ InMemory 三级自适应存储，`fail-open` 默认 `false` | `CaptchaTemplateTest.java`, `AtengCaptchaAutoConfigurationTest.java`, `InMemoryCaptchaStoreTest.java`, `RedisCaptchaStoreTest.java`, `RedissonCaptchaStoreTest.java`, `SvgCaptchaRendererTest.java`, `PngCaptchaRendererTest.java`, `WebCaptchaControllerTest.java`, `WebCaptchaPngSampleTest.java` |
 | **云原生优雅停机** | K8s 就绪探针排空与在途请求感知 | `AtengGracefulShutdownHandler`, `DrainResult`, `PreStopEndpoint`, `PreStopController` | `ateng.boot.web.shutdown.enabled`, `drain-timeout`, `quiet-period`, `poll-interval`, `smart-lifecycle-enabled`, `actuator-endpoint-enabled`, `mvc-endpoint-enabled`, `mvc-endpoint-path` | `drain()`, `isDrained()`, `getInFlightRequestCount()`, 翻转 `ReadinessState.REFUSING_TRAFFIC`，两阶段自适应排空（先等待 `quiet-period` 保障路由传播，未配置时等价 `drain-timeout: 10s`；剩余窗口按 `poll-interval: 100ms` 轮询探测在途归零即提前退出），统计并返回 `inFlightRequestsAtStart` / `inFlightRequestsRemaining` 在途请求快照，`AtomicBoolean` 状态机排空幂等，支持 `/actuator/pre-stop` 与 `/pre-stop` 双模端点及 `SmartLifecycle` 兜底 | `AtengGracefulShutdownHandlerTest.java`, `PreStopEndpointTest.java`, `PreStopControllerTest.java`, `AtengGracefulShutdownAutoConfigurationTest.java`, `WebCloudLifecycleControllerTest.java` |
 | **慢请求主动告警** | 长耗时慢请求性能主动告警与长连接放行 | `SlowRequestFilter` | `ateng.boot.web.slow-request.enabled`, `threshold`, `exclude-urls` | 请求出口处计算总耗时，超过阈值（强类型 Duration）输出包含 TraceId、URI、Method、耗时与 ClientIp 的 `[SLOW_REQUEST]` 格式化 WARN 日志，自动放行 WebSocket、SSE、文件下载与异步挂起请求，支持 Ant 路径白名单 | `SlowRequestFilterTest.java`, `SlowRequestMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
-| **结构化操作审计** | 企业级操作审计切面与存储解耦 SPI | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `DefaultOperateLogStorageProvider`, `OperateLogModel`, `OperateLogEvent` | `ateng.boot.web.operate-log.enabled`, `default-exclude-params` | `@OperateLog(value, module, title, type, description, saveParams, saveResult, excludeParams)`，自动关联线程上下文（操作人/租户）与合并全局 11 项默认敏感基线递归掩码，出参自动联动 `@FieldSensitive` 视图脱敏，保留原始异常因果链，支持异步存储 SPI `OperateLogStorageProvider.store(logModel)`（保留兼容 `default save(logModel)` 别名）与 `OperateLogEvent` 事件广播及开箱即用 JSON 保底 | `OperateLogAspectTest.java`, `OperateLogAutoConfigurationTest.java`, `WebObservabilityAndAuditControllerTest.java` |
-| **请求体可重读管道** | 通用请求体重复多次读取与载荷防爆管道 | `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.body-cache.max-body-size`, `sign.enabled`, `payload-log.enabled` | 自动包装 POST/PUT/PATCH 请求为可重复读包装器，支持多次重复消费输入流；单次超限（DataSize）快速失败并优雅降级输出 HTTP 200 + Result 413 JSON 报文并回写 `X-Trace-Id`；自动跳过表单与文件上传，旧版 `RequestBodyCachingFilter` 保持向后兼容委托 | `ContentCachingFilterTest.java`, `ContentCachingAutoConfigurationTest.java`, `ContentCachingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
+| **结构化操作审计** | 企业级操作审计切面与存储解耦 SPI | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `DefaultOperateLogStorageProvider`, `OperateLogModel`, `OperateLogEvent` | `ateng.boot.web.operate-log.enabled`, `default-exclude-params` | `@OperateLog(value, module, title, type, description, saveParams, saveResult, excludeParams)`，自动关联线程上下文（操作人/租户）与合并全局 11 项默认敏感基线递归掩码，出参自动联动 `@FieldSensitive` 视图脱敏，保留原始异常因果链，支持异步存储 SPI `OperateLogStorageProvider.store(logModel)` 与 `OperateLogEvent` 事件广播及开箱即用 JSON 保底 | `OperateLogAspectTest.java`, `OperateLogAutoConfigurationTest.java`, `WebObservabilityAndAuditControllerTest.java` |
+| **请求体可重读管道** | 通用请求体重复多次读取与载荷防爆管道 | `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.body-cache.max-body-size`, `sign.enabled`, `payload-log.enabled` | 自动包装 POST/PUT/PATCH 请求为可重复读包装器，支持多次重复消费输入流；单次超限（DataSize）快速失败并优雅降级输出 HTTP 200 + Result 413 JSON 报文并回写 `X-Trace-Id`；自动跳过表单与文件上传 | `ContentCachingFilterTest.java`, `ContentCachingAutoConfigurationTest.java`, `ContentCachingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **载荷采样日志** | HTTP 请求/响应双向安全采样与截断防 OOM | `PayloadLoggingFilter` | `ateng.boot.web.payload-log.enabled`, `max-payload-size`, `exclude-urls` | 请求出口处单行聚合输出包含 TraceId、Method、URI、Status、Cost、ReqBody 与 RespBody 的 `[HTTP_PAYLOAD]` 日志，内建 MIME 过滤、凭据正则掩码（`***`）、强类型截断（默认 4KB）、状态自适应提升（>= 400 提升为 WARN）并在 `finally` 确定性执行 `copyBodyToResponse()` | `PayloadLoggingFilterTest.java`, `PayloadLoggingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
-| **双向加签验签** | API 报文防篡改防重放加签验签引擎 | `@ApiSign`, `SignAlgorithm`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `Sm2Signer`, `SignKeyProvider`, `DefaultSignKeyProvider`, `SignCanonicalUtil`, `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.sign.enabled`, `algorithm`, `app-id`, `secret-key`, `public-key`, `private-key`, `rsa-public-key`, `rsa-private-key`, `sm2-public-key`, `sm2-private-key`, `expire`, `max-body-size`, `header-app-id`, `header-timestamp`, `header-nonce`, `header-signature`, `nonce-prefix`, `fail-open` | `@ApiSign(verifyRequest, signResponse, expireSeconds, message, algorithm)` 支持注解级动态路由与单应用内 HMAC_SHA256 / RSA / SM2 多算法共存；`ApiSigner.sign/verify`，`SignKeyProvider.getVerifyKey/getSignKey(appId, algorithm)`（兼容 `getSecretKey/getPublicKey/getPrivateKey`），`SignCanonicalUtil.buildRequestCanonicalString/buildResponseCanonicalString/buildSortedQueryString`，Nonce 防重放（`nonce-prefix` 与 `fail-open` 内存降级）及 Fail-Closed 出站响应加签 | `ApiSignAspectTest.java`, `ApiSignerTest.java`, `Sm2SignerTest.java`, `SignCanonicalUtilTest.java`, `AtengApiSignAutoConfigurationTest.java`, `RequestBodyCachingFilterTest.java`, `WebSecurityAndSignControllerTest.java`, `WebSecuritySignRsaSampleTest.java`, `WebSecuritySignSm2SampleTest.java` |
+| **双向加签验签** | API 报文防篡改防重放加签验签引擎 | `@ApiSign`, `SignAlgorithm`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `Sm2Signer`, `SignKeyProvider`, `DefaultSignKeyProvider`, `SignCanonicalUtil`, `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.sign.enabled`, `algorithm`, `app-id`, `secret-key`, `public-key`, `private-key`, `rsa-public-key`, `rsa-private-key`, `sm2-public-key`, `sm2-private-key`, `expire`, `max-body-size`, `header-app-id`, `header-timestamp`, `header-nonce`, `header-signature`, `nonce-prefix`, `fail-open` | `@ApiSign(verifyRequest, signResponse, expireSeconds, message, algorithm)` 支持注解级动态路由与单应用内 HMAC_SHA256 / RSA / SM2 多算法共存；`ApiSigner.sign/verify`，`SignKeyProvider.getVerifyKey/getSignKey(appId, algorithm)`（兼容 `getSecretKey/getPublicKey/getPrivateKey`），`SignCanonicalUtil.buildRequestCanonicalString/buildResponseCanonicalString/buildSortedQueryString`，Nonce 防重放（`nonce-prefix` 与 `fail-open` 内存降级）及 Fail-Closed 出站响应加签 | `ApiSignAspectTest.java`, `ApiSignerTest.java`, `Sm2SignerTest.java`, `SignCanonicalUtilTest.java`, `AtengApiSignAutoConfigurationTest.java`, `WebSecurityAndSignControllerTest.java`, `WebSecuritySignRsaSampleTest.java`, `WebSecuritySignSm2SampleTest.java` |
 | **安全响应头防御** | 等保三级基线安全响应头注入与容器指纹剥离 | `SecurityHeadersFilter`, `SecurityHeadersProperties` | `ateng.boot.web.security-headers.enabled`, `content-type-options`, `frame-options`, `xss-protection`, `referrer-policy`, `content-security-policy`, `permissions-policy`, `remove-server-header` | 注入 `X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、`X-XSS-Protection: 1; mode=block`、`Referrer-Policy: strict-origin-when-cross-origin` 等基准头，剥离容器 `Server` 头，`containsHeader` 守卫防覆盖 | `SecurityHeadersFilterTest.java`, `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
 | **ETag 协商缓存** | 基于浅层哈希的内容协商缓存与 304 节省带宽 | `ShallowEtagHeaderFilter`, `EtagProperties` | `ateng.boot.web.etag.enabled`, `write-weak-etag` | 条件自动装配 Spring 原生 `ShallowEtagHeaderFilter`，自动计算内容摘要并生成 `ETag` 响应头，配合 `If-None-Match` 返回 `304 Not Modified` 节省网络带宽 | `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
 | **XSS 安全清洗与放行** | 双轨无害化清洗与字段级富文本放行 | `XssFilter`, `XssHttpServletRequestWrapper`, `XssCleaner`, `XssMode`, `XssStringDeserializer`, `@XssIgnore` | `ateng.boot.web.xss.enabled`, `mode`, `clean-headers`, `exclude-headers`, `exclude-urls` | `XssCleaner.clean(value)`, `escape(value)`, `strip(value)`，支持 `XssMode.ESCAPE`（默认 HTML 转义）与 `STRIP`（标签剔除与 `javascript:`/`vbscript:` 伪协议剥离）；拦截 Query/Form 表单参数与请求头（`getHeader`/`getHeaders`）；`XssStringDeserializer` 拦截 JSON 请求体；通过 `@XssIgnore` 声明式在字段或类级别豁免富文本，支持 Ant 白名单路径排除 | `XssCleanerTest.java`, `XssFilterTest.java`, `XssHttpServletRequestWrapperTest.java`, `XssStringDeserializerTest.java`, `WebXssSampleControllerTest.java`, `WebXssStripModeSampleTest.java`, `WebXssHeaderCleanSampleTest.java` |
 | **IP 访问控制防火墙** | 声明式 IP 防火墙与 CIDR 子网判定 | `@IpAccessControl`, `IpAccessMode`, `IpAccessControlFilter`, `IpAccessControlAspect`, `IpAccessControlProperties` | `ateng.boot.web.trusted-proxies`, `ip-access-control.enabled`, `trusted-proxies`, `http-status-403`, `default-denied-message`, `mode`, `rules`, `filter.enabled`, `filter.mode`, `filter.rules`, `filter.url-patterns`, `filter.exclude-urls` | `@IpAccessControl(mode, rules, message, httpStatus403)`，单 IP 与 IPv4/IPv6 CIDR 子网位运算判定，白名单/黑名单双模，全局与模块 `trusted-proxies` 去重合并并逆向清洗 XFF 防伪造，方法级切面与 URL 路径级过滤器双重防线，默认 HTTP 200 + Result 403 + `X-Denied-Reason: IP_BLOCKED` | `IpUtilTest.java`, `IpAccessControlFilterTest.java`, `IpAccessControlAspectTest.java`, `WebIpAccessSampleControllerTest.java`, `WebIpAccessFilterSampleTest.java` |
 | **客户端 IP 提取** | 多级反向代理穿透与 CIDR 判定 | `IpUtil` | `ateng.boot.web.trusted-proxies`, `ateng.boot.web.ip-access-control.trusted-proxies` | `IpUtil.getClientIp()`, `getClientIp(request)`, `getClientIp(trustedProxies)`, `getClientIp(request, trustedProxies)`, `getClientIpWithDefaultFallback(request, preferredTrustedProxies)`, `getDefaultTrustedProxies()`, `setDefaultTrustedProxies(trustedProxies)`, `resetDefaultTrustedProxies()`, `mergeTrustedProxies(primary, secondary)`, `configureDefaultTrustedProxies(primary, secondary)`, `normalizeIp(ip)`, `isValidIp(ip)`, `isInRange(ip, cidrOrIp)`, `isInRange(ip, Collection<String>)`, `isInRange(ip, String...)`；默认授信本地环回（`127.0.0.1`, `::1`）并在启动期同步至静态门面防 XFF 伪造，纯 JDK 原生无 DNS 依赖 CIDR 判定 | `IpUtilTest.java`, `WebRoutingAndUtilityControllerTest.java` |
 | **Servlet 上下文与下载** | 上下文安全门面与 RFC 6266 文件下载 | `ServletUtil` | - | `ServletUtil.getRequest()`, `getResponse()`, `getHeader(name)`, `getHeader(request, name)`, `getCookieValue(name)`, `getCookieValue(request, name)`, `getCookie(request, name)`, `isJsonRequest(request)`, `isAjaxRequest(request)`, `writeJson(response, json)`, `writeJson(response, status, object)`, `setDownloadHeader(response, filename[, contentType])`, `writeDownload(response, filename, bytes/stream)`, `matchesAnyPath(request, patterns)`，RFC 6266 双重编码彻底杜绝浏览器乱码 | `ServletUtilTest.java`, `WebRoutingAndUtilityControllerTest.java` |
-| **声明式 API 多版本分流** | 路径前缀与请求头双模版本控制 | `@ApiVersion`, `ApiVersionCondition`, `ApiVersionRequestMappingHandlerMapping`, `ApiVersionProperties` | `ateng.boot.web.api-version.enabled`, `default-version`, `header` (或 `header-name`), `path-prefix-enabled` | `@ApiVersion(value, number)` 支持 Controller 类或方法标注，URL 路径前缀（`/v{version}/`）与请求头（`X-API-Version`）双向自动分流，缺省默认版本回退与方法级覆盖类级 | `ApiVersionConditionTest.java`, `ApiVersionRequestMappingHandlerMappingTest.java`, `WebVersionSampleControllerTest.java` |
+| **声明式 API 多版本分流** | 路径前缀与请求头双模版本控制 | `@ApiVersion`, `ApiVersionCondition`, `ApiVersionRequestMappingHandlerMapping`, `ApiVersionProperties` | `ateng.boot.web.api-version.enabled`, `default-version`, `header`, `path-prefix-enabled` | `@ApiVersion(value, number)` 支持 Controller 类或方法标注，URL 路径前缀（`/v{version}/`）与请求头（`X-API-Version`）双向自动分流，缺省默认版本回退与方法级覆盖类级 | `ApiVersionConditionTest.java`, `ApiVersionRequestMappingHandlerMappingTest.java`, `WebVersionSampleControllerTest.java` |
 | **枚举字典与反序列化** | 启动期枚举扫描注册表、三阶只读 HTTP 字典端点、自主接管开关与 Jackson 强类型双向反序列化器 | `EnumDictionaryRegistry`, `EnumDictionaryController`, `EnumDictionaryProperties`, `EnumNamingStrategy`, `BaseEnumDeserializer`, `AtengEnumDictionaryAutoConfiguration` | `ateng.boot.web.enum.enabled`, `endpoint-enabled`, `path-prefix`, `naming-strategy`, `scan-packages` | `EnumDictionaryRegistry.scanAndRegister/register/getOptions/getBatchOptions/getAllOptions/contains/getEnumClass/getAliases`；`GET {prefix}` 全量目录索引; `GET {prefix}/{name}` 单枚举查询; `POST/GET {prefix}/batch` 批量聚合; `endpoint-enabled=false` 时仅装配注册表交由上游自行接管路由与权限; 别名冲突启动期 Fail-Fast; i18n 多语言透明适配 (`enum.{SimpleName}.{NAME}`) 与平滑回退; `BaseEnumDeserializer` 自动拦截数字 code、字符串 code 与常量名精准反序列化为 `IBaseEnum` 实例 | `EnumDictionaryTest.java`, `EnumDictionaryI18nTest.java`, `BaseEnumDeserializerTest.java`, `WebEnumSampleControllerTest.java`, `WebEnumEndpointDisabledSampleTest.java` |
 | **启动一体化就绪卡片** | 启动完成规整 ASCII 欢迎卡片与在线文档直达 | `ApplicationReadyCardListener`, `ApplicationReadyEvent` | `ateng.boot.web.ready-card.enabled` | 容器启动就绪输出一体化 ASCII 卡片，自适应探测 Local/Network 访问地址、Swagger/SpringDoc 接口文档、运行环境、进程 PID、JVM 堆内存与秒级启动耗时 | `ApplicationReadyCardListenerTest.java`, `WebReadyCardSampleTest.java` |
 | **生产环境高危安全防呆** | 生产环境高危配置主动探测与启动防呆自检 | `ProductionSanityChecker`, `ApplicationReadyEvent` | `ateng.boot.web.sanity-check.enabled` | 生产环境 (`prod`/`production`/`prod-*`/`prod_*`，忽略大小写) 启动就绪安全防呆自检，前置扫描并告警 Swagger/Knife4j 文档公网暴露、HTTP Payload 全量双向采样日志与 H2 控制台暴露，输出高危安全告警日志 | `ProductionSanityCheckerTest.java`, `WebReadyCardSampleTest.java`, `WebProductionSanitySampleTest.java`, `WebCloudLifecycleControllerTest.java` |
@@ -1028,7 +1028,7 @@ ateng:
 - **全局默认基线 + 嵌套递归脱敏**：即使 `@OperateLog` 未显式指定 `excludeParams`，也自动叠加 `ateng.boot.web.operate-log.default-exclude-params`（内建 11 项密码/令牌/密钥敏感字段基线），通过共享原语 `AuditParamSanitizer` 对方法入参、嵌套实体、`Map` 与集合执行忽略大小写递归替换为 `[EXCLUDED]` 并防御循环引用（`[CIRCULAR_REF]`）；
 - **出参动态脱敏与内存真明文守卫**：出参序列化时自动联动 Core 模块的 `@FieldSensitive` 对手机号等敏感字段掩码入库（如 `138****5678`），同时断言 JVM 内存实体中的字段 100% 保持原始真明文；
 - **异常捕获与透明重抛**：业务方法异常时，切面捕获并记录错误信息与状态（`status = 1`），保留原始异常因果链原样向外抛出；
-- **存储架构解耦 SPI 与事件广播**：`OperateLogStorageProvider` 为 `@FunctionalInterface` SPI，主抽象契约为 `store(OperateLogModel)`（并保留 `default save(OperateLogModel)` 向后兼容别名），默认由 `DefaultOperateLogStorageProvider` 以 SLF4J 格式化 JSON 保底输出，同时发布 `OperateLogEvent` 应用事件，业务系统可轻松扩展投递至 MySQL、Elasticsearch 或 Kafka。
+- **存储架构解耦 SPI 与事件广播**：`OperateLogStorageProvider` 为 `@FunctionalInterface` SPI，唯一抽象契约为 `store(OperateLogModel)`，默认由 `DefaultOperateLogStorageProvider` 以 SLF4J 格式化 JSON 保底输出，同时发布 `OperateLogEvent` 应用事件，业务系统可轻松扩展投递至 MySQL、Elasticsearch 或 Kafka。
 
 #### 1:1 实测业务代码范式
 ```java
@@ -2084,7 +2084,7 @@ ateng:
           - "X-Trace-Id"
           - "Retry-After"
           - "X-Signature"
-        # 预检请求 OPTIONS 浏览器缓存时长（强类型 Duration，默认 3600s；兼容别名 max-age-seconds）
+        # 预检请求 OPTIONS 浏览器缓存时长（强类型 Duration，默认 3600s）
         max-age: 3600s
 ```
 
@@ -2130,7 +2130,7 @@ ateng:
         enabled: true
         # 缺省兜底版本号（客户端未传版本标识时生效，默认 "1"）
         default-version: "1"
-        # 自定义版本请求头名称（默认 X-API-Version；兼容别名 header-name）
+        # 自定义版本请求头名称（默认 X-API-Version）
         header: "X-API-Version"
         # 是否启用 URL 路径前缀模式识别 /v{version}/（默认 true）
         path-prefix-enabled: true
@@ -2506,7 +2506,7 @@ ateng:
       slow-request:
         # 是否启用慢请求性能告警过滤器（默认 true）
         enabled: true
-        # 慢请求判定阈值（强类型 Duration，默认 3s；向后兼容别名 threshold-millis）
+        # 慢请求判定阈值（强类型 Duration，默认 3s）
         threshold: 3s
         # 慢请求监控排除路径白名单（Ant 风格匹配）
         exclude-urls:
@@ -2545,12 +2545,12 @@ ateng:
           - "refreshToken"
           - "authorization"
       body-cache:
-        # 通用请求体可重读最大缓存载荷上限（强类型 DataSize 防 OOM，默认 2MB；向后兼容别名 max-body-size-bytes）
+        # 通用请求体可重读最大缓存载荷上限（强类型 DataSize 防 OOM，默认 2MB）
         max-body-size: 2MB
       payload-log:
         # 是否启用 HTTP Payload 双向采样安全日志过滤器（默认 false，按需开启）
         enabled: false
-        # 单次最大采样截断字节数上限（强类型 DataSize，默认 4KB；向后兼容别名 max-payload-size-bytes）
+        # 单次最大采样截断字节数上限（强类型 DataSize，默认 4KB）
         max-payload-size: 4KB
         # 采样日志排除路径白名单（Ant 风格匹配）
         exclude-urls:
@@ -2597,7 +2597,7 @@ ateng:
           - "X-Trace-Id"
           - "Retry-After"
           - "X-Signature"
-        # 跨域预检请求缓存有效时间（强类型 Duration 格式，支持 3600s, 1h 等，默认 3600s；兼容别名 max-age-seconds）
+        # 跨域预检请求缓存有效时间（强类型 Duration 格式，支持 3600s, 1h 等，默认 3600s）
         max-age: 3600s
       idempotent:
         # 是否启用接口防重幂等切面与存储引擎（默认 true）
@@ -2646,9 +2646,9 @@ ateng:
         sm2-public-key: "YOUR_SM2_PUBLIC_KEY"
         # 多算法共存场景国密 SM2 专属私钥（优先读取，未配时回退读取 private-key）
         sm2-private-key: "YOUR_SM2_PRIVATE_KEY"
-        # 全局签名时效窗口（强类型 Duration，默认 60s；向后兼容别名 expire-seconds: 60）
+        # 全局签名时效窗口（强类型 Duration，默认 60s）
         expire: 60s
-        # 请求体缓存最大载荷大小（强类型 DataSize 防 OOM，支持 2MB, 10MB 等，默认 2MB；向后兼容别名 max-body-size-bytes）
+        # 请求体缓存最大载荷大小（强类型 DataSize 防 OOM，支持 2MB, 10MB 等，默认 2MB）
         max-body-size: 2MB
         # Nonce 防重放缓存 Key 前缀（默认 ateng:sign:nonce:）
         nonce-prefix: "ateng:sign:nonce:"
@@ -2697,7 +2697,7 @@ ateng:
         enabled: true
         # 缺省默认版本（当请求未携带版本时回退，默认 "1"）
         default-version: "1"
-        # 提取版本的 HTTP 请求头名称（默认 X-API-Version；兼容别名 header-name）
+        # 提取版本的 HTTP 请求头名称（默认 X-API-Version）
         header: "X-API-Version"
         # 是否启用 URL 路径前缀版本匹配（如 /v1/...，默认 true）
         path-prefix-enabled: true

@@ -23,7 +23,7 @@
 | **数据源探针** | 动态多数据源与连接池连通性探针 | `DynamicDatasourceHealthIndicator` | `health.dynamic-datasource.enabled` | 探查连接池 `isValid(1)`，联动 `DynamicDatasourceGuard` 诊断多数据源路由与连接状态 | `DynamicDatasourceHealthIndicatorTest`<br>`ObservabilityScenarioTest` |
 | **RocketMQ 探针** | RocketMQ 5.x 客户端与消费监听容器探针 | `RocketmqHealthIndicator` | `health.rocketmq.enabled` | 弱探测 `RocketmqTemplate` 的 `Producer` 实例及 `RocketmqConsumerContainer` 的消费运行状态与活跃端点数 | `RocketmqHealthIndicatorTest` |
 | **邮件探针** | 邮件静态账号防假死安全健康探针（含 60s 防刷缓存） | `MailSafeHealthIndicator` | `health.mail.enabled`<br>`health.mail.cache-ttl`（默认 `60s`） | 仅探测 `MailAccountRegistry` 静态预热账号 SMTP 握手（跳过动态租户账号），内置 `60s` 防刷缓存并强制脱敏异常详情中的邮箱与凭据 | `MailSafeHealthIndicatorTest`<br>`AtengHealthAutoConfigurationTest`<br>`SampleMailIntegrationTest` |
-| **CIDR 匹配器** | 兼容 Core 底座的零依赖 CIDR IP 匹配器 | `CidrMatcher` | - | 继承 `io.github.atengk.boot.core.util.CidrMatcher`，保留 `CidrMatcher(Collection<String>)` 向后兼容构造器，支持 IPv4/IPv6 网段与单 IP 位运算无锁匹配 | `CidrMatcherTest`<br>`ObservabilityScenarioTest` |
+| **CIDR 匹配器** | 直接复用 Core 底座零依赖 CIDR IP 匹配器 | `io.github.atengk.boot.core.util.CidrMatcher` | - | 基于 Core 底座 `CidrMatcher(Collection<String>)` 执行 IPv4/IPv6 网段与单 IP 位运算无锁匹配 | `ObservabilityScenarioTest` |
 | **双层安全守卫** | Actuator 端点防伪造、隐身与双层认证过滤器 | `ActuatorEndpointSecurityFilter` | `security.lockdown-enabled`<br>`security.token`<br>`security.allowed-ip-ranges`<br>`security.trust-proxy-headers`<br>`security.trusted-proxies`<br>`security.stealth-mode`<br>`security.whitelisted-endpoints`<br>`security.basic-auth.*` | 优先级 `HIGHEST_PRECEDENCE + 20`；默认采信直连 `RemoteAddr`，仅在开启 `trust-proxy-headers` 或直连命中 `trusted-proxies` 时解析代理头；白名单端点免密放行（`/actuator` 根索引始终拦截）；未授权支持 `403` 或 `404` 隐身 JSON 响应并广播 `ActuatorAccessDeniedEvent` | `ActuatorEndpointSecurityFilterTest`<br>`AtengSecurityAutoConfigurationTest`<br>`ObservabilityScenarioTest` |
 | **SBA 握手拦截器** | Spring Boot Admin 客户端出站握手密钥拦截器 | `AdminClientSecretHttpRequestInterceptor` | `admin-client.enabled`<br>`admin-client.client-secret`<br>`admin-client.service-url`<br>`admin-client.management-url` | `intercept(...)`：幂等向发往 SBA Server 的 HTTP 请求头附加 `X-Admin-Client-Secret`，并注入 `actuator-token` 至 `InstanceProperties` 元数据 | `AdminClientSecretHttpRequestInterceptorTest`<br>`AtengAdminClientAutoConfigurationTest`<br>`ObservabilityScenarioTest` |
 | **K8s 探针硬隔离** | 生产安全基线与 K8s 黄金探针解耦后处理器 | `ObservabilityEnvironmentPostProcessor` | `health.k8s-isolation-enabled` | 经 `META-INF/spring.factories` 装配：Liveness 仅包含 `livenessState,ping`（剥离外部依赖），Readiness 聚合外部全量组件，默认收敛高危端点暴露 | `ObservabilityEnvironmentPostProcessorTest`<br>`ObservabilityScenarioTest` |
@@ -639,8 +639,9 @@ ateng:
 
 #### 业务实战与防伪造验证代码 (100% 逆向自 Sample 集成测试)
 ```java
-// 1. 直接使用零依赖 CidrMatcher 执行原生 IPv4/IPv6 网段匹配
-CidrMatcher matcher = new CidrMatcher(List.of("10.0.0.0/8", "192.168.1.100"));
+// 1. 直接复用 Core 底座零依赖 CidrMatcher 执行原生 IPv4/IPv6 网段匹配
+io.github.atengk.boot.core.util.CidrMatcher matcher =
+        new io.github.atengk.boot.core.util.CidrMatcher(List.of("10.0.0.0/8", "192.168.1.100"));
 boolean internalAllowed = matcher.matches("10.20.30.40");
 
 // 2. 默认关闭 trust-proxy-headers 时，伪造 X-Forwarded-For: 10.0.0.1 无法绕过白名单
@@ -656,7 +657,7 @@ mockMvc.perform(get("/actuator/env")
 
 #### 机制与边界防御
 - **默认直连防欺骗**：当 `trust-proxy-headers=false` 时，过滤器忽略外部客户端携带的 `X-Forwarded-For` / `X-Real-IP`，仅采信网络层 `RemoteAddr`；仅当直连 `RemoteAddr` 命中 `trusted-proxies`（或显式启用 `trust-proxy-headers=true`）时，才解析代理头首跳客户端 IP；
-- **Core 原语复用**：模块内 `CidrMatcher` 作为继承 `io.github.atengk.boot.core.util.CidrMatcher` 的向后兼容类保留，底层纯依托 JDK 17 位运算与 `InetAddress` 实现 IPv4/IPv6 无锁匹配。
+- **Core 原语复用**：`ActuatorEndpointSecurityFilter` 直接复用 Core 底座 `io.github.atengk.boot.core.util.CidrMatcher`，底层纯依托 JDK 17 位运算与数值解析实现 IPv4/IPv6 无锁匹配。
 
 ---
 

@@ -59,18 +59,4 @@ public class ExcelAsyncExportProperties {
      * 任务等待队列容量（默认 200）
      */
     private int queueCapacity = 200;
-
-    /**
-     * 兼容旧版小时数值获取
-     */
-    public int getRetentionHours() {
-        return retentionPeriod != null ? (int) retentionPeriod.toHours() : 24;
-    }
-
-    /**
-     * 兼容旧版小时数值设置
-     */
-    public void setRetentionHours(int retentionHours) {
-        this.retentionPeriod = Duration.ofHours(retentionHours);
-    }
 }

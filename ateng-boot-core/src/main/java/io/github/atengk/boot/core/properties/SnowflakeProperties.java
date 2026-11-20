@@ -37,7 +37,7 @@ public class SnowflakeProperties {
     private long epoch = Snowflake.DEFAULT_EPOCH;
 
     /**
-     * 最大允许时钟回拨容忍自旋时长（未配置时沿用顶层 clockBackoffTolerance，默认 5ms）
+     * 最大允许时钟回拨容忍自旋时长（强类型 Duration，默认 5ms）
      */
-    private Duration clockBackoffTolerance;
+    private Duration clockBackoffTolerance = Duration.ofMillis(Snowflake.DEFAULT_MAX_BACKWARD_MS);
 }

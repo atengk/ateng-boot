@@ -1,10 +1,10 @@
 package io.github.atengk.boot.web.sign.autoconfigure;
 
+import io.github.atengk.boot.web.autoconfigure.AtengWebAutoConfiguration;
 import io.github.atengk.boot.web.idempotent.autoconfigure.AtengIdempotentAutoConfiguration;
 import io.github.atengk.boot.web.properties.WebProperties;
 import io.github.atengk.boot.web.sign.aspect.ApiSignAspect;
 import io.github.atengk.boot.web.sign.enums.SignAlgorithm;
-import io.github.atengk.boot.web.sign.filter.RequestBodyCachingFilter;
 import io.github.atengk.boot.web.sign.signer.HmacSha256Signer;
 import io.github.atengk.boot.web.sign.signer.RsaSigner;
 import io.github.atengk.boot.web.sign.signer.Sm2Signer;
@@ -14,7 +14,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
-import org.springframework.boot.web.servlet.FilterRegistrationBean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -29,6 +28,7 @@ class AtengApiSignAutoConfigurationTest {
 
     private final WebApplicationContextRunner contextRunner = new WebApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(
+                    AtengWebAutoConfiguration.class,
                     AtengIdempotentAutoConfiguration.class,
                     AtengApiSignAutoConfiguration.class
             ));
@@ -54,7 +54,7 @@ class AtengApiSignAutoConfigurationTest {
             assertThat(context).hasSingleBean(SignKeyProvider.class);
             assertThat(context).hasSingleBean(ApiSigner.class);
             assertThat(context.getBean(ApiSigner.class)).isInstanceOf(HmacSha256Signer.class);
-            assertThat(context).hasBean("requestBodyCachingFilterRegistration");
+            assertThat(context).hasBean("contentCachingFilterRegistration");
         });
     }
 

@@ -453,8 +453,7 @@ class SqlLogInterceptorTest {
                 capturedLogs::add,
                 storageProvider,
                 null,
-                publisher,
-                null
+                publisher
         );
         SqlSessionFactory sessionFactory = createSessionFactory(interceptor);
 
@@ -528,7 +527,6 @@ class SqlLogInterceptorTest {
                 null,
                 storedModels::add,
                 null,
-                null,
                 null
         );
         SqlSessionFactory sessionFactory = createSessionFactory(interceptor);
@@ -563,7 +561,6 @@ class SqlLogInterceptorTest {
                 capturedLogs::add,
                 storedModels::add,
                 null,
-                null,
                 null
         );
         SqlSessionFactory sessionFactory = createSessionFactory(interceptor);
@@ -596,7 +593,6 @@ class SqlLogInterceptorTest {
                 properties,
                 capturedLogs::add,
                 storedModels::add,
-                null,
                 null,
                 null
         );
@@ -645,7 +641,6 @@ class SqlLogInterceptorTest {
                 capturedLogs::add,
                 storedModels::add,
                 null,
-                null,
                 null
         );
         SqlSessionFactory sessionFactory = createSessionFactory(interceptor);
@@ -674,7 +669,6 @@ class SqlLogInterceptorTest {
                 properties,
                 null,
                 storedModels::add,
-                null,
                 null,
                 null
         );

@@ -156,24 +156,6 @@ public class WebProperties {
          * 跨域预检请求缓存有效时间（强类型 Duration，默认 3600 秒）
          */
         private Duration maxAge = Duration.ofSeconds(3600);
-
-        /**
-         * 获取跨域预检请求缓存有效时间（秒，向后兼容）
-         *
-         * @return 缓存秒数
-         */
-        public Long getMaxAgeSeconds() {
-            return maxAge != null ? maxAge.toSeconds() : 3600L;
-        }
-
-        /**
-         * 设置跨域预检请求缓存有效时间（秒，向后兼容）
-         *
-         * @param maxAgeSeconds 缓存秒数
-         */
-        public void setMaxAgeSeconds(Long maxAgeSeconds) {
-            this.maxAge = maxAgeSeconds != null ? Duration.ofSeconds(maxAgeSeconds) : Duration.ofSeconds(3600);
-        }
     }
 
     /**
@@ -274,42 +256,6 @@ public class WebProperties {
         private DataSize maxBodySize = DataSize.ofMegabytes(2);
 
         /**
-         * 获取防重放窗口时间（秒，向后兼容）
-         *
-         * @return 超时秒数
-         */
-        public long getExpireSeconds() {
-            return expire != null ? expire.toSeconds() : 60L;
-        }
-
-        /**
-         * 设置防重放窗口时间（秒，向后兼容）
-         *
-         * @param expireSeconds 超时秒数
-         */
-        public void setExpireSeconds(long expireSeconds) {
-            this.expire = Duration.ofSeconds(expireSeconds);
-        }
-
-        /**
-         * 获取请求体最大缓存字节数（向后兼容）
-         *
-         * @return 字节数
-         */
-        public int getMaxBodySizeBytes() {
-            return maxBodySize != null ? (int) maxBodySize.toBytes() : 2 * 1024 * 1024;
-        }
-
-        /**
-         * 设置请求体最大缓存字节数（向后兼容）
-         *
-         * @param maxBodySizeBytes 字节数
-         */
-        public void setMaxBodySizeBytes(int maxBodySizeBytes) {
-            this.maxBodySize = DataSize.ofBytes(maxBodySizeBytes);
-        }
-
-        /**
          * 应用标识请求头名称（默认 X-App-Id）
          */
         private String headerAppId = "X-App-Id";
@@ -368,24 +314,6 @@ public class WebProperties {
          * 请求体缓存最大字节数载荷上限（强类型 DataSize 防 OOM，默认 2MB）
          */
         private DataSize maxBodySize = DataSize.ofMegabytes(2);
-
-        /**
-         * 获取请求体最大缓存字节数（向后兼容）
-         *
-         * @return 字节数
-         */
-        public int getMaxBodySizeBytes() {
-            return maxBodySize != null ? (int) maxBodySize.toBytes() : 2 * 1024 * 1024;
-        }
-
-        /**
-         * 设置请求体最大缓存字节数（向后兼容）
-         *
-         * @param maxBodySizeBytes 字节数
-         */
-        public void setMaxBodySizeBytes(int maxBodySizeBytes) {
-            this.maxBodySize = DataSize.ofBytes(maxBodySizeBytes);
-        }
     }
 
     /**
@@ -409,24 +337,6 @@ public class WebProperties {
          * 采样日志排除路径白名单（Ant 风格匹配，如 /actuator/**）
          */
         private List<String> excludeUrls = new ArrayList<>();
-
-        /**
-         * 获取单次最大采样截断字节数（向后兼容）
-         *
-         * @return 字节数
-         */
-        public int getMaxPayloadSizeBytes() {
-            return maxPayloadSize != null ? (int) maxPayloadSize.toBytes() : 4096;
-        }
-
-        /**
-         * 设置单次最大采样截断字节数（向后兼容）
-         *
-         * @param maxPayloadSizeBytes 字节数
-         */
-        public void setMaxPayloadSizeBytes(int maxPayloadSizeBytes) {
-            this.maxPayloadSize = DataSize.ofBytes(maxPayloadSizeBytes);
-        }
     }
 
     /**
@@ -534,24 +444,6 @@ public class WebProperties {
          * 慢请求监控排除路径白名单（Ant 风格匹配，如 /actuator/**）
          */
         private List<String> excludeUrls = new ArrayList<>();
-
-        /**
-         * 获取判定阈值毫秒数（向后兼容）
-         *
-         * @return 毫秒数
-         */
-        public long getThresholdMillis() {
-            return threshold != null ? threshold.toMillis() : 3000L;
-        }
-
-        /**
-         * 设置判定阈值毫秒数（向后兼容）
-         *
-         * @param thresholdMillis 毫秒数
-         */
-        public void setThresholdMillis(long thresholdMillis) {
-            this.threshold = Duration.ofMillis(thresholdMillis);
-        }
     }
 
     /**

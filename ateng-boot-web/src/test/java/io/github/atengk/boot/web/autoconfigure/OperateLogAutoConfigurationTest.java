@@ -60,7 +60,7 @@ class OperateLogAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("默认加载 11 个敏感排除词基线，且支持通过配置文件覆盖 operate-log/log default-exclude-params 并感知 save 别名")
+    @DisplayName("默认加载 11 个敏感排除词基线，且支持通过配置文件覆盖 operate-log/log default-exclude-params")
     void shouldBindDefaultAndCustomExcludeParamsProperties() {
         contextRunner.withPropertyValues("ateng.boot.web.log.enabled=true")
                 .run(context -> {
@@ -75,7 +75,7 @@ class OperateLogAutoConfigurationTest {
                     OperateLogStorageProvider provider = context.getBean(OperateLogStorageProvider.class);
                     OperateLogModel model = new OperateLogModel();
                     model.setModule("autowire-check");
-                    provider.save(model);
+                    provider.store(model);
                 });
 
         contextRunner.withPropertyValues(

@@ -291,17 +291,16 @@ class AtengWebAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("验证 ateng.boot.web.api-version.header-name 别名经由 Spring Boot 属性绑定生效")
-    void shouldBindApiVersionHeaderNameAliasViaContextRunner() {
+    @DisplayName("验证 ateng.boot.web.api-version.header 经由 Spring Boot 属性绑定生效")
+    void shouldBindApiVersionHeaderViaContextRunner() {
         new WebApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(
                         io.github.atengk.boot.web.version.autoconfigure.AtengApiVersionAutoConfiguration.class
                 ))
-                .withPropertyValues("ateng.boot.web.api-version.header-name=X-Spec-Ver")
+                .withPropertyValues("ateng.boot.web.api-version.header=X-Spec-Ver")
                 .run(context -> {
                     io.github.atengk.boot.web.version.properties.ApiVersionProperties props =
                             context.getBean(io.github.atengk.boot.web.version.properties.ApiVersionProperties.class);
-                    assertThat(props.getHeaderName()).isEqualTo("X-Spec-Ver");
                     assertThat(props.getHeader()).isEqualTo("X-Spec-Ver");
                 });
     }

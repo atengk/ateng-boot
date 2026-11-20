@@ -51,6 +51,12 @@ class AtengCoreAutoConfigurationTest {
             assertThat(context).hasSingleBean(CoreProperties.class);
             assertThat(context).hasSingleBean(Snowflake.class);
 
+            CoreProperties properties = context.getBean(CoreProperties.class);
+            assertThat(properties.getSnowflake().getClockBackoffTolerance())
+                    .isEqualTo(java.time.Duration.ofMillis(Snowflake.DEFAULT_MAX_BACKWARD_MS));
+            assertThat(properties.getCache().getDefaultTtl())
+                    .isEqualTo(java.time.Duration.ofMinutes(30));
+
             Snowflake snowflake = context.getBean(Snowflake.class);
             assertThat(snowflake.getWorkerId()).isBetween(0L, 31L);
             assertThat(snowflake.getDatacenterId()).isBetween(0L, 31L);
@@ -70,7 +76,7 @@ class AtengCoreAutoConfigurationTest {
                         "ateng.boot.core.snowflake.datacenter-id=23",
                         "ateng.boot.core.snowflake.epoch=1700000000000",
                         "ateng.boot.core.snowflake.clock-backoff-tolerance=15ms",
-                        "ateng.boot.core.cache-ttl=45m"
+                        "ateng.boot.core.cache.default-ttl=45m"
                 )
                 .run(context -> {
                     assertThat(context).hasSingleBean(Snowflake.class);
@@ -85,8 +91,7 @@ class AtengCoreAutoConfigurationTest {
                     assertThat(properties.getSnowflake().getWorkerId()).isEqualTo(12L);
                     assertThat(properties.getSnowflake().getDatacenterId()).isEqualTo(23L);
                     assertThat(properties.getSnowflake().getClockBackoffTolerance().toMillis()).isEqualTo(15L);
-                    assertThat(properties.getEffectiveClockBackoffTolerance().toMillis()).isEqualTo(15L);
-                    assertThat(properties.getEffectiveCacheTtl().toMinutes()).isEqualTo(45L);
+                    assertThat(properties.getCache().getDefaultTtl().toMinutes()).isEqualTo(45L);
 
                     // 验证 IdUtil 静态门面已自动与容器配置同步
                     assertThat(IdUtil.getSnowflake()).isSameAs(snowflake);
@@ -95,20 +100,6 @@ class AtengCoreAutoConfigurationTest {
                     assertThat(info.workerId()).isEqualTo(12L);
                     assertThat(info.datacenterId()).isEqualTo(23L);
                     assertThat(info.epoch()).isEqualTo(1700000000000L);
-                });
-    }
-
-    @Test
-    @DisplayName("顶层时钟回拨配置回退验证：未指定 snowflake.clock-backoff-tolerance 时回退至顶层配置")
-    void shouldRespectTopLevelClockBackoffTolerance() {
-        contextRunner
-                .withPropertyValues("ateng.boot.core.clock-backoff-tolerance=12ms")
-                .run(context -> {
-                    assertThat(context).hasSingleBean(Snowflake.class);
-                    Snowflake snowflake = context.getBean(Snowflake.class);
-                    // snowflake.clockBackoffTolerance 默认是 5ms，所以通过 getEffectiveClockBackoffTolerance 进行统一推导
-                    CoreProperties properties = context.getBean(CoreProperties.class);
-                    assertThat(properties.getClockBackoffTolerance().toMillis()).isEqualTo(12L);
                 });
     }
 
@@ -177,7 +168,7 @@ class AtengCoreAutoConfigurationTest {
                     assertThat(context).hasSingleBean(CoreProperties.class);
                     CoreProperties properties = context.getBean(CoreProperties.class);
                     assertThat(properties.getCache().getDefaultMaxCapacity()).isEqualTo(256);
-                    assertThat(properties.getEffectiveCacheTtl().toMinutes()).isEqualTo(15L);
+                    assertThat(properties.getCache().getDefaultTtl().toMinutes()).isEqualTo(15L);
 
                     // 验证 SpelUtil 与 LambdaUtil 在绑定配置后正常工作
                     SpelUtil.parseExpression("100 + 200");

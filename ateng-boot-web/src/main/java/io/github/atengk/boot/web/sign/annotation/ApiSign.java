@@ -33,7 +33,7 @@ public @interface ApiSign {
     boolean signResponse() default true;
 
     /**
-     * 请求时效防重放时间窗口（秒，默认 -1 表示继承全局配置 ateng.boot.web.sign.expire-seconds；若大于 0 则覆盖全局配置）
+     * 请求时效防重放时间窗口（秒，默认 -1 表示继承全局配置 ateng.boot.web.sign.expire；若大于 0 则覆盖全局配置）
      */
     long expireSeconds() default -1L;
 

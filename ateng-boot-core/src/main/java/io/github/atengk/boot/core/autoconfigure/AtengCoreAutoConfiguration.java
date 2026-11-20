@@ -60,7 +60,9 @@ public class AtengCoreAutoConfiguration {
         public CoreCacheInitializer(CoreProperties properties) {
             if (properties != null) {
                 int maxCapacity = properties.getCache() != null ? properties.getCache().getDefaultMaxCapacity() : 1024;
-                Duration ttl = properties.getEffectiveCacheTtl();
+                Duration ttl = (properties.getCache() != null && properties.getCache().getDefaultTtl() != null)
+                        ? properties.getCache().getDefaultTtl()
+                        : Duration.ofMinutes(30);
                 SpelUtil.configureCache(maxCapacity, ttl);
                 LambdaUtil.configureCache(maxCapacity, ttl);
             }
@@ -94,7 +96,7 @@ public class AtengCoreAutoConfiguration {
         Long workerId = snowflakeProps != null ? snowflakeProps.getWorkerId() : null;
         Long datacenterId = snowflakeProps != null ? snowflakeProps.getDatacenterId() : null;
         long epoch = snowflakeProps != null ? snowflakeProps.getEpoch() : Snowflake.DEFAULT_EPOCH;
-        Duration tolerance = properties.getEffectiveClockBackoffTolerance();
+        Duration tolerance = snowflakeProps != null ? snowflakeProps.getClockBackoffTolerance() : null;
         long maxBackwardMs = tolerance != null ? Math.max(0, tolerance.toMillis()) : Snowflake.DEFAULT_MAX_BACKWARD_MS;
 
         Snowflake snowflake = new Snowflake(workerId, datacenterId, epoch, maxBackwardMs);

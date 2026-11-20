@@ -115,14 +115,13 @@ class ApiVersionRequestMappingHandlerMappingTest {
     }
 
     @Test
-    @DisplayName("ApiVersionProperties.headerName 与 header 别名配置同步生效")
-    void shouldSupportHeaderNameAlias() {
+    @DisplayName("ApiVersionProperties 默认与自定义 header 配置生效")
+    void shouldSupportCustomHeader() {
         ApiVersionProperties properties = new ApiVersionProperties();
-        assertThat(properties.getHeaderName()).isEqualTo("X-API-Version");
+        assertThat(properties.getHeader()).isEqualTo("X-API-Version");
 
-        properties.setHeaderName("X-Custom-API-Ver");
+        properties.setHeader("X-Custom-API-Ver");
         assertThat(properties.getHeader()).isEqualTo("X-Custom-API-Ver");
-        assertThat(properties.getHeaderName()).isEqualTo("X-Custom-API-Ver");
     }
 
     @RestController

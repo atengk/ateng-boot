@@ -49,7 +49,7 @@
 | **口令慢哈希与恒定校验** | 纯 JDK 原生 `PBKDF2WithHmacSHA256` 加盐慢哈希、防时序比对与迭代升级判定 | `PasswordUtil` | -（静态常量：`DEFAULT_ITERATIONS=310000`, `MIN_ITERATIONS=10000`, `MAX_ITERATIONS=5000000`） | `PasswordUtil.hash(CharSequence/char[])`, `hash(raw, iterations)`, `matches(CharSequence/char[], encodedPassword)`, `needsUpgrade(encodedPassword[, targetIterations])` | `PasswordUtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/password`), `CoreSecurityScenarioServiceTest.java` |
 | **数据传输与硬件校验和** | 纯原生数据传输与硬件报文校验和计算 | `ChecksumUtil` | - | `ChecksumUtil.crc32(data)`, `crc32Hex(data)`, `crc32c(data)`, `crc32cHex(data)`, `adler32(data)`, `adler32Hex(data)`, `verifyCrc32`, `verifyCrc32c`, `verifyAdler32`，支持 `InputStream` 流式计算 | `ChecksumUtilTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **单机流量整形与限流** | 纯无锁 CAS 纳秒级平滑令牌桶限流器 | `TokenBucketLimiter` | - | `new TokenBucketLimiter(capacity, refillRatePerSecond)`, `tryAcquire()`, `tryAcquire(permits)`, `tryAcquire(permits, timeout)`, `acquire()`, `acquire(permits)`, `getAvailableTokens()` | `TokenBucketLimiterTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
-| **核心配置外置化与发号器装配** | Core 配置属性绑定、受管雪花发号器与缓存自动装配 | `CoreProperties`, `SnowflakeProperties`, `CacheProperties`, `AtengCoreAutoConfiguration`, `CoreCacheInitializer`, `CoreSnowflakeInitializer`, `Snowflake` | `ateng.boot.core.clock-backoff-tolerance`, `ateng.boot.core.cache-ttl`, `ateng.boot.core.snowflake.enabled`, `worker-id`, `datacenter-id`, `epoch`, `clock-backoff-tolerance`, `ateng.boot.core.cache.default-max-capacity`, `default-ttl` | 自动装配 `@Bean Snowflake`，自适应网卡/IP推导；时钟回拨熔断转译；`CoreSnowflakeInitializer` 同步受管 `Snowflake` 至 `IdUtil` 并在销毁时对称解绑；`CoreCacheInitializer` 自动将 `cache` 配置绑定至 `SpelUtil` 与 `LambdaUtil` | `AtengCoreAutoConfigurationTest.java`, `SnowflakeTest.java`, `CoreSecurityControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **核心配置外置化与发号器装配** | Core 配置属性绑定、受管雪花发号器与缓存自动装配 | `CoreProperties`, `SnowflakeProperties`, `CacheProperties`, `AtengCoreAutoConfiguration`, `CoreCacheInitializer`, `CoreSnowflakeInitializer`, `Snowflake` | `ateng.boot.core.snowflake.enabled`, `worker-id`, `datacenter-id`, `epoch`, `clock-backoff-tolerance`, `ateng.boot.core.cache.default-max-capacity`, `default-ttl` | 自动装配 `@Bean Snowflake`，自适应网卡/IP推导；时钟回拨熔断转译；`CoreSnowflakeInitializer` 同步受管 `Snowflake` 至 `IdUtil` 并在销毁时对称解绑；`CoreCacheInitializer` 自动将 `cache` 配置绑定至 `SpelUtil` 与 `LambdaUtil` | `AtengCoreAutoConfigurationTest.java`, `SnowflakeTest.java`, `CoreSecurityControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **系统环境基线防卫** | 启动前置正交校准网络、Headless/Socket 超时与时区编码 | `SystemEnvironmentPostProcessor`, `SystemProperties` | `ateng.boot.core.system.enabled`, `timezone`, `timezone-guard-enabled`, `slow-bean-threshold`, `shutdown-uptime-enabled` | 通过 `META-INF/spring.factories` (`EnvironmentPostProcessor`) 触发三阶段正交防卫：无条件绑定 `ateng.boot.core.net.*` 至 `NetUtil`（不受 `system.enabled` 影响），激活 Headless 与底层 Socket `10000ms` 默认超时，按 `timezone-guard-enabled` 独立控制 `Asia/Shanghai` 时区与 `UTF-8` 校准 | `SystemEnvironmentPostProcessorTest.java`, `CoreSystemScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **零 XML 工业级日志引擎** | 零 XML 模式高亮彩色控制台、traceId 注入与双文件异步切片落盘 | `LoggingEnvironmentPostProcessor`, `LoggingProperties` | `ateng.boot.core.logging.enabled`, `console.enabled`, `file.enabled`, `file.path`, `file.max-file-size`, `file.max-history`, `file.total-size-cap`, `file.split-error`, `file.clean-history-on-start` | 零 XML 自动注入控制台彩色高亮与 MDC `traceId` 追踪格式；支持纯配置开启磁盘双文件落盘 (`${spring.application.name}-info.log` / `-error.log`，缺省 `application-info.log` / `-error.log`)、大小时间滚动切片与启动自清理 | `LoggingEnvironmentPostProcessorTest.java`, `CoreSystemScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **方法级慢调用主动告警** | 声明式慢方法执行耗时毫秒级监控、复合敏感参数脱敏与领域事件发布 | `@SlowAlert`, `SlowAlertAspect`, `SlowAlertEvent`, `SlowAlertProperties` | `ateng.boot.core.slow-alert.enabled`, `default-threshold`, `include-args`, `max-args-length` | `@SlowAlert(threshold = 30, includeArgs = true)` 监控耗时，超阈值输出 `[SLOW-ALERT]` WARN 并发布 `SlowAlertEvent`（含 `traceId`/异常隔离），入参复合键脱敏与 1KB 截断防爆 | `SlowAlertAspectTest.java`, `AtengCoreAutoConfigurationTest.java`, `SampleSlowAlertEventListener.java`, `CoreSystemScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` (`POST /sample/core/system/slow-alert`) |
@@ -1999,7 +1999,7 @@ ateng:
     core:
       cache:
         default-max-capacity: 1024 # 受管 LRU 缓存默认最大容量（默认 1024）
-        default-ttl: 30m           # 默认存活时间 TTL（未配置时沿用 ateng.boot.core.cache-ttl）
+        default-ttl: 30m           # 默认存活时间 TTL（强类型 Duration，默认 30m）
 ```
 
 #### 核心生产边界与受管缓存治理
@@ -2488,7 +2488,7 @@ ateng:
     core:
       cache:
         default-max-capacity: 1024 # 受管 AST/反射 LRU 缓存默认最大容量（默认 1024）
-        default-ttl: 30m           # 默认存活时间 TTL（未配置时沿用 ateng.boot.core.cache-ttl）
+        default-ttl: 30m           # 默认存活时间 TTL（强类型 Duration，默认 30m）
 ```
 
 #### 核心生产边界与非功能语义
@@ -2909,10 +2909,6 @@ ateng:
   boot:
     # ==================== 0. Core 核心通用底座配置 (CoreProperties) ====================
     core:
-      # 全局默认时钟回拨容忍阈值（强类型 Duration 格式，默认 5ms）
-      clock-backoff-tolerance: 10ms
-      # 进程内内存缓存默认存活时间（强类型 Duration 格式，默认 30m）
-      cache-ttl: 30m
       # 系统运行环境基线防卫配置
       system:
         # 是否启用系统环境防卫总开关（默认 true）
@@ -2967,7 +2963,7 @@ ateng:
         datacenter-id: 1
         # 基准时间戳纪元（毫秒，默认 1767225600000L - 2026-01-01 00:00:00 UTC）
         epoch: 1767225600000
-        # 节点专属时钟回拨容忍阈值（强类型 Duration 格式，缺省时回退至顶层配置）
+        # 节点专属时钟回拨容忍阈值（强类型 Duration 格式，默认 5ms）
         clock-backoff-tolerance: 10ms
       # 内存缓存容器配置
       cache:
@@ -2999,7 +2995,7 @@ ateng:
       max-pool-size: 16
       # 阻塞队列容量（平台线程模式，默认 1000）
       queue-capacity: 1000
-      # 空闲线程存活时间（强类型 Duration 格式，支持 60s, 1m 等，默认 60s；向后兼容 keep-alive-seconds: 60）
+      # 空闲线程存活时间（强类型 Duration 格式，支持 60s, 1m 等，默认 60s）
       keep-alive: 60s
       # 平台线程工作线程名前缀（主池默认 "ateng-async-"）
       thread-name-prefix: "ateng-async-"
@@ -3011,7 +3007,7 @@ ateng:
       rejected-policy: WARN_CALLER_RUNS
       # 容器关闭时是否等待任务执行完成（优雅停机，默认 true）
       wait-for-tasks-to-complete-on-shutdown: true
-      # 优雅停机等待超时时间（强类型 Duration 格式，支持 60s, 1m 等，默认 60s；向后兼容 await-termination-seconds: 60）
+      # 优雅停机等待超时时间（强类型 Duration 格式，支持 60s, 1m 等，默认 60s）
       await-termination: 60s
 
       # ==================== 2. 多业务专属受管子池声明 (pools: 舱壁物理隔离) ====================

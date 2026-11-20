@@ -286,19 +286,6 @@ class OperateLogAspectTest {
     }
 
     @Test
-    @DisplayName("OperateLogStorageProvider 对称兼容：default save(model) 自动委托 store(model)")
-    void shouldDelegateSaveToStoreOnStorageProvider() {
-        AtomicReference<OperateLogModel> saved = new AtomicReference<>();
-        OperateLogStorageProvider provider = saved::set;
-        OperateLogModel model = new OperateLogModel();
-        model.setTraceId("trace-save-alias");
-
-        provider.save(model);
-
-        assertThat(saved.get()).isSameAs(model);
-    }
-
-    @Test
     @DisplayName("默认敏感参数脱敏基线：未配注解 excludeParams 时自动掩码全部默认敏感字段（忽略大小写及嵌套字段）")
     void shouldMaskDefaultSensitiveParamsWhenAnnotationExcludeEmpty() {
         Map<String, Object> nested = new LinkedHashMap<>();

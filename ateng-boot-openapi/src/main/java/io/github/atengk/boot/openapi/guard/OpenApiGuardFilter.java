@@ -1,5 +1,6 @@
 package io.github.atengk.boot.openapi.guard;
 
+import io.github.atengk.boot.core.util.CidrMatcher;
 import io.github.atengk.boot.openapi.properties.GuardMode;
 import io.github.atengk.boot.openapi.properties.OpenApiProperties;
 import jakarta.servlet.FilterChain;
@@ -53,8 +54,8 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
     private static final String SA_TOKEN_STP_UTIL_CLASS = "cn.dev33.satoken.stp.StpUtil";
 
     private final OpenApiProperties properties;
-    private volatile OpenApiCidrMatcher cidrMatcher;
-    private volatile OpenApiCidrMatcher trustedProxyMatcher;
+    private volatile CidrMatcher cidrMatcher;
+    private volatile CidrMatcher trustedProxyMatcher;
 
     public OpenApiGuardFilter(OpenApiProperties properties) {
         this.properties = properties;
@@ -94,13 +95,13 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
                 if (validCidrs.isEmpty()) {
                     throw new IllegalStateException("OpenAPI IP whitelist is enabled, but ateng.boot.openapi.guard.ip-whitelist.cidrs is empty.");
                 }
-                this.cidrMatcher = new OpenApiCidrMatcher(validCidrs);
+                this.cidrMatcher = new CidrMatcher(validCidrs);
             } else if (!validCidrs.isEmpty()) {
-                this.cidrMatcher = new OpenApiCidrMatcher(validCidrs);
+                this.cidrMatcher = new CidrMatcher(validCidrs);
             }
             List<String> validProxies = ipWhitelist != null ? toNonBlankList(ipWhitelist.getTrustedProxies()) : Collections.emptyList();
             if (!validProxies.isEmpty()) {
-                this.trustedProxyMatcher = new OpenApiCidrMatcher(validProxies);
+                this.trustedProxyMatcher = new CidrMatcher(validProxies);
             }
         }
     }
@@ -138,7 +139,7 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
         boolean ipWhitelistEnabled = (ipWhitelist != null && ipWhitelist.isEnabled()) || (mode == GuardMode.IP_WHITELIST);
         if (ipWhitelistEnabled) {
             String clientIp = extractClientIp(request);
-            OpenApiCidrMatcher matcher = getOrCreateCidrMatcher();
+            CidrMatcher matcher = getOrCreateCidrMatcher();
             if (matcher == null || !matcher.matches(clientIp)) {
                 log.warn("OpenAPI document access rejected: client IP [{}] not in whitelist for path [{}]", clientIp, path);
                 writePlainError(response, HttpServletResponse.SC_FORBIDDEN,
@@ -186,7 +187,7 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
     /**
      * 获取或延迟构建 CIDR 匹配器
      */
-    private OpenApiCidrMatcher getOrCreateCidrMatcher() {
+    private CidrMatcher getOrCreateCidrMatcher() {
         if (cidrMatcher == null) {
             cidrMatcher = buildMatcherIfPresent(false);
         }
@@ -196,14 +197,14 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
     /**
      * 获取或延迟构建受信任反向代理节点 CIDR 匹配器
      */
-    private OpenApiCidrMatcher getOrCreateTrustedProxyMatcher() {
+    private CidrMatcher getOrCreateTrustedProxyMatcher() {
         if (trustedProxyMatcher == null) {
             trustedProxyMatcher = buildMatcherIfPresent(true);
         }
         return trustedProxyMatcher;
     }
 
-    private OpenApiCidrMatcher buildMatcherIfPresent(boolean trustedProxy) {
+    private CidrMatcher buildMatcherIfPresent(boolean trustedProxy) {
         if (properties.getGuard() == null) {
             return null;
         }
@@ -212,7 +213,7 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
             return null;
         }
         List<String> cidrs = toNonBlankList(trustedProxy ? ipWhitelist.getTrustedProxies() : ipWhitelist.getCidrs());
-        return cidrs.isEmpty() ? null : new OpenApiCidrMatcher(cidrs);
+        return cidrs.isEmpty() ? null : new CidrMatcher(cidrs);
     }
 
     /**
@@ -234,7 +235,7 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
             return "";
         }
         String rawRemoteAddr = request.getRemoteAddr();
-        String physicalIp = rawRemoteAddr != null ? OpenApiCidrMatcher.stripPort(rawRemoteAddr.trim()) : "";
+        String physicalIp = rawRemoteAddr != null ? CidrMatcher.stripPort(rawRemoteAddr.trim()) : "";
 
         OpenApiProperties.IpWhitelist ipWhitelist = (properties.getGuard() != null)
                 ? properties.getGuard().getIpWhitelist()
@@ -250,7 +251,7 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
         }
 
         if (hasNonBlankElement(ipWhitelist.getTrustedProxies())) {
-            OpenApiCidrMatcher proxyMatcher = getOrCreateTrustedProxyMatcher();
+            CidrMatcher proxyMatcher = getOrCreateTrustedProxyMatcher();
             if (proxyMatcher == null || !proxyMatcher.matches(physicalIp)) {
                 log.debug("Untrusted remote address [{}] attempted to pass proxy header [{}]; falling back to physical IP.",
                         physicalIp, trustedHeader);
@@ -262,7 +263,7 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
         for (String part : parts) {
             String candidate = part.trim();
             if (!candidate.isBlank() && !"unknown".equalsIgnoreCase(candidate)) {
-                return OpenApiCidrMatcher.stripPort(candidate);
+                return CidrMatcher.stripPort(candidate);
             }
         }
 

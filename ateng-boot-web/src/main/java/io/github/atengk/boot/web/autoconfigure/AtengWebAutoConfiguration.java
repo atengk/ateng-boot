@@ -85,7 +85,7 @@ public class AtengWebAutoConfiguration {
      * @param webProperties 配置属性
      * @return FilterRegistrationBean 实例
      */
-    @Bean(name = {"contentCachingFilterRegistration", "requestBodyCachingFilterRegistration"})
+    @Bean
     @Conditional(ContentCachingCondition.class)
     @ConditionalOnMissingBean(name = "contentCachingFilterRegistration")
     public FilterRegistrationBean<ContentCachingFilter> contentCachingFilterRegistration(WebProperties webProperties) {

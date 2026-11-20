@@ -113,8 +113,8 @@ _Avoid_: OperationLog, SysLog, UserLog, ActionLog
 _Avoid_: SysLogAspect, AuditAspect, ActionAspect
 
 **OperateLogStorageProvider**:
-操作审计存储解耦 `@FunctionalInterface` SPI 接口，以 `store(OperateLogModel)` 作为唯一抽象主契约（并保留 `save(OperateLogModel)` 作为向后兼容 `default` 委托别名），支持自定义接入数据库、ES 或 Kafka。
-_Avoid_: AuditStore, LogStorage, OperateLogDao, AuditStorageProvider
+操作审计存储解耦 `@FunctionalInterface` SPI 接口，以 `store(OperateLogModel)` 作为唯一抽象契约，支持自定义接入数据库、ES 或 Kafka。
+_Avoid_: AuditStore, LogStorage, OperateLogDao, AuditStorageProvider, OperateLogStorageProvider#save
 
 **AtengGracefulShutdownHandler**:
 云原生优雅停机排空生命周期处理器，协调就绪探针反转、两阶段自适应排空等待（`drain-timeout` / `quiet-period` / `poll-interval`）、SmartLifecycle 兜底与原子幂等防重入。
@@ -397,8 +397,8 @@ _Avoid_: CaptchaConfig, CaptchaAutoConfig
 ## Disambiguation & Errata
 
 - **WebLogEvent**: 历史拟定审计事件载体；当前模块坚持零多余内存开销，直接由 `WebLogAspect` 结构化输出 SLF4J JSON 审计日志，无需额外中间事件模型。
-- **RequestBodyCachingFilter**: 历史加签专用请求体缓存过滤器（`io.github.atengk.boot.web.sign.filter.RequestBodyCachingFilter`），现已标注 `@Deprecated(since = "1.0.0", forRemoval = false)` 并收缩继承委托给通用 `ContentCachingFilter`（`ateng.boot.web.body-cache.max-body-size`）；新接入应统一依赖 `ContentCachingFilter` 与 `CachedBodyHttpServletRequest`。
-- **OperateLogStorageProvider#save**: 向后兼容 `default` 别名方法，统一委托至唯一抽象主契约 `store(OperateLogModel)`，保证 `OperateLogStorageProvider` 维持 `@FunctionalInterface` Lambda 单方法语义且不破坏旧版实现。
+- **RequestBodyCachingFilter**: 已净切移除的历史加签专用请求体缓存过滤器，统一由 `ContentCachingFilter` 与 `CachedBodyHttpServletRequest` 替代。
+- **OperateLogStorageProvider#save**: 已净切移除的历史别名方法，统一使用唯一抽象契约 `store(OperateLogModel)`。
 - **EnumItemVO**: 历史拟定枚举字典视图模型；当前模块统一复用 Core 底座提供的强类型 `OptionItem<T>` 标准选项模型（参见 ADR-0060）。
 - **MultipartConfig**: 历史拟定文件上传配置类；100% 依托 Spring Boot 原生 `spring.servlet.multipart.*` 机制，不额外引入无谓配置包装类。
 - **UserAgentUtil / ClientInfo**: 历史拟定客户端解析原语；为遵守“零臃肿依赖与底座优先”铁律（ADR-0011），模块严禁引入重型外部 UA 规则库，推荐业务侧按需轻量处理。
