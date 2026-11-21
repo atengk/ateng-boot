@@ -16,3 +16,8 @@ ateng:
   boot:
     liteflow:
       enabled: true
+      trace:
+        slow-chain-threshold: 150ms
+        slow-node-threshold: 60ms
+      dynamic-rule:
+        evict-removed-on-refresh: true

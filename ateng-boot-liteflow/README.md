@@ -13,7 +13,7 @@
 | **执行门面** | 预置上下文同步执行 | `LiteflowTemplate` | `enabled = true` | `<T> T executeWithContext(String, T)`<br>`<T> T executeWithContext(String, Object, T)` | `LiteflowTemplateTest` |
 | **执行门面** | 多上下文编排与轨迹 | `LiteflowTemplate` | `enabled = true` | `LiteflowResponse execute(String, Class<?>, Class<?>, Class<?>...)`<br>`LiteflowResponse execute(String, Object, Class<?>, Class<?>, Class<?>...)`<br>`LiteflowResponse executeMultiple(String, Class<?>...)`<br>`LiteflowResponse executeMultiple(String, Object, Class<?>...)`<br>`LiteflowTraceResult<LiteflowResponse> executeMultipleWithTrace(...)`<br>`Object[] executeMultipleWithContext(String, Object, Object...)`<br>`LiteflowTraceResult<Object[]> executeMultipleWithContextWithTrace(...)` | `LiteflowTemplateTest` |
 | **执行门面** | 链路轨迹提取与 MDC | `LiteflowTemplate`<br>`LiteflowExecutionTrace` | `trace.enable-mdc = false`<br>`trace.mdc-key = "liteflow_trace"` | `<T> LiteflowTraceResult<T> executeWithTrace(...)`<br>`LiteflowExecutionTrace extractTrace(...)`<br>`void clearTraceMdc()` / `static void clearMdcTrace()`<br>`AutoCloseable withTraceMdcScope(LiteflowExecutionTrace)` | `LiteflowObservabilityTest`<br>`LiteflowPriceCalculationController`<br>`LiteflowRiskControlController` |
-| **执行门面** | 受管异步流式编排 | `LiteflowTemplate` | `enabled = true` | `<T> CompletableFuture<T> executeAsync(...)`<br>`<T> CompletableFuture<T> executeAsyncWithContext(...)`<br>`<T> CompletableFuture<LiteflowTraceResult<T>> executeAsyncWithTrace(...)`<br>支持 `Duration timeout` 超时中断 | `LiteflowTemplateTest` |
+| **执行门面** | 受管异步流式编排 | `LiteflowTemplate` | `enabled = true` | `<T> CompletableFuture<T> executeAsync(...)`<br>`<T> CompletableFuture<T> executeAsyncWithContext(...)`<br>`<T> CompletableFuture<LiteflowTraceResult<T>> executeAsyncWithTrace(...)`<br>支持 `Duration timeout` 超时中断 | `LiteflowTemplateTest`<br>`LiteflowPriceCalculationController` |
 | **执行门面** | 在线即时 EL 执行 | `LiteflowTemplate` | `enabled = true` | `<T> T executeEl(String, ...)`<br>`<T> T executeElWithContext(String, ...)`<br>`<T> LiteflowTraceResult<T> executeElWithTrace(...)` | `LiteflowTemplateTest`<br>`LiteflowObservabilityTest`<br>`LiteflowDynamicRuleController` |
 | **决策路由** | 决策路由表编排与重载 | `LiteflowTemplate`<br>`LiteflowRouteResult` | `dynamic-rule.enabled = true` | `<T> T executeRoute(String, ...)`<br>`<T> LiteflowRouteResult<T> executeRouteWithTrace(...)`<br>`void reloadRouteChain(String, String, String)`<br>`void reloadRouteChain(String, String, String, String)` | `LiteflowDynamicRuleSourceTest`<br>`LiteflowPromotionRoutingController` |
 | **动态治流** | 规则热重载与历史回退 | `LiteflowTemplate` | `dynamic-rule.max-history-snapshots = 5` | `void reloadRule()` / `void reloadRule(String)`<br>`void reloadChain(String, String)`<br>`boolean rollbackChain(String)` / `List<String> getChainHistorySnapshots(String)`<br>`boolean containChain(String)` / `boolean removeChain(String)` | `LiteflowTemplateTest`<br>`LiteflowDynamicRuleSourceTest`<br>`LiteflowDynamicRuleController` |
@@ -23,11 +23,11 @@
 | **泛型组件** | 普通处理与 Saga 补偿 | `BaseNodeComponent<T>` | - | `T getContext()` / `void process(T)` / `void rollback(T)`<br>`T onError(Exception, T)` / `boolean isAccess(T)`<br>`void endFlow()` / `void deliverTo(String, Object)` / `<D> D receiveDelivery(Class<D>)`<br>`void invokeSubChain(String)` / `void invokeSubChain(String, Object)` | `LiteflowComponentHierarchyTest`<br>`DeductInventoryCmp`<br>`SettleItemProcessCmp` |
 | **泛型组件** | 分支与循环控制谱系 | `BaseIfComponent<T>`<br>`BaseSwitchComponent<T>`<br>`BaseForComponent<T>`<br>`BaseWhileComponent<T>`<br>`BaseBreakComponent<T>`<br>`BaseIteratorComponent<T>` | - | `boolean processIf(T)` / `String processSwitch(T)`<br>`int processFor(T)` / `boolean processWhile(T)`<br>`boolean processBreak(T)` / `Iterator<?> processIterator(T)`<br>均内置强类型 `getContext()`、`isAccess(T)`、`onError(Exception, T)` | `LiteflowComponentHierarchyTest`<br>`CheckBlacklistIfCmp`<br>`RiskDecisionSwitchCmp`<br>`SettleItemIteratorCmp`<br>`SettleTaxCheckIfCmp` |
 | **组件辅助** | 参数标签与迭代提取 | `Base*Component<T>`<br>`ComponentSupport` | - | `String getTag()` / `Integer getLoopIndex()`<br>`<D> D getCmpData(Class<D>)` / `<D> List<D> getCmpDataList(Class<D>)`<br>`<P> P getRequestData(Class<P>)` / `<E> E getCurrLoopObject(Class<E>)`<br>`ComponentSupport.resolveContext / deliverTo / receiveDelivery` | `LiteflowComponentHierarchyTest`<br>`SettleItemProcessCmp` |
-| **规则源 SPI** | 多源动态加载与调度 | `LiteflowRuleSourceProvider`<br>`JdbcLiteflowRuleSourceProvider`<br>`LiteflowRuleSourceManager` | `dynamic-rule.enabled = true`<br>`dynamic-rule.auto-load-on-startup = true`<br>`dynamic-rule.fail-fast = false`<br>`dynamic-rule.evict-removed-on-refresh = true`<br>`dynamic-rule.database.*` | `LiteflowRuleSourceProvider#loadRules()` / `loadRule(String)` / `getName()` / `getOrder()`<br>`LiteflowRuleSourceManager#refreshAll()` / `refreshChain(String)` / `refreshChain(String, String)` / `refreshRouteChain(...)` / `loadAllRules()` / `loadRule(String)` / `rollbackChain(String)` / `getChainHistorySnapshots(String)` / `getManagedChainIds()` / `getProviders()` | `LiteflowDynamicRuleSourceTest` |
+| **规则源 SPI** | 多源动态加载与调度 | `LiteflowRuleSourceProvider`<br>`JdbcLiteflowRuleSourceProvider`<br>`LiteflowRuleSourceManager` | `dynamic-rule.enabled = true`<br>`dynamic-rule.auto-load-on-startup = true`<br>`dynamic-rule.fail-fast = false`<br>`dynamic-rule.evict-removed-on-refresh = true`<br>`dynamic-rule.database.*` | `LiteflowRuleSourceProvider#loadRules()` / `loadRule(String)` / `getName()` / `getOrder()`<br>`LiteflowRuleSourceManager#refreshAll()` / `refreshChain(String)` / `refreshChain(String, String)` / `refreshRouteChain(...)` / `loadAllRules()` / `loadRule(String)` / `rollbackChain(String)` / `getChainHistorySnapshots(String)` / `getManagedChainIds()` / `getProviders()` | `LiteflowDynamicRuleSourceTest`<br>`SampleDynamicRuleSourceProvider`<br>`LiteflowDynamicRuleController` |
 | **规则事件** | 热更新领域事件总线 | `LiteflowRuleRefreshEvent`<br>`LiteflowRuleRefreshListener` | `dynamic-rule.enabled = true` | `static LiteflowRuleRefreshEvent refreshAll(Object)`<br>`static LiteflowRuleRefreshEvent refreshChain(Object, String)`<br>`static LiteflowRuleRefreshEvent refreshChain(Object, String, String)`<br>`static LiteflowRuleRefreshEvent refreshContent(Object, String)` | `LiteflowDynamicRuleSourceTest`<br>`LiteflowDynamicRuleController` |
 | **执行切面** | 三阶段全局执行拦截器 | `LiteflowExecutionInterceptor` | `enabled = true` | `boolean supports(String chainId)` / `int getOrder()`<br>`void beforeExecute(String, Object)`<br>`void afterExecute(String, Object, LiteflowExecutionTrace)`<br>`void onError(String, Object, LiteflowExecutionTrace, Throwable)` | `LiteflowTemplateTest`<br>`SampleAuditExecutionInterceptor`<br>`LiteflowSampleE2eTest` |
 | **线程治理** | 受管线程池与超时中断 | `LiteflowGlobalExecutorBuilder`<br>`ContextPropagatingExecutorService`<br>`FlowThreadTracker`<br>`FlowTimeoutInterruptionLifeCycle` | `thread-pool.propagate-context = true`<br>`thread-pool.interrupt-on-timeout = true`<br>`thread-pool.use-managed-pool = true`<br>`thread-pool.executor-class`<br>`thread-pool.core-pool-size = 16`<br>`thread-pool.max-pool-size = 64`<br>`thread-pool.queue-capacity = 1000`<br>`thread-pool.keep-alive = 60s`<br>`thread-pool.thread-name-prefix`<br>`when-max-wait-timeout` | 桥接受管线程池透传 `MDC/User/TenantId/IgnoreTenant` 四维上下文；`WHEN` 硬超时毫秒级中断防悬挂；`DisposableBean` 优雅停机；全链路 `ReentrantLock` 消除虚拟线程 Pinning | `LiteflowThreadContextPropagationTest`<br>`ContextPropagatingExecutorServiceTest`<br>`LiteflowResilienceAndRollbackTest`<br>`LiteflowEnvironmentPostProcessorTest`<br>`AtengLiteflowPropertiesTest` |
-| **可观测性** | 慢执行阈值与度量导出 | `LiteflowSlowExecutionRecorder`<br>`LiteflowMetricsBinder`<br>`LiteflowExecutionTrace` | `trace.slow-chain-threshold`<br>`trace.slow-node-threshold`<br>`metrics.enabled = true` | 轨迹标记 `isSlow()` 与 `getSlowNodeIds()` 并打 `WARN` 日志；导出 `liteflow.chain.executions`、`liteflow.chain.duration`、`liteflow.node.duration`、`liteflow.chain.slow.executions`、`liteflow.node.slow.executions`（动态 EL 自动归一化为 `DYNAMIC_EL`） | `LiteflowObservabilityTest` |
+| **可观测性** | 慢执行阈值与度量导出 | `LiteflowSlowExecutionRecorder`<br>`LiteflowMetricsBinder`<br>`LiteflowExecutionTrace` | `trace.slow-chain-threshold`<br>`trace.slow-node-threshold`<br>`metrics.enabled = true` | 轨迹标记 `isSlow()` 与 `getSlowNodeIds()` 并打 `WARN` 日志；导出 `liteflow.chain.executions`、`liteflow.chain.duration`、`liteflow.node.duration`、`liteflow.chain.slow.executions`、`liteflow.node.slow.executions`（动态 EL 自动归一化为 `DYNAMIC_EL`） | `LiteflowObservabilityTest`<br>`DynamicComplianceAuditCmp`<br>`LiteflowDynamicRuleController` |
 
 ---
 
@@ -380,14 +380,32 @@ ateng:
 #### 实战业务代码
 
 ```java
-// 异步编排带 Duration 硬超时与四维上下文自动透传（来自 LiteflowTemplateTest 契约模式）
-CompletableFuture<LiteflowTraceResult<PriceCalculationContext>> future = liteflowTemplate.executeAsyncWithTrace(
-        "price-calc-flow",
-        request,
-        context,
-        Duration.ofSeconds(3)
-);
-LiteflowTraceResult<PriceCalculationContext> result = future.get(5, TimeUnit.SECONDS);
+// 来自 Sample: LiteflowPriceCalculationController#calculatePriceAsync
+@PostMapping("/calculate-async")
+public Result<PriceCalculationResponse> calculatePriceAsync(@Valid @RequestBody PriceCalculationRequest request) {
+    PriceCalculationContext context = buildContext(request);
+    CompletableFuture<LiteflowTraceResult<PriceCalculationContext>> future = liteflowTemplate.executeAsyncWithTrace(
+            "price-calc-flow",
+            request,
+            context,
+            Duration.ofSeconds(3)
+    );
+    try {
+        LiteflowTraceResult<PriceCalculationContext> traceResult = future.get(5, TimeUnit.SECONDS);
+        return Result.success(buildResponse(traceResult));
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new BusinessException("异步算价任务被中断", e);
+    } catch (ExecutionException e) {
+        Throwable cause = e.getCause();
+        if (cause instanceof RuntimeException runtimeException) {
+            throw runtimeException;
+        }
+        throw new BusinessException("异步算价任务执行异常", cause);
+    } catch (TimeoutException e) {
+        throw new BusinessException("异步算价任务等待超时", e);
+    }
+}
 ```
 
 #### 核心机制与边界防御
@@ -571,9 +589,14 @@ public Result<String> publishRefreshEvent(
     }
 }
 
-// 2. 全量刷新动态规则源并获取只读纳管规则快照（来自 LiteflowDynamicRuleSourceTest）
-ruleSourceManager.refreshAll();
-Set<String> managed = ruleSourceManager.getManagedChainIds();
+// 2. 从动态规则源物理移除规则并触发全量刷新，自动下线孤儿链（来自 Sample: LiteflowDynamicRuleController）
+@PostMapping("/source-rule/evict")
+public Result<Set<String>> evictSourceRule(@NotBlank(message = "规则链 chainId 不能为空") @RequestParam("chainId") String chainId) {
+    sampleRuleSourceProvider.removeRule(chainId);
+    ruleSourceManager.refreshAll();
+    Set<String> managed = ruleSourceManager.getManagedChainIds();
+    return Result.success(managed);
+}
 ```
 
 #### 核心机制与边界防御
@@ -687,8 +710,8 @@ ateng:
   boot:
     liteflow:
       trace:
-        slow-chain-threshold: 500ms   # 慢规则链告警阈值（默认 null，不开启）
-        slow-node-threshold: 100ms    # 慢组件节点告警阈值（默认 null，不开启）
+        slow-chain-threshold: 150ms   # 慢规则链告警阈值（默认 null，不开启）
+        slow-node-threshold: 60ms     # 慢组件节点告警阈值（默认 null，不开启）
       metrics:
         enabled: true                 # 开启 Micrometer 自动导出（默认 true，需类路径含 MeterRegistry）
 ```
@@ -696,13 +719,16 @@ ateng:
 #### 实战业务代码
 
 ```java
-// 超阈值执行后，轨迹自动标记 slow=true 与 slowNodeIds，同时累加慢执行指标（来自 LiteflowObservabilityTest）
-LiteflowTraceResult<ObsContext> slowResult = liteflowTemplate.executeElWithTrace(
-        "THEN(obsNodeA, obsSlowNode);", ObsContext.class);
+// 来自 Sample: DynamicComplianceAuditCmp 与 LiteflowDynamicRuleController#executeEl
+// 执行含外部慢合规审计节点的即时 EL："THEN(dynamicValidateCmp, dynamicComplianceAuditCmp.tag(\"SLOW_AUDIT\"), dynamicEchoCmp);"
+LiteflowTraceResult<DynamicFlowContext> traceResult = liteflowTemplate.executeElWithTrace(
+        request.getEl(), request.getPayload(), DynamicFlowContext.class);
 
-LiteflowExecutionTrace slowTrace = slowResult.getTrace();
-boolean isSlow = slowTrace.isSlow();                 // true
-List<String> slowNodes = slowTrace.getSlowNodeIds(); // ["obsSlowNode"]
+LiteflowExecutionTrace trace = traceResult.getTrace();
+boolean slow = trace != null && trace.isSlow(); // true
+List<String> slowNodeIds = trace != null && trace.getSlowNodeIds() != null
+        ? trace.getSlowNodeIds()                  // ["dynamicComplianceAuditCmp"]
+        : Collections.emptyList();
 ```
 
 #### 核心机制与边界防御

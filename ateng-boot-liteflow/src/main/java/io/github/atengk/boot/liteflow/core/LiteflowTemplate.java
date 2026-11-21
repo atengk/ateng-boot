@@ -16,13 +16,11 @@ import io.github.atengk.boot.liteflow.exception.LiteflowExecutionException;
 import io.github.atengk.boot.liteflow.properties.AtengLiteflowProperties;
 import io.github.atengk.boot.liteflow.route.LiteflowRouteResult;
 import io.github.atengk.boot.liteflow.thread.FlowThreadTracker;
-import io.github.atengk.boot.liteflow.trace.ExecutionStepItem;
 import io.github.atengk.boot.liteflow.trace.LiteflowExecutionTrace;
 import io.github.atengk.boot.liteflow.trace.LiteflowTraceResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
-import org.springframework.core.OrderComparator;
 
 import java.time.Duration;
 import java.util.ArrayDeque;
@@ -61,8 +59,8 @@ public class LiteflowTemplate {
     private final FlowExecutor flowExecutor;
     private final Executor asyncExecutor;
     private final AtengLiteflowProperties properties;
-    private final List<LiteflowExecutionInterceptor> interceptors;
-    private final LiteflowSlowExecutionRecorder slowExecutionRecorder;
+    private final LiteflowInterceptorDispatcher interceptorDispatcher;
+    private final LiteflowSlowExecutionEvaluator slowExecutionEvaluator;
     private final ConcurrentMap<String, ChainSnapshotHistory> chainHistorySnapshots = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, String> activeChainEls = new ConcurrentHashMap<>();
 
@@ -93,19 +91,8 @@ public class LiteflowTemplate {
         this.flowExecutor = Objects.requireNonNull(flowExecutor, "flowExecutor 不能为空");
         this.asyncExecutor = asyncExecutor;
         this.properties = properties;
-        this.slowExecutionRecorder = slowExecutionRecorder;
-        if (interceptors == null || interceptors.isEmpty()) {
-            this.interceptors = Collections.emptyList();
-        } else {
-            List<LiteflowExecutionInterceptor> sorted = new ArrayList<>();
-            for (LiteflowExecutionInterceptor interceptor : interceptors) {
-                if (interceptor != null) {
-                    sorted.add(interceptor);
-                }
-            }
-            sorted.sort(OrderComparator.INSTANCE);
-            this.interceptors = Collections.unmodifiableList(sorted);
-        }
+        this.interceptorDispatcher = new LiteflowInterceptorDispatcher(interceptors);
+        this.slowExecutionEvaluator = new LiteflowSlowExecutionEvaluator(properties, slowExecutionRecorder);
     }
 
     /**
@@ -729,8 +716,8 @@ public class LiteflowTemplate {
             throw new IllegalArgumentException("contextBean 不能为空");
         }
         String routeChainId = (namespace != null && !namespace.isBlank()) ? namespace.trim() : "ROUTE_CHAIN";
-        List<LiteflowExecutionInterceptor> active = filterInterceptors(routeChainId);
-        invokeBeforeExecute(active, routeChainId, param);
+        List<LiteflowExecutionInterceptor> active = this.interceptorDispatcher.filter(routeChainId);
+        this.interceptorDispatcher.beforeExecute(active, routeChainId, param);
 
         long start = System.currentTimeMillis();
         List<LiteflowResponse> responses;
@@ -744,14 +731,15 @@ public class LiteflowTemplate {
         } catch (Exception e) {
             LiteflowExecutionException lex = new LiteflowExecutionException(routeChainId, null,
                     "执行决策路由表 [" + namespace + "] 失败: " + e.getMessage(), e);
-            invokeOnError(active, routeChainId, param, null, lex);
+            this.interceptorDispatcher.onError(active, routeChainId, param, null, lex);
             throw lex;
         }
         long totalDuration = System.currentTimeMillis() - start;
 
         if (responses == null || responses.isEmpty()) {
             log.debug("ateng-boot-liteflow: 决策路由表在命名空间 [{}] 未匹配到任何有效流程链", namespace);
-            invokeAfterExecute(active, routeChainId, param, buildRouteAggregateTrace(routeChainId, Collections.emptyList(), totalDuration));
+            this.interceptorDispatcher.afterExecute(active, routeChainId, param,
+                    this.slowExecutionEvaluator.buildRouteAggregateTrace(routeChainId, Collections.emptyList(), totalDuration));
             return new LiteflowRouteResult<>(contextBean, Collections.emptyList(), Collections.emptyList(), totalDuration);
         }
 
@@ -763,13 +751,14 @@ public class LiteflowTemplate {
             LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, -1L);
             if (response == null || !response.isSuccess()) {
                 LiteflowExecutionException ex = buildExecutionException(chainId, response, trace);
-                invokeOnError(active, routeChainId, param, trace, ex);
+                this.interceptorDispatcher.onError(active, routeChainId, param, trace, ex);
                 throw ex;
             }
             matchedChainIds.add(chainId);
             traces.add(trace);
         }
-        invokeAfterExecute(active, routeChainId, param, buildRouteAggregateTrace(routeChainId, traces, totalDuration));
+        this.interceptorDispatcher.afterExecute(active, routeChainId, param,
+                this.slowExecutionEvaluator.buildRouteAggregateTrace(routeChainId, traces, totalDuration));
         return new LiteflowRouteResult<>(contextBean, matchedChainIds, traces, totalDuration);
     }
 
@@ -1088,18 +1077,13 @@ public class LiteflowTemplate {
         }
 
         // 1. 获取当前规则链已有运行中定义与路由元数据
-        String existingEl = resolveCurrentChainEl(chainId);
-        Chain currentChain = FlowBus.containChain(chainId) ? FlowBus.getChain(chainId) : null;
-        String currentRouteEl = currentChain != null ? currentChain.getRouteEl() : null;
-        String currentNamespace = currentChain != null ? currentChain.getNamespace() : null;
+        ChainSnapshot currentSnapshot = captureCurrentChainSnapshot(chainId);
 
         // 2. 编译更新并同步记录当前活跃 EL 与历史快照（成功后才入快照，防未生效脏记录）
         try {
             FlowBus.reloadChain(chainId, el);
             activeChainEls.put(chainId, el);
-            if (existingEl != null && !existingEl.equals(el)) {
-                recordSnapshot(chainId, existingEl, currentRouteEl, currentNamespace);
-            }
+            recordSnapshotIfChanged(chainId, currentSnapshot, el);
             log.info("ateng-boot-liteflow: 成功动态更新/新建规则链 [{}] -> [{}]", chainId, el);
         } catch (Exception e) {
             throw new LiteflowExecutionException(chainId, null,
@@ -1151,25 +1135,13 @@ public class LiteflowTemplate {
         }
 
         // 1. 获取当前规则链已有运行中定义与路由元数据
-        String existingEl = resolveCurrentChainEl(chainId);
-        Chain currentChain = FlowBus.containChain(chainId) ? FlowBus.getChain(chainId) : null;
-        String currentRouteEl = currentChain != null ? currentChain.getRouteEl() : null;
-        String currentNamespace = currentChain != null ? currentChain.getNamespace() : null;
+        ChainSnapshot currentSnapshot = captureCurrentChainSnapshot(chainId);
 
         // 2. 编译决策路由链并记录活跃 EL 与历史快照（成功后才入快照，防未生效脏记录）
         try {
-            LiteFlowChainELBuilder builder = LiteFlowChainELBuilder.createChain()
-                    .setChainId(chainId.trim())
-                    .setRoute(routeEl.trim())
-                    .setEL(bodyEl.trim());
-            if (namespace != null && !namespace.isBlank()) {
-                builder.setNamespace(namespace.trim());
-            }
-            builder.build();
+            buildRouteChain(chainId, namespace, routeEl, bodyEl);
             activeChainEls.put(chainId, bodyEl);
-            if (existingEl != null && !existingEl.equals(bodyEl)) {
-                recordSnapshot(chainId, existingEl, currentRouteEl, currentNamespace);
-            }
+            recordSnapshotIfChanged(chainId, currentSnapshot, bodyEl);
             log.info("ateng-boot-liteflow: 成功动态更新/新建决策路由链 [{}] [namespace={}] [route={}] -> [{}]",
                     chainId, namespace, routeEl, bodyEl);
         } catch (Exception e) {
@@ -1200,14 +1172,7 @@ public class LiteflowTemplate {
         }
         try {
             if (previous.routeEl() != null && !previous.routeEl().isBlank()) {
-                LiteFlowChainELBuilder builder = LiteFlowChainELBuilder.createChain()
-                        .setChainId(chainId.trim())
-                        .setRoute(previous.routeEl().trim())
-                        .setEL(previous.bodyEl().trim());
-                if (previous.namespace() != null && !previous.namespace().isBlank()) {
-                    builder.setNamespace(previous.namespace().trim());
-                }
-                builder.build();
+                buildRouteChain(chainId, previous.namespace(), previous.routeEl(), previous.bodyEl());
             } else {
                 FlowBus.reloadChain(chainId, previous.bodyEl());
             }
@@ -1261,8 +1226,19 @@ public class LiteflowTemplate {
         return null;
     }
 
-    private void recordSnapshot(String chainId, String existingEl, String routeEl, String namespace) {
+    private ChainSnapshot captureCurrentChainSnapshot(String chainId) {
+        String existingEl = resolveCurrentChainEl(chainId);
         if (existingEl == null || existingEl.isBlank()) {
+            return null;
+        }
+        Chain currentChain = FlowBus.containChain(chainId) ? FlowBus.getChain(chainId) : null;
+        String currentRouteEl = currentChain != null ? currentChain.getRouteEl() : null;
+        String currentNamespace = currentChain != null ? currentChain.getNamespace() : null;
+        return new ChainSnapshot(existingEl, currentRouteEl, currentNamespace);
+    }
+
+    private void recordSnapshotIfChanged(String chainId, ChainSnapshot currentSnapshot, String newBodyEl) {
+        if (currentSnapshot == null || currentSnapshot.bodyEl().equals(newBodyEl)) {
             return;
         }
         int max = getMaxHistorySnapshots();
@@ -1270,7 +1246,18 @@ public class LiteflowTemplate {
             return;
         }
         ChainSnapshotHistory history = chainHistorySnapshots.computeIfAbsent(chainId, k -> new ChainSnapshotHistory());
-        history.record(new ChainSnapshot(existingEl, routeEl, namespace), max);
+        history.record(currentSnapshot, max);
+    }
+
+    private void buildRouteChain(String chainId, String namespace, String routeEl, String bodyEl) {
+        LiteFlowChainELBuilder builder = LiteFlowChainELBuilder.createChain()
+                .setChainId(chainId.trim())
+                .setRoute(routeEl.trim())
+                .setEL(bodyEl.trim());
+        if (namespace != null && !namespace.isBlank()) {
+            builder.setNamespace(namespace.trim());
+        }
+        builder.build();
     }
 
     /**
@@ -1321,120 +1308,25 @@ public class LiteflowTemplate {
      * 统一在全局执行拦截器生命周期包裹下调度规则链并提取轨迹与异常转译
      */
     private ExecutionOutcome executeWithInterceptors(String chainId, Object param, Supplier<LiteflowResponse> executorCall) {
-        List<LiteflowExecutionInterceptor> active = filterInterceptors(chainId);
-        invokeBeforeExecute(active, chainId, param);
+        List<LiteflowExecutionInterceptor> active = this.interceptorDispatcher.filter(chainId);
+        this.interceptorDispatcher.beforeExecute(active, chainId, param);
         long start = System.currentTimeMillis();
         LiteflowResponse response;
         try {
             response = executorCall.get();
         } catch (Throwable t) {
-            invokeOnError(active, chainId, param, null, t);
+            this.interceptorDispatcher.onError(active, chainId, param, null, t);
             throw t;
         }
         long duration = System.currentTimeMillis() - start;
         LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
         if (response == null || !response.isSuccess()) {
             LiteflowExecutionException ex = buildExecutionException(chainId, response, trace);
-            invokeOnError(active, chainId, param, trace, ex);
+            this.interceptorDispatcher.onError(active, chainId, param, trace, ex);
             throw ex;
         }
-        invokeAfterExecute(active, chainId, param, trace);
+        this.interceptorDispatcher.afterExecute(active, chainId, param, trace);
         return new ExecutionOutcome(response, trace);
-    }
-
-    private List<LiteflowExecutionInterceptor> filterInterceptors(String chainId) {
-        if (this.interceptors.isEmpty()) {
-            return Collections.emptyList();
-        }
-        List<LiteflowExecutionInterceptor> matched = new ArrayList<>(this.interceptors.size());
-        for (LiteflowExecutionInterceptor interceptor : this.interceptors) {
-            try {
-                if (interceptor.supports(chainId)) {
-                    matched.add(interceptor);
-                }
-            } catch (Throwable t) {
-                log.warn("ateng-boot-liteflow: 执行拦截器 supports 判定异常已 Fail-Open 跳过 [chainId={}, interceptor={}]: {}",
-                        chainId, interceptor.getClass().getName(), t.getMessage(), t);
-            }
-        }
-        return matched;
-    }
-
-    private void invokeBeforeExecute(List<LiteflowExecutionInterceptor> active, String chainId, Object param) {
-        for (LiteflowExecutionInterceptor interceptor : active) {
-            try {
-                interceptor.beforeExecute(chainId, param);
-            } catch (Throwable t) {
-                log.warn("ateng-boot-liteflow: 执行拦截器 beforeExecute 异常已 Fail-Open 放行 [chainId={}, interceptor={}]: {}",
-                        chainId, interceptor.getClass().getName(), t.getMessage(), t);
-            }
-        }
-    }
-
-    private void invokeAfterExecute(List<LiteflowExecutionInterceptor> active, String chainId, Object param, LiteflowExecutionTrace trace) {
-        for (LiteflowExecutionInterceptor interceptor : active) {
-            try {
-                interceptor.afterExecute(chainId, param, trace);
-            } catch (Throwable t) {
-                log.warn("ateng-boot-liteflow: 执行拦截器 afterExecute 异常已 Fail-Open 放行 [chainId={}, interceptor={}]: {}",
-                        chainId, interceptor.getClass().getName(), t.getMessage(), t);
-            }
-        }
-    }
-
-    private void invokeOnError(List<LiteflowExecutionInterceptor> active,
-                               String chainId,
-                               Object param,
-                               LiteflowExecutionTrace trace,
-                               Throwable error) {
-        for (LiteflowExecutionInterceptor interceptor : active) {
-            try {
-                interceptor.onError(chainId, param, trace, error);
-            } catch (Throwable t) {
-                log.warn("ateng-boot-liteflow: 执行拦截器 onError 异常已 Fail-Open 放行 [chainId={}, interceptor={}]: {}",
-                        chainId, interceptor.getClass().getName(), t.getMessage(), t);
-            }
-        }
-    }
-
-    private LiteflowExecutionTrace buildRouteAggregateTrace(String routeChainId,
-                                                            List<LiteflowExecutionTrace> traces,
-                                                            long totalDuration) {
-        if (traces.size() == 1) {
-            return traces.get(0);
-        }
-        LiteflowExecutionTrace aggregate = new LiteflowExecutionTrace();
-        aggregate.setChainId(routeChainId);
-        aggregate.setSuccess(true);
-        long clampedDuration = Math.max(totalDuration, 0L);
-        aggregate.setTotalTimeSpentMs(clampedDuration);
-
-        Set<String> aggregatedSlowNodes = new LinkedHashSet<>();
-        boolean anySubSlow = false;
-        for (LiteflowExecutionTrace item : traces) {
-            if (item == null) {
-                continue;
-            }
-            if (item.getSteps() != null) {
-                aggregate.getSteps().addAll(item.getSteps());
-            }
-            if (item.isSlow()) {
-                anySubSlow = true;
-            }
-            if (item.getSlowNodeIds() != null && !item.getSlowNodeIds().isEmpty()) {
-                aggregatedSlowNodes.addAll(item.getSlowNodeIds());
-            }
-        }
-
-        Duration chainThreshold = (this.properties != null && this.properties.getTrace() != null)
-                ? this.properties.getTrace().getSlowChainThreshold()
-                : null;
-        boolean routeSlow = isPositiveDuration(chainThreshold) && clampedDuration >= chainThreshold.toMillis();
-        aggregate.setSlowNodeIds(aggregatedSlowNodes.isEmpty()
-                ? Collections.emptyList()
-                : new ArrayList<>(aggregatedSlowNodes));
-        aggregate.setSlow(anySubSlow || routeSlow || !aggregatedSlowNodes.isEmpty());
-        return aggregate;
     }
 
     private LiteflowExecutionException buildExecutionException(String chainId,
@@ -1456,80 +1348,11 @@ public class LiteflowTemplate {
      */
     private LiteflowExecutionTrace handleTraceAndAudit(String chainId, LiteflowResponse response, long durationMs) {
         LiteflowExecutionTrace trace = LiteflowExecutionTrace.fromResponse(chainId, response, durationMs);
-        evaluateAndRecordSlowExecution(chainId, trace);
+        this.slowExecutionEvaluator.evaluateAndRecord(chainId, trace);
         if (this.properties != null && this.properties.getTrace() != null && this.properties.getTrace().isEnableMdc()) {
             trace.injectToMdc(this.properties.getTrace().getMdcKey());
         }
         return trace;
-    }
-
-    /**
-     * 根据 {@link AtengLiteflowProperties.TraceProperties} 中的 Duration 阈值评估慢链/慢节点并联动慢执行指标
-     */
-    private void evaluateAndRecordSlowExecution(String chainId, LiteflowExecutionTrace trace) {
-        if (trace == null || this.properties == null || this.properties.getTrace() == null) {
-            return;
-        }
-        AtengLiteflowProperties.TraceProperties traceProps = this.properties.getTrace();
-        Duration chainThreshold = traceProps.getSlowChainThreshold();
-        Duration nodeThreshold = traceProps.getSlowNodeThreshold();
-
-        boolean chainSlow = isPositiveDuration(chainThreshold)
-                && trace.getTotalTimeSpentMs() >= chainThreshold.toMillis();
-
-        Set<String> slowNodes = new LinkedHashSet<>();
-        List<String> slowNodeExecutions = Collections.emptyList();
-        if (isPositiveDuration(nodeThreshold) && trace.getSteps() != null && !trace.getSteps().isEmpty()) {
-            long nodeThresholdMs = nodeThreshold.toMillis();
-            List<String> recorded = null;
-            for (ExecutionStepItem step : trace.getSteps()) {
-                if (step != null && step.getNodeId() != null && step.getTimeSpentMs() >= nodeThresholdMs) {
-                    slowNodes.add(step.getNodeId());
-                    if (recorded == null) {
-                        recorded = new ArrayList<>();
-                    }
-                    recorded.add(step.getNodeId());
-                }
-            }
-            if (recorded != null) {
-                slowNodeExecutions = recorded;
-            }
-        }
-
-        if (!slowNodes.isEmpty()) {
-            trace.setSlowNodeIds(new ArrayList<>(slowNodes));
-        } else {
-            trace.setSlowNodeIds(Collections.emptyList());
-        }
-        trace.setSlow(chainSlow || !slowNodes.isEmpty());
-
-        if (!trace.isSlow()) {
-            return;
-        }
-
-        log.warn("ateng-boot-liteflow: 检测到慢规则执行 [chainId={}, totalTimeMs={}, slowChainThresholdMs={}, slowNodeIds={}, slowNodeThresholdMs={}]",
-                chainId,
-                trace.getTotalTimeSpentMs(),
-                chainThreshold != null ? chainThreshold.toMillis() : null,
-                trace.getSlowNodeIds(),
-                nodeThreshold != null ? nodeThreshold.toMillis() : null);
-
-        if (this.slowExecutionRecorder != null) {
-            try {
-                if (chainSlow) {
-                    this.slowExecutionRecorder.recordSlowChain(chainId);
-                }
-                for (String slowNodeId : slowNodeExecutions) {
-                    this.slowExecutionRecorder.recordSlowNode(chainId, slowNodeId);
-                }
-            } catch (Throwable t) {
-                log.warn("ateng-boot-liteflow: 上报慢执行度量指标异常已忽略 [chainId={}]: {}", chainId, t.getMessage());
-            }
-        }
-    }
-
-    private static boolean isPositiveDuration(Duration duration) {
-        return duration != null && !duration.isNegative() && !duration.isZero();
     }
 
     /**

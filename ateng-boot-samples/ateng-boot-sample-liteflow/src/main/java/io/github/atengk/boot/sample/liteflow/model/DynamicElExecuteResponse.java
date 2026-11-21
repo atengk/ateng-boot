@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.io.Serializable;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -31,6 +32,16 @@ public class DynamicElExecuteResponse implements Serializable {
      * 规则链执行耗时（毫秒）
      */
     private Long executeTimeMs;
+
+    /**
+     * 是否触发慢链/慢节点阈值告警
+     */
+    private boolean slow;
+
+    /**
+     * 触发慢节点阈值的组件 ID 列表
+     */
+    private List<String> slowNodeIds;
 
     /**
      * 上下文变量与输出数据

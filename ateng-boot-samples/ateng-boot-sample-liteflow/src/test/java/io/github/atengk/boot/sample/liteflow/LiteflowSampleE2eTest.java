@@ -770,4 +770,107 @@ class LiteflowSampleE2eTest {
         assertThat(stats.successCount()).isGreaterThan(initialSuccess);
         assertThat(stats.recentRecords()).anyMatch(r -> r.startsWith("SUCCESS:DYNAMIC_EL[THEN(dynamicValidateCmp, dynamicEchoCmp);]"));
     }
+
+    @Test
+    @DisplayName("测试场景 1.3：受管异步算价编排端点 (calculate-async)")
+    void testPriceCalculationAsync() throws Exception {
+        PriceCalculationRequest request = new PriceCalculationRequest();
+        request.setOrderId("ORD_ASYNC_001");
+        request.setUserId("user_svip_888");
+        request.setOriginalAmount(new BigDecimal("200.00"));
+        request.setCouponId("COUPON_50");
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/price/calculate-async")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderId").value("ORD_ASYNC_001"))
+                .andReturn();
+
+        Result<PriceCalculationResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+        PriceCalculationResponse data = result.getData();
+        assertThat(data).isNotNull();
+        assertThat(data.getFinalAmount()).isEqualByComparingTo("120.00");
+        assertThat(data.getTraceSummary()).contains("validateOrderCmp");
+    }
+
+    @Test
+    @DisplayName("测试场景 6.4：外部合规慢查询触发 slow-node-threshold 慢节点标记 (execute-el)")
+    void testSlowExecutionThresholdInSample() throws Exception {
+        DynamicElExecuteRequest request = new DynamicElExecuteRequest();
+        request.setEl("THEN(dynamicValidateCmp, dynamicComplianceAuditCmp.tag(\"SLOW_AUDIT\"), dynamicEchoCmp);");
+        request.setPayload("SLOW_AUDIT_ORDER_999");
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/dynamic/execute-el")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.slow").value(true))
+                .andExpect(jsonPath("$.data.slowNodeIds", org.hamcrest.Matchers.hasItem("dynamicComplianceAuditCmp")))
+                .andReturn();
+
+        Result<DynamicElExecuteResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+        assertThat(result.getData().getOutputData()).containsEntry("complianceStatus", "PASSED");
+    }
+
+    @Test
+    @DisplayName("测试场景 4.9：多源动态规则纳管、同步刷新与孤儿链自动下线 (managed-chains / sync-source / evict)")
+    void testDynamicRuleSourceSyncAndOrphanEviction() throws Exception {
+        String tempManagedChain = "dynamic-temp-campaign-rule";
+
+        // 1. 查询初始受管动态规则链快照，应包含默认规则，不包含静态 XML 链
+        mockMvc.perform(get("/sample/liteflow/dynamic/managed-chains"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasItem("dynamic-vip-discount-rule")))
+                .andExpect(jsonPath("$.data", org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem("price-calc-flow"))));
+
+        // 2. 向动态规则源新增规则并同步刷新
+        DynamicChainReloadRequest upsertReq = new DynamicChainReloadRequest();
+        upsertReq.setChainId(tempManagedChain);
+        upsertReq.setEl("THEN(dynamicValidateCmp, dynamicEchoCmp);");
+
+        mockMvc.perform(post("/sample/liteflow/dynamic/source-rule/upsert")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(upsertReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasItem(tempManagedChain)));
+
+        mockMvc.perform(get("/sample/liteflow/dynamic/contain-chain")
+                        .param("chainId", tempManagedChain))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 3. 物理移除动态规则并触发全量刷新，验证孤儿链自动下线且本地静态链不受影响
+        mockMvc.perform(post("/sample/liteflow/dynamic/source-rule/evict")
+                        .param("chainId", tempManagedChain))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem(tempManagedChain))));
+
+        mockMvc.perform(get("/sample/liteflow/dynamic/contain-chain")
+                        .param("chainId", tempManagedChain))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(false));
+
+        mockMvc.perform(post("/sample/liteflow/dynamic/sync-source"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.greaterThanOrEqualTo(1)));
+
+        mockMvc.perform(get("/sample/liteflow/dynamic/contain-chain")
+                        .param("chainId", "price-calc-flow"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(true));
+    }
 }
