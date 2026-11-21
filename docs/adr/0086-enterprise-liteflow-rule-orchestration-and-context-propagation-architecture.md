@@ -110,17 +110,20 @@ flowchart TB
 - **决策**：底座基于当前最新稳定版 `com.yomahub:liteflow-spring-boot-starter:2.16.3.1` 构建，全面拥抱 JDK 17 / 21 虚拟线程支持、直接 EL 表达式执行与活跃规则智能缓存；
 - **依赖防线**：针对 LiteFlow 传递引入的 `cn.hutool:hutool-core`，确立**严格隔离红线**：`hutool-core` 仅作为 LiteFlow 内部运行时私有黑盒，`ateng-boot-liteflow` 自身源码、公共 API 及业务代码严禁引用任何 `cn.hutool.*` 类，100% 强制复用 JDK 17 原生能力与 `ateng-boot-core` 原语（`JsonUtil`、`IdUtil`、`RetryUtil` 等），捍卫 ADR-0011 与 ADR-0021 纯净底座。
 
-#### 2. 受管线程池全局强制接管与四维跨线程上下文透传 (Decision 2)
-- **决策**：实现 LiteFlow 官方 `com.yomahub.liteflow.thread.ExecutorBuilder` SPI，提供 `LiteflowGlobalExecutorBuilder` 并由自动装配默认激活（绑定 `liteflow.global-thread-pool-executor-class`）；
-- **核心机制**：底层直接桥接 `ateng-boot-core` 的受管线程池设施（`ThreadPoolTaskExecutor`），自动注入 `AsyncContext` 任务包装器。在并行 `WHEN(a, b)` 执行时，透明快照透传 $\langle\text{MDC TraceId}, \text{UserId}, \text{TenantId}, \text{IgnoreTenant}\rangle$，并在子任务完成时在 `finally` 块中绝对清理现场，从根源上杜绝日志追踪断流与租户串门。
+#### 2. 受管线程池全局强制接管、四维跨线程上下文透传与全链路 `ReentrantLock` 防 Pinning (Decision 2)
+- **决策**：实现 LiteFlow 官方 `com.yomahub.liteflow.thread.ExecutorBuilder` SPI，提供 `LiteflowGlobalExecutorBuilder` 并由自动装配默认激活（绑定 `liteflow.global-thread-pool-executor-class`），严格遵循 Spring Boot 3.3.x 装配契约（参见 ADR-0025）：`@AutoConfiguration` 唯一注册于 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`，而 `LiteflowEnvironmentPostProcessor` 通过 `META-INF/spring.factories` 的 `EnvironmentPostProcessor` 键注册（禁用 `EnableAutoConfiguration`）；
+- **核心机制**：底层直接桥接 `ateng-boot-core` 的受管线程池设施（`ThreadPoolTaskExecutor`），自动注入 `AsyncContext` 任务包装器；当回退至独立 `ThreadPoolExecutor` 时，在 `DisposableBean.destroy()` 中确定性优雅停机回收；
+- **虚拟线程防 Pinning**：在并行 `WHEN(a, b)` 执行时透明快照透传 $\langle\text{MDC TraceId}, \text{UserId}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 并在 `finally` 块中清理现场；`LiteflowRuleSourceManager` 规则刷新与 `LiteflowTemplate` 历史快照队列全量采用 `ReentrantLock` + `isHeldByCurrentThread()` 范式替代 `synchronized`，彻底杜绝 JDK 21+ 虚拟线程 Carrier Pinning（ADR-0029）。
 
-#### 3. 强类型统一操作门面 `LiteflowTemplate` 与原生逃生舱 (Decision 3)
+#### 3. 强类型统一操作门面 `LiteflowTemplate`、深度 EL 引用预检与运行时拓扑自省 (Decision 3)
 - **决策**：对外暴露统一门面 `LiteflowTemplate`，屏蔽底层非抛式响应与繁琐强转，提供纯净的强类型 API：
-  - `execute(String chainId, Object param, Class<T> contextClass): T`：执行并校验成功状态，若失败自动转译抛出受管 `LiteflowExecutionException`，成功直接解包返回强类型上下文 `T`；
-  - `execute(String chainId, Object param, Class<?>... contextClasses): LiteflowResponse`：支持多上下文复杂流转；
-  - `executeAsync(...)`：受管异步流式调度，返回 `CompletableFuture<T>`；
+  - `execute(String chainId, Object param, Class<T> contextClass): T` 与 `executeWithContext` / `executeMultipleWithContext`：执行并校验成功状态，失败自动转译抛出受管 `LiteflowExecutionException`，成功直接解包强类型上下文；
+  - `executeAsync(...)`：受管异步流式调度，返回 `CompletableFuture<T>`（支持 `Duration timeout` 硬超时协同中断）；
   - `executeEl(String el, Object param, Class<T> contextClass): T`：无需预注册 chainId，直接执行动态 EL 表达式；
-  - `reloadRule(String ruleContent)` / `reloadChain(String chainId, String el)`：动态规则热更新；
+  - `executeRoute(String namespace, Object param, T contextBean)` / `executeRouteWithTrace`：决策路由表多规则匹配与共享上下文累加，返回 `LiteflowRouteResult<T>`；
+  - `validateEl(String el): LiteflowElValidationResult`：融合官方语法校验与静态词法引用扫描（剥离字符串字面量与 EL 关键字后比对 `FlowBus`），一次性输出 `valid`、`errorMessage`、`componentMissing`、`referencedNodeIds`、`referencedChainIds` 与 `missingComponentIds`；
+  - `getChainMetadata(String chainId)` / `getAllChainMetadata()` / `getLoadedNodeIds()`：返回强类型不可变拓扑快照 `LiteflowChainMetadata`（含 `chainId`、`namespace`、`bodyEl`、`routeEl`、`referencedNodeIds` 与 `historySnapshots`），支撑中后台在线自省；
+  - `reloadRule` / `reloadChain` / `reloadRouteChain` / `rollbackChain`：有界快照安全热更与一键故障回滚；
 - **逃生舱保证**：Spring 容器同时保留暴露官方原生 `FlowExecutor` Bean，业务若需调用小众高级 SPI 均可无缝穿透。
 
 #### 4. 全谱系泛型受管组件基类体系 (Decision 4)
@@ -138,16 +141,17 @@ flowchart TB
   - `getTag()`：直接读取当前节点标签（Tag）；
   - `getCmpData(Class<D> dataClass)`：底层自动桥接 Core 模块 `JsonUtil` 序列化门面，将组件绑定的动态配置（`cmpData`）无缝映射为强类型 Java Bean 或 Record，严禁业务手写脆弱的反序列化解析。
 
-#### 6. 规则多源存储扩展 SPI 与数据库标准加载规范 (Decision 6)
-- **决策**：抽象轻量级扩展接口 `LiteflowRuleSourceProvider`（包含 `loadRules()` 方法），支持从本地文件、关系型数据库（JDBC / MyBatis-Plus）、Redis 及配置中心加载规则；
-- **数据库规范**：提供标准轻量数据库规则元数据表 DDL 建议（`rule_id`, `rule_name`, `el_expression`, `status`）及开箱即用的加载器模版，业务系统无需引入臃肿的官方扩展包即可轻松实现“中后台管理界面在线配规则”。
+#### 6. 规则多源存储扩展 SPI、差量孤儿链下线与数据库标准加载规范 (Decision 6)
+- **决策**：抽象轻量级扩展接口 `LiteflowRuleSourceProvider`（包含 `loadRules()` 与 `loadRule(String chainId)`），由 `LiteflowRuleSourceManager` 统一纳管；
+- **差量孤儿链自动下线（Orphan Chain Eviction）**：`LiteflowRuleSourceManager` 维护动态规则源纳管的 `managedChainIds` 集合，在全量刷新 `refreshAll()` 时，若某条已纳管动态规则从外部存储中被物理移除且 `evict-removed-on-refresh=true`，自动调用 `removeChain` 将其安全下线，且绝不误删本地 XML/YML 静态规则链；
+- **数据库规范**：提供标准轻量数据库规则元数据表 DDL（`rule_id`, `rule_name`, `el_expression`, `route_el`, `status`, `route_group`, `description`）及开箱即用的 `JdbcLiteflowRuleSourceProvider`，无需引入臃肿的官方扩展包即可实现“中后台管理界面在线配规则”。
 
 #### 7. Spring 原生规则热刷新领域事件总线 (Decision 7)
 - **决策**：定义 Spring 标准领域事件 `LiteflowRuleRefreshEvent`。无论是管理后台保存规则入库、收到 Redis Pub/Sub 广播还是 Nacos 监听回调，业务仅需发布该事件，底座监听器自动拉取最新规则文本并调用 `LiteflowTemplate.reloadRule()` 完成零停机增量/全量平滑热更新。
 
 #### 8. 并行硬超时隔离熔断与组件就地优雅降级 (Decision 8)
-- **决策**：支持在配置或 EL 语法中（`maxWaitSeconds`）声明并行执行硬超时，超时后受管线程池协同发出线程中断信号，防止慢下游拖垮应用线程；
-- **优雅降级**：组件基类中提供可选的 `T onError(Exception e, T context)` 钩子，当节点异常时允许就地捕获并返回保底兜底数据（如外部风控接口闪断时自动标记为“需人工初审”），保障主流程不发生阻断性崩溃。
+- **决策**：支持在配置（`when-max-wait-timeout` `Duration`）或 EL 语法中声明并行执行硬超时，超时后通过 `FlowThreadTracker` 与 `FlowTimeoutInterruptionLifeCycle` 协同向悬挂子线程发出中断信号，防止慢下游拖垮应用线程；
+- **优雅降级**：组件基类中提供可选的 `onError(Exception e, T context)` 钩子，当节点异常时允许就地捕获并返回保底兜底数据（如外部风控接口闪断时自动标记为“需人工初审”），保障主流程不发生阻断性崩溃。
 
 #### 9. Saga 反向回滚安全网 (Decision 9)
 - **决策**：规范组件基类的 `rollback(T context)` 机制，当链路下游节点发生不可逆故障时，LiteFlow 自动按逆序触发已成功组件的补偿回滚；
@@ -157,17 +161,20 @@ flowchart TB
 - **决策**：坚持纯原生 Java 强类型组件优先，核心 Starter 默认**零动态脚本依赖**（不引入 Groovy、QLExpress 等重型包），从根源杜绝依赖体积膨胀与 RCE 表达式注入高危漏洞；
 - **解耦扩展**：底座预留官方脚本插件通道，若极端特殊业务需要在线写脚本，由业务工程显式按需引入对应 `liteflow-script-*` 依赖。
 
-#### 11. 结构化执行轨迹与 Micrometer 云原生度量 (Decision 11)
-- **决策**：提供白盒化的可观测性全景：
-  - **结构化轨迹**：单次执行输出 `LiteflowExecutionTrace`，按时序记录 `[nodeId, tag, timeSpentMs, status(SUCCESS/FAIL/SKIPPED), errorSummary]`，可直接注入 MDC 审计日志或随响应返回；
-  - **Micrometer 指标**：与 `ateng-boot-observability` 联动，自动暴露 `liteflow.chain.executions`（执行计数器，按 `chainId`, `status` 打标）、`liteflow.chain.duration`（链耗时直方图，支持 P95/P99 报警）与 `liteflow.node.duration`（节点耗时直方图，秒级识别慢节点）。
+#### 11. 三阶段全局执行拦截器 SPI、慢执行 `Duration` 阈值治理与 Micrometer 云原生度量 (Decision 11)
+- **决策**：提供白盒化的切面治理与可观测性全景：
+  - **三阶段全局拦截器 SPI**：提供 `LiteflowExecutionInterceptor`（`supports` / `beforeExecute` / `afterExecute` / `onError`），支持 `Ordered` 排序与 Fail-Open 容错隔离，在同步、即时 EL 与决策路由全路径统一触发；
+  - **结构化轨迹与慢执行阈值告警**：单次执行输出 `LiteflowExecutionTrace`，按时序记录 `[nodeId, tag, timeSpentMs, status(SUCCESS/FAIL/ROLLBACK/SKIPPED), errorSummary]`；支持配置 `trace.slow-chain-threshold` 与 `trace.slow-node-threshold`（`Duration`），超阈值时自动标记 `trace.isSlow()` / `trace.getSlowNodeIds()` 并输出结构化 `WARN` 告警日志；
+  - **Micrometer 指标与高基数防线**：通过零强依赖回调接口 `LiteflowSlowExecutionRecorder` 解耦执行门面与可选 Micrometer 依赖（无 `micrometer-core` 类路径下零 `NoClassDefFoundError`），与 `ateng-boot-observability` 联动自动暴露 `liteflow.chain.executions`、`liteflow.chain.duration`、`liteflow.node.duration`、`liteflow.chain.slow.executions` 与 `liteflow.node.slow.executions`（动态 EL 与 32 位 UUID 自动归一化为 `DYNAMIC_EL`）。
 
-#### 12. 1:1 独立沙箱工程与 4 大典型高频业务 Controller 闭环 (Decision 12)
-- **决策**：配套专属样例工程 `ateng-boot-samples/ateng-boot-sample-liteflow`，全面 Web 体验化，按功能领域拆分为 4 个独立 Controller，路由统一收敛于 `/sample/liteflow/*`，出参统配强类型 `Result<T>`，依托纯内存自验：
+#### 12. 1:1 独立沙箱工程与 6 大典型高频业务 Controller 闭环 (Decision 12)
+- **决策**：配套专属样例工程 `ateng-boot-samples/ateng-boot-sample-liteflow`，全面 Web 体验化，按功能领域拆分为 6 个独立 Controller，路由统一收敛于 `/sample/liteflow/*`，出参统配强类型 `Result<T>`，依托纯内存自验：
   1. `LiteflowPriceCalculationController`（电商复杂营销算价管道：串行校验 -> 并行 `WHEN` 查询卡券/等级 -> 满减/折扣/运费核算）；
   2. `LiteflowRiskControlController`（金融风控信贷审批流：黑名单 `IF` -> 并行反欺诈 `WHEN` -> `SWITCH` 路由放款/人工/拒绝）；
   3. `LiteflowOrderFulfillmentController`（订单履约与 Saga 反向回滚：扣库存 -> 制出库单 -> 发信 -> 模拟异常反向触发 rollback 补偿解冻）；
-  4. `LiteflowDynamicRuleController`（动态规则热重载与在线即时 EL 执行：验证免重启动态更新算价策略与即时执行临时 EL）。
+  4. `LiteflowDynamicRuleController`（动态规则热重载、在线即时 EL 执行、深度组件引用预检、运行时拓扑元数据自省 `LiteflowChainMetadata` 与历史快照一键回滚）；
+  5. `LiteflowPromotionRoutingController`（决策路由表 `executeRouteWithTrace` 促销多规则匹配与共享上下文累加）；
+  6. `LiteflowBatchRoutingController`（批量订单结算：`ITERATOR` 强类型循环、`onError` 就地优雅降级与 `endFlow` 提前正常熔断）。
 
 ---
 
