@@ -1,11 +1,20 @@
 package io.github.atengk.boot.liteflow.thread;
 
+import com.yomahub.liteflow.springboot.config.LiteflowMainAutoConfiguration;
+import com.yomahub.liteflow.springboot.config.LiteflowPropertyAutoConfiguration;
+import com.yomahub.liteflow.thread.ExecutorHelper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.liteflow.autoconfigure.AtengLiteflowAutoConfiguration;
+import io.github.atengk.boot.liteflow.properties.AtengLiteflowProperties;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.Collections;
 import java.util.List;
@@ -134,5 +143,86 @@ class ContextPropagatingExecutorServiceTest {
         assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
         assertThat(capturedTrace.get()).isNull();
         assertThat(capturedUser.get()).isNull();
+    }
+
+    @Test
+    @DisplayName("验证 LiteflowGlobalExecutorBuilder 独立回退线程池在 destroy 时优雅关闭，而共享受管池不被误关")
+    void testFallbackExecutorGracefulShutdownOnDestroy() {
+        // 1. 独立回退线程池模式（useManagedPool = false）
+        AtengLiteflowProperties fallbackProps = new AtengLiteflowProperties();
+        fallbackProps.getThreadPool().setUseManagedPool(false);
+        fallbackProps.getThreadPool().setCorePoolSize(1);
+        fallbackProps.getThreadPool().setMaxPoolSize(2);
+        fallbackProps.getThreadPool().setQueueCapacity(10);
+
+        try (AnnotationConfigApplicationContext ctx = new AnnotationConfigApplicationContext()) {
+            ctx.registerBean(AtengLiteflowProperties.class, () -> fallbackProps);
+            ctx.refresh();
+
+            LiteflowGlobalExecutorBuilder builder = new LiteflowGlobalExecutorBuilder();
+            builder.setApplicationContext(ctx);
+            ExecutorService built = builder.buildExecutor();
+            assertThat(built).isInstanceOf(ContextPropagatingExecutorService.class);
+            ContextPropagatingExecutorService proxy = (ContextPropagatingExecutorService) built;
+            assertThat(proxy.isShutdownProtected()).isFalse();
+            assertThat(proxy.getDelegate().isShutdown()).isFalse();
+
+            builder.destroy();
+            assertThat(proxy.getDelegate().isShutdown()).isTrue();
+        }
+
+        // 2. 共享受管线程池模式（useManagedPool = true）
+        ThreadPoolTaskExecutor springTaskExecutor = new ThreadPoolTaskExecutor();
+        springTaskExecutor.setCorePoolSize(1);
+        springTaskExecutor.setMaxPoolSize(2);
+        springTaskExecutor.setThreadNamePrefix("test-managed-");
+        springTaskExecutor.initialize();
+        try (AnnotationConfigApplicationContext ctx = new AnnotationConfigApplicationContext()) {
+            ctx.registerBean("taskExecutor", ThreadPoolTaskExecutor.class, () -> springTaskExecutor);
+            ctx.refresh();
+
+            LiteflowGlobalExecutorBuilder builder = new LiteflowGlobalExecutorBuilder();
+            builder.setApplicationContext(ctx);
+            ExecutorService built = builder.buildExecutor();
+            ContextPropagatingExecutorService proxy = (ContextPropagatingExecutorService) built;
+            assertThat(proxy.isShutdownProtected()).isTrue();
+
+            builder.destroy();
+            assertThat(springTaskExecutor.getThreadPoolExecutor().isShutdown()).isFalse();
+        } finally {
+            springTaskExecutor.shutdown();
+        }
+
+        // 3. 验证通过 LiteFlow ExecutorHelper SPI 在真实容器关闭时联动销毁独立回退线程池
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        LiteflowPropertyAutoConfiguration.class,
+                        LiteflowMainAutoConfiguration.class,
+                        AtengLiteflowAutoConfiguration.class
+                ))
+                .withPropertyValues(
+                        "liteflow.enable=true",
+                        "liteflow.parse-mode=PARSE_ONE_ON_FIRST_EXEC",
+                        "liteflow.rule-source=classpath*:liteflow/non-existent/*.el.xml",
+                        "ateng.boot.liteflow.thread-pool.use-managed-pool=false",
+                        "ateng.boot.liteflow.thread-pool.core-pool-size=1",
+                        "ateng.boot.liteflow.thread-pool.max-pool-size=2"
+                )
+                .run(context -> {
+                    ExecutorHelper.loadInstance().clearExecutorServiceMap();
+                    try {
+                        ExecutorService whenExecutor = ExecutorHelper.loadInstance()
+                                .buildWhenExecutor(LiteflowGlobalExecutorBuilder.class.getName());
+                        assertThat(whenExecutor).isInstanceOf(ContextPropagatingExecutorService.class);
+                        ContextPropagatingExecutorService proxy = (ContextPropagatingExecutorService) whenExecutor;
+                        assertThat(proxy.isShutdownProtected()).isFalse();
+                        assertThat(proxy.getDelegate().isShutdown()).isFalse();
+
+                        context.close();
+                        assertThat(proxy.getDelegate().isShutdown()).isTrue();
+                    } finally {
+                        ExecutorHelper.loadInstance().clearExecutorServiceMap();
+                    }
+                });
     }
 }

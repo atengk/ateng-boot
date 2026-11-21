@@ -231,6 +231,18 @@ class LiteflowObservabilityTest {
             throw new RuntimeException(e);
         }
         assertThat(MDC.get("liteflow_trace")).isNull();
+
+        // 异常路径与嵌套作用域 MDC 恢复/清理验证
+        MDC.put("liteflow_trace", "OUTER_TRACE");
+        assertThatThrownBy(() -> {
+            try (AutoCloseable scope = liteflowTemplate.withTraceMdcScope(result.getTrace())) {
+                assertThat(MDC.get("liteflow_trace")).contains("chainId=normalTraceChain");
+                throw new IllegalStateException("模拟业务异常");
+            }
+        }).isInstanceOf(IllegalStateException.class);
+        assertThat(MDC.get("liteflow_trace")).isEqualTo("OUTER_TRACE");
+        liteflowTemplate.clearTraceMdc();
+        assertThat(MDC.get("liteflow_trace")).isNull();
     }
 
     @Test

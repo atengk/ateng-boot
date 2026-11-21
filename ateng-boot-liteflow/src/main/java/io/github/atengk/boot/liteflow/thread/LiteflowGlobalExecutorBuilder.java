@@ -13,7 +13,9 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -31,6 +33,7 @@ public class LiteflowGlobalExecutorBuilder implements ExecutorBuilder, Applicati
     private static final Logger log = LoggerFactory.getLogger(LiteflowGlobalExecutorBuilder.class);
     private static volatile ApplicationContext staticApplicationContext;
     private ApplicationContext applicationContext;
+    private final Set<ExecutorService> ownedFallbackExecutors = ConcurrentHashMap.newKeySet();
 
     @Override
     public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
@@ -40,6 +43,10 @@ public class LiteflowGlobalExecutorBuilder implements ExecutorBuilder, Applicati
 
     @Override
     public void destroy() {
+        for (ExecutorService executor : ownedFallbackExecutors) {
+            shutdownGracefully(executor);
+        }
+        ownedFallbackExecutors.clear();
         staticApplicationContext = null;
         this.applicationContext = null;
     }
@@ -106,7 +113,7 @@ public class LiteflowGlobalExecutorBuilder implements ExecutorBuilder, Applicati
 
         // 2. 若未处于 Spring 容器、未定义受管线程池或显式配置启用独立线程池，根据配置构建受管独立线程池保底
         if (targetExecutor == null) {
-            LiteflowConfig config = LiteflowConfigGetter.get();
+            LiteflowConfig config = properties == null ? resolveLiteflowConfigSafely() : null;
             int corePoolSize = properties != null ? properties.getThreadPool().getCorePoolSize()
                     : ((config != null && config.getGlobalThreadPoolSize() != null) ? config.getGlobalThreadPoolSize() : 16);
             int maxPoolSize = properties != null ? properties.getThreadPool().getMaxPoolSize()
@@ -127,6 +134,7 @@ public class LiteflowGlobalExecutorBuilder implements ExecutorBuilder, Applicati
                     new NamedThreadFactory(threadPrefix),
                     new ThreadPoolExecutor.CallerRunsPolicy()
             );
+            ownedFallbackExecutors.add(targetExecutor);
             log.info("ateng-boot-liteflow: 启用独立受管线程池 (core={}, max={}, queue={}, prefix={})",
                     corePoolSize, maxPoolSize, queueCapacity, threadPrefix);
         }
@@ -134,5 +142,29 @@ public class LiteflowGlobalExecutorBuilder implements ExecutorBuilder, Applicati
         // 3. 统一使用四维上下文透传代理包装
         boolean propagateContext = properties == null || properties.getThreadPool().isPropagateContext();
         return new ContextPropagatingExecutorService(targetExecutor, sharedSpringPool, propagateContext);
+    }
+
+    private LiteflowConfig resolveLiteflowConfigSafely() {
+        try {
+            return LiteflowConfigGetter.get();
+        } catch (Exception e) {
+            log.debug("ateng-boot-liteflow: 读取 LiteflowConfig 回退参数失败，将使用默认线程池参数: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private void shutdownGracefully(ExecutorService executor) {
+        if (executor == null || executor.isShutdown()) {
+            return;
+        }
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }

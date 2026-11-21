@@ -45,8 +45,6 @@ public class LiteflowEnvironmentPostProcessor implements EnvironmentPostProcesso
             defaults.put("liteflow.enable-virtual-thread", false);
             // 3. 开启多规则类型支持（支持 xml/yml/json）
             defaults.put("liteflow.support-multiple-type", true);
-            // 4. 桥接规则扫描默认路径
-            defaults.put("liteflow.rule-source", "classpath*:liteflow/*.el.xml");
             environment.getPropertySources().addLast(new MapPropertySource(PROPERTY_SOURCE_NAME, defaults));
         }
     }

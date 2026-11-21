@@ -20,8 +20,10 @@ import io.github.atengk.boot.liteflow.trace.LiteflowExecutionTrace;
 import io.github.atengk.boot.liteflow.trace.LiteflowTraceResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
@@ -33,12 +35,12 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 /**
@@ -56,7 +58,7 @@ public class LiteflowTemplate {
     private final FlowExecutor flowExecutor;
     private final Executor asyncExecutor;
     private final AtengLiteflowProperties properties;
-    private final ConcurrentMap<String, Deque<ChainSnapshot>> chainHistorySnapshots = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, ChainSnapshotHistory> chainHistorySnapshots = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, String> activeChainEls = new ConcurrentHashMap<>();
 
     public LiteflowTemplate(FlowExecutor flowExecutor) {
@@ -826,10 +828,19 @@ public class LiteflowTemplate {
             return () -> {
             };
         }
-        String mdcKey = (this.properties != null && this.properties.getTrace() != null)
-                ? this.properties.getTrace().getMdcKey() : LiteflowExecutionTrace.DEFAULT_MDC_TRACE_KEY;
-        trace.injectToMdc(mdcKey);
-        return () -> LiteflowExecutionTrace.clearFromMdc(mdcKey);
+        String configuredKey = (this.properties != null && this.properties.getTrace() != null)
+                ? this.properties.getTrace().getMdcKey() : null;
+        String resolvedKey = (configuredKey != null && !configuredKey.isBlank())
+                ? configuredKey : LiteflowExecutionTrace.DEFAULT_MDC_TRACE_KEY;
+        String previous = MDC.get(resolvedKey);
+        trace.injectToMdc(resolvedKey);
+        return () -> {
+            if (previous != null) {
+                MDC.put(resolvedKey, previous);
+            } else {
+                LiteflowExecutionTrace.clearFromMdc(resolvedKey);
+            }
+        };
     }
 
     /**
@@ -1072,17 +1083,15 @@ public class LiteflowTemplate {
         if (chainId == null || chainId.isBlank()) {
             return false;
         }
-        Deque<ChainSnapshot> history = chainHistorySnapshots.get(chainId);
-        if (history == null || history.isEmpty()) {
+        ChainSnapshotHistory history = chainHistorySnapshots.get(chainId);
+        if (history == null) {
             log.warn("ateng-boot-liteflow: 流程链 [{}] 无历史快照可供回退", chainId);
             return false;
         }
-        ChainSnapshot previous;
-        synchronized (history) {
-            if (history.isEmpty()) {
-                return false;
-            }
-            previous = history.removeFirst();
+        ChainSnapshot previous = history.pollFirst();
+        if (previous == null) {
+            log.warn("ateng-boot-liteflow: 流程链 [{}] 无历史快照可供回退", chainId);
+            return false;
         }
         try {
             if (previous.routeEl() != null && !previous.routeEl().isBlank()) {
@@ -1103,9 +1112,7 @@ public class LiteflowTemplate {
             return true;
         } catch (Exception e) {
             // 补偿压栈，防止因重载异常导致快照丢失
-            synchronized (history) {
-                history.addFirst(previous);
-            }
+            history.pushFirst(previous);
             throw new LiteflowExecutionException(chainId, null,
                     "流程链 [" + chainId + "] 回退至历史版本失败: " + e.getMessage(), e);
         }
@@ -1121,13 +1128,11 @@ public class LiteflowTemplate {
         if (chainId == null || chainId.isBlank()) {
             return Collections.emptyList();
         }
-        Deque<ChainSnapshot> history = chainHistorySnapshots.get(chainId);
-        if (history == null || history.isEmpty()) {
+        ChainSnapshotHistory history = chainHistorySnapshots.get(chainId);
+        if (history == null) {
             return Collections.emptyList();
         }
-        synchronized (history) {
-            return history.stream().map(ChainSnapshot::displayEl).toList();
-        }
+        return history.snapshotEls();
     }
 
     private int getMaxHistorySnapshots() {
@@ -1159,13 +1164,8 @@ public class LiteflowTemplate {
         if (max <= 0) {
             return;
         }
-        Deque<ChainSnapshot> history = chainHistorySnapshots.computeIfAbsent(chainId, k -> new ConcurrentLinkedDeque<>());
-        synchronized (history) {
-            history.addFirst(new ChainSnapshot(existingEl, routeEl, namespace));
-            while (history.size() > max) {
-                history.removeLast();
-            }
-        }
+        ChainSnapshotHistory history = chainHistorySnapshots.computeIfAbsent(chainId, k -> new ChainSnapshotHistory());
+        history.record(new ChainSnapshot(existingEl, routeEl, namespace), max);
     }
 
     /**
@@ -1322,6 +1322,65 @@ public class LiteflowTemplate {
     public record ChainSnapshot(String bodyEl, String routeEl, String namespace) {
         public String displayEl() {
             return bodyEl;
+        }
+    }
+
+    /**
+     * 基于 ReentrantLock 的规则链历史快照有界容器（避免虚拟线程 Pinning）
+     */
+    private static final class ChainSnapshotHistory {
+
+        private final ReentrantLock lock = new ReentrantLock();
+        private final Deque<ChainSnapshot> snapshots = new ArrayDeque<>();
+
+        private ChainSnapshot pollFirst() {
+            lock.lock();
+            try {
+                return snapshots.pollFirst();
+            } finally {
+                if (lock.isHeldByCurrentThread()) {
+                    lock.unlock();
+                }
+            }
+        }
+
+        private void pushFirst(ChainSnapshot snapshot) {
+            lock.lock();
+            try {
+                snapshots.addFirst(snapshot);
+            } finally {
+                if (lock.isHeldByCurrentThread()) {
+                    lock.unlock();
+                }
+            }
+        }
+
+        private void record(ChainSnapshot snapshot, int max) {
+            lock.lock();
+            try {
+                snapshots.addFirst(snapshot);
+                while (snapshots.size() > max) {
+                    snapshots.removeLast();
+                }
+            } finally {
+                if (lock.isHeldByCurrentThread()) {
+                    lock.unlock();
+                }
+            }
+        }
+
+        private List<String> snapshotEls() {
+            lock.lock();
+            try {
+                if (snapshots.isEmpty()) {
+                    return Collections.emptyList();
+                }
+                return snapshots.stream().map(ChainSnapshot::displayEl).toList();
+            } finally {
+                if (lock.isHeldByCurrentThread()) {
+                    lock.unlock();
+                }
+            }
         }
     }
 }

@@ -18,8 +18,12 @@ import org.springframework.context.annotation.Import;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -377,6 +381,44 @@ class LiteflowTemplateTest {
         assertThatThrownBy(() -> liteflowTemplate.reloadChain("", "THEN(stepA)"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("chainId 不能为空");
+    }
+
+    @Test
+    @DisplayName("验证高并发热重载、快照查询与回退在 ReentrantLock 下无死锁且快照数量严格受限")
+    void testConcurrentReloadAndRollbackSnapshots() throws Exception {
+        String chainId = "concurrentSnapshotChain";
+        liteflowTemplate.reloadChain(chainId, "THEN(stepA);");
+        int workers = 8;
+        CountDownLatch startGate = new CountDownLatch(1);
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+        try {
+            for (int i = 0; i < workers; i++) {
+                final int idx = i;
+                futures.add(CompletableFuture.runAsync(() -> {
+                    try {
+                        startGate.await(5, TimeUnit.SECONDS);
+                        for (int j = 0; j < 5; j++) {
+                            String el = (idx + j) % 2 == 0 ? "THEN(stepA);" : "THEN(stepA, stepA);";
+                            liteflowTemplate.reloadChain(chainId, el);
+                            List<String> snapshots = liteflowTemplate.getChainHistorySnapshots(chainId);
+                            assertThat(snapshots.size()).isLessThanOrEqualTo(5);
+                            if (j % 2 == 1) {
+                                liteflowTemplate.rollbackChain(chainId);
+                            }
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(e);
+                    }
+                }));
+            }
+            startGate.countDown();
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get(10, TimeUnit.SECONDS);
+            assertThat(liteflowTemplate.containChain(chainId)).isTrue();
+            assertThat(liteflowTemplate.getChainHistorySnapshots(chainId).size()).isLessThanOrEqualTo(5);
+        } finally {
+            liteflowTemplate.removeChain(chainId);
+        }
     }
 
     @Configuration(proxyBeanMethods = false)

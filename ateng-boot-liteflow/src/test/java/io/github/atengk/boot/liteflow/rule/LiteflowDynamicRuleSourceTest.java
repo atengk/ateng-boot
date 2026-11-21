@@ -29,7 +29,10 @@ import java.sql.Connection;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -516,6 +519,40 @@ class LiteflowDynamicRuleSourceTest {
         List<RuleSourceDefinition> rules = permissiveMgr.loadAllRules();
         assertThat(rules).isEmpty();
         assertThat(permissiveMgr.loadRule("anyChain")).isNull();
+    }
+
+    @Test
+    @DisplayName("验证并发触发 refreshAll 与 refreshChain 在 ReentrantLock 下保持线程安全")
+    void testConcurrentRefreshSafety() throws Exception {
+        inMemoryProvider.setRule("concurrentRefreshChain", "THEN(dynStepA)");
+        int workers = 6;
+        CountDownLatch gate = new CountDownLatch(1);
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+        try {
+            for (int i = 0; i < workers; i++) {
+                final int idx = i;
+                futures.add(CompletableFuture.runAsync(() -> {
+                    try {
+                        gate.await(5, TimeUnit.SECONDS);
+                        if (idx % 2 == 0) {
+                            int count = ruleSourceManager.refreshAll();
+                            assertThat(count).isGreaterThanOrEqualTo(1);
+                        } else {
+                            boolean refreshed = ruleSourceManager.refreshChain("concurrentRefreshChain");
+                            assertThat(refreshed).isTrue();
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(e);
+                    }
+                }));
+            }
+            gate.countDown();
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get(10, TimeUnit.SECONDS);
+            assertThat(liteflowTemplate.containChain("concurrentRefreshChain")).isTrue();
+        } finally {
+            liteflowTemplate.removeChain("concurrentRefreshChain");
+        }
     }
 
     @Configuration(proxyBeanMethods = false)
