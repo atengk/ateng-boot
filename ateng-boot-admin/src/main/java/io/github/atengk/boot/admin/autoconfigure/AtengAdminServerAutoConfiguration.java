@@ -339,7 +339,8 @@ public class AtengAdminServerAutoConfiguration {
             ObjectProvider<AdminClusterCoordinator> clusterCoordinatorProvider,
             ObjectProvider<AtengInMemoryEventStore> eventStoreProvider,
             ObjectProvider<AtengAdminNotificationNotifier> notifierProvider,
-            ObjectProvider<AdminMetricsBinder> metricsBinderProvider) {
+            ObjectProvider<AdminMetricsBinder> metricsBinderProvider,
+            ObjectProvider<Clock> clockProvider) {
         AtengAdminNotificationNotifier notifier = notifierProvider.getIfAvailable();
         ZombieInstanceCleanupScheduler scheduler = new ZombieInstanceCleanupScheduler(
                 repository,
@@ -348,7 +349,8 @@ public class AtengAdminServerAutoConfiguration {
                 cleanupSchedulerProvider.getIfAvailable(),
                 clusterCoordinatorProvider.getIfAvailable(),
                 eventStoreProvider.getIfAvailable(),
-                notifier != null ? notifier::purgeInstanceState : null
+                notifier != null ? notifier::purgeInstanceState : null,
+                clockProvider.getIfAvailable(Clock::systemUTC)
         );
         AdminMetricsBinder binder = metricsBinderProvider.getIfAvailable();
         if (binder != null) {

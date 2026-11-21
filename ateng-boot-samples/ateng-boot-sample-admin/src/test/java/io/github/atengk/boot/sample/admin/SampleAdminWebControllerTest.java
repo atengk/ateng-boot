@@ -338,10 +338,9 @@ class SampleAdminWebControllerTest {
                     .andExpect(jsonPath("$.code").value(400))
                     .andExpect(jsonPath("$.success").value(false));
 
-            Thread.sleep(25);
             mockMvc.perform(post("/sample/admin/lifecycle/zombies/clean")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"zombieThresholdOverride\":\"PT0.01S\"}"))
+                            .content("{\"zombieThresholdOverride\":\"PT0S\"}"))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.data.schedulerRunning").value(true))
                     .andExpect(jsonPath("$.data.evictedCount", greaterThanOrEqualTo(1)))

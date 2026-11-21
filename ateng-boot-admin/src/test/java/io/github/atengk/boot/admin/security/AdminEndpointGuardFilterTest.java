@@ -152,6 +152,22 @@ class AdminEndpointGuardFilterTest {
     }
 
     @Test
+    @DisplayName("未认证或缺失 AdminConsolePrincipal 时，写操作必须按 Fail-Closed 拦截返回 403 并记录审计")
+    void shouldRejectMutatingOperationWhenPrincipalIsMissing() throws ServletException, IOException {
+        try (MockedStatic<StpUtil> stpMock = Mockito.mockStatic(StpUtil.class)) {
+            stpMock.when(StpUtil::isLogin).thenReturn(false);
+
+            MockHttpServletRequest unauthPost = new MockHttpServletRequest("POST", "/admin/instances/inst-01/actuator/loggers/root");
+            MockHttpServletResponse unauthRes = new MockHttpServletResponse();
+            filter.doFilter(unauthPost, unauthRes, filterChain);
+            assertThat(unauthRes.getStatus()).isEqualTo(403);
+            verify(filterChain, never()).doFilter(unauthPost, unauthRes);
+        }
+
+        assertThat(auditRepository.query(AdminAuditAction.ENDPOINT_BLOCKED, "anonymous", 10)).hasSize(1);
+    }
+
+    @Test
     @DisplayName("向下兼容 AdminWriteGuardFilter 类型与公开方法契约")
     void shouldRemainCompatibleWithAdminWriteGuardFilterContract() {
         AdminWriteGuardFilter legacyRef = filter;

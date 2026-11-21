@@ -114,12 +114,15 @@ public class AdminEndpointGuardFilter extends AdminWriteGuardFilter {
                 return;
             }
             Optional<AdminConsolePrincipal> principal = AdminSessionHelper.resolvePrincipal(request);
-            if (principal.isPresent() && !principal.get().hasWritePermission()) {
+            if (principal.isEmpty() || !principal.get().hasWritePermission()) {
+                String rolesDesc = principal.map(p -> String.valueOf(p.getRoleCodes())).orElse("[]");
+                String maskedActor = principal.map(AdminConsolePrincipal::getMaskedUsername)
+                        .orElseGet(() -> AdminConsolePrincipal.maskUsername(actor));
                 String reason = "Insufficient console role to execute mutating actuator operation";
-                log.warn("[Endpoint Guard] 越权角色写操作拦截: actor=[{}], roles=[{}], method=[{}], uri=[{}]",
-                        principal.get().getMaskedUsername(), principal.get().getRoleCodes(), method, normalizedUri);
+                log.warn("[Endpoint Guard] 越权或缺失控制台主体写操作拦截: actor=[{}], roles=[{}], method=[{}], uri=[{}]",
+                        maskedActor, rolesDesc, method, normalizedUri);
                 recordAudit(AdminAuditAction.ENDPOINT_BLOCKED, actor, sourceIp, endpointSegment, method, normalizedUri,
-                        "DENIED", reason + ", roles=" + principal.get().getRoleCodes());
+                        "DENIED", reason + ", roles=" + rolesDesc);
                 reject(response, HttpStatus.FORBIDDEN, reason);
                 return;
             }

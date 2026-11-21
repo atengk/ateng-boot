@@ -488,8 +488,7 @@ class AdminSampleIntegrationTest {
 
         instanceRepository.compute(instanceId, (id, inst) -> Mono.just(inst.withStatusInfo(StatusInfo.ofOffline()))).block();
 
-        properties.getCleanup().setZombieThreshold(Duration.ofMillis(10));
-        Thread.sleep(30);
+        properties.getCleanup().setZombieThreshold(Duration.ZERO);
 
         int evicted = zombieCleanupScheduler.cleanZombies();
         assertThat(evicted).isGreaterThanOrEqualTo(1);
@@ -751,8 +750,7 @@ class AdminSampleIntegrationTest {
             assertThat(boundedStore.find(instId).collectList().block()).isNotEmpty();
 
             instanceRepository.compute(instId, (id, curr) -> Mono.just(curr.withStatusInfo(StatusInfo.ofOffline()))).block();
-            properties.getCleanup().setZombieThreshold(Duration.ofMillis(10));
-            Thread.sleep(30);
+            properties.getCleanup().setZombieThreshold(Duration.ZERO);
 
             int evicted = zombieCleanupScheduler.cleanZombies();
             assertThat(evicted).isGreaterThanOrEqualTo(1);

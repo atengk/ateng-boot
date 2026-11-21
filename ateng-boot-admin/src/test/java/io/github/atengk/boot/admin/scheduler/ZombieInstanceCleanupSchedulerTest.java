@@ -16,9 +16,12 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -265,5 +268,46 @@ class ZombieInstanceCleanupSchedulerTest {
         verify(eventStore, times(1)).evict(InstanceId.of("inst-z-clean"));
         assertThat(purgedNotifierIds).containsExactly(InstanceId.of("inst-z-clean"));
         verify(coordinator, times(1)).releaseLock(any(), any());
+    }
+
+    @Test
+    @DisplayName("支持注入可控 Clock 确定性推进时间以验证僵尸阈值边界（零 Thread.sleep）")
+    void shouldUseInjectedClockForDeterministicZombieThresholdEvaluation() {
+        AtomicReference<Instant> currentInstant = new AtomicReference<>(Instant.parse("2026-11-21T06:00:00Z"));
+        Clock mutableClock = new Clock() {
+            @Override
+            public ZoneId getZone() {
+                return ZoneId.of("UTC");
+            }
+
+            @Override
+            public Clock withZone(ZoneId zone) {
+                return this;
+            }
+
+            @Override
+            public Instant instant() {
+                return currentInstant.get();
+            }
+        };
+        properties.getCleanup().setZombieThreshold(Duration.ofMinutes(30));
+        ZombieInstanceCleanupScheduler clockedScheduler = new ZombieInstanceCleanupScheduler(
+                repository, registry, properties, null, null, null, null, mutableClock
+        );
+
+        Instance offlineInstance = createInstance(
+                "inst-clock-01", StatusInfo.ofOffline(), Instant.parse("2026-11-21T05:45:00Z")
+        );
+        when(repository.findAll()).thenReturn(Flux.just(offlineInstance));
+        when(registry.deregister(InstanceId.of("inst-clock-01"))).thenReturn(Mono.just(InstanceId.of("inst-clock-01")));
+
+        // 离线仅 15 分钟 < 30 分钟阈值 -> 不驱逐
+        assertThat(clockedScheduler.cleanZombies()).isZero();
+        verify(registry, never()).deregister(any());
+
+        // 推进时钟 20 分钟后（累计 35 分钟 >= 30 分钟阈值）-> 立即精准驱逐
+        currentInstant.set(Instant.parse("2026-11-21T06:20:00Z"));
+        assertThat(clockedScheduler.cleanZombies()).isEqualTo(1);
+        verify(registry, times(1)).deregister(InstanceId.of("inst-clock-01"));
     }
 }

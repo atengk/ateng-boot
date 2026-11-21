@@ -17,6 +17,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -46,6 +47,7 @@ public class ZombieInstanceCleanupScheduler implements SmartLifecycle {
     private final AdminClusterCoordinator clusterCoordinator;
     private final AtengInMemoryEventStore eventStore;
     private final Consumer<InstanceId> notifierStatePurger;
+    private final Clock clock;
     private final String nodeOwnerId = IdUtil.fastSimpleUUID();
     private final ReentrantLock lifecycleLock = new ReentrantLock();
     private volatile AdminMetricsBinder metricsBinder;
@@ -57,14 +59,14 @@ public class ZombieInstanceCleanupScheduler implements SmartLifecycle {
     public ZombieInstanceCleanupScheduler(InstanceRepository repository,
                                           InstanceRegistry registry,
                                           AtengAdminServerProperties properties) {
-        this(repository, registry, properties, null, null, null, null);
+        this(repository, registry, properties, null, null, null, null, Clock.systemUTC());
     }
 
     public ZombieInstanceCleanupScheduler(InstanceRepository repository,
                                           InstanceRegistry registry,
                                           AtengAdminServerProperties properties,
                                           ThreadPoolTaskScheduler taskScheduler) {
-        this(repository, registry, properties, taskScheduler, null, null, null);
+        this(repository, registry, properties, taskScheduler, null, null, null, Clock.systemUTC());
     }
 
     /**
@@ -85,12 +87,36 @@ public class ZombieInstanceCleanupScheduler implements SmartLifecycle {
                                           AdminClusterCoordinator clusterCoordinator,
                                           AtengInMemoryEventStore eventStore,
                                           Consumer<InstanceId> notifierStatePurger) {
+        this(repository, registry, properties, taskScheduler, clusterCoordinator, eventStore, notifierStatePurger, Clock.systemUTC());
+    }
+
+    /**
+     * 全功能构造僵尸清理调度器（支持注入可控时钟消除测试时序依赖）
+     *
+     * @param repository          实例仓库
+     * @param registry            SBA 注册表
+     * @param properties          配置属性
+     * @param taskScheduler       受管独立清理线程池
+     * @param clusterCoordinator  集群互斥锁协调器（可选）
+     * @param eventStore          有界内存事件仓库（可选，用于驱逐后释放事件历史）
+     * @param notifierStatePurger 通知器实例残留状态清理回调（可选）
+     * @param clock               时钟源（为空时回退 {@link Clock#systemUTC()}）
+     */
+    public ZombieInstanceCleanupScheduler(InstanceRepository repository,
+                                          InstanceRegistry registry,
+                                          AtengAdminServerProperties properties,
+                                          ThreadPoolTaskScheduler taskScheduler,
+                                          AdminClusterCoordinator clusterCoordinator,
+                                          AtengInMemoryEventStore eventStore,
+                                          Consumer<InstanceId> notifierStatePurger,
+                                          Clock clock) {
         this.repository = repository;
         this.registry = registry;
         this.properties = properties;
         this.clusterCoordinator = clusterCoordinator;
         this.eventStore = eventStore;
         this.notifierStatePurger = notifierStatePurger;
+        this.clock = clock != null ? clock : Clock.systemUTC();
         if (taskScheduler != null) {
             this.taskScheduler = taskScheduler;
             this.internalTaskScheduler = false;
@@ -134,7 +160,7 @@ public class ZombieInstanceCleanupScheduler implements SmartLifecycle {
 
             // 首发调度优化：计算初始延迟（若周期小于 10 秒则以周期为准，否则 10 秒后执行首发清理）
             Duration initialDelay = interval.compareTo(Duration.ofSeconds(10)) < 0 ? interval : Duration.ofSeconds(10);
-            Instant startTime = Instant.now().plus(initialDelay);
+            Instant startTime = this.clock.instant().plus(initialDelay);
             this.scheduledFuture = this.taskScheduler.scheduleWithFixedDelay(this::cleanZombies, startTime, interval);
             this.running = true;
 
@@ -227,7 +253,7 @@ public class ZombieInstanceCleanupScheduler implements SmartLifecycle {
                 ? Duration.ofHours(24)
                 : configuredThreshold;
 
-        Instant now = Instant.now();
+        Instant now = this.clock.instant();
         List<Instance> candidates;
         try {
             Flux<Instance> instancesFlux = this.repository.findAll();

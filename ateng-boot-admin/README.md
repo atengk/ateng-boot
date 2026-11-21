@@ -9,18 +9,18 @@
 | 能力域 | 核心能力与对外契约 | 关键组件 / SPI / 端点 / 配置前缀 | 锚定验证源头 | 定位锚点 |
 | :--- | :--- | :--- | :--- | :--- |
 | 起步与架构 | BOM / 显式版本双模引入与五级过滤器链排序 | `AtengAdminServerAutoConfiguration`、`AtengAdminServerDefenseAutoConfiguration` | `AtengAdminServerAutoConfigurationTest` | [第 1 章](#1-快速起步与过滤器链拓扑) |
-| 控制台认证与 RBAC | 原生登录表单、多账号配置、`{bcrypt}`、三角色 RBAC（`VIEWER`/`OPERATOR`/`ADMIN`）与主体桥接 | `AdminLoginController`、`AdminAuthProvider`、`AdminConsolePrincipal`、`AdminPrincipalBridgeFilter` | `AdminRealClientEndToEndTest` / `SampleAdminAuthProvider` | [2.1 节](#21-控制台多角色-rbacbcrypt-与主体桥接) |
+| 控制台认证与 RBAC | 原生登录表单、多账号配置、`{bcrypt}`、三角色 RBAC（`AdminRole`: `VIEWER`/`OPERATOR`/`ADMIN`）与主体桥接 | `AdminLoginController`、`AdminAuthProvider`、`DefaultPropertiesAdminAuthProvider`、`AdminConsolePrincipal`、`AdminRole`、`AdminPrincipalBridgeFilter` | `AdminRealClientEndToEndTest` / `SampleAdminAuthProvider` | [2.1 节](#21-控制台多角色-rbacbcrypt-与主体桥接) |
 | 登录防爆破与登出 | 账号+IP 双轨失败滑窗锁定、可信代理提取（`trusted-proxies`） | `AdminLoginDefenseService`、`ateng.boot.admin.server.login-defense.*` | `AdminLoginDefenseServiceTest` | [2.2 节](#22-登录防爆破锁定与反代可信-ip) |
-| 控制台 REST 门面 | 当前主体信息、审计检索、运行时维护静默增删查 | `AdminConsoleController`（`{context-path}/console/{me,audits,silences}`） | `AdminConsoleControllerTest` / `AdminSecurityConsoleController` | [2.3 节](#23-控制台-rest-门面-me--audits--silences) |
-| 零库脱敏操作审计 | 10 类审计动作、自动凭据掩码与有界环形仓库/领域事件 | `AdminAuditService`、`AdminAuditLogRepository`、`AdminAuditEvent` | `AdminConsoleControllerTest` / `AdminSecurityConsoleController` | [2.4 节](#24-零库结构化脱敏操作审计) |
-| 入出站 SSRF 与发现准入 | 有界可复位请求体（413）、四层 SSRF（含 `100.64/10`、`fc00::/7`）、三种 DNS 模式、出站二次重检与发现过滤 | `AdminSsrfGuardFilter`、`AdminOutboundSsrfFilterFunction`、`AdminAdmissionInstanceFilter`、`AdminInstanceAdmissionPolicy` | `AdminAdmissionController` / `AdminRealClientEndToEndTest` | [2.5 节](#25-入出站-ssrf-防火墙可信发现与生命周期双因子鉴权) |
-| 高危端点与 RBAC 守卫 | `blocked-endpoints` 硬阻断（含 GET）、全局写开关与 `VIEWER` 写拦截 | `AdminEndpointGuardFilter`、`AdminWriteGuardFilter` | `AdminGovernanceController` / `AdminSecurityConsoleController` | [2.6 节](#26-高危端点硬阻断与-rbac-写守卫) |
+| 控制台 REST 门面 | 当前主体信息、审计检索、运行时维护静默增删查 | `AdminConsoleController`（`{context-path}/console/{me,audits,silences}`）、`AdminSessionHelper` | `AdminConsoleControllerTest` / `AdminSecurityConsoleController` | [2.3 节](#23-控制台-rest-门面-me--audits--silences) |
+| 零库脱敏操作审计 | 10 类审计动作（`AdminAuditAction`）、自动凭据掩码与有界环形仓库/领域事件 | `AdminAuditService`、`AdminAuditLogHandler`、`DefaultAdminAuditLogHandler`、`AdminAuditLogRepository`、`AdminAuditRecord`、`AdminAuditEvent` | `AdminConsoleControllerTest` / `AdminSecurityConsoleController` | [2.4 节](#24-零库结构化脱敏操作审计) |
+| 入出站 SSRF 与发现准入 | 有界可复位请求体（413）、四层 SSRF（含 `100.64/10`、`fc00::/7`）、三种 `DnsResolutionMode`、出站二次重检与发现过滤 | `AdminSsrfGuardFilter`、`AdminOutboundSsrfFilterFunction`、`AdminAdmissionInstanceFilter`、`AdminInstanceAdmissionPolicy`、`AdminAdmissionResult`、`InstanceRegistration`、`HostAddressResolver`、`DnsResolutionMode` | `AdminAdmissionController` / `AdminRealClientEndToEndTest` | [2.5 节](#25-入出站-ssrf-防火墙可信发现与生命周期双因子鉴权) |
+| 高危端点与 RBAC 守卫 | `blocked-endpoints` 硬阻断（含 GET）、全局写开关与 `VIEWER` 写拦截 | `AdminEndpointGuardFilter`、`AdminWriteGuardFilter`、`AdminPathMatcher` | `AdminGovernanceController` / `AdminSecurityConsoleController` | [2.6 节](#26-高危端点硬阻断与-rbac-写守卫) |
 | 出站 Actuator 凭据级联 | 抑制原生重复 Basic 标头，按优先级自适应注入凭据 | `AtengActuatorHttpHeadersProvider`、`BasicAuthHttpHeaderProvider` 抑制 | `AdminGovernanceController` / `AdminRealClientEndToEndTest` | [2.7 节](#27-多模态出站-actuator-凭据穿透与跨模块协同) |
 | 客户端握手与自保边界 | `X-Admin-Client-Secret` 自动附加、Client `/actuator/**` Token 保护（`ateng-boot-observability` 归属） | `AdminClientSecretHttpRequestInterceptor`、`ActuatorEndpointSecurityFilter` | `AdminRealClientEndToEndTest` | [2.7 节](#27-多模态出站-actuator-凭据穿透与跨模块协同) |
 | 僵尸清理与有界事件存储 | `ReentrantLock` 定时驱逐失效实例并联动清洗事件与通知状态 | `ZombieInstanceCleanupScheduler`、`AtengInMemoryEventStore` | `AdminLifecycleController` / `ZombieInstanceCleanupSchedulerTest` | [3.1 节](#31-僵尸实例清理与有界内存事件存储) |
 | 多阶防风暴告警状态机 | 毫秒防抖、发版静默、黑白名单、持续周期重提醒与雪崩折叠聚合 | `AtengAdminNotificationNotifier`、`ateng.boot.admin.server.alert.*` | `AdminAlertController` / `AtengAdminNotificationNotifierTest` | [3.2 节](#32-防抖告警发版静默持续重提醒与雪崩聚合状态机) |
-| 按服务路由与维护静默 | 服务模式通配路由至指定渠道与 `@所有人`、运行时维护静默窗口 | `AlertRouteProperties`、`AdminSilenceManager`、`SilenceRule` | `AdminConsoleControllerTest` / `DefaultAdminSilenceManagerTest` | [3.3 节](#33-按服务告警路由与运行时动态维护静默) |
-| 集群协同与单机降级 | 多节点防重复告警与互斥清理（无 Redis 内存自洽，Redis 异常 Fail-Open） | `AdminClusterCoordinator`、`RedisAdminClusterCoordinator` | `AtengAdminServerAutoConfigurationTest` | [3.4 节](#34-fail-open-集群协调与单机内存降级) |
+| 按服务路由与维护静默 | 服务模式通配路由至指定渠道与 `@所有人`、运行时维护静默窗口 | `AlertRouteProperties`、`AdminSilenceManager`、`DefaultAdminSilenceManager`、`SilenceRule` | `AdminConsoleControllerTest` / `DefaultAdminSilenceManagerTest` | [3.3 节](#33-按服务告警路由与运行时动态维护静默) |
+| 集群协同与单机降级 | 多节点防重复告警与互斥清理（无 Redis 内存自洽，Redis 异常 Fail-Open） | `AdminClusterCoordinator`、`InMemoryAdminClusterCoordinator`、`RedisAdminClusterCoordinator` | `AtengAdminServerAutoConfigurationTest` / `AdminClusterCoordinatorTest` | [3.4 节](#34-fail-open-集群协调与单机内存降级) |
 | 低基数自观测探针 | 10 项禁止无界动态标签指标与监控中心 Actuator 健康指示器 | `AdminMetricsBinder`（`ateng.admin.*`）、`AdminServerHealthIndicator`（`adminServer`） | `AdminMetricsBinderTest` / `AdminServerHealthIndicatorTest` / `AdminRealClientEndToEndTest` | [3.5 节](#35-低基数-micrometer-指标与-adminserver-健康探针) |
 | 全量配置与排错指南 | 全属性类型、默认值、单位与常见陷阱排查 | `AtengAdminServerProperties` | `AtengAdminServerAutoConfigurationTest` | [第 4 章](#4-全量配置项字典) & [第 5 章](#5-常见故障排查与验证基准) |
 
@@ -172,6 +172,18 @@ ateng:
             - "127.0.0.1/32"
 ```
 
+- **防爆破预检编程调用（提取自 [AdminLoginController](../ateng-boot-admin/src/main/java/io/github/atengk/boot/admin/controller/AdminLoginController.java)）**：
+
+```java
+AdminLoginDefenseService.LoginDefenseDecision preCheck =
+        loginDefenseService.checkAllowed(username, request);
+if (!preCheck.isAllowed()) {
+    // 锁定期间拒绝登录，剩余锁定秒数由 preCheck.getRemainingLockSeconds() 提供
+    response.sendRedirect(loginPath + "?locked=true");
+    return;
+}
+```
+
 - **预期效果与避坑**：未将反向代理网关 CIDR 列入 `trusted-proxies` 前，恶意客户端携带 `X-Forwarded-For: 1.2.3.4` 无法绕过源 IP 计数锁定，亦无法封死任意第三方无辜 IP。
 
 ### 2.3 控制台 REST 门面（`/me` / `/audits` / `/silences`）
@@ -222,24 +234,43 @@ public class SecurityAuditAlertListener {
   1. **入站可复读与防 SSRF**：`AdminSsrfGuardFilter` 通过 `ResettableContentCachingRequestWrapper` 对 `POST {context-path}/instances` 执行有界流缓存（超出 `max-registration-payload-size` 默认 `1MB` 直接拒收返回 `413`）；`DefaultAdminInstanceAdmissionPolicy` 拦截空请求体、含 `@` 用户凭据的 URL、回环/链路本地/`100.64.0.0/10`（含阿里云 IMDS `100.100.100.200`）/`fc00::/7`（含 AWS IPv6 IMDS `fd00:ec2::254`）及跨编码 IP 变体。
   2. **三模 DNS 核验与出站二次重检**：通过 `dns-resolution-mode` 控制域名解析核验策略（`DISABLED`、`FAIL_OPEN` 默认对可解析 IP 严格查验、对离线不可解析假域名放行，生产建议切为 `FAIL_CLOSED`）；`AdminOutboundSsrfFilterFunction` 在 SBA `InstanceWebClient` 真正发起 HTTP 请求前（`@Order(15)`）再次执行地址与 DNS 校验，防御 DNS Rebinding 攻击。
   3. **Discovery 发现实例过滤与注销双因子**：`AdminAdmissionInstanceFilter` 为 `source=discovery` 发现节点免除 HTTP 密钥并执行地址合规核验（独占上报发现准入指标，不与 HTTP `AdminSsrfGuardFilter` 重复计数）；单段注销 `DELETE {context-path}/instances/{id}` 强制验证 `X-Admin-Client-Secret` 或 `OPERATOR`/`ADMIN` 登录态。
-- **自定义准入 SPI 示例（提取自 [SampleInstanceAdmissionPolicy](../ateng-boot-samples/ateng-boot-sample-admin/src/main/java/io/github/atengk/boot/sample/admin/policy/SampleInstanceAdmissionPolicy.java)）**：
+- **自定义准入 SPI 示例（1:1 提取自 [SampleInstanceAdmissionPolicy](../ateng-boot-samples/ateng-boot-sample-admin/src/main/java/io/github/atengk/boot/sample/admin/policy/SampleInstanceAdmissionPolicy.java)）**：
 
 ```java
 @Component
-public class SampleInstanceAdmissionPolicy extends DefaultAdminInstanceAdmissionPolicy {
+public class SampleInstanceAdmissionPolicy implements AdminInstanceAdmissionPolicy {
+
+    private final DefaultAdminInstanceAdmissionPolicy defaultPolicy;
 
     public SampleInstanceAdmissionPolicy(AtengAdminServerProperties properties) {
-        super(properties);
+        this.defaultPolicy = new DefaultAdminInstanceAdmissionPolicy(properties);
     }
 
     @Override
     public AdminAdmissionResult evaluate(InstanceRegistration registration, HttpServletRequest request) {
-        if (registration != null && StringUtils.hasText(registration.getName())
-                && registration.getName().trim().toLowerCase(Locale.ROOT).startsWith("forbidden-")) {
-            return AdminAdmissionResult.rejected(HttpStatus.FORBIDDEN,
-                    "禁止高危黑名单前缀服务接入看板: " + registration.getName());
+        // 1. 委托默认准入策略执行集群防伪密钥与防 SSRF 审查
+        AdminAdmissionResult defaultResult = defaultPolicy.evaluate(registration, request);
+        if (defaultResult.isRejected()) {
+            return defaultResult;
         }
-        return super.evaluate(registration, request);
+
+        // 2. 企业级命名治理扩展：禁止未批复或违规前缀服务接入生产监控看板
+        if (registration != null && StringUtils.hasText(registration.getName())) {
+            String serviceName = registration.getName().trim();
+            if (serviceName.startsWith("forbidden-") || serviceName.startsWith("unapproved-")) {
+                return AdminAdmissionResult.reject(
+                        HttpStatus.FORBIDDEN,
+                        "Service name rejected by sample admission policy: " + serviceName
+                );
+            }
+        }
+
+        return AdminAdmissionResult.admit();
+    }
+
+    @Override
+    public boolean isOutboundUrlAllowed(String url) {
+        return defaultPolicy.isOutboundUrlAllowed(url);
     }
 }
 ```
@@ -248,7 +279,7 @@ public class SampleInstanceAdmissionPolicy extends DefaultAdminInstanceAdmission
 
 ### 2.6 高危端点硬阻断与 RBAC 写守卫
 
-- **机制说明**：`AdminEndpointGuardFilter`（继承并兼容旧版 `AdminWriteGuardFilter`）拦截 `{context-path}/instances/{id}/actuator/**` 代理路径，按序执行三道防线：1) 命中 `blocked-endpoints` 时无论 HTTP 方法一律返回 `403`；2) 非幂等写操作（`POST`/`PUT`/`DELETE`/`PATCH`）受全局 `enable-write-operations` 开关限制；3) 非幂等写操作强制校检 `OPERATOR` 或 `ADMIN` 角色，`VIEWER` 直接阻断。
+- **机制说明**：`AdminEndpointGuardFilter`（继承并兼容旧版 `AdminWriteGuardFilter`）拦截 `{context-path}/instances/{id}/actuator/**`（及 `/applications/**`）代理路径，按序执行三道防线：1) 命中 `blocked-endpoints` 时无论 HTTP 方法一律返回 `403`；2) 非幂等写操作（`POST`/`PUT`/`DELETE`/`PATCH`）受全局 `enable-write-operations` 开关限制；3) 非幂等写操作以 Fail-Closed 语义校验控制台主体及 `OPERATOR`/`ADMIN` 角色，未携带有效主体或 `VIEWER` 角色直接阻断返回 `403`。
 - **配置示例**：
 
 ```yaml
@@ -261,6 +292,17 @@ ateng:
           - heapdump
           - shutdown
           - restart
+```
+
+- **守卫预检实战示例（提取自 [AdminSecurityConsoleController](../ateng-boot-samples/ateng-boot-sample-admin/src/main/java/io/github/atengk/boot/sample/admin/controller/AdminSecurityConsoleController.java)）**：
+
+```java
+AdminEndpointGuardFilter filter = endpointGuardFilterProvider.getIfAvailable();
+boolean guardBlocked = filter != null && filter.shouldBlock(method, uri);
+String segment = AdminPathMatcher.extractActuatorEndpointSegment(uri, "", "/admin");
+boolean mutating = "POST".equals(method) || "PUT".equals(method)
+        || "DELETE".equals(method) || "PATCH".equals(method);
+boolean viewerWriteBlocked = mutating && AdminRole.VIEWER.name().equals(roleCode);
 ```
 
 - **预期效果与避坑**：默认清单保留 `env`/`beans`/`metrics`/`health` 只读访问以确保 SBA UI 面板正常展示，同时将 `heapdump`/`shutdown`/`restart` 物理切断；生产冻结发版期可将 `enable-write-operations` 动态置为 `false` 进入全看板只读保护模式。
@@ -287,6 +329,20 @@ ateng:
         client-secret: YOUR_CLIENT_SECRET
 ```
 
+- **出站标头推导实战示例（提取自 [AdminGovernanceController](../ateng-boot-samples/ateng-boot-sample-admin/src/main/java/io/github/atengk/boot/sample/admin/controller/AdminGovernanceController.java)）**：
+
+```java
+Registration registration = Registration.builder()
+        .name("payment-core-service")
+        .serviceUrl("http://127.0.0.1:8080/")
+        .managementUrl("http://127.0.0.1:8080/actuator")
+        .healthUrl("http://127.0.0.1:8080/actuator/health")
+        .metadata("actuator-token", "YOUR_SERVICE_ACTUATOR_TOKEN")
+        .build();
+Instance transientInstance = Instance.create(InstanceId.of("preview-only")).register(registration);
+HttpHeaders derived = headersProvider.getHeaders(transientInstance);
+```
+
 - **预期效果与避坑**：在 [AdminRealClientEndToEndTest](../ateng-boot-samples/ateng-boot-sample-admin/src/test/java/io/github/atengk/boot/sample/admin/AdminRealClientEndToEndTest.java) 中已实测验证：未带 Token 直连客户端 `/actuator/env` 被 `401/403` 拦截，而管理员通过 `/admin/instances/{id}/actuator/env` 反代访问时由服务端自动注入 `X-Actuator-Token` 成功穿透返回 `200`。
 
 ---
@@ -295,7 +351,7 @@ ateng:
 
 ### 3.1 僵尸实例清理与有界内存事件存储
 
-- **机制说明**：`AtengInMemoryEventStore` 默认约束单实例聚合事件上限（`max-log-size-per-aggregate=100`）与已注销实例保留上限（`max-retained-deregistered=1000`），按 FIFO 淘汰旧记录防长周期运行堆溢出。开启 `cleanup.enabled=true` 后，`ZombieInstanceCleanupScheduler` 使用专用单线程调度器与 `ReentrantLock` 扫描超时 `OFFLINE`/`UNKNOWN` 实例并执行带超时控制的注销驱逐，同时回调清除事件存储及通知器残留状态。
+- **机制说明**：`AtengInMemoryEventStore` 默认约束单实例聚合事件上限（`max-log-size-per-aggregate=100`）与已注销实例保留上限（`max-retained-deregistered=1000`），按 FIFO 淘汰旧记录防长周期运行堆溢出。开启 `cleanup.enabled=true` 后，`ZombieInstanceCleanupScheduler` 使用专用单线程调度器、注入 `Clock` 时钟源与 `ReentrantLock` 扫描超时 `OFFLINE`/`UNKNOWN` 实例并执行带超时控制的注销驱逐，同时回调清除事件存储及通知器残留状态。
 - **配置示例**：
 
 ```yaml
@@ -310,6 +366,16 @@ ateng:
           enabled: true
           interval: 1h
           zombie-threshold: 24h
+```
+
+- **主动触发与受控清理示例（提取自 [AdminLifecycleController](../ateng-boot-samples/ateng-boot-sample-admin/src/main/java/io/github/atengk/boot/sample/admin/controller/AdminLifecycleController.java)）**：
+
+```java
+ZombieInstanceCleanupScheduler scheduler = cleanupSchedulerProvider.getIfAvailable();
+if (scheduler != null) {
+    int evicted = scheduler.cleanZombies();
+    boolean running = scheduler.isRunning();
+}
 ```
 
 - **预期效果与避坑**：单线程隔离调度 + `ReentrantLock` 彻底杜绝 JDK 21+ 虚拟线程载体 Pinning；未开启 `cleanup.enabled=true` 时不注册清理调度器 Bean，保持零后台线程开销。
@@ -343,12 +409,25 @@ ateng:
             threshold: 5
 ```
 
+- **状态跃迁与优雅下线联动示例（提取自 [AdminAlertController](../ateng-boot-samples/ateng-boot-sample-admin/src/main/java/io/github/atengk/boot/sample/admin/controller/AdminAlertController.java)）**：
+
+```java
+// 1. 触发实例故障状态跃迁事件进入防抖/聚合状态机
+InstanceStatusChangedEvent downEvent = new InstanceStatusChangedEvent(
+        instanceId, updated.getVersion(), StatusInfo.ofDown()
+);
+notifier.notify(downEvent).block();
+
+// 2. 触发优雅注销事件进入发版静默窗口，阻止后续重启抖动误报
+notifier.notify(new InstanceDeregisteredEvent(instanceId, baseVersion + 1)).block();
+```
+
 - **预期效果与避坑**：故障恢复 `UP` 后会自动撤销待发重提醒并推送绿色“故障恢复”卡片；使用静态配置 `excluded-services` 面向长期忽略服务，临时变更为避免重启应改用 3.3 节维护静默。
 
 ### 3.3 按服务告警路由与运行时动态维护静默
 
 - **机制说明**：通过 `alert.routes` 可按 `service-pattern` 将特定业务线告警路由到指定渠道（`channel`），并精细控制 `mention-all`、`mention-mobiles` 与 `mention-user-ids`；运维值班期可通过 `AdminSilenceManager` SPI 或 `{context-path}/console/silences` 增删查带 TTL 维护静默规则，完全正交于静态名单。
-- **配置与调用示例**：
+- **配置与 Java SPI 实战示例（提取自 [AdminSecurityConsoleController](../ateng-boot-samples/ateng-boot-sample-admin/src/main/java/io/github/atengk/boot/sample/admin/controller/AdminSecurityConsoleController.java)）**：
 
 ```yaml
 ateng:
@@ -361,6 +440,15 @@ ateng:
               channel: "payment-oncall-bot"
               mention-all: true
               mention-user-ids: ["oncall-uid-01"]
+```
+
+```java
+// 运行时创建维护静默窗口（带 TTL）并在维护完成后主动撤销
+SilenceRule created = silenceManager.createSilence(
+        "order-*", Duration.ofMinutes(15), "订单库例行变更维护", "sre-operator"
+);
+List<SilenceRule> activeRules = silenceManager.listActiveSilences();
+boolean revoked = silenceManager.revokeSilence(created.getId());
 ```
 
 - **预期效果与避坑**：维护静默规则默认有效期由 `cluster.silence-rule-default-ttl`（默认 `2h`）兜底，支持到期自动清理并同步触发告警状态机阻断重复推送。
@@ -381,6 +469,24 @@ ateng:
           cleanup-lock-ttl: 30s
           alert-dedup-ttl: 60s
           silence-rule-default-ttl: 2h
+```
+
+- **集群协调 SPI 实战示例（提取自 `ZombieInstanceCleanupScheduler` / `AtengAdminNotificationNotifier` 内部协调契约）**：
+
+```java
+// 1. 僵尸清理等周期任务抢占跨节点互斥锁（Redis 故障时自动 Fail-Open 放行）
+if (clusterCoordinator.tryAcquireLock("zombie-cleanup", nodeOwnerId, Duration.ofSeconds(30))) {
+    try {
+        // 执行单副本独占清理逻辑
+    } finally {
+        clusterCoordinator.releaseLock("zombie-cleanup", nodeOwnerId);
+    }
+}
+
+// 2. 告警去重窗判定：同一实例状态变更在多副本间仅允许首个节点投递卡片
+boolean firstDispatched = clusterCoordinator.tryMarkAlertDispatched(
+        "alert:order-core-01:DOWN", Duration.ofSeconds(60)
+);
 ```
 
 - **预期效果与避坑**：未接入 Redis 的单机沙箱即使同时存在 `spring-data-redis` 依赖，在 `cluster.enabled=false` 时仍确定性运行单机协调器，零连接异常告警。
