@@ -27,6 +27,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -930,17 +931,36 @@ public class LiteflowTemplate {
         if (el == null || el.isBlank()) {
             return LiteflowElValidationResult.fail(el, "EL 表达式不能为空");
         }
+        ElExpressionAnalyzer.AnalysisResult analysis = ElExpressionAnalyzer.analyze(el);
         try {
             ValidationResp resp = LiteFlowChainELBuilder.validateWithEx(el);
-            if (resp != null && resp.isSuccess()) {
-                return LiteflowElValidationResult.success(el);
+            boolean syntaxValid = resp != null && resp.isSuccess();
+            if (syntaxValid) {
+                return LiteflowElValidationResult.success(
+                        el, analysis.referencedNodeIds(), analysis.referencedChainIds());
             }
-            String errorMsg = (resp != null && resp.getCause() != null)
+            String causeMsg = (resp != null && resp.getCause() != null)
                     ? resp.getCause().getMessage()
-                    : "EL 表达式语法校验未通过";
-            return LiteflowElValidationResult.fail(el, errorMsg);
-        } catch (Throwable t) {
-            return LiteflowElValidationResult.fail(el, "EL 表达式校验异常: " + t.getMessage());
+                    : null;
+            String errorMsg;
+            if (analysis.hasMissingComponents()) {
+                errorMsg = "存在未注册的组件或子流程链: " + String.join(", ", analysis.missingComponentIds());
+                if (causeMsg != null && !causeMsg.isBlank()) {
+                    errorMsg = errorMsg + " (" + causeMsg + ")";
+                }
+            } else {
+                errorMsg = (causeMsg != null && !causeMsg.isBlank()) ? causeMsg : "EL 表达式语法校验未通过";
+            }
+            return LiteflowElValidationResult.fail(
+                    el, errorMsg,
+                    analysis.referencedNodeIds(), analysis.referencedChainIds(), analysis.missingComponentIds());
+        } catch (Exception e) {
+            String msg = analysis.hasMissingComponents()
+                    ? "存在未注册的组件或子流程链: " + String.join(", ", analysis.missingComponentIds()) + " (" + e.getMessage() + ")"
+                    : "EL 表达式校验异常: " + e.getMessage();
+            return LiteflowElValidationResult.fail(
+                    el, msg,
+                    analysis.referencedNodeIds(), analysis.referencedChainIds(), analysis.missingComponentIds());
         }
     }
 
@@ -956,10 +976,90 @@ public class LiteflowTemplate {
                 return Collections.emptySet();
             }
             return Collections.unmodifiableSet(new TreeSet<>(chainMap.keySet()));
-        } catch (Throwable t) {
-            log.warn("ateng-boot-liteflow: 获取已加载流程链列表异常: {}", t.getMessage());
+        } catch (Exception e) {
+            log.warn("ateng-boot-liteflow: 获取已加载流程链列表异常: {}", e.getMessage());
             return Collections.emptySet();
         }
+    }
+
+    /**
+     * 获取当前容器已注册就绪的全部组件节点 ID 集合
+     *
+     * @return 组件节点 ID 有序不可变集合，保底返回空集合
+     */
+    public Set<String> getLoadedNodeIds() {
+        try {
+            Map<String, ?> nodeMap = FlowBus.getNodeMap();
+            if (nodeMap == null || nodeMap.isEmpty()) {
+                return Collections.emptySet();
+            }
+            return Collections.unmodifiableSet(new TreeSet<>(nodeMap.keySet()));
+        } catch (Exception e) {
+            log.warn("ateng-boot-liteflow: 获取已注册组件节点列表异常: {}", e.getMessage());
+            return Collections.emptySet();
+        }
+    }
+
+    /**
+     * 获取指定规则流程链的运行时拓扑与元数据快照
+     *
+     * @param chainId 规则链 ID
+     * @return 不可变拓扑元数据快照，若流程链不存在或入参为空则返回 {@code null}
+     */
+    public LiteflowChainMetadata getChainMetadata(String chainId) {
+        if (chainId == null || chainId.isBlank() || !FlowBus.containChain(chainId)) {
+            return null;
+        }
+        Chain chain = FlowBus.getChain(chainId);
+        if (chain == null) {
+            return null;
+        }
+        String bodyEl = resolveCurrentChainEl(chainId);
+        String rawRouteEl = chain.getRouteEl();
+        String routeEl = (rawRouteEl != null && !rawRouteEl.isBlank()) ? rawRouteEl : null;
+        boolean routeChain = routeEl != null;
+        String namespace = (chain.getNamespace() != null && !chain.getNamespace().isBlank())
+                ? chain.getNamespace()
+                : "default";
+
+        Set<String> referencedNodeIds = new LinkedHashSet<>();
+        if (bodyEl != null && !bodyEl.isBlank()) {
+            referencedNodeIds.addAll(ElExpressionAnalyzer.analyze(bodyEl).referencedNodeIds());
+        }
+        if (routeEl != null) {
+            referencedNodeIds.addAll(ElExpressionAnalyzer.analyze(routeEl).referencedNodeIds());
+        }
+        List<String> snapshots = getChainHistorySnapshots(chainId);
+        return new LiteflowChainMetadata(
+                chainId,
+                namespace,
+                bodyEl,
+                routeEl,
+                routeChain,
+                referencedNodeIds,
+                snapshots.size(),
+                snapshots
+        );
+    }
+
+    /**
+     * 获取当前已加载的全部规则流程链运行时拓扑元数据快照列表（按 chainId 升序排列）
+     *
+     * @return 拓扑元数据不可变列表，无已加载链时保底返回空列表
+     */
+    public List<LiteflowChainMetadata> getAllChainMetadata() {
+        Set<String> chainIds = getLoadedChainIds();
+        if (chainIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<LiteflowChainMetadata> result = new ArrayList<>(chainIds.size());
+        for (String chainId : chainIds) {
+            LiteflowChainMetadata metadata = getChainMetadata(chainId);
+            if (metadata != null) {
+                result.add(metadata);
+            }
+        }
+        return Collections.unmodifiableList(result);
     }
 
     /**

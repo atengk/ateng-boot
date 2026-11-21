@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.liteflow.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.liteflow.core.LiteflowChainMetadata;
 import io.github.atengk.boot.liteflow.core.LiteflowElValidationResult;
 import io.github.atengk.boot.liteflow.core.LiteflowTemplate;
 import io.github.atengk.boot.liteflow.rule.event.LiteflowRuleRefreshEvent;
@@ -24,6 +25,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -108,6 +110,44 @@ public class LiteflowDynamicRuleController {
         Set<String> chains = liteflowTemplate.getLoadedChainIds();
         log.info("【动态规则】获取已加载流程链列表，当前数量: {}", chains.size());
         return Result.success(chains);
+    }
+
+    /**
+     * 获取当前系统已注册加载的全部组件节点 ID 集合
+     *
+     * @return 组件节点 ID 集合
+     */
+    @GetMapping("/nodes")
+    public Result<Set<String>> getLoadedNodes() {
+        Set<String> nodes = liteflowTemplate.getLoadedNodeIds();
+        log.info("【动态规则】获取已加载组件节点列表，当前数量: {}", nodes.size());
+        return Result.success(nodes);
+    }
+
+    /**
+     * 获取指定规则链的运行时拓扑元数据快照
+     *
+     * @param chainId 规则链标识
+     * @return 规则链拓扑元数据（不存在时 data 为 null）
+     */
+    @GetMapping("/chain-metadata")
+    public Result<LiteflowChainMetadata> getChainMetadata(
+            @NotBlank(message = "规则链 chainId 不能为空") @RequestParam("chainId") String chainId) {
+        LiteflowChainMetadata metadata = liteflowTemplate.getChainMetadata(chainId);
+        log.info("【动态规则】查询规则链拓扑元数据：chainId={}, found={}", chainId, metadata != null);
+        return Result.success(metadata);
+    }
+
+    /**
+     * 获取当前已加载的全部规则链运行时拓扑元数据集合
+     *
+     * @return 规则链拓扑元数据列表
+     */
+    @GetMapping("/chains-metadata")
+    public Result<List<LiteflowChainMetadata>> getAllChainMetadata() {
+        List<LiteflowChainMetadata> metadataList = liteflowTemplate.getAllChainMetadata();
+        log.info("【动态规则】查询全量规则链拓扑元数据，当前数量: {}", metadataList.size());
+        return Result.success(metadataList);
     }
 
     /**

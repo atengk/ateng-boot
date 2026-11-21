@@ -314,16 +314,52 @@ class LiteflowTemplateTest {
         assertThat(successResult.isValid()).isTrue();
         assertThat(successResult.getEl()).isEqualTo("THEN(stepA);");
         assertThat(successResult.getErrorMessage()).isNull();
+        assertThat(successResult.isComponentMissing()).isFalse();
+        assertThat(successResult.getReferencedNodeIds()).containsExactly("stepA");
+        assertThat(successResult.getReferencedChainIds()).isEmpty();
+        assertThat(successResult.getMissingComponentIds()).isEmpty();
+
+        // 含 .tag/.data/.id 字符串字面量及子流程链引用的合法 EL 零误报
+        LiteflowElValidationResult literalAndSubChainResult = liteflowTemplate.validateEl(
+                "THEN(stepA.tag(\"nonExistentLiteral\").data('{\"node\":\"fakeMissing\"}'), testChainSuccess);");
+        assertThat(literalAndSubChainResult.isValid()).isTrue();
+        assertThat(literalAndSubChainResult.isComponentMissing()).isFalse();
+        assertThat(literalAndSubChainResult.getReferencedNodeIds()).containsExactly("stepA");
+        assertThat(literalAndSubChainResult.getReferencedChainIds()).containsExactly("testChainSuccess");
+        assertThat(literalAndSubChainResult.getMissingComponentIds()).isEmpty();
+
+        // 含局部子编排赋值变量的合法 EL 不应误报为缺失组件
+        LiteflowElValidationResult localVarResult = liteflowTemplate.validateEl(
+                "sub = THEN(stepA); THEN(sub, stepSlow);");
+        assertThat(localVarResult.isValid()).isTrue();
+        assertThat(localVarResult.isComponentMissing()).isFalse();
+        assertThat(localVarResult.getReferencedNodeIds()).containsExactly("stepA", "stepSlow");
+        assertThat(localVarResult.getMissingComponentIds()).isEmpty();
 
         LiteflowElValidationResult syntaxFailResult = liteflowTemplate.validateEl("THEN(stepA");
         assertThat(syntaxFailResult).isNotNull();
         assertThat(syntaxFailResult.isValid()).isFalse();
+        assertThat(syntaxFailResult.isComponentMissing()).isFalse();
         assertThat(syntaxFailResult.getErrorMessage()).isNotEmpty();
 
-        LiteflowElValidationResult missingNodeResult = liteflowTemplate.validateEl("THEN(stepA, nonExistentStep);");
+        // 一次性诊断多个未注册组件清单
+        LiteflowElValidationResult missingNodeResult = liteflowTemplate.validateEl(
+                "THEN(stepA, missingCmpOne, missingCmpTwo, testChainSuccess);");
         assertThat(missingNodeResult).isNotNull();
         assertThat(missingNodeResult.isValid()).isFalse();
-        assertThat(missingNodeResult.getErrorMessage()).isNotEmpty();
+        assertThat(missingNodeResult.isComponentMissing()).isTrue();
+        assertThat(missingNodeResult.getReferencedNodeIds()).containsExactly("stepA");
+        assertThat(missingNodeResult.getReferencedChainIds()).containsExactly("testChainSuccess");
+        assertThat(missingNodeResult.getMissingComponentIds()).containsExactly("missingCmpOne", "missingCmpTwo");
+        assertThat(missingNodeResult.getErrorMessage()).contains("missingCmpOne", "missingCmpTwo");
+
+        // 保留旧 3 参构造器向后兼容
+        LiteflowElValidationResult legacyCtor = new LiteflowElValidationResult(true, "THEN(stepA);", null);
+        assertThat(legacyCtor.isValid()).isTrue();
+        assertThat(legacyCtor.isComponentMissing()).isFalse();
+        assertThat(legacyCtor.getReferencedNodeIds()).isEmpty();
+        assertThat(legacyCtor.getReferencedChainIds()).isEmpty();
+        assertThat(legacyCtor.getMissingComponentIds()).isEmpty();
 
         LiteflowElValidationResult emptyResult = liteflowTemplate.validateEl("");
         assertThat(emptyResult.isValid()).isFalse();
@@ -418,6 +454,71 @@ class LiteflowTemplateTest {
             assertThat(liteflowTemplate.getChainHistorySnapshots(chainId).size()).isLessThanOrEqualTo(5);
         } finally {
             liteflowTemplate.removeChain(chainId);
+        }
+    }
+
+    @Test
+    @DisplayName("验证运行时规则链拓扑元数据自省 (getChainMetadata / getAllChainMetadata / getLoadedNodeIds)")
+    void testChainTopologyIntrospection() {
+        // 1. 已加载节点 ID 集合
+        java.util.Set<String> loadedNodes = liteflowTemplate.getLoadedNodeIds();
+        assertThat(loadedNodes).contains("stepA", "stepFail", "stepSlow");
+
+        // 2. 静态 XML 规则链元数据自省
+        LiteflowChainMetadata xmlMeta = liteflowTemplate.getChainMetadata("testChainSuccess");
+        assertThat(xmlMeta).isNotNull();
+        assertThat(xmlMeta.chainId()).isEqualTo("testChainSuccess");
+        assertThat(xmlMeta.namespace()).isEqualTo("default");
+        assertThat(xmlMeta.routeChain()).isFalse();
+        assertThat(xmlMeta.routeEl()).isNull();
+        assertThat(xmlMeta.bodyEl()).contains("stepA");
+        assertThat(xmlMeta.referencedNodeIds()).contains("stepA");
+        assertThat(xmlMeta.historySnapshotCount()).isZero();
+        assertThat(xmlMeta.historySnapshots()).isEmpty();
+
+        // 3. 动态规则链热更与回滚后的快照元数自省
+        String dynChainId = "metaDynamicChain";
+        String routeChainId = "metaRouteChain";
+        try {
+            liteflowTemplate.reloadChain(dynChainId, "THEN(stepA);");
+            liteflowTemplate.reloadChain(dynChainId, "THEN(stepA, stepSlow);");
+
+            LiteflowChainMetadata dynMeta = liteflowTemplate.getChainMetadata(dynChainId);
+            assertThat(dynMeta).isNotNull();
+            assertThat(dynMeta.bodyEl()).isEqualTo("THEN(stepA, stepSlow);");
+            assertThat(dynMeta.referencedNodeIds()).containsExactly("stepA", "stepSlow");
+            assertThat(dynMeta.historySnapshotCount()).isEqualTo(1);
+            assertThat(dynMeta.historySnapshots()).containsExactly("THEN(stepA);");
+
+            // 回滚后元数据应同步更新为前一版本 EL 与清空已消费的历史快照
+            assertThat(liteflowTemplate.rollbackChain(dynChainId)).isTrue();
+            LiteflowChainMetadata rolledBackMeta = liteflowTemplate.getChainMetadata(dynChainId);
+            assertThat(rolledBackMeta).isNotNull();
+            assertThat(rolledBackMeta.bodyEl()).isEqualTo("THEN(stepA);");
+            assertThat(rolledBackMeta.referencedNodeIds()).containsExactly("stepA");
+            assertThat(rolledBackMeta.historySnapshotCount()).isZero();
+            assertThat(rolledBackMeta.historySnapshots()).isEmpty();
+
+            // 4. 决策路由链元数据自省
+            liteflowTemplate.reloadRouteChain(routeChainId, "PROMO_NS", "stepA", "THEN(stepSlow);");
+            LiteflowChainMetadata routeMeta = liteflowTemplate.getChainMetadata(routeChainId);
+            assertThat(routeMeta).isNotNull();
+            assertThat(routeMeta.routeChain()).isTrue();
+            assertThat(routeMeta.namespace()).isEqualTo("PROMO_NS");
+            assertThat(routeMeta.routeEl()).isEqualTo("stepA");
+            assertThat(routeMeta.bodyEl()).isEqualTo("THEN(stepSlow);");
+            assertThat(routeMeta.referencedNodeIds()).containsExactly("stepSlow", "stepA");
+
+            // 5. 全量链元数据自省与不存在链防御
+            List<LiteflowChainMetadata> allMeta = liteflowTemplate.getAllChainMetadata();
+            assertThat(allMeta).extracting(LiteflowChainMetadata::chainId)
+                    .contains("testChainSuccess", dynChainId, routeChainId);
+            assertThat(liteflowTemplate.getChainMetadata("nonExistentChain")).isNull();
+            assertThat(liteflowTemplate.getChainMetadata(null)).isNull();
+            assertThat(liteflowTemplate.getChainMetadata(" ")).isNull();
+        } finally {
+            liteflowTemplate.removeChain(dynChainId);
+            liteflowTemplate.removeChain(routeChainId);
         }
     }
 

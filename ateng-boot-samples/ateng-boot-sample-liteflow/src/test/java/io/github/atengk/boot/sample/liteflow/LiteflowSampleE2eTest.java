@@ -335,9 +335,9 @@ class LiteflowSampleE2eTest {
     @Test
     @DisplayName("测试场景 4.4：在线预校验 EL 表达式有效性 (validate-el)")
     void testValidateElEndpoint() throws Exception {
-        // 1. 合法语法校验
+        // 1. 合法语法与引用拓扑校验
         DynamicElValidateRequest validReq = new DynamicElValidateRequest();
-        validReq.setEl("THEN(dynamicValidateCmp, dynamicEchoCmp);");
+        validReq.setEl("THEN(dynamicValidateCmp.tag(\"SAFE_TAG\"), dynamicEchoCmp);");
 
         mockMvc.perform(post("/sample/liteflow/dynamic/validate-el")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -345,6 +345,9 @@ class LiteflowSampleE2eTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.valid").value(true))
+                .andExpect(jsonPath("$.data.componentMissing").value(false))
+                .andExpect(jsonPath("$.data.referencedNodeIds", org.hamcrest.Matchers.contains("dynamicValidateCmp", "dynamicEchoCmp")))
+                .andExpect(jsonPath("$.data.missingComponentIds").isEmpty())
                 .andExpect(jsonPath("$.data.errorMessage").isEmpty());
 
         // 2. 非法语法校验
@@ -357,7 +360,22 @@ class LiteflowSampleE2eTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.valid").value(false))
+                .andExpect(jsonPath("$.data.componentMissing").value(false))
                 .andExpect(jsonPath("$.data.errorMessage").isNotEmpty());
+
+        // 3. 缺失未注册组件静态清单诊断
+        DynamicElValidateRequest missingReq = new DynamicElValidateRequest();
+        missingReq.setEl("THEN(dynamicValidateCmp, unknownCmpAlpha, unknownCmpBeta);");
+
+        mockMvc.perform(post("/sample/liteflow/dynamic/validate-el")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(missingReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.valid").value(false))
+                .andExpect(jsonPath("$.data.componentMissing").value(true))
+                .andExpect(jsonPath("$.data.referencedNodeIds", org.hamcrest.Matchers.contains("dynamicValidateCmp")))
+                .andExpect(jsonPath("$.data.missingComponentIds", org.hamcrest.Matchers.contains("unknownCmpAlpha", "unknownCmpBeta")));
     }
 
     @Test
@@ -369,6 +387,44 @@ class LiteflowSampleE2eTest {
                 .andExpect(jsonPath("$.data").isArray())
                 .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasItem("price-calc-flow")))
                 .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasItem("risk-approval-flow")));
+    }
+
+    @Test
+    @DisplayName("测试场景 4.5b：查询运行时规则链拓扑元数据与已注册组件节点列表 (chain-metadata / chains-metadata / nodes)")
+    void testChainTopologyIntrospectionEndpoints() throws Exception {
+        // 1. 已注册组件节点列表
+        mockMvc.perform(get("/sample/liteflow/dynamic/nodes"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasItems("dynamicValidateCmp", "dynamicEchoCmp", "validateOrderCmp")));
+
+        // 2. 单条普通链元数据自省
+        mockMvc.perform(get("/sample/liteflow/dynamic/chain-metadata")
+                        .param("chainId", "price-calc-flow"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.chainId").value("price-calc-flow"))
+                .andExpect(jsonPath("$.data.routeChain").value(false))
+                .andExpect(jsonPath("$.data.bodyEl").isNotEmpty())
+                .andExpect(jsonPath("$.data.referencedNodeIds", org.hamcrest.Matchers.hasItem("validateOrderCmp")));
+
+        // 3. 决策路由链元数据自省
+        mockMvc.perform(get("/sample/liteflow/dynamic/chain-metadata")
+                        .param("chainId", "promotionVipRouteChain"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.chainId").value("promotionVipRouteChain"))
+                .andExpect(jsonPath("$.data.routeChain").value(true))
+                .andExpect(jsonPath("$.data.namespace").value("PROMOTION"))
+                .andExpect(jsonPath("$.data.routeEl").isNotEmpty());
+
+        // 4. 全量规则链元数据列表
+        mockMvc.perform(get("/sample/liteflow/dynamic/chains-metadata"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data[*].chainId", org.hamcrest.Matchers.hasItems("price-calc-flow", "promotionVipRouteChain")));
     }
 
     @Test
