@@ -34,3 +34,67 @@ ateng:
           access-key-id: YOUR_HUAWEI_APP_KEY
           access-key-secret: YOUR_HUAWEI_APP_SECRET
           endpoint: https://smsapi.cn-north-4.myhuaweicloud.com:443
+        baidu-backup:
+          supplier: BAIDU
+          access-key-id: YOUR_BAIDU_ACCESS_KEY_ID
+          access-key-secret: YOUR_BAIDU_SECRET_KEY
+          sign-id: YOUR_BAIDU_SIGNATURE_ID
+          ext-code: YOUR_BAIDU_USER_EXT_ID
+          endpoint: https://smsv3.bj.baidubce.com
+          extras:
+            custom: YOUR_BAIDU_CUSTOM_PARAM
+        jdcloud-backup:
+          supplier: JDCLOUD
+          access-key-id: YOUR_JDCLOUD_ACCESS_KEY_ID
+          access-key-secret: YOUR_JDCLOUD_SECRET_KEY
+          sign-id: YOUR_JDCLOUD_SIGN_ID
+          region: cn-north-1
+          endpoint: https://sms.jdcloud-api.com
+        qiniu-backup:
+          supplier: QINIU
+          access-key-id: YOUR_QINIU_ACCESS_KEY
+          access-key-secret: YOUR_QINIU_SECRET_KEY
+          endpoint: https://sms.qiniuapi.com
+        netease-backup:
+          supplier: NETEASE
+          access-key-id: YOUR_NETEASE_APP_KEY
+          access-key-secret: YOUR_NETEASE_APP_SECRET
+          endpoint: https://api.netease.im
+          extras:
+            needUp: "false"
+        cloopen-backup:
+          supplier: CLOOPEN
+          access-key-id: YOUR_CLOOPEN_ACCOUNT_SID
+          access-key-secret: YOUR_CLOOPEN_AUTH_TOKEN
+          app-id: YOUR_CLOOPEN_APP_ID
+          endpoint: https://app.cloopen.com:8883/2013-12-26
+        chuanglan-backup:
+          supplier: CHUANGLAN
+          access-key-id: YOUR_CHUANGLAN_ACCOUNT
+          access-key-secret: YOUR_CHUANGLAN_PASSWORD
+          sign-name: YOUR_CHUANGLAN_SIGN_NAME
+          endpoint: https://smssh1.253.com
+        mas-backup:
+          supplier: MAS
+          app-id: YOUR_MAS_AP_ID
+          access-key-secret: YOUR_MAS_SECRET_KEY
+          sign-id: YOUR_MAS_SIGN_CODE
+          ext-code: ""
+          endpoint: https://YOUR_MAS_GATEWAY_HOST/sms
+          extras:
+            ecName: YOUR_MAS_EC_NAME
+        unisms-backup:
+          supplier: UNISMS
+          access-key-id: YOUR_UNISMS_ACCESS_KEY_ID
+          access-key-secret: YOUR_UNISMS_ACCESS_KEY_SECRET
+          sign-name: YOUR_UNISMS_SIGN_NAME
+          endpoint: https://uni.apistd.com
+          extras:
+            simpleMode: "false"
+        zhutong-backup:
+          supplier: ZHUTONG
+          access-key-id: YOUR_ZHUTONG_USERNAME
+          access-key-secret: YOUR_ZHUTONG_PASSWORD
+          sign-name: YOUR_ZHUTONG_SIGN_NAME
+          ext-code: YOUR_ZHUTONG_EXT_CODE
+          endpoint: https://api.mix2.zthysms.com

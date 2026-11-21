@@ -237,6 +237,20 @@ public class SmsChannel implements Serializable {
     }
 
     /**
+     * 优先返回渠道签名编码（{@code signId}），缺省时回退至动态签名文本决策
+     *
+     * @param logicalTemplateId 逻辑模板标识
+     * @param explicitSignName  显式指定的签名（可为 null）
+     * @return 最终签名编码或签名文本
+     */
+    public String resolveSignIdOrName(String logicalTemplateId, String explicitSignName) {
+        if (StringUtils.hasText(this.signId)) {
+            return this.signId.trim();
+        }
+        return resolveSignName(logicalTemplateId, explicitSignName);
+    }
+
+    /**
      * 获取指定模板的参数映射顺序
      *
      * @param templateId 模板编码或逻辑标识

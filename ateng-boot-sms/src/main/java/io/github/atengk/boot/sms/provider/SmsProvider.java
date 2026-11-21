@@ -41,7 +41,8 @@ public interface SmsProvider {
      * @return true 支持无模板纯文本直发，false 仅支持模板发信
      */
     default boolean supportsPlainText() {
-        return false;
+        SmsSupplier supplier = getSupplier();
+        return supplier != null && supplier.supportsPlainText();
     }
 
     /**

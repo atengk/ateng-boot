@@ -74,4 +74,19 @@ class DigestUtilTest {
         assertEquals(expected, DigestUtil.md5Hex(input));
         assertEquals(expected, DigestUtil.md5Hex(input.getBytes(StandardCharsets.UTF_8)));
     }
+
+    @Test
+    @DisplayName("验证 SHA-1 标准向量与空边界摘要计算正确性 (FIPS 180-4)")
+    void testSha1String() {
+        String expected = "a9993e364706816aba3e25717850c26c9cd0d89d";
+        assertEquals(expected, DigestUtil.sha1Hex("abc"));
+        assertEquals(expected, DigestUtil.sha1Hex("abc".getBytes(StandardCharsets.UTF_8)));
+        assertEquals(20, DigestUtil.sha1("abc").length);
+
+        String emptySha1 = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
+        assertEquals(emptySha1, DigestUtil.sha1Hex(""));
+        assertEquals(emptySha1, DigestUtil.sha1Hex((String) null));
+        assertEquals(emptySha1, DigestUtil.sha1Hex(new byte[0]));
+        assertEquals(emptySha1, DigestUtil.sha1Hex((byte[]) null));
+    }
 }

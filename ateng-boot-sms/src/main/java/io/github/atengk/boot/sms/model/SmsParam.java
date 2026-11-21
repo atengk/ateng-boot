@@ -234,6 +234,40 @@ public class SmsParam implements Serializable {
         return result;
     }
 
+    /**
+     * 将参数自适应转换为有序键值对字典（兼容原生 Map 与有序数组 + {@code paramOrder} 映射）
+     *
+     * @param paramOrder 模板参数声明顺序（可为 null）
+     * @return 有序参数字典
+     */
+    public Map<String, Object> toMap(List<String> paramOrder) {
+        if (isEmpty()) {
+            return Collections.emptyMap();
+        }
+        if (!mapParams.isEmpty()) {
+            return new LinkedHashMap<>(mapParams);
+        }
+        Map<String, Object> mapped = new LinkedHashMap<>(arrayParams.size());
+        for (int i = 0; i < arrayParams.size(); i++) {
+            String key = (paramOrder != null && i < paramOrder.size() && paramOrder.get(i) != null && !paramOrder.get(i).isBlank())
+                    ? paramOrder.get(i).trim()
+                    : String.valueOf(i + 1);
+            mapped.put(key, arrayParams.get(i));
+        }
+        return mapped;
+    }
+
+    /**
+     * 空安全静态适配器：将可空 {@link SmsParam} 自适应转换为参数字典
+     *
+     * @param param      短信参数（可为 null）
+     * @param paramOrder 模板参数声明顺序（可为 null）
+     * @return 参数字典（无参数时返回空 Map）
+     */
+    public static Map<String, Object> toMap(SmsParam param, List<String> paramOrder) {
+        return param != null ? param.toMap(paramOrder) : Collections.emptyMap();
+    }
+
     @Override
     public String toString() {
         if (arrayMode) {

@@ -1,9 +1,11 @@
 package io.github.atengk.boot.sms.provider;
 
+import io.github.atengk.boot.core.concurrent.ConcurrentLruCache;
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
-import io.github.atengk.boot.core.concurrent.ConcurrentLruCache;
+import io.github.atengk.boot.sms.exception.SmsResultCode;
+import io.github.atengk.boot.sms.exception.SmsSendException;
 import io.github.atengk.boot.sms.model.SmsChannel;
 import io.github.atengk.boot.sms.properties.SmsProxyProperties;
 import lombok.extern.slf4j.Slf4j;
@@ -17,12 +19,14 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Proxy;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * 基于 Spring 6 RestClient 的云厂商 HTTP 短信驱动抽象基类
@@ -265,6 +269,258 @@ public abstract class AbstractHttpSmsProvider implements SmsProvider {
             return JsonUtil.parseObject(json, Map.class);
         } catch (Exception ignored) {
             return Collections.emptyMap();
+        }
+    }
+
+    /**
+     * 解析规范化 HTTP {@code Host} 请求头值（非 80/443 端口显式保留端口后缀）
+     *
+     * @param uri 目标 URI
+     * @return Host 头值
+     */
+    protected static String resolveHostHeader(URI uri) {
+        if (uri == null || uri.getHost() == null) {
+            return "";
+        }
+        int port = uri.getPort();
+        return (port > 0 && port != 80 && port != 443) ? uri.getHost() + ":" + port : uri.getHost();
+    }
+
+    /**
+     * 基于规范化端点与操作路径拼接完整请求 URL（兼容根地址、已带完整路径或前导前缀路径）
+     *
+     * @param normalizedEndpoint 规范化端点 URL
+     * @param actionPath         期望追加或匹配的绝对路径（例如 {@code /api/v3/sendSms}）
+     * @return 拼接后的完整 URL
+     */
+    protected static String resolveActionUrl(String normalizedEndpoint, String actionPath) {
+        if (!StringUtils.hasText(actionPath)) {
+            return normalizedEndpoint;
+        }
+        String path = actionPath.startsWith("/") ? actionPath : "/" + actionPath;
+        String base = normalizedEndpoint.endsWith("/")
+                ? normalizedEndpoint.substring(0, normalizedEndpoint.length() - 1)
+                : normalizedEndpoint;
+        String currentPath = URI.create(base).getPath();
+        if (currentPath != null && currentPath.endsWith(path)) {
+            return base;
+        }
+        return base + path;
+    }
+
+    /**
+     * 执行严格 RFC 3986 URI 百分号编码（空格转 %20，保留 ~，转义 *）
+     *
+     * @param value 待编码文本
+     * @return 编码后字符串
+     */
+    protected static String rfc3986Encode(String value) {
+        if (value == null) {
+            return "";
+        }
+        return URLEncoder.encode(value, StandardCharsets.UTF_8)
+                .replace("+", "%20")
+                .replace("*", "%2A")
+                .replace("%7E", "~");
+    }
+
+    /**
+     * 保留路径分隔符斜杠 {@code /} 的 RFC 3986 编码
+     *
+     * @param path URI 路径
+     * @return 编码后的规范 URI 路径
+     */
+    protected static String rfc3986EncodeExceptSlash(String path) {
+        if (!StringUtils.hasText(path)) {
+            return "/";
+        }
+        return rfc3986Encode(path).replace("%2F", "/");
+    }
+
+    /**
+     * 兼容可选父级前缀路径（如 {@code /msg}、{@code /sms}）拼接完整操作 URL
+     *
+     * @param normalizedEndpoint 规范化端点
+     * @param optionalPrefix     可选前缀段（例如 {@code /msg}）
+     * @param actionPath         子动作路径（例如 {@code /v1/send/json}）
+     * @return 完整请求 URL
+     */
+    protected static String resolveActionUrlWithPrefix(String normalizedEndpoint, String optionalPrefix, String actionPath) {
+        String base = normalizedEndpoint.endsWith("/")
+                ? normalizedEndpoint.substring(0, normalizedEndpoint.length() - 1)
+                : normalizedEndpoint;
+        String currentPath = URI.create(base).getPath();
+        String subPath = actionPath.startsWith("/") ? actionPath : "/" + actionPath;
+        if (currentPath != null && currentPath.endsWith(optionalPrefix)) {
+            return base + subPath;
+        }
+        return resolveActionUrl(base, optionalPrefix + subPath);
+    }
+
+    /**
+     * 按 {@code k=v&...} 拼装表单或查询串参数
+     *
+     * @param params         有序参数键值表
+     * @param urlEncodeKey   是否对 Key 执行 RFC 3986 编码
+     * @param urlEncodeValue 是否对 Value 执行 RFC 3986 编码
+     * @return 编码后的查询或表单正文串
+     */
+    protected static String encodeFormOrQuery(Map<String, String> params, boolean urlEncodeKey, boolean urlEncodeValue) {
+        if (params == null || params.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, String> entry : params.entrySet()) {
+            if (sb.length() > 0) {
+                sb.append('&');
+            }
+            String k = urlEncodeKey ? rfc3986Encode(entry.getKey()) : entry.getKey();
+            String v = urlEncodeValue ? rfc3986Encode(entry.getValue()) : entry.getValue();
+            sb.append(k).append('=').append(v);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 规范化签名格式为 {@code 【签名】}
+     *
+     * @param signName 原始签名文本
+     * @return 带中括号包裹的签名字符串
+     */
+    protected static String ensureBracketedSign(String signName) {
+        String clean = signName != null ? signName.trim() : "";
+        if (clean.isEmpty()) {
+            return "";
+        }
+        if (!clean.startsWith("【")) {
+            clean = "【" + clean;
+        }
+        if (!clean.endsWith("】")) {
+            clean = clean + "】";
+        }
+        return clean;
+    }
+
+    /**
+     * 为纯文本内容防御性前置补全 {@code 【签名】}（若正文已含 {@code 【...】} 则原样保持）
+     *
+     * @param signName 渠道或请求签名
+     * @param content  纯文本正文
+     * @return 携带签名的完整短信正文
+     */
+    protected static String prependSignIfAbsent(String signName, String content) {
+        return prependSignIfAbsent(signName, content,
+                "发送纯文本短信时必须在正文携带【签名】或在渠道/请求中指定 signName");
+    }
+
+    /**
+     * 为文本内容防御性前置补全 {@code 【签名】}，支持自定义缺失签名的提示语
+     *
+     * @param signName          渠道或请求签名
+     * @param content           短信正文或模板文本
+     * @param missingSignPrompt 缺失签名时的错误提示
+     * @return 携带签名的完整短信文本
+     */
+    protected static String prependSignIfAbsent(String signName, String content, String missingSignPrompt) {
+        String cleanContent = content != null ? content.trim() : "";
+        if (cleanContent.contains("【") && cleanContent.contains("】")) {
+            return cleanContent;
+        }
+        BusinessAssert.hasText(signName, missingSignPrompt);
+        return ensureBracketedSign(signName) + cleanContent;
+    }
+
+    /**
+     * 从 HTTP 4xx/5xx 响应体提取 JSON 网关错误码与错误描述，转译为保留原始 {@code cause} 的 {@link SmsSendException}
+     *
+     * @param channel     目标渠道
+     * @param vendorLabel 厂商名称
+     * @param httpEx      HTTP 响应异常
+     * @param codeKey     错误码 JSON 字段名（可为 null，默认取 {@code HTTP_<status>}）
+     * @param msgKeys     候选错误描述 JSON 字段名
+     */
+    protected void throwJsonHttpErrorIfPresent(SmsChannel channel,
+                                             String vendorLabel,
+                                             RestClientResponseException httpEx,
+                                             String codeKey,
+                                             String... msgKeys) {
+        Map<String, Object> errMap = parseJsonSafely(httpEx.getResponseBodyAsString());
+        if (errMap.isEmpty()) {
+            return;
+        }
+        Object codeVal = StringUtils.hasText(codeKey) ? errMap.get(codeKey) : null;
+        String errMsg = null;
+        if (msgKeys != null) {
+            for (String mk : msgKeys) {
+                Object mv = errMap.get(mk);
+                if (mv != null && StringUtils.hasText(String.valueOf(mv))) {
+                    errMsg = String.valueOf(mv);
+                    break;
+                }
+            }
+        }
+        if (codeVal != null || errMsg != null) {
+            String rawCode = codeVal != null ? String.valueOf(codeVal) : "HTTP_" + httpEx.getStatusCode().value();
+            String finalMsg = errMsg != null ? errMsg : httpEx.getStatusText();
+            throw new SmsSendException(channel.getName(), rawCode, finalMsg,
+                    SmsResultCode.SMS_SEND_ERROR,
+                    vendorLabel + "短信发送失败: [" + rawCode + "] " + finalMsg, httpEx);
+        }
+    }
+
+    /**
+     * 执行 HTTP POST 调用并统一转译 4xx/5xx、超时与 I/O 异常为保留原始 cause 的 {@link SmsSendException}
+     *
+     * @param channel       发信渠道
+     * @param vendorLabel   厂商中文名称
+     * @param actionName    操作名（用于重试与错误日志）
+     * @param url           完整目标请求 URL
+     * @param contentType   请求内容类型头值
+     * @param headers       附加 HTTP 请求头（可为 null）
+     * @param body          请求体字符串
+     * @param errorTranslator HTTP 响应异常体自定义解析回调（可返回 null 走默认 HTTP 状态异常转译）
+     * @return 响应正文字符串
+     */
+    protected String executePostWithRetry(SmsChannel channel,
+                                          String vendorLabel,
+                                          String actionName,
+                                          String url,
+                                          String contentType,
+                                          Map<String, String> headers,
+                                          String body,
+                                          Consumer<RestClientResponseException> errorTranslator) {
+        RestClient client = buildRestClient(channel);
+        try {
+            return executeWithRetry(channel, actionName, () -> {
+                RestClient.RequestBodySpec spec = client.post()
+                        .uri(URI.create(url));
+                if (StringUtils.hasText(contentType)) {
+                    spec.header("Content-Type", contentType);
+                }
+                if (headers != null && !headers.isEmpty()) {
+                    headers.forEach((k, v) -> {
+                        if (StringUtils.hasText(k) && v != null) {
+                            spec.header(k, v);
+                        }
+                    });
+                }
+                if (body != null) {
+                    spec.body(body);
+                }
+                return spec.retrieve().body(String.class);
+            });
+        } catch (RestClientResponseException e) {
+            if (errorTranslator != null) {
+                errorTranslator.accept(e);
+            }
+            throw new SmsSendException(channel.getName(), "HTTP_" + e.getStatusCode().value(),
+                    e.getStatusText(), SmsResultCode.SMS_SEND_ERROR,
+                    vendorLabel + "短信网关响应异常: " + e.getMessage(), e);
+        } catch (SmsSendException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new SmsSendException(channel.getName(), "NETWORK_ERROR", e.getMessage(),
+                    SmsResultCode.SMS_SEND_ERROR, vendorLabel + "短信网络通信异常: " + e.getMessage(), e);
         }
     }
 

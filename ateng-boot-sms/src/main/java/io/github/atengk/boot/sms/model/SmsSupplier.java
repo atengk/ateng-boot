@@ -21,37 +21,82 @@ public enum SmsSupplier implements IBaseEnum<String> {
     /**
      * 阿里云短信 (Dysmsapi)
      */
-    ALIYUN("aliyun", "阿里云短信"),
+    ALIYUN("aliyun", "阿里云短信", 1000, false),
 
     /**
      * 腾讯云短信 (SMS 3.0)
      */
-    TENCENT("tencent", "腾讯云短信"),
+    TENCENT("tencent", "腾讯云短信", 200, false),
 
     /**
      * 华为云消息&短信 (MSGSMS)
      */
-    HUAWEI("huawei", "华为云短信"),
+    HUAWEI("huawei", "华为云短信", 500, false),
 
     /**
      * 云片网短信 (Yunpian)
      */
-    YUNPIAN("yunpian", "云片网短信"),
+    YUNPIAN("yunpian", "云片网短信", 1000, true),
 
     /**
      * 天翼云短信 (CTYun)
      */
-    CTYUN("ctyun", "天翼云短信"),
+    CTYUN("ctyun", "天翼云短信", 1000, false),
+
+    /**
+     * 百度智能云短信 (BCE SMS v3)
+     */
+    BAIDU("baidu", "百度智能云短信", 1000, false),
+
+    /**
+     * 京东云短信 (JD Cloud)
+     */
+    JDCLOUD("jdcloud", "京东云短信", 100, false),
+
+    /**
+     * 七牛云短信 (Qiniu)
+     */
+    QINIU("qiniu", "七牛云短信", 1000, false),
+
+    /**
+     * 网易云信短信 (Netease)
+     */
+    NETEASE("netease", "网易云信短信", 100, false),
+
+    /**
+     * 容联云短信 (Cloopen)
+     */
+    CLOOPEN("cloopen", "容联云短信", 200, false),
+
+    /**
+     * 创蓝 253 云通讯短信
+     */
+    CHUANGLAN("chuanglan", "创蓝253短信", 1000, true),
+
+    /**
+     * 中国移动云 MAS 短信
+     */
+    MAS("mas", "中国移动云MAS", 1000, true),
+
+    /**
+     * 合一短信 (UniSMS)
+     */
+    UNISMS("unisms", "合一短信", 1000, false),
+
+    /**
+     * 助通科技短信 (Zhutong)
+     */
+    ZHUTONG("zhutong", "助通科技短信", 1000, true),
 
     /**
      * 本地测试内存沙箱
      */
-    MOCK("mock", "本地Mock沙箱"),
+    MOCK("mock", "本地Mock沙箱", 1000, true),
 
     /**
      * 自定义扩展厂商
      */
-    CUSTOM("custom", "自定义厂商");
+    CUSTOM("custom", "自定义厂商", 1000, false);
 
     @JsonValue
     private final String code;
@@ -59,17 +104,14 @@ public enum SmsSupplier implements IBaseEnum<String> {
     private final String label;
 
     /**
-     * 获取云厂商单次 API 调用支持的最大手机号切片上限
-     *
-     * @return 单批最大手机号数量
+     * 单次 API 调用支持的最大手机号切片上限
      */
-    public int getBatchLimit() {
-        return switch (this) {
-            case TENCENT -> 200;
-            case HUAWEI -> 500;
-            case ALIYUN, YUNPIAN, CTYUN, MOCK, CUSTOM -> 1000;
-        };
-    }
+    private final int batchLimit;
+
+    /**
+     * 是否原生支持无模板纯文本正文直发
+     */
+    private final boolean plainTextSupported;
 
     /**
      * 判断当前厂商协议是否原生支持无模板纯文本正文直发
@@ -77,10 +119,7 @@ public enum SmsSupplier implements IBaseEnum<String> {
      * @return true 支持纯文本直发，false 仅支持模板短信
      */
     public boolean supportsPlainText() {
-        return switch (this) {
-            case YUNPIAN, MOCK, CUSTOM -> true;
-            case ALIYUN, TENCENT, HUAWEI, CTYUN -> false;
-        };
+        return plainTextSupported;
     }
 
     /**

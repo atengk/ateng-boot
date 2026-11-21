@@ -10,12 +10,21 @@ import io.github.atengk.boot.sms.limiter.SmsRateLimiter;
 import io.github.atengk.boot.sms.loadbalancer.SmsChannelLoadBalancer;
 import io.github.atengk.boot.sms.properties.SmsProperties;
 import io.github.atengk.boot.sms.provider.AliyunSmsProvider;
+import io.github.atengk.boot.sms.provider.BaiduSmsProvider;
+import io.github.atengk.boot.sms.provider.ChuanglanSmsProvider;
+import io.github.atengk.boot.sms.provider.CloopenSmsProvider;
 import io.github.atengk.boot.sms.provider.CtyunSmsProvider;
 import io.github.atengk.boot.sms.provider.HuaweiSmsProvider;
+import io.github.atengk.boot.sms.provider.JdCloudSmsProvider;
+import io.github.atengk.boot.sms.provider.MasSmsProvider;
 import io.github.atengk.boot.sms.provider.MockSmsProvider;
+import io.github.atengk.boot.sms.provider.NeteaseSmsProvider;
+import io.github.atengk.boot.sms.provider.QiniuSmsProvider;
 import io.github.atengk.boot.sms.provider.SmsProvider;
 import io.github.atengk.boot.sms.provider.TencentSmsProvider;
+import io.github.atengk.boot.sms.provider.UnismsSmsProvider;
 import io.github.atengk.boot.sms.provider.YunpianSmsProvider;
+import io.github.atengk.boot.sms.provider.ZhutongSmsProvider;
 import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
 import io.github.atengk.boot.sms.registry.SmsChannelResolver;
 import io.github.atengk.boot.sms.registry.TenantSmsChannelResolver;
@@ -132,6 +141,123 @@ public class AtengSmsAutoConfiguration {
     public CtyunSmsProvider ctyunSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
         RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
         return new CtyunSmsProvider(builder);
+    }
+
+    /**
+     * 自动装配百度智能云短信驱动 (BCE Auth v1 原生直连)
+     *
+     * @param restClientBuilderProvider RestClient 构造器提供者
+     * @return BaiduSmsProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public BaiduSmsProvider baiduSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
+        RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
+        return new BaiduSmsProvider(builder);
+    }
+
+    /**
+     * 自动装配京东云短信驱动 (JDCLOUD2-HMAC-SHA256 原生直连)
+     *
+     * @param restClientBuilderProvider RestClient 构造器提供者
+     * @return JdCloudSmsProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public JdCloudSmsProvider jdCloudSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
+        RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
+        return new JdCloudSmsProvider(builder);
+    }
+
+    /**
+     * 自动装配七牛云短信驱动 (Qiniu HMAC-SHA1 原生直连)
+     *
+     * @param restClientBuilderProvider RestClient 构造器提供者
+     * @return QiniuSmsProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public QiniuSmsProvider qiniuSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
+        RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
+        return new QiniuSmsProvider(builder);
+    }
+
+    /**
+     * 自动装配网易云信短信驱动 (SHA-1 CheckSum 原生直连)
+     *
+     * @param restClientBuilderProvider RestClient 构造器提供者
+     * @return NeteaseSmsProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public NeteaseSmsProvider neteaseSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
+        RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
+        return new NeteaseSmsProvider(builder);
+    }
+
+    /**
+     * 自动装配容联云短信驱动 (MD5 + Base64 原生直连)
+     *
+     * @param restClientBuilderProvider RestClient 构造器提供者
+     * @return CloopenSmsProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public CloopenSmsProvider cloopenSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
+        RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
+        return new CloopenSmsProvider(builder);
+    }
+
+    /**
+     * 自动装配创蓝 253 短信驱动 (普通/变量双模原生直连)
+     *
+     * @param restClientBuilderProvider RestClient 构造器提供者
+     * @return ChuanglanSmsProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public ChuanglanSmsProvider chuanglanSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
+        RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
+        return new ChuanglanSmsProvider(builder);
+    }
+
+    /**
+     * 自动装配中国移动云 MAS 短信驱动 (Base64 + MD5 MAC 原生直连)
+     *
+     * @param restClientBuilderProvider RestClient 构造器提供者
+     * @return MasSmsProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public MasSmsProvider masSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
+        RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
+        return new MasSmsProvider(builder);
+    }
+
+    /**
+     * 自动装配合一短信驱动 (HMAC-SHA256 / SimpleMode 无状态原生直连)
+     *
+     * @param restClientBuilderProvider RestClient 构造器提供者
+     * @return UnismsSmsProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public UnismsSmsProvider unismsSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
+        RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
+        return new UnismsSmsProvider(builder);
+    }
+
+    /**
+     * 自动装配助通科技短信驱动 (双重 MD5 模板/纯文本双模原生直连)
+     *
+     * @param restClientBuilderProvider RestClient 构造器提供者
+     * @return ZhutongSmsProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public ZhutongSmsProvider zhutongSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
+        RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
+        return new ZhutongSmsProvider(builder);
     }
 
     /**

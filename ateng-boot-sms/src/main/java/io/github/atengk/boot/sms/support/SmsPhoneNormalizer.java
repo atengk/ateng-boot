@@ -3,6 +3,10 @@ package io.github.atengk.boot.sms.support;
 import io.github.atengk.boot.sms.model.SmsChannel;
 import org.springframework.util.StringUtils;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 /**
  * 国际手机号 E.164 归一化与多云厂商出站号段协议适配工具
  * 避免无条件硬拼 +86 对跨境号码造成破坏，按厂商协议精确保留或剥离国际区号前缀
@@ -86,6 +90,42 @@ public final class SmsPhoneNormalizer {
      */
     public static String toDomesticOrE164(String phone, SmsChannel channel) {
         return stripDomestic86Prefix(toE164(phone, channel));
+    }
+
+    /**
+     * 批量将手机号列表转换为国内直连或国际标准 E.164 格式（适用于阿里外的国内 11 位免前缀/国际 E.164 网关）
+     *
+     * @param phones  原始手机号列表
+     * @param channel 目标短信渠道
+     * @return 格式化后的手机号列表（永不返回 null）
+     */
+    public static List<String> toDomesticOrE164List(List<String> phones, SmsChannel channel) {
+        if (phones == null || phones.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<String> result = new ArrayList<>(phones.size());
+        for (String phone : phones) {
+            result.add(toDomesticOrE164(phone, channel));
+        }
+        return result;
+    }
+
+    /**
+     * 批量将手机号列表统一转换为标准 E.164 格式
+     *
+     * @param phones  原始手机号列表
+     * @param channel 目标短信渠道
+     * @return 标准 E.164 手机号列表（永不返回 null）
+     */
+    public static List<String> toE164List(List<String> phones, SmsChannel channel) {
+        if (phones == null || phones.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<String> result = new ArrayList<>(phones.size());
+        for (String phone : phones) {
+            result.add(toE164(phone, channel));
+        }
+        return result;
     }
 
     private static String stripDomestic86Prefix(String e164) {
