@@ -1,11 +1,14 @@
 package io.github.atengk.boot.admin.security;
 
+import cn.dev33.satoken.session.SaSession;
 import cn.dev33.satoken.stp.StpUtil;
 import de.codecentric.boot.admin.server.config.AdminServerProperties;
 import io.github.atengk.boot.admin.admission.AdminAdmissionResult;
 import io.github.atengk.boot.admin.admission.AdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
+import io.github.atengk.boot.admin.provider.AdminConsolePrincipal;
+import io.github.atengk.boot.admin.provider.AdminRole;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import jakarta.servlet.FilterChain;
@@ -23,6 +26,7 @@ import org.springframework.util.unit.DataSize;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -492,16 +496,47 @@ class AdminSsrfGuardFilterTest {
         assertThat(secretExecuted.get()).isTrue();
         assertThat(secretRes.getStatus()).isEqualTo(200);
 
-        // 4. 未携带密钥但存在已认证 Sa-Token 会话 -> 放行
+        // 4. 未携带密钥但存在 OPERATOR 已认证 Sa-Token 会话 -> 放行
         MockHttpServletRequest sessionDelete = new MockHttpServletRequest("DELETE", "/admin/instances/inst-01");
         MockHttpServletResponse sessionRes = new MockHttpServletResponse();
         AtomicBoolean sessionExecuted = new AtomicBoolean(false);
+        SaSession operatorSession = Mockito.mock(SaSession.class);
+        Mockito.when(operatorSession.get(AdminSessionHelper.SESSION_PRINCIPAL_KEY))
+                .thenReturn(AdminConsolePrincipal.of("operator", Set.of(AdminRole.OPERATOR)));
         try (MockedStatic<StpUtil> stpMock = Mockito.mockStatic(StpUtil.class)) {
             stpMock.when(StpUtil::isLogin).thenReturn(true);
+            stpMock.when(() -> StpUtil.getSession(false)).thenReturn(operatorSession);
             filter.doFilter(sessionDelete, sessionRes, (req, res) -> sessionExecuted.set(true));
         }
         assertThat(sessionExecuted.get()).isTrue();
         assertThat(sessionRes.getStatus()).isEqualTo(200);
+
+        // 4a. 未携带密钥且 Sa-Token 会话缺失控制台主体 -> 严禁静默放行，返回 403
+        MockHttpServletRequest missingPrincipalDelete = new MockHttpServletRequest("DELETE", "/admin/instances/inst-01");
+        MockHttpServletResponse missingPrincipalRes = new MockHttpServletResponse();
+        AtomicBoolean missingPrincipalExecuted = new AtomicBoolean(false);
+        try (MockedStatic<StpUtil> stpMock = Mockito.mockStatic(StpUtil.class)) {
+            stpMock.when(StpUtil::isLogin).thenReturn(true);
+            stpMock.when(() -> StpUtil.getSession(false)).thenReturn(null);
+            filter.doFilter(missingPrincipalDelete, missingPrincipalRes, (req, res) -> missingPrincipalExecuted.set(true));
+        }
+        assertThat(missingPrincipalExecuted.get()).isFalse();
+        assertThat(missingPrincipalRes.getStatus()).isEqualTo(HttpStatus.FORBIDDEN.value());
+
+        // 4b. 未携带密钥且会话角色仅为 VIEWER 时，拒绝注销实例返回 403
+        MockHttpServletRequest viewerDelete = new MockHttpServletRequest("DELETE", "/admin/instances/inst-01");
+        MockHttpServletResponse viewerRes = new MockHttpServletResponse();
+        AtomicBoolean viewerExecuted = new AtomicBoolean(false);
+        SaSession viewerSession = Mockito.mock(SaSession.class);
+        Mockito.when(viewerSession.get(AdminSessionHelper.SESSION_PRINCIPAL_KEY))
+                .thenReturn(AdminConsolePrincipal.of("viewer", Set.of(AdminRole.VIEWER)));
+        try (MockedStatic<StpUtil> stpMock = Mockito.mockStatic(StpUtil.class)) {
+            stpMock.when(StpUtil::isLogin).thenReturn(true);
+            stpMock.when(() -> StpUtil.getSession(false)).thenReturn(viewerSession);
+            filter.doFilter(viewerDelete, viewerRes, (req, res) -> viewerExecuted.set(true));
+        }
+        assertThat(viewerExecuted.get()).isFalse();
+        assertThat(viewerRes.getStatus()).isEqualTo(HttpStatus.FORBIDDEN.value());
 
         // 5. 多段子路径 DELETE /admin/instances/inst-01/actuator/caches 不由 AdminSsrfGuardFilter 误判为单实例注销
         MockHttpServletRequest subPathDelete = new MockHttpServletRequest("DELETE", "/admin/instances/inst-01/actuator/caches");

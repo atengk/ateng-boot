@@ -1,5 +1,6 @@
 package io.github.atengk.boot.admin.properties;
 
+import io.github.atengk.boot.admin.provider.AdminRole;
 import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -37,6 +38,16 @@ public class AtengAdminServerProperties {
      * 内置控制台默认管理员访问密码（默认 admin，生产环境请务必修改或对接认证 SPI）
      */
     private String password = "admin";
+
+    /**
+     * 多角色控制台账号列表；配置非空列表后自动失效默认单账号兜底，支持 {bcrypt} 哈希口令
+     */
+    private List<ConsoleUserProperties> users = new ArrayList<>();
+
+    /**
+     * 是否暴露内建控制台自检、审计与静默管理端点（{contextPath}/console/**，默认开启）
+     */
+    private boolean consoleApiEnabled = true;
 
     /**
      * 客户端向服务端注册共享密钥（用于 X-Admin-Client-Secret 握手比对，防止非法实例伪造与 SSRF）
@@ -102,6 +113,23 @@ public class AtengAdminServerProperties {
      * 是否允许在 Web 控制台执行修改日志级别等高危写操作（默认开启）
      */
     private boolean enableWriteOperations = true;
+
+    /**
+     * 物理硬阻断的 Actuator 高危子端点列表（含 GET/POST 等全部方法，默认阻断 heapdump/shutdown/restart）
+     */
+    private List<String> blockedEndpoints = new ArrayList<>(List.of("heapdump", "shutdown", "restart"));
+
+    /**
+     * 登录防暴力破解与 IP 熔断保护配置
+     */
+    @NestedConfigurationProperty
+    private LoginDefenseProperties loginDefense = new LoginDefenseProperties();
+
+    /**
+     * 控制台操作审计轨迹与有界内存追溯配置
+     */
+    @NestedConfigurationProperty
+    private AuditProperties audit = new AuditProperties();
 
     /**
      * 客户端实例注册请求体最大允许载荷容量（默认 1MB，防止超大畸形注册报文引发堆内存溢出）
@@ -354,5 +382,113 @@ public class AtengAdminServerProperties {
          * 动态维护静默规则未显式指定时长时的默认有效期（默认 2 小时）
          */
         private Duration silenceRuleDefaultTtl = Duration.ofHours(2);
+    }
+
+    /**
+     * 控制台多账号与角色配置属性
+     *
+     * @author Ateng
+     * @since 2026-11-21
+     */
+    @Getter
+    @Setter
+    public static class ConsoleUserProperties {
+
+        /**
+         * 控制台登录用户名
+         */
+        private String username;
+
+        /**
+         * 访问口令（支持明文或以 {bcrypt} 前缀标识的 BCrypt 密文哈希）
+         */
+        private String password;
+
+        /**
+         * 授予的角色列表（默认 VIEWER 只读观察员）
+         */
+        private List<AdminRole> roles = new ArrayList<>(List.of(AdminRole.VIEWER));
+
+        /**
+         * 账号启用状态（默认 true；false 时禁止登录）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 附加展示属性（严禁放置敏感凭据）
+         */
+        private Map<String, Object> attributes = new LinkedHashMap<>();
+    }
+
+    /**
+     * 控制台登录防暴力破解保护配置属性
+     *
+     * @author Ateng
+     * @since 2026-11-21
+     */
+    @Getter
+    @Setter
+    public static class LoginDefenseProperties {
+
+        /**
+         * 是否启用登录防暴力破解保护（默认 true）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 滑窗内连续认证失败触发锁定的最大次数阈值（默认 5 次）
+         */
+        private int maxFailures = 5;
+
+        /**
+         * 失败计数统计滑动窗口时长（默认 15 分钟）
+         */
+        private Duration failureWindow = Duration.ofMinutes(15);
+
+        /**
+         * 触发锁定后的临时熔断冷却时长（默认 15 分钟）
+         */
+        private Duration lockDuration = Duration.ofMinutes(15);
+
+        /**
+         * 是否无条件信任 X-Forwarded-For / X-Real-IP 代理头（生产不建议直接 true，推荐配置 trustedProxies）
+         */
+        private boolean trustProxyHeaders = false;
+
+        /**
+         * 可信反向代理 IP/CIDR 网段列表；仅当 TCP 直连来源 IP 命中时才解析 X-Forwarded-For / X-Real-IP
+         */
+        private List<String> trustedProxies = new ArrayList<>();
+
+        /**
+         * 免受防爆破计数与锁定的白名单 IP/CIDR 列表（默认放行本机环回地址）
+         */
+        private List<String> ipWhitelist = new ArrayList<>(List.of("127.0.0.1", "::1"));
+
+        /**
+         * 单机内存防爆破计数表最大容量上限（默认 10000 条，防止海量源 IP 攻击引发 OOM）
+         */
+        private int maxTrackedEntries = 10000;
+    }
+
+    /**
+     * 控制台结构化操作审计配置属性
+     *
+     * @author Ateng
+     * @since 2026-11-21
+     */
+    @Getter
+    @Setter
+    public static class AuditProperties {
+
+        /**
+         * 是否启用控制台操作审计记录（默认 true）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 有界内存环形审计仓库保留的最大记录条数（默认 500 条，超出按 FIFO 淘汰）
+         */
+        private int maxRecords = 500;
     }
 }

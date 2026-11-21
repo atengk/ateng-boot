@@ -4,6 +4,7 @@ import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Spring Boot Admin 路径归一化与精确端点匹配工具
@@ -17,6 +18,8 @@ import java.util.List;
 public final class AdminPathMatcher {
 
     private static final String INSTANCES_SEGMENT = "/instances";
+    private static final String APPLICATIONS_SEGMENT = "/applications";
+    private static final String ACTUATOR_SEGMENT = "/actuator";
 
     private AdminPathMatcher() {
     }
@@ -105,6 +108,100 @@ public final class AdminPathMatcher {
                 && remaining.indexOf('/') < 0
                 && !".".equals(remaining)
                 && !"..".equals(remaining);
+    }
+
+    /**
+     * 判断请求是否位于 SBA 控制台上下文作用域 {@code {adminContextPath}} 或 {@code {adminContextPath}/**} 内
+     *
+     * @param rawPath            原始请求 URI 或路径
+     * @param servletContextPath Servlet contextPath
+     * @param adminContextPath   SBA Server contextPath
+     * @return 命中作用域返回 {@code true}
+     */
+    public static boolean isWithinAdminContext(String rawPath, String servletContextPath, String adminContextPath) {
+        String normalizedPath = normalizeRequestPath(rawPath, servletContextPath);
+        if (normalizedPath.isEmpty()) {
+            return false;
+        }
+        String normalizedAdminCtx = normalizeContextPath(adminContextPath);
+        if (normalizedAdminCtx.isEmpty()) {
+            return true;
+        }
+        return normalizedPath.equals(normalizedAdminCtx)
+                || normalizedPath.startsWith(normalizedAdminCtx + "/");
+    }
+
+    /**
+     * 判断请求是否命中 SBA Actuator 反向代理端点（含单实例 {@code /instances/{id}/actuator/**} 与应用聚合 {@code /applications/{app}/actuator/**}）
+     *
+     * @param rawPath            原始请求 URI 或路径
+     * @param servletContextPath Servlet contextPath
+     * @param adminContextPath   SBA Server contextPath
+     * @return 命中代理端点返回 {@code true}
+     */
+    public static boolean isActuatorProxyEndpoint(String rawPath, String servletContextPath, String adminContextPath) {
+        return extractActuatorSubPath(rawPath, servletContextPath, adminContextPath) != null;
+    }
+
+    /**
+     * 提取 Actuator 反向代理请求的首段子端点名称（如 {@code heapdump}、{@code loggers}、{@code shutdown}）
+     *
+     * @param rawPath            原始请求 URI 或路径
+     * @param servletContextPath Servlet contextPath
+     * @param adminContextPath   SBA Server contextPath
+     * @return 小写首段子端点名称；若为根 {@code /actuator} 返回 {@code ""}，非代理端点返回 {@code null}
+     */
+    public static String extractActuatorEndpointSegment(String rawPath, String servletContextPath, String adminContextPath) {
+        String subPath = extractActuatorSubPath(rawPath, servletContextPath, adminContextPath);
+        if (subPath == null) {
+            return null;
+        }
+        if (subPath.isEmpty()) {
+            return "";
+        }
+        int slashIdx = subPath.indexOf('/');
+        String segment = slashIdx >= 0 ? subPath.substring(0, slashIdx) : subPath;
+        return segment.toLowerCase(Locale.ROOT);
+    }
+
+    private static String extractActuatorSubPath(String rawPath, String servletContextPath, String adminContextPath) {
+        String normalizedPath = normalizeRequestPath(rawPath, servletContextPath);
+        if (normalizedPath.isEmpty()) {
+            return null;
+        }
+        String normalizedAdminCtx = normalizeContextPath(adminContextPath);
+        String relativePath = normalizedPath;
+        if (!normalizedAdminCtx.isEmpty()) {
+            if (!normalizedPath.startsWith(normalizedAdminCtx + "/")) {
+                return null;
+            }
+            relativePath = normalizedPath.substring(normalizedAdminCtx.length());
+        }
+        String afterPrefix = null;
+        if (relativePath.startsWith(INSTANCES_SEGMENT + "/")) {
+            afterPrefix = relativePath.substring(INSTANCES_SEGMENT.length() + 1);
+        } else if (relativePath.startsWith(APPLICATIONS_SEGMENT + "/")) {
+            afterPrefix = relativePath.substring(APPLICATIONS_SEGMENT.length() + 1);
+        }
+        if (afterPrefix == null || afterPrefix.isEmpty()) {
+            return null;
+        }
+        int idSlashIdx = afterPrefix.indexOf('/');
+        if (idSlashIdx <= 0) {
+            return null;
+        }
+        String targetSegment = afterPrefix.substring(0, idSlashIdx);
+        if (".".equals(targetSegment) || "..".equals(targetSegment)) {
+            return null;
+        }
+        String tail = afterPrefix.substring(idSlashIdx);
+        if (ACTUATOR_SEGMENT.equals(tail)) {
+            return "";
+        }
+        if (tail.startsWith(ACTUATOR_SEGMENT + "/")) {
+            return tail.substring(ACTUATOR_SEGMENT.length() + 1);
+        }
+        return null;
     }
 
     private static String normalizeSegments(String rawPath) {

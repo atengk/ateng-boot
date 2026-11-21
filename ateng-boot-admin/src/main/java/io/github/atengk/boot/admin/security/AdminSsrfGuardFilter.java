@@ -1,13 +1,15 @@
 package io.github.atengk.boot.admin.security;
 
-import cn.dev33.satoken.stp.StpUtil;
 import com.fasterxml.jackson.databind.JsonNode;
 import de.codecentric.boot.admin.server.config.AdminServerProperties;
 import io.github.atengk.boot.admin.admission.AdminAdmissionResult;
 import io.github.atengk.boot.admin.admission.AdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.admission.InstanceRegistration;
+import io.github.atengk.boot.admin.audit.AdminAuditAction;
+import io.github.atengk.boot.admin.audit.AdminAuditService;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
+import io.github.atengk.boot.admin.provider.AdminConsolePrincipal;
 import io.github.atengk.boot.core.util.JsonUtil;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ReadListener;
@@ -31,10 +33,12 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * 拦截客户端注册请求，委托准入策略 SPI 进行安全合规核验与防 SSRF 穿透
- * 采用可复位无损流包装有界缓存 Body，支持下游重复消费并防御超大载荷内存溢出
+ * 采用可复位无损流包装有界缓存 Body，支持下游重复消费并防御超大载荷内存溢出；
+ * 同时对单实例注销执行双因子（共享密钥或 OPERATOR/ADMIN 登录态）鉴权与操作审计。
  *
  * @author Ateng
  * @since 2026-10-26
@@ -64,6 +68,8 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
     private final String clientSecret;
     private final String adminContextPath;
     private final int order;
+    private final AdminAuditService auditService;
+    private final AdminLoginDefenseService loginDefenseService;
 
     @Override
     public int getOrder() {
@@ -71,11 +77,11 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
     }
 
     public AdminSsrfGuardFilter(AdminInstanceAdmissionPolicy admissionPolicy) {
-        this(admissionPolicy, DEFAULT_MAX_PAYLOAD_BYTES, null, null, DEFAULT_ORDER);
+        this(admissionPolicy, DEFAULT_MAX_PAYLOAD_BYTES, null, null, DEFAULT_ORDER, null, null);
     }
 
     public AdminSsrfGuardFilter(AdminInstanceAdmissionPolicy admissionPolicy, DataSize maxPayloadSize) {
-        this(admissionPolicy, resolveMaxPayloadBytes(maxPayloadSize), null, null, DEFAULT_ORDER);
+        this(admissionPolicy, resolveMaxPayloadBytes(maxPayloadSize), null, null, DEFAULT_ORDER, null, null);
     }
 
     public AdminSsrfGuardFilter(AtengAdminServerProperties properties) {
@@ -92,7 +98,7 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
     public AdminSsrfGuardFilter(AdminInstanceAdmissionPolicy admissionPolicy,
                                 AtengAdminServerProperties properties,
                                 AdminServerProperties adminServerProperties) {
-        this(admissionPolicy, properties, adminServerProperties, DEFAULT_ORDER);
+        this(admissionPolicy, properties, adminServerProperties, DEFAULT_ORDER, null, null);
     }
 
     /**
@@ -107,23 +113,48 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
                                 AtengAdminServerProperties properties,
                                 AdminServerProperties adminServerProperties,
                                 int order) {
+        this(admissionPolicy, properties, adminServerProperties, order, null, null);
+    }
+
+    /**
+     * 完整构造防线过滤器（支持注入审计协调服务与可信代理 IP 解析器）
+     *
+     * @param admissionPolicy       准入策略 SPI
+     * @param properties            企业级 Admin Server 属性配置
+     * @param adminServerProperties Spring Boot Admin 原生属性
+     * @param order                 Servlet 过滤器执行优先级
+     * @param auditService          操作审计服务（可空）
+     * @param loginDefenseService   登录防爆破服务（用于可信代理源 IP 提取，可空）
+     */
+    public AdminSsrfGuardFilter(AdminInstanceAdmissionPolicy admissionPolicy,
+                                AtengAdminServerProperties properties,
+                                AdminServerProperties adminServerProperties,
+                                int order,
+                                AdminAuditService auditService,
+                                AdminLoginDefenseService loginDefenseService) {
         this(admissionPolicy,
                 resolveMaxPayloadBytes(properties != null ? properties.getMaxRegistrationPayloadSize() : null),
                 properties != null ? properties.getClientSecret() : null,
                 adminServerProperties != null ? adminServerProperties.getContextPath() : null,
-                order);
+                order,
+                auditService,
+                loginDefenseService);
     }
 
     private AdminSsrfGuardFilter(AdminInstanceAdmissionPolicy admissionPolicy,
                                  long maxPayloadBytes,
                                  String clientSecret,
                                  String adminContextPath,
-                                 int order) {
+                                 int order,
+                                 AdminAuditService auditService,
+                                 AdminLoginDefenseService loginDefenseService) {
         this.admissionPolicy = Objects.requireNonNull(admissionPolicy, "admissionPolicy must not be null");
         this.maxPayloadBytes = normalizeMaxPayloadBytes(maxPayloadBytes);
         this.clientSecret = clientSecret;
         this.adminContextPath = AdminPathMatcher.normalizeContextPath(adminContextPath);
         this.order = order;
+        this.auditService = auditService;
+        this.loginDefenseService = loginDefenseService;
     }
 
     private static long resolveMaxPayloadBytes(DataSize maxPayloadSize) {
@@ -149,6 +180,8 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
         String path = request.getRequestURI();
         String servletContextPath = request.getContextPath();
         String method = request.getMethod();
+        String normalizedPath = AdminPathMatcher.normalizeRequestPath(path, servletContextPath);
+        String sourceIp = resolveClientIp(request);
 
         // 1. 拦截向 SBA 注册新实例的 POST 请求（精确锚定 {adminContextPath}/instances）
         if ("POST".equalsIgnoreCase(method)
@@ -159,6 +192,8 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
                 wrappedRequest = new ResettableContentCachingRequestWrapper(request, maxPayloadBytes);
             } catch (PayloadTooLargeException ex) {
                 log.warn("[SSRF Guard] 注册拦截：请求体超出最大容量限制 [{} bytes]", maxPayloadBytes);
+                recordAudit(AdminAuditAction.ADMISSION_REJECTED, "client", sourceIp, "registration",
+                        method, normalizedPath, "413", ex.getMessage());
                 reject(response, HttpStatus.PAYLOAD_TOO_LARGE, ex.getMessage());
                 return;
             }
@@ -172,6 +207,8 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
                     registration = InstanceRegistration.parse(root);
                 } catch (Exception e) {
                     log.error("[SSRF Guard] 解析注册 Body 失败: {}", e.getMessage());
+                    recordAudit(AdminAuditAction.ADMISSION_REJECTED, "client", sourceIp, "registration",
+                            method, normalizedPath, "400", "Malformed JSON registration payload");
                     reject(response, HttpStatus.BAD_REQUEST, "Malformed JSON registration payload");
                     return;
                 }
@@ -186,7 +223,11 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
                 String reason = (result != null && StringUtils.hasText(result.getReason()))
                         ? result.getReason()
                         : "Registration rejected by admission policy";
+                String targetName = registration != null && StringUtils.hasText(registration.getName())
+                        ? registration.getName() : "unknown";
                 log.warn("[SSRF Guard] 注册请求未通过准入策略审核: status=[{}], reason=[{}]", status.value(), reason);
+                recordAudit(AdminAuditAction.ADMISSION_REJECTED, "client", sourceIp, targetName,
+                        method, normalizedPath, String.valueOf(status.value()), reason);
                 reject(response, status, reason);
                 return;
             }
@@ -196,16 +237,52 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
             return;
         }
 
-        // 2. 拦截单实例下线注销 DELETE {adminContextPath}/instances/{id}：要求携带合法共享密钥或已登录会话
+        // 2. 拦截单实例下线注销 DELETE {adminContextPath}/instances/{id}：要求携带合法共享密钥或 OPERATOR/ADMIN 登录态
         if ("DELETE".equalsIgnoreCase(method)
-                && AdminPathMatcher.isSingleInstanceEndpoint(path, servletContextPath, adminContextPath)
-                && StringUtils.hasText(clientSecret)) {
+                && AdminPathMatcher.isSingleInstanceEndpoint(path, servletContextPath, adminContextPath)) {
+            String instanceId = extractSingleInstanceId(normalizedPath);
             String providedSecret = request.getHeader(CLIENT_SECRET_HEADER);
-            if (!isSecretMatch(providedSecret) && !isSessionAuthenticated()) {
+            if (isSecretMatch(providedSecret)) {
+                try {
+                    filterChain.doFilter(request, response);
+                } finally {
+                    recordAudit(AdminAuditAction.INSTANCE_DEREGISTERED, "client-secret", sourceIp, instanceId,
+                            method, normalizedPath, String.valueOf(response.getStatus()), "客户端凭共享密钥注销实例");
+                }
+                return;
+            }
+            if (AdminSessionHelper.isSessionAuthenticated()) {
+                Optional<AdminConsolePrincipal> principal = AdminSessionHelper.resolvePrincipal(request);
+                if (principal.isEmpty() || !principal.get().hasWritePermission()) {
+                    String actor = principal.map(AdminConsolePrincipal::getUsername)
+                            .orElseGet(() -> AdminSessionHelper.getCurrentActorOrFallback("anonymous"));
+                    String reason = "Insufficient console role to deregister instance";
+                    log.warn("[SSRF Guard] 越权或缺失控制台主体注销拦截: actor=[{}], roles=[{}], uri=[{}]",
+                            AdminConsolePrincipal.maskUsername(actor),
+                            principal.map(AdminConsolePrincipal::getRoleCodes).orElse(java.util.List.of()),
+                            normalizedPath);
+                    AdminAuditService.recordIfPresent(auditService, AdminAuditAction.ENDPOINT_BLOCKED, actor, sourceIp,
+                            instanceId, method, normalizedPath, "403", reason);
+                    reject(response, HttpStatus.FORBIDDEN, reason);
+                    return;
+                }
+                String actor = principal.get().getUsername();
+                try {
+                    filterChain.doFilter(request, response);
+                } finally {
+                    AdminAuditService.recordIfPresent(auditService, AdminAuditAction.INSTANCE_DEREGISTERED, actor,
+                            sourceIp, instanceId, method, normalizedPath, String.valueOf(response.getStatus()),
+                            "控制台人工注销实例");
+                }
+                return;
+            }
+            if (StringUtils.hasText(clientSecret)) {
                 log.warn("[SSRF Guard] 注销拦截：未携带有效 [{}] 且不存在已登录管理会话，uri=[{}]",
                         CLIENT_SECRET_HEADER, path);
-                reject(response, HttpStatus.FORBIDDEN,
-                        "Missing valid X-Admin-Client-Secret or authenticated session for instance deregistration");
+                String reason = "Missing valid X-Admin-Client-Secret or authenticated session for instance deregistration";
+                recordAudit(AdminAuditAction.ADMISSION_REJECTED, "anonymous", sourceIp, instanceId,
+                        method, normalizedPath, "403", reason);
+                reject(response, HttpStatus.FORBIDDEN, reason);
                 return;
             }
         }
@@ -217,12 +294,29 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
         return AdminSecretMatcher.matchesConfiguredSecret(providedSecret, clientSecret);
     }
 
-    private boolean isSessionAuthenticated() {
-        try {
-            return StpUtil.isLogin();
-        } catch (Exception ex) {
-            return false;
+    private String resolveClientIp(HttpServletRequest request) {
+        return AdminLoginDefenseService.resolveClientIpOrRemote(loginDefenseService, request);
+    }
+
+    private void recordAudit(AdminAuditAction action,
+                             String actor,
+                             String sourceIp,
+                             String target,
+                             String method,
+                             String path,
+                             String outcome,
+                             String detail) {
+        AdminAuditService.recordIfPresent(auditService, action, actor, sourceIp, target, method, path, outcome, detail);
+    }
+
+    private static String extractSingleInstanceId(String normalizedPath) {
+        if (!StringUtils.hasText(normalizedPath)) {
+            return "";
         }
+        int lastSlash = normalizedPath.lastIndexOf('/');
+        return lastSlash >= 0 && lastSlash + 1 < normalizedPath.length()
+                ? normalizedPath.substring(lastSlash + 1)
+                : normalizedPath;
     }
 
     /**

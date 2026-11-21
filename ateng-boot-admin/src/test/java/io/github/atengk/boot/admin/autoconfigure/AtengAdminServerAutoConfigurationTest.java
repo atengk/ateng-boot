@@ -9,17 +9,25 @@ import de.codecentric.boot.admin.server.notify.Notifier;
 import io.github.atengk.boot.admin.admission.AdminAdmissionResult;
 import io.github.atengk.boot.admin.admission.AdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicy;
+import io.github.atengk.boot.admin.audit.AdminAuditLogHandler;
+import io.github.atengk.boot.admin.audit.AdminAuditLogRepository;
+import io.github.atengk.boot.admin.audit.AdminAuditService;
 import io.github.atengk.boot.admin.cluster.AdminClusterCoordinator;
 import io.github.atengk.boot.admin.cluster.InMemoryAdminClusterCoordinator;
 import io.github.atengk.boot.admin.cluster.RedisAdminClusterCoordinator;
+import io.github.atengk.boot.admin.controller.AdminConsoleController;
 import io.github.atengk.boot.admin.controller.AdminLoginController;
 import io.github.atengk.boot.admin.eventstore.AtengInMemoryEventStore;
 import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AdminAuthProvider;
+import io.github.atengk.boot.admin.provider.AdminRole;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
 import io.github.atengk.boot.admin.provider.DefaultPropertiesAdminAuthProvider;
 import io.github.atengk.boot.admin.scheduler.ZombieInstanceCleanupScheduler;
+import io.github.atengk.boot.admin.security.AdminEndpointGuardFilter;
+import io.github.atengk.boot.admin.security.AdminLoginDefenseService;
+import io.github.atengk.boot.admin.security.AdminPrincipalBridgeFilter;
 import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
 import io.github.atengk.boot.admin.security.AdminWriteGuardFilter;
 import io.github.atengk.boot.admin.silence.AdminSilenceManager;
@@ -155,6 +163,20 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(context.getBean(AdminInstanceAdmissionPolicy.class)).isInstanceOf(DefaultAdminInstanceAdmissionPolicy.class);
                     assertThat(context).hasSingleBean(AdminSsrfGuardFilter.class);
                     assertThat(context).hasSingleBean(AdminWriteGuardFilter.class);
+                    assertThat(context).hasSingleBean(AdminEndpointGuardFilter.class);
+                    assertThat(context).hasSingleBean(AdminPrincipalBridgeFilter.class);
+                    assertThat(context).hasSingleBean(AdminLoginDefenseService.class);
+                    assertThat(context).hasSingleBean(AdminAuditLogRepository.class);
+                    assertThat(context).hasSingleBean(AdminAuditLogHandler.class);
+                    assertThat(context).hasSingleBean(AdminAuditService.class);
+                    assertThat(context).hasSingleBean(AdminConsoleController.class);
+                    assertThat(properties.isConsoleApiEnabled()).isTrue();
+                    assertThat(properties.getBlockedEndpoints()).containsExactly("heapdump", "shutdown", "restart");
+                    assertThat(properties.getLoginDefense().isEnabled()).isTrue();
+                    assertThat(properties.getLoginDefense().getMaxFailures()).isEqualTo(5);
+                    assertThat(properties.getLoginDefense().getIpWhitelist()).containsExactly("127.0.0.1", "::1");
+                    assertThat(properties.getAudit().isEnabled()).isTrue();
+                    assertThat(properties.getAudit().getMaxRecords()).isEqualTo(500);
                     assertThat(context).hasSingleBean(AtengAdminNotificationNotifier.class);
                     assertThat(context).hasBean("adminSaServletFilter");
                     assertThat(context.getBean("adminSaServletFilter")).isInstanceOf(SaServletFilter.class);
@@ -242,7 +264,18 @@ class AtengAdminServerAutoConfigurationTest {
                         "ateng.boot.admin.server.cluster.key-prefix=custom:admin:",
                         "ateng.boot.admin.server.cluster.cleanup-lock-ttl=45s",
                         "ateng.boot.admin.server.cluster.alert-dedup-ttl=90s",
-                        "ateng.boot.admin.server.cluster.silence-rule-default-ttl=30m"
+                        "ateng.boot.admin.server.cluster.silence-rule-default-ttl=30m",
+                        "ateng.boot.admin.server.console-api-enabled=false",
+                        "ateng.boot.admin.server.blocked-endpoints[0]=heapdump",
+                        "ateng.boot.admin.server.blocked-endpoints[1]=env",
+                        "ateng.boot.admin.server.users[0].username=sec-viewer",
+                        "ateng.boot.admin.server.users[0].password=pass1",
+                        "ateng.boot.admin.server.users[0].roles[0]=VIEWER",
+                        "ateng.boot.admin.server.login-defense.max-failures=7",
+                        "ateng.boot.admin.server.login-defense.failure-window=20m",
+                        "ateng.boot.admin.server.login-defense.lock-duration=30m",
+                        "ateng.boot.admin.server.login-defense.trusted-proxies[0]=10.0.0.0/8",
+                        "ateng.boot.admin.server.audit.max-records=250"
                 )
                 .run(context -> {
                     assertThat(context).hasSingleBean(AtengAdminServerProperties.class);
@@ -287,6 +320,17 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(properties.getCluster().getCleanupLockTtl()).isEqualTo(Duration.ofSeconds(45));
                     assertThat(properties.getCluster().getAlertDedupTtl()).isEqualTo(Duration.ofSeconds(90));
                     assertThat(properties.getCluster().getSilenceRuleDefaultTtl()).isEqualTo(Duration.ofMinutes(30));
+                    assertThat(properties.isConsoleApiEnabled()).isFalse();
+                    assertThat(properties.getBlockedEndpoints()).containsExactly("heapdump", "env");
+                    assertThat(properties.getUsers()).hasSize(1);
+                    assertThat(properties.getUsers().get(0).getUsername()).isEqualTo("sec-viewer");
+                    assertThat(properties.getUsers().get(0).getRoles()).containsExactly(AdminRole.VIEWER);
+                    assertThat(properties.getLoginDefense().getMaxFailures()).isEqualTo(7);
+                    assertThat(properties.getLoginDefense().getFailureWindow()).isEqualTo(Duration.ofMinutes(20));
+                    assertThat(properties.getLoginDefense().getLockDuration()).isEqualTo(Duration.ofMinutes(30));
+                    assertThat(properties.getLoginDefense().getTrustedProxies()).containsExactly("10.0.0.0/8");
+                    assertThat(properties.getAudit().getMaxRecords()).isEqualTo(250);
+                    assertThat(context).doesNotHaveBean(AdminConsoleController.class);
                     // 即使开启 cluster.enabled=true，但容器中不存在 StringRedisTemplate 时依然平滑退回单机内存协调器
                     assertThat(context.getBean(AdminClusterCoordinator.class))
                             .isInstanceOf(InMemoryAdminClusterCoordinator.class);

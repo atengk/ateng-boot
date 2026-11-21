@@ -331,6 +331,10 @@ class AdminSampleIntegrationTest {
         mockMvc.perform(post("/admin/instances/inst-sample-01/actuator/loggers/root")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"configuredLevel\":\"DEBUG\"}"))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(get("/admin/instances/inst-sample-01/actuator/heapdump")
+                        .cookie(satokenCookie))
                 .andExpect(status().isForbidden());
 
         mockMvc.perform(get("/admin/instances/inst-sample-01/actuator/health")

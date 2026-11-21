@@ -9,9 +9,14 @@ import de.codecentric.boot.admin.server.domain.entities.InstanceRepository;
 import de.codecentric.boot.admin.server.services.InstanceRegistry;
 import io.github.atengk.boot.admin.admission.AdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicy;
+import io.github.atengk.boot.admin.audit.AdminAuditLogHandler;
+import io.github.atengk.boot.admin.audit.AdminAuditLogRepository;
+import io.github.atengk.boot.admin.audit.AdminAuditService;
+import io.github.atengk.boot.admin.audit.DefaultAdminAuditLogHandler;
 import io.github.atengk.boot.admin.cluster.AdminClusterCoordinator;
 import io.github.atengk.boot.admin.cluster.InMemoryAdminClusterCoordinator;
 import io.github.atengk.boot.admin.cluster.RedisAdminClusterCoordinator;
+import io.github.atengk.boot.admin.controller.AdminConsoleController;
 import io.github.atengk.boot.admin.controller.AdminLoginController;
 import io.github.atengk.boot.admin.eventstore.AtengInMemoryEventStore;
 import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
@@ -20,14 +25,19 @@ import io.github.atengk.boot.admin.provider.AdminAuthProvider;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
 import io.github.atengk.boot.admin.provider.DefaultPropertiesAdminAuthProvider;
 import io.github.atengk.boot.admin.scheduler.ZombieInstanceCleanupScheduler;
+import io.github.atengk.boot.admin.security.AdminEndpointGuardFilter;
+import io.github.atengk.boot.admin.security.AdminLoginDefenseService;
 import io.github.atengk.boot.admin.security.AdminPathMatcher;
+import io.github.atengk.boot.admin.security.AdminPrincipalBridgeFilter;
 import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
 import io.github.atengk.boot.admin.security.AdminWriteGuardFilter;
 import io.github.atengk.boot.admin.silence.AdminSilenceManager;
 import io.github.atengk.boot.admin.silence.DefaultAdminSilenceManager;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
 import jakarta.servlet.http.HttpServletRequest;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -36,9 +46,9 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
@@ -46,6 +56,7 @@ import org.springframework.util.StringUtils;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
 
 /**
@@ -54,6 +65,7 @@ import java.util.concurrent.ScheduledExecutorService;
  * @author Ateng
  * @since 2026-10-26
  */
+@Slf4j
 @AutoConfiguration(afterName = {
         "de.codecentric.boot.admin.server.config.AdminServerAutoConfiguration",
         "io.github.atengk.boot.admin.autoconfigure.AtengAdminServerDefenseAutoConfiguration"
@@ -67,16 +79,70 @@ public class AtengAdminServerAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public AdminAuthProvider adminAuthProvider(AtengAdminServerProperties properties) {
-        return new DefaultPropertiesAdminAuthProvider(properties);
+    public AdminAuthProvider adminAuthProvider(AtengAdminServerProperties properties,
+                                               ObjectProvider<Clock> clockProvider) {
+        return new DefaultPropertiesAdminAuthProvider(properties, clockProvider.getIfAvailable(Clock::systemUTC));
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public AdminAuditLogRepository adminAuditLogRepository(AtengAdminServerProperties properties) {
+        int maxRecords = properties != null && properties.getAudit() != null
+                ? properties.getAudit().getMaxRecords()
+                : AdminAuditLogRepository.DEFAULT_MAX_RECORDS;
+        return new AdminAuditLogRepository(maxRecords);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(AdminAuditLogHandler.class)
+    public AdminAuditLogHandler defaultAdminAuditLogHandler(AdminAuditLogRepository repository) {
+        return new DefaultAdminAuditLogHandler(repository);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public AdminAuditService adminAuditService(AtengAdminServerProperties properties,
+                                               ApplicationEventPublisher eventPublisher,
+                                               ObjectProvider<AdminAuditLogHandler> handlersProvider,
+                                               ObjectProvider<Clock> clockProvider) {
+        List<AdminAuditLogHandler> handlers = handlersProvider.orderedStream().toList();
+        return new AdminAuditService(properties, eventPublisher, handlers, clockProvider.getIfAvailable(Clock::systemUTC));
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public AdminLoginDefenseService adminLoginDefenseService(AtengAdminServerProperties properties,
+                                                             ObjectProvider<StringRedisTemplate> redisTemplateProvider,
+                                                             ObjectProvider<Clock> clockProvider) {
+        boolean useRedis = properties != null && properties.getCluster() != null && properties.getCluster().isEnabled();
+        StringRedisTemplate redisTemplate = useRedis ? redisTemplateProvider.getIfAvailable() : null;
+        return new AdminLoginDefenseService(
+                properties,
+                redisTemplate,
+                clockProvider.getIfAvailable(Clock::systemUTC)
+        );
     }
 
     @Bean
     @ConditionalOnMissingBean
     public AdminLoginController adminLoginController(AdminAuthProvider authProvider,
-                                                     ObjectProvider<AdminServerProperties> adminServerPropertiesProvider) {
+                                                     ObjectProvider<AdminServerProperties> adminServerPropertiesProvider,
+                                                     ObjectProvider<AdminLoginDefenseService> loginDefenseServiceProvider,
+                                                     ObjectProvider<AdminAuditService> auditServiceProvider) {
         AdminServerProperties adminServerProperties = adminServerPropertiesProvider.getIfAvailable();
-        return new AdminLoginController(authProvider, adminServerProperties);
+        return new AdminLoginController(
+                authProvider,
+                adminServerProperties,
+                loginDefenseServiceProvider.getIfAvailable(),
+                auditServiceProvider.getIfAvailable()
+        );
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.admin.server", name = "console-api-enabled", havingValue = "true", matchIfMissing = true)
+    public AdminConsoleController adminConsoleController(ObjectProvider<AdminAuditLogRepository> auditLogRepositoryProvider) {
+        return new AdminConsoleController(auditLogRepositoryProvider.getIfAvailable());
     }
 
     @Bean
@@ -96,21 +162,61 @@ public class AtengAdminServerAutoConfiguration {
     @Order(AdminSsrfGuardFilter.DEFAULT_ORDER)
     public AdminSsrfGuardFilter adminSsrfGuardFilter(AdminInstanceAdmissionPolicy admissionPolicy,
                                                      AtengAdminServerProperties properties,
-                                                     ObjectProvider<AdminServerProperties> adminServerPropertiesProvider) {
+                                                     ObjectProvider<AdminServerProperties> adminServerPropertiesProvider,
+                                                     ObjectProvider<AdminAuditService> auditServiceProvider,
+                                                     ObjectProvider<AdminLoginDefenseService> loginDefenseServiceProvider) {
         return new AdminSsrfGuardFilter(
                 admissionPolicy,
                 properties,
-                adminServerPropertiesProvider.getIfAvailable()
+                adminServerPropertiesProvider.getIfAvailable(),
+                AdminSsrfGuardFilter.DEFAULT_ORDER,
+                auditServiceProvider.getIfAvailable(),
+                loginDefenseServiceProvider.getIfAvailable()
         );
     }
 
     @Bean
     @ConditionalOnMissingBean
-    @Order(Ordered.HIGHEST_PRECEDENCE + 60)
-    public AdminWriteGuardFilter adminWriteGuardFilter(AtengAdminServerProperties properties,
-                                                       ObjectProvider<AdminServerProperties> adminServerPropertiesProvider) {
+    @Order(AdminPrincipalBridgeFilter.DEFAULT_ORDER)
+    public AdminPrincipalBridgeFilter adminPrincipalBridgeFilter(
+            ObjectProvider<AdminServerProperties> adminServerPropertiesProvider) {
+        return new AdminPrincipalBridgeFilter(adminServerPropertiesProvider.getIfAvailable());
+    }
+
+    @Bean
+    @ConditionalOnMissingBean({AdminEndpointGuardFilter.class, AdminWriteGuardFilter.class})
+    @Order(AdminEndpointGuardFilter.DEFAULT_ORDER)
+    public AdminEndpointGuardFilter adminEndpointGuardFilter(AtengAdminServerProperties properties,
+                                                             ObjectProvider<AdminServerProperties> adminServerPropertiesProvider,
+                                                             ObjectProvider<AdminAuditService> auditServiceProvider,
+                                                             ObjectProvider<AdminLoginDefenseService> loginDefenseServiceProvider) {
         AdminServerProperties adminServerProperties = adminServerPropertiesProvider.getIfAvailable();
-        return new AdminWriteGuardFilter(properties, adminServerProperties);
+        return new AdminEndpointGuardFilter(
+                properties,
+                adminServerProperties,
+                auditServiceProvider.getIfAvailable(),
+                loginDefenseServiceProvider.getIfAvailable(),
+                AdminEndpointGuardFilter.DEFAULT_ORDER
+        );
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(name = "adminSecurityStartupWarning")
+    public SmartInitializingSingleton adminSecurityStartupWarning(AtengAdminServerProperties properties) {
+        return () -> {
+            if (properties == null) {
+                return;
+            }
+            boolean usingDefaultSingleCreds = (properties.getUsers() == null || properties.getUsers().isEmpty())
+                    && "admin".equals(properties.getUsername())
+                    && "admin".equals(properties.getPassword());
+            if (usingDefaultSingleCreds) {
+                log.warn("[Admin Security] 检测到控制台正在使用默认单账号口令 (admin/admin)，生产环境请立即配置 ateng.boot.admin.server.users 或修改默认口令！");
+            }
+            if ("YOUR_CLIENT_SECRET".equals(properties.getClientSecret())) {
+                log.warn("[Admin Security] 检测到集群准入密钥仍为默认占位符 (YOUR_CLIENT_SECRET)，生产环境请立即替换为高强度随机密钥！");
+            }
+        };
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -271,7 +377,7 @@ public class AtengAdminServerAutoConfiguration {
                     String method = SaHolder.getRequest().getMethod();
 
                     // 1. 放行微服务客户端生命周期通信（严格锚定 contextPath：注册 POST /instances 与单段注销 DELETE /instances/{id}）
-                    // 实际安全校验由前沿 AdminSsrfGuardFilter（X-Admin-Client-Secret / 会话态与 SSRF 清洗）深度守护
+                    // 实际安全校验由前沿 AdminSsrfGuardFilter（X-Admin-Client-Secret / OPERATOR+ 会话态与 SSRF 清洗）深度守护
                     boolean isInstanceLifecycle = ("POST".equalsIgnoreCase(method)
                             && AdminPathMatcher.isInstancesCollectionEndpoint(reqPath, servletContextPath, contextPath))
                             || ("DELETE".equalsIgnoreCase(method)
