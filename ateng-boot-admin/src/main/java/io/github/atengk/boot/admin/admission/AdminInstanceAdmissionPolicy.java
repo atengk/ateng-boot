@@ -20,4 +20,14 @@ public interface AdminInstanceAdmissionPolicy {
      * @return 准入评估决策结果（不允许返回 null）
      */
     AdminAdmissionResult evaluate(InstanceRegistration registration, HttpServletRequest request);
+
+    /**
+     * 校验出站健康探测与控制台代理目标 URL 是否安全（用于防御 DNS Rebinding 等出站 SSRF 风险）
+     *
+     * @param url 待探测或代理的完整目标 URL
+     * @return 允许出站请求时返回 {@code true}
+     */
+    default boolean isOutboundUrlAllowed(String url) {
+        return true;
+    }
 }

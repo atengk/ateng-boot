@@ -1,7 +1,6 @@
 package io.github.atengk.boot.admin.security;
 
 import de.codecentric.boot.admin.server.config.AdminServerProperties;
-import io.github.atengk.boot.admin.autoconfigure.AtengAdminServerAutoConfiguration;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -49,7 +48,7 @@ public class AdminWriteGuardFilter extends OncePerRequestFilter implements Order
     public AdminWriteGuardFilter(AtengAdminServerProperties properties, AdminServerProperties adminServerProperties, int order) {
         this.properties = properties;
         this.order = order;
-        this.contextPath = AtengAdminServerAutoConfiguration.normalizeContextPath(
+        this.contextPath = AdminPathMatcher.normalizeContextPath(
                 adminServerProperties != null ? adminServerProperties.getContextPath() : null
         );
         String prefix = this.contextPath.isEmpty() ? "" : Pattern.quote(this.contextPath);
@@ -60,11 +59,12 @@ public class AdminWriteGuardFilter extends OncePerRequestFilter implements Order
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
         String method = request.getMethod();
-        String uri = request.getRequestURI();
+        String normalizedUri = AdminPathMatcher.normalizeRequestPath(request.getRequestURI(), request.getContextPath());
 
         // 仅当配置显式关闭写操作（只读模式）且当前请求为写操作方法时执行拦截判定
-        if (shouldBlock(method, uri)) {
-            log.warn("[Write Guard] 控制台只读拦截：当前处于只读管控模式，阻断针对微服务 Actuator 端点的变更请求：method=[{}], uri=[{}]", method, uri);
+        if (shouldBlock(method, normalizedUri)) {
+            log.warn("[Write Guard] 控制台只读拦截：当前处于只读管控模式，阻断针对微服务 Actuator 端点的变更请求：method=[{}], uri=[{}]",
+                    method, request.getRequestURI());
             reject(response, HttpStatus.FORBIDDEN, "Console write operations are disabled by policy");
             return;
         }
@@ -96,7 +96,8 @@ public class AdminWriteGuardFilter extends OncePerRequestFilter implements Order
         if (uri == null || uri.isEmpty()) {
             return false;
         }
-        return actuatorProxyPattern.matcher(uri).matches();
+        String normalized = AdminPathMatcher.normalizeRequestPath(uri, "");
+        return !normalized.isEmpty() && actuatorProxyPattern.matcher(normalized).matches();
     }
 
     /**

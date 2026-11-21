@@ -47,4 +47,9 @@ public class SampleInstanceAdmissionPolicy implements AdminInstanceAdmissionPoli
 
         return AdminAdmissionResult.admit();
     }
+
+    @Override
+    public boolean isOutboundUrlAllowed(String url) {
+        return defaultPolicy.isOutboundUrlAllowed(url);
+    }
 }

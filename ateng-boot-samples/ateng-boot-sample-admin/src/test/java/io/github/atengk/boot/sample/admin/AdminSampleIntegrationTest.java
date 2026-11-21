@@ -49,6 +49,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -605,6 +606,99 @@ class AdminSampleIntegrationTest {
         } else {
             log.info("[豁免：未配置真实 Webhook] ops-alert 未配置或仍为占位符，跳过真实群机器人投递。");
         }
+    }
+
+    @Test
+    @DisplayName("场景 13：Slice 1 纵深防线端到端闭环（路径归一化、注销双因子鉴权、子路径收口与重复 Auth Header 抑制）")
+    void shouldEnforceSlice1DepthDefenseEndToEnd(
+            @Autowired de.codecentric.boot.admin.server.services.InstanceFilter instanceFilter,
+            @Autowired io.github.atengk.boot.admin.security.AdminOutboundSsrfFilterFunction outboundSsrfFilterFunction,
+            @Autowired de.codecentric.boot.admin.server.web.client.BasicAuthHttpHeaderProvider basicAuthHttpHeaderProvider,
+            @Autowired org.springframework.context.ApplicationContext applicationContext) throws Exception {
+        // 1. 验证前置安全自动化装配生效
+        assertThat(instanceFilter).isInstanceOf(io.github.atengk.boot.admin.admission.AdminAdmissionInstanceFilter.class);
+        assertThat(outboundSsrfFilterFunction).isNotNull();
+        Instance sampleBasicInstance = Instance.create(InstanceId.of("basic-dup-sample"))
+                .register(Registration.create("basic-dup-svc", "http://10.20.1.5:8080/actuator/health")
+                        .metadata("user.name", "ops")
+                        .metadata("user.password", "pwd")
+                        .build());
+        de.codecentric.boot.admin.server.web.client.CompositeHttpHeadersProvider composite =
+                new de.codecentric.boot.admin.server.web.client.CompositeHttpHeadersProvider(
+                        applicationContext.getBeansOfType(de.codecentric.boot.admin.server.web.client.HttpHeadersProvider.class).values()
+                );
+        assertThat(basicAuthHttpHeaderProvider.getHeaders(sampleBasicInstance)).isEmpty();
+        assertThat(composite.getHeaders(sampleBasicInstance).get(HttpHeaders.AUTHORIZATION)).hasSize(1);
+
+        // 2. 高危 CGNAT (100.100.100.200)、AWS IPv6 ULA ([fd00:ec2::254])、userInfo 混淆及空载荷注册拦截
+        mockMvc.perform(post("/admin/instances")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, CLIENT_SECRET)
+                        .content("{\"name\":\"cgnat-evil\",\"serviceUrl\":\"http://100.100.100.200/latest/meta-data/\"}"))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(post("/admin/instances")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, CLIENT_SECRET)
+                        .content("{\"name\":\"ula-evil\",\"serviceUrl\":\"http://[fd00:ec2::254]/latest/meta-data/\"}"))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(post("/admin/instances")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, CLIENT_SECRET)
+                        .content("{\"name\":\"userinfo-evil\",\"serviceUrl\":\"http://trusted.internal@169.254.169.254/\"}"))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(post("/admin/instances")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, CLIENT_SECRET))
+                .andExpect(status().isBadRequest());
+
+        // 3. DELETE .../instances/{id}/actuator/caches 未登录严禁旁路（必须返回 401）
+        mockMvc.perform(delete("/admin/instances/inst-01/actuator/caches")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized());
+
+        // 4. DELETE /admin/instances/{id} 无密钥无登录返回 403，合法密钥或已登录会话放行
+        mockMvc.perform(delete("/admin/instances/non-existent-id"))
+                .andExpect(status().isForbidden());
+
+        MvcResult deregWithSecret = mockMvc.perform(delete("/admin/instances/non-existent-id")
+                        .header(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, CLIENT_SECRET))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(deregWithSecret))
+                .andExpect(status().isNotFound());
+
+        MvcResult adminLoginResult = mockMvc.perform(post("/admin/login")
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .param("username", properties.getUsername())
+                        .param("password", properties.getPassword()))
+                .andExpect(status().is3xxRedirection())
+                .andReturn();
+        Cookie[] authCookies = adminLoginResult.getResponse().getCookies();
+        MvcResult deregWithSession = mockMvc.perform(delete("/admin/instances/non-existent-id")
+                        .cookie(authCookies))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(deregWithSession))
+                .andExpect(status().isNotFound());
+
+        // 5. 服务发现来源 instanceRegistry 注册经由 AdminAdmissionInstanceFilter：免 HTTP 密钥直接准入安全节点，阻断高危地址
+        de.codecentric.boot.admin.server.services.InstanceRegistry registry =
+                applicationContext.getBean(de.codecentric.boot.admin.server.services.InstanceRegistry.class);
+        InstanceId discOkId = registry.register(Registration.create("discovery-safe-svc", "http://127.0.0.1:8080/actuator/health")
+                .serviceUrl("http://127.0.0.1:8080/")
+                .source("discovery")
+                .build()).block();
+        assertThat(discOkId).isNotNull();
+        assertThat(registry.getInstance(discOkId).block()).isNotNull();
+
+        InstanceId discBlockedId = registry.register(Registration.create("discovery-cgnat-evil", "http://100.100.100.200/latest/meta-data/")
+                .serviceUrl("http://100.100.100.200/")
+                .source("discovery")
+                .build()).block();
+        assertThat(registry.getInstance(discBlockedId).block()).isNull();
     }
 
     private List<RecordedAlertCardVO> waitForRecordedCards(RecordingNotificationTemplate recorder) throws InterruptedException {

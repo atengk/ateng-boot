@@ -1,8 +1,13 @@
 package io.github.atengk.boot.admin.security;
 
+import cn.dev33.satoken.stp.StpUtil;
+import de.codecentric.boot.admin.server.config.AdminServerProperties;
 import io.github.atengk.boot.admin.admission.AdminAdmissionResult;
 import io.github.atengk.boot.admin.admission.AdminInstanceAdmissionPolicy;
+import io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.ServletRequest;
@@ -412,5 +417,114 @@ class AdminSsrfGuardFilterTest {
             assertThat(chainExecuted.get()).isTrue();
             assertThat(normalRes.getStatus()).isEqualTo(200);
         }
+    }
+
+    @Test
+    @DisplayName("锚定 Admin context-path：宿主业务同后缀 /api/v1/instances 不被劫持，而畸形双斜杠与矩阵参数绕过被归一化拦截")
+    void shouldAnchorAdminContextPathAndNormalizeObfuscatedPaths() throws ServletException, IOException {
+        AtengAdminServerProperties properties = createProperties();
+        AdminServerProperties sbaProperties = new AdminServerProperties();
+        sbaProperties.setContextPath("/admin");
+        AdminSsrfGuardFilter filter = new AdminSsrfGuardFilter(
+                new DefaultAdminInstanceAdmissionPolicy(properties),
+                properties,
+                sbaProperties
+        );
+
+        // 1. 宿主业务接口 /api/v1/instances 不带 Admin Secret 也必须透传放行
+        MockHttpServletRequest businessReq = new MockHttpServletRequest("POST", "/api/v1/instances");
+        businessReq.setContent("{\"biz\":\"ok\"}".getBytes(StandardCharsets.UTF_8));
+        MockHttpServletResponse businessRes = new MockHttpServletResponse();
+        AtomicBoolean businessExecuted = new AtomicBoolean(false);
+        filter.doFilter(businessReq, businessRes, (req, res) -> businessExecuted.set(true));
+        assertThat(businessExecuted.get()).isTrue();
+        assertThat(businessRes.getStatus()).isEqualTo(200);
+
+        // 2. 携带 Servlet contextPath + 连续双斜杠 + 矩阵参数变形路径，必须被剥离归一化并拦截恶意 SSRF URL
+        MockHttpServletRequest obfuscatedReq = new MockHttpServletRequest("POST", "/portal/admin//instances;v=1/");
+        obfuscatedReq.setContextPath("/portal");
+        obfuscatedReq.addHeader(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, VALID_SECRET);
+        obfuscatedReq.setContent("""
+                {
+                    "name": "evil-obfuscated",
+                    "serviceUrl": "http://169.254.169.254/latest/meta-data/"
+                }
+                """.getBytes(StandardCharsets.UTF_8));
+        MockHttpServletResponse obfuscatedRes = new MockHttpServletResponse();
+        AtomicBoolean obfuscatedExecuted = new AtomicBoolean(false);
+        filter.doFilter(obfuscatedReq, obfuscatedRes, (req, res) -> obfuscatedExecuted.set(true));
+        assertThat(obfuscatedExecuted.get()).isFalse();
+        assertThat(obfuscatedRes.getStatus()).isEqualTo(HttpStatus.FORBIDDEN.value());
+    }
+
+    @Test
+    @DisplayName("DELETE 单实例注销受控放行：无密钥且未登录返回 403，合法密钥或已登录会话放行，多段子路径不越权跳过")
+    void shouldGuardSingleInstanceDeregisterWithSecretOrSession() throws ServletException, IOException {
+        AtengAdminServerProperties properties = createProperties();
+        AdminServerProperties sbaProperties = new AdminServerProperties();
+        sbaProperties.setContextPath("/admin");
+        AdminSsrfGuardFilter filter = new AdminSsrfGuardFilter(
+                new DefaultAdminInstanceAdmissionPolicy(properties),
+                properties,
+                sbaProperties
+        );
+
+        // 1. 无密钥且无登录态访问 DELETE /admin/instances/inst-01 -> 403 拒绝
+        MockHttpServletRequest unauthDelete = new MockHttpServletRequest("DELETE", "/admin/instances/inst-01");
+        MockHttpServletResponse unauthRes = new MockHttpServletResponse();
+        AtomicBoolean unauthExecuted = new AtomicBoolean(false);
+        filter.doFilter(unauthDelete, unauthRes, (req, res) -> unauthExecuted.set(true));
+        assertThat(unauthExecuted.get()).isFalse();
+        assertThat(unauthRes.getStatus()).isEqualTo(HttpStatus.FORBIDDEN.value());
+
+        // 2. 畸形路径 DELETE /admin//instances;v=1/inst-01;k=2 -> 同样识别并拒绝
+        MockHttpServletRequest obfuscatedDelete = new MockHttpServletRequest("DELETE", "/admin//instances;v=1/inst-01;k=2");
+        MockHttpServletResponse obfuscatedRes = new MockHttpServletResponse();
+        filter.doFilter(obfuscatedDelete, obfuscatedRes, new MockFilterChain());
+        assertThat(obfuscatedRes.getStatus()).isEqualTo(HttpStatus.FORBIDDEN.value());
+
+        // 3. 携带合法 X-Admin-Client-Secret -> 放行
+        MockHttpServletRequest secretDelete = new MockHttpServletRequest("DELETE", "/admin/instances/inst-01");
+        secretDelete.addHeader(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, VALID_SECRET);
+        MockHttpServletResponse secretRes = new MockHttpServletResponse();
+        AtomicBoolean secretExecuted = new AtomicBoolean(false);
+        filter.doFilter(secretDelete, secretRes, (req, res) -> secretExecuted.set(true));
+        assertThat(secretExecuted.get()).isTrue();
+        assertThat(secretRes.getStatus()).isEqualTo(200);
+
+        // 4. 未携带密钥但存在已认证 Sa-Token 会话 -> 放行
+        MockHttpServletRequest sessionDelete = new MockHttpServletRequest("DELETE", "/admin/instances/inst-01");
+        MockHttpServletResponse sessionRes = new MockHttpServletResponse();
+        AtomicBoolean sessionExecuted = new AtomicBoolean(false);
+        try (MockedStatic<StpUtil> stpMock = Mockito.mockStatic(StpUtil.class)) {
+            stpMock.when(StpUtil::isLogin).thenReturn(true);
+            filter.doFilter(sessionDelete, sessionRes, (req, res) -> sessionExecuted.set(true));
+        }
+        assertThat(sessionExecuted.get()).isTrue();
+        assertThat(sessionRes.getStatus()).isEqualTo(200);
+
+        // 5. 多段子路径 DELETE /admin/instances/inst-01/actuator/caches 不由 AdminSsrfGuardFilter 误判为单实例注销
+        MockHttpServletRequest subPathDelete = new MockHttpServletRequest("DELETE", "/admin/instances/inst-01/actuator/caches");
+        MockHttpServletResponse subPathRes = new MockHttpServletResponse();
+        AtomicBoolean subPathExecuted = new AtomicBoolean(false);
+        filter.doFilter(subPathDelete, subPathRes, (req, res) -> subPathExecuted.set(true));
+        assertThat(subPathExecuted.get()).isTrue();
+    }
+
+    @Test
+    @DisplayName("空 body 请求在持有合法密钥时返回 400 并阻断穿透")
+    void shouldRejectEmptyBodyEvenWithValidSecret() throws ServletException, IOException {
+        AtengAdminServerProperties properties = createProperties();
+        AdminSsrfGuardFilter filter = new AdminSsrfGuardFilter(properties);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/instances");
+        request.addHeader(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, VALID_SECRET);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        AtomicBoolean chainExecuted = new AtomicBoolean(false);
+        filter.doFilter(request, response, (req, res) -> chainExecuted.set(true));
+
+        assertThat(chainExecuted.get()).isFalse();
+        assertThat(response.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST.value());
     }
 }

@@ -8,7 +8,9 @@ import org.springframework.util.unit.DataSize;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Spring Boot Admin Server 企业级监控与管控中心配置属性
@@ -47,6 +49,16 @@ public class AtengAdminServerProperties {
     private String defaultActuatorToken = "";
 
     /**
+     * 向客户端 Actuator 端点透传 Token 的自定义请求头名称（默认 X-Actuator-Token）
+     */
+    private String actuatorTokenHeader = "X-Actuator-Token";
+
+    /**
+     * 按服务名精确配置的 Actuator Token 映射表（优先级高于全局 defaultActuatorToken，低于实例级 metadata）
+     */
+    private Map<String, String> serviceActuatorTokens = new LinkedHashMap<>();
+
+    /**
      * 实例异常状态防抖延时（强类型 Duration，默认 30 秒，避免网络瞬时抖动造成频发误报警）
      */
     private Duration debounceDuration = Duration.ofSeconds(30);
@@ -60,6 +72,31 @@ public class AtengAdminServerProperties {
      * 客户端实例 URL 正则白名单列表，若配置则只有匹配任意一项规则的 URL 方可注册
      */
     private List<String> allowedUrlPatterns = new ArrayList<>();
+
+    /**
+     * 客户端实例 CIDR 白名单列表（采用标准 CIDR 表示法，如 10.20.0.0/16）；若配置则严格限制解析 IP 命中白名单
+     */
+    private List<String> allowedCidrs = new ArrayList<>();
+
+    /**
+     * 客户端实例 CIDR 黑名单列表（优先级高于 allowedCidrs，如 10.20.99.0/24）
+     */
+    private List<String> blockedCidrs = new ArrayList<>();
+
+    /**
+     * 是否阻断 RFC 1918 私网段（10.0.0.0/8、172.16.0.0/12、192.168.0.0/16）；当配置 allowedCidrs 时优先按白名单放行特定内网子网
+     */
+    private boolean blockPrivateNetworks = false;
+
+    /**
+     * 域名 DNS 解析防 SSRF 校验模式（默认 FAIL_OPEN：解析命中黑名单拦截，不可解析域名宽松放行）
+     */
+    private DnsResolutionMode dnsResolutionMode = DnsResolutionMode.FAIL_OPEN;
+
+    /**
+     * 是否开启出站 Actuator 代理与健康探测前 SSRF 二次重检（防止 DNS Rebinding，默认开启）
+     */
+    private boolean outboundSsrfCheckEnabled = true;
 
     /**
      * 是否允许在 Web 控制台执行修改日志级别等高危写操作（默认开启）

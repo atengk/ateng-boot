@@ -13,11 +13,12 @@ import java.util.Map;
 
 /**
  * SBA 服务端向客户端抓取 Actuator 端点时的多模态 HTTP 标头提供者
- * 按四阶明确优先级自适应支持多种业界认证协议：
- * 1. 优先识别实例元数据中的 user.name 与 user.password 并挂载标准 Authorization: Basic <base64> 请求头；
- * 2. 其次识别 bearer-token 或 jwt-token 并挂载 Authorization: Bearer <token> 请求头；
- * 3. 再次识别 actuator-token 挂载自定义 X-Actuator-Token 请求头；
- * 4. 最后兜底读取服务端配置的全局 default-actuator-token。
+ * 按五阶明确优先级自适应支持多种业界认证协议：
+ * 1. 优先识别实例元数据中的 user.name 与 user.password 并挂载标准 Authorization: Basic &lt;base64&gt; 请求头；
+ * 2. 其次识别 bearer-token 或 jwt-token 并挂载 Authorization: Bearer &lt;token&gt; 请求头；
+ * 3. 再次识别实例元数据 actuator-token 挂载自定义请求头（默认 X-Actuator-Token，可通过 actuator-token-header 定制）；
+ * 4. 接着按服务名精确匹配服务端 service-actuator-tokens 映射表；
+ * 5. 最后兜底读取服务端配置的全局 default-actuator-token。
  *
  * @author Ateng
  * @since 2026-10-26
@@ -115,17 +116,38 @@ public class AtengActuatorHttpHeadersProvider implements HttpHeadersProvider {
             // 3. 第三优先级：实例自定义 Actuator Token (actuator-token)
             String actuatorToken = metadata.get(METADATA_ACTUATOR_TOKEN);
             if (StringUtils.hasText(actuatorToken)) {
-                headers.set(ACTUATOR_TOKEN_HEADER, actuatorToken.trim());
+                headers.set(resolveActuatorTokenHeader(), actuatorToken.trim());
                 return headers;
             }
         }
 
-        // 4. 第四优先级：服务端全局兜底 default-actuator-token
+        // 4. 第四优先级：服务端按服务名配置映射 (service-actuator-tokens[serviceName])
+        if (instance.isRegistered() && instance.getRegistration() != null
+                && properties != null && properties.getServiceActuatorTokens() != null
+                && !properties.getServiceActuatorTokens().isEmpty()) {
+            String serviceName = instance.getRegistration().getName();
+            if (StringUtils.hasText(serviceName)) {
+                String serviceToken = properties.getServiceActuatorTokens().get(serviceName.trim());
+                if (StringUtils.hasText(serviceToken)) {
+                    headers.set(resolveActuatorTokenHeader(), serviceToken.trim());
+                    return headers;
+                }
+            }
+        }
+
+        // 5. 第五优先级：服务端全局兜底 default-actuator-token
         if (properties != null && StringUtils.hasText(properties.getDefaultActuatorToken())) {
-            headers.set(ACTUATOR_TOKEN_HEADER, properties.getDefaultActuatorToken().trim());
+            headers.set(resolveActuatorTokenHeader(), properties.getDefaultActuatorToken().trim());
             return headers;
         }
 
         return headers;
+    }
+
+    private String resolveActuatorTokenHeader() {
+        if (properties != null && StringUtils.hasText(properties.getActuatorTokenHeader())) {
+            return properties.getActuatorTokenHeader().trim();
+        }
+        return ACTUATOR_TOKEN_HEADER;
     }
 }

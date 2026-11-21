@@ -16,9 +16,11 @@ import io.github.atengk.boot.admin.provider.AdminAuthProvider;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
 import io.github.atengk.boot.admin.provider.DefaultPropertiesAdminAuthProvider;
 import io.github.atengk.boot.admin.scheduler.ZombieInstanceCleanupScheduler;
+import io.github.atengk.boot.admin.security.AdminPathMatcher;
 import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
 import io.github.atengk.boot.admin.security.AdminWriteGuardFilter;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -42,7 +44,10 @@ import java.util.concurrent.ScheduledExecutorService;
  * @author Ateng
  * @since 2026-10-26
  */
-@AutoConfiguration(afterName = "de.codecentric.boot.admin.server.config.AdminServerAutoConfiguration")
+@AutoConfiguration(afterName = {
+        "de.codecentric.boot.admin.server.config.AdminServerAutoConfiguration",
+        "io.github.atengk.boot.admin.autoconfigure.AtengAdminServerDefenseAutoConfiguration"
+})
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @ConditionalOnClass(AdminServerMarkerConfiguration.Marker.class)
 @ConditionalOnBean(AdminServerMarkerConfiguration.Marker.class)
@@ -78,12 +83,14 @@ public class AtengAdminServerAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    @Order(Ordered.HIGHEST_PRECEDENCE + 50)
+    @Order(AdminSsrfGuardFilter.DEFAULT_ORDER)
     public AdminSsrfGuardFilter adminSsrfGuardFilter(AdminInstanceAdmissionPolicy admissionPolicy,
-                                                     AtengAdminServerProperties properties) {
+                                                     AtengAdminServerProperties properties,
+                                                     ObjectProvider<AdminServerProperties> adminServerPropertiesProvider) {
         return new AdminSsrfGuardFilter(
                 admissionPolicy,
-                properties != null ? properties.getMaxRegistrationPayloadSize() : null
+                properties,
+                adminServerPropertiesProvider.getIfAvailable()
         );
     }
 
@@ -146,34 +153,7 @@ public class AtengAdminServerAutoConfiguration {
      * @return 规范化后的 contextPath
      */
     public static String normalizeContextPath(String contextPath) {
-        if (!StringUtils.hasText(contextPath)) {
-            return "";
-        }
-        String path = contextPath.strip();
-        while (path.endsWith("/") && path.length() > 1) {
-            path = path.substring(0, path.length() - 1);
-        }
-        if (!path.isEmpty() && !path.startsWith("/")) {
-            path = "/" + path;
-        }
-        return "/".equals(path) ? "" : path;
-    }
-
-    private static boolean isInstancesEndpoint(String path, String contextPath) {
-        if (!StringUtils.hasText(path)) {
-            return false;
-        }
-        String normalized = path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
-        String target = contextPath.isEmpty() ? "/instances" : (contextPath + "/instances");
-        return target.equals(normalized);
-    }
-
-    private static boolean isInstanceDetailEndpoint(String path, String contextPath) {
-        if (!StringUtils.hasText(path)) {
-            return false;
-        }
-        String targetPrefix = contextPath.isEmpty() ? "/instances/" : (contextPath + "/instances/");
-        return path.startsWith(targetPrefix);
+        return AdminPathMatcher.normalizeContextPath(contextPath);
     }
 
     @Bean
@@ -207,12 +187,20 @@ public class AtengAdminServerAutoConfiguration {
                 )
                 .setAuth(obj -> {
                     String reqPath = SaHolder.getRequest().getRequestPath();
+                    String servletContextPath = "";
+                    Object source = SaHolder.getRequest().getSource();
+                    if (source instanceof HttpServletRequest servletRequest) {
+                        reqPath = servletRequest.getRequestURI();
+                        servletContextPath = servletRequest.getContextPath();
+                    }
                     String method = SaHolder.getRequest().getMethod();
 
-                    // 1. 放行微服务客户端生命周期通信（注册 POST /instances 与下线注销 DELETE /instances/{id}）
-                    // 实际安全校验由前沿 AdminSsrfGuardFilter（X-Admin-Client-Secret 与 SSRF 清洗）深度守护
-                    boolean isInstanceLifecycle = ("POST".equalsIgnoreCase(method) && isInstancesEndpoint(reqPath, contextPath))
-                            || ("DELETE".equalsIgnoreCase(method) && isInstanceDetailEndpoint(reqPath, contextPath));
+                    // 1. 放行微服务客户端生命周期通信（严格锚定 contextPath：注册 POST /instances 与单段注销 DELETE /instances/{id}）
+                    // 实际安全校验由前沿 AdminSsrfGuardFilter（X-Admin-Client-Secret / 会话态与 SSRF 清洗）深度守护
+                    boolean isInstanceLifecycle = ("POST".equalsIgnoreCase(method)
+                            && AdminPathMatcher.isInstancesCollectionEndpoint(reqPath, servletContextPath, contextPath))
+                            || ("DELETE".equalsIgnoreCase(method)
+                            && AdminPathMatcher.isSingleInstanceEndpoint(reqPath, servletContextPath, contextPath));
                     if (isInstanceLifecycle) {
                         return;
                     }

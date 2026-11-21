@@ -150,5 +150,14 @@ class AdminWriteGuardFilterTest {
         assertThat(filter.shouldBlock("post", "/admin/instances/inst-001/actuator/loggers/root")).isTrue();
         assertThat(filter.shouldBlock("GET", "/admin/instances/inst-001/actuator/health")).isFalse();
         assertThat(filter.shouldBlock("POST", "/admin/instances")).isFalse();
+
+        // 4. 归一化绕过防御：双斜杠、矩阵参数与 Servlet contextPath 不得绕过只读守卫
+        MockHttpServletRequest obfuscatedWriteReq = new MockHttpServletRequest(
+                "POST", "/portal/admin//instances;v=1/inst-001;k=2/actuator/loggers/root");
+        obfuscatedWriteReq.setContextPath("/portal");
+        MockHttpServletResponse obfuscatedWriteResp = new MockHttpServletResponse();
+        filter.doFilter(obfuscatedWriteReq, obfuscatedWriteResp, filterChain);
+        assertThat(obfuscatedWriteResp.getStatus()).isEqualTo(403);
+        verify(filterChain, never()).doFilter(obfuscatedWriteReq, obfuscatedWriteResp);
     }
 }

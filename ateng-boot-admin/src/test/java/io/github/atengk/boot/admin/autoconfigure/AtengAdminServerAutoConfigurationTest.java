@@ -176,6 +176,13 @@ class AtengAdminServerAutoConfigurationTest {
                         "ateng.boot.admin.server.debounce-duration=45s",
                         "ateng.boot.admin.server.allow-local-instances=false",
                         "ateng.boot.admin.server.allowed-url-patterns[0]=^https://.*",
+                        "ateng.boot.admin.server.allowed-cidrs[0]=10.20.0.0/16",
+                        "ateng.boot.admin.server.blocked-cidrs[0]=10.20.99.0/24",
+                        "ateng.boot.admin.server.block-private-networks=true",
+                        "ateng.boot.admin.server.dns-resolution-mode=FAIL_CLOSED",
+                        "ateng.boot.admin.server.outbound-ssrf-check-enabled=false",
+                        "ateng.boot.admin.server.actuator-token-header=X-Custom-Actuator-Token",
+                        "ateng.boot.admin.server.service-actuator-tokens.order-service=svc-token-01",
                         "ateng.boot.admin.server.enable-write-operations=false",
                         "ateng.boot.admin.server.max-registration-payload-size=512KB",
                         "ateng.boot.admin.server.cleanup.enabled=true",
@@ -195,6 +202,14 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(properties.getDebounceDuration()).isEqualTo(Duration.ofSeconds(45));
                     assertThat(properties.isAllowLocalInstances()).isFalse();
                     assertThat(properties.getAllowedUrlPatterns()).containsExactly("^https://.*");
+                    assertThat(properties.getAllowedCidrs()).containsExactly("10.20.0.0/16");
+                    assertThat(properties.getBlockedCidrs()).containsExactly("10.20.99.0/24");
+                    assertThat(properties.isBlockPrivateNetworks()).isTrue();
+                    assertThat(properties.getDnsResolutionMode())
+                            .isEqualTo(io.github.atengk.boot.admin.properties.DnsResolutionMode.FAIL_CLOSED);
+                    assertThat(properties.isOutboundSsrfCheckEnabled()).isFalse();
+                    assertThat(properties.getActuatorTokenHeader()).isEqualTo("X-Custom-Actuator-Token");
+                    assertThat(properties.getServiceActuatorTokens()).containsEntry("order-service", "svc-token-01");
                     assertThat(properties.isEnableWriteOperations()).isFalse();
                     assertThat(properties.getMaxRegistrationPayloadSize()).isEqualTo(DataSize.ofKilobytes(512));
                     assertThat(properties.getCleanup().isEnabled()).isTrue();
@@ -252,5 +267,73 @@ class AtengAdminServerAutoConfigurationTest {
         assertThat(AtengAdminServerAutoConfiguration.normalizeContextPath("/admin/")).isEqualTo("/admin");
         assertThat(AtengAdminServerAutoConfiguration.normalizeContextPath("/admin///")).isEqualTo("/admin");
         assertThat(AtengAdminServerAutoConfiguration.normalizeContextPath("  /sba/  ")).isEqualTo("/sba");
+    }
+
+    @Test
+    @DisplayName("完整装配 SBA 与 Ateng 防线配置后，InstanceFilter、出站 SSRF 过滤器与去重 HttpHeadersProvider 正常协同且不产出重复 Authorization 标头")
+    void shouldWireDefenseBeansAndSuppressDuplicateBasicAuthHeaderWithSba() {
+        new WebApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration.class,
+                        org.springframework.boot.autoconfigure.http.HttpMessageConvertersAutoConfiguration.class,
+                        org.springframework.boot.autoconfigure.web.servlet.WebMvcAutoConfiguration.class,
+                        AtengAdminServerDefenseAutoConfiguration.class,
+                        de.codecentric.boot.admin.server.config.AdminServerAutoConfiguration.class,
+                        AtengAdminServerAutoConfiguration.class,
+                        org.springframework.boot.autoconfigure.web.reactive.function.client.WebClientAutoConfiguration.class
+                ))
+                .withBean(AdminServerMarkerConfiguration.Marker.class, AdminServerMarkerConfiguration.Marker::new)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(de.codecentric.boot.admin.server.services.InstanceFilter.class);
+                    assertThat(context.getBean(de.codecentric.boot.admin.server.services.InstanceFilter.class))
+                            .isInstanceOf(io.github.atengk.boot.admin.admission.AdminAdmissionInstanceFilter.class);
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.admin.security.AdminOutboundSsrfFilterFunction.class);
+                    assertThat(context.getBean(io.github.atengk.boot.admin.security.AdminOutboundSsrfFilterFunction.class).getOrder())
+                            .isEqualTo(io.github.atengk.boot.admin.security.AdminOutboundSsrfFilterFunction.DEFAULT_ORDER);
+                    assertThat(context.getBean(AdminSsrfGuardFilter.class).getOrder())
+                            .isEqualTo(AdminSsrfGuardFilter.DEFAULT_ORDER);
+                    assertThat(context).hasSingleBean(de.codecentric.boot.admin.server.web.client.BasicAuthHttpHeaderProvider.class);
+
+                    AtengAdminServerProperties defaultProps = context.getBean(AtengAdminServerProperties.class);
+                    assertThat(defaultProps.getActuatorTokenHeader()).isEqualTo("X-Actuator-Token");
+                    assertThat(defaultProps.getDnsResolutionMode())
+                            .isEqualTo(io.github.atengk.boot.admin.properties.DnsResolutionMode.FAIL_OPEN);
+                    assertThat(defaultProps.isOutboundSsrfCheckEnabled()).isTrue();
+                    assertThat(defaultProps.isBlockPrivateNetworks()).isFalse();
+
+                    de.codecentric.boot.admin.server.web.client.CompositeHttpHeadersProvider composite =
+                            new de.codecentric.boot.admin.server.web.client.CompositeHttpHeadersProvider(
+                                    context.getBeansOfType(de.codecentric.boot.admin.server.web.client.HttpHeadersProvider.class).values()
+                            );
+                    de.codecentric.boot.admin.server.domain.entities.Instance instance =
+                            de.codecentric.boot.admin.server.domain.entities.Instance.create(
+                                            de.codecentric.boot.admin.server.domain.values.InstanceId.of("dup-check"))
+                                    .register(de.codecentric.boot.admin.server.domain.values.Registration
+                                            .create("svc-auth", "http://10.20.1.5:8080/actuator/health")
+                                            .managementUrl("http://10.20.1.5:8080/actuator")
+                                            .metadata("user.name", "ops")
+                                            .metadata("user.password", "pwd123")
+                                            .build());
+                    org.springframework.http.HttpHeaders headers = composite.getHeaders(instance);
+                    assertThat(headers.get(org.springframework.http.HttpHeaders.AUTHORIZATION)).hasSize(1);
+
+                    // 验证真实 SBA filterInstanceWebClientCustomizer 在 Spring 容器 @Order 排序下，
+                    // 先由 rewriteEndpointUrl(@Order(10)) 将相对端点 "health" 改写为绝对 URL，再通过出站 SSRF 校验(@Order(15))
+                    de.codecentric.boot.admin.server.web.client.InstanceWebClientCustomizer customizer =
+                            context.getBean("filterInstanceWebClientCustomizer",
+                                    de.codecentric.boot.admin.server.web.client.InstanceWebClientCustomizer.class);
+                    org.springframework.web.reactive.function.client.WebClient.Builder stubBuilder =
+                            org.springframework.web.reactive.function.client.WebClient.builder()
+                                    .exchangeFunction(req -> reactor.core.publisher.Mono.just(
+                                            org.springframework.web.reactive.function.client.ClientResponse
+                                                    .create(org.springframework.http.HttpStatus.OK).build()));
+                    de.codecentric.boot.admin.server.web.client.InstanceWebClient.Builder clientBuilder =
+                            de.codecentric.boot.admin.server.web.client.InstanceWebClient.builder(stubBuilder);
+                    customizer.customize(clientBuilder);
+                    de.codecentric.boot.admin.server.web.client.InstanceWebClient client = clientBuilder.build();
+                    assertThat(client.instance(instance).get().uri("health")
+                            .exchangeToMono(reactor.core.publisher.Mono::just).block().statusCode())
+                            .isEqualTo(org.springframework.http.HttpStatus.OK);
+                });
     }
 }

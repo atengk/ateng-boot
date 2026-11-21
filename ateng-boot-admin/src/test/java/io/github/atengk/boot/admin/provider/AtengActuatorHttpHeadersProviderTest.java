@@ -197,4 +197,32 @@ class AtengActuatorHttpHeadersProviderTest {
         assertThat(headers).isNotNull();
         assertThat(headers.getFirst(AtengActuatorHttpHeadersProvider.ACTUATOR_TOKEN_HEADER)).isEqualTo("fallback");
     }
+
+    @Test
+    @DisplayName("支持自定义 actuator-token-header 与 service-actuator-tokens 服务维度级联覆盖")
+    void testCustomActuatorTokenHeaderAndServiceActuatorTokensCascade() {
+        AtengAdminServerProperties properties = new AtengAdminServerProperties();
+        properties.setActuatorTokenHeader("X-Internal-Actuator-Auth");
+        properties.setServiceActuatorTokens(java.util.Map.of("order-service", "order-svc-secret"));
+        properties.setDefaultActuatorToken("global-fallback-token");
+        AtengActuatorHttpHeadersProvider provider = new AtengActuatorHttpHeadersProvider(properties);
+
+        // 1. 实例 metadata 最高优先（在自定义 Header 上输出）
+        Registration withInstanceMeta = Registration.create("order-service", "http://10.20.1.5:8080/actuator/health")
+                .metadata(AtengActuatorHttpHeadersProvider.METADATA_ACTUATOR_TOKEN, "instance-override-token")
+                .build();
+        HttpHeaders metaHeaders = provider.getHeaders(Instance.create(InstanceId.of("i1")).register(withInstanceMeta));
+        assertThat(metaHeaders.getFirst("X-Internal-Actuator-Auth")).isEqualTo("instance-override-token");
+        assertThat(metaHeaders.containsKey(AtengActuatorHttpHeadersProvider.ACTUATOR_TOKEN_HEADER)).isFalse();
+
+        // 2. 无实例 metadata 时命中 service-actuator-tokens[name]
+        Registration orderNoMeta = Registration.create("order-service", "http://10.20.1.5:8080/actuator/health").build();
+        HttpHeaders svcHeaders = provider.getHeaders(Instance.create(InstanceId.of("i2")).register(orderNoMeta));
+        assertThat(svcHeaders.getFirst("X-Internal-Actuator-Auth")).isEqualTo("order-svc-secret");
+
+        // 3. 未命中服务映射时兜底 default-actuator-token
+        Registration payNoMeta = Registration.create("pay-service", "http://10.20.1.6:8080/actuator/health").build();
+        HttpHeaders fallbackHeaders = provider.getHeaders(Instance.create(InstanceId.of("i3")).register(payNoMeta));
+        assertThat(fallbackHeaders.getFirst("X-Internal-Actuator-Auth")).isEqualTo("global-fallback-token");
+    }
 }
