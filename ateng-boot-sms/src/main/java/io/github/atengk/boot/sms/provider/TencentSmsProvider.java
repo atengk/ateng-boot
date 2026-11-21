@@ -9,6 +9,7 @@ import io.github.atengk.boot.sms.model.SmsChannel;
 import io.github.atengk.boot.sms.model.SmsRequest;
 import io.github.atengk.boot.sms.model.SmsResult;
 import io.github.atengk.boot.sms.model.SmsSupplier;
+import io.github.atengk.boot.sms.support.SmsPhoneNormalizer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
@@ -100,11 +101,11 @@ public class TencentSmsProvider extends AbstractHttpSmsProvider {
         String signName = StringUtils.hasText(request.getSignName()) ? request.getSignName() : channel.getSignName();
         BusinessAssert.hasText(signName, "短信签名 (SignName) 不能为空，请在请求或渠道配置中显式指定");
 
-        // 2. 手机号码标准化清洗为 E.164 格式
+        // 2. 手机号码标准化清洗为 E.164 格式（支持国际区号通道）
         List<String> rawPhones = request.getPhones();
         List<String> e164Phones = new ArrayList<>(rawPhones.size());
         for (String p : rawPhones) {
-            e164Phones.add(formatE164(p));
+            e164Phones.add(SmsPhoneNormalizer.toE164(p, channel));
         }
 
         // 3. 模板参数智能推导为有序字符串数组
@@ -128,7 +129,7 @@ public class TencentSmsProvider extends AbstractHttpSmsProvider {
         String payloadJson = JsonUtil.toJsonString(payloadMap);
 
         // 5. 确定请求端点与 Host 头
-        String endpoint = StringUtils.hasText(channel.getEndpoint()) ? channel.getEndpoint() : DEFAULT_ENDPOINT;
+        String endpoint = normalizeEndpoint(channel.getEndpoint(), DEFAULT_ENDPOINT);
         URI uri = URI.create(endpoint);
         final String finalHost = (uri.getPort() > 0 && uri.getPort() != 80 && uri.getPort() != 443)
                 ? uri.getHost() + ":" + uri.getPort()
@@ -148,8 +149,7 @@ public class TencentSmsProvider extends AbstractHttpSmsProvider {
         );
 
         // 7. 发送 HTTP POST 请求
-        Duration timeout = channel.getTimeout() != null ? channel.getTimeout() : Duration.ofSeconds(10);
-        RestClient client = buildRestClient(timeout);
+        RestClient client = buildRestClient(channel);
 
         String region = StringUtils.hasText(channel.getRegion()) ? channel.getRegion() : "ap-guangzhou";
 
@@ -242,20 +242,7 @@ public class TencentSmsProvider extends AbstractHttpSmsProvider {
      * @return E.164 格式号码
      */
     public static String formatE164(String phone) {
-        if (!StringUtils.hasText(phone)) {
-            return "";
-        }
-        String clean = phone.trim().replace("-", "").replace(" ", "");
-        if (clean.startsWith("+")) {
-            return clean;
-        }
-        if (clean.startsWith("00")) {
-            return "+" + clean.substring(2);
-        }
-        if (clean.startsWith("86") && clean.length() == 13) {
-            return "+" + clean;
-        }
-        return "+86" + clean;
+        return SmsPhoneNormalizer.toE164(phone, "+86");
     }
 
     /**

@@ -5,6 +5,7 @@ import io.github.atengk.boot.sms.properties.SmsGuardProperties;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -44,14 +45,20 @@ public class SmsChannelCircuitBreaker {
     }
 
     private final SmsGuardProperties properties;
+    private final Clock clock;
     private final ConcurrentHashMap<String, ChannelHealth> channelHealthMap = new ConcurrentHashMap<>();
 
-    public SmsChannelCircuitBreaker(SmsGuardProperties properties) {
+    public SmsChannelCircuitBreaker(SmsGuardProperties properties, Clock clock) {
         this.properties = properties != null ? properties : new SmsGuardProperties();
+        this.clock = clock != null ? clock : Clock.systemDefaultZone();
+    }
+
+    public SmsChannelCircuitBreaker(SmsGuardProperties properties) {
+        this(properties, Clock.systemDefaultZone());
     }
 
     public SmsChannelCircuitBreaker() {
-        this(new SmsGuardProperties());
+        this(new SmsGuardProperties(), Clock.systemDefaultZone());
     }
 
     /**
@@ -65,7 +72,7 @@ public class SmsChannelCircuitBreaker {
             return true;
         }
         BusinessAssert.hasText(channelName, "渠道名称不能为空");
-        ChannelHealth health = channelHealthMap.computeIfAbsent(channelName, k -> new ChannelHealth());
+        ChannelHealth health = channelHealthMap.computeIfAbsent(channelName, k -> new ChannelHealth(clock));
         long openDurationMillis = getOpenDurationMillis();
         return health.allowRequest(true, openDurationMillis);
     }
@@ -101,7 +108,7 @@ public class SmsChannelCircuitBreaker {
             return;
         }
         BusinessAssert.hasText(channelName, "渠道名称不能为空");
-        ChannelHealth health = channelHealthMap.computeIfAbsent(channelName, k -> new ChannelHealth());
+        ChannelHealth health = channelHealthMap.computeIfAbsent(channelName, k -> new ChannelHealth(clock));
         int threshold = Math.max(1, properties.getCircuitBreakerFailureThreshold());
         long openDurationMillis = getOpenDurationMillis();
 
@@ -195,14 +202,19 @@ public class SmsChannelCircuitBreaker {
      * 单渠道健康状态模型（无锁并发）
      */
     private static class ChannelHealth {
+        private final Clock clock;
         private final AtomicInteger consecutiveFailures = new AtomicInteger(0);
         private final AtomicLong lastOpenTimestamp = new AtomicLong(0L);
         private final AtomicReference<State> state = new AtomicReference<>(State.CLOSED);
 
+        ChannelHealth(Clock clock) {
+            this.clock = clock;
+        }
+
         State getState(long openDurationMillis) {
             State current = state.get();
             if (current == State.OPEN) {
-                long elapsed = System.currentTimeMillis() - lastOpenTimestamp.get();
+                long elapsed = clock.millis() - lastOpenTimestamp.get();
                 if (elapsed >= openDurationMillis) {
                     if (state.compareAndSet(State.OPEN, State.HALF_OPEN)) {
                         return State.HALF_OPEN;
@@ -231,14 +243,14 @@ public class SmsChannelCircuitBreaker {
             State current = state.get();
             if (current == State.HALF_OPEN) {
                 // 半开探测失败，重新进入开路熔断并刷新开路时间戳
-                lastOpenTimestamp.set(System.currentTimeMillis());
+                lastOpenTimestamp.set(clock.millis());
                 state.set(State.OPEN);
                 return;
             }
 
             int failures = consecutiveFailures.incrementAndGet();
             if (failures >= threshold) {
-                lastOpenTimestamp.set(System.currentTimeMillis());
+                lastOpenTimestamp.set(clock.millis());
                 state.set(State.OPEN);
             }
         }

@@ -3,15 +3,16 @@ package io.github.atengk.boot.sms.limiter;
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.sms.exception.SmsRateLimitException;
 import io.github.atengk.boot.sms.properties.SmsRateLimitProperties;
+import io.github.atengk.boot.sms.support.BoundedLruMap;
 import lombok.extern.slf4j.Slf4j;
 
-import java.time.Instant;
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.time.Clock;
+import java.util.ArrayDeque;
+import java.util.Deque;
 
 /**
  * 纯内存本地滑动窗口短信频控限流器
- * 当应用未接入 Redis 或处于单机离线环境时自动启用
+ * 当应用未接入 Redis 或处于单机离线环境时自动启用，基于有界 LRU 与 ReentrantLock 消除 OOM 与虚拟线程 Pinning 风险
  *
  * @author Ateng
  * @since 2026-11-02
@@ -20,14 +21,29 @@ import java.util.concurrent.ConcurrentHashMap;
 public class InMemorySmsRateLimiter implements SmsRateLimiter {
 
     private final SmsRateLimitProperties properties;
-    private final Map<String, Deque<Long>> phoneTimestamps = new ConcurrentHashMap<>();
+    private final Clock clock;
+    private final BoundedLruMap<String, Deque<Long>> phoneTimestamps;
+
+    public InMemorySmsRateLimiter(SmsRateLimitProperties properties, int maxEntries, Clock clock) {
+        this.properties = properties != null ? properties : new SmsRateLimitProperties();
+        this.clock = clock != null ? clock : Clock.systemDefaultZone();
+        this.phoneTimestamps = new BoundedLruMap<>(maxEntries);
+    }
+
+    public InMemorySmsRateLimiter(SmsRateLimitProperties properties, Clock clock) {
+        this(properties, BoundedLruMap.DEFAULT_MAX_ENTRIES, clock);
+    }
+
+    public InMemorySmsRateLimiter(SmsRateLimitProperties properties, int maxEntries) {
+        this(properties, maxEntries, Clock.systemDefaultZone());
+    }
 
     public InMemorySmsRateLimiter(SmsRateLimitProperties properties) {
-        this.properties = properties != null ? properties : new SmsRateLimitProperties();
+        this(properties, BoundedLruMap.DEFAULT_MAX_ENTRIES, Clock.systemDefaultZone());
     }
 
     public InMemorySmsRateLimiter() {
-        this(new SmsRateLimitProperties());
+        this(new SmsRateLimitProperties(), BoundedLruMap.DEFAULT_MAX_ENTRIES, Clock.systemDefaultZone());
     }
 
     @Override
@@ -44,13 +60,18 @@ public class InMemorySmsRateLimiter implements SmsRateLimiter {
     public void acquire(String phone) {
         BusinessAssert.hasText(phone, "目标手机号不能为空");
 
-        long now = Instant.now().toEpochMilli();
+        long now = clock.millis();
         long oneMinuteAgo = now - 60_000L;
         long oneHourAgo = now - 3_600_000L;
         long oneDayAgo = now - 86_400_000L;
 
-        Deque<Long> queue = phoneTimestamps.computeIfAbsent(phone, k -> new ArrayDeque<>());
-        synchronized (queue) {
+        phoneTimestamps.withLock(view -> {
+            Deque<Long> queue = view.get(phone);
+            if (queue == null) {
+                queue = new ArrayDeque<>();
+                view.put(phone, queue, q -> isEntryExpired(q, oneDayAgo));
+            }
+
             // 1. 淘汰已超过 24 小时的过期历史时间戳
             while (!queue.isEmpty() && queue.peekFirst() < oneDayAgo) {
                 queue.pollFirst();
@@ -103,7 +124,8 @@ public class InMemorySmsRateLimiter implements SmsRateLimiter {
 
             // 6. 成功记录当前时间戳
             queue.addLast(now);
-        }
+            return null;
+        });
     }
 
     @Override
@@ -111,5 +133,18 @@ public class InMemorySmsRateLimiter implements SmsRateLimiter {
         if (phone != null) {
             phoneTimestamps.remove(phone);
         }
+    }
+
+    /**
+     * 获取当前在存频控键数量（用于监控容量与防泄漏验证）
+     *
+     * @return 当前追踪的键数量
+     */
+    public int size() {
+        return phoneTimestamps.size();
+    }
+
+    private boolean isEntryExpired(Deque<Long> queue, long oneDayAgo) {
+        return queue == null || queue.isEmpty() || queue.peekLast() < oneDayAgo;
     }
 }

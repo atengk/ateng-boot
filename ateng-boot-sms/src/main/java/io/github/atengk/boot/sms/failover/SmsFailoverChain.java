@@ -2,6 +2,7 @@ package io.github.atengk.boot.sms.failover;
 
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
+import io.github.atengk.boot.sms.exception.SmsException;
 import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.exception.SmsSendException;
 import io.github.atengk.boot.sms.guard.SmsChannelCircuitBreaker;
@@ -14,12 +15,15 @@ import io.github.atengk.boot.sms.provider.SmsProvider;
 import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.util.StringUtils;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 短信高可用顺延容灾降级链执行器
  * 当主渠道调用遭遇云厂商网络超时、接口限流或 5xx 故障时，自动顺延切换至备用渠道重试并输出降级审计日志
+ * 底层基于规范化 {@code providerCode} 路由索引（兼顾兼容 {@link SmsSupplier} 枚举），支持无限多自定义驱动与纯文本直发检验
  *
  * @author Ateng
  * @since 2026-11-02
@@ -28,19 +32,48 @@ import java.util.*;
 public class SmsFailoverChain {
 
     private final SmsChannelRegistry channelRegistry;
-    private final Map<SmsSupplier, SmsProvider> providerMap;
+    private final Map<String, SmsProvider> providerCodeMap = new ConcurrentHashMap<>();
     private final List<SmsSendFailureHandler> failureHandlers;
     @Getter
     private final SmsChannelCircuitBreaker circuitBreaker;
+
+    public SmsFailoverChain(SmsChannelRegistry channelRegistry,
+                            List<SmsProvider> providers,
+                            List<SmsSendFailureHandler> failureHandlers,
+                            SmsChannelCircuitBreaker circuitBreaker) {
+        this.channelRegistry = channelRegistry;
+        this.failureHandlers = failureHandlers != null ? failureHandlers : Collections.emptyList();
+        this.circuitBreaker = circuitBreaker;
+        if (providers != null) {
+            for (SmsProvider provider : providers) {
+                String code = resolveProviderCode(provider);
+                if (code != null) {
+                    this.providerCodeMap.put(code, provider);
+                }
+            }
+        }
+    }
 
     public SmsFailoverChain(SmsChannelRegistry channelRegistry,
                             Map<SmsSupplier, SmsProvider> providerMap,
                             List<SmsSendFailureHandler> failureHandlers,
                             SmsChannelCircuitBreaker circuitBreaker) {
         this.channelRegistry = channelRegistry;
-        this.providerMap = providerMap != null ? providerMap : Collections.emptyMap();
         this.failureHandlers = failureHandlers != null ? failureHandlers : Collections.emptyList();
         this.circuitBreaker = circuitBreaker;
+        if (providerMap != null) {
+            providerMap.forEach((supplier, provider) -> {
+                if (provider != null) {
+                    String code = resolveProviderCode(provider);
+                    if (code != null) {
+                        this.providerCodeMap.put(code, provider);
+                    }
+                    if (supplier != null) {
+                        this.providerCodeMap.putIfAbsent(supplier.getCode().toLowerCase(Locale.ROOT), provider);
+                    }
+                }
+            });
+        }
     }
 
     public SmsFailoverChain(SmsChannelRegistry channelRegistry,
@@ -51,6 +84,50 @@ public class SmsFailoverChain {
 
     public SmsFailoverChain(SmsChannelRegistry channelRegistry, Map<SmsSupplier, SmsProvider> providerMap) {
         this(channelRegistry, providerMap, null, null);
+    }
+
+    /**
+     * 解析短信驱动的规范化小写路由编码
+     *
+     * @param provider 短信驱动实例
+     * @return 小写驱动路由编码，无法推导时返回 null
+     */
+    public static String resolveProviderCode(SmsProvider provider) {
+        if (provider == null) {
+            return null;
+        }
+        String code = provider.getProviderCode();
+        if (StringUtils.hasText(code)) {
+            return code.trim().toLowerCase(Locale.ROOT);
+        }
+        return provider.getSupplier() != null ? provider.getSupplier().getCode().toLowerCase(Locale.ROOT) : null;
+    }
+
+    /**
+     * 按渠道配置（优先 {@code providerCode}，缺省回退 {@link SmsSupplier}）解析对应驱动实现
+     *
+     * @param channel 目标短信渠道
+     * @return 匹配的 SmsProvider，未找到时返回 null
+     */
+    public SmsProvider resolveProvider(SmsChannel channel) {
+        if (channel == null) {
+            return null;
+        }
+        String code = channel.resolveProviderCode();
+        return code != null ? providerCodeMap.get(code) : null;
+    }
+
+    /**
+     * 按规范化驱动编码检索已注册驱动
+     *
+     * @param providerCode 驱动编码（不区分大小写）
+     * @return SmsProvider，不存在时返回 null
+     */
+    public SmsProvider getProvider(String providerCode) {
+        if (!StringUtils.hasText(providerCode)) {
+            return null;
+        }
+        return providerCodeMap.get(providerCode.trim().toLowerCase(Locale.ROOT));
     }
 
     /**
@@ -68,8 +145,8 @@ public class SmsFailoverChain {
         Set<String> visitedChannels = new HashSet<>();
         SmsChannel currentChannel = initialChannel;
         Exception lastException = null;
-
         SmsRequest lastAttemptRequest = request;
+        boolean isPlainText = !StringUtils.hasText(request.getTemplateId()) && StringUtils.hasText(request.getContent());
 
         while (currentChannel != null) {
             final SmsChannel attemptChannel = currentChannel;
@@ -105,24 +182,34 @@ public class SmsFailoverChain {
             }
 
             // 针对当前尝试渠道执行逻辑模板 ID 与专属签名转译
-            String targetTemplateId = attemptChannel.resolveTemplateId(request.getTemplateId());
-            BusinessAssert.hasText(targetTemplateId,
-                    () -> "短信模板编码不能为空 (渠道 [" + attemptChannel.getName() + "] 未配置 defaultTemplateId 且发信请求未指定模板)");
+            String targetTemplateId = isPlainText ? null : attemptChannel.resolveTemplateId(request.getTemplateId());
+            if (!isPlainText) {
+                BusinessAssert.hasText(targetTemplateId,
+                        () -> "短信模板编码不能为空 (渠道 [" + attemptChannel.getName() + "] 未配置 defaultTemplateId 且发信请求未指定模板)");
+            }
             String targetSignName = attemptChannel.resolveSignName(request.getTemplateId(), request.getSignName());
             SmsRequest channelRequest = request.withTemplateSignAndChannel(targetTemplateId, targetSignName, attemptChannel.getName());
             lastAttemptRequest = channelRequest;
 
-            SmsProvider provider = providerMap.get(attemptChannel.getSupplier());
+            SmsProvider provider = resolveProvider(attemptChannel);
             if (provider == null) {
+                String missingCode = attemptChannel.resolveProviderCode();
                 lastException = new SmsSendException(attemptChannel.getName(), "PROVIDER_NOT_FOUND",
-                        "未找到云厂商驱动: " + attemptChannel.getSupplier(), SmsResultCode.SMS_CHANNEL_NOT_FOUND,
-                        "未找到云厂商驱动: " + attemptChannel.getSupplier());
+                        "未找到云厂商驱动: " + missingCode, SmsResultCode.SMS_CHANNEL_NOT_FOUND,
+                        "未找到云厂商驱动: " + missingCode);
+            } else if (isPlainText && !provider.supportsPlainText()) {
+                SmsException unsupportedEx = new SmsException(SmsResultCode.SMS_PARAM_INVALID,
+                        "短信厂商 [" + attemptChannel.resolveProviderCode() + "] 仅支持模板发送，不支持无模板纯文本直发");
+                if (visitedChannels.size() == 1) {
+                    throw unsupportedEx;
+                }
+                lastException = unsupportedEx;
             } else {
                 try {
                     if (log.isDebugEnabled()) {
-                        log.debug("[SmsFailoverChain] 尝试通过渠道 [{}] 投递短信 -> 厂商: {}, 模板: {}, 签名: {}, 目标号码: {}",
+                        log.debug("[SmsFailoverChain] 尝试通过渠道 [{}] 投递短信 -> 驱动: {}, 模板: {}, 签名: {}, 目标号码: {}",
                                 attemptChannel.getName(),
-                                attemptChannel.getSupplier(),
+                                attemptChannel.resolveProviderCode(),
                                 targetTemplateId,
                                 targetSignName,
                                 DesensitizeUtil.mobilePhone(request.getPhone()));
@@ -134,10 +221,10 @@ public class SmsFailoverChain {
                             circuitBreaker.recordSuccess(attemptChannel.getName());
                         }
                         if (!attemptChannel.getName().equals(initialChannel.getName())) {
-                            log.warn("[SmsFailoverChain] 顺延容灾降级投递成功 -> 主渠道: [{}], 降级渠道: [{}], 厂商: {}, 目标号码: {}",
+                            log.warn("[SmsFailoverChain] 顺延容灾降级投递成功 -> 主渠道: [{}], 降级渠道: [{}], 驱动: {}, 目标号码: {}",
                                     initialChannel.getName(),
                                     attemptChannel.getName(),
-                                    attemptChannel.getSupplier(),
+                                    attemptChannel.resolveProviderCode(),
                                     DesensitizeUtil.mobilePhone(request.getPhone()));
                         }
                         return result;
@@ -162,7 +249,6 @@ public class SmsFailoverChain {
             // 检查当前渠道是否配置了备用容灾渠道
             String failoverChannelName = currentChannel.getFailoverChannel();
             if (failoverChannelName == null || failoverChannelName.isBlank()) {
-                // 未配置容灾备用渠道，终止降级链
                 break;
             }
 
@@ -196,9 +282,11 @@ public class SmsFailoverChain {
             for (SmsSendFailureHandler handler : failureHandlers) {
                 if (handler != null) {
                     try {
-                        handler.handle(lastAttemptRequest != null ? lastAttemptRequest : request, currentChannel != null ? currentChannel : initialChannel, lastException);
+                        handler.handle(lastAttemptRequest != null ? lastAttemptRequest : request,
+                                currentChannel != null ? currentChannel : initialChannel, lastException);
                     } catch (Exception handlerEx) {
-                        log.error("[SmsFailoverChain] 失败补偿处理器 [{}] 执行异常: {}", handler.getClass().getName(), handlerEx.getMessage());
+                        log.error("[SmsFailoverChain] 失败补偿处理器 [{}] 执行异常: {}",
+                                handler.getClass().getName(), handlerEx.getMessage());
                     }
                 }
             }

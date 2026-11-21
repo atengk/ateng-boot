@@ -38,6 +38,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.web.client.RestClient;
 
+import java.time.Clock;
 import java.util.List;
 import java.util.concurrent.Executor;
 
@@ -171,13 +172,15 @@ public class AtengSmsAutoConfiguration {
     /**
      * 自动装配短信渠道健康度短时熔断器
      *
-     * @param properties 配置属性
+     * @param properties    配置属性
+     * @param clockProvider 可选时钟提供者
      * @return SmsChannelCircuitBreaker
      */
     @Bean
     @ConditionalOnMissingBean
-    public SmsChannelCircuitBreaker smsChannelCircuitBreaker(SmsProperties properties) {
-        return new SmsChannelCircuitBreaker(properties.getGuard());
+    public SmsChannelCircuitBreaker smsChannelCircuitBreaker(SmsProperties properties,
+                                                             ObjectProvider<Clock> clockProvider) {
+        return new SmsChannelCircuitBreaker(properties.getGuard(), clockProvider.getIfAvailable(Clock::systemDefaultZone));
     }
 
     /**
@@ -206,7 +209,10 @@ public class AtengSmsAutoConfiguration {
      * @param budgetBreaker            单日成本预算熔断器提供者
      * @param circuitBreakerProvider   渠道熔断器提供者
      * @param loadBalancerProvider     负载均衡器提供者
+     * @param idempotentGuardProvider  出站幂等卫士提供者
+     * @param eventPublisherProvider   事件发布器提供者
      * @param taskExecutorProvider     异步执行器提供者
+     * @param clockProvider            可选时钟提供者
      * @return SmsTemplate
      */
     @Bean
@@ -222,7 +228,8 @@ public class AtengSmsAutoConfiguration {
                                    ObjectProvider<SmsChannelLoadBalancer> loadBalancerProvider,
                                    ObjectProvider<SmsIdempotentGuard> idempotentGuardProvider,
                                    ObjectProvider<ApplicationEventPublisher> eventPublisherProvider,
-                                   ObjectProvider<Executor> taskExecutorProvider) {
+                                   ObjectProvider<Executor> taskExecutorProvider,
+                                   ObjectProvider<Clock> clockProvider) {
         return new SmsTemplate(
                 properties,
                 providers,
@@ -235,7 +242,8 @@ public class AtengSmsAutoConfiguration {
                 loadBalancerProvider.getIfAvailable(),
                 idempotentGuardProvider.getIfAvailable(),
                 eventPublisherProvider.getIfAvailable(),
-                taskExecutorProvider.getIfAvailable()
+                taskExecutorProvider.getIfAvailable(),
+                clockProvider.getIfAvailable(Clock::systemDefaultZone)
         );
     }
 
@@ -289,8 +297,10 @@ public class AtengSmsAutoConfiguration {
         @ConditionalOnMissingBean
         public DailyBudgetBreaker redisDailyBudgetBreaker(SmsProperties properties,
                                                           StringRedisTemplate redisTemplate,
-                                                          ObjectProvider<ApplicationEventPublisher> eventPublisherProvider) {
-            return new RedisDailyBudgetBreaker(redisTemplate, properties.getGuard(), eventPublisherProvider.getIfAvailable());
+                                                          ObjectProvider<ApplicationEventPublisher> eventPublisherProvider,
+                                                          ObjectProvider<Clock> clockProvider) {
+            return new RedisDailyBudgetBreaker(redisTemplate, properties.getGuard(),
+                    eventPublisherProvider.getIfAvailable(), clockProvider.getIfAvailable(Clock::systemDefaultZone));
         }
 
         @Bean
@@ -301,8 +311,9 @@ public class AtengSmsAutoConfiguration {
 
         @Bean
         @ConditionalOnMissingBean
-        public SmsVerifyCodeRepository redisSmsVerifyCodeRepository(StringRedisTemplate redisTemplate) {
-            return new RedisSmsVerifyCodeRepository(redisTemplate);
+        public SmsVerifyCodeRepository redisSmsVerifyCodeRepository(StringRedisTemplate redisTemplate,
+                                                                    ObjectProvider<Clock> clockProvider) {
+            return new RedisSmsVerifyCodeRepository(redisTemplate, clockProvider.getIfAvailable(Clock::systemDefaultZone));
         }
 
         @Bean
@@ -329,20 +340,27 @@ public class AtengSmsAutoConfiguration {
         @Bean
         @ConditionalOnMissingBean
         public DailyBudgetBreaker inMemoryDailyBudgetBreaker(SmsProperties properties,
-                                                            ObjectProvider<ApplicationEventPublisher> eventPublisherProvider) {
-            return new InMemoryDailyBudgetBreaker(properties.getGuard(), eventPublisherProvider.getIfAvailable());
+                                                            ObjectProvider<ApplicationEventPublisher> eventPublisherProvider,
+                                                            ObjectProvider<Clock> clockProvider) {
+            return new InMemoryDailyBudgetBreaker(properties.getGuard(), eventPublisherProvider.getIfAvailable(),
+                    clockProvider.getIfAvailable(Clock::systemDefaultZone));
         }
 
         @Bean
         @ConditionalOnMissingBean
-        public SmsRateLimiter inMemorySmsRateLimiter(SmsProperties properties) {
-            return new InMemorySmsRateLimiter(properties.getRateLimit());
+        public SmsRateLimiter inMemorySmsRateLimiter(SmsProperties properties,
+                                                     ObjectProvider<Clock> clockProvider) {
+            return new InMemorySmsRateLimiter(properties.getRateLimit(),
+                    properties.getGuard().getInMemoryMaxEntries(),
+                    clockProvider.getIfAvailable(Clock::systemDefaultZone));
         }
 
         @Bean
         @ConditionalOnMissingBean
-        public SmsVerifyCodeRepository inMemorySmsVerifyCodeRepository() {
-            return new InMemorySmsVerifyCodeRepository();
+        public SmsVerifyCodeRepository inMemorySmsVerifyCodeRepository(SmsProperties properties,
+                                                                       ObjectProvider<Clock> clockProvider) {
+            return new InMemorySmsVerifyCodeRepository(properties.getGuard().getInMemoryMaxEntries(),
+                    clockProvider.getIfAvailable(Clock::systemDefaultZone));
         }
 
         @Bean
@@ -353,8 +371,10 @@ public class AtengSmsAutoConfiguration {
 
         @Bean
         @ConditionalOnMissingBean
-        public SmsIdempotentGuard inMemorySmsIdempotentGuard() {
-            return new InMemorySmsIdempotentGuard();
+        public SmsIdempotentGuard inMemorySmsIdempotentGuard(SmsProperties properties,
+                                                             ObjectProvider<Clock> clockProvider) {
+            return new InMemorySmsIdempotentGuard(properties.getGuard().getInMemoryMaxEntries(),
+                    clockProvider.getIfAvailable(Clock::systemDefaultZone));
         }
     }
 }

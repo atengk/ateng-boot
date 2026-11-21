@@ -7,6 +7,7 @@ import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.exception.SmsSendException;
 import io.github.atengk.boot.sms.model.*;
+import io.github.atengk.boot.sms.support.SmsPhoneNormalizer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
@@ -98,8 +99,9 @@ public class AliyunSmsProvider extends AbstractHttpSmsProvider {
         params.put("AccessKeyId", channel.getAccessKeyId());
         params.put("RegionId", StringUtils.hasText(channel.getRegion()) ? channel.getRegion() : "cn-hangzhou");
 
-        // 手机号拼接（多手机号以英文逗号分隔）
-        params.put("PhoneNumbers", String.join(",", request.getPhones()));
+        // 手机号归一化与拼接（国内 11 位、国际去 + 前缀并以英文逗号分隔）
+        List<String> formattedPhones = formatPhones(request.getPhones(), channel);
+        params.put("PhoneNumbers", String.join(",", formattedPhones));
         params.put("SignName", signName);
         params.put("TemplateCode", request.getTemplateId());
 
@@ -129,9 +131,8 @@ public class AliyunSmsProvider extends AbstractHttpSmsProvider {
         }
 
         // 5. 确定请求端点并执行网络调用
-        String endpoint = StringUtils.hasText(channel.getEndpoint()) ? channel.getEndpoint() : DEFAULT_ENDPOINT;
-        Duration timeout = channel.getTimeout() != null ? channel.getTimeout() : Duration.ofSeconds(10);
-        RestClient client = buildRestClient(timeout);
+        String endpoint = normalizeEndpoint(channel.getEndpoint(), DEFAULT_ENDPOINT);
+        RestClient client = buildRestClient(channel);
 
         String responseBody;
         try {
@@ -250,9 +251,8 @@ public class AliyunSmsProvider extends AbstractHttpSmsProvider {
         String signName = channel.resolveSignName(request.getTemplateId(), request.getSignName());
         BusinessAssert.hasText(signName, "短信签名 (SignName) 不能为空，请在请求或渠道配置中显式指定");
 
-        String endpoint = StringUtils.hasText(channel.getEndpoint()) ? channel.getEndpoint() : DEFAULT_ENDPOINT;
-        Duration timeout = channel.getTimeout() != null ? channel.getTimeout() : Duration.ofSeconds(10);
-        RestClient client = buildRestClient(timeout);
+        String endpoint = normalizeEndpoint(channel.getEndpoint(), DEFAULT_ENDPOINT);
+        RestClient client = buildRestClient(channel);
 
         List<List<String>> slices = BatchSliceUtil.slice(request.getPhones(), 100);
         int successCount = 0;
@@ -272,7 +272,7 @@ public class AliyunSmsProvider extends AbstractHttpSmsProvider {
             params.put("RegionId", StringUtils.hasText(channel.getRegion()) ? channel.getRegion() : "cn-hangzhou");
             params.put("TemplateCode", request.getTemplateId());
 
-            params.put("PhoneNumberJson", JsonUtil.toJsonString(slice));
+            params.put("PhoneNumberJson", JsonUtil.toJsonString(formatPhones(slice, channel)));
             params.put("SignNameJson", JsonUtil.toJsonString(Collections.nCopies(slice.size(), signName)));
 
             List<Map<String, Object>> paramMaps = new ArrayList<>(slice.size());
@@ -356,6 +356,14 @@ public class AliyunSmsProvider extends AbstractHttpSmsProvider {
         } catch (Exception ignored) {
             // 解析失败不影响兜底异常向外抛出
         }
+    }
+
+    private List<String> formatPhones(List<String> phones, SmsChannel channel) {
+        List<String> formatted = new ArrayList<>(phones.size());
+        for (String phone : phones) {
+            formatted.add(SmsPhoneNormalizer.toAliyunFormat(phone, channel));
+        }
+        return formatted;
     }
 
     private String getFieldIgnoreCase(Map<String, Object> map, String key) {

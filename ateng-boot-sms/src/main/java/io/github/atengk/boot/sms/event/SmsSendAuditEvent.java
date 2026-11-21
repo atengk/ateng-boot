@@ -133,6 +133,7 @@ public class SmsSendAuditEvent extends ApplicationEvent {
                     .channel(channelName)
                     .bizId(batchRequest.getBizId())
                     .urgent(batchRequest.isUrgent())
+                    .content(batchRequest.getContent())
                     .build();
         } else {
             this.request = null;

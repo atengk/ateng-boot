@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sms.model;
 
 import io.github.atengk.boot.core.util.BusinessAssert;
+import io.github.atengk.boot.core.util.DesensitizeUtil;
 import lombok.Builder;
 import lombok.Getter;
 
@@ -9,7 +10,7 @@ import java.util.*;
 
 /**
  * 批量/大规模营销短信发送领域请求对象
- * 封装手机号列表、模板编码、动态参数与渠道配置，由底座依据云厂商上限透明分批切片并发投递
+ * 封装手机号列表、模板编码或纯文本正文、动态参数与渠道配置，由底座依据云厂商上限透明分批切片并发投递
  * 同时支持个性化批量发信（针对不同手机号配置差异化模板参数）
  *
  * @author Ateng
@@ -62,7 +63,13 @@ public class BatchSmsRequest implements Serializable {
     @Builder.Default
     private final boolean urgent = false;
 
-    public BatchSmsRequest(List<String> phones, String templateId, SmsParam params, Map<String, SmsParam> phoneParams, String signName, String channel, String bizId, boolean urgent) {
+    /**
+     * 无模板纯文本批量短信正文内容（用于云片、Mock 等支持纯文本直发的网关）
+     */
+    private final String content;
+
+    public BatchSmsRequest(List<String> phones, String templateId, SmsParam params, Map<String, SmsParam> phoneParams,
+                           String signName, String channel, String bizId, boolean urgent, String content) {
         List<String> targetPhones = phones;
         if ((targetPhones == null || targetPhones.isEmpty()) && phoneParams != null && !phoneParams.isEmpty()) {
             targetPhones = new ArrayList<>(phoneParams.keySet());
@@ -85,14 +92,22 @@ public class BatchSmsRequest implements Serializable {
         this.channel = channel != null ? channel.trim() : null;
         this.bizId = bizId != null ? bizId.trim() : null;
         this.urgent = urgent;
+        this.content = (content != null && !content.isBlank()) ? content.trim() : null;
     }
 
-    public BatchSmsRequest(List<String> phones, String templateId, SmsParam params, Map<String, SmsParam> phoneParams, String signName, String channel, String bizId) {
-        this(phones, templateId, params, phoneParams, signName, channel, bizId, false);
+    public BatchSmsRequest(List<String> phones, String templateId, SmsParam params, Map<String, SmsParam> phoneParams,
+                           String signName, String channel, String bizId, boolean urgent) {
+        this(phones, templateId, params, phoneParams, signName, channel, bizId, urgent, null);
     }
 
-    public BatchSmsRequest(List<String> phones, String templateId, SmsParam params, String signName, String channel, String bizId) {
-        this(phones, templateId, params, null, signName, channel, bizId, false);
+    public BatchSmsRequest(List<String> phones, String templateId, SmsParam params, Map<String, SmsParam> phoneParams,
+                           String signName, String channel, String bizId) {
+        this(phones, templateId, params, phoneParams, signName, channel, bizId, false, null);
+    }
+
+    public BatchSmsRequest(List<String> phones, String templateId, SmsParam params,
+                           String signName, String channel, String bizId) {
+        this(phones, templateId, params, null, signName, channel, bizId, false, null);
     }
 
     /**
@@ -102,7 +117,8 @@ public class BatchSmsRequest implements Serializable {
      * @return 新的 BatchSmsRequest 实例
      */
     public BatchSmsRequest withUrgent(boolean urgent) {
-        return new BatchSmsRequest(this.phones, this.templateId, this.params, this.phoneParams, this.signName, this.channel, this.bizId, urgent);
+        return new BatchSmsRequest(this.phones, this.templateId, this.params, this.phoneParams,
+                this.signName, this.channel, this.bizId, urgent, this.content);
     }
 
     /**
@@ -132,7 +148,8 @@ public class BatchSmsRequest implements Serializable {
      * @return 新的 BatchSmsRequest 实例
      */
     public BatchSmsRequest withTemplateSignAndChannel(String targetTemplateId, String targetSignName, String targetChannel) {
-        return new BatchSmsRequest(this.phones, targetTemplateId, this.params, this.phoneParams, targetSignName, targetChannel, this.bizId);
+        return new BatchSmsRequest(this.phones, targetTemplateId, this.params, this.phoneParams,
+                targetSignName, targetChannel, this.bizId, this.urgent, this.content);
     }
 
     /**
@@ -171,6 +188,18 @@ public class BatchSmsRequest implements Serializable {
     }
 
     /**
+     * 便捷静态工厂：批量纯文本正文群发
+     *
+     * @param phones  目标手机号列表
+     * @param content 短信纯文本正文
+     * @return BatchSmsRequest 实例
+     */
+    public static BatchSmsRequest ofContent(List<String> phones, String content) {
+        BusinessAssert.hasText(content, "短信正文内容不能为空");
+        return new BatchSmsRequest(phones, null, null, null, null, null, null, false, content);
+    }
+
+    /**
      * 构建个性化批量发信请求（各手机号携带差异化参数）
      *
      * @param phoneParams 手机号与专属参数的映射表
@@ -193,5 +222,18 @@ public class BatchSmsRequest implements Serializable {
     public static BatchSmsRequest ofPersonalized(Map<String, SmsParam> phoneParams, String templateId, String signName) {
         BusinessAssert.notEmpty(phoneParams, "个性化批量发信参数映射不能为空");
         return new BatchSmsRequest(new ArrayList<>(phoneParams.keySet()), templateId, null, phoneParams, signName, null, null);
+    }
+
+    @Override
+    public String toString() {
+        return "BatchSmsRequest{" +
+                "phones=" + (phones != null ? phones.stream().map(DesensitizeUtil::mobilePhone).toList() : "[]") +
+                ", templateId='" + templateId + '\'' +
+                ", signName='" + signName + '\'' +
+                ", channel='" + channel + '\'' +
+                ", bizId='" + bizId + '\'' +
+                ", urgent=" + urgent +
+                ", hasContent=" + (content != null) +
+                '}';
     }
 }

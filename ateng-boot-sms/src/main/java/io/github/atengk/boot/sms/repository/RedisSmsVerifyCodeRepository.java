@@ -1,19 +1,23 @@
 package io.github.atengk.boot.sms.repository;
 
 import io.github.atengk.boot.core.util.BusinessAssert;
+import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.sms.exception.SmsRateLimitException;
 import io.github.atengk.boot.sms.exception.SmsVerifyCodeException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 
+import java.time.Clock;
 import java.time.Duration;
-import java.time.Instant;
-import java.util.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 基于 Redis Hash 与原子 Lua 脚本的分布式短信验证码仓储
- * 严格防重放（成功原子删除）与防爆破（错误原子扣减、达上限原子冻结）
+ * 严格防重放（成功原子删除）、防爆破（错误原子扣减、达上限原子冻结）、短 TTL 保底与全日志手机号脱敏
  *
  * @author Ateng
  * @since 2026-11-02
@@ -22,6 +26,7 @@ import java.util.*;
 public class RedisSmsVerifyCodeRepository implements SmsVerifyCodeRepository {
 
     private static final String KEY_PREFIX = "ateng:sms:code:";
+    private static final long DEFAULT_EXPIRE_SECONDS = 300L;
 
     private static final String VERIFY_LUA = """
             local key = KEYS[1]
@@ -54,13 +59,19 @@ public class RedisSmsVerifyCodeRepository implements SmsVerifyCodeRepository {
             """;
 
     private final StringRedisTemplate redisTemplate;
+    private final Clock clock;
     private final DefaultRedisScript<List> verifyScript;
 
-    public RedisSmsVerifyCodeRepository(StringRedisTemplate redisTemplate) {
+    public RedisSmsVerifyCodeRepository(StringRedisTemplate redisTemplate, Clock clock) {
         this.redisTemplate = redisTemplate;
+        this.clock = clock != null ? clock : Clock.systemDefaultZone();
         this.verifyScript = new DefaultRedisScript<>();
         this.verifyScript.setScriptText(VERIFY_LUA);
         this.verifyScript.setResultType(List.class);
+    }
+
+    public RedisSmsVerifyCodeRepository(StringRedisTemplate redisTemplate) {
+        this(redisTemplate, Clock.systemDefaultZone());
     }
 
     @Override
@@ -69,14 +80,15 @@ public class RedisSmsVerifyCodeRepository implements SmsVerifyCodeRepository {
             return;
         }
         String key = buildKey(phone, bizType);
-        long now = Instant.now().toEpochMilli();
+        long now = clock.millis();
         String resendAfterStr = (String) redisTemplate.opsForHash().get(key, "resendAfter");
         if (resendAfterStr != null) {
             try {
                 long resendAfter = Long.parseLong(resendAfterStr);
                 if (now < resendAfter) {
                     long waitSeconds = Math.max(1, (resendAfter - now) / 1000);
-                    log.warn("[RedisSmsVerifyCodeRepository] 验证码处于冷却期内，拦截重发 (还需等待: {} 秒)", waitSeconds);
+                    log.warn("[RedisSmsVerifyCodeRepository] 验证码处于冷却期内，拦截重发 (phone: {}, 还需等待: {} 秒)",
+                            DesensitizeUtil.mobilePhone(phone), waitSeconds);
                     throw new SmsRateLimitException("验证码发送过于频繁，请等待 " + waitSeconds + " 秒后再试", waitSeconds);
                 }
             } catch (NumberFormatException ex) {
@@ -94,10 +106,10 @@ public class RedisSmsVerifyCodeRepository implements SmsVerifyCodeRepository {
         checkCooldown(phone, bizType);
 
         String key = buildKey(phone, bizType);
-        long now = Instant.now().toEpochMilli();
+        long now = clock.millis();
 
-        // 2. 写入新验证码 Hash
-        long expireSeconds = ttl != null ? ttl.toSeconds() : 300L;
+        // 2. 计算有效 TTL（亚秒级保底至少 1 秒，杜绝 EXPIRE 0 立即误删）
+        long expireSeconds = resolveExpireSeconds(ttl);
         long resendAfter = now + (resendInterval != null ? resendInterval.toMillis() : 60_000L);
 
         Map<String, String> data = new HashMap<>(4);
@@ -117,7 +129,8 @@ public class RedisSmsVerifyCodeRepository implements SmsVerifyCodeRepository {
         BusinessAssert.hasText(code, "待核验验证码不能为空");
 
         String key = buildKey(phone, bizType);
-        long now = Instant.now().toEpochMilli();
+        long now = clock.millis();
+        String maskedPhone = DesensitizeUtil.mobilePhone(phone);
 
         List<Long> result = (List<Long>) redisTemplate.execute(
                 verifyScript,
@@ -134,13 +147,14 @@ public class RedisSmsVerifyCodeRepository implements SmsVerifyCodeRepository {
         long remaining = result.size() > 1 ? result.get(1) : 0;
 
         if (status == 1L) {
-            log.info("[RedisSmsVerifyCodeRepository] 验证码核销成功并原子删除 (phone: {}, bizType: {})", phone, bizType);
+            log.info("[RedisSmsVerifyCodeRepository] 验证码核销成功并原子删除 (phone: {}, bizType: {})", maskedPhone, bizType);
             return true;
         } else if (status == -1L) {
             throw new SmsVerifyCodeException("验证码不存在或已过期", 0, false);
         } else if (status == -2L) {
             throw new SmsVerifyCodeException("验证码连续错误过多，已被锁定", 0, true);
         } else if (status == -3L) {
+            log.warn("[RedisSmsVerifyCodeRepository] 验证码连续错误达到上限，强制冻结作废 (phone: {}, bizType: {})", maskedPhone, bizType);
             throw new SmsVerifyCodeException("验证码连续错误过多，已被锁定", 0, true);
         } else if (status == -4L) {
             throw new SmsVerifyCodeException("验证码错误，剩余重试次数: " + remaining, (int) remaining, false);
@@ -168,6 +182,13 @@ public class RedisSmsVerifyCodeRepository implements SmsVerifyCodeRepository {
         if (phone != null) {
             redisTemplate.delete(buildKey(phone, bizType));
         }
+    }
+
+    private long resolveExpireSeconds(Duration ttl) {
+        if (ttl == null || ttl.isNegative() || ttl.isZero()) {
+            return DEFAULT_EXPIRE_SECONDS;
+        }
+        return Math.max(1L, (ttl.toMillis() + 999L) / 1000L);
     }
 
     private String buildKey(String phone, String bizType) {

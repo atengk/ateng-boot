@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sms.guard;
 
 import io.github.atengk.boot.core.util.DigestUtil;
+import io.github.atengk.boot.sms.model.BatchSmsRequest;
 import io.github.atengk.boot.sms.model.SmsRequest;
 
 import java.time.Duration;
@@ -47,7 +48,24 @@ public interface SmsIdempotentGuard {
         String phone = request.getPhone() != null ? request.getPhone().trim() : "";
         String templateId = request.getTemplateId() != null ? request.getTemplateId().trim() : "";
         String paramsStr = request.getParams() != null ? request.getParams().asMap().toString() : "";
-        String raw = phone + "|" + templateId + "|" + paramsStr;
-        return "hash:" + DigestUtil.sha256Hex(raw);
+        StringBuilder rawBuilder = new StringBuilder()
+                .append(phone).append("|").append(templateId).append("|").append(paramsStr);
+        if (request.getContent() != null && !request.getContent().isBlank()) {
+            rawBuilder.append("|").append(request.getContent().trim());
+        }
+        return "hash:" + DigestUtil.sha256Hex(rawBuilder.toString());
+    }
+
+    /**
+     * 根据批量发信请求生成幂等指纹键（仅当显式传入 bizId 时生成防重键，未传入则返回 null）
+     *
+     * @param request 批量发信请求
+     * @return 批量幂等指纹键，未指定 bizId 时返回 null
+     */
+    default String generateKey(BatchSmsRequest request) {
+        if (request == null || request.getBizId() == null || request.getBizId().isBlank()) {
+            return null;
+        }
+        return "batch:biz:" + request.getBizId().trim();
     }
 }

@@ -3,10 +3,9 @@ package io.github.atengk.boot.sms.template;
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.sms.exception.SmsException;
-import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.exception.SmsVerifyCodeException;
 import io.github.atengk.boot.sms.limiter.SmsRateLimiter;
-import io.github.atengk.boot.sms.model.SmsParam;
+import io.github.atengk.boot.sms.model.SmsChannel;
 import io.github.atengk.boot.sms.model.SmsRequest;
 import io.github.atengk.boot.sms.model.SmsResult;
 import io.github.atengk.boot.sms.properties.SmsProperties;
@@ -28,6 +27,7 @@ import java.util.Random;
 @Slf4j
 public class SmsVerifyCodeTemplate {
 
+    private static final String DEFAULT_VERIFY_TEMPLATE_ID = "SMS_VERIFY_CODE";
     private static final String NUMBERS = "0123456789";
     private static final String UPPER_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     private static final String ALL_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -110,10 +110,8 @@ public class SmsVerifyCodeTemplate {
             rateLimiter.acquire(phone, ip);
         }
 
-        // 3. 生成随机安全验证码
+        // 3. 生成随机安全验证码并写入仓储
         String code = generateCode(codeProp);
-
-        // 4. 写入仓储
         repository.save(
                 phone,
                 bizType,
@@ -123,22 +121,22 @@ public class SmsVerifyCodeTemplate {
                 codeProp.getMaxRetryAttempts()
         );
 
-        // 5. 解析模板ID（若未指定，尝试从默认或渠道配置中推导）
-        String finalTemplateId = StringUtils.hasText(templateId) ? templateId : "SMS_VERIFY_CODE";
-
-        // 6. 组装发信请求并投递
-        SmsRequest request = SmsRequest.newBuilder(phone, finalTemplateId)
-                .param("code", code)
-                .channel(channel)
-                .signName(signName)
-                .bizId(bizType)
-                .urgent(true)
-                .build();
-
-        log.info("[SmsVerifyCodeTemplate] 触发验证码短信投递 -> 目标号码: {}, 业务类型: {}, 模板ID: {}",
-                DesensitizeUtil.mobilePhone(phone), bizType, finalTemplateId);
-
         try {
+            // 4. 级联解析目标模板与执行渠道：显式入参 -> verifyCode.defaultTemplateId -> 解析后渠道 defaultTemplateId -> 默认兜底常量
+            ChannelAndTemplate resolved = resolveTargetTemplate(templateId, codeProp, channel);
+
+            // 5. 组装发信请求并投递
+            SmsRequest request = SmsRequest.newBuilder(phone, resolved.templateId())
+                    .param("code", code)
+                    .channel(resolved.channelName())
+                    .signName(signName)
+                    .bizId(bizType)
+                    .urgent(true)
+                    .build();
+
+            log.info("[SmsVerifyCodeTemplate] 触发验证码短信投递 -> 目标号码: {}, 业务类型: {}, 模板ID: {}",
+                    DesensitizeUtil.mobilePhone(phone), bizType, resolved.templateId());
+
             SmsResult result = smsTemplate.send(request);
             if (!result.isSuccess()) {
                 log.warn("[SmsVerifyCodeTemplate] 验证码发送失败，回滚作废验证码: {}", result.getRawMessage());
@@ -193,6 +191,29 @@ public class SmsVerifyCodeTemplate {
         repository.remove(phone, bizType);
     }
 
+    private ChannelAndTemplate resolveTargetTemplate(String explicitTemplateId,
+                                                     SmsVerifyCodeProperties codeProp,
+                                                     String requestedChannel) {
+        if (StringUtils.hasText(explicitTemplateId)) {
+            return new ChannelAndTemplate(requestedChannel, explicitTemplateId.trim());
+        }
+        if (StringUtils.hasText(codeProp.getDefaultTemplateId())) {
+            return new ChannelAndTemplate(requestedChannel, codeProp.getDefaultTemplateId().trim());
+        }
+        if (smsTemplate != null) {
+            SmsChannel resolvedChannel = smsTemplate.resolveChannel(requestedChannel);
+            String pinnedChannel = StringUtils.hasText(requestedChannel) ? requestedChannel : resolvedChannel.getName();
+            if (SmsTemplate.LOAD_BALANCE_CHANNEL.equalsIgnoreCase(smsTemplate.resolveChannelName(requestedChannel))) {
+                pinnedChannel = resolvedChannel.getName();
+            }
+            if (StringUtils.hasText(resolvedChannel.getDefaultTemplateId())) {
+                return new ChannelAndTemplate(pinnedChannel, resolvedChannel.getDefaultTemplateId().trim());
+            }
+            return new ChannelAndTemplate(pinnedChannel, DEFAULT_VERIFY_TEMPLATE_ID);
+        }
+        return new ChannelAndTemplate(requestedChannel, DEFAULT_VERIFY_TEMPLATE_ID);
+    }
+
     /**
      * 生成随机验证码
      */
@@ -209,5 +230,8 @@ public class SmsVerifyCodeTemplate {
             sb.append(source.charAt(random.nextInt(source.length())));
         }
         return sb.toString();
+    }
+
+    private record ChannelAndTemplate(String channelName, String templateId) {
     }
 }

@@ -6,6 +6,7 @@ import io.github.atengk.boot.sms.properties.SmsGuardProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 
+import java.time.Clock;
 import java.time.LocalDate;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -22,20 +23,27 @@ public class InMemoryDailyBudgetBreaker implements DailyBudgetBreaker {
 
     private final SmsGuardProperties properties;
     private final ApplicationEventPublisher eventPublisher;
+    private final Clock clock;
     private final AtomicLong currentCount = new AtomicLong(0);
-    private final AtomicReference<LocalDate> currentDate = new AtomicReference<>(LocalDate.now());
+    private final AtomicReference<LocalDate> currentDate;
 
-    public InMemoryDailyBudgetBreaker(SmsGuardProperties properties, ApplicationEventPublisher eventPublisher) {
+    public InMemoryDailyBudgetBreaker(SmsGuardProperties properties, ApplicationEventPublisher eventPublisher, Clock clock) {
         this.properties = properties != null ? properties : new SmsGuardProperties();
         this.eventPublisher = eventPublisher;
+        this.clock = clock != null ? clock : Clock.systemDefaultZone();
+        this.currentDate = new AtomicReference<>(LocalDate.now(this.clock));
+    }
+
+    public InMemoryDailyBudgetBreaker(SmsGuardProperties properties, ApplicationEventPublisher eventPublisher) {
+        this(properties, eventPublisher, Clock.systemDefaultZone());
     }
 
     public InMemoryDailyBudgetBreaker(SmsGuardProperties properties) {
-        this(properties, null);
+        this(properties, null, Clock.systemDefaultZone());
     }
 
     public InMemoryDailyBudgetBreaker() {
-        this(new SmsGuardProperties(), null);
+        this(new SmsGuardProperties(), null, Clock.systemDefaultZone());
     }
 
     @Override
@@ -45,7 +53,7 @@ public class InMemoryDailyBudgetBreaker implements DailyBudgetBreaker {
         }
 
         // 跨日自然翻转时自动原子归零，防御并发竞态
-        LocalDate today = LocalDate.now();
+        LocalDate today = LocalDate.now(clock);
         LocalDate recordedDate = currentDate.get();
         if (!today.equals(recordedDate)) {
             if (currentDate.compareAndSet(recordedDate, today)) {
@@ -90,6 +98,6 @@ public class InMemoryDailyBudgetBreaker implements DailyBudgetBreaker {
     @Override
     public void reset() {
         currentCount.set(0);
-        currentDate.set(LocalDate.now());
+        currentDate.set(LocalDate.now(clock));
     }
 }

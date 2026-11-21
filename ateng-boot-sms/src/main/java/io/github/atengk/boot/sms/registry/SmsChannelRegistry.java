@@ -52,12 +52,22 @@ public class SmsChannelRegistry {
                         }
                     }
                 }
+                SmsSupplier effectiveSupplier = prop.getSupplier();
+                if (org.springframework.util.StringUtils.hasText(prop.getProviderCode())
+                        && effectiveSupplier == SmsSupplier.MOCK
+                        && !"mock".equalsIgnoreCase(prop.getProviderCode().trim())) {
+                    SmsSupplier inferred = SmsSupplier.fromCode(prop.getProviderCode());
+                    effectiveSupplier = inferred != null ? inferred : SmsSupplier.CUSTOM;
+                }
                 SmsChannel channel = SmsChannel.builder()
                         .name(name)
-                        .supplier(prop.getSupplier())
+                        .supplier(effectiveSupplier)
+                        .providerCode(prop.getProviderCode())
                         .accessKeyId(prop.getAccessKeyId())
                         .accessKeySecret(prop.getAccessKeySecret())
                         .signName(prop.getSignName())
+                        .signId(prop.getSignId())
+                        .extCode(prop.getExtCode())
                         .appId(prop.getAppId())
                         .region(prop.getRegion())
                         .endpoint(prop.getEndpoint())
@@ -68,6 +78,10 @@ public class SmsChannelRegistry {
                         .weight(prop.getWeight() > 0 ? prop.getWeight() : 1)
                         .maxRetries(prop.getMaxRetries())
                         .retryInterval(prop.getRetryInterval() != null ? prop.getRetryInterval() : java.time.Duration.ofSeconds(1))
+                        .internationalEnabled(prop.isInternationalEnabled())
+                        .defaultRegionCode(prop.getDefaultRegionCode())
+                        .proxy(prop.getProxy() != null ? prop.getProxy().copy() : null)
+                        .extras(prop.getExtras() != null ? Collections.unmodifiableMap(new LinkedHashMap<>(prop.getExtras())) : Collections.emptyMap())
                         .templates(prop.getTemplates() != null ? Collections.unmodifiableMap(new LinkedHashMap<>(prop.getTemplates())) : Collections.emptyMap())
                         .templateParamOrders(paramOrders)
                         .build();
@@ -84,12 +98,13 @@ public class SmsChannelRegistry {
     public void register(SmsChannel channel) {
         BusinessAssert.notNull(channel, "注册的短信渠道 SmsChannel 不能为空");
         BusinessAssert.hasText(channel.getName(), "短信渠道名称不能为空");
-        BusinessAssert.notNull(channel.getSupplier(), "短信渠道对应的服务商 SmsSupplier 不能为空");
+        BusinessAssert.isTrue(channel.getSupplier() != null || org.springframework.util.StringUtils.hasText(channel.getProviderCode()),
+                "短信渠道对应的服务商 SmsSupplier 与 providerCode 不能同时为空");
 
         channelMap.put(channel.getName().trim(), channel);
         if (log.isInfoEnabled()) {
-            log.info("[SmsChannelRegistry] 成功注册/更新短信渠道 [名称: {}, 服务商: {}, 容灾备用: {}]",
-                    channel.getName(), channel.getSupplier(), channel.getFailoverChannel());
+            log.info("[SmsChannelRegistry] 成功注册/更新短信渠道 [名称: {}, 驱动编码: {}, 服务商: {}, 容灾备用: {}]",
+                    channel.getName(), channel.resolveProviderCode(), channel.getSupplier(), channel.getFailoverChannel());
         }
     }
 

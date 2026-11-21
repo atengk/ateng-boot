@@ -8,6 +8,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 
+import java.time.Clock;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
@@ -43,23 +44,32 @@ public class RedisDailyBudgetBreaker implements DailyBudgetBreaker {
     private final StringRedisTemplate redisTemplate;
     private final SmsGuardProperties properties;
     private final ApplicationEventPublisher eventPublisher;
+    private final Clock clock;
     private final DefaultRedisScript<Long> redisScript;
 
     public RedisDailyBudgetBreaker(StringRedisTemplate redisTemplate,
                                   SmsGuardProperties properties,
-                                  ApplicationEventPublisher eventPublisher) {
+                                  ApplicationEventPublisher eventPublisher,
+                                  Clock clock) {
         this.redisTemplate = redisTemplate;
         this.properties = properties != null ? properties : new SmsGuardProperties();
         this.eventPublisher = eventPublisher;
+        this.clock = clock != null ? clock : Clock.systemDefaultZone();
         this.redisScript = new DefaultRedisScript<>(LUA_SCRIPT, Long.class);
     }
 
+    public RedisDailyBudgetBreaker(StringRedisTemplate redisTemplate,
+                                  SmsGuardProperties properties,
+                                  ApplicationEventPublisher eventPublisher) {
+        this(redisTemplate, properties, eventPublisher, Clock.systemDefaultZone());
+    }
+
     public RedisDailyBudgetBreaker(StringRedisTemplate redisTemplate, SmsGuardProperties properties) {
-        this(redisTemplate, properties, null);
+        this(redisTemplate, properties, null, Clock.systemDefaultZone());
     }
 
     private String getTodayKey() {
-        return KEY_PREFIX + LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE);
+        return KEY_PREFIX + LocalDate.now(clock).format(DateTimeFormatter.ISO_LOCAL_DATE);
     }
 
     @Override

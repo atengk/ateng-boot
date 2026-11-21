@@ -15,7 +15,7 @@ ateng:
           sign-name: YOUR_ALIYUN_SIGN_NAME
           access-key-id: YOUR_ALIYUN_ACCESS_KEY_ID
           access-key-secret: YOUR_ALIYUN_ACCESS_KEY_SECRET
-          endpoint: dysmsapi.aliyuncs.com
+          endpoint: https://dysmsapi.aliyuncs.com
           region: cn-hangzhou
           failover-channel: tencent-backup
         tencent-backup:
@@ -24,7 +24,7 @@ ateng:
           app-id: YOUR_TENCENT_SDK_APP_ID
           access-key-id: YOUR_TENCENT_SECRET_ID
           access-key-secret: YOUR_TENCENT_SECRET_KEY
-          endpoint: sms.tencentcloudapi.com
+          endpoint: https://sms.tencentcloudapi.com
           region: ap-guangzhou
           failover-channel: huawei-backup
         huawei-backup:

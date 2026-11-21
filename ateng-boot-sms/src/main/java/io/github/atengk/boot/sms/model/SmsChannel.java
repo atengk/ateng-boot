@@ -1,15 +1,18 @@
 package io.github.atengk.boot.sms.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import io.github.atengk.boot.sms.properties.SmsProxyProperties;
 import io.github.atengk.boot.sms.properties.SmsTemplateProperties;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.ToString;
+import org.springframework.util.StringUtils;
 
 import java.io.Serializable;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -37,6 +40,11 @@ public class SmsChannel implements Serializable {
     private final SmsSupplier supplier;
 
     /**
+     * 自定义短信驱动路由编码（不区分大小写，为空时回退 supplier.getCode()）
+     */
+    private final String providerCode;
+
+    /**
      * 访问凭据 Key / SecretId / AppKey
      */
     private final String accessKeyId;
@@ -51,6 +59,16 @@ public class SmsChannel implements Serializable {
      * 默认短信签名
      */
     private final String signName;
+
+    /**
+     * 云平台短信签名 ID（部分厂商接口要求使用签名编码而非签名文本时配置）
+     */
+    private final String signId;
+
+    /**
+     * 短信通道扩展码 / 子号
+     */
+    private final String extCode;
 
     /**
      * 应用标识（腾讯云 SmsSdkAppId / 华为云通道号 from）
@@ -106,6 +124,28 @@ public class SmsChannel implements Serializable {
     private final Duration retryInterval = Duration.ofSeconds(1);
 
     /**
+     * 是否开启国际及港澳台短信区号归一化适配，默认 false
+     */
+    @Builder.Default
+    private final boolean internationalEnabled = false;
+
+    /**
+     * 开启国际短信适配时未带区号号码的默认国家码，默认 "+86"
+     */
+    @Builder.Default
+    private final String defaultRegionCode = "+86";
+
+    /**
+     * 渠道级独立 HTTP 出站代理配置
+     */
+    private final SmsProxyProperties proxy;
+
+    /**
+     * 单厂商独有扩展属性字典
+     */
+    private final Map<String, String> extras;
+
+    /**
      * 渠道下绑定的特定模板配置映射（模板编码 -> 模板配置）
      */
     private final Map<String, SmsTemplateProperties> templates;
@@ -114,6 +154,43 @@ public class SmsChannel implements Serializable {
      * 模板参数顺序配置（模板ID -> 有序参数名列表）
      */
     private final Map<String, List<String>> templateParamOrders;
+
+    /**
+     * 解析当前渠道对应的规范化驱动路由编码（小写，优先取 providerCode，缺省回退 supplier.getCode()）
+     *
+     * @return 小写驱动路由编码，未配置时返回 null
+     */
+    public String resolveProviderCode() {
+        if (StringUtils.hasText(providerCode)) {
+            return providerCode.trim().toLowerCase(Locale.ROOT);
+        }
+        return supplier != null ? supplier.getCode().toLowerCase(Locale.ROOT) : null;
+    }
+
+    /**
+     * 安全读取单厂商扩展属性字典中的指定配置值
+     *
+     * @param key 扩展属性键
+     * @return 属性值，不存在时返回 null
+     */
+    public String getExtra(String key) {
+        return getExtra(key, null);
+    }
+
+    /**
+     * 安全读取单厂商扩展属性字典中的指定配置值（支持缺省默认值）
+     *
+     * @param key          扩展属性键
+     * @param defaultValue 缺省默认值
+     * @return 属性值或默认值
+     */
+    public String getExtra(String key, String defaultValue) {
+        if (extras == null || key == null) {
+            return defaultValue;
+        }
+        String val = extras.get(key);
+        return StringUtils.hasText(val) ? val.trim() : defaultValue;
+    }
 
     /**
      * 跨云逻辑模板 ID 转译

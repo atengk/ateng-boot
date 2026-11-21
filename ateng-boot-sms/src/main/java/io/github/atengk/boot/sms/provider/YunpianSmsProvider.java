@@ -5,6 +5,7 @@ import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.exception.SmsSendException;
 import io.github.atengk.boot.sms.model.*;
+import io.github.atengk.boot.sms.support.SmsPhoneNormalizer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
@@ -46,6 +47,11 @@ public class YunpianSmsProvider extends AbstractHttpSmsProvider {
     }
 
     @Override
+    public boolean supportsPlainText() {
+        return true;
+    }
+
+    @Override
     public SmsResult send(SmsRequest request, SmsChannel channel) {
         // 1. 前置卫语句防卫
         BusinessAssert.notNull(request, "发信请求 SmsRequest 不能为空");
@@ -54,20 +60,43 @@ public class YunpianSmsProvider extends AbstractHttpSmsProvider {
         String apiKey = StringUtils.hasText(channel.getAccessKeyId()) ? channel.getAccessKeyId() : channel.getAccessKeySecret();
         BusinessAssert.hasText(apiKey, "云片网短信 apikey (AccessKeyId) 不能为空");
         BusinessAssert.hasText(request.getPhone(), "接收短信的目标手机号不能为空");
-        BusinessAssert.hasText(request.getTemplateId(), "云片网短信模板 ID (tpl_id) 不能为空");
 
-        List<String> phones = request.getPhones();
-        boolean isBatch = phones.size() > 1;
+        boolean hasTemplate = StringUtils.hasText(request.getTemplateId());
+        boolean isPlainText = !hasTemplate && StringUtils.hasText(request.getContent());
+        if (!isPlainText) {
+            BusinessAssert.hasText(request.getTemplateId(), "云片网短信模板 ID (tpl_id) 不能为空");
+        }
+
+        List<String> formattedPhones = new ArrayList<>(request.getPhones().size());
+        for (String p : request.getPhones()) {
+            formattedPhones.add(SmsPhoneNormalizer.toDomesticOrE164(p, channel));
+        }
+        boolean isBatch = formattedPhones.size() > 1;
 
         // 2. 组装表单参数
         Map<String, String> formParams = new LinkedHashMap<>();
         formParams.put("apikey", apiKey.trim());
-        formParams.put("mobile", String.join(",", phones));
-        formParams.put("tpl_id", request.getTemplateId().trim());
+        formParams.put("mobile", String.join(",", formattedPhones));
 
-        String tplValue = formatTplValue(request.getParams());
-        if (StringUtils.hasText(tplValue)) {
-            formParams.put("tpl_value", tplValue);
+        String actionName;
+        String templateLabel;
+        if (isPlainText) {
+            String signName = channel.resolveSignName(null, request.getSignName());
+            String rawText = request.getContent().trim();
+            String textWithSign = (StringUtils.hasText(signName) && !rawText.startsWith("【"))
+                    ? "【" + signName + "】" + rawText
+                    : rawText;
+            formParams.put("text", textWithSign);
+            actionName = isBatch ? "BatchSend" : "SingleSend";
+            templateLabel = "[PLAIN_TEXT]";
+        } else {
+            formParams.put("tpl_id", request.getTemplateId().trim());
+            String tplValue = formatTplValue(request.getParams());
+            if (StringUtils.hasText(tplValue)) {
+                formParams.put("tpl_value", tplValue);
+            }
+            actionName = isBatch ? "TplBatchSend" : "TplSingleSend";
+            templateLabel = request.getTemplateId().trim();
         }
 
         // 厂商状态报告推送地址
@@ -92,12 +121,10 @@ public class YunpianSmsProvider extends AbstractHttpSmsProvider {
         }
         String requestBody = bodyBuilder.toString();
 
-        // 4. 解析目标请求端点
-        String endpoint = resolveEndpoint(channel.getEndpoint(), isBatch);
-        Duration timeout = channel.getTimeout() != null ? channel.getTimeout() : Duration.ofSeconds(10);
-        RestClient client = buildRestClient(timeout);
+        // 4. 解析目标请求端点并获取支持代理的客户端
+        String endpoint = resolveEndpoint(channel.getEndpoint(), isBatch, isPlainText);
+        RestClient client = buildRestClient(channel);
 
-        String actionName = isBatch ? "TplBatchSend" : "TplSingleSend";
         String responseBody;
         try {
             responseBody = executeWithRetry(channel, actionName, () -> client.post()
@@ -119,7 +146,7 @@ public class YunpianSmsProvider extends AbstractHttpSmsProvider {
         }
 
         // 5. 校验并解析云厂商回执报文
-        return parseResponse(channel.getName(), request.getPhone(), request.getTemplateId(), responseBody, phones.size());
+        return parseResponse(channel.getName(), request.getPhone(), templateLabel, responseBody, formattedPhones.size());
     }
 
     /**
@@ -152,20 +179,23 @@ public class YunpianSmsProvider extends AbstractHttpSmsProvider {
     }
 
     /**
-     * 解析请求端点
+     * 解析请求端点（支持模板与纯文本直发端点自适应及 HTTPS 协议头防御补全）
      */
-    private String resolveEndpoint(String channelEndpoint, boolean isBatch) {
+    private String resolveEndpoint(String channelEndpoint, boolean isBatch, boolean isPlainText) {
+        String suffix = isPlainText
+                ? (isBatch ? "/sms/batch_send.json" : "/sms/single_send.json")
+                : (isBatch ? "/sms/tpl_batch_send.json" : "/sms/tpl_single_send.json");
         if (!StringUtils.hasText(channelEndpoint)) {
-            return DEFAULT_ENDPOINT + (isBatch ? "/sms/tpl_batch_send.json" : "/sms/tpl_single_send.json");
+            return DEFAULT_ENDPOINT + suffix;
         }
-        String ep = channelEndpoint.trim();
+        String ep = normalizeEndpoint(channelEndpoint, DEFAULT_ENDPOINT);
         if (ep.endsWith(".json")) {
             return ep;
         }
         if (ep.endsWith("/")) {
             ep = ep.substring(0, ep.length() - 1);
         }
-        return ep + (isBatch ? "/sms/tpl_batch_send.json" : "/sms/tpl_single_send.json");
+        return ep + suffix;
     }
 
     /**

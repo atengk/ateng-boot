@@ -72,6 +72,18 @@ public enum SmsSupplier implements IBaseEnum<String> {
     }
 
     /**
+     * 判断当前厂商协议是否原生支持无模板纯文本正文直发
+     *
+     * @return true 支持纯文本直发，false 仅支持模板短信
+     */
+    public boolean supportsPlainText() {
+        return switch (this) {
+            case YUNPIAN, MOCK, CUSTOM -> true;
+            case ALIYUN, TENCENT, HUAWEI, CTYUN -> false;
+        };
+    }
+
+    /**
      * 根据编码安全解析短信服务商枚举（不区分大小写）
      *
      * @param code 服务商编码

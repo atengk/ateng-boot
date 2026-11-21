@@ -9,6 +9,7 @@ import io.github.atengk.boot.sms.model.SmsChannel;
 import io.github.atengk.boot.sms.model.SmsRequest;
 import io.github.atengk.boot.sms.model.SmsResult;
 import io.github.atengk.boot.sms.model.SmsSupplier;
+import io.github.atengk.boot.sms.support.SmsPhoneNormalizer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
@@ -89,8 +90,12 @@ public class HuaweiSmsProvider extends AbstractHttpSmsProvider {
         Map<String, String> formParams = new LinkedHashMap<>();
         // 发送方通道号
         formParams.put("from", channel.getAppId());
-        // 接收方手机号（多个以英文逗号分隔）
-        formParams.put("to", String.join(",", request.getPhones()));
+        // 接收方手机号（国内 11 位或国际 E.164，多个以英文逗号分隔）
+        List<String> formattedPhones = new ArrayList<>(request.getPhones().size());
+        for (String p : request.getPhones()) {
+            formattedPhones.add(SmsPhoneNormalizer.toDomesticOrE164(p, channel));
+        }
+        formParams.put("to", String.join(",", formattedPhones));
         // 模板 ID
         formParams.put("templateId", request.getTemplateId());
 
@@ -138,8 +143,7 @@ public class HuaweiSmsProvider extends AbstractHttpSmsProvider {
 
         // 6. 确定请求端点 URL 并执行网络请求
         String endpoint = resolveEndpoint(channel.getEndpoint());
-        Duration timeout = channel.getTimeout() != null ? channel.getTimeout() : Duration.ofSeconds(10);
-        RestClient client = buildRestClient(timeout);
+        RestClient client = buildRestClient(channel);
 
         String responseBody;
         try {
@@ -269,7 +273,7 @@ public class HuaweiSmsProvider extends AbstractHttpSmsProvider {
         if (!StringUtils.hasText(endpoint)) {
             return DEFAULT_ENDPOINT;
         }
-        String clean = endpoint.trim();
+        String clean = normalizeEndpoint(endpoint, DEFAULT_ENDPOINT);
         if (clean.contains("/sms/batchSendSms/v1")) {
             return clean;
         }

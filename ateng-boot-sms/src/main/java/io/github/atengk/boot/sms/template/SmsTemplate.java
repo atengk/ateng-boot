@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sms.template;
 
 import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.AsyncUtil;
 import io.github.atengk.boot.core.util.BatchSliceUtil;
 import io.github.atengk.boot.core.util.BusinessAssert;
@@ -8,6 +9,7 @@ import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.sms.context.SmsContextHolder;
 import io.github.atengk.boot.sms.event.SmsSendAuditEvent;
 import io.github.atengk.boot.sms.exception.SmsBudgetExceededException;
+import io.github.atengk.boot.sms.exception.SmsException;
 import io.github.atengk.boot.sms.exception.SmsIdempotentException;
 import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.exception.SmsSendException;
@@ -29,6 +31,8 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalTime;
 
@@ -91,6 +95,9 @@ public class SmsTemplate {
     @Getter
     private final Executor executor;
 
+    @Getter
+    private final Clock clock;
+
     public SmsTemplate(SmsProperties properties,
                        List<SmsProvider> providers,
                        SmsChannelRegistry channelRegistry,
@@ -102,12 +109,14 @@ public class SmsTemplate {
                        SmsChannelLoadBalancer loadBalancer,
                        SmsIdempotentGuard idempotentGuard,
                        ApplicationEventPublisher eventPublisher,
-                       Executor executor) {
+                       Executor executor,
+                       Clock clock) {
         this.properties = properties != null ? properties : new SmsProperties();
+        this.clock = clock != null ? clock : Clock.systemDefaultZone();
         if (providers != null) {
             for (SmsProvider provider : providers) {
                 if (provider != null && provider.getSupplier() != null) {
-                    this.providerMap.put(provider.getSupplier(), provider);
+                    this.providerMap.putIfAbsent(provider.getSupplier(), provider);
                 }
             }
         }
@@ -123,14 +132,29 @@ public class SmsTemplate {
         this.channelResolvers = Collections.unmodifiableList(resolversList);
 
         this.failureHandlers = failureHandlers != null ? Collections.unmodifiableList(new ArrayList<>(failureHandlers)) : Collections.emptyList();
-        this.circuitBreaker = circuitBreaker != null ? circuitBreaker : new SmsChannelCircuitBreaker(this.properties.getGuard());
+        this.circuitBreaker = circuitBreaker != null ? circuitBreaker : new SmsChannelCircuitBreaker(this.properties.getGuard(), this.clock);
         this.loadBalancer = loadBalancer != null ? loadBalancer : new SmsChannelLoadBalancer(this.channelRegistry, this.circuitBreaker);
-        this.failoverChain = new SmsFailoverChain(this.channelRegistry, this.providerMap, this.failureHandlers, this.circuitBreaker);
+        this.failoverChain = new SmsFailoverChain(this.channelRegistry, providers, this.failureHandlers, this.circuitBreaker);
         this.blacklistProvider = blacklistProvider != null ? blacklistProvider : new InMemorySmsBlacklistProvider(this.properties.getGuard().getBlacklist());
-        this.dailyBudgetBreaker = dailyBudgetBreaker != null ? dailyBudgetBreaker : new InMemoryDailyBudgetBreaker(this.properties.getGuard());
-        this.idempotentGuard = idempotentGuard != null ? idempotentGuard : new InMemorySmsIdempotentGuard();
+        this.dailyBudgetBreaker = dailyBudgetBreaker != null ? dailyBudgetBreaker : new InMemoryDailyBudgetBreaker(this.properties.getGuard(), null, this.clock);
+        this.idempotentGuard = idempotentGuard != null ? idempotentGuard : new InMemorySmsIdempotentGuard(this.properties.getGuard().getInMemoryMaxEntries(), this.clock);
         this.eventPublisher = eventPublisher;
         this.executor = executor != null ? executor : AsyncUtil.getExecutor();
+    }
+
+    public SmsTemplate(SmsProperties properties,
+                       List<SmsProvider> providers,
+                       SmsChannelRegistry channelRegistry,
+                       List<SmsChannelResolver> channelResolvers,
+                       List<SmsSendFailureHandler> failureHandlers,
+                       SmsBlacklistProvider blacklistProvider,
+                       DailyBudgetBreaker dailyBudgetBreaker,
+                       SmsChannelCircuitBreaker circuitBreaker,
+                       SmsChannelLoadBalancer loadBalancer,
+                       SmsIdempotentGuard idempotentGuard,
+                       ApplicationEventPublisher eventPublisher,
+                       Executor executor) {
+        this(properties, providers, channelRegistry, channelResolvers, failureHandlers, blacklistProvider, dailyBudgetBreaker, circuitBreaker, loadBalancer, idempotentGuard, eventPublisher, executor, null);
     }
 
     public SmsTemplate(SmsProperties properties,
@@ -210,7 +234,7 @@ public class SmsTemplate {
         BusinessAssert.notNull(request, "发信请求 SmsRequest 不能为空");
         BusinessAssert.hasText(request.getPhone(), "目标手机号不能为空");
 
-        long startTime = System.currentTimeMillis();
+        long startTime = clock.millis();
         SmsChannel channel = null;
         SmsResult result = null;
         Throwable failure = null;
@@ -218,14 +242,9 @@ public class SmsTemplate {
         boolean lockAcquired = false;
 
         try {
-            // 1. 三级级联解析目标发信渠道
+            // 1. 三级级联解析目标发信渠道并校检模板/纯文本发送模式
             channel = resolveChannel(request.getChannel());
-
-            // 验证当前渠道或请求中是否存在有效模板
-            String effectiveTemplateId = channel.resolveTemplateId(request.getTemplateId());
-            String channelName = channel.getName();
-            BusinessAssert.hasText(effectiveTemplateId,
-                    () -> "短信模板编码不能为空 (渠道 [" + channelName + "] 未配置 defaultTemplateId 且发信请求未指定模板)");
+            String effectiveTemplateId = validateAndResolveMode(channel, request.getTemplateId(), request.getContent());
 
             // 2. 出站黑名单前置静默拦截防卫（多号码逐一校验，防漏检穿透）
             if (properties.getGuard().isBlacklistEnabled() && blacklistProvider != null) {
@@ -274,11 +293,11 @@ public class SmsTemplate {
 
             // 6. 经由高可用顺延容灾链执行物理发信
             if (log.isDebugEnabled()) {
-                log.debug("[SmsTemplate] 准备发送短信 -> 目标号码: {}, 初始渠道: {}, 服务商: {}, 模板: {}",
+                log.debug("[SmsTemplate] 准备发送短信 -> 目标号码: {}, 初始渠道: {}, 驱动: {}, 模板: {}",
                         DesensitizeUtil.mobilePhone(request.getPhone()),
                         channel.getName(),
-                        channel.getSupplier(),
-                        effectiveTemplateId);
+                        channel.resolveProviderCode(),
+                        effectiveTemplateId != null ? effectiveTemplateId : "[PLAIN_TEXT]");
             }
 
             result = failoverChain.execute(request, channel);
@@ -303,12 +322,12 @@ public class SmsTemplate {
         } finally {
             // 7. 广播全链路出站发信审计事件
             if (eventPublisher != null) {
-                long cost = System.currentTimeMillis() - startTime;
+                long cost = clock.millis() - startTime;
                 String channelName = channel != null ? channel.getName() : request.getChannel();
-                SmsSupplier supplier = channel != null ? channel.getSupplier() : null;
+                SmsSupplier supplier = resolveEffectiveSupplier(channel);
                 try {
                     eventPublisher.publishEvent(new SmsSendAuditEvent(
-                            this, request, channelName, supplier, result, failure, cost, Instant.now()
+                            this, request, channelName, supplier, result, failure, cost, Instant.now(clock)
                     ));
                 } catch (Exception pubEx) {
                     log.error("[SmsTemplate] 广播发信审计事件异常: {}", pubEx.getMessage());
@@ -397,19 +416,19 @@ public class SmsTemplate {
         BusinessAssert.notNull(request, "批量发信请求 BatchSmsRequest 不能为空");
         BusinessAssert.notEmpty(request.getPhones(), "目标手机号列表不能为空");
 
-        long startTime = System.currentTimeMillis();
+        long startTime = clock.millis();
         SmsChannel channel = null;
         BatchSmsResult batchResult = null;
         Throwable failure = null;
+        String idempotentKey = null;
+        boolean lockAcquired = false;
 
         try {
             // 1. 三级级联解析目标渠道
             final SmsChannel targetChannel = resolveChannel(request.getChannel());
             channel = targetChannel;
 
-            String effectiveTemplateId = targetChannel.resolveTemplateId(request.getTemplateId());
-            BusinessAssert.hasText(effectiveTemplateId,
-                    () -> "短信模板编码不能为空 (渠道 [" + targetChannel.getName() + "] 未配置 defaultTemplateId 且批量发信请求未指定模板)");
+            String effectiveTemplateId = validateAndResolveMode(targetChannel, request.getTemplateId(), request.getContent());
 
             // 2. 营销短信夜间免打扰时段静默拦截 (urgent 批量短信自动豁免)
             if (properties.getGuard().isQuietHoursEnabled() && !request.isUrgent() && isInQuietHours()) {
@@ -429,225 +448,257 @@ public class SmsTemplate {
             }
 
             // 3. 出站黑名单前置静默拦截
-        List<String> rawPhones = request.getPhones();
-        List<String> allowedPhones = new ArrayList<>(rawPhones.size());
-        List<String> blacklistedPhones = new ArrayList<>();
+            List<String> rawPhones = request.getPhones();
+            List<String> allowedPhones = new ArrayList<>(rawPhones.size());
+            List<String> blacklistedPhones = new ArrayList<>();
 
-        boolean checkBlacklist = properties.getGuard().isBlacklistEnabled() && blacklistProvider != null;
-        for (String phone : rawPhones) {
-            if (checkBlacklist && blacklistProvider.isBlacklisted(phone)) {
-                blacklistedPhones.add(phone);
-                if (log.isWarnEnabled()) {
-                    log.warn("[SmsTemplate] 手机号 [{}] 命中出站黑名单，前置静默拦截 (原因: {})",
-                            DesensitizeUtil.mobilePhone(phone),
-                            blacklistProvider.getReason(phone));
+            boolean checkBlacklist = properties.getGuard().isBlacklistEnabled() && blacklistProvider != null;
+            for (String phone : rawPhones) {
+                if (checkBlacklist && blacklistProvider.isBlacklisted(phone)) {
+                    blacklistedPhones.add(phone);
+                    if (log.isWarnEnabled()) {
+                        log.warn("[SmsTemplate] 手机号 [{}] 命中出站黑名单，前置静默拦截 (原因: {})",
+                                DesensitizeUtil.mobilePhone(phone),
+                                blacklistProvider.getReason(phone));
+                    }
+                } else {
+                    allowedPhones.add(phone);
                 }
-            } else {
-                allowedPhones.add(phone);
             }
-        }
 
-        // 若全部号码均处于黑名单中，直接阻断外发并返回拦截结果
-        if (allowedPhones.isEmpty()) {
-            return BatchSmsResult.of(
-                    rawPhones.size(),
-                    0,
-                    Collections.emptyList(),
-                    blacklistedPhones,
-                    List.of(SmsResult.blocked(channel.getName(), "全部目标手机号均处于出站黑名单中"))
-            );
-        }
+            // 若全部号码均处于黑名单中，直接阻断外发并赋值给 batchResult 确保审计完整
+            if (allowedPhones.isEmpty()) {
+                batchResult = BatchSmsResult.of(
+                        rawPhones.size(),
+                        0,
+                        Collections.emptyList(),
+                        blacklistedPhones,
+                        List.of(SmsResult.blocked(channel.getName(), "全部目标手机号均处于出站黑名单中"))
+                );
+                return batchResult;
+            }
 
-        // 3. 单日成本预算硬熔断防卫（基于实际拟放行发信量）
-        if (dailyBudgetBreaker != null) {
-            dailyBudgetBreaker.checkAndIncrement(allowedPhones.size());
-        }
-
-        // 4. 个性化批量发信分支（每个号码拥有独立的动态参数模型）
-        if (request.isPersonalized()) {
-            SmsProvider provider = providerMap.get(channel.getSupplier());
-            if (provider != null) {
-                Map<String, SmsParam> filteredParams = new LinkedHashMap<>();
-                for (String p : allowedPhones) {
-                    filteredParams.put(p, request.getPhoneParams().get(p));
+            // 4. 批量出站幂等防重保护（仅当显式提供 bizId 时生效）
+            if (properties.getGuard().isIdempotentEnabled() && idempotentGuard != null) {
+                idempotentKey = idempotentGuard.generateKey(request);
+                if (idempotentKey != null) {
+                    boolean acquired = idempotentGuard.acquireLock(idempotentKey, properties.getGuard().getIdempotentWindow());
+                    if (!acquired) {
+                        if (log.isWarnEnabled()) {
+                            log.warn("[SmsTemplate] 批量发信请求命中出站幂等窗口防重拦截 -> 首号: {}, 幂等键: {}",
+                                    DesensitizeUtil.mobilePhone(rawPhones.get(0)), idempotentKey);
+                        }
+                        throw new SmsIdempotentException(rawPhones.get(0), idempotentKey);
+                    }
+                    lockAcquired = true;
                 }
-                String effectiveSignName = channel.resolveSignName(request.getTemplateId(), request.getSignName());
-                BatchSmsRequest filteredRequest = BatchSmsRequest.builder()
-                        .phones(allowedPhones)
-                        .templateId(effectiveTemplateId)
-                        .params(request.getParams())
-                        .phoneParams(filteredParams)
-                        .signName(effectiveSignName)
-                        .channel(channel.getName())
-                        .bizId(request.getBizId())
-                        .urgent(request.isUrgent())
-                        .build();
+            }
 
-                BatchSmsResult nativeResult = provider.sendPersonalizedBatch(filteredRequest, channel);
-                if (nativeResult != null) {
-                    if (blacklistedPhones.isEmpty()) {
-                        batchResult = nativeResult;
+            // 5. 单日成本预算硬熔断防卫（基于实际拟放行发信量）
+            if (dailyBudgetBreaker != null) {
+                dailyBudgetBreaker.checkAndIncrement(allowedPhones.size());
+            }
+
+            // 6. 个性化批量发信分支（每个号码拥有独立的动态参数模型）
+            if (request.isPersonalized()) {
+                SmsProvider provider = failoverChain.resolveProvider(channel);
+                if (provider != null) {
+                    Map<String, SmsParam> filteredParams = new LinkedHashMap<>();
+                    for (String p : allowedPhones) {
+                        filteredParams.put(p, request.getPhoneParams().get(p));
+                    }
+                    String effectiveSignName = channel.resolveSignName(request.getTemplateId(), request.getSignName());
+                    BatchSmsRequest filteredRequest = BatchSmsRequest.builder()
+                            .phones(allowedPhones)
+                            .templateId(effectiveTemplateId)
+                            .content(request.getContent())
+                            .params(request.getParams())
+                            .phoneParams(filteredParams)
+                            .signName(effectiveSignName)
+                            .channel(channel.getName())
+                            .bizId(request.getBizId())
+                            .urgent(request.isUrgent())
+                            .build();
+
+                    BatchSmsResult nativeResult = provider.sendPersonalizedBatch(filteredRequest, channel);
+                    if (nativeResult != null) {
+                        if (blacklistedPhones.isEmpty()) {
+                            batchResult = nativeResult;
+                        } else {
+                            batchResult = BatchSmsResult.of(
+                                    rawPhones.size(),
+                                    nativeResult.getSuccessCount(),
+                                    nativeResult.getFailedPhones(),
+                                    blacklistedPhones,
+                                    nativeResult.getBatchResults()
+                            );
+                        }
+                        releaseIdempotentOnFailure(batchResult.isSuccess(), batchResult.getSuccessCount(), lockAcquired, idempotentKey);
                         return batchResult;
                     }
-                    batchResult = BatchSmsResult.of(
-                            rawPhones.size(),
-                            nativeResult.getSuccessCount(),
-                            nativeResult.getFailedPhones(),
-                            blacklistedPhones,
-                            nativeResult.getBatchResults()
-                    );
-                    return batchResult;
                 }
+
+                // 云厂商未实现原生个性化批量发送，降级为受管线程池并发投递单条发信
+                List<CompletableFuture<SliceExecutionResult>> futures = new ArrayList<>(allowedPhones.size());
+                for (String phone : allowedPhones) {
+                    SmsParam phoneParam = request.getPhoneParams().get(phone);
+                    SmsRequest singleReq = SmsRequest.builder()
+                            .phone(phone)
+                            .templateId(request.getTemplateId())
+                            .content(request.getContent())
+                            .params(phoneParam != null ? phoneParam : request.getParams())
+                            .signName(request.getSignName())
+                            .channel(channel.getName())
+                            .bizId(request.getBizId())
+                            .urgent(request.isUrgent())
+                            .build();
+
+                    Supplier<SliceExecutionResult> singleTask = () -> {
+                        try {
+                            SmsResult res = failoverChain.execute(singleReq, targetChannel);
+                            return new SliceExecutionResult(List.of(phone), res, null);
+                        } catch (Exception ex) {
+                            log.error("[SmsTemplate] 个性化批次号码投递异常 -> 号码: {}, 错误: {}",
+                                    DesensitizeUtil.mobilePhone(phone), ex.getMessage());
+                            return new SliceExecutionResult(List.of(phone), null, ex);
+                        }
+                    };
+                    futures.add(CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(singleTask), executor));
+                }
+
+                batchResult = awaitAndAggregateSlices(futures, rawPhones.size(), blacklistedPhones, targetChannel);
+                releaseIdempotentOnFailure(batchResult.isSuccess(), batchResult.getSuccessCount(), lockAcquired, idempotentKey);
+                return batchResult;
             }
 
-            // 云厂商未实现原生个性化批量发送，降级为受管线程池并发投递单条发信
-            List<CompletableFuture<SliceExecutionResult>> futures = new ArrayList<>(allowedPhones.size());
-            for (String phone : allowedPhones) {
-                SmsParam phoneParam = request.getPhoneParams().get(phone);
-                SmsRequest singleReq = SmsRequest.builder()
-                        .phone(phone)
+            // 7. 依据厂商上限使用 BatchSliceUtil 透明切片
+            int sliceLimit = resolveChannelBatchLimit(channel);
+            List<List<String>> slices = BatchSliceUtil.slice(allowedPhones, sliceLimit);
+
+            if (log.isDebugEnabled()) {
+                log.debug("[SmsTemplate] 批量短信分片投递 -> 渠道: {}, 驱动: {}, 原始号码数: {}, 放行数: {}, 黑名单拦截: {}, 切片数: {}, 单批上限: {}",
+                        channel.getName(), channel.resolveProviderCode(), rawPhones.size(), allowedPhones.size(),
+                        blacklistedPhones.size(), slices.size(), sliceLimit);
+            }
+
+            // 8. 通过 Core 受管异步线程池设施受控并发调度并在各切片批次内部支持顺延容灾
+            List<CompletableFuture<SliceExecutionResult>> futures = new ArrayList<>(slices.size());
+            for (List<String> slice : slices) {
+                SmsRequest sliceRequest = SmsRequest.builder()
+                        .phones(slice)
                         .templateId(request.getTemplateId())
-                        .params(phoneParam != null ? phoneParam : request.getParams())
+                        .content(request.getContent())
+                        .params(request.getParams())
                         .signName(request.getSignName())
                         .channel(channel.getName())
                         .bizId(request.getBizId())
                         .urgent(request.isUrgent())
                         .build();
 
-                Supplier<SliceExecutionResult> singleTask = () -> {
+                Supplier<SliceExecutionResult> sliceTask = () -> {
                     try {
-                        SmsResult res = failoverChain.execute(singleReq, targetChannel);
-                        return new SliceExecutionResult(List.of(phone), res, null);
+                        SmsResult res = failoverChain.execute(sliceRequest, targetChannel);
+                        return new SliceExecutionResult(slice, res, null);
                     } catch (Exception ex) {
-                        log.error("[SmsTemplate] 个性化批次号码投递异常 -> 号码: {}, 错误: {}",
-                                DesensitizeUtil.mobilePhone(phone), ex.getMessage());
-                        return new SliceExecutionResult(List.of(phone), null, ex);
+                        log.error("[SmsTemplate] 批次切片投递异常 -> 批次号码数: {}, 错误: {}", slice.size(), ex.getMessage());
+                        return new SliceExecutionResult(slice, null, ex);
                     }
                 };
-                futures.add(CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(singleTask), executor));
+
+                futures.add(CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(sliceTask), executor));
             }
 
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-
-            int successCount = 0;
-            List<String> failedPhones = new ArrayList<>();
-            List<SmsResult> batchResults = new ArrayList<>(futures.size());
-
-            for (CompletableFuture<SliceExecutionResult> future : futures) {
-                SliceExecutionResult execRes = future.join();
-                if (execRes.exception != null) {
-                    failedPhones.addAll(execRes.slicePhones);
-                    String rawCode = execRes.exception instanceof SmsSendException sse ? sse.getRawCode() : "BATCH_SEND_ERROR";
-                    batchResults.add(SmsResult.failure(channel.getName(), channel.getSupplier(), rawCode, execRes.exception.getMessage()));
-                } else if (execRes.result != null && execRes.result.isSuccess()) {
-                    successCount += execRes.slicePhones.size();
-                    batchResults.add(execRes.result);
-                } else {
-                    failedPhones.addAll(execRes.slicePhones);
-                    batchResults.add(execRes.result != null ? execRes.result : SmsResult.failure(channel.getName(), channel.getSupplier(), "UNKNOWN", "Unknown error"));
-                }
-            }
-
-            batchResult = BatchSmsResult.of(
-                    rawPhones.size(),
-                    successCount,
-                    failedPhones,
-                    blacklistedPhones,
-                    batchResults
-            );
+            batchResult = awaitAndAggregateSlices(futures, rawPhones.size(), blacklistedPhones, targetChannel);
+            releaseIdempotentOnFailure(batchResult.isSuccess(), batchResult.getSuccessCount(), lockAcquired, idempotentKey);
             return batchResult;
-        }
-
-        // 5. 依据厂商上限使用 BatchSliceUtil 透明切片
-        int sliceLimit = resolveBatchLimit(channel.getSupplier());
-        List<List<String>> slices = BatchSliceUtil.slice(allowedPhones, sliceLimit);
-
-        if (log.isDebugEnabled()) {
-            log.debug("[SmsTemplate] 批量短信分片投递 -> 渠道: {}, 厂商: {}, 原始号码数: {}, 放行数: {}, 黑名单拦截: {}, 切片数: {}, 单批上限: {}",
-                    channel.getName(), channel.getSupplier(), rawPhones.size(), allowedPhones.size(),
-                    blacklistedPhones.size(), slices.size(), sliceLimit);
-        }
-
-        // 6. 通过 Core 受管异步线程池设施受控并发调度并在各切片批次内部支持顺延容灾
-        List<CompletableFuture<SliceExecutionResult>> futures = new ArrayList<>(slices.size());
-        for (List<String> slice : slices) {
-            SmsRequest sliceRequest = SmsRequest.builder()
-                    .phones(slice)
-                    .templateId(request.getTemplateId())
-                    .params(request.getParams())
-                    .signName(request.getSignName())
-                    .channel(channel.getName())
-                    .bizId(request.getBizId())
-                    .urgent(request.isUrgent())
-                    .build();
-
-            Supplier<SliceExecutionResult> sliceTask = () -> {
+        } catch (Throwable ex) {
+            failure = ex;
+            if (lockAcquired && idempotentGuard != null && !(ex instanceof SmsIdempotentException)) {
+                idempotentGuard.releaseLock(idempotentKey);
+            }
+            if (batchResult == null) {
+                batchResult = buildFailureBatchResult(request, channel, ex);
+            }
+            if (ex instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new SmsSendException(channel != null ? channel.getName() : request.getChannel(),
+                    "BATCH_UNEXPECTED_ERROR", ex.getMessage(), SmsResultCode.SMS_SEND_ERROR, ex.getMessage(), ex);
+        } finally {
+            // 9. 广播全链路出站批量发信审计事件
+            if (eventPublisher != null) {
+                long cost = clock.millis() - startTime;
+                String channelName = channel != null ? channel.getName() : request.getChannel();
+                SmsSupplier supplier = resolveEffectiveSupplier(channel);
                 try {
-                    SmsResult res = failoverChain.execute(sliceRequest, targetChannel);
-                    return new SliceExecutionResult(slice, res, null);
-                } catch (Exception ex) {
-                    log.error("[SmsTemplate] 批次切片投递异常 -> 批次号码数: {}, 错误: {}", slice.size(), ex.getMessage());
-                    return new SliceExecutionResult(slice, null, ex);
+                    eventPublisher.publishEvent(new SmsSendAuditEvent(
+                            this, request, channelName, supplier, batchResult, failure, cost, Instant.now(clock)
+                    ));
+                } catch (Exception pubEx) {
+                    log.error("[SmsTemplate] 广播批量发信审计事件异常: {}", pubEx.getMessage());
                 }
-            };
+            }
+        }
+    }
 
-            futures.add(CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(sliceTask), executor));
+    private BatchSmsResult awaitAndAggregateSlices(List<CompletableFuture<SliceExecutionResult>> futures,
+                                                   int totalCount,
+                                                   List<String> blacklistedPhones,
+                                                   SmsChannel channel) {
+        List<SliceExecutionResult> execResults;
+        try {
+            execResults = AsyncUtil.allOf(futures, resolveBatchTimeout());
+        } catch (BusinessException ex) {
+            throw new SmsSendException(channel.getName(), "BATCH_AGGREGATION_TIMEOUT",
+                    "批量短信分片并发聚合异常或超时: " + ex.getMessage(),
+                    SmsResultCode.SMS_SEND_ERROR, ex.getMessage(), ex);
         }
 
-        // 等待所有切片批次执行完成
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-
-        // 7. 聚合统计结果
+        SmsSupplier effectiveSupplier = resolveEffectiveSupplier(channel);
         int successCount = 0;
         List<String> failedPhones = new ArrayList<>();
-        List<SmsResult> batchResults = new ArrayList<>(slices.size());
+        List<SmsResult> batchResults = new ArrayList<>(execResults.size());
 
-        for (CompletableFuture<SliceExecutionResult> future : futures) {
-            SliceExecutionResult execRes = future.join();
+        for (SliceExecutionResult execRes : execResults) {
             if (execRes.exception != null) {
                 failedPhones.addAll(execRes.slicePhones);
                 String rawCode = execRes.exception instanceof SmsSendException sse ? sse.getRawCode() : "BATCH_SEND_ERROR";
-                batchResults.add(SmsResult.failure(channel.getName(), channel.getSupplier(), rawCode, execRes.exception.getMessage()));
+                batchResults.add(SmsResult.failure(channel.getName(), effectiveSupplier, rawCode, execRes.exception.getMessage()));
             } else if (execRes.result != null && execRes.result.isSuccess()) {
                 successCount += execRes.slicePhones.size();
                 batchResults.add(execRes.result);
             } else {
                 failedPhones.addAll(execRes.slicePhones);
-                batchResults.add(execRes.result != null ? execRes.result : SmsResult.failure(channel.getName(), channel.getSupplier(), "UNKNOWN", "Unknown error"));
+                batchResults.add(execRes.result != null
+                        ? execRes.result
+                        : SmsResult.failure(channel.getName(), effectiveSupplier, "UNKNOWN", "Unknown error"));
             }
         }
 
-        batchResult = BatchSmsResult.of(
-                rawPhones.size(),
-                successCount,
-                failedPhones,
-                blacklistedPhones,
-                batchResults
-        );
-        return batchResult;
-    } catch (Throwable ex) {
-        failure = ex;
-        if (ex instanceof RuntimeException re) {
-            throw re;
-        }
-        throw new SmsSendException(channel != null ? channel.getName() : request.getChannel(),
-                "BATCH_UNEXPECTED_ERROR", ex.getMessage(), SmsResultCode.SMS_SEND_ERROR, ex.getMessage(), ex);
-    } finally {
-        // 8. 广播全链路出站批量发信审计事件
-        if (eventPublisher != null) {
-            long cost = System.currentTimeMillis() - startTime;
-            String channelName = channel != null ? channel.getName() : request.getChannel();
-            SmsSupplier supplier = channel != null ? channel.getSupplier() : null;
-            try {
-                eventPublisher.publishEvent(new SmsSendAuditEvent(
-                        this, request, channelName, supplier, batchResult, failure, cost, Instant.now()
-                ));
-            } catch (Exception pubEx) {
-                log.error("[SmsTemplate] 广播批量发信审计事件异常: {}", pubEx.getMessage());
-            }
-        }
+        return BatchSmsResult.of(totalCount, successCount, failedPhones, blacklistedPhones, batchResults);
     }
-}
+
+    private BatchSmsResult buildFailureBatchResult(BatchSmsRequest request, SmsChannel channel, Throwable ex) {
+        String errChannel = channel != null ? channel.getName() : request.getChannel();
+        SmsSupplier errSupplier = resolveEffectiveSupplier(channel);
+        String rawCode = ex instanceof SmsSendException sse && sse.getRawCode() != null
+                ? sse.getRawCode()
+                : ex.getClass().getSimpleName();
+        return BatchSmsResult.of(
+                request.getPhones().size(),
+                0,
+                request.getPhones(),
+                Collections.emptyList(),
+                List.of(SmsResult.failure(errChannel, errSupplier, rawCode, ex.getMessage()))
+        );
+    }
+
+    private Duration resolveBatchTimeout() {
+        Duration configured = properties.getGuard() != null ? properties.getGuard().getBatchTimeout() : null;
+        return (configured != null && !configured.isNegative() && !configured.isZero())
+                ? configured
+                : Duration.ofSeconds(30);
+    }
 
     /**
      * 异步批量发送短信
@@ -775,6 +826,23 @@ public class SmsTemplate {
      */
     public int resolveBatchLimit(SmsSupplier supplier) {
         return supplier != null ? supplier.getBatchLimit() : 1000;
+    }
+
+    /**
+     * 根据渠道及其绑定驱动解析单批最大支持的手机号切片上限
+     *
+     * @param channel 目标短信渠道
+     * @return 单批最大手机号数量
+     */
+    public int resolveChannelBatchLimit(SmsChannel channel) {
+        if (channel == null) {
+            return 1000;
+        }
+        SmsProvider provider = failoverChain.resolveProvider(channel);
+        if (provider != null) {
+            return Math.max(1, provider.getBatchLimit());
+        }
+        return resolveBatchLimit(channel.getSupplier());
     }
 
     /**
@@ -964,7 +1032,7 @@ public class SmsTemplate {
      * @return true 处于免打扰窗口内
      */
     public boolean isInQuietHours() {
-        return isInQuietHours(LocalTime.now());
+        return isInQuietHours(LocalTime.now(clock));
     }
 
     /**
@@ -1010,6 +1078,55 @@ public class SmsTemplate {
      */
     public SmsProvider getProvider(SmsSupplier supplier) {
         return providerMap.get(supplier);
+    }
+
+    /**
+     * 底层逃生舱：按驱动唯一编码（{@code providerCode}）获取原生驱动实例
+     *
+     * @param providerCode 驱动唯一编码（内置厂商小写名称或自定义扩展驱动标识）
+     * @return 对应的 SmsProvider 驱动，不存在时返回 {@code null}
+     */
+    public SmsProvider getProvider(String providerCode) {
+        return failoverChain.getProvider(providerCode);
+    }
+
+    private String validateAndResolveMode(SmsChannel channel, String templateId, String content) {
+        if (StringUtils.hasText(templateId)) {
+            return templateId.trim();
+        }
+        if (StringUtils.hasText(content)) {
+            SmsProvider provider = failoverChain.resolveProvider(channel);
+            boolean supported = provider != null
+                    ? provider.supportsPlainText()
+                    : (channel.getSupplier() == null || channel.getSupplier().supportsPlainText());
+            if (!supported) {
+                String providerId = provider != null ? provider.getProviderCode() : channel.resolveProviderCode();
+                throw new SmsException(SmsResultCode.SMS_PARAM_INVALID,
+                        "短信驱动 [" + providerId + "] 仅支持模板短信，不支持纯文本 content 直发");
+            }
+            return null;
+        }
+        String effectiveTemplateId = channel.resolveTemplateId(templateId);
+        BusinessAssert.hasText(effectiveTemplateId,
+                () -> "短信模板编码不能为空 (渠道 [" + channel.getName() + "] 未配置 defaultTemplateId 且未指定模板或纯文本内容)");
+        return effectiveTemplateId;
+    }
+
+    private SmsSupplier resolveEffectiveSupplier(SmsChannel channel) {
+        if (channel == null) {
+            return null;
+        }
+        SmsProvider provider = failoverChain.resolveProvider(channel);
+        if (provider != null && provider.getSupplier() != null) {
+            return provider.getSupplier();
+        }
+        return channel.getSupplier();
+    }
+
+    private void releaseIdempotentOnFailure(boolean batchSuccess, int successCount, boolean lockAcquired, String idempotentKey) {
+        if (!batchSuccess && successCount == 0 && lockAcquired && idempotentGuard != null) {
+            idempotentGuard.releaseLock(idempotentKey);
+        }
     }
 
     /**

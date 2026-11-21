@@ -11,7 +11,7 @@ import java.util.List;
 
 /**
  * 单条或批量短信发送领域请求对象
- * 内存中保持真明文，日志打印与外部表示强制执行手机号敏感脱敏
+ * 内存中保持真明文，日志打印与外部表示强制执行手机号与正文敏感脱敏
  *
  * @author Ateng
  * @since 2026-11-02
@@ -63,13 +63,20 @@ public class SmsRequest implements Serializable {
     @Builder.Default
     private final boolean urgent = false;
 
-    public SmsRequest(String phone, List<String> phones, String templateId, SmsParam params, String signName, String channel, String bizId, boolean urgent) {
+    /**
+     * 无模板纯文本短信正文内容（用于云片、Mock 等支持纯文本直发的网关）
+     */
+    private final String content;
+
+    public SmsRequest(String phone, List<String> phones, String templateId, SmsParam params,
+                      String signName, String channel, String bizId, boolean urgent, String content) {
         this.templateId = (templateId != null && !templateId.isBlank()) ? templateId.trim() : null;
         this.params = params != null ? params : SmsParam.create();
         this.signName = signName != null ? signName.trim() : null;
         this.channel = channel != null ? channel.trim() : null;
         this.bizId = bizId != null ? bizId.trim() : null;
         this.urgent = urgent;
+        this.content = (content != null && !content.isBlank()) ? content.trim() : null;
 
         if (phones != null && !phones.isEmpty()) {
             this.phones = Collections.unmodifiableList(phones);
@@ -81,12 +88,18 @@ public class SmsRequest implements Serializable {
         }
     }
 
-    public SmsRequest(String phone, List<String> phones, String templateId, SmsParam params, String signName, String channel, String bizId) {
-        this(phone, phones, templateId, params, signName, channel, bizId, false);
+    public SmsRequest(String phone, List<String> phones, String templateId, SmsParam params,
+                      String signName, String channel, String bizId, boolean urgent) {
+        this(phone, phones, templateId, params, signName, channel, bizId, urgent, null);
+    }
+
+    public SmsRequest(String phone, List<String> phones, String templateId, SmsParam params,
+                      String signName, String channel, String bizId) {
+        this(phone, phones, templateId, params, signName, channel, bizId, false, null);
     }
 
     public SmsRequest(String phone, String templateId, SmsParam params, String signName, String channel, String bizId) {
-        this(phone, null, templateId, params, signName, channel, bizId, false);
+        this(phone, null, templateId, params, signName, channel, bizId, false, null);
     }
 
     /**
@@ -98,7 +111,8 @@ public class SmsRequest implements Serializable {
      * @return 新的 SmsRequest 实例
      */
     public SmsRequest withTemplateSignAndChannel(String targetTemplateId, String targetSignName, String targetChannel) {
-        return new SmsRequest(this.phone, this.phones, targetTemplateId, this.params, targetSignName, targetChannel, this.bizId, this.urgent);
+        return new SmsRequest(this.phone, this.phones, targetTemplateId, this.params, targetSignName,
+                targetChannel, this.bizId, this.urgent, this.content);
     }
 
     /**
@@ -119,7 +133,8 @@ public class SmsRequest implements Serializable {
      * @return 新的 SmsRequest 实例
      */
     public SmsRequest withChannel(String targetChannel) {
-        return new SmsRequest(this.phone, this.phones, this.templateId, this.params, this.signName, targetChannel, this.bizId, this.urgent);
+        return new SmsRequest(this.phone, this.phones, this.templateId, this.params, this.signName,
+                targetChannel, this.bizId, this.urgent, this.content);
     }
 
     /**
@@ -129,7 +144,19 @@ public class SmsRequest implements Serializable {
      * @return 新的 SmsRequest 实例
      */
     public SmsRequest withUrgent(boolean urgent) {
-        return new SmsRequest(this.phone, this.phones, this.templateId, this.params, this.signName, this.channel, this.bizId, urgent);
+        return new SmsRequest(this.phone, this.phones, this.templateId, this.params, this.signName,
+                this.channel, this.bizId, urgent, this.content);
+    }
+
+    /**
+     * 基于当前发信请求复制并覆盖纯文本正文
+     *
+     * @param content 短信正文文本
+     * @return 新的 SmsRequest 实例
+     */
+    public SmsRequest withContent(String content) {
+        return new SmsRequest(this.phone, this.phones, this.templateId, this.params, this.signName,
+                this.channel, this.bizId, this.urgent, content);
     }
 
     /**
@@ -205,6 +232,18 @@ public class SmsRequest implements Serializable {
     }
 
     /**
+     * 便捷静态工厂：单号码与纯文本正文直发
+     *
+     * @param phone   目标手机号
+     * @param content 纯文本正文
+     * @return SmsRequest 实例
+     */
+    public static SmsRequest ofContent(String phone, String content) {
+        BusinessAssert.hasText(content, "短信正文内容不能为空");
+        return builder().phone(phone).content(content).build();
+    }
+
+    /**
      * 自定义 Builder 增强方法
      */
     public static class SmsRequestBuilder {
@@ -227,6 +266,7 @@ public class SmsRequest implements Serializable {
                 ", signName='" + signName + '\'' +
                 ", channel='" + channel + '\'' +
                 ", bizId='" + bizId + '\'' +
+                ", hasContent=" + (content != null) +
                 '}';
     }
 }

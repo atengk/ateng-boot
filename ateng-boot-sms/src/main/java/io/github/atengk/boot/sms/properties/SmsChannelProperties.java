@@ -26,6 +26,11 @@ public class SmsChannelProperties implements Serializable {
     private SmsSupplier supplier = SmsSupplier.MOCK;
 
     /**
+     * 自定义短信驱动编码（当注册多个自定义 SmsProvider 或需要显式覆盖 supplier 路由键时指定）
+     */
+    private String providerCode;
+
+    /**
      * 访问凭据 Key / SecretId / AppKey
      */
     private String accessKeyId;
@@ -39,6 +44,16 @@ public class SmsChannelProperties implements Serializable {
      * 默认短信签名
      */
     private String signName;
+
+    /**
+     * 云平台短信签名 ID（部分厂商接口要求使用签名编码而非签名文本时配置）
+     */
+    private String signId;
+
+    /**
+     * 短信通道扩展码 / 子号
+     */
+    private String extCode;
 
     /**
      * 专属应用标识（腾讯云 SmsSdkAppId / 华为云通道号 from）
@@ -89,6 +104,27 @@ public class SmsChannelProperties implements Serializable {
      * 单渠道重试间隔，默认 1 秒
      */
     private Duration retryInterval = Duration.ofSeconds(1);
+
+    /**
+     * 是否开启国际及港澳台短信区号归一化适配，默认 false
+     */
+    private boolean internationalEnabled = false;
+
+    /**
+     * 开启国际短信适配时未带区号号码的默认国家码，默认 "+86"
+     */
+    private String defaultRegionCode = "+86";
+
+    /**
+     * 渠道级独立 HTTP 出站代理配置
+     */
+    @NestedConfigurationProperty
+    private SmsProxyProperties proxy = new SmsProxyProperties();
+
+    /**
+     * 单厂商独有扩展属性字典（避免配置模型被各家私有字段污染）
+     */
+    private Map<String, String> extras = new LinkedHashMap<>();
 
     /**
      * 渠道下绑定的特定模板配置映射（模板编码 -> 模板配置）

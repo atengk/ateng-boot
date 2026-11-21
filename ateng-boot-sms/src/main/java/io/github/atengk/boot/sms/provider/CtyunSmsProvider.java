@@ -10,6 +10,7 @@ import io.github.atengk.boot.sms.model.SmsChannel;
 import io.github.atengk.boot.sms.model.SmsRequest;
 import io.github.atengk.boot.sms.model.SmsResult;
 import io.github.atengk.boot.sms.model.SmsSupplier;
+import io.github.atengk.boot.sms.support.SmsPhoneNormalizer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
@@ -87,11 +88,11 @@ public class CtyunSmsProvider extends AbstractHttpSmsProvider {
         String signName = StringUtils.hasText(request.getSignName()) ? request.getSignName() : channel.getSignName();
         BusinessAssert.hasText(signName, "短信签名 (SignName) 不能为空，请在请求或渠道配置中显式指定");
 
-        // 2. 手机号码标准化并清洗 (+86 前缀补充)
+        // 2. 手机号码标准化并清洗 (统一 E.164 规范，支持国际区号通道)
         List<String> rawPhones = request.getPhones();
         List<String> formattedPhones = new ArrayList<>(rawPhones.size());
         for (String p : rawPhones) {
-            formattedPhones.add(formatPhone(p));
+            formattedPhones.add(SmsPhoneNormalizer.toE164(p, channel));
         }
         String phoneStr = String.join(",", formattedPhones);
 
@@ -120,9 +121,8 @@ public class CtyunSmsProvider extends AbstractHttpSmsProvider {
         );
 
         // 5. 确定请求端点并发送 HTTP POST 请求
-        String endpoint = StringUtils.hasText(channel.getEndpoint()) ? channel.getEndpoint() : DEFAULT_ENDPOINT;
-        Duration timeout = channel.getTimeout() != null ? channel.getTimeout() : Duration.ofSeconds(10);
-        RestClient client = buildRestClient(timeout);
+        String endpoint = normalizeEndpoint(channel.getEndpoint(), DEFAULT_ENDPOINT);
+        RestClient client = buildRestClient(channel);
 
         String responseBody;
         try {
@@ -158,7 +158,7 @@ public class CtyunSmsProvider extends AbstractHttpSmsProvider {
      * @return 格式化后的号码
      */
     public static String formatPhone(String phone) {
-        return TencentSmsProvider.formatE164(phone);
+        return SmsPhoneNormalizer.toE164(phone, "+86");
     }
 
     /**

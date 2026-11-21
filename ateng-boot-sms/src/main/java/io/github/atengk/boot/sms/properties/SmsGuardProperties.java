@@ -74,4 +74,14 @@ public class SmsGuardProperties implements Serializable {
      * 收到用户上行退订指令（TD/退订/T）时是否自动加入出站黑名单，默认 true
      */
     private boolean autoBlacklistOnUnsubscribe = true;
+
+    /**
+     * 纯内存防护容器（限流、验证码仓储、幂等锁）最大条目上限（防恶意探测引发 OOM），默认 50000
+     */
+    private int inMemoryMaxEntries = 50_000;
+
+    /**
+     * 批量短信并发分片聚合超时上限，默认 30 秒
+     */
+    private java.time.Duration batchTimeout = java.time.Duration.ofSeconds(30);
 }

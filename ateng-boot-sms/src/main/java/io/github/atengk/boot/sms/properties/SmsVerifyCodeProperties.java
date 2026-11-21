@@ -42,6 +42,11 @@ public class SmsVerifyCodeProperties implements Serializable {
     private CharType charType = CharType.NUMERIC;
 
     /**
+     * 验证码默认模板逻辑标识（未在调用时显式指定模板 ID 时优先使用）
+     */
+    private String defaultTemplateId;
+
+    /**
      * 验证码字符集模式
      */
     public enum CharType {

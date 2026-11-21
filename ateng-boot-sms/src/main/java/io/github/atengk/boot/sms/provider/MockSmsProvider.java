@@ -7,6 +7,7 @@ import io.github.atengk.boot.sms.model.SmsRequest;
 import io.github.atengk.boot.sms.model.SmsResult;
 import io.github.atengk.boot.sms.model.SmsSupplier;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -15,7 +16,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
  * 本地开发与离线测试 Mock 沙箱短信驱动
- * 纯内存记录发信请求并打印结构化脱敏审计日志，保障脱网环境下 100% 离线自洽
+ * 纯内存记录发信请求并打印结构化脱敏审计日志，支持模板短信与无模板纯文本直发，保障脱网环境下 100% 离线自洽
  *
  * @author Ateng
  * @since 2026-11-02
@@ -31,29 +32,40 @@ public class MockSmsProvider implements SmsProvider {
     }
 
     @Override
+    public boolean supportsPlainText() {
+        return true;
+    }
+
+    @Override
     public SmsResult send(SmsRequest request, SmsChannel channel) {
         String channelName = channel != null ? channel.getName() : "mock";
         String maskedPhone = DesensitizeUtil.mobilePhone(request.getPhone());
         String bizId = "MOCK_BIZ_" + IdUtil.fastSimpleUUID();
         String requestId = "MOCK_REQ_" + IdUtil.fastSimpleUUID();
+        String templateLabel = StringUtils.hasText(request.getTemplateId())
+                ? request.getTemplateId()
+                : "[PLAIN_TEXT len=" + (request.getContent() != null ? request.getContent().length() : 0) + "]";
+        String sign = request.getSignName() != null
+                ? request.getSignName()
+                : (channel != null ? channel.getSignName() : "MOCK");
 
-        // 纯内存记录
+        // 纯内存记录真明文请求
         sentRequests.offer(request);
 
         if (request.getPhones() != null && request.getPhones().size() > 1) {
             log.info("[MockSmsProvider] 模拟批量发信成功 -> 渠道: {}, 目标号码数: {}, 模板ID: {}, 签名: {}, 动态参数: {}, 模拟流水号: {}",
                     channelName,
                     request.getPhones().size(),
-                    request.getTemplateId(),
-                    request.getSignName() != null ? request.getSignName() : (channel != null ? channel.getSignName() : "MOCK"),
+                    templateLabel,
+                    sign,
                     request.getParams(),
                     bizId);
         } else {
             log.info("[MockSmsProvider] 模拟发信成功 -> 渠道: {}, 目标号码: {}, 模板ID: {}, 签名: {}, 动态参数: {}, 模拟流水号: {}",
                     channelName,
                     maskedPhone,
-                    request.getTemplateId(),
-                    request.getSignName() != null ? request.getSignName() : (channel != null ? channel.getSignName() : "MOCK"),
+                    templateLabel,
+                    sign,
                     request.getParams(),
                     bizId);
         }
