@@ -189,3 +189,5 @@ flowchart TB
    - 由单一的 Token 数量统计演进为支持不同大模型（如 deepseek-v3 vs deepseek-r1 vs gpt-4o）的动态费率折算系数（Ratio-weighted tokens），统一换算为标准计费单元或金额，实现精细化成本归因。
 3. **自适应熔断降级联动**：
    - 联动自研或标准熔断中间件，当大模型网关发生高频 429、504 或延迟断崖式升高时，配额守卫与路由模块支持按租户优先级实行动态削峰与弹性降额。
+
+> **演进注记 (Evolution Note — 2026-11-22)**：详见 [ADR-0111](./0111-enterprise-ai-cache-prompt-parallel-graph-bm25-eval-and-health-architecture.md)。现行生产基线已确立 `ateng.boot.ai.audit.aggregate-tenant-metrics=true` 低基数多租户标签折叠防爆机制、`log-payload=false` / `max-payload-chars=2000`、`audit.pricings.*` 与 `audit.default-pricing.*` 财务配置结构（累计财务指标名 `ateng.ai.cost.total`），并在 `ateng-boot-observability` 落地防假死零扣费安全探针 `AiSafeHealthIndicator`。

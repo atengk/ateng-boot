@@ -13,6 +13,8 @@ ateng:
         api-key: YOUR_DEEPSEEK_API_KEY
         model-name: deepseek-chat
         timeout: 60s
+        # 原生 JSON Schema 严格约束模式 (默认 false)
+        strict-native-json-schema: false
       models:
         reasoner:
           base-url: https://api.deepseek.com/v1
@@ -24,11 +26,39 @@ ateng:
           api-key: YOUR_DASHSCOPE_API_KEY
           model-name: qwen-plus
           timeout: 60s
-      # 全维可观测审计与 PII 脱敏配置
+      # 精确与向量语义双级响应缓存配置
+      cache:
+        enabled: false
+        type: AUTO
+        exact-enabled: true
+        semantic-enabled: false
+        similarity-threshold: 0.95
+        ttl: 1h
+        max-entries: 1000
+      # 动态提示词资产托管与版本路由配置
+      prompt:
+        enabled: true
+        locations:
+          - "classpath:/prompts/"
+        strict-validation: true
+        cache-ttl: 0s
+      # 全维可观测审计、PII 脱敏、低基数折叠与财务定价配置
       audit:
         enabled: true
         mask-pii: true
-        log-payload: true
+        log-payload: false
+        max-payload-chars: 2000
+        aggregate-tenant-metrics: true
+        default-pricing:
+          input-cost-per-million: 0
+          output-cost-per-million: 0
+        pricings:
+          gpt-4o:
+            input-cost-per-million: 2.50
+            output-cost-per-million: 10.00
+          deepseek-chat:
+            input-cost-per-million: 0.14
+            output-cost-per-million: 0.28
       # SaaS 多租户模型切源映射 (tenantId -> modelName)
       tenant-models:
         tenant-finance: reasoner
@@ -62,6 +92,35 @@ ateng:
         max-results: 3
         min-score: 0.6
         model-name: text-embedding-3-small
+        hybrid:
+          enabled: false
+          dense-weight: 1.0
+          sparse-weight: 1.0
+          rrf-k: 60
+        # 可选：外接生产级分布式向量存储库 (挂接于 ateng.boot.ai.rag.store)
+        # store:
+        #   type: MILVUS # 或 REDIS / PGVECTOR / ELASTICSEARCH
+        #   milvus:
+        #     uri: http://YOUR_MILVUS_HOST:19530
+        #     token: YOUR_MILVUS_TOKEN
+        #     collection-name: rag_embeddings
+        #     dimension: 1536
+        #   redis:
+        #     host: YOUR_REDIS_HOST
+        #     port: 6379
+        #     password: YOUR_REDIS_PASSWORD
+        #     index-name: rag-index
+        #     prefix: "rag:"
+        #     dimension: 1536
+        #   pgvector:
+        #     host: YOUR_PG_HOST
+        #     port: 5432
+        #     database: postgres
+        #     user: postgres
+        #     password: YOUR_PG_PASSWORD
+        #     table: rag_embeddings
+        #     dimension: 1536
+        #     drop-table-first: false
         # 可选：配置独立 Embedding 模型端点与密钥 (未配置时自动继承主模型凭据)
         # model:
         #   base-url: https://api.openai.com/v1
@@ -94,26 +153,3 @@ ateng:
         #     bucket: YOUR_BUCKET
         #     access-key: YOUR_ACCESS_KEY
         #     secret-key: YOUR_SECRET_KEY
-        # store:
-        #   type: MILVUS # 或 REDIS / PGVECTOR / ELASTICSEARCH
-        #   milvus:
-        #     uri: http://YOUR_MILVUS_HOST:19530
-        #     token: YOUR_MILVUS_TOKEN
-        #     collection-name: rag_embeddings
-        #     dimension: 1536
-        #   redis:
-        #     host: YOUR_REDIS_HOST
-        #     port: 6379
-        #     password: YOUR_REDIS_PASSWORD
-        #     index-name: rag-index
-        #     prefix: "rag:"
-        #     dimension: 1536
-        #   pgvector:
-        #     host: YOUR_PG_HOST
-        #     port: 5432
-        #     database: postgres
-        #     user: postgres
-        #     password: YOUR_PG_PASSWORD
-        #     table: rag_embeddings
-        #     dimension: 1536
-        #     drop-table-first: false

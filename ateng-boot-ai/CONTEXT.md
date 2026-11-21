@@ -275,3 +275,55 @@ _Avoid_: SpeechRecord, ArgumentItem, DebateUtterance
 **DebateState**:
 对抗式多智能体辩论强类型状态基类，继承 `BaseGraphState`，提供辩题、轮次计数、历史发言记录集、共识达成标志与仲裁终局裁决 TypedKey。
 _Avoid_: DebateContext, ArgumentState, ConsensusState
+
+**AiSemanticCache**:
+精确哈希与向量语义双级响应缓存具体门面，基于租户、模型、关键参数指纹与系统提示词摘要严格防串话隔离，默认豁免工具调用、流式响应与高随机性采样。
+_Avoid_: SemanticCacheService, LlmCacheManager, ResponseCacheHelper
+
+**AiCacheStore**:
+双级响应缓存持久化存储 SPI 顶层接口，定义精确哈希命中与向量语义相似度检索的读取、写入、失效及按租户清理生命周期契约，与主 RAG 知识库存储物理隔离。
+_Avoid_: CacheRepository, SemanticStorage, CacheProvider
+
+**InMemoryAiCacheStore**:
+单机内存有界 LRU 双级响应缓存存储实现类，用于轻量单机部署或 100% 离线自洽测试沙箱。
+_Avoid_: LocalAiCache, SimpleCacheStore
+
+**RedisAiCacheStore**:
+基于 `ateng-boot-redis` 的分布式双级响应缓存存储实现类，依托 Redis 共享跨 Pod 缓存命中状态并绑定强类型 `Duration` TTL 自动回收。
+_Avoid_: DistributedAiCache, RedisCacheManager
+
+**PromptRegistry**:
+动态提示词资产集中托管与版本路由具体注册表，基于 `PromptProvider` SPI 支持按业务编码、版本号与环境标签寻址及运行期受控热刷新。
+_Avoid_: PromptManager, TemplateService, PromptCenter
+
+**PromptProvider**:
+动态提示词外部仓储加载扩展点 SPI 顶层接口，内置本地 YAML/Classpath 默认加载实现，并支持无侵入对接 Nacos、数据库等外部配置中心。
+_Avoid_: PromptLoader, PromptRepository, TemplateSource
+
+**PromptDefinition**:
+不可变动态提示词资产契约模型，封装唯一编码（`code`）、版本号（`version`）、环境标签（`label`）、模板正文及必填占位变量清单。
+_Avoid_: PromptEntity, PromptDto, TemplateMeta
+
+**ParallelFanOutWorkflow**:
+基于 LangGraph4j 与 Core 受管异步线程池的并发扇出-汇聚认知状态图抽象基类，支持多路 `ParallelBranch` 并发执行、四维上下文透传与 `FAIL_FAST`/`BEST_EFFORT` 汇聚策略。
+_Avoid_: ConcurrentGraph, ForkJoinWorkflow, ParallelPipeline
+
+**ParallelBranch**:
+并行扇出认知图的受管执行分支契约模型，封装分支唯一名称、阶段处理逻辑与单分支 `Duration` 硬超时阈值。
+_Avoid_: ParallelTask, ForkStep, BranchHandler
+
+**ParallelState**:
+并行扇出-汇聚认知图强类型状态基类，继承 `BaseGraphState`，提供成功分支产出（`branchResults`）、结构化分支失败明细（`branchErrors` / `BranchError`）及完成/失败分支清单 TypedKey。
+_Avoid_: ConcurrentState, ForkJoinState, ParallelContext
+
+**RagEvaluator**:
+显式按需调用的轻量 RAG 质量评测具体门面，依托 LLM-as-a-Judge 对问答输出的忠实度、答案相关性与可选上下文召回率进行结构化打分，严禁默认挂载至在线实时对话热路径。
+_Avoid_: RagJudge, EvaluationService, RagBenchmark
+
+**RagEvaluationRequest**:
+强类型 RAG 质量按需评测输入请求模型，封装提问（`question`）、回答（`answer`）、检索上下文（`retrievedContexts`）、可选参考标准答案（`referenceAnswer`）及可选评测模型标识（`modelName`）。
+_Avoid_: EvalRequest, RagJudgeParam, BenchmarkInput
+
+**RagEvaluationReport**:
+强类型 RAG 质量评测结果契约模型，封装忠实度（`faithfulness`）、答案相关性（`answerRelevance`）、上下文召回率（`contextRecall`）与综合分（`overallScore`）及诊断评语（`reasoning`）。
+_Avoid_: EvalResult, RagScoreVo, QualityReport

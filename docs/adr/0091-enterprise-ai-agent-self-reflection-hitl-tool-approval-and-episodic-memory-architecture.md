@@ -136,3 +136,5 @@ flowchart TB
 ### 架构权衡
 - 引入工单快照机制需要占用微量 Redis 内存，但通过 30 分钟强 TTL 自动淘汰机制彻底消除泄漏风险；
 - 异步长效记忆提取消耗额外微量 Token，但通过轻量模型提示词与单日配额风控（`AiQuotaChecker`）实现了成本可控。
+
+> **演进注记 (Evolution Note — 2026-11-22)**：详见 [ADR-0111](./0111-enterprise-ai-cache-prompt-parallel-graph-bm25-eval-and-health-architecture.md)。现已在既有状态图体系上扩展 `ParallelFanOutWorkflow` 并行扇出-汇聚工作流与分支隔离快照；已对 `OpenApiToolAdapter` 加固 `blockPrivateNetwork` / `allowedHosts` SSRF 防线；并将 `McpClientAdapter` 扩展至只读资源与提示词模板（`resources/*`、`prompts/*`）。

@@ -1,6 +1,5 @@
 package io.github.atengk.boot.sample.ai.controller;
 
-import io.github.atengk.boot.core.model.Result;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
@@ -10,7 +9,12 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 契约目标服务模拟控制器 (用于本地运行与端到端真实联调)
+ * 契约目标服务模拟控制器 (Simulated Downstream Stub for OpenApiToolAdapter)
+ * <p>
+ * 说明：本控制器仅作为 {@code OpenApiToolAdapter}（{@code openapi/order-service-api.json}）
+ * 在本地联调与端到端集成测试阶段的模拟第三方下游目标服务桩使用，提供标准 REST 响应模拟订单查询、
+ * 创建与作废操作，并非对外业务体验接口（常规 Sample 业务接入请参阅 {@code AiOpenApiToolController}）。
+ * </p>
  *
  * @author Ateng
  * @since 2026-11-06

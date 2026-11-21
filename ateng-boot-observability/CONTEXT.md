@@ -99,3 +99,7 @@ _Avoid_: ObservabilityPostProcessor, ActuatorConfigProcessor
 **AdminClientSecretHttpRequestInterceptor**:
 面向 Spring Boot Admin 客户端（SBA Client）的出站注册握手密钥拦截器，在实例向管控中心发起注册与心跳请求时透明注入 `X-Admin-Client-Secret` 请求头，与 `ateng-boot-admin` 服务端形成零配置安全准入闭环。
 _Avoid_: SbaSecretInterceptor, AdminAuthInterceptor, RegistrationHeaderFilter
+
+**AiSafeHealthIndicator**:
+面向 `ateng-boot-ai` 的防假死安全健康探针，仅校检 `AiModelRegistry` 静态预热模型配置完整性及可选零计费只读 `/models` 端点探活（严禁触发扣费对话请求，未配密钥安全返回 `UNKNOWN`），内置默认 `60s` 防刷缓存与异常凭据自动脱敏。
+_Avoid_: AiHealthProbe, LlmHealthIndicator, OpenAiHealthCheck

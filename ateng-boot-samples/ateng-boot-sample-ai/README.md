@@ -1,6 +1,6 @@
 # ateng-boot-sample-ai AI 智能体与认知图底座自验体验工程
 
-> 专注于演示与自验 `ateng-boot-ai` 核心特性在真实业务场景下的开箱使用，涵盖 OpenAI-Compatible 万能网关多模型路由、发票凭单视觉多模态分析、DeepSeek-R1 `<think>` 思考链提炼与双通道打字机流式推流、智能体多通道过程流式推流、文档智能切片、交叉重排、多模型故障转移、突发滑动限流、动态函数调用与 MCP 客户端、企业 OpenAPI 契约转沙箱工具、长会话异步摘要记忆、声明式高危工具人机协作审批与主动续跑闭环 (HITL)、主管-专工分层认知图、确定性顺序流水线认知工作流、对抗式多智能体辩论与共识裁决工作流、跨会话长效情景记忆与可信 RAG 证据溯源推流。
+> 专注于演示与自验 `ateng-boot-ai` 核心特性在真实业务场景下的开箱使用，涵盖 OpenAI-Compatible 万能网关多模型路由、精确与向量语义双级响应缓存、动态提示词资产托管与版本路由、发票凭单视觉多模态分析、DeepSeek-R1 `<think>` 思考链提炼与双通道打字机流式推流、智能体多通道过程流式推流、文档智能切片与混合 BM25 多租户倒排检索、按需 RAG 质量评测、交叉重排、多模型故障转移、突发滑动限流、动态函数调用与 MCP 客户端（含资源/提示词）、企业 OpenAPI 契约转沙箱工具（含 SSRF 守卫）、长会话异步摘要记忆、声明式高危工具人机协作审批与主动续跑闭环 (HITL)、主管-专工/顺序流水线/对抗辩论/并行扇出全谱系认知状态图工作流、跨会话长效情景记忆与可信 RAG 证据溯源推流。
 
 ---
 
@@ -65,6 +65,7 @@
 | **RAG 融合知识库增强问答** | `AiRagController` | `POST /sample/ai/rag/ask` | `curl -X POST "http://localhost:8080/sample/ai/rag/ask" -H "Content-Type: application/json" -d "{\"question\":\"ateng-boot 的 Controller 能直接返回 Entity 吗？\"}"` |
 | **可信 RAG 证据溯源问答** | `AiRagController` | `POST /sample/ai/rag/ask-with-citations` | `curl -X POST "http://localhost:8080/sample/ai/rag/ask-with-citations" -H "Content-Type: application/json" -d "{\"question\":\"ateng-boot 的响应契约是什么？\"}"` |
 | **可信 RAG 证据溯源推流** | `AiRagController` | `GET /sample/ai/rag/stream-with-citations` | `curl -N "http://localhost:8080/sample/ai/rag/stream-with-citations?question=ateng-boot的响应契约是什么？"` |
+| **显式按需 RAG 质量评测** | `AiRagController` | `POST /sample/ai/rag/evaluate` | `curl -X POST "http://localhost:8080/sample/ai/rag/evaluate" -H "Content-Type: application/json" -d "{\"question\":\"ateng-boot的核心设计理念是什么？\",\"answer\":\"遵循纯原生零臃肿架构，严禁泄露持久化实体。\",\"retrievedContexts\":[\"ateng-boot 是纯原生零臃肿工业级 Starter 套件，Controller 严禁泄露 Entity。\"],\"referenceAnswer\":\"遵循纯原生零臃肿架构，严禁泄露持久化实体。\"}"` |
 | **长文档智能结构化切分** | `AiRagController` | `POST /sample/ai/rag/split` | `curl -X POST "http://localhost:8080/sample/ai/rag/split" -H "Content-Type: application/json" -d "{\"text\":\"# 规范\\nController 严禁返回实体\",\"strategy\":\"MARKDOWN\"}"` |
 | **原生父子分级切片切分** | `AiRagSplitterController` | `POST /sample/ai/rag/split/parent-child` | `curl -X POST "http://localhost:8080/sample/ai/rag/split/parent-child" -H "Content-Type: application/json" -d "{\"text\":\"第一章 基础底座。第二章 数据安全。\",\"parentChunkSize\":1000,\"childChunkSize\":200}"` |
 | **候选切片两阶段交叉重排** | `AiRagController` | `POST /sample/ai/rag/rerank` | `curl -X POST "http://localhost:8080/sample/ai/rag/rerank" -H "Content-Type: application/json" -d "{\"query\":\"Controller规范\",\"candidates\":[\"Redis缓存\",\"Result强类型契约\"],\"topK\":2}"` |
@@ -75,6 +76,10 @@
 | **编程式动态工具函数调用** | `AiToolsController` | `POST /sample/ai/tools/chat-dynamic` | `curl -X POST "http://localhost:8080/sample/ai/tools/chat-dynamic" -H "Content-Type: application/json" -d "{\"question\":\"请帮我计算 125 * 8 是多少\"}"` |
 | **远程 MCP 客户端清单概览** | `AiToolsController` | `GET /sample/ai/tools/mcp-list` | `curl "http://localhost:8080/sample/ai/tools/mcp-list"` |
 | **远程 MCP 标准工具调用执行** | `AiToolsController` | `POST /sample/ai/tools/mcp-call` | `curl -X POST "http://localhost:8080/sample/ai/tools/mcp-call" -H "Content-Type: application/json" -d "{\"serverName\":\"weather-server\",\"toolName\":\"get_weather\",\"arguments\":{\"city\":\"Beijing\"}}"` |
+| **远程 MCP 资源清单探查** | `AiToolsController` | `GET /sample/ai/tools/mcp-resources` | `curl "http://localhost:8080/sample/ai/tools/mcp-resources?serverName=weather-server"` |
+| **读取远程 MCP 资源正文** | `AiToolsController` | `GET /sample/ai/tools/mcp-resource` | `curl "http://localhost:8080/sample/ai/tools/mcp-resource?serverName=weather-server&uri=docs://faq.md"` |
+| **远程 MCP 提示词清单探查** | `AiToolsController` | `GET /sample/ai/tools/mcp-prompts` | `curl "http://localhost:8080/sample/ai/tools/mcp-prompts?serverName=weather-server"` |
+| **渲染远程 MCP 提示词模板** | `AiToolsController` | `POST /sample/ai/tools/mcp-prompt` | `curl -X POST "http://localhost:8080/sample/ai/tools/mcp-prompt" -H "Content-Type: application/json" -d "{\"serverName\":\"weather-server\",\"promptName\":\"summary\",\"arguments\":{\"topic\":\"weather\"}}"` |
 | **长会话多轮输入摘要对话** | `AiSummaryController` | `POST /sample/ai/summary/chat` | `curl -X POST "http://localhost:8080/sample/ai/summary/chat" -H "Content-Type: application/json" -d "{\"sessionId\":\"sess_001\",\"message\":\"我需要一个Spring Boot脚手架\"}"` |
 | **长会话双层上下文状态探查** | `AiSummaryController` | `GET /sample/ai/summary/state` | `curl "http://localhost:8080/sample/ai/summary/state?sessionId=sess_001"` |
 | **清空长会话记忆与历史摘要** | `AiSummaryController` | `POST /sample/ai/summary/clear` | `curl -X POST "http://localhost:8080/sample/ai/summary/clear?sessionId=sess_001"` |
@@ -114,6 +119,21 @@
 | **OpenAPI 受管工具直接调用** | `AiOpenApiToolController` | `POST /sample/ai/agent/openapi-tools/execute` | `curl -X POST "http://localhost:8080/sample/ai/agent/openapi-tools/execute" -H "Content-Type: application/json" -d "{\"operationId\":\"getOrderById\",\"arguments\":{\"id\":1001,\"includeItems\":true}}"` |
 | **OpenAPI 工具驱动智能对话** | `AiOpenApiToolController` | `POST /sample/ai/agent/openapi-tools/chat` | `curl -X POST "http://localhost:8080/sample/ai/agent/openapi-tools/chat" -H "Content-Type: application/json" -d "{\"prompt\":\"请帮我查询订单 1001 的详情\"}"` |
 | **OpenAPI 契约工具热重载** | `AiOpenApiToolController` | `POST /sample/ai/agent/openapi-tools/reload` | `curl -X POST "http://localhost:8080/sample/ai/agent/openapi-tools/reload"` |
+| **双级语义缓存对话体验** | `AiCacheController` | `POST /sample/ai/cache/chat` | `curl -X POST "http://localhost:8080/sample/ai/cache/chat" -H "Content-Type: application/json" -d "{\"prompt\":\"什么是Spring Boot自动装配？\",\"tenantId\":\"tenant-a\",\"bypassCache\":false}"` |
+| **按租户驱逐语义缓存** | `AiCacheController` | `DELETE /sample/ai/cache/evict/{tenantId}` | `curl -X DELETE "http://localhost:8080/sample/ai/cache/evict/tenant-a"` |
+| **清空全部 AI 语义缓存** | `AiCacheController` | `DELETE /sample/ai/cache/clear` | `curl -X DELETE "http://localhost:8080/sample/ai/cache/clear"` |
+| **查询语义缓存命中统计** | `AiCacheController` | `GET /sample/ai/cache/stats` | `curl "http://localhost:8080/sample/ai/cache/stats"` |
+| **托管动态提示词清单** | `AiPromptController` | `GET /sample/ai/prompt/list` | `curl "http://localhost:8080/sample/ai/prompt/list"` |
+| **按版本/标签查看提示词** | `AiPromptController` | `GET /sample/ai/prompt/detail` | `curl "http://localhost:8080/sample/ai/prompt/detail?code=customer-support&versionOrLabel=canary"` |
+| **提示词渲染与严格校验** | `AiPromptController` | `POST /sample/ai/prompt/render` | `curl -X POST "http://localhost:8080/sample/ai/prompt/render" -H "Content-Type: application/json" -d "{\"code\":\"customer-support\",\"versionOrLabel\":\"prod\",\"strict\":true,\"variables\":{\"userName\":\"张三\",\"topic\":\"物流延迟\"}}"` |
+| **按 promptCode 发起对话** | `AiPromptController` | `POST /sample/ai/prompt/chat` | `curl -X POST "http://localhost:8080/sample/ai/prompt/chat" -H "Content-Type: application/json" -d "{\"code\":\"customer-support\",\"variables\":{\"userName\":\"张三\",\"topic\":\"物流延迟\"}}"` |
+| **运行期注册新版本提示词** | `AiPromptController` | `POST /sample/ai/prompt/register` | `curl -X POST "http://localhost:8080/sample/ai/prompt/register" -H "Content-Type: application/json" -d "{\"code\":\"order-notice\",\"version\":\"1.0.0\",\"label\":\"prod\",\"content\":\"尊敬的{{customer}}，订单{{orderId}}已出库。\",\"requiredVariables\":[\"customer\",\"orderId\"]}"` |
+| **提示词提供者热刷新** | `AiPromptController` | `POST /sample/ai/prompt/refresh` | `curl -X POST "http://localhost:8080/sample/ai/prompt/refresh?code=customer-support"` |
+| **声明式提示词智能体对话** | `AiPromptController` | `POST /sample/ai/prompt/agent-chat` | `curl -X POST "http://localhost:8080/sample/ai/prompt/agent-chat" -H "Content-Type: application/json" -d "{\"question\":\"如何排查支付回调超时？\"}"` |
+| **订单并行多维核验启动** | `AiParallelWorkflowController` | `POST /sample/ai/workflow/parallel/start` | `curl -X POST "http://localhost:8080/sample/ai/workflow/parallel/start" -H "Content-Type: application/json" -d "{\"orderId\":\"ORD_PAR_1001\",\"userId\":\"U-888\",\"amount\":1999.00,\"skuCode\":\"SKU-IPHONE-16\",\"riskDelayMs\":0}"` |
+| **并行工作流快照回查** | `AiParallelWorkflowController` | `GET /sample/ai/workflow/parallel/snapshot/{threadId}` | `curl "http://localhost:8080/sample/ai/workflow/parallel/snapshot/YOUR_THREAD_ID"` |
+
+> **模拟下游目标服务桩说明 (`MockOrderApiController`)**：样例工程中的 `MockOrderApiController`（`/api/v1/orders/*`）**仅作为 `OpenApiToolAdapter` 本地端到端联调的模拟第三方下游目标服务桩**，用于验证 OpenAPI 契约转沙箱工具调用，并非面向终端业务的标准接口。
 
 > **流式推流说明**：调用 `GET /sample/ai/chat/stream` 或 `GET /sample/ai/rag/stream-with-citations` 时，控制台或客户端将持续接收由 `event: reasoning`（思考过程）、`event: text`（正文内容）、`event: citation`（证据溯源引用尾包，包含合法引用切片列表与事实忠实度评分）与 `event: done`（`[DONE]` 结束信号）组成的标准 Server-Sent Events 事件流。
 

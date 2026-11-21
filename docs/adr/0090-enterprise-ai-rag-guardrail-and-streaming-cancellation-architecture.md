@@ -237,3 +237,5 @@ flowchart TB
   - `ChatMemoryManagerTest`：Token 级滑动裁剪、系统指令保全。
 - **Sample 场景联动工程**：
   - `ateng-boot-sample-ai`：全真覆盖 `AiChatController`、`AiAgentController`、`AiRagController`、`AiWorkflowController` 与 `AiMetricsController`，实现 100% 接口与场景闭环自验。
+
+> **演进注记 (Evolution Note — 2026-11-22)**：详见 [ADR-0111](./0111-enterprise-ai-cache-prompt-parallel-graph-bm25-eval-and-health-architecture.md)。在混合检索方面，`Bm25KeywordRetriever` 已演进为 `ReentrantLock` 守护的多租户增量倒排索引并与 `RagIngestionTemplate`（`ingest`/`OVERWRITE`/`deleteDocument`）自动同步；同时补齐显式按需 `RagEvaluator` 质量评测门面（热路径零介入）与原生严格模式 `strict-native-json-schema`。
