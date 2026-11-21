@@ -33,6 +33,8 @@ import org.springframework.test.web.servlet.MvcResult;
 
 import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
@@ -586,6 +588,140 @@ class SampleSocialIntegrationTest {
                 .andExpect(jsonPath("$.data[0].eventType").value("UNBOUND"))
                 .andExpect(jsonPath("$.data[0].userId").value("user_bound_1001"))
                 .andExpect(jsonPath("$.data[0].appKey").value("github_app"));
+    }
+
+    @Test
+    @DisplayName("19. [WebOAuth] OAuth 2.1 PKCE 授权挑战、POST form_post 回调与 OIDC idToken 完整透传")
+    void test19_WebOAuth_PkceAuthorizeAndPostCallbackWithOidcIdToken() throws Exception {
+        MvcResult renderResult = mockMvc.perform(get("/sample/social/oauth/render-pkce/huawei_pkce_app")
+                        .param("redirectUrl", "https://ateng.example.com/pkce-done")
+                        .param("tenantId", "tenant_pkce_01"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        String authorizeUrl = objectMapper.readTree(renderResult.getResponse().getContentAsString())
+                .get("data").asText();
+        assertThat(authorizeUrl)
+                .contains("code_challenge=")
+                .contains("code_challenge_method=S256")
+                .contains("state=");
+
+        String state = extractQueryParam(authorizeUrl, "state");
+
+        // 构造模拟 OIDC JWT id_token (header.payload.signature)
+        String jwtHeader = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("{\"alg\":\"RS256\",\"typ\":\"JWT\"}".getBytes(StandardCharsets.UTF_8));
+        String jwtPayload = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("{\"sub\":\"hw_oidc_sub_9001\",\"name\":\"HuaweiPkceUser\",\"nickname\":\"华为PKCE用户\",\"picture\":\"https://avatar.example.com/hw.png\"}".getBytes(StandardCharsets.UTF_8));
+        String mockIdToken = jwtHeader + "." + jwtPayload + ".mock_sig";
+
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"access_token\":\"hw_access_pkce_01\",\"refresh_token\":\"hw_refresh_pkce_01\",\"expires_in\":3600,\"id_token\":\"" + mockIdToken + "\"}"));
+
+        // 使用 POST form_post 方式回调换码
+        mockMvc.perform(post("/sample/social/oauth/callback/huawei_pkce_app")
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .param("code", "hw_pkce_auth_code_01")
+                        .param("state", state))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.state").value("REQUIRE_BIND"))
+                .andExpect(jsonPath("$.data.socialUser.openId").value("hw_oidc_sub_9001"))
+                .andExpect(jsonPath("$.data.socialUser.nickname").value("华为PKCE用户"))
+                .andExpect(jsonPath("$.data.socialUser.rawToken.idToken").value(mockIdToken));
+
+        // 校验发往第三方 Token 端点的请求中携带了 PKCE code_verifier
+        String tokenRequestPath = mockWebServer.takeRequest().getPath();
+        assertThat(tokenRequestPath).contains("code_verifier=");
+    }
+
+    @Test
+    @DisplayName("20. [MiniApp] /sample/social/miniapp/qq-direct-login: QQ 小程序 code2Session 直传登录")
+    void test20_MiniApp_QqMiniProgramDirectLogin() throws Exception {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"errcode\":0,\"errmsg\":\"ok\",\"session_key\":\"qq_sess_888\",\"openid\":\"qq_mini_openid_888\",\"unionid\":\"qq_union_888\"}"));
+
+        SocialDirectLoginRequest request = SocialDirectLoginRequest.builder()
+                .code("qq_js_code_888")
+                .deviceType("MINI_PROGRAM")
+                .build();
+
+        mockMvc.perform(post("/sample/social/miniapp/qq-direct-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.state").value("REQUIRE_BIND"))
+                .andExpect(jsonPath("$.data.socialUser.source").value("QQ_MINI_PROGRAM"))
+                .andExpect(jsonPath("$.data.socialUser.openId").value("qq_mini_openid_888"))
+                .andExpect(jsonPath("$.data.socialUser.unionId").value("qq_union_888"));
+    }
+
+    @Test
+    @DisplayName("21. [MiniApp] /sample/social/miniapp/snapshot-guard-login: 微信快照页虚拟账号 7009 刚性阻断")
+    void test21_MiniApp_WeChatSnapshotUserRejection() throws Exception {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"access_token\":\"wx_snap_tok\",\"refresh_token\":\"wx_snap_ref\",\"expires_in\":7200,\"openid\":\"wx_fake_snapshot_001\",\"scope\":\"snsapi_base\",\"is_snapshotuser\":1}"));
+
+        SocialDirectLoginRequest request = SocialDirectLoginRequest.builder()
+                .code("wx_snapshot_code_001")
+                .deviceType("MP_H5")
+                .build();
+
+        mockMvc.perform(post("/sample/social/miniapp/snapshot-guard-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(SocialResultCode.SOCIAL_SNAPSHOT_USER_REJECTED.getCode()))
+                .andExpect(jsonPath("$.msg").value(containsString("快照虚拟账号")));
+    }
+
+    @Test
+    @DisplayName("22. [MultiTenant] 自定义企业 SSO 平台 (AuthSource 扩展源 ENTERPRISE_SSO) 动态接入与登录闭环")
+    void test22_MultiTenant_CustomEnterpriseSsoAuthSourceFlow() throws Exception {
+        MvcResult renderResult = mockMvc.perform(get("/sample/social/tenant/custom-source-render")
+                        .param("redirectUrl", "https://ateng.example.com/sso-home")
+                        .param("tenantId", "tenant_enterprise_01"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        String authorizeUrl = objectMapper.readTree(renderResult.getResponse().getContentAsString())
+                .get("data").asText();
+        assertThat(authorizeUrl)
+                .startsWith("https://sso.ateng.example.com/oauth2/authorize")
+                .contains("client_id=enterprise_sso_client_id")
+                .contains("state=");
+
+        String state = extractQueryParam(authorizeUrl, "state");
+
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"access_token\":\"esso_tok_001\",\"refresh_token\":\"esso_ref_001\",\"expires_in\":3600,\"id_token\":\"esso_jwt_id_token_001\",\"sub\":\"esso_emp_001\"}"));
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"sub\":\"esso_emp_001\",\"username\":\"zhangsan_corp\",\"nickname\":\"张三(企业内网)\",\"email\":\"zhangsan@ateng.example.com\"}"));
+
+        mockMvc.perform(get("/sample/social/tenant/custom-source-callback")
+                        .param("code", "esso_code_001")
+                        .param("state", state))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.state").value("LOGGED_IN"))
+                .andExpect(jsonPath("$.data.userId").value(containsString("auto_user_")))
+                .andExpect(jsonPath("$.data.socialUser.source").value("ENTERPRISE_SSO"))
+                .andExpect(jsonPath("$.data.socialUser.openId").value("esso_emp_001"))
+                .andExpect(jsonPath("$.data.socialUser.rawToken.idToken").value("esso_jwt_id_token_001"))
+                .andExpect(jsonPath("$.data.stateContext.tenantId").value("tenant_enterprise_01"));
     }
 
     private String extractQueryParam(String url, String paramName) {

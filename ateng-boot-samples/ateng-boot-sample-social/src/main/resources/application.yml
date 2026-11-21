@@ -46,3 +46,22 @@ ateng:
           client-id: sample_baidu_client_id
           client-secret: sample_baidu_client_secret
           redirect-uri: http://localhost:8080/auth/social/callback/baidu_app
+        huawei_pkce_app:
+          source: HUAWEI_V3
+          client-id: sample_huawei_client_id
+          client-secret: sample_huawei_client_secret
+          redirect-uri: http://localhost:8080/sample/social/oauth/callback/huawei_pkce_app
+          pkce: true
+        qq_mini_app:
+          source: QQ_MINI_PROGRAM
+          client-id: sample_qq_mini_appid
+          client-secret: sample_qq_mini_secret
+          ignore-check-state: true
+          ignore-check-redirect-uri: true
+        wechat_snapshot_guard_app:
+          source: WECHAT_MP
+          client-id: sample_wx_mp_appid
+          client-secret: sample_wx_mp_secret
+          redirect-uri: http://localhost:8080/sample/social/oauth/callback/wechat_snapshot_guard_app
+          ignore-check-state: true
+          reject-snapshot-user: true

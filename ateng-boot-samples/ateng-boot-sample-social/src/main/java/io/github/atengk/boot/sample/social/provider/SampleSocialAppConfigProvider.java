@@ -41,6 +41,17 @@ public class SampleSocialAppConfigProvider implements SocialAppConfigProvider {
                     .redirectUri("http://localhost:8080/sample/social/oauth/callback/" + appKey)
                     .build();
         }
+        // 演示场景 3：动态提供基于自定义 AuthSource (ENTERPRISE_SSO) 的企业私有化 SSO 平台配置
+        if ("enterprise_sso_app".equals(appKey)) {
+            return SocialAppConfig.builder()
+                    .appKey(appKey)
+                    .source(SampleEnterpriseSsoAuthSource.SOURCE_NAME)
+                    .clientId("enterprise_sso_client_id")
+                    .clientSecret("enterprise_sso_client_secret")
+                    .redirectUri("http://localhost:8080/sample/social/oauth/callback/" + appKey)
+                    .autoSignUp(true)
+                    .build();
+        }
         return null;
     }
 }

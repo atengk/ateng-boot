@@ -50,6 +50,22 @@ public class SampleSocialScenarioService {
     }
 
     /**
+     * 处理标准 Web 回调换码认证（支持 GET Query 参数及 POST form_post 回调载体）
+     *
+     * @param appKey   社交应用唯一标识
+     * @param callback 平台回调参数对象（包含 code、state、auth_code、user 等）
+     * @return 认证结果（已登录签发会话，或未绑定引导两阶段绑定）
+     */
+    public SocialAuthResult completeWebLogin(String appKey, AuthCallback callback) {
+        log.info("业务场景编排：执行 Web OAuth2 回调换码登录, appKey={}", appKey);
+        SocialLoginOptions options = SocialLoginOptions.builder()
+                .deviceType("PC")
+                .loginType("USER")
+                .build();
+        return socialAuthTemplate.login(appKey, callback, options);
+    }
+
+    /**
      * 处理标准 Web 回调换码认证
      *
      * @param appKey 社交应用唯一标识
@@ -58,16 +74,11 @@ public class SampleSocialScenarioService {
      * @return 认证结果（已登录签发会话，或未绑定引导两阶段绑定）
      */
     public SocialAuthResult completeWebLogin(String appKey, String code, String state) {
-        log.info("业务场景编排：执行 Web OAuth2 回调换码登录, appKey={}", appKey);
         AuthCallback callback = AuthCallback.builder()
                 .code(code)
                 .state(state)
                 .build();
-        SocialLoginOptions options = SocialLoginOptions.builder()
-                .deviceType("PC")
-                .loginType("USER")
-                .build();
-        return socialAuthTemplate.login(appKey, callback, options);
+        return completeWebLogin(appKey, callback);
     }
 
     /**

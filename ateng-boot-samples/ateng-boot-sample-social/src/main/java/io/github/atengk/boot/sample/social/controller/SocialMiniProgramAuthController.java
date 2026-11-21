@@ -72,4 +72,40 @@ public class SocialMiniProgramAuthController {
         SocialAuthResult result = socialAuthTemplate.directLogin(appKey, request.getCode(), options);
         return Result.success(result);
     }
+
+    /**
+     * 演示 QQ 小程序 (qq.login code2Session) 凭证直传换码登录
+     * <p>
+     * 对应 {@code qq_mini_app}（{@code source: QQ_MINI_PROGRAM}），验证 {@code SocialAppFactory}
+     * 对上游 {@code AuthDefaultSource.QQ_MINI_PROGRAM} 的自动映射自愈与小程序无状态换码。
+     * </p>
+     *
+     * @param request 直传登录请求对象
+     * @return 认证结果
+     */
+    @PostMapping("/qq-direct-login")
+    public Result<SocialAuthResult> qqMiniProgramDirectLogin(
+            @Valid @RequestBody SocialDirectLoginRequest request) {
+        SocialAuthResult result = scenarioService.directLogin("qq_mini_app", request.getCode(), request.getDeviceType());
+        return Result.success(result);
+    }
+
+    /**
+     * 演示微信快照页虚拟账号安全防卫拦截 (Snapshot User Guard)
+     * <p>
+     * 对应 {@code wechat_snapshot_guard_app}（开启 {@code reject-snapshot-user: true}）。
+     * 当用户未同意隐私协议处于微信快照浏览模式（{@code is_snapshotuser=1}）时，
+     * 框架在入库与签发会话前刚性抛出 {@link io.github.atengk.boot.social.exception.SocialSnapshotUserException}（错误码 7009），
+     * 彻底杜绝虚拟假 OpenID 污染生产用户表。
+     * </p>
+     *
+     * @param request 直传登录请求对象
+     * @return 认证结果（若为快照虚拟号将被 7009 异常阻断）
+     */
+    @PostMapping("/snapshot-guard-login")
+    public Result<SocialAuthResult> snapshotGuardLogin(
+            @Valid @RequestBody SocialDirectLoginRequest request) {
+        SocialAuthResult result = scenarioService.directLogin("wechat_snapshot_guard_app", request.getCode(), request.getDeviceType());
+        return Result.success(result);
+    }
 }

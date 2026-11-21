@@ -183,3 +183,25 @@ public interface SocialAuthTemplate {
 - **1:1 独立场景沙箱**：`ateng-boot-samples/ateng-boot-sample-social`
 - **单测离线自洽保障**：基于轻量 `MockWebServer` 模拟微信/GitHub/Gitee OAuth2 换码与用户信息响应，离线跑通 `directLogin`、两阶段 `bind`、防重放拦截与 `unbind` 安全防卫。
 - **配置属性前缀**：`ateng.boot.social.*`（配置类 `AtengSocialProperties` 统配 `Duration`，并由 `spring-boot-configuration-processor` 生成 IDE 补全元数据）。
+
+---
+
+## 5. 2026-11 生产加固与 Dromara Anduin 2.3.0 演进注记 (Incremental Evolution)
+
+在保持上述 10 项核心架构决策向后兼容的前提下，针对 Dromara Anduin `2.3.0` 升级与生产高阶场景完成以下增量演进（参见 Issue [#1144](https://github.com/atengk/ateng-boot/issues/1144)）：
+
+1. **Dromara Anduin 2.3.0 引擎升级与上游映射自愈**：
+   - BOM 统一升级 `org.dromara.anduin:dromara-anduin` 至 `2.3.0`，`SpringRestClientHttpImpl` 切换至 `org.springframework.http.HttpHeaders` 与 `MediaType` 原生常量；
+   - `SocialAppFactory` 接管平台路由构建，自动修复上游 `AuthDefaultSource.AFDIAN`（误映射为 `AuthProginnRequest`）与 `QQ_MINI_PROGRAM`（误映射为 `null`）的映射缺陷。
+2. **自定义 `AuthSource` 容器自动发现与高优先级路由**：
+   - 自动发现 Spring 容器中的 `AuthSource` Bean，并提供 `registerExtendSource` / `unregisterExtendSource` / `getExtendSourceNames` 对称编程式 API；
+   - 确立 `自定义扩展源 > 内置自愈补丁 > AuthDefaultSource` 的三级路由优先级，解决上游 `AuthRequestBuilder` 内置枚举遮蔽同名自定义源的问题。
+3. **多租户动态 `RestClient` 配置指纹热更新**：
+   - `SpringRestClientHttpImpl` 基于 `(connectTimeout, readTimeout, proxyType, proxyHost, proxyPort)` 构建不可变配置指纹 `ClientConfigFingerprint`；当 `SocialAppConfigProvider` 动态变更应用超时或代理时自动热替换，移除专有配置时自动回退至全局默认客户端，并配套对称注销接口 `unregisterAppRestClient` / `clearAppRestClients`。
+4. **OAuth 2.1 PKCE 状态解耦与 `code_verifier` 阅后即焚**：
+   - `InMemorySocialAuthStateCache` 与 `RedisSocialAuthStateCache` 通过识别 `:code_verifier:` 命名空间，将 OAuth 2.1 PKCE 原始字符串存储与 `StateContext` JSON 存储物理隔离；
+   - `SocialAuthTemplate` 在 `login` / `getSocialUser` / `bindDirect` 的 `finally` 块中确定性清除 `<SOURCE>:code_verifier:<state>`，实现 PKCE 校验码单次消费即焚。
+5. **企业级平台专有属性对齐、OIDC `idToken` 与微信快照虚拟号防卫**：
+   - `SocialAppItemProperties` 与 `SocialAppConfig` 全量补齐 `pkce`、微软 Entra `microsoftTenantId`、Apple `kid`/`teamId`、企微 V2 `loginType`/`lang`、钉钉 V2 `dingTalkCorpId`/`dingTalkExclusiveLogin`、Okta `domainPrefix`/`authServerId` 等属性；`SocialToken` 补齐 OIDC `idToken`；
+   - 新增 `reject-snapshot-user` 配置与 `SocialSnapshotUserException`（错误码 `7009`），在微信公众号/网页授权命中快照浏览模式（`is_snapshotuser=1`）时刚性阻断虚拟号入库与会话签发；
+   - `SocialAuthController` 的 `/callback/{appKey}` 同时支持 `GET` 与 `POST`（兼容 Apple Sign In `form_post`），并对齐 `/refresh-token/{appKey}`（兼容 `/refresh/{appKey}`）与 `/revoke-token/{appKey}`（兼容 `/revoke/{appKey}`）双路由。

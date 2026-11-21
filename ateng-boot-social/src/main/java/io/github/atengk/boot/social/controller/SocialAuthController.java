@@ -25,6 +25,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -70,13 +71,13 @@ public class SocialAuthController {
     }
 
     /**
-     * 处理标准 Web 浏览器端 OAuth2 回调换码认证
+     * 处理标准 Web 浏览器端 OAuth2 回调换码认证（同时支持 GET 重定向回调与 Apple Sign In 等 POST form_post 回调）
      *
      * @param appKey   社交应用唯一标识
-     * @param callback 接收包含 code、auth_code、state 等平台回调参数
+     * @param callback 接收包含 code、auth_code、state、oauth_token、oauth_verifier、user 等平台回调参数
      * @return 认证结果（已绑定签发会话或未绑定引导两阶段绑定）
      */
-    @GetMapping("/callback/{appKey}")
+    @RequestMapping(value = "/callback/{appKey}", method = {RequestMethod.GET, RequestMethod.POST})
     public Result<SocialAuthResult> callback(
             @PathVariable("appKey") String appKey,
             AuthCallback callback) {
@@ -99,7 +100,12 @@ public class SocialAuthController {
                 .deviceType(request.getDeviceType())
                 .loginType(request.getLoginType())
                 .build();
-        SocialAuthResult result = socialAuthTemplate.directLogin(appKey, request.getCode(), options);
+        SocialAuthResult result;
+        if (request.hasExtendedCallbackFields()) {
+            result = socialAuthTemplate.directLogin(appKey, request.toAuthCallback(), options);
+        } else {
+            result = socialAuthTemplate.directLogin(appKey, request.getCode(), options);
+        }
         return Result.success(result);
     }
 
@@ -138,13 +144,13 @@ public class SocialAuthController {
     }
 
     /**
-     * 刷新第三方 OAuth2 访问令牌
+     * 刷新第三方 OAuth2 访问令牌（主路径 /refresh-token/{appKey}，向下兼容 /refresh/{appKey}）
      *
      * @param appKey  社交应用唯一标识
      * @param request 刷新令牌请求对象
      * @return 刷新后的最新令牌领域模型
      */
-    @PostMapping("/refresh/{appKey}")
+    @PostMapping({"/refresh-token/{appKey}", "/refresh/{appKey}"})
     public Result<SocialToken> refresh(
             @PathVariable("appKey") String appKey,
             @Valid @RequestBody SocialTokenRefreshRequest request) {
@@ -153,13 +159,13 @@ public class SocialAuthController {
     }
 
     /**
-     * 吊销第三方 OAuth2 授权凭证
+     * 吊销第三方 OAuth2 授权凭证（主路径 /revoke-token/{appKey}，向下兼容 /revoke/{appKey}）
      *
      * @param appKey  社交应用唯一标识
      * @param request 吊销令牌请求对象
      * @return 操作成功响应
      */
-    @PostMapping("/revoke/{appKey}")
+    @PostMapping({"/revoke-token/{appKey}", "/revoke/{appKey}"})
     public Result<Void> revoke(
             @PathVariable("appKey") String appKey,
             @Valid @RequestBody SocialTokenRevokeRequest request) {
@@ -179,12 +185,11 @@ public class SocialAuthController {
             @PathVariable("appKey") String appKey,
             @Valid @RequestBody SocialDirectBindRequest request) {
         SocialUser socialUser;
-        if (request.getState() != null && !request.getState().isBlank()) {
-            AuthCallback callback = AuthCallback.builder()
-                    .code(request.getCode())
-                    .state(request.getState())
-                    .build();
-            socialUser = socialAuthTemplate.bindDirect(request.getUserId(), appKey, callback);
+        boolean hasState = request.getState() != null && !request.getState().isBlank();
+        if (hasState) {
+            socialUser = socialAuthTemplate.bindDirect(request.getUserId(), appKey, request.toAuthCallback());
+        } else if (request.hasExtendedCallbackFields()) {
+            socialUser = socialAuthTemplate.bindDirect(request.getUserId(), appKey, request.toAuthCallback(), false);
         } else {
             socialUser = socialAuthTemplate.bindDirect(request.getUserId(), appKey, request.getCode());
         }

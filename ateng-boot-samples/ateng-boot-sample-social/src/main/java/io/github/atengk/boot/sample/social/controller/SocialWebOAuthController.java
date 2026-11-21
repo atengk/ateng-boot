@@ -11,11 +11,13 @@ import io.github.atengk.boot.social.template.SocialAuthTemplate;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.dromara.anduin.model.AuthCallback;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -75,19 +77,39 @@ public class SocialWebOAuthController {
     }
 
     /**
-     * 处理标准 Web 回调换码认证
+     * 演示 OAuth 2.1 PKCE (S256 code_challenge) 授权跳转地址生成
+     * <p>
+     * 对应开启了 {@code pkce: true} 的应用（如 {@code huawei_pkce_app}），
+     * 自动生成高熵 {@code code_verifier} 存入分布式状态缓存，并在授权 URL 中附加
+     * {@code code_challenge} 与 {@code code_challenge_method=S256}。
+     * </p>
      *
-     * @param appKey 社交应用唯一标识
-     * @param code   第三方平台授权码 code
-     * @param state  防伪状态码 state
+     * @param appKey      开启 PKCE 的社交应用唯一标识（如 huawei_pkce_app）
+     * @param redirectUrl 登录成功后回跳目标页面
+     * @param tenantId    多租户隔离标识
+     * @return 携带 PKCE code_challenge 与高熵 State 的授权跳转 URL
+     */
+    @GetMapping("/render-pkce/{appKey}")
+    public Result<String> renderPkceAuthorizeUrl(
+            @PathVariable("appKey") String appKey,
+            @RequestParam(value = "redirectUrl", required = false) String redirectUrl,
+            @RequestParam(value = "tenantId", required = false) String tenantId) {
+        String url = scenarioService.generateWebAuthorizeUrl(appKey, redirectUrl, tenantId);
+        return Result.success(url);
+    }
+
+    /**
+     * 处理标准 Web 回调换码认证（同时支持 GET 重定向回调与 Apple Sign In 等 POST form_post 回调）
+     *
+     * @param appKey   社交应用唯一标识
+     * @param callback 第三方平台回调参数载体（包含 code、state、auth_code、user 等）
      * @return 认证结果（已绑定用户签发会话凭据，未绑定用户返回 bindTicket）
      */
-    @GetMapping("/callback/{appKey}")
+    @RequestMapping(value = "/callback/{appKey}", method = {RequestMethod.GET, RequestMethod.POST})
     public Result<SocialAuthResult> completeWebLogin(
             @PathVariable("appKey") String appKey,
-            @RequestParam("code") String code,
-            @RequestParam("state") String state) {
-        SocialAuthResult result = scenarioService.completeWebLogin(appKey, code, state);
+            AuthCallback callback) {
+        SocialAuthResult result = scenarioService.completeWebLogin(appKey, callback);
         return Result.success(result);
     }
 

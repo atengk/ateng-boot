@@ -94,4 +94,34 @@ public class SocialMultiTenantConfigController {
         List<SampleSocialEventListener.AuditEventRecord> events = eventListener.getAuditEvents();
         return Result.success(events);
     }
+
+    /**
+     * 演示自定义企业 SSO 平台 (AuthSource 扩展源 ENTERPRISE_SSO) 授权跳转地址生成
+     *
+     * @param redirectUrl 登录成功后回跳目标页面
+     * @param tenantId    多租户隔离标识
+     * @return 携带高熵防伪 State 的企业 SSO 授权 URL
+     */
+    @GetMapping("/custom-source-render")
+    public Result<String> renderCustomEnterpriseSsoUrl(
+            @RequestParam(value = "redirectUrl", required = false) String redirectUrl,
+            @RequestParam(value = "tenantId", required = false) String tenantId) {
+        String url = scenarioService.generateWebAuthorizeUrl("enterprise_sso_app", redirectUrl, tenantId);
+        return Result.success(url);
+    }
+
+    /**
+     * 演示自定义企业 SSO 平台 (AuthSource 扩展源 ENTERPRISE_SSO) 回调换码与自动开户登录
+     *
+     * @param code  企业 SSO 授权码
+     * @param state 防伪状态码
+     * @return 认证结果（含 OIDC idToken 透传与自动注册用户会话）
+     */
+    @GetMapping("/custom-source-callback")
+    public Result<SocialAuthResult> customEnterpriseSsoCallback(
+            @RequestParam("code") String code,
+            @RequestParam("state") String state) {
+        SocialAuthResult result = scenarioService.completeWebLogin("enterprise_sso_app", code, state);
+        return Result.success(result);
+    }
 }

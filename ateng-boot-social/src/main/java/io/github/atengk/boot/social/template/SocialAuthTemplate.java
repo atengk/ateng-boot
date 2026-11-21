@@ -432,6 +432,19 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
         return doBindDirect(userId, appKey, callback, true);
     }
 
+    /**
+     * 个人中心已登录态直接绑定第三方社交账号（支持显式控制是否核验防伪 State，适配特殊平台直传回调参数）
+     *
+     * @param userId     本地系统用户唯一标识
+     * @param appKey     社交应用唯一标识
+     * @param callback   第三方回调凭证参数
+     * @param checkState 是否强制核验防伪 State
+     * @return 绑定的第三方标准化用户画像
+     */
+    public SocialUser bindDirect(String userId, String appKey, AuthCallback callback, boolean checkState) {
+        return doBindDirect(userId, appKey, callback, checkState);
+    }
+
     private SocialUser doBindDirect(String userId, String appKey, AuthCallback callback, boolean checkState) {
         if (userId == null || userId.isBlank()) {
             throw new IllegalArgumentException("本地用户标识 [userId] 不能为空");

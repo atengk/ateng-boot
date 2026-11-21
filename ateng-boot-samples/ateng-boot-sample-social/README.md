@@ -32,8 +32,9 @@
 | 功能场景 | 请求方式与路径 | 快速体验 cURL 命令 |
 | :--- | :--- | :--- |
 | **PC 扫码授权地址渲染** | `GET /sample/social/oauth/render/{appKey}` | `curl "http://localhost:8080/sample/social/oauth/render/github_app?redirectUrl=https%3A%2F%2Fateng.example.com%2Fwelcome&tenantId=tenant_dev"` |
+| **OAuth 2.1 PKCE 授权地址渲染** | `GET /sample/social/oauth/render-pkce/{appKey}` | `curl "http://localhost:8080/sample/social/oauth/render-pkce/huawei_pkce_app?redirectUrl=https%3A%2F%2Fateng.example.com%2Fpkce-done"` |
 | **开放重定向白名单校验** | `GET /sample/social/oauth/render-whitelist` | `curl "http://localhost:8080/sample/social/oauth/render-whitelist?redirectUrl=https%3A%2F%2Fateng.example.com%2Fdashboard"` |
-| **Web 回调换码认证** | `GET /sample/social/oauth/callback/{appKey}` | `curl "http://localhost:8080/sample/social/oauth/callback/github_app?code=MOCK_CODE&state=MOCK_STATE"` |
+| **Web 回调换码认证 (GET/POST)** | `GET/POST /sample/social/oauth/callback/{appKey}` | `curl "http://localhost:8080/sample/social/oauth/callback/github_app?code=MOCK_CODE&state=MOCK_STATE"` |
 | **第三方令牌续期** | `POST /sample/social/oauth/refresh-token/{appKey}` | `curl -X POST "http://localhost:8080/sample/social/oauth/refresh-token/baidu_app" -H "Content-Type: application/json" -d "{\"refreshToken\":\"MOCK_REFRESH_TOKEN\"}"` |
 | **第三方授权吊销** | `POST /sample/social/oauth/revoke-token/{appKey}` | `curl -X POST "http://localhost:8080/sample/social/oauth/revoke-token/baidu_app" -H "Content-Type: application/json" -d "{\"accessToken\":\"MOCK_ACCESS_TOKEN\"}"` |
 
@@ -41,8 +42,10 @@
 
 | 功能场景 | 请求方式与路径 | 快速体验 cURL 命令 |
 | :--- | :--- | :--- |
-| **小程序凭据直传登录** | `POST /sample/social/miniapp/direct-login/{appKey}` | `curl -X POST "http://localhost:8080/sample/social/miniapp/direct-login/wechat_mp_app" -H "Content-Type: application/json" -d "{\"code\":\"mock_wx_js_code\",\"deviceType\":\"MINI_PROGRAM\"}"` |
+| **微信小程序凭据直传登录** | `POST /sample/social/miniapp/direct-login/{appKey}` | `curl -X POST "http://localhost:8080/sample/social/miniapp/direct-login/wechat_mp_app" -H "Content-Type: application/json" -d "{\"code\":\"mock_wx_js_code\",\"deviceType\":\"MINI_PROGRAM\"}"` |
 | **首次登录静默自动开户** | `POST /sample/social/miniapp/auto-signup-login/{appKey}` | `curl -X POST "http://localhost:8080/sample/social/miniapp/auto-signup-login/wechat_auto_app" -H "Content-Type: application/json" -d "{\"code\":\"mock_wx_auto_code\",\"deviceType\":\"MINI_PROGRAM\"}"` |
+| **QQ 小程序凭据直传登录** | `POST /sample/social/miniapp/qq-direct-login` | `curl -X POST "http://localhost:8080/sample/social/miniapp/qq-direct-login" -H "Content-Type: application/json" -d "{\"code\":\"qq_js_code_888\",\"deviceType\":\"MINI_PROGRAM\"}"` |
+| **微信快照页虚拟账号 7009 防卫** | `POST /sample/social/miniapp/snapshot-guard-login` | `curl -X POST "http://localhost:8080/sample/social/miniapp/snapshot-guard-login" -H "Content-Type: application/json" -d "{\"code\":\"wx_snapshot_code_001\",\"deviceType\":\"MP_H5\"}"` |
 
 ### 3.3 领域三：账号绑定、跨号防卫与解绑 (`SocialAccountBindController`)
 
@@ -54,24 +57,28 @@
 | **孤儿账号防卫安全解绑** | `POST /sample/social/bind/unbind/{appKey}` | `curl -X POST "http://localhost:8080/sample/social/bind/unbind/github_app" -H "Content-Type: application/json" -d "{\"userId\":\"user_orphan_2002\"}"` |
 | **已绑定社交账号列表查询** | `GET /sample/social/bind/bindings` | `curl "http://localhost:8080/sample/social/bind/bindings?userId=user_bound_1001"` |
 
-### 3.4 领域四：多租户切源与领域事件审计 (`SocialMultiTenantConfigController`)
+### 3.4 领域四：多租户切源、自定义平台扩展与领域事件审计 (`SocialMultiTenantConfigController`)
 
 | 功能场景 | 请求方式与路径 | 快速体验 cURL 命令 |
 | :--- | :--- | :--- |
 | **SaaS 动态配置切源提取** | `GET /sample/social/tenant/app-config` | `curl "http://localhost:8080/sample/social/tenant/app-config?appKey=tenant_saas_app"` |
 | **多租户上下文自动恢复** | `GET /sample/social/tenant/verify-tenant-callback` | `curl "http://localhost:8080/sample/social/tenant/verify-tenant-callback?appKey=github_app&code=MOCK_CODE&state=MOCK_STATE"` |
 | **领域事件四件套审计查询** | `GET /sample/social/tenant/audit-events` | `curl "http://localhost:8080/sample/social/tenant/audit-events"` |
+| **自定义企业 SSO 平台授权渲染** | `GET /sample/social/tenant/custom-source-render` | `curl "http://localhost:8080/sample/social/tenant/custom-source-render?redirectUrl=https%3A%2F%2Fateng.example.com%2Fsso-home&tenantId=tenant_enterprise_01"` |
+| **自定义企业 SSO 平台回调换码** | `GET /sample/social/tenant/custom-source-callback` | `curl "http://localhost:8080/sample/social/tenant/custom-source-callback?code=esso_code_001&state=MOCK_STATE"` |
 
 ### 3.5 Starter 开箱即用内置控制器 (`SocialAuthController`)
 
 | 功能场景 | 请求方式与路径 | 快速体验 cURL 命令 |
 | :--- | :--- | :--- |
 | **开箱生成授权跳转** | `GET /auth/social/render/{appKey}` | `curl "http://localhost:8080/auth/social/render/github_app?redirectUrl=https%3A%2F%2Fateng.example.com%2Fwelcome"` |
-| **开箱 Web 回调换码** | `GET /auth/social/callback/{appKey}` | `curl "http://localhost:8080/auth/social/callback/github_app?code=MOCK_CODE&state=MOCK_STATE"` |
-| **开箱小程序直传换码** | `POST /auth/social/direct-login/{appKey}` | `curl -X POST "http://localhost:8080/auth/social/direct-login/wechat_mp_app" -H "Content-Type: application/json" -d "{\"code\":\"mock_js_code\"}"` |
+| **开箱 Web 回调换码 (GET/POST)** | `GET/POST /auth/social/callback/{appKey}` | `curl "http://localhost:8080/auth/social/callback/github_app?code=MOCK_CODE&state=MOCK_STATE"` |
+| **开箱小程序/App 直传换码** | `POST /auth/social/direct-login/{appKey}` | `curl -X POST "http://localhost:8080/auth/social/direct-login/wechat_mp_app" -H "Content-Type: application/json" -d "{\"code\":\"mock_js_code\"}"` |
 | **开箱两阶段账号绑定** | `POST /auth/social/bind/{appKey}` | `curl -X POST "http://localhost:8080/auth/social/bind/github_app" -H "Content-Type: application/json" -d "{\"bindTicket\":\"TICKET_UUID\",\"userId\":\"user_1001\"}"` |
 | **开箱已登录直接绑定** | `POST /auth/social/bind-direct/{appKey}` | `curl -X POST "http://localhost:8080/auth/social/bind-direct/wechat_mp_app" -H "Content-Type: application/json" -d "{\"userId\":\"user_1001\",\"code\":\"mock_code\"}"` |
 | **开箱解除第三方绑定** | `POST /auth/social/unbind/{appKey}` | `curl -X POST "http://localhost:8080/auth/social/unbind/github_app" -H "Content-Type: application/json" -d "{\"userId\":\"user_bound_1001\"}"` |
+| **开箱第三方令牌续期** | `POST /auth/social/refresh-token/{appKey}` | `curl -X POST "http://localhost:8080/auth/social/refresh-token/baidu_app" -H "Content-Type: application/json" -d "{\"refreshToken\":\"MOCK_REFRESH_TOKEN\"}"` |
+| **开箱第三方授权吊销** | `POST /auth/social/revoke-token/{appKey}` | `curl -X POST "http://localhost:8080/auth/social/revoke-token/baidu_app" -H "Content-Type: application/json" -d "{\"accessToken\":\"MOCK_ACCESS_TOKEN\"}"` |
 | **开箱已绑定列表查询** | `GET /auth/social/bindings` | `curl "http://localhost:8080/auth/social/bindings?userId=user_bound_1001"` |
 
 ---

@@ -441,4 +441,115 @@ class SocialAuthControllerTest {
             UserContextHolder.clear();
         }
     }
+
+    @Test
+    @DisplayName("19. callback POST: 支持 Apple Sign In 等 POST form_post 回调模式")
+    void testCallbackPostForm() throws Exception {
+        SocialUser mockUser = SocialUser.builder()
+                .appKey("apple_app")
+                .source("APPLE")
+                .openId("apple_sub_001")
+                .username("AppleUser")
+                .build();
+        SocialAuthResult mockResult = SocialAuthResult.loggedIn("user_apple_001", "token_apple", mockUser, null);
+
+        when(authTemplate.login(eq("apple_app"), any(AuthCallback.class)))
+                .thenReturn(mockResult);
+
+        mockMvc.perform(post("/auth/social/callback/apple_app")
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .param("code", "apple_form_code_123")
+                        .param("state", "apple_state_456")
+                        .param("user", "{\"name\":{\"firstName\":\"San\",\"lastName\":\"Zhang\"}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.state").value("LOGGED_IN"))
+                .andExpect(jsonPath("$.data.userId").value("user_apple_001"))
+                .andExpect(jsonPath("$.data.socialUser.openId").value("apple_sub_001"));
+
+        verify(authTemplate).login(eq("apple_app"), any(AuthCallback.class));
+    }
+
+    @Test
+    @DisplayName("20. refresh-token & revoke-token: 主路径与向后兼容旧路径双路由对齐")
+    void testRefreshAndRevokeDualRoutes() throws Exception {
+        SocialToken mockToken = SocialToken.builder()
+                .accessToken("new_access_token_dual")
+                .refreshToken("new_refresh_token_dual")
+                .expireIn(7200)
+                .openId("open_dual_1")
+                .build();
+
+        when(authTemplate.refreshToken(eq("github_app"), eq("refresh_dual_123")))
+                .thenReturn(mockToken);
+
+        SocialTokenRefreshRequest refreshReq = SocialTokenRefreshRequest.builder()
+                .refreshToken("refresh_dual_123")
+                .build();
+
+        mockMvc.perform(post("/auth/social/refresh-token/github_app")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(refreshReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.accessToken").value("new_access_token_dual"));
+
+        SocialTokenRevokeRequest revokeReq = SocialTokenRevokeRequest.builder()
+                .accessToken("revoke_dual_456")
+                .build();
+
+        mockMvc.perform(post("/auth/social/revoke-token/github_app")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(revokeReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        verify(authTemplate).refreshToken("github_app", "refresh_dual_123");
+        verify(authTemplate).revokeAuth("github_app", "revoke_dual_456");
+    }
+
+    @Test
+    @DisplayName("21. directLogin & bindDirect: 支持 authCode/oauthToken/oauthVerifier/user 扩展回调字段")
+    void testDirectLoginAndBindDirectWithExtendedFields() throws Exception {
+        SocialUser alipayUser = SocialUser.builder()
+                .appKey("alipay_app")
+                .source("ALIPAY")
+                .openId("alipay_uid_001")
+                .build();
+        SocialAuthResult loginResult = SocialAuthResult.loggedIn("user_ali_001", "token_ali", alipayUser, null);
+
+        when(authTemplate.directLogin(eq("alipay_app"), any(AuthCallback.class), any(SocialLoginOptions.class)))
+                .thenReturn(loginResult);
+
+        SocialDirectLoginRequest directLoginReq = SocialDirectLoginRequest.builder()
+                .authCode("alipay_auth_code_999")
+                .deviceType("APP")
+                .build();
+
+        mockMvc.perform(post("/auth/social/direct-login/alipay_app")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(directLoginReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.userId").value("user_ali_001"));
+
+        verify(authTemplate).directLogin(eq("alipay_app"), any(AuthCallback.class), any(SocialLoginOptions.class));
+
+        when(authTemplate.bindDirect(eq("user_ali_001"), eq("alipay_app"), any(AuthCallback.class), eq(false)))
+                .thenReturn(alipayUser);
+
+        SocialDirectBindRequest directBindReq = SocialDirectBindRequest.builder()
+                .userId("user_ali_001")
+                .authCode("alipay_bind_auth_code_888")
+                .build();
+
+        mockMvc.perform(post("/auth/social/bind-direct/alipay_app")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(directBindReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.openId").value("alipay_uid_001"));
+
+        verify(authTemplate).bindDirect(eq("user_ali_001"), eq("alipay_app"), any(AuthCallback.class), eq(false));
+    }
 }
