@@ -85,6 +85,18 @@ public class AtengAiProperties {
     private EpisodicMemoryProperties episodicMemory = new EpisodicMemoryProperties();
 
     /**
+     * 精确与向量语义双级响应缓存强类型配置
+     */
+    @NestedConfigurationProperty
+    private AiCacheProperties cache = new AiCacheProperties();
+
+    /**
+     * 动态提示词资产托管与版本路由强类型配置
+     */
+    @NestedConfigurationProperty
+    private AtengAiPromptProperties prompt = new AtengAiPromptProperties();
+
+    /**
      * SaaS 多租户专有模型绑定映射 (key 为租户标识 tenantId，value 为绑定的专有模型标识别名)
      */
     private Map<String, String> tenantModels = new LinkedHashMap<>();

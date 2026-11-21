@@ -12,12 +12,15 @@ import dev.langchain4j.model.output.Response;
 import dev.langchain4j.rag.content.Content;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.query.Query;
+import io.github.atengk.boot.ai.cache.AiCacheLookupResult;
+import io.github.atengk.boot.ai.cache.AiSemanticCache;
 import io.github.atengk.boot.ai.context.AiContextHolder;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiExceptionTranslator;
 import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.guardrail.*;
 import io.github.atengk.boot.ai.observability.FallbackTokenEstimator;
+import io.github.atengk.boot.ai.prompt.PromptRegistry;
 import io.github.atengk.boot.ai.prompt.PromptTemplate;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AiResponseFormat;
@@ -74,6 +77,8 @@ public class AiTemplate {
     private final ActiveStreamRegistry activeStreamRegistry;
     private final AiGuardrail guardrail;
     private final AiRateLimiter rateLimiter;
+    private final AiSemanticCache semanticCache;
+    private final PromptRegistry promptRegistry;
 
     public AiTemplate(AiModelRegistry registry) {
         this(registry, new AtengAiProperties());
@@ -104,7 +109,7 @@ public class AiTemplate {
                       AiQuotaChecker quotaChecker,
                       ActiveStreamRegistry activeStreamRegistry,
                       AiGuardrail guardrail) {
-        this(registry, properties, tenantModelResolver, quotaChecker, activeStreamRegistry, guardrail, null);
+        this(registry, properties, tenantModelResolver, quotaChecker, activeStreamRegistry, guardrail, null, null, null);
     }
 
     public AiTemplate(AiModelRegistry registry,
@@ -114,6 +119,29 @@ public class AiTemplate {
                       ActiveStreamRegistry activeStreamRegistry,
                       AiGuardrail guardrail,
                       AiRateLimiter rateLimiter) {
+        this(registry, properties, tenantModelResolver, quotaChecker, activeStreamRegistry, guardrail, rateLimiter, null, null);
+    }
+
+    public AiTemplate(AiModelRegistry registry,
+                      AtengAiProperties properties,
+                      AiTenantModelResolver tenantModelResolver,
+                      AiQuotaChecker quotaChecker,
+                      ActiveStreamRegistry activeStreamRegistry,
+                      AiGuardrail guardrail,
+                      AiRateLimiter rateLimiter,
+                      AiSemanticCache semanticCache) {
+        this(registry, properties, tenantModelResolver, quotaChecker, activeStreamRegistry, guardrail, rateLimiter, semanticCache, null);
+    }
+
+    public AiTemplate(AiModelRegistry registry,
+                      AtengAiProperties properties,
+                      AiTenantModelResolver tenantModelResolver,
+                      AiQuotaChecker quotaChecker,
+                      ActiveStreamRegistry activeStreamRegistry,
+                      AiGuardrail guardrail,
+                      AiRateLimiter rateLimiter,
+                      AiSemanticCache semanticCache,
+                      PromptRegistry promptRegistry) {
         this.registry = Objects.requireNonNull(registry, "AiModelRegistry 不能为空");
         this.properties = properties != null ? properties : new AtengAiProperties();
         this.tenantModelResolver = tenantModelResolver;
@@ -121,6 +149,26 @@ public class AiTemplate {
         this.activeStreamRegistry = activeStreamRegistry;
         this.guardrail = guardrail != null ? guardrail : new DefaultAiGuardrail(this.properties.getGuardrail());
         this.rateLimiter = rateLimiter;
+        this.semanticCache = semanticCache;
+        this.promptRegistry = promptRegistry;
+    }
+
+    /**
+     * 获取动态提示词版本路由注册表
+     *
+     * @return PromptRegistry 实例，若未装配则返回 null
+     */
+    public PromptRegistry getPromptRegistry() {
+        return promptRegistry;
+    }
+
+    /**
+     * 获取 AI 语义与精确双级响应缓存门面
+     *
+     * @return AiSemanticCache 实例，若未启用则返回 null
+     */
+    public AiSemanticCache getSemanticCache() {
+        return semanticCache;
     }
 
     /**
@@ -287,6 +335,120 @@ public class AiTemplate {
      */
     public String chat(String modelName, PromptTemplate template, Map<String, ?> variables) {
         return chatWithModel(modelName, template, variables);
+    }
+
+    /**
+     * 根据动态提示词编码从 PromptRegistry 渲染并执行同步对话
+     *
+     * @param promptCode 提示词编码
+     * @param variables  变量键值对
+     * @return 大模型响应文本
+     */
+    public String chatByPromptCode(String promptCode, Map<String, ?> variables) {
+        return chatByPromptCode(null, promptCode, null, variables);
+    }
+
+    /**
+     * 根据动态提示词编码与版本/标签从 PromptRegistry 渲染并执行同步对话
+     *
+     * @param promptCode     提示词编码
+     * @param versionOrLabel 版本号或发布标签（如 prod / canary）
+     * @param variables      变量键值对
+     * @return 大模型响应文本
+     */
+    public String chatByPromptCode(String promptCode, String versionOrLabel, Map<String, ?> variables) {
+        return chatByPromptCode(null, promptCode, versionOrLabel, variables);
+    }
+
+    /**
+     * 指定模型、提示词编码与版本/标签执行动态托管提示词同步对话
+     *
+     * @param modelName      模型名称或别名（可为空）
+     * @param promptCode     提示词编码
+     * @param versionOrLabel 版本号或发布标签（可为空）
+     * @param variables      变量键值对
+     * @return 大模型响应文本
+     */
+    public String chatByPromptCode(String modelName, String promptCode, String versionOrLabel, Map<String, ?> variables) {
+        String renderedPrompt = resolveAndRenderPrompt(promptCode, versionOrLabel, variables);
+        return chatWithModel(modelName, renderedPrompt);
+    }
+
+    /**
+     * 根据动态提示词编码从 PromptRegistry 渲染并发起 SSE 打字机流式对话
+     *
+     * @param promptCode 提示词编码
+     * @param variables  变量键值对
+     * @return SseEmitter 实例
+     */
+    public SseEmitter streamByPromptCode(String promptCode, Map<String, ?> variables) {
+        return streamByPromptCode(promptCode, (String) null, variables);
+    }
+
+    /**
+     * 根据动态提示词编码与版本/标签从 PromptRegistry 渲染并发起 SSE 打字机流式对话
+     *
+     * @param promptCode     提示词编码
+     * @param versionOrLabel 版本号或发布标签
+     * @param variables      变量键值对
+     * @return SseEmitter 实例
+     */
+    public SseEmitter streamByPromptCode(String promptCode, String versionOrLabel, Map<String, ?> variables) {
+        SseEmitter emitter = new SseEmitter(DEFAULT_SSE_TIMEOUT.toMillis());
+        streamByPromptCode(null, promptCode, versionOrLabel, variables, emitter);
+        return emitter;
+    }
+
+    /**
+     * 根据动态提示词编码渲染并推流至指定 SseEmitter
+     *
+     * @param promptCode 提示词编码
+     * @param variables  变量键值对
+     * @param emitter    Spring MVC SseEmitter 实例
+     */
+    public void streamByPromptCode(String promptCode, Map<String, ?> variables, SseEmitter emitter) {
+        streamByPromptCode(null, promptCode, null, variables, emitter);
+    }
+
+    /**
+     * 指定模型、提示词编码与版本/标签执行动态托管提示词流式对话并推送至 SseEmitter
+     *
+     * @param modelName      模型名称或别名（可为空）
+     * @param promptCode     提示词编码
+     * @param versionOrLabel 版本号或发布标签（可为空）
+     * @param variables      变量键值对
+     * @param emitter        Spring MVC SseEmitter 实例
+     */
+    public void streamByPromptCode(String modelName, String promptCode, String versionOrLabel,
+                                   Map<String, ?> variables, SseEmitter emitter) {
+        if (emitter == null) {
+            throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "SseEmitter 不能为空");
+        }
+        try {
+            String renderedPrompt = resolveAndRenderPrompt(promptCode, versionOrLabel, variables);
+            streamWithModel(modelName, renderedPrompt, emitter);
+        } catch (Throwable t) {
+            SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, IdUtil.fastSimpleUUID(), activeStreamRegistry);
+            bridge.onError(t);
+        }
+    }
+
+    private String resolveAndRenderPrompt(String promptCode, String versionOrLabel, Map<String, ?> variables) {
+        if (promptRegistry == null) {
+            throw new AiException(AiResultCode.AI_CONFIG_ERROR, "未配置 PromptRegistry Bean，无法按 promptCode 解析提示词");
+        }
+        if (!StringUtils.hasText(promptCode)) {
+            throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "提示词编码 promptCode 不能为空");
+        }
+        boolean strict = properties.getPrompt() == null || properties.getPrompt().isStrictValidation();
+        if (StringUtils.hasText(versionOrLabel)) {
+            return strict
+                    ? promptRegistry.renderStrict(promptCode, versionOrLabel, variables)
+                    : promptRegistry.render(promptCode, versionOrLabel, variables);
+        }
+        return strict
+                ? promptRegistry.renderStrict(promptCode, variables)
+                : promptRegistry.render(promptCode, variables);
     }
 
     // -------------------------------------------------------------------------
@@ -1416,6 +1578,19 @@ public class AiTemplate {
         }
 
         String effectiveModelName = resolveEffectiveModelName(modelName);
+        AiModelConfig config = resolveModelConfig(effectiveModelName);
+        String cacheModelKey = StringUtils.hasText(effectiveModelName)
+                ? effectiveModelName.trim()
+                : AiModelRegistry.DEFAULT_MODEL_NAME;
+
+        // 0.5 双级语义响应缓存检索（严格位于前置安检之后、限流与配额扣费之前，命中即免扣配额直接返回）
+        if (semanticCache != null) {
+            Optional<AiCacheLookupResult> cached = semanticCache.get(cacheModelKey, messages, config, false, false);
+            if (cached.isPresent()) {
+                return Response.from(AiMessage.from(cached.get().getResponseText()));
+            }
+        }
+
         String tenantId = TenantContextHolder.getTenantId();
 
         // 1. 前置配额与微观突发限流风控防卫 (Fail-Fast)
@@ -1428,7 +1603,6 @@ public class AiTemplate {
         }
 
         ChatLanguageModel model = resolveChatModel(effectiveModelName);
-        AiModelConfig config = resolveModelConfig(effectiveModelName);
         int maxRetries = config.getMaxRetries() != null ? config.getMaxRetries() : 3;
         Duration initialInterval = config.getRetryInitialInterval() != null ? config.getRetryInitialInterval() : Duration.ofMillis(500);
         Duration maxInterval = config.getRetryMaxInterval() != null ? config.getRetryMaxInterval() : Duration.ofSeconds(5);
@@ -1453,6 +1627,7 @@ public class AiTemplate {
             }
 
             // 3. 后置内容安全护栏检查 (POST_RESPONSE 防涉黄涉暴/违禁敏感词)
+            boolean postGuardrailPassed = true;
             if (guardrail != null) {
                 String responseText = extractText(response);
                 GuardrailResult postResult = guardrail.inspectResponse(responseText);
@@ -1460,7 +1635,17 @@ public class AiTemplate {
                     throw new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, postResult.getReason());
                 }
                 if (postResult.getAction() == GuardrailAction.REPLACE) {
-                    return Response.from(AiMessage.from(postResult.getSafeContent()), response.tokenUsage(), response.finishReason());
+                    postGuardrailPassed = false;
+                    response = Response.from(AiMessage.from(postResult.getSafeContent()), response.tokenUsage(), response.finishReason());
+                }
+            }
+
+            // 4. 仅在后置护栏完整放行且无工具调用请求时回写双级语义响应缓存
+            if (semanticCache != null && postGuardrailPassed && response != null && response.content() != null
+                    && !response.content().hasToolExecutionRequests()) {
+                String responseText = extractText(response);
+                if (StringUtils.hasText(responseText)) {
+                    semanticCache.put(cacheModelKey, messages, responseText, config, false, false);
                 }
             }
 

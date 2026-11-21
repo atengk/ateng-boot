@@ -144,4 +144,33 @@ class PromptTemplateTest {
                 .isInstanceOf(AiException.class)
                 .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
     }
+
+    @Test
+    @DisplayName("严格校验模式 renderStrict：必填变量齐备时成功渲染，缺失或为 null 时抛出 AI_INVALID_PAYLOAD")
+    void testRenderStrictSuccessAndFailFast() {
+        PromptTemplate template = PromptTemplate.of("工单 {{ticketId}} 分配给 {{owner}}");
+
+        // 1. 变量全部齐备 -> 正常渲染
+        assertThat(template.renderStrict(Map.of("ticketId", "T-100", "owner", "Ateng")))
+                .isEqualTo("工单 T-100 分配给 Ateng");
+        assertThat(template.renderStrict("ticketId", "T-101", "owner", "Bot"))
+                .isEqualTo("工单 T-101 分配给 Bot");
+
+        // 2. 缺失变量 -> 抛出 AI_INVALID_PAYLOAD
+        assertThatThrownBy(() -> template.renderStrict(Map.of("ticketId", "T-100")))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_INVALID_PAYLOAD));
+
+        // 3. 变量显式传 null -> 抛出 AI_INVALID_PAYLOAD
+        Map<String, Object> withNull = new HashMap<>();
+        withNull.put("ticketId", "T-100");
+        withNull.put("owner", null);
+        assertThatThrownBy(() -> template.renderStrict(withNull))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_INVALID_PAYLOAD));
+
+        // 4. 空映射调用无占位符模板 -> 正常通过
+        assertThat(PromptTemplate.of("纯静态系统指令").renderStrict(Collections.emptyMap()))
+                .isEqualTo("纯静态系统指令");
+    }
 }

@@ -16,6 +16,7 @@ public final class AiContextHolder {
 
     private static final ThreadLocal<Deque<String>> CONTEXT = ThreadLocal.withInitial(ArrayDeque::new);
     private static final ThreadLocal<Deque<String>> EMBEDDING_CONTEXT = ThreadLocal.withInitial(ArrayDeque::new);
+    private static final ThreadLocal<Deque<Boolean>> BYPASS_CACHE_CONTEXT = ThreadLocal.withInitial(ArrayDeque::new);
 
     private AiContextHolder() {
     }
@@ -55,11 +56,61 @@ public final class AiContextHolder {
     }
 
     /**
-     * 彻底清理当前线程绑定的所有模型与向量上下文
+     * 彻底清理当前线程绑定的所有模型、向量与缓存控制上下文
      */
     public static void clearAll() {
         CONTEXT.remove();
         EMBEDDING_CONTEXT.remove();
+        BYPASS_CACHE_CONTEXT.remove();
+    }
+
+    /**
+     * 设置当前线程是否绕过 AI 语义缓存
+     *
+     * @param bypass true 表示强制跳过缓存直连模型，false 表示允许正常走缓存逻辑
+     */
+    public static void setBypassCache(boolean bypass) {
+        BYPASS_CACHE_CONTEXT.get().push(bypass);
+    }
+
+    /**
+     * 判断当前线程是否处于绕过 AI 语义缓存作用域内
+     *
+     * @return 若处于绕过作用域则返回 true，否则返回 false
+     */
+    public static boolean isBypassCache() {
+        Deque<Boolean> stack = BYPASS_CACHE_CONTEXT.get();
+        return !stack.isEmpty() && Boolean.TRUE.equals(stack.peek());
+    }
+
+    /**
+     * 弹出当前线程栈顶的缓存绕过标记，若栈已清空则彻底释放 ThreadLocal
+     */
+    public static void clearBypassCache() {
+        Deque<Boolean> stack = BYPASS_CACHE_CONTEXT.get();
+        if (!stack.isEmpty()) {
+            stack.pop();
+        }
+        if (stack.isEmpty()) {
+            BYPASS_CACHE_CONTEXT.remove();
+        }
+    }
+
+    /**
+     * 声明式语法糖：在当前作用域内强制绕过 AI 语义缓存并返回 AutoCloseable 资源句柄
+     *
+     * <pre>{@code
+     * try (AiContextHolder.AiModelScope ignored = AiContextHolder.bypassCache()) {
+     *     // 此代码块内的 AI 调用强制跳过语义缓存直接访问大模型
+     *     aiTemplate.chat("实时最新行情分析");
+     * }
+     * }</pre>
+     *
+     * @return 自动释放句柄
+     */
+    public static AiModelScope bypassCache() {
+        setBypassCache(true);
+        return AiContextHolder::clearBypassCache;
     }
 
     /**

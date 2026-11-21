@@ -21,8 +21,34 @@ public final class AiPiiMasker {
     private static final Pattern API_KEY_PATTERN = Pattern.compile("(?i)(sk-[a-zA-Z0-9_\\-]{10,})");
     private static final Pattern EMAIL_PATTERN = Pattern.compile("(?i)([a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,})");
     private static final Pattern BEARER_PATTERN = Pattern.compile("(?i)(?<![a-zA-Z0-9_\\-])(bearer\\s+)([a-zA-Z0-9_\\-\\.~+/]{10,})");
+    private static final Pattern[] ALL_PII_PATTERNS = {
+            BEARER_PATTERN,
+            API_KEY_PATTERN,
+            PHONE_PATTERN,
+            ID_CARD_PATTERN,
+            BANK_CARD_PATTERN,
+            EMAIL_PATTERN
+    };
 
     private AiPiiMasker() {
+    }
+
+    /**
+     * 检测文本中是否包含 API Key、Bearer 凭证或手机号/身份证/银行卡/邮箱等 PII 敏感信息
+     *
+     * @param text 待检测文本
+     * @return 命中任一敏感信息模式返回 true，否则返回 false
+     */
+    public static boolean containsPii(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        for (Pattern pattern : ALL_PII_PATTERNS) {
+            if (pattern.matcher(text).find()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

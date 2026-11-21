@@ -75,4 +75,15 @@ public @interface AiAgent {
      * @return 是否自动提炼记忆，默认 true
      */
     boolean extractMemory() default true;
+
+    /**
+     * 绑定的动态托管提示词编码（对应 {@link io.github.atengk.boot.ai.prompt.PromptRegistry} 中的 {@code code}）
+     * <p>
+     * 声明后将在每次智能体调用时实时从 {@code PromptRegistry} 拉取当前生效版本作为系统提示词，
+     * 并与长效情景记忆画像无缝拼接；支持运行期通过 {@code refresh} 热更新而无需重启服务。
+     * </p>
+     *
+     * @return 动态提示词编码，默认空字符串
+     */
+    String promptCode() default "";
 }

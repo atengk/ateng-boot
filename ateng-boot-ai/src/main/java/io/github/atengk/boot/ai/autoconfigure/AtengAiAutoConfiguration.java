@@ -7,9 +7,14 @@ import dev.langchain4j.model.Tokenizer;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import dev.langchain4j.model.chat.listener.ChatModelListener;
+import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import dev.langchain4j.model.openai.OpenAiTokenizer;
+import io.github.atengk.boot.ai.cache.AiCacheStore;
+import io.github.atengk.boot.ai.cache.AiSemanticCache;
+import io.github.atengk.boot.ai.cache.InMemoryAiCacheStore;
+import io.github.atengk.boot.ai.cache.RedisAiCacheStore;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.failover.FailoverChatLanguageModel;
@@ -65,6 +70,10 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import io.github.atengk.boot.ai.observability.AiAuditLogHandler;
 import io.github.atengk.boot.ai.observability.AtengAiObservabilityListener;
+import io.github.atengk.boot.ai.prompt.DefaultPromptProvider;
+import io.github.atengk.boot.ai.prompt.PromptProvider;
+import io.github.atengk.boot.ai.prompt.PromptRegistry;
+import io.github.atengk.boot.ai.properties.AiCacheProperties;
 import io.github.atengk.boot.ai.quota.AiQuotaChecker;
 import io.github.atengk.boot.ai.quota.DefaultAiQuotaChecker;
 import io.github.atengk.boot.ai.quota.RedisAiQuotaChecker;
@@ -389,7 +398,9 @@ public class AtengAiAutoConfiguration {
                                  ObjectProvider<AiQuotaChecker> quotaCheckerProvider,
                                  ObjectProvider<ActiveStreamRegistry> activeStreamRegistryProvider,
                                  ObjectProvider<AiGuardrail> guardrailProvider,
-                                 ObjectProvider<AiRateLimiter> rateLimiterProvider) {
+                                 ObjectProvider<AiRateLimiter> rateLimiterProvider,
+                                 ObjectProvider<AiSemanticCache> semanticCacheProvider,
+                                 ObjectProvider<PromptRegistry> promptRegistryProvider) {
         return new AiTemplate(
                 registry,
                 properties,
@@ -397,7 +408,9 @@ public class AtengAiAutoConfiguration {
                 quotaCheckerProvider.getIfAvailable(),
                 activeStreamRegistryProvider.getIfAvailable(),
                 guardrailProvider.getIfAvailable(),
-                rateLimiterProvider.getIfAvailable()
+                rateLimiterProvider.getIfAvailable(),
+                semanticCacheProvider.getIfAvailable(),
+                promptRegistryProvider.getIfAvailable()
         );
     }
 
@@ -622,22 +635,122 @@ public class AtengAiAutoConfiguration {
      */
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(MeterRegistry.class)
-    @ConditionalOnProperty(prefix = "ateng.boot.ai.audit", name = "enabled", havingValue = "true", matchIfMissing = true)
     static class AiMetricsConfiguration {
 
         @Bean
         @ConditionalOnMissingBean(name = "aiMetricsBinder")
         public SmartInitializingSingleton aiMetricsBinder(
                 ObjectProvider<AtengAiObservabilityListener> listenerProvider,
+                ObjectProvider<AiSemanticCache> semanticCacheProvider,
                 ObjectProvider<MeterRegistry> meterRegistryProvider) {
             return () -> {
-                AtengAiObservabilityListener listener = listenerProvider.getIfAvailable();
                 MeterRegistry registry = meterRegistryProvider.getIfAvailable();
-                if (listener != null && registry != null) {
+                if (registry == null) {
+                    return;
+                }
+                AtengAiObservabilityListener listener = listenerProvider.getIfAvailable();
+                if (listener != null) {
                     listener.setMeterRegistry(registry);
+                }
+                AiSemanticCache semanticCache = semanticCacheProvider.getIfAvailable();
+                if (semanticCache != null) {
+                    semanticCache.setMeterRegistry(registry);
                 }
             };
         }
+    }
+
+    /**
+     * 动态提示词资产提供者自动装配
+     */
+    @Bean
+    @ConditionalOnMissingBean(PromptProvider.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.prompt", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public PromptProvider defaultPromptProvider(AtengAiProperties properties) {
+        return new DefaultPromptProvider(properties.getPrompt());
+    }
+
+    /**
+     * 动态提示词版本路由注册表自动装配
+     */
+    @Bean
+    @ConditionalOnMissingBean(PromptRegistry.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.prompt", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public PromptRegistry promptRegistry(AtengAiProperties properties,
+                                         ObjectProvider<PromptProvider> promptProviders) {
+        List<PromptProvider> providerList = promptProviders.orderedStream().toList();
+        return new PromptRegistry(properties.getPrompt(), providerList, true);
+    }
+
+    /**
+     * AI 双级语义缓存存储自动装配（Redis 支持）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(StringRedisTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.cache", name = "enabled", havingValue = "true")
+    static class RedisAiCacheConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(AiCacheStore.class)
+        public AiCacheStore redisAiCacheStore(AtengAiProperties properties,
+                                              ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+            AiCacheProperties cacheConfig = properties.getCache();
+            StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+
+            if (cacheConfig.getType() == AiCacheProperties.CacheType.REDIS) {
+                if (redisTemplate == null) {
+                    throw new AiException(AiResultCode.AI_CONFIG_ERROR,
+                            "已配置 ateng.boot.ai.cache.type=REDIS，但 Spring 容器中未找到 StringRedisTemplate Bean");
+                }
+                log.info("AI 响应缓存启用分布式 Redis 存储 [keyPrefix={}, ttl={}, maxEntries={}]",
+                        cacheConfig.getKeyPrefix(), cacheConfig.getTtl(), cacheConfig.getMaxEntries());
+                return new RedisAiCacheStore(redisTemplate, cacheConfig.getKeyPrefix(), cacheConfig.getTtl(), cacheConfig.getMaxEntries());
+            }
+
+            if (cacheConfig.getType() == AiCacheProperties.CacheType.AUTO && redisTemplate != null) {
+                log.info("AI 响应缓存自动探测到 Redis，启用分布式存储 [keyPrefix={}, ttl={}, maxEntries={}]",
+                        cacheConfig.getKeyPrefix(), cacheConfig.getTtl(), cacheConfig.getMaxEntries());
+                return new RedisAiCacheStore(redisTemplate, cacheConfig.getKeyPrefix(), cacheConfig.getTtl(), cacheConfig.getMaxEntries());
+            }
+
+            log.info("AI 响应缓存启用单机内存有界 LRU 存储 [maxEntries={}, ttl={}]",
+                    cacheConfig.getMaxEntries(), cacheConfig.getTtl());
+            return new InMemoryAiCacheStore(cacheConfig.getMaxEntries());
+        }
+    }
+
+    /**
+     * AI 双级语义缓存存储单机内存兜底装配（未引入 Redis 时保底装配）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnMissingBean(AiCacheStore.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.cache", name = "enabled", havingValue = "true")
+    static class InMemoryAiCacheFallbackConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(AiCacheStore.class)
+        public AiCacheStore inMemoryAiCacheStore(AtengAiProperties properties) {
+            AiCacheProperties cacheConfig = properties.getCache();
+            if (cacheConfig.getType() == AiCacheProperties.CacheType.REDIS) {
+                throw new AiException(AiResultCode.AI_CONFIG_ERROR,
+                        "已配置 ateng.boot.ai.cache.type=REDIS，但未引入 Spring Data Redis / StringRedisTemplate 依赖，无法启动单机降级");
+            }
+            log.info("AI 响应缓存启用单机内存有界 LRU 存储兜底 [maxEntries={}, ttl={}]",
+                    cacheConfig.getMaxEntries(), cacheConfig.getTtl());
+            return new InMemoryAiCacheStore(cacheConfig.getMaxEntries());
+        }
+    }
+
+    /**
+     * AI 精确与向量语义双级响应缓存门面自动装配
+     */
+    @Bean
+    @ConditionalOnMissingBean(AiSemanticCache.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.cache", name = "enabled", havingValue = "true")
+    public AiSemanticCache aiSemanticCache(AiCacheStore cacheStore,
+                                           AtengAiProperties properties,
+                                           ObjectProvider<EmbeddingModel> embeddingModelProvider) {
+        return new AiSemanticCache(cacheStore, properties.getCache(), embeddingModelProvider, null, properties.getAudit());
     }
 
     /**

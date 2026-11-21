@@ -6,6 +6,7 @@ import dev.langchain4j.memory.chat.ChatMemoryProvider;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.tool.ToolExecutor;
+import io.github.atengk.boot.ai.cache.AiSemanticCache;
 import io.github.atengk.boot.ai.context.AgentCallContext;
 import io.github.atengk.boot.ai.context.EpisodicMemoryContext;
 import io.github.atengk.boot.ai.exception.AiException;
@@ -15,6 +16,8 @@ import io.github.atengk.boot.ai.guardrail.GuardrailAction;
 import io.github.atengk.boot.ai.guardrail.GuardrailResult;
 import io.github.atengk.boot.ai.memory.episodic.EpisodicMemoryTemplate;
 import io.github.atengk.boot.ai.memory.episodic.MemoryFact;
+import io.github.atengk.boot.ai.prompt.PromptDefinition;
+import io.github.atengk.boot.ai.prompt.PromptRegistry;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AiResponseFormat;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
@@ -101,6 +104,10 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
     @Setter
     private boolean extractMemory = true;
 
+    @Getter
+    @Setter
+    private String promptCode;
+
     @Setter
     private EpisodicMemoryTemplate episodicMemoryTemplate;
 
@@ -148,8 +155,15 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
             org.springframework.beans.factory.ObjectProvider<AiRateLimiter> rateLimiterProvider = applicationContext.getBeanProvider(AiRateLimiter.class);
             AiRateLimiter rateLimiter = rateLimiterProvider != null ? rateLimiterProvider.getIfAvailable() : null;
 
-            // 2. 构建多模型动态路由代理 (注入多租户切源、微观限流与配额风控守卫)
-            DynamicRoutingChatLanguageModel routingModel = new DynamicRoutingChatLanguageModel(registry, model, tenantModelResolver, quotaChecker, rateLimiter);
+            org.springframework.beans.factory.ObjectProvider<AiSemanticCache> semanticCacheProvider = applicationContext.getBeanProvider(AiSemanticCache.class);
+            AiSemanticCache semanticCache = semanticCacheProvider != null ? semanticCacheProvider.getIfAvailable() : null;
+
+            org.springframework.beans.factory.ObjectProvider<AtengAiProperties> aiPropertiesProvider = applicationContext.getBeanProvider(AtengAiProperties.class);
+            AtengAiProperties aiProperties = aiPropertiesProvider != null ? aiPropertiesProvider.getIfAvailable() : null;
+
+            // 2. 构建多模型动态路由代理 (前置护栏已由增强代理对入参精确执行，此处挂载后置护栏确保回写缓存前 100% 过检)
+            DynamicRoutingChatLanguageModel routingModel = new DynamicRoutingChatLanguageModel(
+                    registry, model, tenantModelResolver, quotaChecker, rateLimiter, semanticCache, aiProperties, null, resolveGuardrail());
 
             // 3. 构建 LangChain4j 原始 AiServices 代理
             AiServices<T> builder = AiServices.builder(agentInterface)
@@ -166,7 +180,7 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
                 builder.streamingChatLanguageModel(streamingRoutingModel);
             }
 
-            // 3.2 解析接口级 @SystemMessage 系统提示词与长效情景记忆 Persona 提示词注入
+            // 3.2 解析接口级 @SystemMessage / @AiAgent(promptCode) 动态提示词与长效情景记忆 Persona 提示词注入
             dev.langchain4j.service.SystemMessage interfaceSystemMessage = agentInterface.getAnnotation(dev.langchain4j.service.SystemMessage.class);
             String systemText = null;
             if (interfaceSystemMessage != null) {
@@ -176,16 +190,38 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
                     systemText = String.join(interfaceSystemMessage.delimiter(), interfaceSystemMessage.value());
                 }
             }
+            io.github.atengk.boot.ai.annotation.AiAgent agentAnnotation =
+                    agentInterface.getAnnotation(io.github.atengk.boot.ai.annotation.AiAgent.class);
+            String resolvedPromptCode = StringUtils.hasText(this.promptCode)
+                    ? this.promptCode.trim()
+                    : (agentAnnotation != null && StringUtils.hasText(agentAnnotation.promptCode())
+                            ? agentAnnotation.promptCode().trim()
+                            : null);
+
             final String baseSystemText = systemText;
-            if (StringUtils.hasText(baseSystemText) || episodicMemory) {
+            if (StringUtils.hasText(resolvedPromptCode) || StringUtils.hasText(baseSystemText) || episodicMemory) {
                 builder.systemMessageProvider(memoryId -> {
-                    String episodicPersona = EpisodicMemoryContext.getInjectedPrompt();
+                    String dynamicSystemPrompt = baseSystemText;
+                    if (StringUtils.hasText(resolvedPromptCode)) {
+                        org.springframework.beans.factory.ObjectProvider<PromptRegistry> promptProvider =
+                                applicationContext.getBeanProvider(PromptRegistry.class);
+                        PromptRegistry promptRegistry = promptProvider != null ? promptProvider.getIfAvailable() : null;
+                        if (promptRegistry == null) {
+                            throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
+                                    "智能体 [" + agentInterface.getSimpleName() + "] 声明了 promptCode="
+                                            + resolvedPromptCode + "，但 Spring 容器中未找到 PromptRegistry Bean");
+                        }
+                        PromptDefinition def = promptRegistry.get(resolvedPromptCode);
+                        dynamicSystemPrompt = def.getContent();
+                    }
+
+                    String episodicPersona = episodicMemory ? EpisodicMemoryContext.getInjectedPrompt() : null;
                     if (StringUtils.hasText(episodicPersona)) {
-                        return StringUtils.hasText(baseSystemText)
-                                ? episodicPersona + "\n\n" + baseSystemText
+                        return StringUtils.hasText(dynamicSystemPrompt)
+                                ? episodicPersona + "\n\n" + dynamicSystemPrompt
                                 : episodicPersona;
                     }
-                    return baseSystemText != null ? baseSystemText : "";
+                    return dynamicSystemPrompt != null ? dynamicSystemPrompt : "";
                 });
             }
 

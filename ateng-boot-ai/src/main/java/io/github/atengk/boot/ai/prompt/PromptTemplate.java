@@ -97,7 +97,79 @@ public final class PromptTemplate {
         if (variables == null || variables.isEmpty()) {
             return template;
         }
+        return applyVariables(variables);
+    }
 
+    /**
+     * 严格变量插值渲染：校验模板中的全部占位符必须在 variables 中显式提供且非 null
+     * <p>
+     * 缺失必填占位变量或值为 {@code null} 时立即 Fail-Fast 抛出 {@link AiException} ({@link AiResultCode#AI_INVALID_PAYLOAD})。
+     * </p>
+     *
+     * @param variables 变量键值映射
+     * @return 渲染完成的提示词字符串
+     */
+    public String renderStrict(Map<String, ?> variables) {
+        return renderStrict(variables, Collections.emptySet());
+    }
+
+    /**
+     * 严格变量插值渲染（支持附加必填变量名校验）
+     *
+     * @param variables         变量键值映射
+     * @param extraRequiredVars 额外声明的必填变量名集合
+     * @return 渲染完成的提示词字符串
+     */
+    public String renderStrict(Map<String, ?> variables, Collection<String> extraRequiredVars) {
+        validateStrictVariables(variables, extraRequiredVars);
+        if (variables == null || variables.isEmpty()) {
+            return template;
+        }
+        return applyVariables(variables);
+    }
+
+    /**
+     * 严格变长参数渲染语法糖 (key, value, key, value, ...)
+     *
+     * @param keyValues 偶数个键值对参数
+     * @return 渲染完成的提示词字符串
+     */
+    public String renderStrict(Object... keyValues) {
+        Map<String, Object> map = toVariableMap(keyValues);
+        return renderStrict(map);
+    }
+
+    /**
+     * 校验模板所需占位符及额外声明的必填变量均已存在且值非 null
+     *
+     * @param variables         变量映射
+     * @param extraRequiredVars 额外声明的必填变量名集合
+     */
+    public void validateStrictVariables(Map<String, ?> variables, Collection<String> extraRequiredVars) {
+        Set<String> allRequired = new LinkedHashSet<>(this.variableNames);
+        if (extraRequiredVars != null) {
+            for (String extra : extraRequiredVars) {
+                if (StringUtils.hasText(extra)) {
+                    allRequired.add(extra.trim());
+                }
+            }
+        }
+        if (allRequired.isEmpty()) {
+            return;
+        }
+        List<String> missing = new ArrayList<>();
+        for (String name : allRequired) {
+            if (variables == null || !variables.containsKey(name) || variables.get(name) == null) {
+                missing.add(name);
+            }
+        }
+        if (!missing.isEmpty()) {
+            throw new AiException(AiResultCode.AI_INVALID_PAYLOAD,
+                    "提示词模板缺少必填变量或变量值为 null: " + String.join(", ", missing));
+        }
+    }
+
+    private String applyVariables(Map<String, ?> variables) {
         Matcher matcher = PLACEHOLDER_PATTERN.matcher(template);
         StringBuilder sb = new StringBuilder();
 
@@ -125,6 +197,13 @@ public final class PromptTemplate {
         if (keyValues == null || keyValues.length == 0) {
             return template;
         }
+        return render(toVariableMap(keyValues));
+    }
+
+    private static Map<String, Object> toVariableMap(Object... keyValues) {
+        if (keyValues == null || keyValues.length == 0) {
+            return Collections.emptyMap();
+        }
         if (keyValues.length % 2 != 0) {
             throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "变长参数键值对必须成对提供，当前参数个数: " + keyValues.length);
         }
@@ -135,7 +214,7 @@ public final class PromptTemplate {
             Object value = keyValues[i + 1];
             map.put(key, value);
         }
-        return render(map);
+        return map;
     }
 
     /**

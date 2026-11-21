@@ -1,0 +1,28 @@
+prompts:
+  - code: customer-support
+    version: "1.0.0"
+    label: prod
+    description: 客户服务工单问答生产环境提示词
+    requiredVariables:
+      - userName
+      - topic
+    content: |
+      你是一位专业、耐心的企业客服专家。请针对客户【{{userName}}】咨询的主题「{{topic}}」给出清晰准确、分点说明的答复。
+
+  - code: customer-support
+    version: "2.0.0"
+    label: canary
+    description: 客户服务工单问答金丝雀灰度提示词
+    requiredVariables:
+      - userName
+      - topic
+      - urgency
+    content: |
+      【灰度增强版】你是高级客户成功顾问。请针对客户【{{userName}}】（紧急度：{{urgency}}）咨询的「{{topic}}」立即提供可执行方案与下一步指引。
+
+  - code: advisor-system
+    version: "1.0.0"
+    label: prod
+    description: 声明式智能体动态托管系统提示词
+    content: |
+      你是一位资深的分布式系统架构顾问（生产稳态版 V1），请给出简洁专业的架构建议。

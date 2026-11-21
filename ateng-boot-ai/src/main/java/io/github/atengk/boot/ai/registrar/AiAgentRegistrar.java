@@ -149,6 +149,7 @@ public class AiAgentRegistrar implements ImportBeanDefinitionRegistrar, Resource
         String chatMemory = attributes.getString("chatMemory");
         boolean episodicMemory = attributes.getBoolean("episodicMemory");
         boolean extractMemory = attributes.getBoolean("extractMemory");
+        String promptCode = attributes.getString("promptCode");
 
         String beanName = generateBeanName(interfaceClassName);
         if (registry.containsBeanDefinition(beanName)) {
@@ -164,6 +165,7 @@ public class AiAgentRegistrar implements ImportBeanDefinitionRegistrar, Resource
         builder.addPropertyValue("chatMemory", chatMemory);
         builder.addPropertyValue("episodicMemory", episodicMemory);
         builder.addPropertyValue("extractMemory", extractMemory);
+        builder.addPropertyValue("promptCode", promptCode);
 
         AbstractBeanDefinition targetBeanDefinition = builder.getBeanDefinition();
         try {
