@@ -1258,6 +1258,100 @@ class SocialAuthTemplateTest {
         assertThat(accounts.get(0).getUsername()).isEqualTo("ateng_gh");
     }
 
+    @Test
+    @DisplayName("47. 对称门面 API: getRegisteredAppKeys 与自定义 AuthSource 注册/注销/查询")
+    void testSymmetricAppKeysAndExtendSourceFacade() {
+        assertThat(authTemplate.getRegisteredAppKeys())
+                .contains("github_app", "wechat_mp_app", "baidu_app");
+
+        org.dromara.anduin.config.AuthSource customSource = new org.dromara.anduin.config.AuthSource() {
+            @Override
+            public String authorize() {
+                return "https://casdoor.example.com/login/oauth/authorize";
+            }
+
+            @Override
+            public String accessToken() {
+                return "https://casdoor.example.com/api/login/oauth/access_token";
+            }
+
+            @Override
+            public String userInfo() {
+                return "https://casdoor.example.com/api/get-account";
+            }
+
+            @Override
+            public String getName() {
+                return "CASDOOR";
+            }
+
+            @Override
+            public Class<? extends org.dromara.anduin.request.AuthDefaultRequest> getTargetClass() {
+                return org.dromara.anduin.request.AuthGithubRequest.class;
+            }
+        };
+
+        authTemplate.registerExtendSource(customSource);
+        assertThat(authTemplate.getExtendSourceNames()).contains("CASDOOR");
+
+        boolean removed = authTemplate.unregisterExtendSource("casdoor");
+        assertThat(removed).isTrue();
+        assertThat(authTemplate.getExtendSourceNames()).doesNotContain("CASDOOR");
+    }
+
+    @Test
+    @DisplayName("48. 上游缺陷平台 AFDIAN 与 QQ_MINI_PROGRAM 端到端授权与换码验证")
+    void testAfdianAndQqMiniProgramEndToEndExchange() {
+        SocialAppItemProperties afdianProps = new SocialAppItemProperties();
+        afdianProps.setSource("AFDIAN");
+        afdianProps.setClientId("afdian_cid");
+        afdianProps.setClientSecret("afdian_sec");
+        afdianProps.setRedirectUri("https://ateng.example.com/oauth/afdian/callback");
+        authTemplate.getProperties().getApps().put("afdian_app", afdianProps);
+
+        SocialAppItemProperties qqMiniProps = new SocialAppItemProperties();
+        qqMiniProps.setSource("QQ_MINI_PROGRAM");
+        qqMiniProps.setClientId("qq_mini_appid");
+        qqMiniProps.setClientSecret("qq_mini_secret");
+        qqMiniProps.setIgnoreCheckState(true);
+        qqMiniProps.setIgnoreCheckRedirectUri(true);
+        authTemplate.getProperties().getApps().put("qq_mini_app", qqMiniProps);
+
+        // 1. 验证 AFDIAN 生成授权地址与回调换码
+        String afdianAuthorizeUrl = authTemplate.getAuthorizeUrl("afdian_app");
+        assertThat(afdianAuthorizeUrl).contains("afdian.net/oauth2/authorize");
+        String state = extractQueryParam(afdianAuthorizeUrl, "state");
+
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"ec\":200,\"em\":\"ok\",\"data\":{\"user_id\":\"afdian_user_777\"}}"));
+
+        when(userDetailsService.loadUserIdBySocialUser(eq("afdian_app"), any(SocialUser.class)))
+                .thenReturn("local_afdian_user");
+
+        SocialAuthResult afdianResult = authTemplate.login("afdian_app",
+                AuthCallback.builder().code("afdian_code_1").state(state).build());
+        assertThat(afdianResult.isLoggedIn()).isTrue();
+        assertThat(afdianResult.getUserId()).isEqualTo("local_afdian_user");
+        assertThat(afdianResult.getSocialUser().getOpenId()).isEqualTo("afdian_user_777");
+
+        // 2. 验证 QQ_MINI_PROGRAM 凭据直传换码
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"errcode\":0,\"errmsg\":\"ok\",\"openid\":\"qq_open_888\",\"unionid\":\"qq_union_999\",\"session_key\":\"qq_sess\"}"));
+
+        when(userDetailsService.loadUserIdBySocialUser(eq("qq_mini_app"), any(SocialUser.class)))
+                .thenReturn("local_qq_user");
+
+        SocialAuthResult qqResult = authTemplate.directLogin("qq_mini_app", "qq_js_code_123");
+        assertThat(qqResult.isLoggedIn()).isTrue();
+        assertThat(qqResult.getUserId()).isEqualTo("local_qq_user");
+        assertThat(qqResult.getSocialUser().getOpenId()).isEqualTo("qq_open_888");
+        assertThat(qqResult.getSocialUser().getUnionId()).isEqualTo("qq_union_999");
+    }
+
     private String extractQueryParam(String url, String paramName) {
         int queryIdx = url.indexOf('?');
         if (queryIdx < 0) {

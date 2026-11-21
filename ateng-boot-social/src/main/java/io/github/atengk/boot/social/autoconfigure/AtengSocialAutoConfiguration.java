@@ -18,6 +18,7 @@ import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.anduin.cache.AuthStateCache;
+import org.dromara.anduin.config.AuthSource;
 import org.dromara.anduin.http.HttpClientAdapter;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.SmartInitializingSingleton;
@@ -87,8 +88,9 @@ public class AtengSocialAutoConfiguration {
      * 自动装配社交应用路由与实例工厂
      *
      * @param configProviderObjectProvider 动态切源 SPI 提供者
-     * @param stateCacheObjectProvider    State 缓存提供者
-     * @param httpClientAdapter           网络适配器
+     * @param stateCacheObjectProvider     State 缓存提供者
+     * @param httpClientAdapter            网络适配器
+     * @param extendSourceObjectProvider   自定义第三方平台源扩展提供者
      * @return SocialAppFactory 实例
      */
     @Bean
@@ -96,11 +98,19 @@ public class AtengSocialAutoConfiguration {
     public SocialAppFactory socialAppFactory(
             ObjectProvider<SocialAppConfigProvider> configProviderObjectProvider,
             ObjectProvider<AuthStateCache> stateCacheObjectProvider,
-            HttpClientAdapter httpClientAdapter) {
+            HttpClientAdapter httpClientAdapter,
+            ObjectProvider<AuthSource> extendSourceObjectProvider) {
         SpringRestClientHttpImpl springClient = httpClientAdapter instanceof SpringRestClientHttpImpl s
                 ? s : null;
-        SocialAppFactory factory = new SocialAppFactory(properties, configProviderObjectProvider, stateCacheObjectProvider, springClient);
-        log.info("Initialized SocialAppFactory with {} static apps configured", properties.getApps().size());
+        SocialAppFactory factory = new SocialAppFactory(
+                properties,
+                configProviderObjectProvider,
+                stateCacheObjectProvider,
+                springClient,
+                extendSourceObjectProvider
+        );
+        log.info("Initialized SocialAppFactory with {} static apps and {} custom AuthSources configured",
+                properties.getApps().size(), factory.getExtendSourceNames().size());
         return factory;
     }
 

@@ -13,15 +13,25 @@ import org.dromara.anduin.AuthRequestBuilder;
 import org.dromara.anduin.cache.AuthDefaultStateCache;
 import org.dromara.anduin.cache.AuthStateCache;
 import org.dromara.anduin.config.AuthConfig;
+import org.dromara.anduin.config.AuthSource;
+import org.dromara.anduin.enums.AuthResponseStatus;
+import org.dromara.anduin.exception.AuthException;
+import org.dromara.anduin.request.AuthAfDianRequest;
+import org.dromara.anduin.request.AuthDefaultRequest;
+import org.dromara.anduin.request.AuthQQMiniProgramRequest;
 import org.dromara.anduin.request.AuthRequest;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.util.ReflectionUtils;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
 import java.net.Proxy;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.Objects;
-import java.util.Set;
+import java.util.LinkedHashSet;
+import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -37,20 +47,37 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 public class SocialAppFactory {
 
+    private static final Map<String, Class<? extends AuthDefaultRequest>> BUILTIN_PATCH_REQUEST_CLASSES = Map.of(
+            "AFDIAN", AuthAfDianRequest.class,
+            "QQ_MINI_PROGRAM", AuthQQMiniProgramRequest.class
+    );
+
     private final AtengSocialProperties properties;
     private final ObjectProvider<SocialAppConfigProvider> configProviderObjectProvider;
     private final ObjectProvider<AuthStateCache> stateCacheObjectProvider;
     private final SpringRestClientHttpImpl httpClientAdapter;
-    private final Set<String> registeredProxyAppKeys = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private final Map<String, AppClientFingerprint> appClientFingerprints = new ConcurrentHashMap<>();
+    private final Map<String, AuthSource> extendSources = new ConcurrentHashMap<>();
 
     public SocialAppFactory(AtengSocialProperties properties,
                             ObjectProvider<SocialAppConfigProvider> configProviderObjectProvider,
                             ObjectProvider<AuthStateCache> stateCacheObjectProvider,
                             SpringRestClientHttpImpl httpClientAdapter) {
+        this(properties, configProviderObjectProvider, stateCacheObjectProvider, httpClientAdapter, null);
+    }
+
+    public SocialAppFactory(AtengSocialProperties properties,
+                            ObjectProvider<SocialAppConfigProvider> configProviderObjectProvider,
+                            ObjectProvider<AuthStateCache> stateCacheObjectProvider,
+                            SpringRestClientHttpImpl httpClientAdapter,
+                            ObjectProvider<AuthSource> extendSourceObjectProvider) {
         this.properties = properties != null ? properties : new AtengSocialProperties();
         this.configProviderObjectProvider = configProviderObjectProvider;
         this.stateCacheObjectProvider = stateCacheObjectProvider;
         this.httpClientAdapter = httpClientAdapter;
+        if (extendSourceObjectProvider != null) {
+            extendSourceObjectProvider.orderedStream().forEach(this::registerExtendSource);
+        }
     }
 
     /**
@@ -112,16 +139,124 @@ public class SocialAppFactory {
         AuthConfig anduinAuthConfig = appConfig.toAuthConfig();
 
         try {
-            AuthRequest rawAuthRequest = AuthRequestBuilder.builder()
-                    .source(appConfig.getSource())
-                    .authConfig(anduinAuthConfig)
-                    .authStateCache(stateCache)
-                    .build();
+            AuthRequest rawAuthRequest = resolveAndBuildAuthRequest(appConfig.getSource(), anduinAuthConfig, stateCache);
             return new AppKeyAwareAuthRequest(appKey, rawAuthRequest);
         } catch (Exception ex) {
             log.error("Failed to build AuthRequest for appKey: {}, source: {}", appKey, appConfig.getSource(), ex);
             throw new SocialException("构建第三方 OAuth2 请求实例失败: " + ex.getMessage(), ex);
         }
+    }
+
+    /**
+     * 按 [自定义扩展 AuthSource > 内置缺陷修正源 (AFDIAN / QQ_MINI_PROGRAM) > AuthDefaultSource] 优先级构建请求实例
+     */
+    private AuthRequest resolveAndBuildAuthRequest(String rawSource, AuthConfig authConfig, AuthStateCache stateCache) {
+        if (rawSource == null || rawSource.isBlank()) {
+            throw new AuthException(AuthResponseStatus.NOT_IMPLEMENTED.getCode(), "Missing source or authConfig");
+        }
+        String normalizedSource = rawSource.trim().toUpperCase(Locale.ROOT);
+
+        // 1. 优先匹配自定义注册的 AuthSource（避免被上游 AuthRequestBuilder.concat 中的内置枚举遮蔽）
+        AuthSource customSource = extendSources.get(normalizedSource);
+        if (customSource != null) {
+            return instantiateTargetRequest(customSource.getName(), customSource.getTargetClass(), authConfig, stateCache);
+        }
+
+        // 2. 匹配上游 dromara-anduin 内置枚举映射缺陷修正源（AFDIAN 与 QQ_MINI_PROGRAM）
+        Class<? extends AuthDefaultRequest> patchedClass = BUILTIN_PATCH_REQUEST_CLASSES.get(normalizedSource);
+        if (patchedClass != null) {
+            return instantiateTargetRequest(normalizedSource, patchedClass, authConfig, stateCache);
+        }
+
+        // 3. 回退至 Anduin 标准构建器
+        return AuthRequestBuilder.builder()
+                .source(rawSource.trim())
+                .authConfig(authConfig)
+                .authStateCache(stateCache)
+                .extendSource(extendSources.values().toArray(new AuthSource[0]))
+                .build();
+    }
+
+    private AuthRequest instantiateTargetRequest(String sourceName,
+                                                 Class<? extends AuthDefaultRequest> targetClass,
+                                                 AuthConfig authConfig,
+                                                 AuthStateCache stateCache) {
+        if (targetClass == null) {
+            throw new AuthException(AuthResponseStatus.NOT_IMPLEMENTED.getCode(),
+                    "No request class for source: " + sourceName);
+        }
+        try {
+            if (stateCache != null) {
+                try {
+                    Constructor<? extends AuthDefaultRequest> ctor =
+                            targetClass.getDeclaredConstructor(AuthConfig.class, AuthStateCache.class);
+                    ReflectionUtils.makeAccessible(ctor);
+                    return ctor.newInstance(authConfig, stateCache);
+                } catch (NoSuchMethodException ignored) {
+                    // 回退至单参构造器
+                }
+            }
+            Constructor<? extends AuthDefaultRequest> singleCtor =
+                    targetClass.getDeclaredConstructor(AuthConfig.class);
+            ReflectionUtils.makeAccessible(singleCtor);
+            return singleCtor.newInstance(authConfig);
+        } catch (InvocationTargetException ex) {
+            Throwable cause = ex.getCause();
+            if (cause instanceof AuthException authEx) {
+                throw authEx;
+            }
+            throw new AuthException("Unable to construct request for source " + sourceName
+                    + " using " + targetClass.getName(), cause);
+        } catch (ReflectiveOperationException | SecurityException | LinkageError ex) {
+            throw new AuthException("Unable to construct request for source " + sourceName
+                    + " using " + targetClass.getName(), ex);
+        }
+    }
+
+    /**
+     * 动态注册自定义第三方 OAuth2 / OIDC 平台源
+     *
+     * @param sources 自定义平台源数组
+     */
+    public void registerExtendSource(AuthSource... sources) {
+        if (sources == null || sources.length == 0) {
+            return;
+        }
+        for (AuthSource source : sources) {
+            if (source != null && source.getName() != null && !source.getName().isBlank()) {
+                String key = source.getName().trim().toUpperCase(Locale.ROOT);
+                extendSources.put(key, source);
+                log.info("Registered custom social AuthSource: [{}]", key);
+            }
+        }
+    }
+
+    /**
+     * 对称注销自定义第三方 OAuth2 / OIDC 平台源
+     *
+     * @param sourceName 平台源名称（忽略大小写）
+     * @return true 表示存在并已成功移除；false 表示未注册
+     */
+    public boolean unregisterExtendSource(String sourceName) {
+        if (sourceName == null || sourceName.isBlank()) {
+            return false;
+        }
+        String key = sourceName.trim().toUpperCase(Locale.ROOT);
+        AuthSource removed = extendSources.remove(key);
+        if (removed != null) {
+            log.info("Unregistered custom social AuthSource: [{}]", key);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 获取当前已注册的全部自定义扩展平台名称集合
+     *
+     * @return 不可变平台名称集合
+     */
+    public Collection<String> getExtendSourceNames() {
+        return Collections.unmodifiableSet(new LinkedHashSet<>(extendSources.keySet()));
     }
 
     /**
@@ -137,24 +272,64 @@ public class SocialAppFactory {
     }
 
     /**
-     * 若应用配置了专有网络代理或超时且尚未注册至适配器，则执行动态注册
+     * 对称移除指定应用的专属 RestClient 缓存
+     *
+     * @param appKey 社交应用唯一标识
+     */
+    public void unregisterAppRestClient(String appKey) {
+        if (appKey == null || appKey.isBlank()) {
+            return;
+        }
+        appClientFingerprints.remove(appKey);
+        if (httpClientAdapter != null) {
+            httpClientAdapter.unregisterAppRestClient(appKey);
+        }
+    }
+
+    /**
+     * 清空全部应用级专属 RestClient 缓存
+     */
+    public void clearAppRestClients() {
+        appClientFingerprints.clear();
+        if (httpClientAdapter != null) {
+            httpClientAdapter.clearAppRestClients();
+        }
+    }
+
+    /**
+     * 若应用配置了专有网络代理或超时，按配置指纹自动注册或热更新至适配器；若已移除专有配置则对称卸载
      */
     private void ensureAppProxyRegistered(String appKey, SocialAppConfig appConfig) {
-        if (httpClientAdapter == null || registeredProxyAppKeys.contains(appKey)) {
+        if (httpClientAdapter == null || appKey == null || appKey.isBlank()) {
             return;
         }
 
         SocialProxyConfig proxyConfig = appConfig.getProxy();
+        Proxy proxy = proxyConfig != null ? proxyConfig.toProxy() : null;
         Duration connectTimeout = appConfig.getConnectTimeout();
         Duration readTimeout = appConfig.getReadTimeout();
 
-        if (proxyConfig != null || connectTimeout != null || readTimeout != null) {
-            Proxy proxy = proxyConfig != null ? proxyConfig.toProxy() : null;
-            httpClientAdapter.registerAppRestClient(appKey, connectTimeout, readTimeout, proxy);
-            registeredProxyAppKeys.add(appKey);
-            log.info("Registered dedicated RestClient for social appKey: [{}], proxy: [{}], timeout: [{}, {}]",
-                    appKey, proxy != null ? proxy.type() : "DIRECT", connectTimeout, readTimeout);
+        if (proxy != null || connectTimeout != null || readTimeout != null) {
+            AppClientFingerprint currentFingerprint = new AppClientFingerprint(connectTimeout, readTimeout, proxy);
+            AppClientFingerprint previousFingerprint = appClientFingerprints.get(appKey);
+            if (!currentFingerprint.equals(previousFingerprint)) {
+                httpClientAdapter.registerAppRestClient(appKey, connectTimeout, readTimeout, proxy);
+                appClientFingerprints.put(appKey, currentFingerprint);
+                log.info("Registered or updated dedicated RestClient for social appKey: [{}], proxy: [{}], timeout: [{}, {}]",
+                        appKey, proxy != null ? proxy.type() : "DIRECT", connectTimeout, readTimeout);
+            }
+        } else {
+            if (appClientFingerprints.remove(appKey) != null) {
+                httpClientAdapter.unregisterAppRestClient(appKey);
+                log.info("Evicted dedicated RestClient for social appKey: [{}], reverted to default client", appKey);
+            }
         }
+    }
+
+    /**
+     * 应用级专有网络配置指纹值对象
+     */
+    private record AppClientFingerprint(Duration connectTimeout, Duration readTimeout, Proxy proxy) {
     }
 
     /**

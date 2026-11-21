@@ -28,6 +28,7 @@ import io.github.atengk.boot.social.spi.SocialUserDetailsService;
 import io.github.atengk.boot.social.support.SocialRedirectUriValidator;
 import io.github.atengk.boot.social.ticket.BindTicketStore;
 import lombok.extern.slf4j.Slf4j;
+import org.dromara.anduin.config.AuthSource;
 import org.dromara.anduin.model.AuthCallback;
 import org.dromara.anduin.model.AuthResponse;
 import org.dromara.anduin.model.AuthToken;
@@ -39,6 +40,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.ApplicationEventPublisherAware;
 
 import java.time.Duration;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.function.Supplier;
@@ -762,6 +764,43 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             throw new IllegalArgumentException("应用标识 [appKey] 不能为空");
         }
         return socialAppFactory.getAppConfig(appKey);
+    }
+
+    /**
+     * 获取当前所有已注册的静态应用标识列表
+     *
+     * @return 应用标识集合（保底返回空集合，严禁返回 null）
+     */
+    public Collection<String> getRegisteredAppKeys() {
+        return socialAppFactory.getRegisteredAppKeys();
+    }
+
+    /**
+     * 动态注册自定义第三方 OAuth2 / OIDC 平台源
+     *
+     * @param sources 自定义平台源数组
+     */
+    public void registerExtendSource(AuthSource... sources) {
+        socialAppFactory.registerExtendSource(sources);
+    }
+
+    /**
+     * 对称注销自定义第三方 OAuth2 / OIDC 平台源
+     *
+     * @param sourceName 平台源名称（忽略大小写）
+     * @return true 表示存在并已成功移除；false 表示未注册
+     */
+    public boolean unregisterExtendSource(String sourceName) {
+        return socialAppFactory.unregisterExtendSource(sourceName);
+    }
+
+    /**
+     * 获取当前已注册的全部自定义扩展平台名称集合
+     *
+     * @return 不可变平台名称集合
+     */
+    public Collection<String> getExtendSourceNames() {
+        return socialAppFactory.getExtendSourceNames();
     }
 
     // ==================== 8. 内部编排辅助方法 ====================

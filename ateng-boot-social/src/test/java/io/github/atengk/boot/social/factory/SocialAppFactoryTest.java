@@ -9,14 +9,24 @@ import io.github.atengk.boot.social.properties.AtengSocialProperties;
 import io.github.atengk.boot.social.properties.SocialAppItemProperties;
 import io.github.atengk.boot.social.spi.SocialAppConfigProvider;
 import org.dromara.anduin.cache.AuthStateCache;
+import org.dromara.anduin.config.AuthConfig;
+import org.dromara.anduin.config.AuthSource;
+import org.dromara.anduin.model.AuthCallback;
+import org.dromara.anduin.model.AuthToken;
+import org.dromara.anduin.model.AuthUser;
+import org.dromara.anduin.request.AuthAfDianRequest;
+import org.dromara.anduin.request.AuthDefaultRequest;
 import org.dromara.anduin.request.AuthGiteeRequest;
 import org.dromara.anduin.request.AuthGithubRequest;
+import org.dromara.anduin.request.AuthQQMiniProgramRequest;
 import org.dromara.anduin.request.AuthRequest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.support.StaticListableBeanFactory;
+import org.springframework.web.client.RestClient;
 
 import java.net.Proxy;
 import java.time.Duration;
@@ -155,5 +165,200 @@ class SocialAppFactoryTest {
 
         CurrentSocialAppContextHolder.clear();
         assertThat(CurrentSocialAppContextHolder.getAppKey()).isNull();
+    }
+
+    @Test
+    @DisplayName("验证上游 AFDIAN 与 QQ_MINI_PROGRAM 映射缺陷自动修复")
+    void testUpstreamAfdianAndQqMiniProgramSelfHealing() {
+        SocialAppItemProperties afdianProps = new SocialAppItemProperties();
+        afdianProps.setSource("AFDIAN");
+        afdianProps.setClientId("afdian-client-id");
+        afdianProps.setClientSecret("afdian-client-secret");
+        afdianProps.setRedirectUri("https://example.com/oauth/afdian/callback");
+        properties.getApps().put("afdian-app", afdianProps);
+
+        SocialAppItemProperties qqMiniProps = new SocialAppItemProperties();
+        qqMiniProps.setSource("QQ_MINI_PROGRAM");
+        qqMiniProps.setClientId("qq-mini-appid");
+        qqMiniProps.setClientSecret("qq-mini-secret");
+        qqMiniProps.setIgnoreCheckState(true);
+        qqMiniProps.setIgnoreCheckRedirectUri(true);
+        properties.getApps().put("qq-mini-app", qqMiniProps);
+
+        AuthRequest afdianRequest = factory.createAuthRequest("afdian-app");
+        assertThat(afdianRequest).isInstanceOf(AppKeyAwareAuthRequest.class);
+        assertThat(((AppKeyAwareAuthRequest) afdianRequest).getDelegate()).isInstanceOf(AuthAfDianRequest.class);
+
+        AuthRequest qqMiniRequest = factory.createAuthRequest("qq-mini-app");
+        assertThat(qqMiniRequest).isInstanceOf(AppKeyAwareAuthRequest.class);
+        assertThat(((AppKeyAwareAuthRequest) qqMiniRequest).getDelegate()).isInstanceOf(AuthQQMiniProgramRequest.class);
+    }
+
+    @Test
+    @DisplayName("验证自定义 AuthSource 容器自动发现、编程式注册注销及同名优先级覆写")
+    void testCustomExtendSourceRegistrationAndPrecedence() {
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        beanFactory.addBean("customKeycloakSource", CustomEnterpriseSource.KEYCLOAK);
+
+        SocialAppFactory customFactory = new SocialAppFactory(
+                properties,
+                configProviderProvider,
+                stateCacheProvider,
+                httpClientAdapter,
+                beanFactory.getBeanProvider(AuthSource.class)
+        );
+
+        assertThat(customFactory.getExtendSourceNames()).contains("KEYCLOAK");
+
+        SocialAppItemProperties keycloakProps = new SocialAppItemProperties();
+        keycloakProps.setSource("keycloak");
+        keycloakProps.setClientId("kc-client");
+        keycloakProps.setClientSecret("kc-secret");
+        keycloakProps.setRedirectUri("https://example.com/kc/callback");
+        properties.getApps().put("keycloak-app", keycloakProps);
+
+        AuthRequest kcRequest = customFactory.createAuthRequest("keycloak-app");
+        assertThat(((AppKeyAwareAuthRequest) kcRequest).getDelegate()).isInstanceOf(CustomKeycloakRequest.class);
+        assertThat(kcRequest.authorize("st_kc")).startsWith("https://sso.enterprise.internal/auth");
+
+        // 注册与内置 GITHUB 同名的自定义 AuthSource，验证优先命中自定义源而非被内置枚举遮蔽
+        customFactory.registerExtendSource(CustomEnterpriseSource.GITHUB);
+        assertThat(customFactory.getExtendSourceNames()).contains("KEYCLOAK", "GITHUB");
+
+        AuthRequest overriddenGithub = customFactory.createAuthRequest("github-main");
+        assertThat(((AppKeyAwareAuthRequest) overriddenGithub).getDelegate()).isInstanceOf(CustomKeycloakRequest.class);
+
+        // 对称注销同名扩展源后，恢复命中内置 AuthGithubRequest
+        boolean removed = customFactory.unregisterExtendSource("github");
+        assertThat(removed).isTrue();
+        assertThat(customFactory.getExtendSourceNames()).doesNotContain("GITHUB");
+
+        AuthRequest restoredGithub = customFactory.createAuthRequest("github-main");
+        assertThat(((AppKeyAwareAuthRequest) restoredGithub).getDelegate()).isInstanceOf(AuthGithubRequest.class);
+    }
+
+    @Test
+    @DisplayName("验证多租户动态切源下 RestClient 配置指纹热更新与回退清理")
+    void testDynamicAppClientFingerprintHotUpdateAndEviction() {
+        SocialAppConfigProvider mockProvider = mock(SocialAppConfigProvider.class);
+        when(configProviderProvider.getIfAvailable()).thenReturn(mockProvider);
+
+        RestClient defaultClient = httpClientAdapter.obtainClient();
+
+        // 1. 首次动态配置携带 3s 超时与 7890 代理
+        SocialAppConfig configV1 = SocialAppConfig.builder()
+                .appKey("dynamic-app")
+                .source("GITEE")
+                .clientId("c1")
+                .clientSecret("s1")
+                .redirectUri("https://example.com/cb")
+                .connectTimeout(Duration.ofSeconds(3))
+                .readTimeout(Duration.ofSeconds(3))
+                .proxy(SocialProxyConfig.builder().type(Proxy.Type.HTTP).host("127.0.0.1").port(7890).build())
+                .build();
+        when(mockProvider.getAppConfig("dynamic-app")).thenReturn(configV1);
+
+        factory.createAuthRequest("dynamic-app");
+        RestClient clientV1 = CurrentSocialAppContextHolder.runWithAppKey("dynamic-app", () -> httpClientAdapter.obtainClient());
+        assertThat(clientV1).isNotSameAs(defaultClient);
+
+        // 2. 配置未变更时，复用同一专有 RestClient 实例
+        factory.createAuthRequest("dynamic-app");
+        RestClient clientV1Repeat = CurrentSocialAppContextHolder.runWithAppKey("dynamic-app", () -> httpClientAdapter.obtainClient());
+        assertThat(clientV1Repeat).isSameAs(clientV1);
+
+        // 3. 租户后台热修改超时为 8s、代理端口改为 1080 -> 指纹变化，自动热替换 RestClient
+        SocialAppConfig configV2 = SocialAppConfig.builder()
+                .appKey("dynamic-app")
+                .source("GITEE")
+                .clientId("c1")
+                .clientSecret("s1")
+                .redirectUri("https://example.com/cb")
+                .connectTimeout(Duration.ofSeconds(8))
+                .readTimeout(Duration.ofSeconds(8))
+                .proxy(SocialProxyConfig.builder().type(Proxy.Type.SOCKS).host("127.0.0.1").port(1080).build())
+                .build();
+        when(mockProvider.getAppConfig("dynamic-app")).thenReturn(configV2);
+
+        factory.createAuthRequest("dynamic-app");
+        RestClient clientV2 = CurrentSocialAppContextHolder.runWithAppKey("dynamic-app", () -> httpClientAdapter.obtainClient());
+        assertThat(clientV2).isNotSameAs(defaultClient).isNotSameAs(clientV1);
+
+        // 4. 租户移除专有代理与超时配置 -> 自动卸载专有客户端并回退至默认 RestClient
+        SocialAppConfig configV3NoCustomHttp = SocialAppConfig.builder()
+                .appKey("dynamic-app")
+                .source("GITEE")
+                .clientId("c1")
+                .clientSecret("s1")
+                .redirectUri("https://example.com/cb")
+                .build();
+        when(mockProvider.getAppConfig("dynamic-app")).thenReturn(configV3NoCustomHttp);
+
+        factory.createAuthRequest("dynamic-app");
+        RestClient clientV3 = CurrentSocialAppContextHolder.runWithAppKey("dynamic-app", () -> httpClientAdapter.obtainClient());
+        assertThat(clientV3).isSameAs(defaultClient);
+
+        // 5. 验证工厂显式对称注销与清空 API (unregisterAppRestClient / clearAppRestClients)
+        when(mockProvider.getAppConfig("dynamic-app")).thenReturn(configV1);
+        factory.createAuthRequest("dynamic-app");
+        assertThat(CurrentSocialAppContextHolder.runWithAppKey("dynamic-app", () -> httpClientAdapter.obtainClient()))
+                .isNotSameAs(defaultClient);
+
+        factory.unregisterAppRestClient("dynamic-app");
+        assertThat(CurrentSocialAppContextHolder.runWithAppKey("dynamic-app", () -> httpClientAdapter.obtainClient()))
+                .isSameAs(defaultClient);
+
+        factory.createAuthRequest("dynamic-app");
+        assertThat(CurrentSocialAppContextHolder.runWithAppKey("dynamic-app", () -> httpClientAdapter.obtainClient()))
+                .isNotSameAs(defaultClient);
+
+        factory.clearAppRestClients();
+        assertThat(CurrentSocialAppContextHolder.runWithAppKey("dynamic-app", () -> httpClientAdapter.obtainClient()))
+                .isSameAs(defaultClient);
+    }
+
+    public enum CustomEnterpriseSource implements AuthSource {
+        KEYCLOAK,
+        GITHUB;
+
+        @Override
+        public String authorize() {
+            return "https://sso.enterprise.internal/auth";
+        }
+
+        @Override
+        public String accessToken() {
+            return "https://sso.enterprise.internal/token";
+        }
+
+        @Override
+        public String userInfo() {
+            return "https://sso.enterprise.internal/userinfo";
+        }
+
+        @Override
+        public Class<? extends AuthDefaultRequest> getTargetClass() {
+            return CustomKeycloakRequest.class;
+        }
+    }
+
+    public static class CustomKeycloakRequest extends AuthDefaultRequest {
+        public CustomKeycloakRequest(AuthConfig config) {
+            super(config, CustomEnterpriseSource.KEYCLOAK);
+        }
+
+        public CustomKeycloakRequest(AuthConfig config, AuthStateCache authStateCache) {
+            super(config, CustomEnterpriseSource.KEYCLOAK, authStateCache);
+        }
+
+        @Override
+        public AuthToken getAccessToken(AuthCallback authCallback) {
+            return AuthToken.builder().accessToken("kc-token").openId("kc-open-1").build();
+        }
+
+        @Override
+        public AuthUser getUserInfo(AuthToken authToken) {
+            return AuthUser.builder().uuid("kc-open-1").username("kc_user").token(authToken).source(source.getName()).build();
+        }
     }
 }

@@ -4,13 +4,15 @@ import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
 import org.dromara.anduin.http.AdapterHttpResponse;
-import org.dromara.anduin.http.HttpConstants;
 import org.dromara.anduin.http.HttpHeader;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.web.client.RestClient;
 
 import java.io.IOException;
 import java.net.Proxy;
@@ -74,7 +76,7 @@ class SpringRestClientHttpImplTest {
         assertTrue(recordedRequest.getPath().contains("client_id=test_id"));
         assertTrue(recordedRequest.getPath().contains("scope=snsapi_userinfo"));
         assertEquals("secret-key", recordedRequest.getHeader("X-Custom-Auth"));
-        assertEquals(HttpConstants.USER_AGENT_DATA, recordedRequest.getHeader(HttpConstants.USER_AGENT));
+        assertEquals(SpringRestClientHttpImpl.USER_AGENT_DATA, recordedRequest.getHeader(HttpHeaders.USER_AGENT));
     }
 
     @Test
@@ -115,7 +117,7 @@ class SpringRestClientHttpImplTest {
         RecordedRequest recordedRequest = mockWebServer.takeRequest();
         assertEquals("POST", recordedRequest.getMethod());
         assertEquals(jsonPayload, recordedRequest.getBody().readUtf8());
-        assertEquals(HttpConstants.CONTENT_TYPE_JSON, recordedRequest.getHeader("Content-Type"));
+        assertEquals(MediaType.APPLICATION_JSON_VALUE, recordedRequest.getHeader(HttpHeaders.CONTENT_TYPE));
     }
 
     @Test
@@ -192,5 +194,31 @@ class SpringRestClientHttpImplTest {
                 .port(0)
                 .build();
         assertNull(invalidConfig.toProxy());
+    }
+
+    @Test
+    @DisplayName("应用级专有 RestClient 对称注册、注销与清空验证")
+    void testSymmetricAppRestClientManagement() {
+        RestClient defaultClient = httpAdapter.obtainClient();
+        assertNotNull(defaultClient);
+
+        httpAdapter.registerAppRestClient("custom_app", Duration.ofSeconds(2), Duration.ofSeconds(2), null);
+        io.github.atengk.boot.social.context.CurrentSocialAppContextHolder.setAppKey("custom_app");
+        try {
+            RestClient customClient = httpAdapter.obtainClient();
+            assertNotNull(customClient);
+            assertNotSame(defaultClient, customClient);
+
+            httpAdapter.unregisterAppRestClient("custom_app");
+            assertSame(defaultClient, httpAdapter.obtainClient());
+
+            httpAdapter.registerAppRestClient("custom_app", Duration.ofSeconds(5), Duration.ofSeconds(5), null);
+            assertNotSame(defaultClient, httpAdapter.obtainClient());
+
+            httpAdapter.clearAppRestClients();
+            assertSame(defaultClient, httpAdapter.obtainClient());
+        } finally {
+            io.github.atengk.boot.social.context.CurrentSocialAppContextHolder.clear();
+        }
     }
 }

@@ -4,11 +4,11 @@ import io.github.atengk.boot.social.context.CurrentSocialAppContextHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.anduin.http.AdapterHttpResponse;
 import org.dromara.anduin.http.HttpClientAdapter;
-import org.dromara.anduin.http.HttpConstants;
 import org.dromara.anduin.http.HttpHeader;
 import org.dromara.anduin.utils.MapUtil;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
@@ -31,6 +31,12 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Slf4j
 public class SpringRestClientHttpImpl implements HttpClientAdapter {
+
+    /**
+     * 默认出站请求 User-Agent 标头值
+     */
+    public static final String USER_AGENT_DATA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 HttpClientAdapter";
 
     private final RestClient defaultRestClient;
     private final Map<String, RestClient> appClientMap = new ConcurrentHashMap<>();
@@ -98,6 +104,25 @@ public class SpringRestClientHttpImpl implements HttpClientAdapter {
             return;
         }
         appClientMap.put(appKey, createRestClient(connectTimeout, readTimeout, proxy));
+    }
+
+    /**
+     * 对称注销指定应用标识的专属 RestClient，释放并回退至全局默认客户端
+     *
+     * @param appKey 应用唯一标识
+     */
+    public void unregisterAppRestClient(String appKey) {
+        if (appKey == null || appKey.isBlank()) {
+            return;
+        }
+        appClientMap.remove(appKey);
+    }
+
+    /**
+     * 清空所有已注册的应用级专属 RestClient 缓存
+     */
+    public void clearAppRestClients() {
+        appClientMap.clear();
     }
 
     private static RestClient createRestClient(Duration connectTimeout, Duration readTimeout, Proxy proxy) {
@@ -182,12 +207,12 @@ public class SpringRestClientHttpImpl implements HttpClientAdapter {
         HttpHeader formHeader = new HttpHeader();
         if (header != null && header.getHeaders() != null) {
             header.getHeaders().forEach((k, v) -> {
-                if (!HttpConstants.CONTENT_TYPE.equalsIgnoreCase(k)) {
+                if (!HttpHeaders.CONTENT_TYPE.equalsIgnoreCase(k)) {
                     formHeader.add(k, v);
                 }
             });
         }
-        formHeader.add(HttpConstants.CONTENT_TYPE, "application/x-www-form-urlencoded");
+        formHeader.add(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_FORM_URLENCODED_VALUE);
         return post(url, body, formHeader);
     }
 
@@ -206,7 +231,7 @@ public class SpringRestClientHttpImpl implements HttpClientAdapter {
             RestClient.RequestBodySpec requestSpec = obtainClient().method(method).uri(uri);
 
             // 统一挂载 User-Agent 标头
-            requestSpec.header(HttpConstants.USER_AGENT, HttpConstants.USER_AGENT_DATA);
+            requestSpec.header(HttpHeaders.USER_AGENT, USER_AGENT_DATA);
 
             // 应用自定义请求标头
             boolean hasContentType = false;
@@ -214,7 +239,7 @@ public class SpringRestClientHttpImpl implements HttpClientAdapter {
                 for (Map.Entry<String, String> entry : customHeader.getHeaders().entrySet()) {
                     if (entry.getKey() != null && entry.getValue() != null) {
                         requestSpec.header(entry.getKey(), entry.getValue());
-                        if (HttpConstants.CONTENT_TYPE.equalsIgnoreCase(entry.getKey())) {
+                        if (HttpHeaders.CONTENT_TYPE.equalsIgnoreCase(entry.getKey())) {
                             hasContentType = true;
                         }
                     }
@@ -223,7 +248,7 @@ public class SpringRestClientHttpImpl implements HttpClientAdapter {
 
             // 若为 POST 且存在数据且未指定 Content-Type，默认设为 application/json
             if (HttpMethod.POST.equals(method) && body != null && !body.isEmpty() && !hasContentType) {
-                requestSpec.header(HttpConstants.CONTENT_TYPE, HttpConstants.CONTENT_TYPE_JSON);
+                requestSpec.header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE);
             }
 
             if (body != null) {
