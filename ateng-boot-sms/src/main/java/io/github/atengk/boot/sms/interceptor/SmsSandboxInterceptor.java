@@ -113,10 +113,29 @@ public class SmsSandboxInterceptor implements SmsSendInterceptor {
         String target = redirectTo.trim();
         if (!context.isBatch()) {
             SmsRequest req = context.getRequest();
-            log.warn("[SMS-SANDBOX-REDIRECT] 非白名单单条短信已重定向 -> 原号码: {}, 测试目标: {}, 渠道: {}",
-                    DesensitizeUtil.mobilePhone(req.getPhone()), DesensitizeUtil.mobilePhone(target), channelName);
+            if (allowedPhones.isEmpty()) {
+                log.warn("[SMS-SANDBOX-REDIRECT] 非白名单单条短信已重定向 -> 原号码: {}, 测试目标: {}, 渠道: {}",
+                        DesensitizeUtil.mobilePhone(req.getPhone()), DesensitizeUtil.mobilePhone(target), channelName);
+                context.setRequest(SmsRequest.builder()
+                        .phone(target)
+                        .templateId(req.getTemplateId())
+                        .params(req.getParams())
+                        .signName(req.getSignName())
+                        .channel(req.getChannel())
+                        .bizId(req.getBizId())
+                        .urgent(req.isUrgent())
+                        .content(req.getContent())
+                        .skipRateLimit(req.isSkipRateLimit())
+                        .build());
+                return true;
+            }
+            Set<String> deduplicatedSingle = new LinkedHashSet<>(allowedPhones);
+            deduplicatedSingle.add(target);
+            List<String> finalSinglePhones = new ArrayList<>(deduplicatedSingle);
+            log.warn("[SMS-SANDBOX-REDIRECT] 混合号码单发短信已保留白名单并合并重定向 -> 原号码数: {}, 非白名单数: {}, 重定向后号码数: {}, 测试目标: {}, 渠道: {}",
+                    phones.size(), nonAllowedPhones.size(), finalSinglePhones.size(), DesensitizeUtil.mobilePhone(target), channelName);
             context.setRequest(SmsRequest.builder()
-                    .phone(target)
+                    .phones(finalSinglePhones)
                     .templateId(req.getTemplateId())
                     .params(req.getParams())
                     .signName(req.getSignName())

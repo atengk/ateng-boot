@@ -107,7 +107,7 @@ public class SmsChannelLoadBalancer {
                 if (available.isEmpty()) {
                     SmsChannel first = allCandidates.get(0);
                     long used = quotaGuard.getUsedQuota(first);
-                    throw new SmsBudgetExceededException(first.getMaxQuota(), used);
+                    throw new SmsBudgetExceededException(first.getMaxQuota(), used, true);
                 }
                 quotaCandidates = available;
             }

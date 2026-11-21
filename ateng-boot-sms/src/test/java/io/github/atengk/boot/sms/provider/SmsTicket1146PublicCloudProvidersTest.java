@@ -100,6 +100,7 @@ class SmsTicket1146PublicCloudProvidersTest {
                 .build();
 
         BaiduSmsProvider provider = new BaiduSmsProvider(RestClient.builder());
+        assertThat(provider.getBatchLimit()).isEqualTo(200);
         SmsRequest req = SmsRequest.builder()
                 .phone("13800138000")
                 .templateId("sms-tmpl-baidu")

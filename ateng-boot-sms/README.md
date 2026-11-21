@@ -18,7 +18,7 @@
 | `HUAWEI` (`huawei`) | 华为云短信 MSGSMS | X-WSSE SHA256 Digest | `500` | `false`（纯模板） | 降级 `supported=false` | 降级 `supported=false` |
 | `YUNPIAN` (`yunpian`) | 云片网短信 Yunpian | APIKey Form POST | `1000` | `true`（模板/纯文本） | 降级 `supported=false` | 支持（`/v2/user/get.json`） |
 | `CTYUN` (`ctyun`) | 天翼云短信 CTYun | CTYun HMAC-SHA256 | `1000` | `false` | 降级 `supported=false` | 降级 `supported=false` |
-| `BAIDU` (`baidu`) | 百度智能云 BCE SMS v3 | BCE-AUTH-V1 HMAC-SHA256 | `1000` | `false` | 降级 `supported=false` | 降级 `supported=false` |
+| `BAIDU` (`baidu`) | 百度智能云 BCE SMS v3 | BCE-AUTH-V1 HMAC-SHA256 | `200` | `false` | 降级 `supported=false` | 降级 `supported=false` |
 | `JDCLOUD` (`jdcloud`) | 京东云短信 JD Cloud | JDCLOUD2-HMAC-SHA256 | `100` | `false` | 降级 `supported=false` | 降级 `supported=false` |
 | `QINIU` (`qiniu`) | 七牛云短信 Qiniu | Qiniu AccessToken HMAC-SHA1 | `1000` | `false` | 降级 `supported=false` | 降级 `supported=false` |
 | `NETEASE` (`netease`) | 网易云信短信 Netease | CheckSum SHA1 + CurTime | `100` | `false` | 降级 `supported=false` | 降级 `supported=false` |
@@ -534,7 +534,7 @@ Timer latencyTimer = meterRegistry.find("ateng.sms.send.duration").timer();
 ```
 
 ```bash
-# 查看 K8s Readiness 中的短信基础设施健康状态
+# 查看 K8s Readiness 中的短信基础设施健康状态（需业务工程同时引入 ateng-boot-observability 与 spring-boot-starter-actuator）
 curl -X GET "http://localhost:8080/actuator/health/sms"
 ```
 

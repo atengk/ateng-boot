@@ -1,8 +1,11 @@
 package io.github.atengk.boot.sms.metrics;
 
 import io.github.atengk.boot.sms.config.AtengSmsAutoConfiguration;
+import io.github.atengk.boot.sms.event.SmsSendAuditEvent;
+import io.github.atengk.boot.sms.exception.SmsBudgetExceededException;
 import io.github.atengk.boot.sms.guard.InMemoryDailyBudgetBreaker;
 import io.github.atengk.boot.sms.guard.InMemorySmsBlacklistProvider;
+import io.github.atengk.boot.sms.guard.InMemorySmsQuotaGuard;
 import io.github.atengk.boot.sms.guard.SmsChannelCircuitBreaker;
 import io.github.atengk.boot.sms.limiter.InMemorySmsRateLimiter;
 import io.github.atengk.boot.sms.model.SmsChannel;
@@ -277,5 +280,67 @@ class SmsMetricsTest {
                     SmsTemplate tpl = ctx.getBean(SmsTemplate.class);
                     assertThat(tpl.getMetricsRecorder()).isInstanceOf(SmsMetrics.class);
                 });
+    }
+
+    @Test
+    @DisplayName("负载均衡全渠道配额耗尽时精准记录 quota_exceeded 度量并触发发送审计事件")
+    void shouldRecordQuotaExceededAndAuditForLoadBalanceExhaustion() {
+        SmsProperties props = new SmsProperties();
+        SmsChannelRegistry registry = new SmsChannelRegistry(props);
+        registry.register(SmsChannel.builder()
+                .name("lb-q-1")
+                .supplier(SmsSupplier.MOCK)
+                .defaultTemplateId("TPL_Q")
+                .maxQuota(1)
+                .weight(1)
+                .build());
+
+        SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+        SmsMetrics smsMetrics = new SmsMetrics(meterRegistry, registry);
+        InMemorySmsQuotaGuard quotaGuard = new InMemorySmsQuotaGuard(Clock.systemDefaultZone());
+        List<SmsSendAuditEvent> audits = new java.util.ArrayList<>();
+
+        SmsTemplate template = new SmsTemplate(
+                props,
+                List.of(new MockSmsProvider(props.getGuard())),
+                registry,
+                null, null, null, null, null, null, null,
+                event -> {
+                    if (event instanceof SmsSendAuditEvent audit) {
+                        audits.add(audit);
+                    }
+                },
+                null,
+                Clock.systemDefaultZone(),
+                null, null,
+                quotaGuard,
+                null,
+                smsMetrics
+        );
+
+        // 第 1 次成功消耗唯一配额
+        assertThat(template.sendByLoadBalance(SmsRequest.of("13800001001", "TPL_Q")).isSuccess()).isTrue();
+
+        // 第 2 次通过 sendByLoadBalance 触发全渠道配额耗尽：抛出异常且记录 quota_exceeded 与失败审计
+        assertThatThrownBy(() -> template.sendByLoadBalance(SmsRequest.of("13800001002", "TPL_Q")))
+                .isInstanceOf(SmsBudgetExceededException.class)
+                .satisfies(ex -> assertThat(((SmsBudgetExceededException) ex).isChannelQuota()).isTrue());
+
+        // 第 3 次直接传 channel="load-balance" 同样准确记录为 quota_exceeded（非 budget_exceeded）
+        assertThatThrownBy(() -> template.send(SmsRequest.of("13800001003", "TPL_Q").withChannel(SmsTemplate.LOAD_BALANCE_CHANNEL)))
+                .isInstanceOf(SmsBudgetExceededException.class)
+                .satisfies(ex -> assertThat(((SmsBudgetExceededException) ex).isChannelQuota()).isTrue());
+
+        Counter quotaCounter = meterRegistry.find(SmsMetrics.METRIC_SEND_COUNT)
+                .tag("outcome", "quota_exceeded")
+                .counter();
+        assertThat(quotaCounter).isNotNull();
+        assertThat(quotaCounter.count()).isEqualTo(2.0);
+        assertThat(meterRegistry.find(SmsMetrics.METRIC_SEND_COUNT)
+                .tag("outcome", "budget_exceeded")
+                .counter()).isNull();
+        assertThat(audits).hasSize(3);
+        assertThat(audits.get(1).isSuccess()).isFalse();
+        assertThat(audits.get(2).isSuccess()).isFalse();
     }
 }

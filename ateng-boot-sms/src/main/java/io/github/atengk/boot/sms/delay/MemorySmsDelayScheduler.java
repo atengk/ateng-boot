@@ -3,6 +3,7 @@ package io.github.atengk.boot.sms.delay;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.sms.context.SmsContextHolder;
 import io.github.atengk.boot.sms.model.BatchSmsRequest;
 import io.github.atengk.boot.sms.model.SmsRequest;
 import io.github.atengk.boot.sms.properties.SmsDelayProperties;
@@ -64,14 +65,27 @@ public class MemorySmsDelayScheduler extends AbstractSmsDelayScheduler {
         PendingTaskHandle handle = new PendingTaskHandle();
         pendingTasks.put(taskId, handle);
 
+        // 显式捕获调用线程的 SmsContextHolder（同时确保静态快照提供者已注册），并在任务结束严格还原
+        final String capturedSmsChannel = SmsContextHolder.getChannel();
         Runnable wrappedTask = AsyncContext.wrap(() -> {
             if (!handle.status.compareAndSet(SmsScheduledStatus.PENDING, SmsScheduledStatus.RUNNING)) {
                 return;
             }
+            String previousSmsChannel = SmsContextHolder.getChannel();
             SmsScheduledStatus finalStatus = SmsScheduledStatus.FAILED;
             try {
+                if (capturedSmsChannel != null) {
+                    SmsContextHolder.setChannel(capturedSmsChannel);
+                } else {
+                    SmsContextHolder.clear();
+                }
                 finalStatus = action.get();
             } finally {
+                if (previousSmsChannel != null) {
+                    SmsContextHolder.setChannel(previousSmsChannel);
+                } else {
+                    SmsContextHolder.clear();
+                }
                 handle.status.set(finalStatus);
                 pendingTasks.remove(taskId);
                 recordStatus(taskId, finalStatus);

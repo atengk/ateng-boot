@@ -199,6 +199,21 @@ class SmsNotifyRateLimitAndDesensitizeTest {
             SmsSendAuditEvent batchAudit = captor.getValue();
             assertThat(batchAudit.getBatchRequest().getContent()).doesNotContain(rawCode);
 
+            // 2.5 SmsRequest.toString() 对敏感 Map 参数与数组参数严格脱敏且不破坏内存真明文
+            String reqStr = mockReq.toString();
+            assertThat(reqStr).doesNotContain(rawCode);
+            assertThat(reqStr).doesNotContain(rawPwd);
+            assertThat(reqStr).contains("ORD-2026-01");
+            assertThat(mockReq.getParams().asMap().get("code")).isEqualTo(rawCode);
+
+            SmsRequest arrayReq = SmsRequest.builder()
+                    .phone("13812345678")
+                    .templateId("TPL_ARR")
+                    .params(SmsParam.ofArray("654321", "5"))
+                    .build();
+            assertThat(arrayReq.toString()).doesNotContain("654321");
+            assertThat(arrayReq.getParams().getArrayParams()).containsExactly("654321", "5");
+
             // 3. MockWebServer 出站 HTTP 报文保持 100% 真明文
             SmsRequest httpReq = SmsRequest.builder()
                     .phone("13812345678")

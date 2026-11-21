@@ -2,6 +2,7 @@ package io.github.atengk.boot.sms.model;
 
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
+import io.github.atengk.boot.sms.support.SmsDesensitizeSupport;
 import lombok.Builder;
 import lombok.Getter;
 
@@ -282,11 +283,20 @@ public class SmsRequest implements Serializable {
 
     @Override
     public String toString() {
+        Object maskedParams;
+        if (params == null || params.isEmpty()) {
+            maskedParams = params;
+        } else if (params.isArrayMode()) {
+            maskedParams = "[ARRAY_MASKED(size=" + params.getArrayParams().size() + ")]";
+        } else {
+            maskedParams = SmsDesensitizeSupport.maskSensitiveParams(
+                    params, null, SmsDesensitizeSupport.DEFAULT_SENSITIVE_PARAM_KEYS);
+        }
         return "SmsRequest{" +
                 "phone='" + DesensitizeUtil.mobilePhone(phone) + '\'' +
                 ", phones=" + (phones != null ? phones.stream().map(DesensitizeUtil::mobilePhone).toList() : "[]") +
                 ", templateId='" + templateId + '\'' +
-                ", params=" + params +
+                ", params=" + maskedParams +
                 ", signName='" + signName + '\'' +
                 ", channel='" + channel + '\'' +
                 ", bizId='" + bizId + '\'' +

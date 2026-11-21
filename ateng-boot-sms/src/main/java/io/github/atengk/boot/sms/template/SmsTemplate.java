@@ -409,7 +409,6 @@ public class SmsTemplate implements DisposableBean {
         SmsSendContext sendContext = null;
         int executedInterceptors = 0;
         String blockCategory = null;
-        boolean quotaPhase = false;
 
         try {
             // 1. 三级级联解析目标发信渠道并校检模板/纯文本发送模式
@@ -500,7 +499,6 @@ public class SmsTemplate implements DisposableBean {
             if (dailyBudgetBreaker != null) {
                 dailyBudgetBreaker.checkAndIncrement(effectiveRequest.getPhones().size());
             }
-            quotaPhase = true;
 
             // 8. 经由高可用顺延容灾链执行物理发信
             if (log.isDebugEnabled()) {
@@ -535,7 +533,7 @@ public class SmsTemplate implements DisposableBean {
         } finally {
             long cost = clock.millis() - startTime;
             recordMetricsForOutcome(channel, effectiveRequest.getChannel(), blockCategory,
-                    result != null && result.isSuccess(), failure, quotaPhase, cost);
+                    result != null && result.isSuccess(), failure, cost);
             // 9. 广播全链路出站发信审计事件（按配置脱敏内容与敏感变量）
             if (eventPublisher != null) {
                 String channelName = channel != null ? channel.getName() : effectiveRequest.getChannel();
@@ -644,7 +642,6 @@ public class SmsTemplate implements DisposableBean {
         SmsSendContext sendContext = null;
         int executedInterceptors = 0;
         String blockCategory = null;
-        boolean quotaPhase = false;
 
         try {
             // 1. 三级级联解析目标渠道
@@ -760,7 +757,6 @@ public class SmsTemplate implements DisposableBean {
             if (dailyBudgetBreaker != null) {
                 dailyBudgetBreaker.checkAndIncrement(allowedPhones.size());
             }
-            quotaPhase = true;
 
             // 6. 个性化批量发信分支（每个号码拥有独立的动态参数模型，统一受容灾链、熔断器与单渠道配额守卫治理）
             if (effectiveRequest.isPersonalized()) {
@@ -893,7 +889,7 @@ public class SmsTemplate implements DisposableBean {
             long cost = clock.millis() - startTime;
             boolean batchOk = batchResult != null && (batchResult.isSuccess() || batchResult.getSuccessCount() > 0);
             recordMetricsForOutcome(channel, effectiveRequest.getChannel(), blockCategory,
-                    batchOk, failure, quotaPhase, cost);
+                    batchOk, failure, cost);
             // 9. 广播全链路出站批量发信审计事件（按配置脱敏内容与敏感变量）
             if (eventPublisher != null) {
                 String channelName = channel != null ? channel.getName() : effectiveRequest.getChannel();
@@ -1189,9 +1185,7 @@ public class SmsTemplate implements DisposableBean {
      */
     public SmsResult sendByLoadBalance(SmsRequest request) {
         BusinessAssert.notNull(request, "发信请求 SmsRequest 不能为空");
-        SmsChannel selected = loadBalancer != null ? loadBalancer.selectChannel() : null;
-        BusinessAssert.notNull(selected, "负载均衡未找到可用短信渠道");
-        return send(request.withChannel(selected.getName()));
+        return send(request.withChannel(LOAD_BALANCE_CHANNEL));
     }
 
     /**
@@ -1506,7 +1500,6 @@ public class SmsTemplate implements DisposableBean {
                                          String blockCategory,
                                          boolean success,
                                          Throwable failure,
-                                         boolean quotaPhase,
                                          long costMillis) {
         if (metricsRecorder == null) {
             return;
@@ -1530,8 +1523,10 @@ public class SmsTemplate implements DisposableBean {
             metricsRecorder.recordSend(chName, supplierCode, SmsSendOutcome.RATE_LIMITED, duration);
         } else if (failure instanceof SmsIdempotentException) {
             metricsRecorder.recordSend(chName, supplierCode, SmsSendOutcome.IDEMPOTENT_REJECTED, duration);
-        } else if (failure instanceof SmsBudgetExceededException) {
-            SmsSendOutcome outcome = quotaPhase ? SmsSendOutcome.QUOTA_EXCEEDED : SmsSendOutcome.BUDGET_EXCEEDED;
+        } else if (failure instanceof SmsBudgetExceededException budgetEx) {
+            SmsSendOutcome outcome = budgetEx.isChannelQuota()
+                    ? SmsSendOutcome.QUOTA_EXCEEDED
+                    : SmsSendOutcome.BUDGET_EXCEEDED;
             metricsRecorder.recordSend(chName, supplierCode, outcome, duration);
         } else {
             metricsRecorder.recordSend(chName, supplierCode, SmsSendOutcome.FAILURE, duration);

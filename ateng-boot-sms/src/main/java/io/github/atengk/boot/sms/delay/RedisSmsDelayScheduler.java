@@ -232,6 +232,7 @@ public class RedisSmsDelayScheduler extends AbstractSmsDelayScheduler {
         }
 
         String taskId = payload.getTaskId();
+        String previousSmsChannel = SmsContextHolder.getChannel();
         AsyncContext.ContextSnapshot previous = AsyncContext.capturePrevious();
         try {
             applyCapturedContext(payload);
@@ -241,6 +242,11 @@ public class RedisSmsDelayScheduler extends AbstractSmsDelayScheduler {
             recordStatus(taskId, status);
         } finally {
             previous.restore();
+            if (previousSmsChannel != null) {
+                SmsContextHolder.setChannel(previousSmsChannel);
+            } else {
+                SmsContextHolder.clear();
+            }
         }
     }
 

@@ -5,7 +5,9 @@ import io.github.atengk.boot.sms.guard.SmsChannelCircuitBreaker;
 import io.github.atengk.boot.sms.model.SmsChannel;
 import io.github.atengk.boot.sms.model.SmsSupplier;
 import io.github.atengk.boot.sms.properties.SmsProperties;
+import io.github.atengk.boot.sms.provider.AliyunSmsProvider;
 import io.github.atengk.boot.sms.provider.MockSmsProvider;
+import io.github.atengk.boot.sms.provider.TencentSmsProvider;
 import io.github.atengk.boot.sms.registry.SmsChannelProvider;
 import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
 import io.github.atengk.boot.sms.template.SmsTemplate;
@@ -103,7 +105,9 @@ class SmsSafeHealthIndicatorTest {
 
         SmsChannelCircuitBreaker cb = new SmsChannelCircuitBreaker(smsProps.getGuard());
         MockSmsProvider mockProvider = new MockSmsProvider(smsProps.getGuard());
-        SmsTemplate template = new SmsTemplate(smsProps, List.of(mockProvider), registry,
+        SmsTemplate template = new SmsTemplate(smsProps,
+                List.of(mockProvider, new AliyunSmsProvider(), new TencentSmsProvider()),
+                registry,
                 null, null, null, null, cb, null, null, null, null, null, null, null, null, null, null);
 
         StaticApplicationContext ctx = new StaticApplicationContext();
@@ -209,5 +213,43 @@ class SmsSafeHealthIndicatorTest {
         assertThat(text).doesNotContain("BEARER_999");
         assertThat(text).contains("******");
         assertThat(countingMockProvider.getSentCount()).isZero();
+    }
+
+    @Test
+    @DisplayName("静态渠道配置了未注册的 providerCode 时探针应判为 configValid=false 并返回 DOWN")
+    @SuppressWarnings("unchecked")
+    void shouldReturnDownWhenStaticChannelProviderCodeIsUnregistered() {
+        SmsProperties smsProps = new SmsProperties();
+        SmsChannelRegistry registry = new SmsChannelRegistry(smsProps);
+        registry.register(SmsChannel.builder()
+                .name("custom-missing")
+                .supplier(SmsSupplier.CUSTOM)
+                .providerCode("unregistered-custom-provider")
+                .build());
+
+        MockSmsProvider mockProvider = new MockSmsProvider(smsProps.getGuard());
+        SmsTemplate template = new SmsTemplate(smsProps, List.of(mockProvider), registry,
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+
+        StaticApplicationContext ctx = new StaticApplicationContext();
+        ctx.registerBean(SmsChannelRegistry.class, () -> registry);
+        ctx.registerBean(SmsTemplate.class, () -> template);
+        ctx.refresh();
+
+        ObservabilityProperties obsProps = new ObservabilityProperties();
+        obsProps.getHealth().getSms().setCacheTtl(Duration.ZERO);
+        SmsSafeHealthIndicator indicator = new SmsSafeHealthIndicator(
+                ctx.getBeanProvider(SmsChannelRegistry.class),
+                ctx.getBeanProvider(SmsChannelCircuitBreaker.class),
+                ctx.getBeanProvider(SmsTemplate.class),
+                obsProps
+        );
+
+        Health health = indicator.health();
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+        assertThat(health.getDetails()).containsEntry("healthyCount", 0);
+        Map<String, Object> channelsMap = (Map<String, Object>) health.getDetails().get("channels");
+        Map<String, Object> chInfo = (Map<String, Object>) channelsMap.get("custom-missing");
+        assertThat(chInfo).containsEntry("configValid", false).containsEntry("status", "DOWN");
     }
 }

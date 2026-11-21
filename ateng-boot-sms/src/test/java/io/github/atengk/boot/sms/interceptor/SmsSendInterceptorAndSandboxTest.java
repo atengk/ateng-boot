@@ -206,6 +206,17 @@ class SmsSendInterceptorAndSandboxTest {
         assertThat(allowedRes.isSuccess()).isTrue();
         assertThat(mockProvider.getLastRequest().getPhone()).isEqualTo("13800138001");
 
+        // 1.5 多号码 SmsRequest 混含白名单与非白名单：保留白名单并合并去重 redirectTo
+        mockProvider.clear();
+        SmsRequest mixedSingleReq = SmsRequest.builder()
+                .phones(List.of("13800138001", "13700000001", "13700000002"))
+                .templateId("TPL_1")
+                .build();
+        SmsResult mixedSingleRes = template.send(mixedSingleReq);
+        assertThat(mixedSingleRes.isSuccess()).isTrue();
+        assertThat(mockProvider.getSentCount()).isEqualTo(1);
+        assertThat(mockProvider.getLastRequest().getPhones()).containsExactly("13800138001", "13999990000");
+
         // 2. 批量全部为非白名单号码 -> 合并去重仅向 redirectTo 发出 1 条测试短信
         mockProvider.clear();
         BatchSmsResult batchRes = template.sendBatch(BatchSmsRequest.create(

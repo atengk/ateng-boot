@@ -23,9 +23,22 @@ public class SmsBudgetExceededException extends SmsException {
      */
     private final long currentSent;
 
+    /**
+     * 是否由单渠道周期配额触限引发（true=单渠道配额耗尽，false=全局单日总预算触限）
+     */
+    private final boolean channelQuota;
+
     public SmsBudgetExceededException(long dailyQuota, long currentSent) {
-        super(SmsResultCode.SMS_BUDGET_EXCEEDED, String.format("短信单日发送量达到上限 (当前累计: %d, 配额上限: %d)", currentSent, dailyQuota));
-        this.dailyQuota = dailyQuota;
+        this(dailyQuota, currentSent, false);
+    }
+
+    public SmsBudgetExceededException(long quota, long currentSent, boolean channelQuota) {
+        super(SmsResultCode.SMS_BUDGET_EXCEEDED,
+                channelQuota
+                        ? String.format("短信渠道发送量达到配额上限 (当前累计: %d, 配额上限: %d)", currentSent, quota)
+                        : String.format("短信单日发送量达到上限 (当前累计: %d, 配额上限: %d)", currentSent, quota));
+        this.dailyQuota = quota;
         this.currentSent = currentSent;
+        this.channelQuota = channelQuota;
     }
 }

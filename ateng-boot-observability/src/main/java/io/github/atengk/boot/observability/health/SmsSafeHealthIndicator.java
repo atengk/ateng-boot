@@ -277,7 +277,7 @@ public class SmsSafeHealthIndicator extends AbstractSafeHealthIndicator {
         }
         if (smsTemplate != null) {
             SmsProvider provider = smsTemplate.getProvider(providerCode);
-            if (provider != null && !provider.isAvailable(channel)) {
+            if (provider == null || !provider.isAvailable(channel)) {
                 return false;
             }
         }

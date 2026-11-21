@@ -242,7 +242,7 @@ public class SmsFailoverChain {
                 long used = quotaGuard.getUsedQuota(attemptChannel);
                 log.warn("[SmsFailoverChain] 渠道 [{}] 已达配额上限 (已用: {}, 上限: {})，跳过并尝试顺延备用渠道",
                         attemptChannel.getName(), used, attemptChannel.getMaxQuota());
-                lastException = new SmsBudgetExceededException(attemptChannel.getMaxQuota(), used);
+                lastException = new SmsBudgetExceededException(attemptChannel.getMaxQuota(), used, true);
             } else {
                 try {
                     if (log.isDebugEnabled()) {
@@ -401,7 +401,7 @@ public class SmsFailoverChain {
                     long used = quotaGuard.getUsedQuota(attemptChannel);
                     log.warn("[SmsFailoverChain] 个性化批量渠道 [{}] 已达配额上限 (已用: {}, 上限: {})，跳过并尝试顺延备用渠道",
                             attemptChannel.getName(), used, attemptChannel.getMaxQuota());
-                    lastException = new SmsBudgetExceededException(attemptChannel.getMaxQuota(), used);
+                    lastException = new SmsBudgetExceededException(attemptChannel.getMaxQuota(), used, true);
                 } else {
                     try {
                         BatchSmsRequest channelRequest = request.withTemplateSignAndChannel(

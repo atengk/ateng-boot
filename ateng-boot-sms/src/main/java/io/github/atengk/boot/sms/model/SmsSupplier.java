@@ -46,7 +46,7 @@ public enum SmsSupplier implements IBaseEnum<String> {
     /**
      * 百度智能云短信 (BCE SMS v3)
      */
-    BAIDU("baidu", "百度智能云短信", 1000, false),
+    BAIDU("baidu", "百度智能云短信", 200, false),
 
     /**
      * 京东云短信 (JD Cloud)
