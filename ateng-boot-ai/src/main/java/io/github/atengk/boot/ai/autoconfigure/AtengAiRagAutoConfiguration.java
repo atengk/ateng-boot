@@ -18,6 +18,7 @@ import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
 import io.github.atengk.boot.ai.properties.VectorStoreProperties;
 import io.github.atengk.boot.ai.quota.AiQuotaChecker;
+import io.github.atengk.boot.ai.rag.eval.RagEvaluator;
 import io.github.atengk.boot.ai.rag.filter.DynamicFilterContentRetriever;
 import io.github.atengk.boot.ai.ratelimit.AiRateLimiter;
 import io.github.atengk.boot.ai.rag.fusion.Bm25KeywordRetriever;
@@ -45,6 +46,7 @@ import io.github.atengk.boot.ai.rag.splitter.TokenCharacterSplitter;
 import io.github.atengk.boot.ai.rag.store.VectorStoreFactory;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
+import io.github.atengk.boot.ai.template.AiTemplate;
 import io.github.atengk.boot.ai.template.EmbeddingTemplate;
 import io.github.atengk.boot.ai.template.RagIngestionTemplate;
 import io.github.atengk.boot.storage.template.StorageTemplate;
@@ -53,7 +55,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 
 import java.io.ByteArrayInputStream;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -278,7 +279,7 @@ public class AtengAiRagAutoConfiguration {
                 ? properties.getRag().getMaxResults()
                 : 10;
         log.info("自动装配默认纯内存 BM25 关键词稀疏检索器 (Bm25KeywordRetriever) [maxResults={}]", maxResults);
-        return new Bm25KeywordRetriever(Collections::emptyList, maxResults);
+        return new Bm25KeywordRetriever(maxResults);
     }
 
     /**
@@ -570,15 +571,33 @@ public class AtengAiRagAutoConfiguration {
             EmbeddingTemplate embeddingTemplate,
             DocumentSplitter documentSplitter,
             ObjectProvider<EmbeddingStore<TextSegment>> defaultStoreProvider,
-            ObjectProvider<Executor> executorProvider) {
+            ObjectProvider<Executor> executorProvider,
+            ObjectProvider<Bm25KeywordRetriever> bm25RetrieverProvider) {
         log.info("自动装配 RAG 端到端 ETL Ingestion 摄取管道与生命周期治理门面 (RagIngestionTemplate)");
         return new RagIngestionTemplate(
                 parserManager,
                 embeddingTemplate,
                 documentSplitter,
                 defaultStoreProvider,
-                executorProvider.getIfAvailable()
+                executorProvider.getIfAvailable(),
+                bm25RetrieverProvider.getIfAvailable()
         );
+    }
+
+    /**
+     * 自动装配显式按需 RAG 质量评测器 (RagEvaluator)
+     * <p>
+     * 仅提供按需主动调用的质量裁判能力，绝不自动注入对话热路径，零额外成本与耗时。
+     * </p>
+     *
+     * @param aiTemplateProvider 统一对话门面提供者
+     * @return RagEvaluator 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(RagEvaluator.class)
+    public RagEvaluator ragEvaluator(ObjectProvider<AiTemplate> aiTemplateProvider) {
+        log.info("自动装配显式按需 RAG 质量评测器 (RagEvaluator)");
+        return new RagEvaluator(aiTemplateProvider);
     }
 
     /**

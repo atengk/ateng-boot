@@ -11,6 +11,7 @@ import dev.langchain4j.store.embedding.EmbeddingSearchResult;
 import dev.langchain4j.store.embedding.filter.MetadataFilterBuilder;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
 import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
+import io.github.atengk.boot.ai.rag.fusion.Bm25KeywordRetriever;
 import io.github.atengk.boot.ai.rag.parser.DocumentParserManager;
 import io.github.atengk.boot.ai.rag.parser.HtmlDocumentParser;
 import io.github.atengk.boot.ai.rag.parser.TextDocumentParser;
@@ -421,5 +422,42 @@ class RagIngestionTemplateTest {
 
         assertThatThrownBy(() -> ingestionTemplate.deleteDocument("   "))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("BM25 稀疏索引联动：摄取入库、OVERWRITE 覆盖更新与 deleteDocument 实时同步与租户隔离")
+    void testBm25SyncOnIngestOverwriteAndDelete() {
+        Bm25KeywordRetriever bm25Retriever = new Bm25KeywordRetriever(10);
+        RagIngestionTemplate syncedTemplate = new RagIngestionTemplate(
+                parserManager, embeddingTemplate, splitter, embeddingStore, null, bm25Retriever);
+
+        TenantContextHolder.setTenantId("tenant-alpha");
+        IngestResult v1 = syncedTemplate.ingest(
+                "量子加密通讯网关初代规范内容。",
+                "quantum-v1.txt",
+                IngestOptions.builder().docId("DOC-BM25-1").build()
+        );
+        assertThat(v1.isSuccess()).isTrue();
+        assertThat(bm25Retriever.retrieve(dev.langchain4j.rag.query.Query.from("量子加密"))).hasSize(v1.getChunkCount());
+
+        // 切换到另一租户不能越权命中 tenant-alpha 语料
+        TenantContextHolder.setTenantId("tenant-beta");
+        assertThat(bm25Retriever.retrieve(dev.langchain4j.rag.query.Query.from("量子加密"))).isEmpty();
+
+        // 切回 tenant-alpha 并以 OVERWRITE 更新同 docId 内容，验证旧词汇“初代规范”被移除，新词汇“量子密钥演进”生效
+        TenantContextHolder.setTenantId("tenant-alpha");
+        IngestResult v2 = syncedTemplate.ingest(
+                "量子密钥演进网关全新架构设计。",
+                "quantum-v2.txt",
+                IngestOptions.builder().docId("DOC-BM25-1").policy(DeduplicationPolicy.OVERWRITE).build()
+        );
+        assertThat(v2.isSuccess()).isTrue();
+        assertThat(bm25Retriever.retrieve(dev.langchain4j.rag.query.Query.from("初代规范"))).isEmpty();
+        assertThat(bm25Retriever.retrieve(dev.langchain4j.rag.query.Query.from("量子密钥演进"))).isNotEmpty();
+
+        // 物理级联删除文档后，BM25 索引同步归零
+        syncedTemplate.deleteDocument("DOC-BM25-1");
+        assertThat(bm25Retriever.size()).isZero();
+        assertThat(bm25Retriever.retrieve(dev.langchain4j.rag.query.Query.from("量子密钥演进"))).isEmpty();
     }
 }

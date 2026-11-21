@@ -72,9 +72,12 @@ public final class AiExceptionTranslator {
             return aiEx;
         }
 
-        // 1. 优先沿因果链查找特定强类型异常 (如 OpenAiHttpException、SocketTimeoutException)
+        // 1. 优先沿因果链查找特定强类型异常 (如嵌套 AiException、OpenAiHttpException、SocketTimeoutException)
         Throwable current = t;
         while (current != null) {
+            if (current instanceof AiException nestedAi) {
+                return nestedAi;
+            }
             if (current instanceof OpenAiHttpException httpEx) {
                 int code = httpEx.code();
                 if (code == 401 || code == 403) {

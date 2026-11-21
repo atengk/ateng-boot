@@ -289,6 +289,8 @@ class AtengAiRagAutoConfigurationTest {
             assertThat(context).hasSingleBean(io.github.atengk.boot.ai.rag.fusion.Bm25KeywordRetriever.class);
             assertThat(context.getBean(ContentRetriever.class))
                     .isInstanceOf(io.github.atengk.boot.ai.rag.fusion.HybridContentRetriever.class);
+            assertThat(context.getBean(RagIngestionTemplate.class).getBm25Retriever())
+                    .isSameAs(context.getBean(io.github.atengk.boot.ai.rag.fusion.Bm25KeywordRetriever.class));
         });
     }
 
@@ -326,6 +328,8 @@ class AtengAiRagAutoConfigurationTest {
             EmbeddingTemplate template = context.getBean(EmbeddingTemplate.class);
             assertThat(template.isAvailable()).isTrue();
             assertThat(template.getRegistry()).isSameAs(registry);
+            assertThat(context).hasSingleBean(io.github.atengk.boot.ai.rag.eval.RagEvaluator.class);
+            assertThat(context.getBean(io.github.atengk.boot.ai.rag.eval.RagEvaluator.class).isAvailable()).isFalse();
         });
     }
 }

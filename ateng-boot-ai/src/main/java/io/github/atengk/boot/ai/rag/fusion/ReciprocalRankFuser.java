@@ -150,14 +150,15 @@ public final class ReciprocalRankFuser {
         if (segment != null) {
             Metadata meta = segment.metadata();
             if (meta != null) {
-                String docId = meta.getString("doc_id");
-                String chunkIndex = meta.getString("chunk_index");
-                if (docId != null && chunkIndex != null) {
-                    return docId + "#" + chunkIndex;
+                Map<String, Object> metaMap = meta.toMap();
+                Object rawDocId = metaMap.get("doc_id");
+                Object rawChunkIndex = metaMap.get("chunk_index");
+                if (rawDocId != null && rawChunkIndex != null) {
+                    return rawDocId + "#" + rawChunkIndex;
                 }
-                String id = meta.getString("id");
-                if (id != null) {
-                    return id;
+                Object rawId = metaMap.get("id");
+                if (rawId != null) {
+                    return String.valueOf(rawId);
                 }
             }
             if (segment.text() != null) {

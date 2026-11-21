@@ -11,6 +11,7 @@ import dev.langchain4j.store.embedding.filter.MetadataFilterBuilder;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
+import io.github.atengk.boot.ai.rag.fusion.Bm25KeywordRetriever;
 import io.github.atengk.boot.ai.rag.ingest.DeduplicationPolicy;
 import io.github.atengk.boot.ai.rag.ingest.IngestOptions;
 import io.github.atengk.boot.ai.rag.ingest.IngestResult;
@@ -80,18 +81,19 @@ public class RagIngestionTemplate {
     private final ObjectProvider<EmbeddingStore<TextSegment>> defaultStoreProvider;
     private final EmbeddingStore<TextSegment> defaultStore;
     private final Executor executor;
+    private final Bm25KeywordRetriever bm25Retriever;
 
     public RagIngestionTemplate(DocumentParserManager parserManager,
                                 EmbeddingTemplate embeddingTemplate,
                                 DocumentSplitter defaultSplitter) {
-        this(parserManager, embeddingTemplate, defaultSplitter, (ObjectProvider<EmbeddingStore<TextSegment>>) null, null);
+        this(parserManager, embeddingTemplate, defaultSplitter, (ObjectProvider<EmbeddingStore<TextSegment>>) null, null, null);
     }
 
     public RagIngestionTemplate(DocumentParserManager parserManager,
                                 EmbeddingTemplate embeddingTemplate,
                                 DocumentSplitter defaultSplitter,
                                 EmbeddingStore<TextSegment> defaultStore) {
-        this(parserManager, embeddingTemplate, defaultSplitter, defaultStore, null);
+        this(parserManager, embeddingTemplate, defaultSplitter, defaultStore, null, null);
     }
 
     public RagIngestionTemplate(DocumentParserManager parserManager,
@@ -99,6 +101,15 @@ public class RagIngestionTemplate {
                                 DocumentSplitter defaultSplitter,
                                 EmbeddingStore<TextSegment> defaultStore,
                                 Executor executor) {
+        this(parserManager, embeddingTemplate, defaultSplitter, defaultStore, executor, null);
+    }
+
+    public RagIngestionTemplate(DocumentParserManager parserManager,
+                                EmbeddingTemplate embeddingTemplate,
+                                DocumentSplitter defaultSplitter,
+                                EmbeddingStore<TextSegment> defaultStore,
+                                Executor executor,
+                                Bm25KeywordRetriever bm25Retriever) {
         Assert.notNull(parserManager, "parserManager 不能为空");
         Assert.notNull(embeddingTemplate, "embeddingTemplate 不能为空");
         this.parserManager = parserManager;
@@ -107,6 +118,7 @@ public class RagIngestionTemplate {
         this.defaultStoreProvider = null;
         this.defaultStore = defaultStore;
         this.executor = executor;
+        this.bm25Retriever = bm25Retriever;
     }
 
     public RagIngestionTemplate(DocumentParserManager parserManager,
@@ -114,6 +126,15 @@ public class RagIngestionTemplate {
                                 DocumentSplitter defaultSplitter,
                                 ObjectProvider<EmbeddingStore<TextSegment>> defaultStoreProvider,
                                 Executor executor) {
+        this(parserManager, embeddingTemplate, defaultSplitter, defaultStoreProvider, executor, null);
+    }
+
+    public RagIngestionTemplate(DocumentParserManager parserManager,
+                                EmbeddingTemplate embeddingTemplate,
+                                DocumentSplitter defaultSplitter,
+                                ObjectProvider<EmbeddingStore<TextSegment>> defaultStoreProvider,
+                                Executor executor,
+                                Bm25KeywordRetriever bm25Retriever) {
         Assert.notNull(parserManager, "parserManager 不能为空");
         Assert.notNull(embeddingTemplate, "embeddingTemplate 不能为空");
         this.parserManager = parserManager;
@@ -122,6 +143,7 @@ public class RagIngestionTemplate {
         this.defaultStoreProvider = defaultStoreProvider;
         this.defaultStore = null;
         this.executor = executor;
+        this.bm25Retriever = bm25Retriever;
     }
 
     // ==================== 同步 Ingest API ====================
@@ -366,15 +388,17 @@ public class RagIngestionTemplate {
         if (store == null) {
             throw new IllegalArgumentException("目标 EmbeddingStore 不能为空");
         }
-        Filter filter = MetadataFilterBuilder.metadataKey("doc_id").isEqualTo(docId.trim());
+        String normalizedDocId = docId.trim();
+        Filter filter = MetadataFilterBuilder.metadataKey("doc_id").isEqualTo(normalizedDocId);
         try {
             store.removeAll(filter);
-            log.info("RAG Ingestion: 成功依据 doc_id 级联清理知识库文档切片 [docId={}]", docId.trim());
+            log.info("RAG Ingestion: 成功依据 doc_id 级联清理知识库文档切片 [docId={}]", normalizedDocId);
         } catch (UnsupportedOperationException e) {
             log.warn("目标向量库 [{}] 不支持 removeAll(Filter) 级联物理删除，尝试适配降级清理: {}",
                     store.getClass().getSimpleName(), e.getMessage());
-            cleanStoreIfUnsupported(store, docId.trim());
+            cleanStoreIfUnsupported(store, normalizedDocId);
         }
+        syncRemoveBm25(normalizedDocId);
     }
 
     private void cleanStoreIfUnsupported(EmbeddingStore<TextSegment> store, String docId) {
@@ -593,13 +617,14 @@ public class RagIngestionTemplate {
             segments.add(TextSegment.from(seg.text(), segMeta));
         }
 
-        // 5. 批处理向量化计算并持久化至向量库
+        // 5. 批处理向量化计算并持久化至向量库，并同步增量更新 BM25 稀疏倒排索引
         List<String> segmentIds;
         if (StringUtils.hasText(opts.getEmbeddingModelName())) {
             segmentIds = this.embeddingTemplate.ingestAllWithModel(opts.getEmbeddingModelName().trim(), store, segments);
         } else {
             segmentIds = this.embeddingTemplate.ingestAll(store, segments);
         }
+        syncAddBm25(segments);
 
         Duration duration = Duration.ofNanos(System.nanoTime() - startNano);
         log.info("RAG Ingestion: 成功完成文档摄取入库 [docId={}, docName={}, 切片数={}, 耗时={}ms]",
@@ -757,5 +782,21 @@ public class RagIngestionTemplate {
 
     public Executor getExecutor() {
         return executor;
+    }
+
+    public Bm25KeywordRetriever getBm25Retriever() {
+        return bm25Retriever;
+    }
+
+    private void syncAddBm25(List<TextSegment> segments) {
+        if (this.bm25Retriever != null && segments != null && !segments.isEmpty()) {
+            this.bm25Retriever.addSegments(segments);
+        }
+    }
+
+    private void syncRemoveBm25(String docId) {
+        if (this.bm25Retriever != null && StringUtils.hasText(docId)) {
+            this.bm25Retriever.removeByDocId(docId);
+        }
     }
 }

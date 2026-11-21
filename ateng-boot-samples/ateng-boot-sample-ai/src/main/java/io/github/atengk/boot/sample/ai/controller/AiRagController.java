@@ -12,6 +12,11 @@ import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.query.Query;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import io.github.atengk.boot.ai.rag.citation.RagResponse;
+import io.github.atengk.boot.ai.exception.AiException;
+import io.github.atengk.boot.ai.exception.AiResultCode;
+import io.github.atengk.boot.ai.rag.eval.RagEvaluationReport;
+import io.github.atengk.boot.ai.rag.eval.RagEvaluationRequest;
+import io.github.atengk.boot.ai.rag.eval.RagEvaluator;
 import io.github.atengk.boot.ai.rag.parser.ParsedDocument;
 import io.github.atengk.boot.ai.rag.query.QueryTransformer;
 import io.github.atengk.boot.ai.rag.rerank.RerankResult;
@@ -24,6 +29,7 @@ import io.github.atengk.boot.ai.template.EmbeddingTemplate;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.ai.dto.AiRagAskRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagEmbedRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagEvaluateRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagIngestRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagRerankRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagRetrieveRequest;
@@ -31,6 +37,7 @@ import io.github.atengk.boot.sample.ai.dto.AiRagSplitRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagTransformRequest;
 import io.github.atengk.boot.sample.ai.vo.AiRagAskVo;
 import io.github.atengk.boot.sample.ai.vo.AiRagEmbedVo;
+import io.github.atengk.boot.sample.ai.vo.AiRagEvaluateVo;
 import io.github.atengk.boot.sample.ai.vo.AiRagIngestVo;
 import io.github.atengk.boot.sample.ai.vo.AiRagRerankVo;
 import io.github.atengk.boot.sample.ai.vo.AiRagRetrieveVo;
@@ -83,6 +90,7 @@ public class AiRagController {
     private final ObjectProvider<DocumentSplitter> documentSplitterProvider;
     private final ObjectProvider<Reranker> rerankerProvider;
     private final ObjectProvider<QueryTransformer> queryTransformerProvider;
+    private final ObjectProvider<RagEvaluator> ragEvaluatorProvider;
 
     /**
      * 长文档智能结构化切分体验
@@ -448,5 +456,35 @@ public class AiRagController {
                 .toList();
 
         return aiTemplate.streamWithCitations(question, segments);
+    }
+
+    /**
+     * 显式按需 RAG 质量多维评测体验 (Faithfulness / AnswerRelevance / ContextRecall)
+     *
+     * @param request 评测请求 DTO
+     * @return 结构化评测指标与裁决依据 VO
+     */
+    @PostMapping("/evaluate")
+    public Result<AiRagEvaluateVo> evaluate(@Valid @RequestBody AiRagEvaluateRequest request) {
+        RagEvaluator evaluator = ragEvaluatorProvider.getIfAvailable();
+        if (evaluator == null) {
+            throw new AiException(AiResultCode.AI_MODEL_NOT_FOUND, "RagEvaluator 组件未装配或不可用");
+        }
+        RagEvaluationReport report = evaluator.evaluate(RagEvaluationRequest.builder()
+                .question(request.getQuestion())
+                .answer(request.getAnswer())
+                .retrievedContexts(request.getRetrievedContexts())
+                .referenceAnswer(request.getReferenceAnswer())
+                .modelName(request.getModelName())
+                .build());
+
+        AiRagEvaluateVo vo = AiRagEvaluateVo.builder()
+                .faithfulness(report.getFaithfulness())
+                .answerRelevance(report.getAnswerRelevance())
+                .contextRecall(report.getContextRecall())
+                .overallScore(report.getOverallScore())
+                .reasoning(report.getReasoning())
+                .build();
+        return Result.success(vo);
     }
 }

@@ -6,6 +6,7 @@ import dev.langchain4j.store.embedding.EmbeddingStore;
 import io.github.atengk.boot.sample.ai.dto.AiRagAskRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagDocumentDeleteRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagEmbedRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagEvaluateRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagFilteredRetrieveRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagIngestPipelineRequest;
 import io.github.atengk.boot.sample.ai.dto.AiRagIngestRequest;
@@ -162,6 +163,37 @@ class RagControllerIntegrationTest {
                 }
 
                 // 2. Chat Completions 对话与问答接口模拟
+                if (body.contains("faithfulness") && body.contains("answerRelevance")) {
+                    String evalContent = "{\\\"faithfulness\\\":0.95,\\\"answerRelevance\\\":0.91,\\\"contextRecall\\\":0.89,\\\"overallScore\\\":0.92,\\\"reasoning\\\":\\\"回答严格依据检索上下文生成，无幻觉捏造。\\\"}";
+                    String evalChatJson = String.format("""
+                            {
+                              "id": "chatcmpl-rag-eval-1",
+                              "object": "chat.completion",
+                              "created": 1700000000,
+                              "model": "gpt-4o",
+                              "choices": [
+                                {
+                                  "index": 0,
+                                  "message": {
+                                    "role": "assistant",
+                                    "content": "%s"
+                                  },
+                                  "finish_reason": "stop"
+                                }
+                              ],
+                              "usage": {
+                                "prompt_tokens": 50,
+                                "completion_tokens": 35,
+                                "total_tokens": 85
+                              }
+                            }
+                            """, evalContent);
+                    return new MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json; charset=utf-8")
+                            .setBody(evalChatJson);
+                }
+
                 String chatContent = body.contains("【参考资料列表】")
                         ? "根据知识库资料[1]，ateng-boot 遵循纯原生零臃肿架构设计，严禁泄露持久化实体。"
                         : "根据知识库资料，ateng-boot 遵循纯原生零臃肿架构设计，严禁泄露持久化实体。";
@@ -574,5 +606,44 @@ class RagControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400))
                 .andExpect(jsonPath("$.msg").value("提问内容 question 不能为空"));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/evaluate 显式按需 RAG 质量多维评测")
+    void testRagEvaluateEndpoint() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地环境仅校验 MockWebServer 结构化裁判契约");
+        AiRagEvaluateRequest request = AiRagEvaluateRequest.builder()
+                .question("ateng-boot 的核心设计理念是什么？")
+                .answer("ateng-boot 遵循纯原生零臃肿架构设计，严禁泄露持久化实体。")
+                .retrievedContexts(java.util.List.of("ateng-boot 是纯原生零臃肿工业级 Starter 套件，Controller 严禁泄露 Entity。"))
+                .referenceAnswer("遵循纯原生零臃肿架构设计，严禁泄露持久化实体。")
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/evaluate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.faithfulness").value(0.95))
+                .andExpect(jsonPath("$.data.answerRelevance").value(0.91))
+                .andExpect(jsonPath("$.data.contextRecall").value(0.89))
+                .andExpect(jsonPath("$.data.overallScore").value(0.92))
+                .andExpect(jsonPath("$.data.reasoning").value("回答严格依据检索上下文生成，无幻觉捏造。"));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/evaluate 缺失必填参数快速失败校验")
+    void testRagEvaluateValidationFailFast() throws Exception {
+        AiRagEvaluateRequest invalidRequest = AiRagEvaluateRequest.builder()
+                .question("  ")
+                .answer("answer")
+                .retrievedContexts(java.util.Collections.emptyList())
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/evaluate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
     }
 }
