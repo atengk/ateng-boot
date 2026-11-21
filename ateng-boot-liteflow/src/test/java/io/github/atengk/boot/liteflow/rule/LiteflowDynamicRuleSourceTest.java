@@ -555,6 +555,60 @@ class LiteflowDynamicRuleSourceTest {
         }
     }
 
+    @Test
+    @DisplayName("验证多源动态规则物理删除孤儿链差量自动下线与 evictRemovedOnRefresh 开关语义")
+    void testOrphanChainAutoEvictionOnRefresh() {
+        try {
+            // 1. 装载两条 SPI 动态规则并全量刷新
+            inMemoryProvider.setRule("orphanEvictChainA", "THEN(dynStepA)");
+            inMemoryProvider.setRule("orphanEvictChainB", "THEN(dynStepB)");
+            ruleSourceManager.refreshAll();
+
+            assertThat(liteflowTemplate.containChain("baseFlow")).isTrue();
+            assertThat(liteflowTemplate.containChain("orphanEvictChainA")).isTrue();
+            assertThat(liteflowTemplate.containChain("orphanEvictChainB")).isTrue();
+
+            java.util.Set<String> managed = ruleSourceManager.getManagedChainIds();
+            assertThat(managed).contains("orphanEvictChainA", "orphanEvictChainB");
+            assertThat(managed).doesNotContain("baseFlow");
+            assertThatThrownBy(() -> managed.add("illegalMutation"))
+                    .isInstanceOf(UnsupportedOperationException.class);
+
+            // 2. 物理删除 orphanEvictChainA 后刷新，默认 evictRemovedOnRefresh=true 应自动下线孤儿链，保留 B 与静态 baseFlow
+            inMemoryProvider.removeRule("orphanEvictChainA");
+            ruleSourceManager.refreshAll();
+
+            assertThat(liteflowTemplate.containChain("orphanEvictChainA")).isFalse();
+            assertThat(liteflowTemplate.containChain("orphanEvictChainB")).isTrue();
+            assertThat(liteflowTemplate.containChain("baseFlow")).isTrue();
+            assertThat(ruleSourceManager.getManagedChainIds())
+                    .contains("orphanEvictChainB")
+                    .doesNotContain("orphanEvictChainA");
+
+            // 3. 验证 evictRemovedOnRefresh=false 时保留物理删除后的旧链不下线
+            AtengLiteflowProperties retainProps = new AtengLiteflowProperties();
+            retainProps.getDynamicRule().setEvictRemovedOnRefresh(false);
+            assertThat(new AtengLiteflowProperties().getDynamicRule().isEvictRemovedOnRefresh()).isTrue();
+
+            LiteflowRuleSourceManager retainManager = new LiteflowRuleSourceManager(
+                    List.of(inMemoryProvider), liteflowTemplate, retainProps);
+            inMemoryProvider.setRule("retainOrphanChain", "THEN(dynStepC)");
+            retainManager.refreshAll();
+            assertThat(liteflowTemplate.containChain("retainOrphanChain")).isTrue();
+            assertThat(retainManager.getManagedChainIds()).contains("retainOrphanChain");
+
+            inMemoryProvider.removeRule("retainOrphanChain");
+            retainManager.refreshAll();
+            assertThat(liteflowTemplate.containChain("retainOrphanChain")).isTrue();
+            assertThat(liteflowTemplate.containChain("baseFlow")).isTrue();
+        } finally {
+            inMemoryProvider.removeRule("orphanEvictChainA");
+            inMemoryProvider.removeRule("orphanEvictChainB");
+            inMemoryProvider.removeRule("retainOrphanChain");
+            FlowBus.removeChain("orphanEvictChainA", "orphanEvictChainB", "retainOrphanChain");
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableAutoConfiguration
     @Import({StepA.class, StepB.class, StepC.class, RouteCondTrue.class, RouteCondFalse.class, RouteCondContext.class, InMemoryTestRuleSourceProvider.class})
@@ -581,6 +635,10 @@ class LiteflowDynamicRuleSourceTest {
         public void setRule(String chainId, String el, boolean enabled) {
             list.removeIf(r -> chainId.equals(r.getChainId()));
             list.add(new RuleSourceDefinition(chainId, el, "内存规则-" + chainId, enabled));
+        }
+
+        public void removeRule(String chainId) {
+            list.removeIf(r -> chainId.equals(r.getChainId()));
         }
 
         public void clear() {

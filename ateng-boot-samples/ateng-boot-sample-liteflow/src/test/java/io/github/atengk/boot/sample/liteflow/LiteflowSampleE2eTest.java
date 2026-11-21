@@ -9,6 +9,7 @@ import io.github.atengk.boot.sample.liteflow.model.DynamicChainReloadRequest;
 import io.github.atengk.boot.sample.liteflow.model.DynamicElExecuteRequest;
 import io.github.atengk.boot.sample.liteflow.model.DynamicElExecuteResponse;
 import io.github.atengk.boot.sample.liteflow.model.DynamicElValidateRequest;
+import io.github.atengk.boot.sample.liteflow.model.InterceptorStatsResponse;
 import io.github.atengk.boot.sample.liteflow.model.OrderFulfillmentRequest;
 import io.github.atengk.boot.sample.liteflow.model.OrderFulfillmentResponse;
 import io.github.atengk.boot.sample.liteflow.model.PriceCalculationRequest;
@@ -732,5 +733,41 @@ class LiteflowSampleE2eTest {
         assertThat(zeroData.getFinalAmount()).isEqualByComparingTo("100.00");
         assertThat(zeroData.getAppliedPromotions()).isEmpty();
         assertThat(zeroData.getMatchedChainIds()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("测试场景 6.3：全局执行拦截器演示 Bean 端到端自动生效与审计统计接口闭环")
+    void testGlobalExecutionInterceptorStatsEndpoint() throws Exception {
+        MvcResult beforeMvc = mockMvc.perform(get("/sample/liteflow/dynamic/interceptor-stats"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+        Result<InterceptorStatsResponse> beforeRes = objectMapper.readValue(
+                beforeMvc.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+        long initialSuccess = beforeRes.getData().successCount();
+
+        DynamicElExecuteRequest req = new DynamicElExecuteRequest();
+        req.setEl("THEN(dynamicValidateCmp, dynamicEchoCmp);");
+        req.setPayload("interceptor-e2e-payload");
+        mockMvc.perform(post("/sample/liteflow/dynamic/execute-el")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        MvcResult afterMvc = mockMvc.perform(get("/sample/liteflow/dynamic/interceptor-stats"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+        Result<InterceptorStatsResponse> afterRes = objectMapper.readValue(
+                afterMvc.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+        InterceptorStatsResponse stats = afterRes.getData();
+        assertThat(stats.successCount()).isGreaterThan(initialSuccess);
+        assertThat(stats.recentRecords()).anyMatch(r -> r.startsWith("SUCCESS:DYNAMIC_EL[THEN(dynamicValidateCmp, dynamicEchoCmp);]"));
     }
 }

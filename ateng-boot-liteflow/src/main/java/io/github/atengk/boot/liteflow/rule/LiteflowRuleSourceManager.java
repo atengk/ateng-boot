@@ -8,6 +8,7 @@ import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.core.OrderComparator;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -26,6 +27,7 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
     private final LiteflowTemplate liteflowTemplate;
     private final AtengLiteflowProperties properties;
     private final ReentrantLock refreshLock = new ReentrantLock();
+    private final Set<String> managedChainIds = ConcurrentHashMap.newKeySet();
 
     public LiteflowRuleSourceManager(List<LiteflowRuleSourceProvider> providers,
                                      LiteflowTemplate liteflowTemplate,
@@ -61,10 +63,15 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
      * @return 聚合后的全量规则定义列表
      */
     public List<RuleSourceDefinition> loadAllRules() {
+        return loadAllRulesInternal().definitions();
+    }
+
+    private LoadResult loadAllRulesInternal() {
         if (this.providers.isEmpty()) {
-            return Collections.emptyList();
+            return new LoadResult(Collections.emptyList(), false);
         }
         Map<String, RuleSourceDefinition> map = new LinkedHashMap<>();
+        boolean anyProviderFailed = false;
         for (LiteflowRuleSourceProvider provider : this.providers) {
             try {
                 List<RuleSourceDefinition> list = provider.loadRules();
@@ -80,10 +87,11 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
                 if (properties.getDynamicRule().isFailFast()) {
                     throw new IllegalStateException("从规则源 [" + provider.getName() + "] 加载规则列表失败", e);
                 }
+                anyProviderFailed = true;
                 log.error("ateng-boot-liteflow: 从规则源 [{}] 加载规则列表失败: {}", provider.getName(), e.getMessage(), e);
             }
         }
-        return new ArrayList<>(map.values());
+        return new LoadResult(new ArrayList<>(map.values()), anyProviderFailed);
     }
 
     /**
@@ -120,19 +128,30 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
     public int refreshAll() {
         refreshLock.lock();
         try {
-            List<RuleSourceDefinition> definitions = loadAllRules();
+            Set<String> previousManaged = new LinkedHashSet<>(this.managedChainIds);
+            LoadResult loadResult = loadAllRulesInternal();
+            List<RuleSourceDefinition> definitions = loadResult.definitions();
+            Set<String> latestEnabledChainIds = new LinkedHashSet<>();
+            Set<String> handledChainIds = new LinkedHashSet<>();
             int activeCount = 0;
             int disabledCount = 0;
+            int evictedCount = 0;
 
             for (RuleSourceDefinition def : definitions) {
                 String chainId = def.getChainId();
+                handledChainIds.add(chainId);
                 try {
                     if (def.isEnabled() && def.getEl() != null && !def.getEl().isBlank()) {
                         applyEnabledDefinition(def);
+                        this.managedChainIds.add(chainId);
+                        latestEnabledChainIds.add(chainId);
                         activeCount++;
-                    } else if (!def.isEnabled() && this.liteflowTemplate.containChain(chainId)) {
-                        this.liteflowTemplate.removeChain(chainId);
-                        disabledCount++;
+                    } else {
+                        if (this.liteflowTemplate.containChain(chainId)) {
+                            this.liteflowTemplate.removeChain(chainId);
+                            disabledCount++;
+                        }
+                        this.managedChainIds.remove(chainId);
                     }
                 } catch (Exception e) {
                     if (properties.getDynamicRule().isFailFast()) {
@@ -142,8 +161,22 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
                 }
             }
 
-            log.info("ateng-boot-liteflow: 多源动态规则全量刷新完成，生效启用 [{}] 条规则链，下线停用 [{}] 条规则链",
-                    activeCount, disabledCount);
+            // 仅当本次全部规则源均正常拉取且开启孤儿自动清理时，差量下线已物理移除的动态纳管规则链
+            if (properties.getDynamicRule().isEvictRemovedOnRefresh() && !loadResult.anyProviderFailed()) {
+                for (String oldChainId : previousManaged) {
+                    if (!latestEnabledChainIds.contains(oldChainId) && !handledChainIds.contains(oldChainId)) {
+                        if (this.liteflowTemplate.containChain(oldChainId)) {
+                            this.liteflowTemplate.removeChain(oldChainId);
+                        }
+                        this.managedChainIds.remove(oldChainId);
+                        evictedCount++;
+                        log.info("ateng-boot-liteflow: 检测到外部规则源已物理移除规则链 [{}]，已自动下线清理", oldChainId);
+                    }
+                }
+            }
+
+            log.info("ateng-boot-liteflow: 多源动态规则全量刷新完成，生效启用 [{}] 条，停用下线 [{}] 条，孤儿差量清理 [{}] 条",
+                    activeCount, disabledCount, evictedCount);
             return activeCount;
         } finally {
             if (refreshLock.isHeldByCurrentThread()) {
@@ -172,8 +205,10 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
             try {
                 if (def.isEnabled() && def.getEl() != null && !def.getEl().isBlank()) {
                     applyEnabledDefinition(def);
+                    this.managedChainIds.add(chainId);
                 } else {
                     this.liteflowTemplate.removeChain(chainId);
+                    this.managedChainIds.remove(chainId);
                 }
                 return true;
             } catch (Exception e) {
@@ -244,11 +279,23 @@ public class LiteflowRuleSourceManager implements SmartInitializingSingleton {
     }
 
     /**
+     * 获取当前由动态规则管理器纳管的规则链 ID 只读快照视图
+     *
+     * @return 按字典序排列的不可变规则链 ID 集合
+     */
+    public Set<String> getManagedChainIds() {
+        return Collections.unmodifiableSet(new TreeSet<>(this.managedChainIds));
+    }
+
+    /**
      * 获取所有已注册的规则源提供者列表（已按优先级排序）
      *
      * @return 规则源列表
      */
     public List<LiteflowRuleSourceProvider> getProviders() {
         return this.providers;
+    }
+
+    private record LoadResult(List<RuleSourceDefinition> definitions, boolean anyProviderFailed) {
     }
 }

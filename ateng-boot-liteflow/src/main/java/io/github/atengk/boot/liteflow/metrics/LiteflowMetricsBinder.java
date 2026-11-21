@@ -37,6 +37,8 @@ public class LiteflowMetricsBinder implements MeterBinder, DisposableBean {
     public static final String METRIC_CHAIN_EXECUTIONS = "liteflow.chain.executions";
     public static final String METRIC_CHAIN_DURATION = "liteflow.chain.duration";
     public static final String METRIC_NODE_DURATION = "liteflow.node.duration";
+    public static final String METRIC_CHAIN_SLOW_EXECUTIONS = "liteflow.chain.slow.executions";
+    public static final String METRIC_NODE_SLOW_EXECUTIONS = "liteflow.node.slow.executions";
 
     public static final String TAG_CHAIN_ID = "chainId";
     public static final String TAG_NODE_ID = "nodeId";
@@ -185,6 +187,52 @@ public class LiteflowMetricsBinder implements MeterBinder, DisposableBean {
         } catch (Throwable t) {
             log.warn("ateng-boot-liteflow: 采集组件节点度量异常 [chainId={}, nodeId={}, status={}]: {}",
                     safeChainId, safeNodeId, safeStatus, t.getMessage());
+        }
+    }
+
+    /**
+     * 累加慢规则链执行计数器
+     *
+     * @param chainId 规则链 ID（动态 EL 自动归一化为 {@code DYNAMIC_EL}）
+     */
+    public void recordSlowChainExecution(String chainId) {
+        if (this.meterRegistry == null) {
+            return;
+        }
+        String safeChainId = normalizeChainId(chainId);
+        try {
+            Counter.builder(METRIC_CHAIN_SLOW_EXECUTIONS)
+                    .description("Total number of slow LiteFlow rule chain executions")
+                    .tag(TAG_CHAIN_ID, safeChainId)
+                    .register(this.meterRegistry)
+                    .increment();
+        } catch (Throwable t) {
+            log.warn("ateng-boot-liteflow: 采集慢规则链度量异常 [chainId={}]: {}", safeChainId, t.getMessage());
+        }
+    }
+
+    /**
+     * 累加慢组件节点执行计数器
+     *
+     * @param chainId 规则链 ID（动态 EL 自动归一化为 {@code DYNAMIC_EL}）
+     * @param nodeId  组件节点 ID
+     */
+    public void recordSlowNodeExecution(String chainId, String nodeId) {
+        if (this.meterRegistry == null) {
+            return;
+        }
+        String safeChainId = normalizeChainId(chainId);
+        String safeNodeId = (nodeId != null && !nodeId.isBlank()) ? nodeId : "UNKNOWN";
+        try {
+            Counter.builder(METRIC_NODE_SLOW_EXECUTIONS)
+                    .description("Total number of slow LiteFlow node component executions")
+                    .tag(TAG_CHAIN_ID, safeChainId)
+                    .tag(TAG_NODE_ID, safeNodeId)
+                    .register(this.meterRegistry)
+                    .increment();
+        } catch (Throwable t) {
+            log.warn("ateng-boot-liteflow: 采集慢组件节点度量异常 [chainId={}, nodeId={}]: {}",
+                    safeChainId, safeNodeId, t.getMessage());
         }
     }
 

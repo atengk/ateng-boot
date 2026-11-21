@@ -68,7 +68,29 @@ public class LiteflowExecutionTrace implements Serializable {
      */
     private String traceId;
 
+    /**
+     * 是否触发慢链或慢节点阈值告警
+     */
+    private boolean slow;
+
+    /**
+     * 达到或超过慢节点阈值的组件节点 ID 列表（保底返回不可变空列表）
+     */
+    private List<String> slowNodeIds = Collections.emptyList();
+
     public LiteflowExecutionTrace() {
+    }
+
+    public List<String> getSlowNodeIds() {
+        return slowNodeIds != null ? slowNodeIds : Collections.emptyList();
+    }
+
+    public void setSlowNodeIds(List<String> slowNodeIds) {
+        if (slowNodeIds == null || slowNodeIds.isEmpty()) {
+            this.slowNodeIds = Collections.emptyList();
+        } else {
+            this.slowNodeIds = Collections.unmodifiableList(new ArrayList<>(slowNodeIds));
+        }
     }
 
     /**
@@ -254,6 +276,12 @@ public class LiteflowExecutionTrace implements Serializable {
         }
         if (errorSummary != null && !errorSummary.isBlank()) {
             sb.append(", error=").append(errorSummary);
+        }
+        if (slow) {
+            sb.append(", slow=true");
+            if (slowNodeIds != null && !slowNodeIds.isEmpty()) {
+                sb.append(", slowNodes=").append(slowNodeIds);
+            }
         }
         sb.append(", steps: ");
         if (steps.isEmpty()) {

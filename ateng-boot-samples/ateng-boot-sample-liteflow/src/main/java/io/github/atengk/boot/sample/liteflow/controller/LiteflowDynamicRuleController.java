@@ -7,10 +7,12 @@ import io.github.atengk.boot.liteflow.core.LiteflowTemplate;
 import io.github.atengk.boot.liteflow.rule.event.LiteflowRuleRefreshEvent;
 import io.github.atengk.boot.liteflow.trace.LiteflowTraceResult;
 import io.github.atengk.boot.sample.liteflow.context.DynamicFlowContext;
+import io.github.atengk.boot.sample.liteflow.interceptor.SampleAuditExecutionInterceptor;
 import io.github.atengk.boot.sample.liteflow.model.DynamicChainReloadRequest;
 import io.github.atengk.boot.sample.liteflow.model.DynamicElExecuteRequest;
 import io.github.atengk.boot.sample.liteflow.model.DynamicElExecuteResponse;
 import io.github.atengk.boot.sample.liteflow.model.DynamicElValidateRequest;
+import io.github.atengk.boot.sample.liteflow.model.InterceptorStatsResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
@@ -44,6 +46,7 @@ public class LiteflowDynamicRuleController {
 
     private final LiteflowTemplate liteflowTemplate;
     private final ApplicationEventPublisher eventPublisher;
+    private final SampleAuditExecutionInterceptor auditInterceptor;
 
     /**
      * 在线热重载或动态注册一条规则链
@@ -209,5 +212,18 @@ public class LiteflowDynamicRuleController {
         java.util.List<String> snapshots = liteflowTemplate.getChainHistorySnapshots(chainId);
         log.info("【动态规则】查询规则链历史快照：chainId={}, count={}", chainId, snapshots.size());
         return Result.success(snapshots);
+    }
+
+    /**
+     * 获取全局三阶段执行拦截器累计审计统计快照
+     *
+     * @return 全局执行拦截器审计统计响应
+     */
+    @GetMapping("/interceptor-stats")
+    public Result<InterceptorStatsResponse> getInterceptorStats() {
+        InterceptorStatsResponse stats = auditInterceptor.snapshot();
+        log.info("【动态规则】查询全局执行拦截器审计统计: successCount={}, errorCount={}",
+                stats.successCount(), stats.errorCount());
+        return Result.success(stats);
     }
 }

@@ -16,11 +16,13 @@ import io.github.atengk.boot.liteflow.exception.LiteflowExecutionException;
 import io.github.atengk.boot.liteflow.properties.AtengLiteflowProperties;
 import io.github.atengk.boot.liteflow.route.LiteflowRouteResult;
 import io.github.atengk.boot.liteflow.thread.FlowThreadTracker;
+import io.github.atengk.boot.liteflow.trace.ExecutionStepItem;
 import io.github.atengk.boot.liteflow.trace.LiteflowExecutionTrace;
 import io.github.atengk.boot.liteflow.trace.LiteflowTraceResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.core.OrderComparator;
 
 import java.time.Duration;
 import java.util.ArrayDeque;
@@ -59,21 +61,51 @@ public class LiteflowTemplate {
     private final FlowExecutor flowExecutor;
     private final Executor asyncExecutor;
     private final AtengLiteflowProperties properties;
+    private final List<LiteflowExecutionInterceptor> interceptors;
+    private final LiteflowSlowExecutionRecorder slowExecutionRecorder;
     private final ConcurrentMap<String, ChainSnapshotHistory> chainHistorySnapshots = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, String> activeChainEls = new ConcurrentHashMap<>();
 
     public LiteflowTemplate(FlowExecutor flowExecutor) {
-        this(flowExecutor, null, null);
+        this(flowExecutor, null, null, Collections.emptyList(), null);
     }
 
     public LiteflowTemplate(FlowExecutor flowExecutor, Executor asyncExecutor) {
-        this(flowExecutor, asyncExecutor, null);
+        this(flowExecutor, asyncExecutor, null, Collections.emptyList(), null);
     }
 
     public LiteflowTemplate(FlowExecutor flowExecutor, Executor asyncExecutor, AtengLiteflowProperties properties) {
+        this(flowExecutor, asyncExecutor, properties, Collections.emptyList(), null);
+    }
+
+    public LiteflowTemplate(FlowExecutor flowExecutor,
+                            Executor asyncExecutor,
+                            AtengLiteflowProperties properties,
+                            List<LiteflowExecutionInterceptor> interceptors) {
+        this(flowExecutor, asyncExecutor, properties, interceptors, null);
+    }
+
+    public LiteflowTemplate(FlowExecutor flowExecutor,
+                            Executor asyncExecutor,
+                            AtengLiteflowProperties properties,
+                            List<LiteflowExecutionInterceptor> interceptors,
+                            LiteflowSlowExecutionRecorder slowExecutionRecorder) {
         this.flowExecutor = Objects.requireNonNull(flowExecutor, "flowExecutor 不能为空");
         this.asyncExecutor = asyncExecutor;
         this.properties = properties;
+        this.slowExecutionRecorder = slowExecutionRecorder;
+        if (interceptors == null || interceptors.isEmpty()) {
+            this.interceptors = Collections.emptyList();
+        } else {
+            List<LiteflowExecutionInterceptor> sorted = new ArrayList<>();
+            for (LiteflowExecutionInterceptor interceptor : interceptors) {
+                if (interceptor != null) {
+                    sorted.add(interceptor);
+                }
+            }
+            sorted.sort(OrderComparator.INSTANCE);
+            this.interceptors = Collections.unmodifiableList(sorted);
+        }
     }
 
     /**
@@ -105,12 +137,9 @@ public class LiteflowTemplate {
         if (contextClass == null) {
             throw new IllegalArgumentException("contextClass 不能为空");
         }
-        long start = System.currentTimeMillis();
-        LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, contextClass);
-        long duration = System.currentTimeMillis() - start;
-        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
-        checkResponseSuccess(chainId, response, trace);
-        return response.getContextBean(contextClass);
+        ExecutionOutcome outcome = executeWithInterceptors(
+                chainId, param, () -> this.flowExecutor.execute2Resp(chainId, param, contextClass));
+        return outcome.response().getContextBean(contextClass);
     }
 
     /**
@@ -139,11 +168,7 @@ public class LiteflowTemplate {
             throw new IllegalArgumentException("chainId 不能为空");
         }
         Objects.requireNonNull(contextBean, "contextBean 不能为空");
-        long start = System.currentTimeMillis();
-        LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, contextBean);
-        long duration = System.currentTimeMillis() - start;
-        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
-        checkResponseSuccess(chainId, response, trace);
+        executeWithInterceptors(chainId, param, () -> this.flowExecutor.execute2Resp(chainId, param, contextBean));
         return contextBean;
     }
 
@@ -175,12 +200,9 @@ public class LiteflowTemplate {
         if (contextBeans == null || contextBeans.length == 0) {
             throw new IllegalArgumentException("contextBeans 不能为空");
         }
-        long start = System.currentTimeMillis();
-        LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, contextBeans);
-        long duration = System.currentTimeMillis() - start;
-        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
-        checkResponseSuccess(chainId, response, trace);
-        return new LiteflowTraceResult<>(contextBeans, trace);
+        ExecutionOutcome outcome = executeWithInterceptors(
+                chainId, param, () -> this.flowExecutor.execute2Resp(chainId, param, contextBeans));
+        return new LiteflowTraceResult<>(contextBeans, outcome.trace());
     }
 
     /**
@@ -212,13 +234,10 @@ public class LiteflowTemplate {
         if (contextClass == null) {
             throw new IllegalArgumentException("contextClass 不能为空");
         }
-        long start = System.currentTimeMillis();
-        LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, contextClass);
-        long duration = System.currentTimeMillis() - start;
-        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
-        checkResponseSuccess(chainId, response, trace);
-        T context = response.getContextBean(contextClass);
-        return new LiteflowTraceResult<>(context, trace);
+        ExecutionOutcome outcome = executeWithInterceptors(
+                chainId, param, () -> this.flowExecutor.execute2Resp(chainId, param, contextClass));
+        T context = outcome.response().getContextBean(contextClass);
+        return new LiteflowTraceResult<>(context, outcome.trace());
     }
 
     /**
@@ -247,12 +266,9 @@ public class LiteflowTemplate {
             throw new IllegalArgumentException("chainId 不能为空");
         }
         Objects.requireNonNull(contextBean, "contextBean 不能为空");
-        long start = System.currentTimeMillis();
-        LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, contextBean);
-        long duration = System.currentTimeMillis() - start;
-        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
-        checkResponseSuccess(chainId, response, trace);
-        return new LiteflowTraceResult<>(contextBean, trace);
+        ExecutionOutcome outcome = executeWithInterceptors(
+                chainId, param, () -> this.flowExecutor.execute2Resp(chainId, param, contextBean));
+        return new LiteflowTraceResult<>(contextBean, outcome.trace());
     }
 
     /**
@@ -289,12 +305,8 @@ public class LiteflowTemplate {
         if (otherContextClasses != null && otherContextClasses.length > 0) {
             System.arraycopy(otherContextClasses, 0, classes, 2, otherContextClasses.length);
         }
-        long start = System.currentTimeMillis();
-        LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, classes);
-        long duration = System.currentTimeMillis() - start;
-        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
-        checkResponseSuccess(chainId, response, trace);
-        return response;
+        return executeWithInterceptors(
+                chainId, param, () -> this.flowExecutor.execute2Resp(chainId, param, classes)).response();
     }
 
     /**
@@ -320,12 +332,8 @@ public class LiteflowTemplate {
         if (chainId == null || chainId.isBlank()) {
             throw new IllegalArgumentException("chainId 不能为空");
         }
-        long start = System.currentTimeMillis();
-        LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, contextClasses);
-        long duration = System.currentTimeMillis() - start;
-        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
-        checkResponseSuccess(chainId, response, trace);
-        return response;
+        return executeWithInterceptors(
+                chainId, param, () -> this.flowExecutor.execute2Resp(chainId, param, contextClasses)).response();
     }
 
     /**
@@ -340,12 +348,9 @@ public class LiteflowTemplate {
         if (chainId == null || chainId.isBlank()) {
             throw new IllegalArgumentException("chainId 不能为空");
         }
-        long start = System.currentTimeMillis();
-        LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, contextClasses);
-        long duration = System.currentTimeMillis() - start;
-        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
-        checkResponseSuccess(chainId, response, trace);
-        return new LiteflowTraceResult<>(response, trace);
+        ExecutionOutcome outcome = executeWithInterceptors(
+                chainId, param, () -> this.flowExecutor.execute2Resp(chainId, param, contextClasses));
+        return new LiteflowTraceResult<>(outcome.response(), outcome.trace());
     }
 
     /**
@@ -562,13 +567,10 @@ public class LiteflowTemplate {
         if (contextClass == null) {
             throw new IllegalArgumentException("contextClass 不能为空");
         }
-        long start = System.currentTimeMillis();
-        LiteflowResponse response = this.flowExecutor.execute2RespWithEL(el, param, null, contextClass);
-        long duration = System.currentTimeMillis() - start;
         String chainId = resolveDynamicChainId(el);
-        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
-        checkResponseSuccess(chainId, response, trace);
-        return response.getContextBean(contextClass);
+        ExecutionOutcome outcome = executeWithInterceptors(
+                chainId, param, () -> this.flowExecutor.execute2RespWithEL(el, param, null, contextClass));
+        return outcome.response().getContextBean(contextClass);
     }
 
     /**
@@ -597,12 +599,9 @@ public class LiteflowTemplate {
             throw new IllegalArgumentException("el 表达式不能为空");
         }
         Objects.requireNonNull(contextBean, "contextBean 不能为空");
-        long start = System.currentTimeMillis();
-        LiteflowResponse response = this.flowExecutor.execute2RespWithEL(el, param, null, contextBean);
-        long duration = System.currentTimeMillis() - start;
         String chainId = resolveDynamicChainId(el);
-        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
-        checkResponseSuccess(chainId, response, trace);
+        executeWithInterceptors(
+                chainId, param, () -> this.flowExecutor.execute2RespWithEL(el, param, null, contextBean));
         return contextBean;
     }
 
@@ -634,14 +633,11 @@ public class LiteflowTemplate {
         if (contextClass == null) {
             throw new IllegalArgumentException("contextClass 不能为空");
         }
-        long start = System.currentTimeMillis();
-        LiteflowResponse response = this.flowExecutor.execute2RespWithEL(el, param, null, contextClass);
-        long duration = System.currentTimeMillis() - start;
         String chainId = resolveDynamicChainId(el);
-        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
-        checkResponseSuccess(chainId, response, trace);
-        T context = response.getContextBean(contextClass);
-        return new LiteflowTraceResult<>(context, trace);
+        ExecutionOutcome outcome = executeWithInterceptors(
+                chainId, param, () -> this.flowExecutor.execute2RespWithEL(el, param, null, contextClass));
+        T context = outcome.response().getContextBean(contextClass);
+        return new LiteflowTraceResult<>(context, outcome.trace());
     }
 
     /**
@@ -670,13 +666,10 @@ public class LiteflowTemplate {
             throw new IllegalArgumentException("el 表达式不能为空");
         }
         Objects.requireNonNull(contextBean, "contextBean 不能为空");
-        long start = System.currentTimeMillis();
-        LiteflowResponse response = this.flowExecutor.execute2RespWithEL(el, param, null, contextBean);
-        long duration = System.currentTimeMillis() - start;
         String chainId = resolveDynamicChainId(el);
-        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
-        checkResponseSuccess(chainId, response, trace);
-        return new LiteflowTraceResult<>(contextBean, trace);
+        ExecutionOutcome outcome = executeWithInterceptors(
+                chainId, param, () -> this.flowExecutor.execute2RespWithEL(el, param, null, contextBean));
+        return new LiteflowTraceResult<>(contextBean, outcome.trace());
     }
 
     /**
@@ -735,23 +728,30 @@ public class LiteflowTemplate {
         if (contextBean == null) {
             throw new IllegalArgumentException("contextBean 不能为空");
         }
+        String routeChainId = (namespace != null && !namespace.isBlank()) ? namespace.trim() : "ROUTE_CHAIN";
+        List<LiteflowExecutionInterceptor> active = filterInterceptors(routeChainId);
+        invokeBeforeExecute(active, routeChainId, param);
+
         long start = System.currentTimeMillis();
         List<LiteflowResponse> responses;
         try {
             responses = (namespace != null && !namespace.isBlank())
-                    ? this.flowExecutor.executeRouteChain(namespace.trim(), param, contextBean)
+                    ? this.flowExecutor.executeRouteChain(routeChainId, param, contextBean)
                     : this.flowExecutor.executeRouteChain(param, contextBean);
         } catch (RouteChainNotFoundException | NoMatchedRouteChainException e) {
             log.debug("ateng-boot-liteflow: 命名空间 [{}] 未匹配到任何决策路由链: {}", namespace, e.getMessage());
             responses = Collections.emptyList();
         } catch (Exception e) {
-            throw new LiteflowExecutionException(namespace != null ? namespace : "ROUTE_CHAIN", null,
+            LiteflowExecutionException lex = new LiteflowExecutionException(routeChainId, null,
                     "执行决策路由表 [" + namespace + "] 失败: " + e.getMessage(), e);
+            invokeOnError(active, routeChainId, param, null, lex);
+            throw lex;
         }
         long totalDuration = System.currentTimeMillis() - start;
 
         if (responses == null || responses.isEmpty()) {
             log.debug("ateng-boot-liteflow: 决策路由表在命名空间 [{}] 未匹配到任何有效流程链", namespace);
+            invokeAfterExecute(active, routeChainId, param, buildRouteAggregateTrace(routeChainId, Collections.emptyList(), totalDuration));
             return new LiteflowRouteResult<>(contextBean, Collections.emptyList(), Collections.emptyList(), totalDuration);
         }
 
@@ -761,10 +761,15 @@ public class LiteflowTemplate {
         for (LiteflowResponse response : responses) {
             String chainId = response != null ? response.getChainId() : "ROUTE_CHAIN";
             LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, -1L);
-            checkResponseSuccess(chainId, response, trace);
+            if (response == null || !response.isSuccess()) {
+                LiteflowExecutionException ex = buildExecutionException(chainId, response, trace);
+                invokeOnError(active, routeChainId, param, trace, ex);
+                throw ex;
+            }
             matchedChainIds.add(chainId);
             traces.add(trace);
         }
+        invokeAfterExecute(active, routeChainId, param, buildRouteAggregateTrace(routeChainId, traces, totalDuration));
         return new LiteflowRouteResult<>(contextBean, matchedChainIds, traces, totalDuration);
     }
 
@@ -1313,10 +1318,145 @@ public class LiteflowTemplate {
     }
 
     /**
-     * 处理结构化时序轨迹构建与可选 MDC 审计日志自动注入
+     * 统一在全局执行拦截器生命周期包裹下调度规则链并提取轨迹与异常转译
+     */
+    private ExecutionOutcome executeWithInterceptors(String chainId, Object param, Supplier<LiteflowResponse> executorCall) {
+        List<LiteflowExecutionInterceptor> active = filterInterceptors(chainId);
+        invokeBeforeExecute(active, chainId, param);
+        long start = System.currentTimeMillis();
+        LiteflowResponse response;
+        try {
+            response = executorCall.get();
+        } catch (Throwable t) {
+            invokeOnError(active, chainId, param, null, t);
+            throw t;
+        }
+        long duration = System.currentTimeMillis() - start;
+        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
+        if (response == null || !response.isSuccess()) {
+            LiteflowExecutionException ex = buildExecutionException(chainId, response, trace);
+            invokeOnError(active, chainId, param, trace, ex);
+            throw ex;
+        }
+        invokeAfterExecute(active, chainId, param, trace);
+        return new ExecutionOutcome(response, trace);
+    }
+
+    private List<LiteflowExecutionInterceptor> filterInterceptors(String chainId) {
+        if (this.interceptors.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<LiteflowExecutionInterceptor> matched = new ArrayList<>(this.interceptors.size());
+        for (LiteflowExecutionInterceptor interceptor : this.interceptors) {
+            try {
+                if (interceptor.supports(chainId)) {
+                    matched.add(interceptor);
+                }
+            } catch (Throwable t) {
+                log.warn("ateng-boot-liteflow: 执行拦截器 supports 判定异常已 Fail-Open 跳过 [chainId={}, interceptor={}]: {}",
+                        chainId, interceptor.getClass().getName(), t.getMessage(), t);
+            }
+        }
+        return matched;
+    }
+
+    private void invokeBeforeExecute(List<LiteflowExecutionInterceptor> active, String chainId, Object param) {
+        for (LiteflowExecutionInterceptor interceptor : active) {
+            try {
+                interceptor.beforeExecute(chainId, param);
+            } catch (Throwable t) {
+                log.warn("ateng-boot-liteflow: 执行拦截器 beforeExecute 异常已 Fail-Open 放行 [chainId={}, interceptor={}]: {}",
+                        chainId, interceptor.getClass().getName(), t.getMessage(), t);
+            }
+        }
+    }
+
+    private void invokeAfterExecute(List<LiteflowExecutionInterceptor> active, String chainId, Object param, LiteflowExecutionTrace trace) {
+        for (LiteflowExecutionInterceptor interceptor : active) {
+            try {
+                interceptor.afterExecute(chainId, param, trace);
+            } catch (Throwable t) {
+                log.warn("ateng-boot-liteflow: 执行拦截器 afterExecute 异常已 Fail-Open 放行 [chainId={}, interceptor={}]: {}",
+                        chainId, interceptor.getClass().getName(), t.getMessage(), t);
+            }
+        }
+    }
+
+    private void invokeOnError(List<LiteflowExecutionInterceptor> active,
+                               String chainId,
+                               Object param,
+                               LiteflowExecutionTrace trace,
+                               Throwable error) {
+        for (LiteflowExecutionInterceptor interceptor : active) {
+            try {
+                interceptor.onError(chainId, param, trace, error);
+            } catch (Throwable t) {
+                log.warn("ateng-boot-liteflow: 执行拦截器 onError 异常已 Fail-Open 放行 [chainId={}, interceptor={}]: {}",
+                        chainId, interceptor.getClass().getName(), t.getMessage(), t);
+            }
+        }
+    }
+
+    private LiteflowExecutionTrace buildRouteAggregateTrace(String routeChainId,
+                                                            List<LiteflowExecutionTrace> traces,
+                                                            long totalDuration) {
+        if (traces.size() == 1) {
+            return traces.get(0);
+        }
+        LiteflowExecutionTrace aggregate = new LiteflowExecutionTrace();
+        aggregate.setChainId(routeChainId);
+        aggregate.setSuccess(true);
+        long clampedDuration = Math.max(totalDuration, 0L);
+        aggregate.setTotalTimeSpentMs(clampedDuration);
+
+        Set<String> aggregatedSlowNodes = new LinkedHashSet<>();
+        boolean anySubSlow = false;
+        for (LiteflowExecutionTrace item : traces) {
+            if (item == null) {
+                continue;
+            }
+            if (item.getSteps() != null) {
+                aggregate.getSteps().addAll(item.getSteps());
+            }
+            if (item.isSlow()) {
+                anySubSlow = true;
+            }
+            if (item.getSlowNodeIds() != null && !item.getSlowNodeIds().isEmpty()) {
+                aggregatedSlowNodes.addAll(item.getSlowNodeIds());
+            }
+        }
+
+        Duration chainThreshold = (this.properties != null && this.properties.getTrace() != null)
+                ? this.properties.getTrace().getSlowChainThreshold()
+                : null;
+        boolean routeSlow = isPositiveDuration(chainThreshold) && clampedDuration >= chainThreshold.toMillis();
+        aggregate.setSlowNodeIds(aggregatedSlowNodes.isEmpty()
+                ? Collections.emptyList()
+                : new ArrayList<>(aggregatedSlowNodes));
+        aggregate.setSlow(anySubSlow || routeSlow || !aggregatedSlowNodes.isEmpty());
+        return aggregate;
+    }
+
+    private LiteflowExecutionException buildExecutionException(String chainId,
+                                                             LiteflowResponse response,
+                                                             LiteflowExecutionTrace trace) {
+        Throwable cause = response != null ? response.getCause() : null;
+        String failedNodeId = (trace != null && trace.getFailedStep() != null)
+                ? trace.getFailedStep().getNodeId()
+                : resolveFailedNodeId(response);
+        String message = formatErrorMessage(chainId, failedNodeId, response);
+        return new LiteflowExecutionException(chainId, failedNodeId, trace, message, cause);
+    }
+
+    private record ExecutionOutcome(LiteflowResponse response, LiteflowExecutionTrace trace) {
+    }
+
+    /**
+     * 处理结构化时序轨迹构建、慢执行阈值治理与可选 MDC 审计日志自动注入
      */
     private LiteflowExecutionTrace handleTraceAndAudit(String chainId, LiteflowResponse response, long durationMs) {
         LiteflowExecutionTrace trace = LiteflowExecutionTrace.fromResponse(chainId, response, durationMs);
+        evaluateAndRecordSlowExecution(chainId, trace);
         if (this.properties != null && this.properties.getTrace() != null && this.properties.getTrace().isEnableMdc()) {
             trace.injectToMdc(this.properties.getTrace().getMdcKey());
         }
@@ -1324,17 +1464,72 @@ public class LiteflowTemplate {
     }
 
     /**
-     * 检查响应执行状态，若失败则转译抛出受管业务异常
+     * 根据 {@link AtengLiteflowProperties.TraceProperties} 中的 Duration 阈值评估慢链/慢节点并联动慢执行指标
      */
-    private void checkResponseSuccess(String chainId, LiteflowResponse response, LiteflowExecutionTrace trace) {
-        if (response != null && !response.isSuccess()) {
-            Throwable cause = response.getCause();
-            String failedNodeId = (trace != null && trace.getFailedStep() != null)
-                    ? trace.getFailedStep().getNodeId()
-                    : resolveFailedNodeId(response);
-            String message = formatErrorMessage(chainId, failedNodeId, response);
-            throw new LiteflowExecutionException(chainId, failedNodeId, trace, message, cause);
+    private void evaluateAndRecordSlowExecution(String chainId, LiteflowExecutionTrace trace) {
+        if (trace == null || this.properties == null || this.properties.getTrace() == null) {
+            return;
         }
+        AtengLiteflowProperties.TraceProperties traceProps = this.properties.getTrace();
+        Duration chainThreshold = traceProps.getSlowChainThreshold();
+        Duration nodeThreshold = traceProps.getSlowNodeThreshold();
+
+        boolean chainSlow = isPositiveDuration(chainThreshold)
+                && trace.getTotalTimeSpentMs() >= chainThreshold.toMillis();
+
+        Set<String> slowNodes = new LinkedHashSet<>();
+        List<String> slowNodeExecutions = Collections.emptyList();
+        if (isPositiveDuration(nodeThreshold) && trace.getSteps() != null && !trace.getSteps().isEmpty()) {
+            long nodeThresholdMs = nodeThreshold.toMillis();
+            List<String> recorded = null;
+            for (ExecutionStepItem step : trace.getSteps()) {
+                if (step != null && step.getNodeId() != null && step.getTimeSpentMs() >= nodeThresholdMs) {
+                    slowNodes.add(step.getNodeId());
+                    if (recorded == null) {
+                        recorded = new ArrayList<>();
+                    }
+                    recorded.add(step.getNodeId());
+                }
+            }
+            if (recorded != null) {
+                slowNodeExecutions = recorded;
+            }
+        }
+
+        if (!slowNodes.isEmpty()) {
+            trace.setSlowNodeIds(new ArrayList<>(slowNodes));
+        } else {
+            trace.setSlowNodeIds(Collections.emptyList());
+        }
+        trace.setSlow(chainSlow || !slowNodes.isEmpty());
+
+        if (!trace.isSlow()) {
+            return;
+        }
+
+        log.warn("ateng-boot-liteflow: 检测到慢规则执行 [chainId={}, totalTimeMs={}, slowChainThresholdMs={}, slowNodeIds={}, slowNodeThresholdMs={}]",
+                chainId,
+                trace.getTotalTimeSpentMs(),
+                chainThreshold != null ? chainThreshold.toMillis() : null,
+                trace.getSlowNodeIds(),
+                nodeThreshold != null ? nodeThreshold.toMillis() : null);
+
+        if (this.slowExecutionRecorder != null) {
+            try {
+                if (chainSlow) {
+                    this.slowExecutionRecorder.recordSlowChain(chainId);
+                }
+                for (String slowNodeId : slowNodeExecutions) {
+                    this.slowExecutionRecorder.recordSlowNode(chainId, slowNodeId);
+                }
+            } catch (Throwable t) {
+                log.warn("ateng-boot-liteflow: 上报慢执行度量指标异常已忽略 [chainId={}]: {}", chainId, t.getMessage());
+            }
+        }
+    }
+
+    private static boolean isPositiveDuration(Duration duration) {
+        return duration != null && !duration.isNegative() && !duration.isZero();
     }
 
     /**

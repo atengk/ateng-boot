@@ -44,6 +44,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         "liteflow.enable=true",
         "ateng.boot.liteflow.trace.enable-mdc=true",
         "ateng.boot.liteflow.trace.mdc-key=liteflow_trace",
+        "ateng.boot.liteflow.trace.slow-chain-threshold=40ms",
+        "ateng.boot.liteflow.trace.slow-node-threshold=40ms",
         "ateng.boot.liteflow.metrics.enabled=true"
 })
 @DisplayName("LiteFlow 结构化时序轨迹与 Micrometer 云原生度量测试")
@@ -403,13 +405,78 @@ class LiteflowObservabilityTest {
         com.yomahub.liteflow.lifecycle.LifeCycleHolder.addLifeCycle(liteflowMetricsBinder.getNodeLifeCycle());
     }
 
+    @Test
+    @DisplayName("验证慢链与慢节点 Duration 阈值治理及 Micrometer 慢执行指标归一化记录")
+    void testSlowChainAndNodeThresholdGovernance() {
+        // 1. 未超阈值正常链：slow=false, slowNodeIds 为空列表
+        LiteflowTraceResult<ObsContext> fastResult = liteflowTemplate.executeWithTrace("normalTraceChain", ObsContext.class);
+        assertThat(fastResult.getTrace().isSlow()).isFalse();
+        assertThat(fastResult.getTrace().getSlowNodeIds()).isEmpty();
+
+        // 2. 具名慢链执行：触发慢链与慢节点阈值，记录 liteflow.chain.slow.executions 与 liteflow.node.slow.executions
+        liteflowTemplate.reloadChain("slowTraceChain", "THEN(obsNodeA, obsSlowNode);");
+        try {
+            LiteflowTraceResult<ObsContext> slowResult = liteflowTemplate.executeWithTrace("slowTraceChain", ObsContext.class);
+            LiteflowExecutionTrace slowTrace = slowResult.getTrace();
+            assertThat(slowTrace.isSlow()).isTrue();
+            assertThat(slowTrace.getSlowNodeIds()).containsExactly("obsSlowNode");
+
+            Counter slowChainCounter = meterRegistry.find(LiteflowMetricsBinder.METRIC_CHAIN_SLOW_EXECUTIONS)
+                    .tag(LiteflowMetricsBinder.TAG_CHAIN_ID, "slowTraceChain")
+                    .counter();
+            assertThat(slowChainCounter).isNotNull();
+            assertThat(slowChainCounter.count()).isGreaterThanOrEqualTo(1.0);
+
+            Counter slowNodeCounter = meterRegistry.find(LiteflowMetricsBinder.METRIC_NODE_SLOW_EXECUTIONS)
+                    .tag(LiteflowMetricsBinder.TAG_CHAIN_ID, "slowTraceChain")
+                    .tag(LiteflowMetricsBinder.TAG_NODE_ID, "obsSlowNode")
+                    .counter();
+            assertThat(slowNodeCounter).isNotNull();
+            assertThat(slowNodeCounter.count()).isGreaterThanOrEqualTo(1.0);
+        } finally {
+            liteflowTemplate.removeChain("slowTraceChain");
+        }
+
+        // 3. 动态即时 EL 慢执行：chainId 标签必须安全归一化为 DYNAMIC_EL
+        LiteflowTraceResult<ObsContext> dynamicSlowResult = liteflowTemplate.executeElWithTrace(
+                "THEN(obsNodeA, obsSlowNode);", ObsContext.class);
+        assertThat(dynamicSlowResult.getTrace().isSlow()).isTrue();
+        assertThat(dynamicSlowResult.getTrace().getSlowNodeIds()).containsExactly("obsSlowNode");
+
+        Counter dynamicSlowChainCounter = meterRegistry.find(LiteflowMetricsBinder.METRIC_CHAIN_SLOW_EXECUTIONS)
+                .tag(LiteflowMetricsBinder.TAG_CHAIN_ID, LiteflowMetricsBinder.TAG_DYNAMIC_EL)
+                .counter();
+        assertThat(dynamicSlowChainCounter).isNotNull();
+        assertThat(dynamicSlowChainCounter.count()).isGreaterThanOrEqualTo(1.0);
+
+        Counter dynamicSlowNodeCounter = meterRegistry.find(LiteflowMetricsBinder.METRIC_NODE_SLOW_EXECUTIONS)
+                .tag(LiteflowMetricsBinder.TAG_CHAIN_ID, LiteflowMetricsBinder.TAG_DYNAMIC_EL)
+                .tag(LiteflowMetricsBinder.TAG_NODE_ID, "obsSlowNode")
+                .counter();
+        assertThat(dynamicSlowNodeCounter).isNotNull();
+        assertThat(dynamicSlowNodeCounter.count()).isGreaterThanOrEqualTo(1.0);
+
+        // 4. 默认配置下（未配置阈值）不触发慢标记
+        io.github.atengk.boot.liteflow.properties.AtengLiteflowProperties defaultProps =
+                new io.github.atengk.boot.liteflow.properties.AtengLiteflowProperties();
+        assertThat(defaultProps.getTrace().getSlowChainThreshold()).isNull();
+        assertThat(defaultProps.getTrace().getSlowNodeThreshold()).isNull();
+        LiteflowTemplate noThresholdTemplate = new LiteflowTemplate(
+                liteflowTemplate.getFlowExecutor(), null, defaultProps);
+        LiteflowTraceResult<ObsContext> unflagged = noThresholdTemplate.executeElWithTrace(
+                "THEN(obsSlowNode);", ObsContext.class);
+        assertThat(unflagged.getTrace().isSlow()).isFalse();
+        assertThat(unflagged.getTrace().getSlowNodeIds()).isEmpty();
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableAutoConfiguration
     @Import({
             ObsNodeA.class,
             ObsNodeB.class,
             ObsFailNode.class,
-            ObsRollbackNodeA.class
+            ObsRollbackNodeA.class,
+            ObsSlowNode.class
     })
     static class TestConfig {
 
@@ -462,6 +529,19 @@ class LiteflowObservabilityTest {
         @Override
         public void rollback(ObsContext context) {
             context.getRollbackNodes().add("obsRollbackNodeA");
+        }
+    }
+
+    @Component("obsSlowNode")
+    public static class ObsSlowNode extends BaseNodeComponent<ObsContext> {
+        @Override
+        public void process(ObsContext context) {
+            try {
+                Thread.sleep(100L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            context.getExecutedNodes().add("obsSlowNode");
         }
     }
 }

@@ -5,6 +5,8 @@ import com.yomahub.liteflow.lifecycle.LifeCycleHolder;
 import com.yomahub.liteflow.property.LiteflowConfig;
 import com.yomahub.liteflow.springboot.config.LiteflowMainAutoConfiguration;
 import com.yomahub.liteflow.springboot.config.LiteflowPropertyAutoConfiguration;
+import io.github.atengk.boot.liteflow.core.LiteflowExecutionInterceptor;
+import io.github.atengk.boot.liteflow.core.LiteflowSlowExecutionRecorder;
 import io.github.atengk.boot.liteflow.core.LiteflowTemplate;
 import io.github.atengk.boot.liteflow.properties.AtengLiteflowProperties;
 import io.github.atengk.boot.liteflow.rule.JdbcLiteflowRuleSourceProvider;
@@ -85,8 +87,17 @@ public class AtengLiteflowAutoConfiguration {
     @ConditionalOnMissingBean(LiteflowTemplate.class)
     public LiteflowTemplate liteflowTemplate(FlowExecutor flowExecutor,
                                              ObjectProvider<Executor> executorProvider,
-                                             AtengLiteflowProperties properties) {
-        return new LiteflowTemplate(flowExecutor, executorProvider.getIfAvailable(), properties);
+                                             AtengLiteflowProperties properties,
+                                             ObjectProvider<List<LiteflowExecutionInterceptor>> interceptorsProvider,
+                                             ObjectProvider<LiteflowSlowExecutionRecorder> slowExecutionRecorderProvider) {
+        List<LiteflowExecutionInterceptor> interceptors = interceptorsProvider.getIfAvailable(Collections::emptyList);
+        return new LiteflowTemplate(
+                flowExecutor,
+                executorProvider.getIfAvailable(),
+                properties,
+                interceptors,
+                slowExecutionRecorderProvider.getIfAvailable()
+        );
     }
 
     /**

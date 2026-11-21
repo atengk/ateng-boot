@@ -139,6 +139,11 @@ public class AtengLiteflowProperties {
         private boolean failFast = false;
 
         /**
+         * 全量刷新规则源时是否自动下线已被外部规则源物理删除的孤儿规则链（仅清理动态纳管链，绝不误删本地静态 XML/YML 规则链，默认 true）
+         */
+        private boolean evictRemovedOnRefresh = true;
+
+        /**
          * 数据库动态规则加载器配置
          */
         @NestedConfigurationProperty
@@ -217,6 +222,16 @@ public class AtengLiteflowProperties {
          * MDC 注入时使用的 Key 名称
          */
         private String mdcKey = "liteflow_trace";
+
+        /**
+         * 慢规则链耗时告警阈值（达到或超过该阈值标记慢链并记录告警与慢执行指标；默认 null 表示不触发）
+         */
+        private Duration slowChainThreshold;
+
+        /**
+         * 慢组件节点耗时告警阈值（达到或超过该阈值标记慢节点并记录告警与慢执行指标；默认 null 表示不触发）
+         */
+        private Duration slowNodeThreshold;
     }
 
     /**

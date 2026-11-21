@@ -2,6 +2,7 @@ package io.github.atengk.boot.liteflow.autoconfigure;
 
 import com.yomahub.liteflow.core.FlowExecutor;
 import com.yomahub.liteflow.lifecycle.LifeCycleHolder;
+import io.github.atengk.boot.liteflow.core.LiteflowSlowExecutionRecorder;
 import io.github.atengk.boot.liteflow.metrics.LiteflowMetricsBinder;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -49,5 +50,25 @@ public class LiteflowMetricsAutoConfiguration {
         }
 
         return binder;
+    }
+
+    /**
+     * 注册慢规则/慢节点执行可观测指标回调桥梁，解耦核心执行门面与可选 Micrometer 依赖
+     */
+    @Bean
+    @ConditionalOnBean(LiteflowMetricsBinder.class)
+    @ConditionalOnMissingBean(LiteflowSlowExecutionRecorder.class)
+    public LiteflowSlowExecutionRecorder liteflowSlowExecutionRecorder(LiteflowMetricsBinder binder) {
+        return new LiteflowSlowExecutionRecorder() {
+            @Override
+            public void recordSlowChain(String chainId) {
+                binder.recordSlowChainExecution(chainId);
+            }
+
+            @Override
+            public void recordSlowNode(String chainId, String nodeId) {
+                binder.recordSlowNodeExecution(chainId, nodeId);
+            }
+        };
     }
 }

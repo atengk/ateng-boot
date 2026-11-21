@@ -5,6 +5,8 @@ import com.yomahub.liteflow.core.NodeComponent;
 import com.yomahub.liteflow.flow.FlowBus;
 import com.yomahub.liteflow.flow.LiteflowResponse;
 import io.github.atengk.boot.liteflow.exception.LiteflowExecutionException;
+import io.github.atengk.boot.liteflow.properties.AtengLiteflowProperties;
+import io.github.atengk.boot.liteflow.trace.LiteflowExecutionTrace;
 import io.github.atengk.boot.liteflow.trace.LiteflowTraceResult;
 import lombok.Data;
 import org.junit.jupiter.api.AfterEach;
@@ -13,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.stereotype.Component;
@@ -48,6 +51,9 @@ class LiteflowTemplateTest {
 
     @Autowired
     private FlowExecutor flowExecutor;
+
+    @Autowired
+    private RecordingContainerInterceptor containerInterceptor;
 
     @AfterEach
     void tearDown() {
@@ -522,10 +528,194 @@ class LiteflowTemplateTest {
         }
     }
 
+    @Test
+    @DisplayName("验证三阶段全局执行拦截器 Ordered 排序、supports 过滤、全路径触发与 Fail-Open 容错")
+    void testExecutionInterceptorsLifecycleAndFailOpen() throws Exception {
+        // 1. 验证容器自动装配的拦截器在同步/异步/EL/决策路由全路径生效
+        containerInterceptor.clear();
+        containerInterceptor.setEnabled(true);
+        try {
+            liteflowTemplate.execute("testChainSuccess", "syncParam", SampleTestContext.class);
+            liteflowTemplate.executeAsync("testChainSuccess", "asyncParam", SampleTestContext.class).get(5, TimeUnit.SECONDS);
+            liteflowTemplate.executeEl("THEN(stepA);", "elParam", SampleTestContext.class);
+
+            liteflowTemplate.reloadRouteChain("interceptorRouteChain", "INTERCEPT_NS", "stepA", "THEN(stepA);");
+            try {
+                liteflowTemplate.executeRoute("INTERCEPT_NS", "routeParam", new SampleTestContext());
+            } finally {
+                liteflowTemplate.removeChain("interceptorRouteChain");
+            }
+
+            assertThat(containerInterceptor.getEvents()).containsExactly(
+                    "before:testChainSuccess:syncParam",
+                    "after:testChainSuccess:true",
+                    "before:testChainSuccess:asyncParam",
+                    "after:testChainSuccess:true",
+                    "before:DYNAMIC_EL[THEN(stepA);]:elParam",
+                    "after:DYNAMIC_EL[THEN(stepA);]:true",
+                    "before:INTERCEPT_NS:routeParam",
+                    "after:INTERCEPT_NS:true"
+            );
+        } finally {
+            containerInterceptor.setEnabled(false);
+            containerInterceptor.clear();
+        }
+
+        // 2. 验证多拦截器 Ordered 排序、supports 过滤、失败 onError 与 Fail-Open 容错隔离
+        List<String> orderLog = new ArrayList<>();
+        LiteflowExecutionInterceptor second = new LiteflowExecutionInterceptor() {
+            @Override
+            public int getOrder() {
+                return 20;
+            }
+
+            @Override
+            public void beforeExecute(String chainId, Object param) {
+                orderLog.add("second:before:" + chainId);
+            }
+
+            @Override
+            public void afterExecute(String chainId, Object param, LiteflowExecutionTrace trace) {
+                orderLog.add("second:after:" + chainId);
+            }
+
+            @Override
+            public void onError(String chainId, Object param, LiteflowExecutionTrace trace, Throwable error) {
+                orderLog.add("second:error:" + chainId + ":" + (error instanceof LiteflowExecutionException));
+            }
+        };
+
+        LiteflowExecutionInterceptor first = new LiteflowExecutionInterceptor() {
+            @Override
+            public int getOrder() {
+                return 10;
+            }
+
+            @Override
+            public void beforeExecute(String chainId, Object param) {
+                orderLog.add("first:before:" + chainId);
+            }
+
+            @Override
+            public void afterExecute(String chainId, Object param, LiteflowExecutionTrace trace) {
+                orderLog.add("first:after:" + chainId);
+            }
+
+            @Override
+            public void onError(String chainId, Object param, LiteflowExecutionTrace trace, Throwable error) {
+                orderLog.add("first:error:" + chainId);
+            }
+        };
+
+        LiteflowExecutionInterceptor unsupported = new LiteflowExecutionInterceptor() {
+            @Override
+            public boolean supports(String chainId) {
+                return false;
+            }
+
+            @Override
+            public void beforeExecute(String chainId, Object param) {
+                orderLog.add("unsupported:before");
+            }
+        };
+
+        LiteflowExecutionInterceptor faulty = new LiteflowExecutionInterceptor() {
+            @Override
+            public int getOrder() {
+                return 15;
+            }
+
+            @Override
+            public void beforeExecute(String chainId, Object param) {
+                throw new IllegalStateException("interceptor-before-boom");
+            }
+
+            @Override
+            public void afterExecute(String chainId, Object param, LiteflowExecutionTrace trace) {
+                throw new IllegalStateException("interceptor-after-boom");
+            }
+
+            @Override
+            public void onError(String chainId, Object param, LiteflowExecutionTrace trace, Throwable error) {
+                throw new IllegalStateException("interceptor-error-boom");
+            }
+        };
+
+        LiteflowTemplate customTemplate = new LiteflowTemplate(
+                flowExecutor,
+                Runnable::run,
+                new AtengLiteflowProperties(),
+                List.of(second, unsupported, faulty, first)
+        );
+
+        SampleTestContext okCtx = customTemplate.execute("testChainSuccess", "p1", SampleTestContext.class);
+        assertThat(okCtx.getData()).isEqualTo("stepA_done");
+        assertThat(orderLog).containsExactly(
+                "first:before:testChainSuccess",
+                "second:before:testChainSuccess",
+                "first:after:testChainSuccess",
+                "second:after:testChainSuccess"
+        );
+
+        orderLog.clear();
+        assertThatThrownBy(() -> customTemplate.execute("testChainFailure", "p2", SampleTestContext.class))
+                .isInstanceOf(LiteflowExecutionException.class)
+                .hasCauseInstanceOf(IllegalStateException.class);
+        assertThat(orderLog).containsExactly(
+                "first:before:testChainFailure",
+                "second:before:testChainFailure",
+                "first:error:testChainFailure",
+                "second:error:testChainFailure:true"
+        );
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableAutoConfiguration
     @Import({StepA.class, StepFail.class, StepSlow.class})
     static class TestConfig {
+
+        @Bean
+        RecordingContainerInterceptor recordingContainerInterceptor() {
+            return new RecordingContainerInterceptor();
+        }
+    }
+
+    static class RecordingContainerInterceptor implements LiteflowExecutionInterceptor {
+
+        private volatile boolean enabled = false;
+        private final List<String> events = java.util.Collections.synchronizedList(new ArrayList<>());
+
+        void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        void clear() {
+            events.clear();
+        }
+
+        List<String> getEvents() {
+            return new ArrayList<>(events);
+        }
+
+        @Override
+        public boolean supports(String chainId) {
+            return enabled;
+        }
+
+        @Override
+        public void beforeExecute(String chainId, Object param) {
+            events.add("before:" + chainId + ":" + param);
+        }
+
+        @Override
+        public void afterExecute(String chainId, Object param, LiteflowExecutionTrace trace) {
+            events.add("after:" + chainId + ":" + (trace != null && trace.isSuccess()));
+        }
+
+        @Override
+        public void onError(String chainId, Object param, LiteflowExecutionTrace trace, Throwable error) {
+            events.add("error:" + chainId + ":" + (error != null));
+        }
     }
 
     @Data
