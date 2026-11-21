@@ -118,6 +118,13 @@
             <artifactId>spring-boot-starter-validation</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- OkHttp MockWebServer (MCP/OpenAPI 协议交互单元测试，版本由 BOM 统管) -->
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>mockwebserver</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
 </project>

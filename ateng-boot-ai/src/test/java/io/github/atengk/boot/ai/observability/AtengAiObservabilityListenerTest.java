@@ -581,8 +581,9 @@ class AtengAiObservabilityListenerTest {
     }
 
     @Test
-    @DisplayName("多租户上下文透传下 Micrometer 指标包含 tenant_id 标签验证")
+    @DisplayName("低基数多租户度量标签归并与关闭归并后保留真实租户下钻验证")
     void testMicrometerMetricsWithTenantIdTag() {
+        // 1. 默认 aggregateTenantMetrics=true，多租户归并至低基数 "tenant"
         MeterRegistry registry = new SimpleMeterRegistry();
         AtengAiObservabilityListener listener = new AtengAiObservabilityListener(properties, registry);
 
@@ -602,23 +603,34 @@ class AtengAiObservabilityListenerTest {
             ChatModelResponseContext respContext = new ChatModelResponseContext(response, request, reqContext.attributes());
             listener.onResponse(respContext);
 
-            // 验证指标中带有 tenant_id="tenant-corp-01"
-            Counter reqCounter = registry.find(AtengAiObservabilityListener.METRIC_REQUESTS_TOTAL)
+            Counter aggregatedCounter = registry.find(AtengAiObservabilityListener.METRIC_REQUESTS_TOTAL)
+                    .tag("model", "qwen-max")
+                    .tag("tenant_id", "tenant")
+                    .tag("status", "SUCCESS")
+                    .counter();
+            assertThat(aggregatedCounter).isNotNull();
+            assertThat(aggregatedCounter.count()).isEqualTo(1.0);
+            assertThat(registry.find(AtengAiObservabilityListener.METRIC_REQUESTS_TOTAL)
+                    .tag("tenant_id", "tenant-corp-01").counter()).isNull();
+
+            // 2. 显式关闭 aggregateTenantMetrics=false 后保留真实租户 ID 下钻
+            properties.getAudit().setAggregateTenantMetrics(false);
+            MeterRegistry drillDownRegistry = new SimpleMeterRegistry();
+            AtengAiObservabilityListener drillDownListener = new AtengAiObservabilityListener(properties, drillDownRegistry);
+
+            ChatModelRequestContext req2 = new ChatModelRequestContext(request, new ConcurrentHashMap<>());
+            drillDownListener.onRequest(req2);
+            drillDownListener.onResponse(new ChatModelResponseContext(response, request, req2.attributes()));
+
+            Counter exactCounter = drillDownRegistry.find(AtengAiObservabilityListener.METRIC_REQUESTS_TOTAL)
                     .tag("model", "qwen-max")
                     .tag("tenant_id", "tenant-corp-01")
                     .tag("status", "SUCCESS")
                     .counter();
-            assertThat(reqCounter).isNotNull();
-            assertThat(reqCounter.count()).isEqualTo(1.0);
-
-            Counter tokenCounter = registry.find(AtengAiObservabilityListener.METRIC_TOKENS_TOTAL)
-                    .tag("model", "qwen-max")
-                    .tag("tenant_id", "tenant-corp-01")
-                    .tag("type", "total")
-                    .counter();
-            assertThat(tokenCounter).isNotNull();
-            assertThat(tokenCounter.count()).isGreaterThan(0.0);
+            assertThat(exactCounter).isNotNull();
+            assertThat(exactCounter.count()).isEqualTo(1.0);
         } finally {
+            properties.getAudit().setAggregateTenantMetrics(true);
             io.github.atengk.boot.core.context.TenantContextHolder.clear();
         }
     }
@@ -667,5 +679,40 @@ class AtengAiObservabilityListenerTest {
                 .counter();
         assertThat(costCounter).isNotNull();
         assertThat(costCounter.count()).isEqualTo(0.050000, org.assertj.core.data.Offset.offset(0.000001));
+    }
+
+    @Test
+    @DisplayName("超出 maxPayloadChars 时对 AiAuditRecord 中的 promptText 与 responseText 执行精确截断")
+    void testPayloadTruncationByMaxPayloadChars() {
+        properties.getAudit().setMaxPayloadChars(16);
+        AtomicReference<AiAuditRecord> recordRef = new AtomicReference<>();
+        AiAuditLogHandler handler = recordRef::set;
+
+        @SuppressWarnings("unchecked")
+        ObjectProvider<AiAuditLogHandler> handlerProvider = mock(ObjectProvider.class);
+        when(handlerProvider.getIfAvailable()).thenReturn(handler);
+
+        AtengAiObservabilityListener listener = new AtengAiObservabilityListener(properties, handlerProvider, null, new SimpleMeterRegistry());
+
+        String longPrompt = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        String longResponse = "abcdefghijklmnopqrstuvwxyz0123456789";
+
+        ChatModelRequest request = ChatModelRequest.builder()
+                .model("gpt-4o")
+                .messages(List.of(UserMessage.from(longPrompt)))
+                .build();
+        ChatModelRequestContext reqContext = new ChatModelRequestContext(request, new ConcurrentHashMap<>());
+        listener.onRequest(reqContext);
+
+        ChatModelResponse response = ChatModelResponse.builder()
+                .model("gpt-4o")
+                .aiMessage(AiMessage.from(longResponse))
+                .build();
+        listener.onResponse(new ChatModelResponseContext(response, request, reqContext.attributes()));
+
+        AiAuditRecord record = recordRef.get();
+        assertThat(record).isNotNull();
+        assertThat(record.getPromptText()).isEqualTo("0123456789ABCDEF...(truncated)");
+        assertThat(record.getResponseText()).isEqualTo("abcdefghijklmnop...(truncated)");
     }
 }

@@ -1,10 +1,13 @@
 package io.github.atengk.boot.sample.ai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.ai.mcp.HttpMcpClientAdapter;
 import io.github.atengk.boot.ai.mcp.McpClientAdapter;
 import io.github.atengk.boot.ai.mcp.McpClientRegistry;
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.sample.ai.dto.AiDynamicToolRequest;
 import io.github.atengk.boot.sample.ai.dto.AiMcpCallRequest;
+import io.github.atengk.boot.sample.ai.dto.AiMcpPromptRequest;
 import okhttp3.mockwebserver.Dispatcher;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -181,5 +184,87 @@ class ToolsControllerIntegrationTest {
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(61019));
+    }
+
+    @Test
+    @DisplayName("验证真实 HttpMcpClientAdapter + MockWebServer 握手、Session 透传与资源/提示词端点全绿")
+    @SuppressWarnings("unchecked")
+    void testMcpLifecycleResourcesAndPromptsEndToEnd() throws Exception {
+        if (mcpClientRegistry == null) {
+            return;
+        }
+        try (MockWebServer mcpServer = new MockWebServer()) {
+            mcpServer.setDispatcher(new Dispatcher() {
+                @Override
+                public MockResponse dispatch(RecordedRequest request) {
+                    java.util.Map<String, Object> body = JsonUtil.parseObject(request.getBody().readUtf8(), java.util.Map.class);
+                    String method = String.valueOf(body.get("method"));
+                    Object id = body.get("id");
+                    return switch (method) {
+                        case "initialize" -> new MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setHeader("Mcp-Session-Id", "sample-sess-1")
+                                .setBody("{\"jsonrpc\":\"2.0\",\"id\":\"" + id + "\",\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{}}}");
+                        case "notifications/initialized" -> new MockResponse().setResponseCode(202);
+                        case "resources/list" -> new MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("{\"jsonrpc\":\"2.0\",\"id\":\"" + id + "\",\"result\":{\"resources\":[{\"uri\":\"doc://arch\",\"name\":\"arch\",\"mimeType\":\"text/markdown\"}]}}");
+                        case "resources/read" -> new MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("{\"jsonrpc\":\"2.0\",\"id\":\"" + id + "\",\"result\":{\"contents\":[{\"uri\":\"doc://arch\",\"text\":\"ateng-boot-ai architecture\"}]}}");
+                        case "prompts/list" -> new MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("{\"jsonrpc\":\"2.0\",\"id\":\"" + id + "\",\"result\":{\"prompts\":[{\"name\":\"summarize\",\"description\":\"摘要\"}]}}");
+                        case "prompts/get" -> new MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("{\"jsonrpc\":\"2.0\",\"id\":\"" + id + "\",\"result\":{\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":\"Summarize: arch\"}}]}}");
+                        default -> new MockResponse().setResponseCode(404);
+                    };
+                }
+            });
+            mcpServer.start();
+
+            try (HttpMcpClientAdapter adapter = new HttpMcpClientAdapter(
+                    "sample-e2e-mcp", mcpServer.url("/mcp").toString(), java.time.Duration.ofSeconds(5), null, "http", false)) {
+                mcpClientRegistry.register("sample-e2e-mcp", adapter);
+                try {
+                    mockMvc.perform(get("/sample/ai/tools/mcp-resources").param("serverName", "sample-e2e-mcp"))
+                            .andExpect(status().isOk())
+                            .andExpect(jsonPath("$.code").value(200))
+                            .andExpect(jsonPath("$.data[0].uri").value("doc://arch"));
+
+                    mockMvc.perform(get("/sample/ai/tools/mcp-resource")
+                                    .param("serverName", "sample-e2e-mcp")
+                                    .param("uri", "doc://arch"))
+                            .andExpect(status().isOk())
+                            .andExpect(jsonPath("$.code").value(200))
+                            .andExpect(jsonPath("$.data").value("ateng-boot-ai architecture"));
+
+                    mockMvc.perform(get("/sample/ai/tools/mcp-prompts").param("serverName", "sample-e2e-mcp"))
+                            .andExpect(status().isOk())
+                            .andExpect(jsonPath("$.code").value(200))
+                            .andExpect(jsonPath("$.data[0].name").value("summarize"));
+
+                    AiMcpPromptRequest promptReq = AiMcpPromptRequest.builder()
+                            .serverName("sample-e2e-mcp")
+                            .promptName("summarize")
+                            .arguments(java.util.Map.of("target", "arch"))
+                            .build();
+                    mockMvc.perform(post("/sample/ai/tools/mcp-prompt")
+                                    .contentType(MediaType.APPLICATION_JSON)
+                                    .content(objectMapper.writeValueAsString(promptReq)))
+                            .andExpect(status().isOk())
+                            .andExpect(jsonPath("$.code").value(200))
+                            .andExpect(jsonPath("$.data").value("Summarize: arch"));
+                } finally {
+                    mcpClientRegistry.unregister("sample-e2e-mcp");
+                }
+            }
+        }
     }
 }

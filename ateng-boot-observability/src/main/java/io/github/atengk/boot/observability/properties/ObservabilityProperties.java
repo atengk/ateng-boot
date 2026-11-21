@@ -230,6 +230,12 @@ public class ObservabilityProperties {
          */
         @NestedConfigurationProperty
         private SmsHealthProperties sms = new SmsHealthProperties();
+
+        /**
+         * AI 大模型基础设施（ateng-boot-ai）健康探针配置
+         */
+        @NestedConfigurationProperty
+        private AiHealthProperties ai = new AiHealthProperties();
     }
 
     /**
@@ -375,6 +381,29 @@ public class ObservabilityProperties {
          * 是否对支持只读余额查询接口的静态短信渠道顺带探查账户余额（默认关闭，开启后也绝不发送计费短信）
          */
         private boolean probeBalance = false;
+    }
+
+    /**
+     * AI 大模型基础设施（ateng-boot-ai）探针配置
+     */
+    @Getter
+    @Setter
+    public static class AiHealthProperties {
+
+        /**
+         * 是否启用 AI 安全健康探针（默认开启）
+         */
+        private boolean enabled = true;
+
+        /**
+         * AI 健康探针防刷缓存有效期（强类型 Duration，默认 60s 以防高频探活压垮外部大模型平台；设为 0s 可关闭缓存）
+         */
+        private Duration cacheTtl = Duration.ofSeconds(60);
+
+        /**
+         * 是否发起零 Token 计费的只读 GET /models 连通性探活（默认 false 仅验证静态注册配置完整性）
+         */
+        private boolean probeModels = false;
     }
 
     /**

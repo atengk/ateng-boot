@@ -4,6 +4,7 @@ import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.service.tool.ToolExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
@@ -14,13 +15,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * 远程 MCP 客户端适配器受管注册中心
  * <p>
  * 集中管理所有已配置和动态注册的远程 MCP 服务端客户端适配器 {@link McpClientAdapter}，
- * 支持按服务名称检索、聚合全量动态工具清单，供编程式或声明式动态工具调用直接注入。
+ * 支持按服务名称检索、聚合全量动态工具清单，并在容器销毁时确定性释放所有适配器连接与后台流。
  * </p>
  *
  * @author Ateng
  * @since 2026-11-05
  */
-public class McpClientRegistry {
+public class McpClientRegistry implements DisposableBean, AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(McpClientRegistry.class);
 
@@ -149,5 +150,24 @@ public class McpClientRegistry {
      */
     public int size() {
         return adapters.size();
+    }
+
+    @Override
+    public void destroy() {
+        close();
+    }
+
+    @Override
+    public void close() {
+        for (Map.Entry<String, McpClientAdapter> entry : adapters.entrySet()) {
+            McpClientAdapter adapter = entry.getValue();
+            if (adapter instanceof AutoCloseable closeable) {
+                try {
+                    closeable.close();
+                } catch (Exception e) {
+                    log.warn("[AI-MCP] 销毁关闭 MCP 适配器 [{}] 异常: {}", entry.getKey(), e.getMessage());
+                }
+            }
+        }
     }
 }

@@ -6,6 +6,11 @@ import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
 import dev.langchain4j.service.tool.ToolExecutor;
 import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.util.JsonUtil;
+import okhttp3.mockwebserver.Dispatcher;
+import okhttp3.mockwebserver.MockResponse;
+import okhttp3.mockwebserver.MockWebServer;
+import okhttp3.mockwebserver.RecordedRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -98,10 +103,10 @@ class HttpMcpClientAdapterTest {
         assertThat(spec.parameters().properties()).containsKeys("city", "unit");
         assertThat(spec.parameters().required()).contains("city");
 
-        // 验证请求头附带 Bearer token
+        // 验证请求头附带 Bearer token (initialize + notifications/initialized + tools/list)
         ArgumentCaptor<HttpRequest> requestCaptor = ArgumentCaptor.forClass(HttpRequest.class);
-        verify(httpClient).send(requestCaptor.capture(), any());
-        HttpRequest request = requestCaptor.getValue();
+        verify(httpClient, atLeastOnce()).send(requestCaptor.capture(), any());
+        HttpRequest request = requestCaptor.getAllValues().get(0);
         assertThat(request.headers().firstValue("Authorization")).contains("Bearer test-api-key");
     }
 
@@ -307,5 +312,253 @@ class HttpMcpClientAdapterTest {
         McpClientAdapter removed = registry.unregister("server1");
         assertThat(removed).isSameAs(adapter1);
         assertThat(registry.isEmpty()).isTrue();
+    }
+
+    @Test
+    @DisplayName("MockWebServer：Streamable HTTP 自动完成 initialize 握手、透传 Mcp-Session-Id、解析 SSE 响应及资源/提示词契约")
+    @SuppressWarnings("unchecked")
+    void testStreamableHttpFullLifecycleAndSymmetricContracts() throws Exception {
+        java.util.List<RecordedRequest> captured = new java.util.concurrent.CopyOnWriteArrayList<>();
+        try (MockWebServer mockWebServer = new MockWebServer()) {
+            mockWebServer.setDispatcher(new Dispatcher() {
+                @Override
+                public MockResponse dispatch(RecordedRequest request) {
+                    captured.add(request);
+                    String body = request.getBody().readUtf8();
+                    Map<String, Object> payload = JsonUtil.parseObject(body, Map.class);
+                    String method = String.valueOf(payload.get("method"));
+                    Object id = payload.get("id");
+
+                    return switch (method) {
+                        case "initialize" -> new MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setHeader("Mcp-Session-Id", "sess-streamable-99")
+                                .setBody("{\"jsonrpc\":\"2.0\",\"id\":\"" + id + "\",\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"serverInfo\":{\"name\":\"demo\",\"version\":\"1.0\"}}}");
+                        case "notifications/initialized" -> {
+                            assertThat(request.getHeader("Mcp-Session-Id")).isEqualTo("sess-streamable-99");
+                            yield new MockResponse().setResponseCode(202);
+                        }
+                        case "tools/list" -> {
+                            assertThat(request.getHeader("Mcp-Session-Id")).isEqualTo("sess-streamable-99");
+                            yield new MockResponse()
+                                    .setResponseCode(200)
+                                    .setHeader("Content-Type", "text/event-stream; charset=utf-8")
+                                    .setBody("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":\"" + id + "\",\"result\":{\"tools\":[{\"name\":\"ping\",\"description\":\"pong\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}}\n\n");
+                        }
+                        case "resources/list" -> {
+                            assertThat(request.getHeader("Mcp-Session-Id")).isEqualTo("sess-streamable-99");
+                            yield new MockResponse()
+                                    .setResponseCode(200)
+                                    .setHeader("Content-Type", "application/json")
+                                    .setBody("{\"jsonrpc\":\"2.0\",\"id\":\"" + id + "\",\"result\":{\"resources\":[{\"uri\":\"file:///README.md\",\"name\":\"readme\",\"description\":\"项目说明\",\"mimeType\":\"text/markdown\"}]}}");
+                        }
+                        case "resources/read" -> new MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("{\"jsonrpc\":\"2.0\",\"id\":\"" + id + "\",\"result\":{\"contents\":[{\"uri\":\"file:///README.md\",\"text\":\"# Hello MCP Resource\"}]}}");
+                        case "prompts/list" -> new MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("{\"jsonrpc\":\"2.0\",\"id\":\"" + id + "\",\"result\":{\"prompts\":[{\"name\":\"code_review\",\"description\":\"代码评审模板\",\"arguments\":[{\"name\":\"lang\",\"description\":\"语言\",\"required\":true}]}]}}");
+                        case "prompts/get" -> new MockResponse()
+                                .setResponseCode(200)
+                                .setHeader("Content-Type", "application/json")
+                                .setBody("{\"jsonrpc\":\"2.0\",\"id\":\"" + id + "\",\"result\":{\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":\"Review Java code\"}}]}}");
+                        default -> new MockResponse().setResponseCode(400);
+                    };
+                }
+            });
+            mockWebServer.start();
+
+            try (HttpMcpClientAdapter adapter = new HttpMcpClientAdapter(
+                    "streamable-mcp", mockWebServer.url("/mcp").toString(), Duration.ofSeconds(5), "secret-k", "http", false)) {
+                assertThat(adapter.getTools()).hasSize(1);
+                java.util.List<McpResource> resources = adapter.listResources();
+                assertThat(resources).hasSize(1);
+                assertThat(resources.get(0).uri()).isEqualTo("file:///README.md");
+                assertThat(adapter.readResource("file:///README.md")).contains("Hello MCP Resource");
+
+                java.util.List<McpPrompt> prompts = adapter.listPrompts();
+                assertThat(prompts).hasSize(1);
+                assertThat(prompts.get(0).name()).isEqualTo("code_review");
+                assertThat(adapter.getPrompt("code_review", Map.of("lang", "Java"))).contains("Review Java code");
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("持久 Legacy SSE：不关闭 GET 长连接前提下异步关联 JSON-RPC 响应并确定性 close")
+    @SuppressWarnings("unchecked")
+    void testPersistentLegacySseBidirectionalCorrelationAndClose() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger sseGetCount = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.BlockingQueue<String> pendingSsePayloads = new java.util.concurrent.LinkedBlockingQueue<>();
+        java.util.concurrent.CountDownLatch sseClosedLatch = new java.util.concurrent.CountDownLatch(1);
+
+        com.sun.net.httpserver.HttpServer sseServer = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress(0), 0);
+        java.util.concurrent.ExecutorService serverExecutor = new java.util.concurrent.ThreadPoolExecutor(
+                2,
+                16,
+                60L,
+                java.util.concurrent.TimeUnit.SECONDS,
+                new java.util.concurrent.SynchronousQueue<>(),
+                new io.github.atengk.boot.core.concurrent.NamedThreadFactory("test-mcp-sse", true)
+        );
+        sseServer.setExecutor(serverExecutor);
+        sseServer.createContext("/sse", exchange -> {
+            sseGetCount.incrementAndGet();
+            exchange.getResponseHeaders().add("Content-Type", "text/event-stream; charset=utf-8");
+            exchange.sendResponseHeaders(200, 0);
+            try (java.io.OutputStream os = exchange.getResponseBody()) {
+                os.write("event: endpoint\ndata: /messages?sessionId=legacy-1\n\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                os.flush();
+                while (!Thread.currentThread().isInterrupted()) {
+                    String frame = pendingSsePayloads.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    if ("__CLOSE__".equals(frame)) {
+                        break;
+                    }
+                    String toWrite = frame != null ? frame : ": ping\n\n";
+                    os.write(toWrite.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    os.flush();
+                }
+            } catch (Exception ignored) {
+            } finally {
+                sseClosedLatch.countDown();
+            }
+        });
+        sseServer.createContext("/messages", exchange -> {
+            String reqBody = new String(exchange.getRequestBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            Map<String, Object> payload = JsonUtil.parseObject(reqBody, Map.class);
+            String method = String.valueOf(payload.get("method"));
+            Object id = payload.get("id");
+
+            if (!"notifications/initialized".equals(method)) {
+                String resultJson = switch (method) {
+                    case "initialize" -> "{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{}}";
+                    case "tools/list" -> "{\"tools\":[{\"name\":\"echo_sse\",\"description\":\"sse\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}";
+                    case "tools/call" -> "{\"content\":[{\"type\":\"text\",\"text\":\"legacy-sse-ok\"}]}";
+                    case "resources/list" -> "{\"resources\":[{\"uri\":\"mem://res1\",\"name\":\"r1\",\"mimeType\":\"text/plain\"}]}";
+                    case "resources/read" -> "{\"contents\":[{\"uri\":\"mem://res1\",\"text\":\"res-content\"}]}";
+                    case "prompts/list" -> "{\"prompts\":[{\"name\":\"p1\",\"description\":\"desc\"}]}";
+                    case "prompts/get" -> "{\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":\"prompt-text\"}}]}";
+                    default -> "{}";
+                };
+                pendingSsePayloads.offer("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":\"" + id + "\",\"result\":" + resultJson + "}\n\n");
+            }
+            exchange.sendResponseHeaders(202, -1);
+            exchange.close();
+        });
+        sseServer.start();
+        HttpMcpClientAdapter closedAdapterRef;
+        try {
+            String sseUrl = "http://127.0.0.1:" + sseServer.getAddress().getPort() + "/sse";
+            try (HttpMcpClientAdapter adapter = new HttpMcpClientAdapter(
+                    "legacy-sse", sseUrl, Duration.ofSeconds(5), null, "sse", false)) {
+                closedAdapterRef = adapter;
+                assertThat(adapter.getTools()).hasSize(1);
+                assertThat(adapter.callTool("echo_sse", Collections.emptyMap())).isEqualTo("legacy-sse-ok");
+                assertThat(adapter.listResources()).hasSize(1);
+                assertThat(adapter.readResource("mem://res1")).isEqualTo("res-content");
+                assertThat(adapter.listPrompts()).hasSize(1);
+                assertThat(adapter.getPrompt("p1", Collections.emptyMap())).contains("prompt-text");
+                assertThat(sseGetCount.get()).isEqualTo(1);
+            }
+            assertThat(sseClosedLatch.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThatThrownBy(() -> closedAdapterRef.callTool("echo_sse", Collections.emptyMap()))
+                    .isInstanceOf(BusinessException.class)
+                    .satisfies(e -> assertThat(((BusinessException) e).getResultCode()).isEqualTo(AiResultCode.AI_MCP_CALL_FAILED));
+        } finally {
+            pendingSsePayloads.offer("__CLOSE__");
+            sseServer.stop(0);
+            serverExecutor.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("持久 Legacy SSE：首次握手后断连，下次调用自动重建 SSE 长连接并重新 initialize")
+    @SuppressWarnings("unchecked")
+    void testPersistentLegacySseReconnectTriggersInitialize() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger sseConnections = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.atomic.AtomicInteger initCalls = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.BlockingQueue<String> queue1 = new java.util.concurrent.LinkedBlockingQueue<>();
+        java.util.concurrent.BlockingQueue<String> queue2 = new java.util.concurrent.LinkedBlockingQueue<>();
+        java.util.concurrent.CountDownLatch firstSseEnded = new java.util.concurrent.CountDownLatch(1);
+
+        com.sun.net.httpserver.HttpServer server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress(0), 0);
+        java.util.concurrent.ExecutorService serverExec = new java.util.concurrent.ThreadPoolExecutor(
+                2, 16, 60L, java.util.concurrent.TimeUnit.SECONDS,
+                new java.util.concurrent.SynchronousQueue<>(),
+                new io.github.atengk.boot.core.concurrent.NamedThreadFactory("test-sse-reconnect", true));
+        server.setExecutor(serverExec);
+        server.createContext("/sse", exchange -> {
+            int conn = sseConnections.incrementAndGet();
+            java.util.concurrent.BlockingQueue<String> q = (conn == 1) ? queue1 : queue2;
+            exchange.getResponseHeaders().add("Content-Type", "text/event-stream; charset=utf-8");
+            exchange.sendResponseHeaders(200, 0);
+            try (java.io.OutputStream os = exchange.getResponseBody()) {
+                os.write("event: endpoint\ndata: /messages\n\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                os.flush();
+                while (!Thread.currentThread().isInterrupted()) {
+                    String frame = q.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    if ("__DROP__".equals(frame)) {
+                        break;
+                    }
+                    if (frame != null) {
+                        os.write(frame.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        os.flush();
+                    }
+                }
+            } catch (Exception ignored) {
+            } finally {
+                if (conn == 1) {
+                    firstSseEnded.countDown();
+                }
+            }
+        });
+        server.createContext("/messages", exchange -> {
+            String reqBody = new String(exchange.getRequestBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            Map<String, Object> payload = JsonUtil.parseObject(reqBody, Map.class);
+            String method = String.valueOf(payload.get("method"));
+            Object id = payload.get("id");
+            java.util.concurrent.BlockingQueue<String> targetQueue = sseConnections.get() == 1 ? queue1 : queue2;
+            if ("initialize".equals(method)) {
+                initCalls.incrementAndGet();
+                targetQueue.offer("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":\"" + id + "\",\"result\":{\"protocolVersion\":\"2024-11-05\"}}\n\n");
+            } else if ("tools/call".equals(method)) {
+                targetQueue.offer("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":\"" + id + "\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok-" + sseConnections.get() + "\"}]}}\n\n");
+            }
+            exchange.sendResponseHeaders(202, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            String url = "http://127.0.0.1:" + server.getAddress().getPort() + "/sse";
+            try (HttpMcpClientAdapter adapter = new HttpMcpClientAdapter(
+                    "reconnect-sse", url, Duration.ofSeconds(5), null, "sse", false)) {
+                assertThat(adapter.callTool("ping", Collections.emptyMap())).isEqualTo("ok-1");
+                assertThat(initCalls.get()).isEqualTo(1);
+
+                queue1.offer("__DROP__");
+                assertThat(firstSseEnded.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                // 短暂等待客户端 SSE 读取线程完成断开状态收敛
+                long deadline = System.currentTimeMillis() + 2000;
+                while (adapter.isSseEndpoint() && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(20);
+                    if (initCalls.get() >= 1) {
+                        break;
+                    }
+                }
+                Thread.sleep(100);
+
+                assertThat(adapter.callTool("ping", Collections.emptyMap())).isEqualTo("ok-2");
+                assertThat(sseConnections.get()).isEqualTo(2);
+                assertThat(initCalls.get()).isEqualTo(2);
+            }
+        } finally {
+            queue1.offer("__DROP__");
+            queue2.offer("__DROP__");
+            server.stop(0);
+            serverExec.shutdownNow();
+        }
     }
 }

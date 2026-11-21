@@ -5,23 +5,29 @@ import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.mcp.HttpMcpClientAdapter;
 import io.github.atengk.boot.ai.mcp.McpClientAdapter;
 import io.github.atengk.boot.ai.mcp.McpClientRegistry;
+import io.github.atengk.boot.ai.mcp.McpPrompt;
+import io.github.atengk.boot.ai.mcp.McpResource;
 import io.github.atengk.boot.ai.template.AiTemplate;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.ai.dto.AiDynamicToolRequest;
 import io.github.atengk.boot.sample.ai.dto.AiMcpCallRequest;
+import io.github.atengk.boot.sample.ai.dto.AiMcpPromptRequest;
 import io.github.atengk.boot.sample.ai.tool.CalculatorTool;
 import io.github.atengk.boot.sample.ai.vo.AiDynamicToolVo;
 import io.github.atengk.boot.sample.ai.vo.AiMcpCallVo;
 import io.github.atengk.boot.sample.ai.vo.AiMcpListVo;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.lang.reflect.Modifier;
@@ -38,6 +44,7 @@ import java.util.Map;
  * @since 2026-11-05
  */
 @Slf4j
+@Validated
 @RestController
 @RequestMapping("/sample/ai/tools")
 @RequiredArgsConstructor
@@ -128,13 +135,7 @@ public class AiToolsController {
      */
     @PostMapping("/mcp-call")
     public Result<AiMcpCallVo> callMcpTool(@Valid @RequestBody AiMcpCallRequest request) {
-        McpClientRegistry registry = mcpClientRegistryProvider.getIfAvailable();
-        if (registry == null || !registry.contains(request.getServerName())) {
-            throw new BusinessException(AiResultCode.AI_MCP_CALL_FAILED,
-                    "未找到已配置或注册的远程 MCP 服务端: " + request.getServerName());
-        }
-
-        McpClientAdapter adapter = registry.getAdapter(request.getServerName());
+        McpClientAdapter adapter = requireAdapter(request.getServerName());
         long start = System.currentTimeMillis();
         String result = adapter.callTool(request.getToolName(), request.getArguments());
         long duration = System.currentTimeMillis() - start;
@@ -146,5 +147,64 @@ public class AiToolsController {
                 .durationMs(duration)
                 .build();
         return Result.success(vo);
+    }
+
+    /**
+     * 查询指定远程 MCP 服务暴露的只读资源清单
+     *
+     * @param serverName 目标 MCP 服务端名称
+     * @return 只读资源描述列表
+     */
+    @GetMapping("/mcp-resources")
+    public Result<List<McpResource>> listMcpResources(
+            @RequestParam("serverName") @NotBlank(message = "serverName 不能为空") String serverName) {
+        return Result.success(requireAdapter(serverName).listResources());
+    }
+
+    /**
+     * 读取指定远程 MCP 服务的资源文本内容
+     *
+     * @param serverName 目标 MCP 服务端名称
+     * @param uri        资源 URI
+     * @return 资源文本内容
+     */
+    @GetMapping("/mcp-resource")
+    public Result<String> readMcpResource(
+            @RequestParam("serverName") @NotBlank(message = "serverName 不能为空") String serverName,
+            @RequestParam("uri") @NotBlank(message = "uri 不能为空") String uri) {
+        return Result.success(requireAdapter(serverName).readResource(uri));
+    }
+
+    /**
+     * 查询指定远程 MCP 服务暴露的提示词模板清单
+     *
+     * @param serverName 目标 MCP 服务端名称
+     * @return 提示词模板描述列表
+     */
+    @GetMapping("/mcp-prompts")
+    public Result<List<McpPrompt>> listMcpPrompts(
+            @RequestParam("serverName") @NotBlank(message = "serverName 不能为空") String serverName) {
+        return Result.success(requireAdapter(serverName).listPrompts());
+    }
+
+    /**
+     * 渲染获取指定远程 MCP 服务的提示词内容
+     *
+     * @param request 提示词模板渲染请求
+     * @return 渲染后的提示词文本内容
+     */
+    @PostMapping("/mcp-prompt")
+    public Result<String> getMcpPrompt(@Valid @RequestBody AiMcpPromptRequest request) {
+        return Result.success(requireAdapter(request.getServerName())
+                .getPrompt(request.getPromptName(), request.getArguments()));
+    }
+
+    private McpClientAdapter requireAdapter(String serverName) {
+        McpClientRegistry registry = mcpClientRegistryProvider.getIfAvailable();
+        if (registry == null || !registry.contains(serverName)) {
+            throw new BusinessException(AiResultCode.AI_MCP_CALL_FAILED,
+                    "未找到已配置或注册的远程 MCP 服务端: " + serverName);
+        }
+        return registry.getAdapter(serverName);
     }
 }

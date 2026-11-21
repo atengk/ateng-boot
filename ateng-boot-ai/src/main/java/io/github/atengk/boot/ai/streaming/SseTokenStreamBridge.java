@@ -299,15 +299,26 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
                     return;
                 }
             }
-            List<StreamToken> tokens = extractor.feed(token);
-            for (StreamToken streamToken : tokens) {
-                if (streamToken.channel() == TokenChannel.TEXT) {
-                    textAccumulator.append(streamToken.text());
-                    notifyListenersText(streamToken.text());
-                } else if (streamToken.channel() == TokenChannel.REASONING) {
-                    notifyListenersReasoning(streamToken.text());
+            List<StreamToken> tokens;
+            sendLock.lock();
+            try {
+                if (guardrailTerminated.get() || completed.get()) {
+                    return;
                 }
-                sendEvent(streamToken.channel().getEventName(), streamToken.text());
+                tokens = extractor.feed(token);
+                for (StreamToken streamToken : tokens) {
+                    if (streamToken.channel() == TokenChannel.TEXT) {
+                        textAccumulator.append(streamToken.text());
+                        notifyListenersText(streamToken.text());
+                    } else if (streamToken.channel() == TokenChannel.REASONING) {
+                        notifyListenersReasoning(streamToken.text());
+                    }
+                    sendEvent(streamToken.channel().getEventName(), streamToken.text());
+                }
+            } finally {
+                if (sendLock.isHeldByCurrentThread()) {
+                    sendLock.unlock();
+                }
             }
         });
     }
@@ -390,37 +401,44 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
         }
 
         runWithContext(() -> {
-            // 1. 排空思考链状态机中残留的最后一个 Token
-            List<StreamToken> remaining = extractor.finish();
-            for (StreamToken streamToken : remaining) {
-                if (streamToken.channel() == TokenChannel.TEXT) {
-                    textAccumulator.append(streamToken.text());
-                    notifyListenersText(streamToken.text());
-                } else if (streamToken.channel() == TokenChannel.REASONING) {
-                    notifyListenersReasoning(streamToken.text());
+            sendLock.lock();
+            try {
+                // 1. 排空思考链状态机中残留的最后一个 Token
+                List<StreamToken> remaining = extractor.finish();
+                for (StreamToken streamToken : remaining) {
+                    if (streamToken.channel() == TokenChannel.TEXT) {
+                        textAccumulator.append(streamToken.text());
+                        notifyListenersText(streamToken.text());
+                    } else if (streamToken.channel() == TokenChannel.REASONING) {
+                        notifyListenersReasoning(streamToken.text());
+                    }
+                    sendEvent(streamToken.channel().getEventName(), streamToken.text());
                 }
-                sendEvent(streamToken.channel().getEventName(), streamToken.text());
-            }
 
-            // 1.5 如果配置了引用提取，在正文打字机推流完成后增量下发专属 event: citation 数据包
-            sendCitationEventIfConfigured(response);
+                // 1.5 如果配置了引用提取，在正文打字机推流完成后增量下发专属 event: citation 数据包
+                sendCitationEventIfConfigured(response);
 
-            // 1.8 通知监听器完成
-            for (AgentStreamListener listener : listeners) {
-                try {
-                    listener.onComplete(response);
-                } catch (Throwable t) {
-                    log.warn("AgentStreamListener onComplete 回调异常: {}", t.getMessage());
+                // 1.8 通知监听器完成
+                for (AgentStreamListener listener : listeners) {
+                    try {
+                        listener.onComplete(response);
+                    } catch (Throwable t) {
+                        log.warn("AgentStreamListener onComplete 回调异常: {}", t.getMessage());
+                    }
+                }
+
+                // 2. 推送标准结束事件
+                sendEvent("done", "[DONE]");
+
+                // 3. 闭合 HTTP SSE 连接管道并清理注册表
+                normalCompleted.set(true);
+                closeSafely();
+                cleanupStreamSafely();
+            } finally {
+                if (sendLock.isHeldByCurrentThread()) {
+                    sendLock.unlock();
                 }
             }
-
-            // 2. 推送标准结束事件
-            sendEvent("done", "[DONE]");
-
-            // 3. 闭合 HTTP SSE 连接管道并清理注册表
-            normalCompleted.set(true);
-            closeSafely();
-            cleanupStreamSafely();
         });
     }
 

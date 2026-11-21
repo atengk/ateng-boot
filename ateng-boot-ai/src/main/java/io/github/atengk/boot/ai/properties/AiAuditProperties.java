@@ -28,6 +28,16 @@ public class AiAuditProperties {
     private boolean logPayload = false;
 
     /**
+     * Micrometer 度量指标是否按低基数聚合多租户标签（true 时非空租户统一归并为 "tenant"，false 时保留真实租户 ID 下钻）
+     */
+    private boolean aggregateTenantMetrics = true;
+
+    /**
+     * 审计日志与 AiAuditRecord 中出入参文本最大保留字符数（超出后自动截断并追加 "...(truncated)"，<= 0 表示不限制）
+     */
+    private int maxPayloadChars = 2000;
+
+    /**
      * 默认模型定价配置 (当未在 pricings 中匹配到特定模型时回退保底使用)
      */
     @NestedConfigurationProperty

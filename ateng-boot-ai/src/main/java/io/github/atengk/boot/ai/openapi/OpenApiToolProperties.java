@@ -86,6 +86,16 @@ public class OpenApiToolProperties {
      */
     private String authToken;
 
+    /**
+     * 是否阻断私网、回环及链路本地（云元数据）地址请求（SSRF 防卫，默认 false 保持本地联调兼容）
+     */
+    private boolean blockPrivateNetwork = false;
+
+    /**
+     * 允许访问的目标主机名/IP 白名单集合（非空时仅允许命中白名单的主机发起契约加载与工具调用）
+     */
+    private Set<String> allowedHosts = new LinkedHashSet<>();
+
     public OpenApiToolProperties() {
     }
 
@@ -213,6 +223,22 @@ public class OpenApiToolProperties {
         this.authToken = authToken;
     }
 
+    public boolean isBlockPrivateNetwork() {
+        return blockPrivateNetwork;
+    }
+
+    public void setBlockPrivateNetwork(boolean blockPrivateNetwork) {
+        this.blockPrivateNetwork = blockPrivateNetwork;
+    }
+
+    public Set<String> getAllowedHosts() {
+        return allowedHosts;
+    }
+
+    public void setAllowedHosts(Set<String> allowedHosts) {
+        this.allowedHosts = allowedHosts != null ? new LinkedHashSet<>(allowedHosts) : new LinkedHashSet<>();
+    }
+
     /**
      * 链式构建器
      */
@@ -306,6 +332,23 @@ public class OpenApiToolProperties {
 
         public Builder authToken(String authToken) {
             properties.setAuthToken(authToken);
+            return this;
+        }
+
+        public Builder blockPrivateNetwork(boolean blockPrivateNetwork) {
+            properties.setBlockPrivateNetwork(blockPrivateNetwork);
+            return this;
+        }
+
+        public Builder allowedHosts(Set<String> allowedHosts) {
+            properties.setAllowedHosts(allowedHosts);
+            return this;
+        }
+
+        public Builder addAllowedHost(String host) {
+            if (host != null && !host.isBlank()) {
+                properties.getAllowedHosts().add(host.trim());
+            }
             return this;
         }
 

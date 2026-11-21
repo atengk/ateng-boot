@@ -118,6 +118,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- 可选依赖：AI 大模型底座 (用于编译与装配 AiSafeHealthIndicator，严格单向零循环依赖) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-ai</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 可选依赖：Spring Boot Admin Client (用于 SBA 客户端透明增强与握手凭据注入) -->
         <dependency>
             <groupId>de.codecentric</groupId>

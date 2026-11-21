@@ -1,8 +1,11 @@
 package io.github.atengk.boot.observability.autoconfigure;
 
+import io.github.atengk.boot.ai.properties.AtengAiProperties;
+import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard;
+import io.github.atengk.boot.observability.health.AiSafeHealthIndicator;
 import io.github.atengk.boot.observability.health.DynamicDatasourceHealthIndicator;
 import io.github.atengk.boot.observability.health.KafkaSafeHealthIndicator;
 import io.github.atengk.boot.observability.health.MailSafeHealthIndicator;
@@ -280,6 +283,30 @@ public class AtengHealthAutoConfiguration {
                     registryProvider,
                     circuitBreakerProvider,
                     smsTemplateProvider,
+                    properties,
+                    executorProvider.getIfAvailable()
+            );
+        }
+    }
+
+    /**
+     * ateng-boot-ai 专属安全健康探针装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass({AiModelRegistry.class, AtengAiProperties.class})
+    @ConditionalOnProperty(prefix = "ateng.boot.observability.health.ai", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public static class AiHealthIndicatorConfiguration {
+
+        @Bean(name = {"aiSafeHealthIndicator", "aiHealthIndicator"})
+        @ConditionalOnMissingBean(name = "aiSafeHealthIndicator")
+        public AiSafeHealthIndicator aiSafeHealthIndicator(
+                ObjectProvider<AiModelRegistry> registryProvider,
+                ObjectProvider<AtengAiProperties> aiPropertiesProvider,
+                ObservabilityProperties properties,
+                @Qualifier(HEALTH_PROBE_EXECUTOR_BEAN_NAME) ObjectProvider<Executor> executorProvider) {
+            return new AiSafeHealthIndicator(
+                    registryProvider,
+                    aiPropertiesProvider,
                     properties,
                     executorProvider.getIfAvailable()
             );

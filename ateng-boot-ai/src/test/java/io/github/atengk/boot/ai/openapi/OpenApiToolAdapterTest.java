@@ -497,4 +497,82 @@ class OpenApiToolAdapterTest {
         assertThat(result).contains("Order not found");
         mockServer.verify();
     }
+
+    @Test
+    @DisplayName("SSRF 防卫：blockPrivateNetwork=true 阻断回环、元数据与私网地址契约加载及工具执行")
+    void testSsrfBlocksPrivateAndLoopbackTargets() {
+        OpenApiToolProperties strictProps = OpenApiToolProperties.builder()
+                .blockPrivateNetwork(true)
+                .build();
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> OpenApiToolAdapter.fromUrl("http://127.0.0.1:8080/v3/api-docs", strictProps))
+                .isInstanceOf(io.github.atengk.boot.ai.exception.AiException.class)
+                .extracting("code")
+                .isEqualTo(io.github.atengk.boot.ai.exception.AiResultCode.AI_AGENT_CONFIG_ERROR.getCode());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> OpenApiToolAdapter.fromUrl("http://169.254.169.254/latest/meta-data", strictProps))
+                .isInstanceOf(io.github.atengk.boot.ai.exception.AiException.class)
+                .extracting("code")
+                .isEqualTo(io.github.atengk.boot.ai.exception.AiResultCode.AI_AGENT_CONFIG_ERROR.getCode());
+
+        OpenApiToolProperties runtimeProps = OpenApiToolProperties.builder()
+                .baseUrl("http://192.168.1.1/api/v1")
+                .blockPrivateNetwork(true)
+                .build();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> OpenApiToolAdapter.fromString(OPENAPI_V3_SPEC, runtimeProps))
+                .isInstanceOf(io.github.atengk.boot.ai.exception.AiException.class)
+                .extracting("code")
+                .isEqualTo(io.github.atengk.boot.ai.exception.AiResultCode.AI_AGENT_CONFIG_ERROR.getCode());
+
+        OpenApiToolProperties dynamicProps = OpenApiToolProperties.builder()
+                .baseUrl("http://127.0.0.1:18080/api/v1")
+                .build();
+        OpenApiToolAdapter dynamicAdapter = OpenApiToolAdapter.fromString(OPENAPI_V3_SPEC, dynamicProps, RestClient.create());
+        dynamicProps.setBlockPrivateNetwork(true);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> dynamicAdapter.execute("getOrderById", Map.of("id", 1)))
+                .isInstanceOf(io.github.atengk.boot.ai.exception.AiException.class)
+                .extracting("code")
+                .isEqualTo(io.github.atengk.boot.ai.exception.AiResultCode.AI_AGENT_CONFIG_ERROR.getCode());
+    }
+
+    @Test
+    @DisplayName("SSRF 防卫：allowedHosts 白名单拦截非授权域名")
+    void testSsrfAllowedHostsWhitelist() {
+        OpenApiToolProperties whitelistProps = OpenApiToolProperties.builder()
+                .baseUrl("https://evil.attacker.com/api/v1")
+                .allowedHosts(java.util.Set.of("api.partner.com"))
+                .build();
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> OpenApiToolAdapter.fromString(OPENAPI_V3_SPEC, whitelistProps))
+                .isInstanceOf(io.github.atengk.boot.ai.exception.AiException.class)
+                .extracting("code")
+                .isEqualTo(io.github.atengk.boot.ai.exception.AiResultCode.AI_AGENT_CONFIG_ERROR.getCode());
+    }
+
+    @Test
+    @DisplayName("SSRF 防卫：阻断 3xx 重定向跳转私网元数据端点")
+    void testSsrfBlocksHttpRedirectToPrivateNetwork() {
+        RestClient.Builder builder = RestClient.builder().baseUrl("https://api.partner.com/api/v1");
+        MockRestServiceServer mockServer = MockRestServiceServer.bindTo(builder).build();
+        RestClient restClient = builder.build();
+
+        OpenApiToolProperties props = OpenApiToolProperties.builder()
+                .baseUrl("https://api.partner.com/api/v1")
+                .blockPrivateNetwork(true)
+                .allowedHosts(java.util.Set.of("api.partner.com"))
+                .build();
+
+        OpenApiToolAdapter adapter = OpenApiToolAdapter.fromString(OPENAPI_V3_SPEC, props, restClient);
+        mockServer.expect(requestTo("https://api.partner.com/api/v1/orders/1"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators
+                        .withStatus(org.springframework.http.HttpStatus.FOUND)
+                        .location(java.net.URI.create("http://169.254.169.254/latest/meta-data")));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> adapter.execute("getOrderById", Map.of("id", 1)))
+                .isInstanceOf(io.github.atengk.boot.ai.exception.AiException.class)
+                .extracting("code")
+                .isEqualTo(io.github.atengk.boot.ai.exception.AiResultCode.AI_AGENT_CONFIG_ERROR.getCode());
+        mockServer.verify();
+    }
 }

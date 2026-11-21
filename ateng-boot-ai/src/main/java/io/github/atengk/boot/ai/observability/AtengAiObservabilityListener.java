@@ -186,8 +186,8 @@ public class AtengAiObservabilityListener implements ChatModelListener {
         }
 
         AiAuditProperties auditProps = getAuditProperties();
-        String promptText = auditProps.isMaskPii() ? AiPiiMasker.mask(rawPrompt) : rawPrompt;
-        String responseText = auditProps.isMaskPii() ? AiPiiMasker.mask(rawResponse) : rawResponse;
+        String promptText = sanitizeAndTruncate(rawPrompt, auditProps);
+        String responseText = sanitizeAndTruncate(rawResponse, auditProps);
         BigDecimal estimatedCost = tokenCostCalculator.calculateCost(modelName, promptTokens, completionTokens);
 
         if (auditProps.isLogPayload()) {
@@ -231,7 +231,7 @@ public class AtengAiObservabilityListener implements ChatModelListener {
         String modelName = resolveModelName(request, partialResponse);
         String rawPrompt = extractPromptText(request);
         AiAuditProperties auditProps = getAuditProperties();
-        String promptText = auditProps.isMaskPii() ? AiPiiMasker.mask(rawPrompt) : rawPrompt;
+        String promptText = sanitizeAndTruncate(rawPrompt, auditProps);
 
         boolean clientAbort = isClientAbort(error);
         String status = clientAbort ? AiAuditRecord.STATUS_CANCELLED : AiAuditRecord.STATUS_ERROR;
@@ -307,8 +307,30 @@ public class AtengAiObservabilityListener implements ChatModelListener {
         }
     }
 
-    private static String resolveTenantTag(String tenantId) {
-        return (tenantId != null && !tenantId.isBlank()) ? tenantId : "default";
+    private String resolveTenantTag(String tenantId) {
+        if (tenantId == null || tenantId.isBlank()) {
+            return "default";
+        }
+        AiAuditProperties auditProps = getAuditProperties();
+        if (auditProps == null || auditProps.isAggregateTenantMetrics()) {
+            return "tenant";
+        }
+        return tenantId.trim();
+    }
+
+    private static String sanitizeAndTruncate(String rawPayload, AiAuditProperties auditProps) {
+        if (rawPayload == null) {
+            return null;
+        }
+        String sanitized = (auditProps != null && auditProps.isMaskPii()) ? AiPiiMasker.mask(rawPayload) : rawPayload;
+        if (sanitized == null || auditProps == null) {
+            return sanitized;
+        }
+        int maxChars = auditProps.getMaxPayloadChars();
+        if (maxChars > 0 && sanitized.length() > maxChars) {
+            return sanitized.substring(0, maxChars) + "...(truncated)";
+        }
+        return sanitized;
     }
 
     private void recordMetricsOnResponse(String modelName, String tenantId, long durationMs,

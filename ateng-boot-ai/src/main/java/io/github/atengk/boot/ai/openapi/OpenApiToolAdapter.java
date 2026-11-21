@@ -10,6 +10,7 @@ import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.tool.SandboxedToolExecutor;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.util.CidrMatcher;
 import io.github.atengk.boot.core.util.JsonUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,6 +29,7 @@ import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.io.InputStream;
+import java.net.InetAddress;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -53,6 +55,18 @@ public class OpenApiToolAdapter {
     private static final Logger log = LoggerFactory.getLogger(OpenApiToolAdapter.class);
 
     private static final Set<String> SAFE_METHODS = Set.of("GET", "HEAD", "OPTIONS");
+    private static final CidrMatcher PRIVATE_NETWORK_CIDRS = new CidrMatcher(List.of(
+            "127.0.0.0/8",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "169.254.0.0/16",
+            "0.0.0.0/8",
+            "::1/128",
+            "fc00::/7",
+            "fe80::/10",
+            "::/128"
+    ));
 
     private final OpenApiToolProperties properties;
     private final String rawSpecJson;
@@ -87,26 +101,22 @@ public class OpenApiToolAdapter {
             throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR, "解析 OpenAPI 契约 JSON 语法失败: " + e.getMessage(), e);
         }
 
-        // 2. 确定 baseUrl
+        // 2. 确定 baseUrl 并执行 SSRF 边界校验
         if (StringUtils.hasText(this.properties.getBaseUrl())) {
             this.resolvedBaseUrl = OpenApiSchemaConverter.cleanTrailingSlash(this.properties.getBaseUrl());
         } else {
             String detected = OpenApiSchemaConverter.detectBaseUrl(this.rootSpecNode);
             this.resolvedBaseUrl = StringUtils.hasText(detected) ? detected : "http://localhost:8080";
         }
+        if (hasSsrfPolicy(this.properties)) {
+            validateTargetUri(URI.create(this.resolvedBaseUrl), this.properties);
+        }
 
         // 3. 构造 RestClient
         if (restClient != null) {
             this.restClient = restClient;
         } else {
-            SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-            requestFactory.setConnectTimeout((int) this.properties.getConnectTimeout().toMillis());
-            requestFactory.setReadTimeout((int) this.properties.getReadTimeout().toMillis());
-
-            this.restClient = RestClient.builder()
-                    .baseUrl(this.resolvedBaseUrl)
-                    .requestFactory(requestFactory)
-                    .build();
+            this.restClient = createConfiguredRestClient(this.resolvedBaseUrl, this.properties);
         }
 
         // 4. 解析并注册受管工具
@@ -163,10 +173,30 @@ public class OpenApiToolAdapter {
      * @return 适配器实例
      */
     public static OpenApiToolAdapter fromUrl(String specUrl, OpenApiToolProperties properties) {
+        OpenApiToolProperties effectiveProps = properties != null ? properties : new OpenApiToolProperties();
+        if (!StringUtils.hasText(specUrl)) {
+            throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR, "OpenAPI 契约 URL 不能为空");
+        }
+        URI specUri;
         try {
-            RestClient client = RestClient.create();
-            String content = client.get().uri(specUrl).retrieve().body(String.class);
-            return new OpenApiToolAdapter(content, properties, null);
+            specUri = URI.create(specUrl.trim());
+        } catch (Exception e) {
+            throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
+                    "非法 OpenAPI 契约 URL [" + specUrl + "]: " + e.getMessage(), e);
+        }
+        if (hasSsrfPolicy(effectiveProps)) {
+            validateTargetUri(specUri, effectiveProps);
+        }
+        try {
+            RestClient client = createConfiguredRestClient(null, effectiveProps);
+            ResponseEntity<String> entity = client.get().uri(specUri).retrieve().toEntity(String.class);
+            if (hasSsrfPolicy(effectiveProps) && entity.getStatusCode().is3xxRedirection()) {
+                throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
+                        "SSRF 安全校验阻断：开启防内网策略时禁止契约 URL 3xx 重定向 [" + specUrl + "]");
+            }
+            return new OpenApiToolAdapter(entity.getBody(), effectiveProps, null);
+        } catch (AiException e) {
+            throw e;
         } catch (Exception e) {
             throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
                     "从远程 URL 获取 OpenAPI 契约 [" + specUrl + "] 失败: " + e.getMessage(), e);
@@ -378,6 +408,9 @@ public class OpenApiToolAdapter {
             }
 
             URI targetUri = uriBuilder.build().encode().toUri();
+            if (hasSsrfPolicy(properties)) {
+                validateTargetUri(targetUri, properties);
+            }
 
             // 3. 构造 RequestSpec 并填充 Headers
             RestClient.RequestBodySpec requestSpec = restClient
@@ -440,8 +473,12 @@ public class OpenApiToolAdapter {
                 }
             }
 
-            // 5. 发送请求并弹性接收响应
+            // 5. 发送请求并弹性接收响应（启用 SSRF 策略时严禁跟随或放行 3xx 重定向）
             ResponseEntity<String> response = requestSpec.retrieve().toEntity(String.class);
+            if (hasSsrfPolicy(properties) && response.getStatusCode().is3xxRedirection()) {
+                throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
+                        "SSRF 安全校验阻断：开启防内网策略时禁止 HTTP 3xx 重定向 [" + targetUri + "]");
+            }
             String responseBody = response.getBody();
             if (!StringUtils.hasText(responseBody)) {
                 return "{\"status\":\"SUCCESS\",\"statusCode\":" + response.getStatusCode().value() + "}";
@@ -472,6 +509,9 @@ public class OpenApiToolAdapter {
             err.put("message", "Network timeout or connect error: " + e.getMessage());
             return JsonUtil.toJsonString(err);
 
+        } catch (AiException e) {
+            throw e;
+
         } catch (Exception e) {
             log.error("[AI-OPENAPI-TOOL] 执行工具调度发生未知异常 [{}]: {}", operationId, e.getMessage(), e);
             Map<String, Object> err = new LinkedHashMap<>();
@@ -480,6 +520,104 @@ public class OpenApiToolAdapter {
             err.put("message", "Internal tool execution error: " + e.getMessage());
             return JsonUtil.toJsonString(err);
         }
+    }
+
+    private static RestClient createConfiguredRestClient(String baseUrl, OpenApiToolProperties properties) {
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory() {
+            @Override
+            protected void prepareConnection(java.net.HttpURLConnection connection, String httpMethod) throws java.io.IOException {
+                super.prepareConnection(connection, httpMethod);
+                if (hasSsrfPolicy(properties)) {
+                    connection.setInstanceFollowRedirects(false);
+                }
+            }
+        };
+        requestFactory.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
+        requestFactory.setReadTimeout((int) properties.getReadTimeout().toMillis());
+        RestClient.Builder builder = RestClient.builder().requestFactory(requestFactory);
+        if (StringUtils.hasText(baseUrl)) {
+            builder.baseUrl(baseUrl);
+        }
+        return builder.build();
+    }
+
+    private static boolean hasSsrfPolicy(OpenApiToolProperties properties) {
+        return properties != null && (properties.isBlockPrivateNetwork()
+                || (properties.getAllowedHosts() != null && !properties.getAllowedHosts().isEmpty()));
+    }
+
+    private static void validateTargetUri(URI targetUri, OpenApiToolProperties properties) {
+        if (targetUri == null) {
+            throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR, "SSRF 安全校验阻断：目标 URI 不能为空");
+        }
+        String scheme = targetUri.getScheme();
+        if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
+            throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
+                    "SSRF 安全校验阻断：仅允许 http/https 协议，当前为 [" + scheme + "]");
+        }
+        String rawHost = targetUri.getHost();
+        if (!StringUtils.hasText(rawHost)) {
+            throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
+                    "SSRF 安全校验阻断：无法解析目标主机 [" + targetUri + "]");
+        }
+        String host = rawHost.trim().toLowerCase(Locale.ROOT);
+        if (host.startsWith("[") && host.endsWith("]") && host.length() > 2) {
+            host = host.substring(1, host.length() - 1);
+        }
+
+        Set<String> allowedHosts = properties.getAllowedHosts();
+        if (allowedHosts != null && !allowedHosts.isEmpty() && !isHostAllowed(host, allowedHosts)) {
+            throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
+                    "SSRF 白名单阻断：目标主机 [" + host + "] 未在 allowedHosts 授权范围内");
+        }
+
+        if (properties.isBlockPrivateNetwork()) {
+            if (PRIVATE_NETWORK_CIDRS.matches(host)) {
+                throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
+                        "SSRF 内网防卫阻断：禁止访问回环、私网或元数据地址 [" + host + "]");
+            }
+            try {
+                InetAddress[] addresses = InetAddress.getAllByName(host);
+                for (InetAddress address : addresses) {
+                    if (isRestrictedAddress(address)) {
+                        throw new AiException(AiResultCode.AI_AGENT_CONFIG_ERROR,
+                                "SSRF 内网防卫阻断：目标主机 [" + host + "] 解析至受限内网地址 ["
+                                        + address.getHostAddress() + "]");
+                    }
+                }
+            } catch (AiException e) {
+                throw e;
+            } catch (Exception ignored) {
+                // DNS 不可达主机由后续网络阶段按超时或连接异常处理，避免纯离线单测误杀静态域名契约
+            }
+        }
+    }
+
+    private static boolean isHostAllowed(String host, Set<String> allowedHosts) {
+        for (String pattern : allowedHosts) {
+            if (!StringUtils.hasText(pattern)) {
+                continue;
+            }
+            String normalized = pattern.trim().toLowerCase(Locale.ROOT);
+            if (normalized.equals(host)) {
+                return true;
+            }
+            if (normalized.startsWith("*.") && normalized.length() > 2) {
+                String suffix = normalized.substring(1);
+                if (host.endsWith(suffix) && host.length() > suffix.length()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean isRestrictedAddress(InetAddress address) {
+        return address.isAnyLocalAddress()
+                || address.isLoopbackAddress()
+                || address.isLinkLocalAddress()
+                || address.isSiteLocalAddress()
+                || PRIVATE_NETWORK_CIDRS.matches(address.getHostAddress());
     }
 
     /**

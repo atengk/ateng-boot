@@ -1,6 +1,7 @@
 package io.github.atengk.boot.ai.guardrail;
 
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 流式响应实时增量内容安全护栏会话状态机。
@@ -16,6 +17,7 @@ public final class StreamingGuardrailSession {
     private final AiGuardrail guardrail;
     private final StringBuilder accumulated = new StringBuilder();
     private final AtomicBoolean terminated = new AtomicBoolean(false);
+    private final ReentrantLock bufferLock = new ReentrantLock();
 
     public StreamingGuardrailSession(AiGuardrail guardrail) {
         this.guardrail = guardrail;
@@ -48,13 +50,25 @@ public final class StreamingGuardrailSession {
         if (terminated.get()) {
             return Decision.ALREADY_TERMINATED;
         }
-        if (token != null) {
-            accumulated.append(token);
+        String snapshot;
+        bufferLock.lock();
+        try {
+            if (terminated.get()) {
+                return Decision.ALREADY_TERMINATED;
+            }
+            if (token != null) {
+                accumulated.append(token);
+            }
+            if (guardrail == null) {
+                return Decision.ALLOW;
+            }
+            snapshot = accumulated.toString();
+        } finally {
+            if (bufferLock.isHeldByCurrentThread()) {
+                bufferLock.unlock();
+            }
         }
-        if (guardrail == null) {
-            return Decision.ALLOW;
-        }
-        GuardrailResult postResult = guardrail.inspectResponse(accumulated.toString());
+        GuardrailResult postResult = guardrail.inspectResponse(snapshot);
         return evaluatePostResult(postResult, cancelAction);
     }
 
@@ -71,7 +85,19 @@ public final class StreamingGuardrailSession {
         if (guardrail == null) {
             return Decision.ALLOW;
         }
-        GuardrailResult postResult = guardrail.inspectResponse(accumulated.toString());
+        String snapshot;
+        bufferLock.lock();
+        try {
+            if (terminated.get()) {
+                return Decision.ALREADY_TERMINATED;
+            }
+            snapshot = accumulated.toString();
+        } finally {
+            if (bufferLock.isHeldByCurrentThread()) {
+                bufferLock.unlock();
+            }
+        }
+        GuardrailResult postResult = guardrail.inspectResponse(snapshot);
         return evaluatePostResult(postResult, cancelAction);
     }
 

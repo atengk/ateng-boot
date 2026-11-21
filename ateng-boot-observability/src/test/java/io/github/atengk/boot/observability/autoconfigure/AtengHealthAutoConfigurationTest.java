@@ -1,6 +1,8 @@
 package io.github.atengk.boot.observability.autoconfigure;
 
+import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
+import io.github.atengk.boot.observability.health.AiSafeHealthIndicator;
 import io.github.atengk.boot.observability.health.DynamicDatasourceHealthIndicator;
 import io.github.atengk.boot.observability.health.KafkaSafeHealthIndicator;
 import io.github.atengk.boot.observability.health.MailSafeHealthIndicator;
@@ -106,6 +108,23 @@ class AtengHealthAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(AtengHealthAutoConfiguration.class);
                     assertThat(context).doesNotHaveBean("atengHealthProbeExecutor");
                     assertThat(context).doesNotHaveBean(StorageHealthIndicator.class);
+                });
+    }
+
+    @Test
+    @DisplayName("默认装配 AiSafeHealthIndicator，并在缺少 AiModelRegistry 或关闭开关时跳过装配")
+    void testAiHealthIndicatorAutoConfiguredAndFiltered() {
+        contextRunner.run(context -> assertThat(context).hasSingleBean(AiSafeHealthIndicator.class));
+
+        contextRunner
+                .withPropertyValues("ateng.boot.observability.health.ai.enabled=false")
+                .run(context -> assertThat(context).doesNotHaveBean(AiSafeHealthIndicator.class));
+
+        contextRunner
+                .withClassLoader(new FilteredClassLoader(AiModelRegistry.class))
+                .run(context -> {
+                    assertThat(context).hasSingleBean(AtengHealthAutoConfiguration.class);
+                    assertThat(context).doesNotHaveBean(AiSafeHealthIndicator.class);
                 });
     }
 }
