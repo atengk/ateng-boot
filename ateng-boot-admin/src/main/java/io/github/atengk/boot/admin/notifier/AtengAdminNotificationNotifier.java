@@ -9,6 +9,7 @@ import de.codecentric.boot.admin.server.domain.values.InstanceId;
 import de.codecentric.boot.admin.server.domain.values.StatusInfo;
 import de.codecentric.boot.admin.server.notify.AbstractStatusChangeNotifier;
 import io.github.atengk.boot.admin.cluster.AdminClusterCoordinator;
+import io.github.atengk.boot.admin.observability.AdminMetricsBinder;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.silence.AdminSilenceManager;
 import io.github.atengk.boot.notification.model.CardColor;
@@ -67,6 +68,7 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
     private final AdminSilenceManager silenceManager;
     private final AdminClusterCoordinator clusterCoordinator;
     private final Clock clock;
+    private volatile AdminMetricsBinder metricsBinder;
     private volatile ScheduledExecutorService scheduler;
     private final boolean internalScheduler;
     private final AtomicReference<LifecycleState> lifecycleState = new AtomicReference<>(LifecycleState.CREATED);
@@ -254,6 +256,7 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
                 if (clock.millis() - deregisteredAt < resolveDeregistrationSilenceMillis()) {
                     String appName = resolveInstanceName(instance, id);
                     log.info("[SBA Notifier] 实例 [{}] 属于正常优雅下线排空，静默忽略状态变迁", appName);
+                    recordMetric("silenced");
                     return;
                 } else {
                     deregisteredInstances.remove(id);
@@ -277,10 +280,12 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
         // 1. 前置名单与动态维护静默校验：未通过直接跳过防抖排期
         if (!isServiceAlertAllowed(appName)) {
             log.info("[SBA Notifier] 实例 [{}] 命中告警名单过滤规则，静默跳过防抖告警", appName);
+            recordMetric("silenced");
             return;
         }
         if (isMaintenanceSilenced(appName)) {
             log.info("[SBA Notifier] 实例 [{}] 处于动态维护静默窗口期，静默跳过故障排期", appName);
+            recordMetric("silenced");
             return;
         }
 
@@ -313,6 +318,7 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
                 selfRef[0] = scheduledTask;
                 if (scheduledTask != null && !scheduledTask.isDone()) {
                     pendingTasks.put(id, scheduledTask);
+                    recordMetric("debounced");
                 }
             } catch (RejectedExecutionException ex) {
                 log.debug("[SBA Notifier] 调度器拒绝排期，忽略实例 [{}] 的防抖告警: {}", appName, ex.getMessage());
@@ -346,10 +352,12 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             // 防抖超时触发前二次名单与动态维护静默校验，防止等待期间配置/规则变更（静默判定提前在锁外完成，避免持锁阻塞 Redis I/O）
             if (!isServiceAlertAllowed(currentAppName)) {
                 log.info("[SBA Notifier] 实例 [{}] 在防抖超时后命中告警名单过滤规则，静默取消告警", currentAppName);
+                recordMetric("silenced");
                 return;
             }
             if (maintenanceSilenced) {
                 log.info("[SBA Notifier] 实例 [{}] 在防抖超时后命中维护静默规则，静默取消告警", currentAppName);
+                recordMetric("silenced");
                 return;
             }
 
@@ -369,6 +377,7 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
 
         if (stormEvaluation.action == StormAction.SUPPRESS) {
             log.warn("[SBA Notifier] 微窗口告警雪崩已触发折叠，吸收散落实例 [{}] 告警", currentAppName);
+            recordMetric("storm_aggregated");
             return;
         }
 
@@ -376,8 +385,10 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             long windowMillis = Math.max(1L, stormEvaluation.windowMillis);
             long bucket = stormEvaluation.windowStartMillis / windowMillis;
             String stormDedupKey = "alert:storm:" + windowMillis + ":" + bucket;
+            recordMetric("storm_aggregated");
             if (tryClaimClusterDispatch(stormDedupKey)) {
                 sendStormSummaryNotification(stormEvaluation.entries);
+                recordMetric("sent");
             }
             return;
         }
@@ -386,6 +397,7 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
                 + (status != null ? status.toUpperCase(Locale.ROOT) : "UNKNOWN");
         if (tryClaimClusterDispatch(dedupKey)) {
             sendNotification(instance, "🚨 微服务实例异常宕机告警", status, statusEvent.getStatusInfo(), CardColor.RED);
+            recordMetric("sent");
         }
     }
 
@@ -432,6 +444,7 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
         if (tryClaimClusterDispatch(dedupKey)) {
             String title = String.format("⚠️ 微服务持续故障升级重提醒 (%d/%d)", reminderCount, maxCount);
             sendNotification(instance, title, status, statusEvent.getStatusInfo(), CardColor.ORANGE);
+            recordMetric("reminder");
         }
     }
 
@@ -546,6 +559,7 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             String dedupKey = "alert:recovery:" + id.getValue() + ":" + statusEvent.getVersion();
             if (tryClaimClusterDispatch(dedupKey)) {
                 sendNotification(instance, "🟢 微服务实例恢复正常通知", "UP", statusEvent.getStatusInfo(), CardColor.GREEN);
+                recordMetric("sent");
             }
         }
     }
@@ -943,9 +957,39 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
         return this.lifecycleState.get() == LifecycleState.RUNNING;
     }
 
-    boolean isSchedulerShutdown() {
+    public boolean isSchedulerShutdown() {
         ScheduledExecutorService current = this.scheduler;
         return current == null || current.isShutdown();
+    }
+
+    /**
+     * 获取当前雪崩折叠统计微窗口内累积的故障实例条目数（线程安全快照）
+     *
+     * @return 当前统计窗口条目数
+     */
+    public int getStormWindowEntryCount() {
+        lifecycleLock.lock();
+        try {
+            return this.stormWindowEntries.size();
+        } finally {
+            lifecycleLock.unlock();
+        }
+    }
+
+    /**
+     * 注入低基数自观测指标绑定器（支持装配阶段解耦挂载）
+     *
+     * @param metricsBinder 服务端指标绑定器
+     */
+    public void setMetricsBinder(AdminMetricsBinder metricsBinder) {
+        this.metricsBinder = metricsBinder;
+    }
+
+    private void recordMetric(String type) {
+        AdminMetricsBinder binder = this.metricsBinder;
+        if (binder != null) {
+            binder.recordAlert(type);
+        }
     }
 
     public Map<InstanceId, ScheduledFuture<?>> getPendingTasks() {

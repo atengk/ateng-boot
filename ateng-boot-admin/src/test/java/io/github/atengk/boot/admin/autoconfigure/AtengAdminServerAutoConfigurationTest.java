@@ -19,6 +19,8 @@ import io.github.atengk.boot.admin.controller.AdminConsoleController;
 import io.github.atengk.boot.admin.controller.AdminLoginController;
 import io.github.atengk.boot.admin.eventstore.AtengInMemoryEventStore;
 import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
+import io.github.atengk.boot.admin.observability.AdminMetricsBinder;
+import io.github.atengk.boot.admin.observability.AdminServerHealthIndicator;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AdminAuthProvider;
 import io.github.atengk.boot.admin.provider.AdminRole;
@@ -455,6 +457,16 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(context).hasSingleBean(Notifier.class);
                     assertThat(context.getBean(Notifier.class)).isInstanceOf(AtengAdminNotificationNotifier.class);
                     assertThat(context).doesNotHaveBean("filteringNotifier");
+                    assertThat(context).hasSingleBean(AdminMetricsBinder.class);
+                    assertThat(context).hasSingleBean(AdminServerHealthIndicator.class);
+                    assertThat(context.getBean(AdminServerHealthIndicator.class).health().getStatus())
+                            .isEqualTo(org.springframework.boot.actuate.health.Status.UP);
+
+                    io.micrometer.core.instrument.simple.SimpleMeterRegistry registry =
+                            new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+                    context.getBean(AdminMetricsBinder.class).bindTo(registry);
+                    assertThat(registry.find("ateng.admin.instances.registered").gauge()).isNotNull();
+                    assertThat(registry.find("ateng.admin.silences.active").gauge()).isNotNull();
                 });
     }
 

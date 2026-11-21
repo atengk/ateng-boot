@@ -7,6 +7,7 @@ import de.codecentric.boot.admin.server.domain.values.StatusInfo;
 import de.codecentric.boot.admin.server.services.InstanceRegistry;
 import io.github.atengk.boot.admin.cluster.AdminClusterCoordinator;
 import io.github.atengk.boot.admin.eventstore.AtengInMemoryEventStore;
+import io.github.atengk.boot.admin.observability.AdminMetricsBinder;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.core.util.IdUtil;
 import org.slf4j.Logger;
@@ -47,6 +48,7 @@ public class ZombieInstanceCleanupScheduler implements SmartLifecycle {
     private final Consumer<InstanceId> notifierStatePurger;
     private final String nodeOwnerId = IdUtil.fastSimpleUUID();
     private final ReentrantLock lifecycleLock = new ReentrantLock();
+    private volatile AdminMetricsBinder metricsBinder;
 
     private ThreadPoolTaskScheduler taskScheduler;
     private ScheduledFuture<?> scheduledFuture;
@@ -243,7 +245,7 @@ public class ZombieInstanceCleanupScheduler implements SmartLifecycle {
                         return statusTimestamp != null && Duration.between(statusTimestamp, now).compareTo(threshold) >= 0;
                     })
                     .collectList()
-                    .block();
+                    .block(Duration.ofSeconds(3));
         } catch (Exception ex) {
             log.error("Failed to query candidate zombie instances from repository: {}", ex.getMessage(), ex);
             return 0;
@@ -262,9 +264,9 @@ public class ZombieInstanceCleanupScheduler implements SmartLifecycle {
                         id, name, instance.getStatusInfo().getStatus(), instance.getStatusTimestamp());
 
                 if (this.registry != null) {
-                    this.registry.deregister(id).block();
+                    this.registry.deregister(id).block(Duration.ofSeconds(3));
                 } else {
-                    this.repository.computeIfPresent(id, (k, inst) -> Mono.just(inst.deregister())).block();
+                    this.repository.computeIfPresent(id, (k, inst) -> Mono.just(inst.deregister())).block(Duration.ofSeconds(3));
                 }
                 purgeResidualState(id);
                 evictedCount++;
@@ -273,9 +275,22 @@ public class ZombieInstanceCleanupScheduler implements SmartLifecycle {
             }
         }
         if (evictedCount > 0) {
+            AdminMetricsBinder binder = this.metricsBinder;
+            if (binder != null) {
+                binder.recordZombieEvicted(evictedCount);
+            }
             log.info("ZombieInstanceCleanupScheduler evicted {} zombie instance(s).", evictedCount);
         }
         return evictedCount;
+    }
+
+    /**
+     * 注入低基数指标绑定器，用于记录僵尸实例驱逐计数。
+     *
+     * @param metricsBinder 指标绑定器
+     */
+    public void setMetricsBinder(AdminMetricsBinder metricsBinder) {
+        this.metricsBinder = metricsBinder;
     }
 
     private void purgeResidualState(InstanceId id) {

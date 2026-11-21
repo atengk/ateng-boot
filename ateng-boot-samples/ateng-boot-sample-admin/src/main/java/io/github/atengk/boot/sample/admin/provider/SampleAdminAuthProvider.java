@@ -2,10 +2,12 @@ package io.github.atengk.boot.sample.admin.provider;
 
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AdminAuthProvider;
+import io.github.atengk.boot.admin.provider.AdminConsolePrincipal;
 import io.github.atengk.boot.admin.provider.DefaultPropertiesAdminAuthProvider;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -31,13 +33,18 @@ public class SampleAdminAuthProvider implements AdminAuthProvider {
 
     @Override
     public boolean authenticate(String username, String password) {
+        return authenticatePrincipal(username, password).isPresent();
+    }
+
+    @Override
+    public Optional<AdminConsolePrincipal> authenticatePrincipal(String username, String password) {
         if (!StringUtils.hasText(username) || !StringUtils.hasText(password)) {
-            return false;
+            return Optional.empty();
         }
         String normalizedUser = username.trim();
         if (LOCKED_ACCOUNTS.contains(normalizedUser)) {
-            return false;
+            return Optional.empty();
         }
-        return defaultProvider.authenticate(normalizedUser, password);
+        return defaultProvider.authenticatePrincipal(normalizedUser, password);
     }
 }

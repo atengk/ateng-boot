@@ -2,6 +2,7 @@ package io.github.atengk.boot.admin.autoconfigure;
 
 import de.codecentric.boot.admin.server.config.AdminServerMarkerConfiguration;
 import de.codecentric.boot.admin.server.domain.entities.Instance;
+import de.codecentric.boot.admin.server.domain.entities.InstanceRepository;
 import de.codecentric.boot.admin.server.eventstore.InstanceEventStore;
 import de.codecentric.boot.admin.server.services.InstanceFilter;
 import de.codecentric.boot.admin.server.web.client.BasicAuthHttpHeaderProvider;
@@ -9,8 +10,13 @@ import io.github.atengk.boot.admin.admission.AdminAdmissionInstanceFilter;
 import io.github.atengk.boot.admin.admission.AdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.eventstore.AtengInMemoryEventStore;
+import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
+import io.github.atengk.boot.admin.observability.AdminMetricsBinder;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.security.AdminOutboundSsrfFilterFunction;
+import io.github.atengk.boot.admin.silence.AdminSilenceManager;
+import io.micrometer.core.instrument.binder.MeterBinder;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -49,9 +55,19 @@ public class AtengAdminServerDefenseAutoConfiguration {
     }
 
     @Bean
+    @ConditionalOnClass(MeterBinder.class)
+    @ConditionalOnMissingBean
+    public AdminMetricsBinder adminMetricsBinder(ObjectProvider<InstanceRepository> repositoryProvider,
+                                                 ObjectProvider<AtengAdminNotificationNotifier> notifierProvider,
+                                                 ObjectProvider<AdminSilenceManager> silenceManagerProvider) {
+        return new AdminMetricsBinder(repositoryProvider, notifierProvider, silenceManagerProvider);
+    }
+
+    @Bean
     @ConditionalOnMissingBean(InstanceFilter.class)
-    public InstanceFilter instanceFilter(AdminInstanceAdmissionPolicy admissionPolicy) {
-        return new AdminAdmissionInstanceFilter(admissionPolicy);
+    public InstanceFilter instanceFilter(AdminInstanceAdmissionPolicy admissionPolicy,
+                                         ObjectProvider<AdminMetricsBinder> metricsBinderProvider) {
+        return new AdminAdmissionInstanceFilter(admissionPolicy, metricsBinderProvider.getIfAvailable());
     }
 
     @Bean

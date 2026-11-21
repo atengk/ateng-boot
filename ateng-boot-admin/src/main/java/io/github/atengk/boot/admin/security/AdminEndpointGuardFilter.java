@@ -3,6 +3,7 @@ package io.github.atengk.boot.admin.security;
 import de.codecentric.boot.admin.server.config.AdminServerProperties;
 import io.github.atengk.boot.admin.audit.AdminAuditAction;
 import io.github.atengk.boot.admin.audit.AdminAuditService;
+import io.github.atengk.boot.admin.observability.AdminMetricsBinder;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AdminConsolePrincipal;
 import jakarta.servlet.FilterChain;
@@ -43,16 +44,17 @@ public class AdminEndpointGuardFilter extends AdminWriteGuardFilter {
 
     private final AdminAuditService auditService;
     private final AdminLoginDefenseService loginDefenseService;
+    private final AdminMetricsBinder metricsBinder;
 
     public AdminEndpointGuardFilter(AtengAdminServerProperties properties,
                                     AdminServerProperties adminServerProperties) {
-        this(properties, adminServerProperties, null, null, DEFAULT_ORDER);
+        this(properties, adminServerProperties, null, null, DEFAULT_ORDER, null);
     }
 
     public AdminEndpointGuardFilter(AtengAdminServerProperties properties,
                                     AdminServerProperties adminServerProperties,
                                     AdminAuditService auditService) {
-        this(properties, adminServerProperties, auditService, null, DEFAULT_ORDER);
+        this(properties, adminServerProperties, auditService, null, DEFAULT_ORDER, null);
     }
 
     public AdminEndpointGuardFilter(AtengAdminServerProperties properties,
@@ -60,9 +62,19 @@ public class AdminEndpointGuardFilter extends AdminWriteGuardFilter {
                                     AdminAuditService auditService,
                                     AdminLoginDefenseService loginDefenseService,
                                     int order) {
+        this(properties, adminServerProperties, auditService, loginDefenseService, order, null);
+    }
+
+    public AdminEndpointGuardFilter(AtengAdminServerProperties properties,
+                                    AdminServerProperties adminServerProperties,
+                                    AdminAuditService auditService,
+                                    AdminLoginDefenseService loginDefenseService,
+                                    int order,
+                                    AdminMetricsBinder metricsBinder) {
         super(properties, adminServerProperties, order);
         this.auditService = auditService;
         this.loginDefenseService = loginDefenseService;
+        this.metricsBinder = metricsBinder;
     }
 
     @Override
@@ -171,6 +183,9 @@ public class AdminEndpointGuardFilter extends AdminWriteGuardFilter {
                              String path,
                              String outcome,
                              String detail) {
+        if (action == AdminAuditAction.ENDPOINT_BLOCKED) {
+            AdminMetricsBinder.recordEndpointBlockedIfPresent(metricsBinder);
+        }
         AdminAuditService.recordIfPresent(auditService, action, actor, sourceIp, target, method, path, outcome, detail);
     }
 }

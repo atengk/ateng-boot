@@ -253,3 +253,22 @@ stateDiagram-v2
    - `RecordingNotificationTemplate`（`@Profile("!local")`）采用 `ReentrantLock` + `Condition` 实现原子有界录制与无竞态同步等待，彻底撤除 `@MockBean` 并提供宿主中立 `application-local.example.yml`。
 3. **1:1 逆向五维文档与跨模块划界（`#917`）**：
    - 按 Sample-First 流程沉淀五维 `ateng-boot-admin/README.md` 与四段式 `ateng-boot-sample-admin/README.md`；明确 `AdminClientSecretHttpRequestInterceptor` 归属 `ateng-boot-observability`（第 2 章跨模块协同，不混入第 0 章），并同步校准仓库根 `CONTEXT-MAP.md`。
+
+---
+
+## 二阶段全场景演进决策（2026-11：安全堵漏、RBAC 端点治理、防风暴与双模高可用 `Accepted`）
+
+> **状态说明**：本节二阶段全量演进已于工单 `#1139 ~ #1142` 分切片全部实现、通过真实 SBA Client 与 Server 全链路端到端验证及 `ateng-boot-admin` / `ateng-boot-sample-admin` 二阶回归测试全绿，架构状态正式转为 `Accepted`。
+
+1. **模块边界与标头冲突消解（不跨模块修改 `ateng-boot-observability`）**：
+   - **权衡决策**：本轮源码改造严格收敛于 `ateng-boot-admin` 与 `ateng-boot-sample-admin`。针对 SBA 官方 `AdminServerInstanceWebClientConfiguration` 默认注册 `BasicAuthHttpHeaderProvider` 并通过 `CompositeHttpHeadersProvider` 与 `AtengActuatorHttpHeadersProvider` 叠加产生重复 `Authorization` 标头的隐患，采用在服务端装配阶段替换/占位官方 `BasicAuthHttpHeaderProvider` Bean 的方式，由 `AtengActuatorHttpHeadersProvider` 统一收口四阶凭据与服务级映射（并支持自定义 Token 标头名）；在 Sample 端补充引入 `spring-boot-admin-starter-client` 验证真实客户端握手与反代闭环。
+2. **路径规范化与生命周期双轨鉴权（堵死 `DELETE` 越权绕过）**：
+   - **权衡决策**：统一在入站安全防线剥离 Servlet `contextPath`、折叠多斜杠与矩阵参数，并将路由严格锚定于 SBA `context-path` 下的单段 `/instances` 与 `/instances/{id}`（彻底消除 `endsWith("/instances")` 对业务接口的误伤以及 `startsWith("/instances/")` 放行 `DELETE .../actuator/**` 的高危越权）；合法注销 `DELETE .../instances/{id}` 在 `client-secret` 非空时强制核验“有效 `X-Admin-Client-Secret` 或具备 `OPERATOR`/`ADMIN` 角色的有效 Sa-Token 会话”。
+3. **SSRF 纵深防御与 `FAIL_OPEN` 可切 `FAIL_CLOSED` DNS 校验**：
+   - **权衡决策**：拒绝空注册载荷与含 `userInfo` 的 URL，补充硬阻断 `100.64.0.0/10`（覆盖阿里云 IMDS `100.100.100.200`）与 `fc00::/7`（覆盖 AWS IPv6 IMDS `fd00:ec2::254`），并复用 Core `CidrMatcher` 纳管 CIDR 规则；针对 DNS 解析在离线单测假域名与防 DNS Rebinding 之间的权衡，引入 `dns-resolution-mode`（`DISABLED`/`FAIL_OPEN`/`FAIL_CLOSED`，默认 `FAIL_OPEN` 对可解析 IP 严格查验、对离线不可解析域名豁免），并新增出站 `InstanceExchangeFilterFunction` 在实际抓取/代理前二次核验目标地址；同时注册 SBA `InstanceFilter` 桥接 `AdminInstanceAdmissionPolicy` 为 `DiscoveryClient` 自动发现实例提供统一地址审查。
+4. **控制台 RBAC、`BCrypt` 零膨胀口令与不误伤 SBA UI 的高危端点治理**：
+   - **权衡决策**：保留 `AdminAuthProvider.authenticate` 签名向后兼容，新增默认方法 `authenticatePrincipal` 返回 `AdminConsolePrincipal` 与 `AdminRole`（`VIEWER` / `OPERATOR` / `ADMIN`）；复用 `ateng-boot-satoken` 内置 `BCrypt` 支持 `{bcrypt}` 口令，配置多账号 `users` 后自动关闭默认 `admin/admin` 兜底防后门；通过 `Principal` 桥接至 `HttpServletRequest.getUserPrincipal()` 打通 SBA 原生 UI 账号展示；端点守卫升级为 `AdminEndpointGuardFilter`（保留 `AdminWriteGuardFilter` 兼容），默认硬阻断 `heapdump`/`shutdown`/`restart`（保留 `env`/`beans`/`metrics` 只读可用性以免破坏 SBA UI），并启用 `ateng.boot.admin.server.login-defense.*` 独立防爆破与 Zero-DB 领域事件/有界环形审计。
+5. **告警防风暴状态机与拒绝耦合 SBA `FilteringNotifier` 的单一通知器路线**：
+   - **权衡决策**：改用毫秒精度防抖与可配发版静默窗，拦截已告警实例在未恢复前的故障态互跳刷屏；补齐有限次周期重提醒（`Fault Escalation Reminder`）、微窗口雪崩折叠聚合（`Alert Storm Aggregation`）及按服务路由/色彩/`@MentionTarget` 富卡片。为避免同时存在 `FilteringNotifier` 与 `AtengAdminNotificationNotifier` 两个 `Notifier` Bean 触发 SBA `CompositeNotifier` 双发冲突，舍弃对接 SBA 原生 `/notifications/filters` 耦合路线，统一由 `AdminSilenceManager` SPI 与受 RBAC 保护的 `{contextPath}/console/silences` 端点治理运行时维护静默窗口。
+6. **虚拟线程合规与 `AdminClusterCoordinator` Fail-Open 双模协调**：
+   - **权衡决策**：`ZombieInstanceCleanupScheduler` 全面替换 `synchronized` 为 `ReentrantLock` 并独立专用受管调度器，驱逐僵尸后同步触发事件存储与通知器滞留内存清理；抽象 `AdminClusterCoordinator` SPI，默认内存单机自洽，仅显式开启 `cluster.enabled=true` 且存在 `StringRedisTemplate` 时启用 Redis 分布式协调，并在 Redis 故障时严格 Fail-Open 放行，确保无 Redis 环境与 Sample 沙箱 100% 稳定。

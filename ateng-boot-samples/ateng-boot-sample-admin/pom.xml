@@ -23,6 +23,12 @@
             <artifactId>ateng-boot-admin</artifactId>
         </dependency>
 
+        <!-- Spring Boot Admin 客户端 Starter（用于真实 Client <-> Server 双向握手、心跳与代理端到端验证） -->
+        <dependency>
+            <groupId>de.codecentric</groupId>
+            <artifactId>spring-boot-admin-starter-client</artifactId>
+        </dependency>
+
         <!-- 云原生可观测性 Starter（演示微服务 Actuator 端点加固与客户端透明增强） -->
         <dependency>
             <groupId>io.github.atengk</groupId>

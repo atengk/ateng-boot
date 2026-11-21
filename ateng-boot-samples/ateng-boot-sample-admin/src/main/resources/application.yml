@@ -9,6 +9,9 @@ spring:
   boot:
     admin:
       context-path: /admin
+      client:
+        # 默认关闭客户端自动注册，避免影响独立单元测试；真实端到端测试按需激活
+        enabled: false
 
 ateng:
   boot:

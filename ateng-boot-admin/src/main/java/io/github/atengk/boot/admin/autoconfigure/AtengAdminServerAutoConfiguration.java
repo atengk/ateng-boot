@@ -20,6 +20,8 @@ import io.github.atengk.boot.admin.controller.AdminConsoleController;
 import io.github.atengk.boot.admin.controller.AdminLoginController;
 import io.github.atengk.boot.admin.eventstore.AtengInMemoryEventStore;
 import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
+import io.github.atengk.boot.admin.observability.AdminMetricsBinder;
+import io.github.atengk.boot.admin.observability.AdminServerHealthIndicator;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AdminAuthProvider;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
@@ -39,6 +41,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -128,21 +131,33 @@ public class AtengAdminServerAutoConfiguration {
     public AdminLoginController adminLoginController(AdminAuthProvider authProvider,
                                                      ObjectProvider<AdminServerProperties> adminServerPropertiesProvider,
                                                      ObjectProvider<AdminLoginDefenseService> loginDefenseServiceProvider,
-                                                     ObjectProvider<AdminAuditService> auditServiceProvider) {
+                                                     ObjectProvider<AdminAuditService> auditServiceProvider,
+                                                     ObjectProvider<AdminMetricsBinder> metricsBinderProvider) {
         AdminServerProperties adminServerProperties = adminServerPropertiesProvider.getIfAvailable();
         return new AdminLoginController(
                 authProvider,
                 adminServerProperties,
                 loginDefenseServiceProvider.getIfAvailable(),
-                auditServiceProvider.getIfAvailable()
+                auditServiceProvider.getIfAvailable(),
+                metricsBinderProvider.getIfAvailable()
         );
     }
 
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.admin.server", name = "console-api-enabled", havingValue = "true", matchIfMissing = true)
-    public AdminConsoleController adminConsoleController(ObjectProvider<AdminAuditLogRepository> auditLogRepositoryProvider) {
-        return new AdminConsoleController(auditLogRepositoryProvider.getIfAvailable());
+    public AdminConsoleController adminConsoleController(ObjectProvider<AdminAuditLogRepository> auditLogRepositoryProvider,
+                                                         ObjectProvider<AdminSilenceManager> silenceManagerProvider,
+                                                         ObjectProvider<AdminAuditService> auditServiceProvider,
+                                                         ObjectProvider<AdminLoginDefenseService> loginDefenseServiceProvider,
+                                                         ObjectProvider<AdminMetricsBinder> metricsBinderProvider) {
+        return new AdminConsoleController(
+                auditLogRepositoryProvider.getIfAvailable(),
+                silenceManagerProvider.getIfAvailable(),
+                auditServiceProvider.getIfAvailable(),
+                loginDefenseServiceProvider.getIfAvailable(),
+                metricsBinderProvider.getIfAvailable()
+        );
     }
 
     @Bean
@@ -164,14 +179,16 @@ public class AtengAdminServerAutoConfiguration {
                                                      AtengAdminServerProperties properties,
                                                      ObjectProvider<AdminServerProperties> adminServerPropertiesProvider,
                                                      ObjectProvider<AdminAuditService> auditServiceProvider,
-                                                     ObjectProvider<AdminLoginDefenseService> loginDefenseServiceProvider) {
+                                                     ObjectProvider<AdminLoginDefenseService> loginDefenseServiceProvider,
+                                                     ObjectProvider<AdminMetricsBinder> metricsBinderProvider) {
         return new AdminSsrfGuardFilter(
                 admissionPolicy,
                 properties,
                 adminServerPropertiesProvider.getIfAvailable(),
                 AdminSsrfGuardFilter.DEFAULT_ORDER,
                 auditServiceProvider.getIfAvailable(),
-                loginDefenseServiceProvider.getIfAvailable()
+                loginDefenseServiceProvider.getIfAvailable(),
+                metricsBinderProvider.getIfAvailable()
         );
     }
 
@@ -189,14 +206,16 @@ public class AtengAdminServerAutoConfiguration {
     public AdminEndpointGuardFilter adminEndpointGuardFilter(AtengAdminServerProperties properties,
                                                              ObjectProvider<AdminServerProperties> adminServerPropertiesProvider,
                                                              ObjectProvider<AdminAuditService> auditServiceProvider,
-                                                             ObjectProvider<AdminLoginDefenseService> loginDefenseServiceProvider) {
+                                                             ObjectProvider<AdminLoginDefenseService> loginDefenseServiceProvider,
+                                                             ObjectProvider<AdminMetricsBinder> metricsBinderProvider) {
         AdminServerProperties adminServerProperties = adminServerPropertiesProvider.getIfAvailable();
         return new AdminEndpointGuardFilter(
                 properties,
                 adminServerProperties,
                 auditServiceProvider.getIfAvailable(),
                 loginDefenseServiceProvider.getIfAvailable(),
-                AdminEndpointGuardFilter.DEFAULT_ORDER
+                AdminEndpointGuardFilter.DEFAULT_ORDER,
+                metricsBinderProvider.getIfAvailable()
         );
     }
 
@@ -288,10 +307,11 @@ public class AtengAdminServerAutoConfiguration {
             ObjectProvider<ScheduledExecutorService> scheduledExecutorProvider,
             ObjectProvider<AdminSilenceManager> silenceManagerProvider,
             ObjectProvider<AdminClusterCoordinator> clusterCoordinatorProvider,
-            ObjectProvider<Clock> clockProvider) {
+            ObjectProvider<Clock> clockProvider,
+            ObjectProvider<AdminMetricsBinder> metricsBinderProvider) {
         ThreadPoolTaskScheduler taskScheduler = schedulerProvider.getIfAvailable();
         ScheduledExecutorService executor = taskScheduler != null ? taskScheduler.getScheduledExecutor() : scheduledExecutorProvider.getIfAvailable();
-        return new AtengAdminNotificationNotifier(
+        AtengAdminNotificationNotifier notifier = new AtengAdminNotificationNotifier(
                 repository,
                 notificationTemplateProvider,
                 properties,
@@ -300,6 +320,11 @@ public class AtengAdminServerAutoConfiguration {
                 clusterCoordinatorProvider.getIfAvailable(),
                 clockProvider.getIfAvailable()
         );
+        AdminMetricsBinder binder = metricsBinderProvider.getIfAvailable();
+        if (binder != null) {
+            notifier.setMetricsBinder(binder);
+        }
+        return notifier;
     }
 
     @Bean
@@ -313,9 +338,10 @@ public class AtengAdminServerAutoConfiguration {
             AtengAdminServerProperties properties,
             ObjectProvider<AdminClusterCoordinator> clusterCoordinatorProvider,
             ObjectProvider<AtengInMemoryEventStore> eventStoreProvider,
-            ObjectProvider<AtengAdminNotificationNotifier> notifierProvider) {
+            ObjectProvider<AtengAdminNotificationNotifier> notifierProvider,
+            ObjectProvider<AdminMetricsBinder> metricsBinderProvider) {
         AtengAdminNotificationNotifier notifier = notifierProvider.getIfAvailable();
-        return new ZombieInstanceCleanupScheduler(
+        ZombieInstanceCleanupScheduler scheduler = new ZombieInstanceCleanupScheduler(
                 repository,
                 registryProvider.getIfAvailable(),
                 properties,
@@ -323,6 +349,30 @@ public class AtengAdminServerAutoConfiguration {
                 clusterCoordinatorProvider.getIfAvailable(),
                 eventStoreProvider.getIfAvailable(),
                 notifier != null ? notifier::purgeInstanceState : null
+        );
+        AdminMetricsBinder binder = metricsBinderProvider.getIfAvailable();
+        if (binder != null) {
+            scheduler.setMetricsBinder(binder);
+        }
+        return scheduler;
+    }
+
+    @Bean
+    @ConditionalOnClass(HealthIndicator.class)
+    @ConditionalOnBean(InstanceRepository.class)
+    @ConditionalOnMissingBean(name = "adminServerHealthIndicator")
+    public AdminServerHealthIndicator adminServerHealthIndicator(
+            InstanceRepository repository,
+            ObjectProvider<AtengAdminNotificationNotifier> notifierProvider,
+            ObjectProvider<ZombieInstanceCleanupScheduler> cleanupSchedulerProvider,
+            ObjectProvider<AdminSilenceManager> silenceManagerProvider,
+            AtengAdminServerProperties properties) {
+        return new AdminServerHealthIndicator(
+                repository,
+                notifierProvider.getIfAvailable(),
+                cleanupSchedulerProvider.getIfAvailable(),
+                silenceManagerProvider.getIfAvailable(),
+                properties
         );
     }
 

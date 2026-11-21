@@ -8,6 +8,7 @@ import io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicy
 import io.github.atengk.boot.admin.admission.InstanceRegistration;
 import io.github.atengk.boot.admin.audit.AdminAuditAction;
 import io.github.atengk.boot.admin.audit.AdminAuditService;
+import io.github.atengk.boot.admin.observability.AdminMetricsBinder;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AdminConsolePrincipal;
 import io.github.atengk.boot.core.util.JsonUtil;
@@ -70,6 +71,7 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
     private final int order;
     private final AdminAuditService auditService;
     private final AdminLoginDefenseService loginDefenseService;
+    private final AdminMetricsBinder metricsBinder;
 
     @Override
     public int getOrder() {
@@ -77,11 +79,11 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
     }
 
     public AdminSsrfGuardFilter(AdminInstanceAdmissionPolicy admissionPolicy) {
-        this(admissionPolicy, DEFAULT_MAX_PAYLOAD_BYTES, null, null, DEFAULT_ORDER, null, null);
+        this(admissionPolicy, DEFAULT_MAX_PAYLOAD_BYTES, null, null, DEFAULT_ORDER, null, null, null);
     }
 
     public AdminSsrfGuardFilter(AdminInstanceAdmissionPolicy admissionPolicy, DataSize maxPayloadSize) {
-        this(admissionPolicy, resolveMaxPayloadBytes(maxPayloadSize), null, null, DEFAULT_ORDER, null, null);
+        this(admissionPolicy, resolveMaxPayloadBytes(maxPayloadSize), null, null, DEFAULT_ORDER, null, null, null);
     }
 
     public AdminSsrfGuardFilter(AtengAdminServerProperties properties) {
@@ -132,13 +134,35 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
                                 int order,
                                 AdminAuditService auditService,
                                 AdminLoginDefenseService loginDefenseService) {
+        this(admissionPolicy, properties, adminServerProperties, order, auditService, loginDefenseService, null);
+    }
+
+    /**
+     * 完整构造防线过滤器（支持注入审计协调服务、可信代理 IP 解析器与低基数指标绑定器）
+     *
+     * @param admissionPolicy       准入策略 SPI
+     * @param properties            企业级 Admin Server 属性配置
+     * @param adminServerProperties Spring Boot Admin 原生属性
+     * @param order                 Servlet 过滤器执行优先级
+     * @param auditService          操作审计服务（可空）
+     * @param loginDefenseService   登录防爆破服务（用于可信代理源 IP 提取，可空）
+     * @param metricsBinder         低基数指标绑定器（可空）
+     */
+    public AdminSsrfGuardFilter(AdminInstanceAdmissionPolicy admissionPolicy,
+                                AtengAdminServerProperties properties,
+                                AdminServerProperties adminServerProperties,
+                                int order,
+                                AdminAuditService auditService,
+                                AdminLoginDefenseService loginDefenseService,
+                                AdminMetricsBinder metricsBinder) {
         this(admissionPolicy,
                 resolveMaxPayloadBytes(properties != null ? properties.getMaxRegistrationPayloadSize() : null),
                 properties != null ? properties.getClientSecret() : null,
                 adminServerProperties != null ? adminServerProperties.getContextPath() : null,
                 order,
                 auditService,
-                loginDefenseService);
+                loginDefenseService,
+                metricsBinder);
     }
 
     private AdminSsrfGuardFilter(AdminInstanceAdmissionPolicy admissionPolicy,
@@ -147,7 +171,8 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
                                  String adminContextPath,
                                  int order,
                                  AdminAuditService auditService,
-                                 AdminLoginDefenseService loginDefenseService) {
+                                 AdminLoginDefenseService loginDefenseService,
+                                 AdminMetricsBinder metricsBinder) {
         this.admissionPolicy = Objects.requireNonNull(admissionPolicy, "admissionPolicy must not be null");
         this.maxPayloadBytes = normalizeMaxPayloadBytes(maxPayloadBytes);
         this.clientSecret = clientSecret;
@@ -155,6 +180,7 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
         this.order = order;
         this.auditService = auditService;
         this.loginDefenseService = loginDefenseService;
+        this.metricsBinder = metricsBinder;
     }
 
     private static long resolveMaxPayloadBytes(DataSize maxPayloadSize) {
@@ -192,6 +218,7 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
                 wrappedRequest = new ResettableContentCachingRequestWrapper(request, maxPayloadBytes);
             } catch (PayloadTooLargeException ex) {
                 log.warn("[SSRF Guard] 注册拦截：请求体超出最大容量限制 [{} bytes]", maxPayloadBytes);
+                AdminMetricsBinder.recordAdmissionIfPresent(metricsBinder, false);
                 recordAudit(AdminAuditAction.ADMISSION_REJECTED, "client", sourceIp, "registration",
                         method, normalizedPath, "413", ex.getMessage());
                 reject(response, HttpStatus.PAYLOAD_TOO_LARGE, ex.getMessage());
@@ -207,6 +234,7 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
                     registration = InstanceRegistration.parse(root);
                 } catch (Exception e) {
                     log.error("[SSRF Guard] 解析注册 Body 失败: {}", e.getMessage());
+                    AdminMetricsBinder.recordAdmissionIfPresent(metricsBinder, false);
                     recordAudit(AdminAuditAction.ADMISSION_REJECTED, "client", sourceIp, "registration",
                             method, normalizedPath, "400", "Malformed JSON registration payload");
                     reject(response, HttpStatus.BAD_REQUEST, "Malformed JSON registration payload");
@@ -226,6 +254,7 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
                 String targetName = registration != null && StringUtils.hasText(registration.getName())
                         ? registration.getName() : "unknown";
                 log.warn("[SSRF Guard] 注册请求未通过准入策略审核: status=[{}], reason=[{}]", status.value(), reason);
+                AdminMetricsBinder.recordAdmissionIfPresent(metricsBinder, false);
                 recordAudit(AdminAuditAction.ADMISSION_REJECTED, "client", sourceIp, targetName,
                         method, normalizedPath, String.valueOf(status.value()), reason);
                 reject(response, status, reason);
@@ -233,6 +262,7 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
             }
 
             // 1.4 传递已缓存 Body 且支持无损重读的包装请求向下游流转
+            AdminMetricsBinder.recordAdmissionIfPresent(metricsBinder, true);
             filterChain.doFilter(wrappedRequest, response);
             return;
         }
@@ -261,6 +291,7 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter implements Ordere
                             AdminConsolePrincipal.maskUsername(actor),
                             principal.map(AdminConsolePrincipal::getRoleCodes).orElse(java.util.List.of()),
                             normalizedPath);
+                    AdminMetricsBinder.recordEndpointBlockedIfPresent(metricsBinder);
                     AdminAuditService.recordIfPresent(auditService, AdminAuditAction.ENDPOINT_BLOCKED, actor, sourceIp,
                             instanceId, method, normalizedPath, "403", reason);
                     reject(response, HttpStatus.FORBIDDEN, reason);

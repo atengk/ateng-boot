@@ -5,6 +5,7 @@ import de.codecentric.boot.admin.server.config.AdminServerProperties;
 import io.github.atengk.boot.admin.audit.AdminAuditAction;
 import io.github.atengk.boot.admin.audit.AdminAuditService;
 import io.github.atengk.boot.admin.autoconfigure.AtengAdminServerAutoConfiguration;
+import io.github.atengk.boot.admin.observability.AdminMetricsBinder;
 import io.github.atengk.boot.admin.provider.AdminAuthProvider;
 import io.github.atengk.boot.admin.provider.AdminConsolePrincipal;
 import io.github.atengk.boot.admin.security.AdminLoginDefenseService;
@@ -87,21 +88,31 @@ public class AdminLoginController {
     private final String adminPath;
     private final AdminLoginDefenseService loginDefenseService;
     private final AdminAuditService auditService;
+    private final AdminMetricsBinder metricsBinder;
 
     public AdminLoginController(AdminAuthProvider authProvider, AdminServerProperties adminServerProperties) {
-        this(authProvider, adminServerProperties, null, null);
+        this(authProvider, adminServerProperties, null, null, null);
     }
 
     public AdminLoginController(AdminAuthProvider authProvider,
                                 AdminServerProperties adminServerProperties,
                                 AdminLoginDefenseService loginDefenseService,
                                 AdminAuditService auditService) {
+        this(authProvider, adminServerProperties, loginDefenseService, auditService, null);
+    }
+
+    public AdminLoginController(AdminAuthProvider authProvider,
+                                AdminServerProperties adminServerProperties,
+                                AdminLoginDefenseService loginDefenseService,
+                                AdminAuditService auditService,
+                                AdminMetricsBinder metricsBinder) {
         this.authProvider = authProvider;
         this.adminPath = AtengAdminServerAutoConfiguration.normalizeContextPath(
                 adminServerProperties != null ? adminServerProperties.getContextPath() : null
         );
         this.loginDefenseService = loginDefenseService;
         this.auditService = auditService;
+        this.metricsBinder = metricsBinder;
     }
 
     @GetMapping(value = {"/login", "${spring.boot.admin.context-path:}/login"}, produces = "text/html;charset=UTF-8")
@@ -133,6 +144,7 @@ public class AdminLoginController {
         if (loginDefenseService != null) {
             AdminLoginDefenseService.LoginDefenseDecision preCheck = loginDefenseService.checkAllowed(username, request);
             if (!preCheck.isAllowed()) {
+                AdminMetricsBinder.recordLoginIfPresent(metricsBinder, "locked");
                 recordAudit(AdminAuditAction.LOGIN_LOCKED, username, sourceIp, "console", "POST", loginPath,
                         "LOCKED", "登录请求因防爆破锁定被拒绝，剩余锁定秒数=" + preCheck.getRemainingLockSeconds());
                 response.sendRedirect(loginPath + "?locked=true");
@@ -151,6 +163,7 @@ public class AdminLoginController {
             }
             StpUtil.login(principal.getName());
             AdminSessionHelper.savePrincipal(principal);
+            AdminMetricsBinder.recordLoginIfPresent(metricsBinder, "success");
             recordAudit(AdminAuditAction.LOGIN_SUCCESS, principal.getName(), sourceIp, "console", "POST", loginPath,
                     "SUCCESS", "控制台登录成功，roles=" + principal.getRoleCodes());
             String target = adminPath.isEmpty() ? "/" : adminPath;
@@ -162,12 +175,14 @@ public class AdminLoginController {
         if (loginDefenseService != null) {
             AdminLoginDefenseService.LoginDefenseDecision postFailure = loginDefenseService.recordFailure(username, request);
             if (postFailure.isLocked()) {
+                AdminMetricsBinder.recordLoginIfPresent(metricsBinder, "locked");
                 recordAudit(AdminAuditAction.LOGIN_LOCKED, username, sourceIp, "console", "POST", loginPath,
                         "LOCKED", "连续登录失败触发防爆破锁定，锁定秒数=" + postFailure.getRemainingLockSeconds());
                 response.sendRedirect(loginPath + "?locked=true");
                 return;
             }
         }
+        AdminMetricsBinder.recordLoginIfPresent(metricsBinder, "failure");
         recordAudit(AdminAuditAction.LOGIN_FAILURE, username, sourceIp, "console", "POST", loginPath,
                 "DENIED", "账号或口令校验未通过");
         response.sendRedirect(loginPath + "?error=true");

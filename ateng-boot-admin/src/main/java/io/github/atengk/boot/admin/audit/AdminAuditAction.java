@@ -52,7 +52,17 @@ public enum AdminAuditAction implements IBaseEnum<String> {
     /**
      * 手动或受控实例下线注销
      */
-    INSTANCE_DEREGISTERED("INSTANCE_DEREGISTERED", "实例下线注销");
+    INSTANCE_DEREGISTERED("INSTANCE_DEREGISTERED", "实例下线注销"),
+
+    /**
+     * 创建运行时维护静默规则
+     */
+    SILENCE_CREATED("SILENCE_CREATED", "创建维护静默规则"),
+
+    /**
+     * 撤销运行时维护静默规则
+     */
+    SILENCE_REVOKED("SILENCE_REVOKED", "撤销维护静默规则");
 
     private final String code;
     private final String label;

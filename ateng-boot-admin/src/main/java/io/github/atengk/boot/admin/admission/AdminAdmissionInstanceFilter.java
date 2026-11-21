@@ -2,6 +2,7 @@ package io.github.atengk.boot.admin.admission;
 
 import de.codecentric.boot.admin.server.domain.entities.Instance;
 import de.codecentric.boot.admin.server.services.InstanceFilter;
+import io.github.atengk.boot.admin.observability.AdminMetricsBinder;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.Objects;
@@ -19,9 +20,16 @@ import java.util.Objects;
 public class AdminAdmissionInstanceFilter implements InstanceFilter {
 
     private final AdminInstanceAdmissionPolicy admissionPolicy;
+    private final AdminMetricsBinder metricsBinder;
 
     public AdminAdmissionInstanceFilter(AdminInstanceAdmissionPolicy admissionPolicy) {
+        this(admissionPolicy, null);
+    }
+
+    public AdminAdmissionInstanceFilter(AdminInstanceAdmissionPolicy admissionPolicy,
+                                        AdminMetricsBinder metricsBinder) {
         this.admissionPolicy = Objects.requireNonNull(admissionPolicy, "admissionPolicy must not be null");
+        this.metricsBinder = metricsBinder;
     }
 
     @Override
@@ -36,6 +44,8 @@ public class AdminAdmissionInstanceFilter implements InstanceFilter {
         if (DefaultAdminInstanceAdmissionPolicy.DISCOVERY_SOURCE.equalsIgnoreCase(registration.getSource())) {
             AdminAdmissionResult result = admissionPolicy.evaluate(registration, null);
             boolean allowed = result != null && result.isAllowed();
+            // 服务发现实例不经过 HTTP AdminSsrfGuardFilter，由本过滤器独占上报准入统计避免重复计数
+            AdminMetricsBinder.recordAdmissionIfPresent(metricsBinder, allowed);
             if (!allowed) {
                 log.warn("[Admission InstanceFilter] 服务发现实例准入被拒: name=[{}], reason=[{}]",
                         registration.getName(), result != null ? result.getReason() : "null result");

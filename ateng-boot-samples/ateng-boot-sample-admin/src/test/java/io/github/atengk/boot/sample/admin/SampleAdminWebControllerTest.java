@@ -3,6 +3,8 @@ package io.github.atengk.boot.sample.admin;
 import de.codecentric.boot.admin.server.domain.entities.InstanceRepository;
 import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
+import io.github.atengk.boot.admin.silence.AdminSilenceManager;
+import io.github.atengk.boot.admin.silence.SilenceRule;
 import io.github.atengk.boot.sample.admin.config.RecordingNotificationTemplate;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -23,6 +25,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.not;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -55,8 +58,16 @@ class SampleAdminWebControllerTest {
     @Autowired(required = false)
     private RecordingNotificationTemplate recordingNotificationTemplate;
 
+    @Autowired(required = false)
+    private AdminSilenceManager silenceManager;
+
     @AfterEach
     void tearDown() {
+        if (silenceManager != null) {
+            for (SilenceRule rule : silenceManager.listActiveSilences()) {
+                silenceManager.revokeSilence(rule.getId());
+            }
+        }
         SampleAdminTestSupport.resetSandboxState(
                 instanceRepository,
                 notificationNotifier,
@@ -528,5 +539,70 @@ class SampleAdminWebControllerTest {
                     .andExpect(jsonPath("$.data[*].content", hasItem(containsString("payment-imm-service"))))
                     .andExpect(jsonPath("$.data[*].content", not(hasItem(containsString("payment-deb-service")))));
         }
+    }
+
+    @Test
+    @DisplayName("控制台领域接口支持静默规则 CRUD、审计轨迹检索、高危端点守卫预检与自观测摘要查询")
+    void shouldSupportSecurityConsoleSilencesAuditsGuardAndObservabilitySummary() throws Exception {
+        String createBody = mockMvc.perform(post("/sample/admin/console/silences")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"pattern\":\"order-*\",\"ttlSeconds\":300,\"reason\":\"订单集群主从切换维护\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.pattern").value("order-*"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+
+        com.fasterxml.jackson.databind.JsonNode createdNode = new com.fasterxml.jackson.databind.ObjectMapper().readTree(createBody);
+        String ruleId = createdNode.path("data").path("id").asText();
+
+        mockMvc.perform(get("/sample/admin/console/silences"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[*].id", hasItem(ruleId)));
+
+        mockMvc.perform(get("/sample/admin/console/audits")
+                        .param("action", "SILENCE_CREATED")
+                        .param("limit", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[*].action", hasItem("SILENCE_CREATED")))
+                .andExpect(jsonPath("$.data[*].target", hasItem(ruleId)));
+
+        mockMvc.perform(post("/sample/admin/console/endpoint-guard/evaluate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"method\":\"GET\",\"endpointUri\":\"/admin/instances/demo-01/actuator/heapdump\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.blocked").value(true));
+
+        mockMvc.perform(post("/sample/admin/console/endpoint-guard/evaluate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"method\":\"GET\",\"endpointUri\":\"/admin/instances/demo-01/actuator/health\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.blocked").value(false));
+
+        mockMvc.perform(post("/sample/admin/console/endpoint-guard/evaluate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"method\":\"POST\",\"endpointUri\":\"/admin/instances/demo-01/actuator/loggers/ROOT\",\"role\":\"VIEWER\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.role").value("VIEWER"))
+                .andExpect(jsonPath("$.data.blocked").value(true));
+
+        mockMvc.perform(get("/sample/admin/console/observability/summary"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.activeSilenceRules", greaterThanOrEqualTo(1)))
+                .andExpect(jsonPath("$.data.stormThreshold", greaterThanOrEqualTo(1)))
+                .andExpect(jsonPath("$.data.statusCounts").isMap());
+
+        mockMvc.perform(delete("/sample/admin/console/silences/" + ruleId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 验证 JSR-303 校验拦截空模式参数（遵循 ADR-0004 统一返回 HTTP 200 + 业务 code=400）
+        mockMvc.perform(post("/sample/admin/console/silences")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"pattern\":\"\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false));
     }
 }
