@@ -7,6 +7,7 @@ import org.springframework.util.StringUtils;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -55,9 +56,9 @@ public class DefaultAiGuardrail implements AiGuardrail {
     private final TrieNode root = new TrieNode();
 
     /**
-     * 树构建互斥锁，保障动态增量写入与并发检索安全
+     * 树构建互斥锁，保障动态增量写入与并发检索安全（ReentrantLock 避免虚拟线程 Carrier Pinning）
      */
-    private final Object trieLock = new Object();
+    private final ReentrantLock trieLock = new ReentrantLock();
 
     public DefaultAiGuardrail() {
         this(new AiGuardrailProperties());
@@ -112,7 +113,8 @@ public class DefaultAiGuardrail implements AiGuardrail {
         if (words == null || words.isEmpty()) {
             return;
         }
-        synchronized (trieLock) {
+        trieLock.lock();
+        try {
             for (String word : words) {
                 if (!StringUtils.hasText(word)) {
                     continue;
@@ -125,6 +127,10 @@ public class DefaultAiGuardrail implements AiGuardrail {
                 }
                 current.isEnd = true;
                 current.word = word.trim();
+            }
+        } finally {
+            if (trieLock.isHeldByCurrentThread()) {
+                trieLock.unlock();
             }
         }
     }
@@ -252,7 +258,8 @@ public class DefaultAiGuardrail implements AiGuardrail {
         String normalized = text.toLowerCase(Locale.ROOT);
         int n = normalized.length();
 
-        synchronized (trieLock) {
+        trieLock.lock();
+        try {
             if (root.children.isEmpty()) {
                 return null;
             }
@@ -271,6 +278,10 @@ public class DefaultAiGuardrail implements AiGuardrail {
                         }
                     }
                 }
+            }
+        } finally {
+            if (trieLock.isHeldByCurrentThread()) {
+                trieLock.unlock();
             }
         }
         return null;

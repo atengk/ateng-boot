@@ -8,6 +8,7 @@ import dev.langchain4j.model.output.Response;
 import dev.langchain4j.model.output.TokenUsage;
 import io.github.atengk.boot.ai.observability.FallbackTokenEstimator;
 import io.github.atengk.boot.ai.quota.AiQuotaChecker;
+import io.github.atengk.boot.ai.ratelimit.AiRateLimiter;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.sanitizer.JsonPayloadSanitizer;
 import io.github.atengk.boot.ai.tenant.AiTenantModelResolver;
@@ -31,21 +32,29 @@ public class DynamicRoutingChatLanguageModel implements ChatLanguageModel {
     private final String configuredModelName;
     private final AiTenantModelResolver tenantModelResolver;
     private final AiQuotaChecker quotaChecker;
+    private final AiRateLimiter rateLimiter;
 
     public DynamicRoutingChatLanguageModel(AiModelRegistry registry, String configuredModelName) {
-        this(registry, configuredModelName, null, null);
+        this(registry, configuredModelName, null, null, null);
     }
 
     public DynamicRoutingChatLanguageModel(AiModelRegistry registry, String configuredModelName, AiTenantModelResolver tenantModelResolver) {
-        this(registry, configuredModelName, tenantModelResolver, null);
+        this(registry, configuredModelName, tenantModelResolver, null, null);
     }
 
     public DynamicRoutingChatLanguageModel(AiModelRegistry registry, String configuredModelName,
                                            AiTenantModelResolver tenantModelResolver, AiQuotaChecker quotaChecker) {
+        this(registry, configuredModelName, tenantModelResolver, quotaChecker, null);
+    }
+
+    public DynamicRoutingChatLanguageModel(AiModelRegistry registry, String configuredModelName,
+                                           AiTenantModelResolver tenantModelResolver, AiQuotaChecker quotaChecker,
+                                           AiRateLimiter rateLimiter) {
         this.registry = Objects.requireNonNull(registry, "AiModelRegistry 不能为空");
         this.configuredModelName = StringUtils.hasText(configuredModelName) ? configuredModelName.trim() : "";
         this.tenantModelResolver = tenantModelResolver;
         this.quotaChecker = quotaChecker;
+        this.rateLimiter = rateLimiter;
     }
 
     /**
@@ -105,8 +114,13 @@ public class DynamicRoutingChatLanguageModel implements ChatLanguageModel {
         ChatLanguageModel model = resolveModel(modelName);
 
         String tenantId = !TenantContextHolder.isIgnoreTenant() ? TenantContextHolder.getTenantId() : null;
+        int promptTokens = (rateLimiter != null || (quotaChecker != null && StringUtils.hasText(tenantId)))
+                ? FallbackTokenEstimator.estimatePromptTokens(preprocessed)
+                : 0;
+        if (rateLimiter != null) {
+            rateLimiter.acquire(tenantId, modelName, promptTokens);
+        }
         if (quotaChecker != null && StringUtils.hasText(tenantId)) {
-            int promptTokens = FallbackTokenEstimator.estimatePromptTokens(preprocessed);
             quotaChecker.checkQuota(tenantId.trim(), modelName, promptTokens);
         }
 

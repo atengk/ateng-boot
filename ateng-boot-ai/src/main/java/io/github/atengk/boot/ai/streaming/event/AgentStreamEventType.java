@@ -44,6 +44,11 @@ public enum AgentStreamEventType {
     CITATION("citation"),
 
     /**
+     * 内容安全护栏流式拦截替换控制事件
+     */
+    GUARDRAIL_REPLACED("guardrail_replaced"),
+
+    /**
      * 流式推流正常完成结束标志事件
      */
     DONE("done"),

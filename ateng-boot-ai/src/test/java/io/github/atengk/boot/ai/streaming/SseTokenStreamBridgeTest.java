@@ -383,6 +383,70 @@ class SseTokenStreamBridgeTest {
         assertThat(capturedEvents.get(5).eventType()).isEqualTo("error");
     }
 
+    @Test
+    @DisplayName("流式后置护栏 FAIL_FAST：onNext 阶段命中违禁词立即触发物理断流并阻止违规分片下发")
+    void testGuardrailImmediateBlockCancelsStreamMidflight() throws Exception {
+        ActiveStreamRegistry registry = new ActiveStreamRegistry();
+        AtomicBoolean physicallyCancelled = new AtomicBoolean(false);
+        registry.register("stream-guard-block", () -> physicallyCancelled.set(true));
+
+        io.github.atengk.boot.ai.guardrail.AiGuardrailProperties props = new io.github.atengk.boot.ai.guardrail.AiGuardrailProperties();
+        props.setEnabled(true);
+        props.setMode(io.github.atengk.boot.ai.guardrail.GuardrailMode.FAIL_FAST);
+        props.setBannedKeywords(List.of("违禁词"));
+        io.github.atengk.boot.ai.guardrail.AiGuardrail guardrail = new io.github.atengk.boot.ai.guardrail.DefaultAiGuardrail(props);
+
+        SseEmitter emitter = mock(SseEmitter.class);
+        SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, "stream-guard-block", registry)
+                .withGuardrail(guardrail);
+
+        bridge.onNext("正常开头，");
+        bridge.onNext("突然出现违禁词");
+        bridge.onNext("后续分片不应再输出");
+
+        assertThat(physicallyCancelled.get()).isTrue();
+        ArgumentCaptor<SseEmitter.SseEventBuilder> captor = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
+        verify(emitter, times(2)).send(captor.capture());
+
+        List<SseEmitter.SseEventBuilder> sent = captor.getAllValues();
+        assertThat(extractSseString(sent.get(0))).contains("event:text").contains("正常开头，");
+        assertThat(extractSseString(sent.get(1))).contains("event:error");
+        verify(emitter, times(1)).completeWithError(any());
+    }
+
+    @Test
+    @DisplayName("流式后置护栏 REPLACE：onNext 阶段命中违禁词立即断流并下发 event: guardrail_replaced 控制事件")
+    void testGuardrailReplaceEmitsControlEventAndCancelsStream() throws Exception {
+        ActiveStreamRegistry registry = new ActiveStreamRegistry();
+        AtomicBoolean physicallyCancelled = new AtomicBoolean(false);
+        registry.register("stream-guard-replace", () -> physicallyCancelled.set(true));
+
+        io.github.atengk.boot.ai.guardrail.AiGuardrailProperties props = new io.github.atengk.boot.ai.guardrail.AiGuardrailProperties();
+        props.setEnabled(true);
+        props.setMode(io.github.atengk.boot.ai.guardrail.GuardrailMode.REPLACE);
+        props.setBlockResponseText("安全替换提示");
+        props.setBannedKeywords(List.of("违禁词"));
+        io.github.atengk.boot.ai.guardrail.AiGuardrail guardrail = new io.github.atengk.boot.ai.guardrail.DefaultAiGuardrail(props);
+
+        SseEmitter emitter = mock(SseEmitter.class);
+        SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, "stream-guard-replace", registry)
+                .withGuardrail(guardrail);
+
+        bridge.onNext("安全前缀");
+        bridge.onNext("违禁词触发替换");
+        bridge.onComplete(Response.from(AiMessage.from("安全前缀违禁词触发替换")));
+
+        assertThat(physicallyCancelled.get()).isTrue();
+        ArgumentCaptor<SseEmitter.SseEventBuilder> captor = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
+        verify(emitter, times(3)).send(captor.capture());
+
+        List<SseEmitter.SseEventBuilder> sent = captor.getAllValues();
+        assertThat(extractSseString(sent.get(0))).contains("event:text").contains("安全前缀");
+        assertThat(extractSseString(sent.get(1))).contains("event:guardrail_replaced").contains("安全替换提示");
+        assertThat(extractSseString(sent.get(2))).contains("event:done");
+        verify(emitter, times(1)).complete();
+    }
+
     private static String extractSseString(SseEmitter.SseEventBuilder builder) {
         Set<ResponseBodyEmitter.DataWithMediaType> set = builder.build();
         StringBuilder sb = new StringBuilder();

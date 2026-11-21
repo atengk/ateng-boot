@@ -34,6 +34,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 跨会话原子化长效情景语义记忆统一治理门面 (EpisodicMemoryTemplate)
@@ -77,6 +78,7 @@ public class EpisodicMemoryTemplate {
      * 具备固定容量上限淘汰机制，彻底防御单例长周期运行下的无界累积与 OOM 隐患。
      */
     private final Map<String, Map<String, MemoryFact>> localIndex;
+    private final ReentrantLock localIndexLock = new ReentrantLock();
 
     public EpisodicMemoryTemplate(EmbeddingTemplate embeddingTemplate) {
         this(embeddingTemplate, null, null, null, null, null);
@@ -111,12 +113,12 @@ public class EpisodicMemoryTemplate {
         this.executor = executor != null ? executor : DEFAULT_EXECUTOR;
 
         int capacity = (this.properties.getLocalCacheCapacity() > 0) ? this.properties.getLocalCacheCapacity() : 1000;
-        this.localIndex = Collections.synchronizedMap(new LinkedHashMap<String, Map<String, MemoryFact>>(16, 0.75f, true) {
+        this.localIndex = new LinkedHashMap<String, Map<String, MemoryFact>>(16, 0.75f, true) {
             @Override
             protected boolean removeEldestEntry(Map.Entry<String, Map<String, MemoryFact>> eldest) {
                 return size() > capacity;
             }
-        });
+        };
     }
 
     private static EmbeddingStore<TextSegment> resolveDedicatedStore(EmbeddingStore<TextSegment> explicitStore,
@@ -225,7 +227,10 @@ public class EpisodicMemoryTemplate {
         // 4. 同步更新本地快速索引 (若启用)
         if (this.properties.isEnableLocalCache()) {
             String cacheKey = buildCacheKey(effectiveTenantId, fact.getUserId());
-            localIndex.computeIfAbsent(cacheKey, k -> new ConcurrentHashMap<>()).put(slotKey, fact);
+            withLocalIndexLock(() -> {
+                localIndex.computeIfAbsent(cacheKey, k -> new ConcurrentHashMap<>()).put(slotKey, fact);
+                return null;
+            });
         }
 
         log.info("[EPISODIC-MEMORY] 成功持久化情景事实 [id={}, slotKey={}, statement={}]",
@@ -573,7 +578,10 @@ public class EpisodicMemoryTemplate {
 
         // 清理本地索引 (若启用)
         if (this.properties.isEnableLocalCache()) {
-            localIndex.values().forEach(slotMap -> slotMap.values().removeIf(f -> trimmedId.equals(f.getId())));
+            withLocalIndexLock(() -> {
+                localIndex.values().forEach(slotMap -> slotMap.values().removeIf(f -> trimmedId.equals(f.getId())));
+                return null;
+            });
         }
         log.info("[EPISODIC-MEMORY] 成功依据 factId 物理遗忘事实 [factId={}]", trimmedId);
     }
@@ -620,10 +628,13 @@ public class EpisodicMemoryTemplate {
 
         if (this.properties.isEnableLocalCache()) {
             String cacheKey = buildCacheKey(effectiveTenantId, effectiveUserId);
-            Map<String, MemoryFact> slotMap = localIndex.get(cacheKey);
-            if (slotMap != null) {
-                slotMap.remove(trimmedSlot);
-            }
+            withLocalIndexLock(() -> {
+                Map<String, MemoryFact> slotMap = localIndex.get(cacheKey);
+                if (slotMap != null) {
+                    slotMap.remove(trimmedSlot);
+                }
+                return null;
+            });
         }
     }
 
@@ -654,7 +665,10 @@ public class EpisodicMemoryTemplate {
 
         if (this.properties.isEnableLocalCache()) {
             String cacheKey = buildCacheKey(effectiveTenantId, effectiveUserId);
-            localIndex.remove(cacheKey);
+            withLocalIndexLock(() -> {
+                localIndex.remove(cacheKey);
+                return null;
+            });
         }
     }
 
@@ -695,14 +709,20 @@ public class EpisodicMemoryTemplate {
 
         if (this.properties.isEnableLocalCache()) {
             String cacheKey = buildCacheKey(effectiveTenantId, effectiveUserId);
-            Map<String, MemoryFact> slotMap = localIndex.get(cacheKey);
-            if (slotMap != null && !slotMap.isEmpty()) {
-                return slotMap.values().stream()
-                        .sorted((a, b) -> Long.compare(
-                                b.getTimestamp() != null ? b.getTimestamp() : 0L,
-                                a.getTimestamp() != null ? a.getTimestamp() : 0L))
-                        .limit(effectiveLimit)
-                        .toList();
+            List<MemoryFact> cached = withLocalIndexLock(() -> {
+                Map<String, MemoryFact> slotMap = localIndex.get(cacheKey);
+                if (slotMap != null && !slotMap.isEmpty()) {
+                    return slotMap.values().stream()
+                            .sorted((a, b) -> Long.compare(
+                                    b.getTimestamp() != null ? b.getTimestamp() : 0L,
+                                    a.getTimestamp() != null ? a.getTimestamp() : 0L))
+                            .limit(effectiveLimit)
+                            .toList();
+                }
+                return null;
+            });
+            if (cached != null) {
+                return cached;
             }
         }
 
@@ -776,5 +796,16 @@ public class EpisodicMemoryTemplate {
 
     private static String buildCacheKey(String tenantId, String userId) {
         return (tenantId != null ? tenantId.trim() : "") + ":" + (userId != null ? userId.trim() : "");
+    }
+
+    private <R> R withLocalIndexLock(java.util.function.Supplier<R> action) {
+        localIndexLock.lock();
+        try {
+            return action.get();
+        } finally {
+            if (localIndexLock.isHeldByCurrentThread()) {
+                localIndexLock.unlock();
+            }
+        }
     }
 }

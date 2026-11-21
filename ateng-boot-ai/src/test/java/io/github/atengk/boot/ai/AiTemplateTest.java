@@ -474,4 +474,60 @@ class AiTemplateTest {
 
         properties.getModel().setResponseFormat(AiResponseFormat.TEXT);
     }
+
+    @Test
+    @DisplayName("流式推流：onNext 阶段命中后置护栏违禁词应立即切断活跃连接并阻止后续分片")
+    void testStreamGuardrailIncrementalCancelOnViolation() {
+        io.github.atengk.boot.ai.guardrail.AiGuardrailProperties guardrailProps = new io.github.atengk.boot.ai.guardrail.AiGuardrailProperties();
+        guardrailProps.setEnabled(true);
+        guardrailProps.setMode(io.github.atengk.boot.ai.guardrail.GuardrailMode.FAIL_FAST);
+        guardrailProps.setBannedKeywords(List.of("违规敏感词"));
+        io.github.atengk.boot.ai.guardrail.AiGuardrail guardrail = new io.github.atengk.boot.ai.guardrail.DefaultAiGuardrail(guardrailProps);
+
+        io.github.atengk.boot.ai.streaming.ActiveStreamRegistry streamRegistry = new io.github.atengk.boot.ai.streaming.ActiveStreamRegistry();
+        java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
+        streamRegistry.register("stream-tpl-1", () -> cancelled.set(true));
+
+        AiTemplate governedTemplate = new AiTemplate(registry, properties, null, null, streamRegistry, guardrail, null);
+
+        java.util.concurrent.atomic.AtomicReference<Throwable> capturedErr = new java.util.concurrent.atomic.AtomicReference<>();
+        StringBuilder receivedText = new StringBuilder();
+
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            StreamingResponseHandler<AiMessage> handler = invocation.getArgument(1);
+            handler.onNext("正常文本");
+            handler.onNext("违规敏感词");
+            // 模拟切断后即便底层继续回调，也应已被阻断
+            handler.onNext("不应下发的尾包");
+            return null;
+        }).when(defaultStreamingModel).generate(anyList(), any());
+
+        io.github.atengk.boot.ai.streaming.StreamContextHolder.setStreamId("stream-tpl-1");
+        try {
+            governedTemplate.stream(List.of(UserMessage.from("测试流式护栏")), new StreamingResponseHandler<>() {
+                @Override
+                public void onNext(String token) {
+                    receivedText.append(token);
+                }
+
+                @Override
+                public void onComplete(Response<AiMessage> response) {
+                }
+
+                @Override
+                public void onError(Throwable error) {
+                    capturedErr.set(error);
+                }
+            });
+        } finally {
+            io.github.atengk.boot.ai.streaming.StreamContextHolder.clear();
+        }
+
+        assertThat(cancelled.get()).isTrue();
+        assertThat(receivedText.toString()).isEqualTo("正常文本");
+        assertThat(capturedErr.get()).isInstanceOf(AiException.class)
+                .extracting("code")
+                .isEqualTo(AiResultCode.AI_CONTENT_RISK_DETECTED.getCode());
+    }
 }

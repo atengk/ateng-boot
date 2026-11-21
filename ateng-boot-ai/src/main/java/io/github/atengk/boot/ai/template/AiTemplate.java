@@ -30,6 +30,7 @@ import io.github.atengk.boot.ai.ratelimit.AiRateLimiter;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.sanitizer.JsonPayloadSanitizer;
 import io.github.atengk.boot.ai.sanitizer.JsonSchemaGenerator;
+import io.github.atengk.boot.ai.sanitizer.NativeJsonSchemaContext;
 import io.github.atengk.boot.ai.streaming.ActiveStreamRegistry;
 import io.github.atengk.boot.ai.streaming.SseTokenStreamBridge;
 import io.github.atengk.boot.ai.streaming.StreamContextHolder;
@@ -379,17 +380,10 @@ public class AiTemplate {
      * @return 校验通过的结构化对象实例
      */
     public <T> T chatForObject(String modelName, String prompt, Class<T> responseType, Class<?>... validationGroups) {
-        Objects.requireNonNull(responseType, "目标反序列化类型 responseType 不能为空");
-        AiModelConfig modelConfig = properties.resolveConfig(modelName);
-        String guidedPrompt;
-        if (modelConfig.getResponseFormat() == AiResponseFormat.JSON_SCHEMA) {
-            String schema = JsonSchemaGenerator.generateSchema(responseType);
-            guidedPrompt = appendJsonSchemaGuidance(prompt, schema);
-        } else {
-            guidedPrompt = appendJsonGuidance(prompt);
-        }
-        String rawReply = chatWithModel(modelName, guidedPrompt);
-        return JsonPayloadSanitizer.parseAndValidate(rawReply, responseType, validationGroups);
+        return executeChatForObject(modelName, responseType, validationGroups, schema -> {
+            String guidedPrompt = schema != null ? appendJsonSchemaGuidance(prompt, schema) : appendJsonGuidance(prompt);
+            return chatWithModel(modelName, guidedPrompt);
+        });
     }
 
     /**
@@ -478,16 +472,34 @@ public class AiTemplate {
      * @return 校验通过的结构化对象实例
      */
     public <T> T chatForObject(String modelName, List<ChatMessage> messages, Class<T> responseType, Class<?>... validationGroups) {
+        return executeChatForObject(modelName, responseType, validationGroups, schema -> {
+            List<ChatMessage> guidedMessages = schema != null
+                    ? appendJsonSchemaGuidance(messages, schema)
+                    : appendJsonGuidance(messages);
+            return chatMessages(modelName, guidedMessages);
+        });
+    }
+
+    private <T> T executeChatForObject(String modelName, Class<T> responseType, Class<?>[] validationGroups,
+                                       java.util.function.Function<String, String> modelCaller) {
         Objects.requireNonNull(responseType, "目标反序列化类型 responseType 不能为空");
-        AiModelConfig modelConfig = properties.resolveConfig(modelName);
-        List<ChatMessage> guidedMessages;
-        if (modelConfig.getResponseFormat() == AiResponseFormat.JSON_SCHEMA) {
-            String schema = JsonSchemaGenerator.generateSchema(responseType);
-            guidedMessages = appendJsonSchemaGuidance(messages, schema);
-        } else {
-            guidedMessages = appendJsonGuidance(messages);
+        AiModelConfig modelConfig = resolveModelConfig(resolveEffectiveModelName(modelName));
+        boolean nativeStrict = modelConfig != null && modelConfig.isStrictNativeJsonSchema();
+        boolean jsonSchemaMode = modelConfig != null && modelConfig.getResponseFormat() == AiResponseFormat.JSON_SCHEMA;
+        String schema = null;
+        if (nativeStrict) {
+            schema = JsonSchemaGenerator.generateStrictSchema(responseType);
+        } else if (jsonSchemaMode) {
+            schema = JsonSchemaGenerator.generateSchema(responseType);
         }
-        String rawReply = chatMessages(modelName, guidedMessages);
+        String rawReply;
+        if (nativeStrict) {
+            try (NativeJsonSchemaContext.Scope ignored = NativeJsonSchemaContext.openScope(responseType.getSimpleName(), schema)) {
+                rawReply = modelCaller.apply(schema);
+            }
+        } else {
+            rawReply = modelCaller.apply(schema);
+        }
         return JsonPayloadSanitizer.parseAndValidate(rawReply, responseType, validationGroups);
     }
 
@@ -1340,20 +1352,22 @@ public class AiTemplate {
             quotaChecker.checkQuota(tenantId, effectiveModelName, promptTokens);
         }
 
+        // 若当前未显式设置 streamId，但 handler 为带有 streamId 的 SseTokenStreamBridge，则自动填充与排空上下文
+        boolean locallySetStreamId = false;
+        String activeStreamId = StreamContextHolder.getStreamId();
+        if (activeStreamId == null && handler instanceof SseTokenStreamBridge bridge && bridge.getStreamId() != null) {
+            activeStreamId = bridge.getStreamId();
+            StreamContextHolder.setStreamId(activeStreamId);
+            locallySetStreamId = true;
+        }
+
         StreamingChatLanguageModel model = resolveStreamingChatModel(effectiveModelName);
         StreamingResponseHandler<AiMessage> wrappedHandler = (quotaChecker != null)
                 ? new QuotaTrackingStreamingResponseHandler(handler, quotaChecker, tenantId, effectiveModelName, messages)
                 : handler;
         StreamingResponseHandler<AiMessage> guardrailHandler = (guardrail != null)
-                ? new GuardrailStreamingResponseHandler(wrappedHandler, guardrail)
+                ? new GuardrailStreamingResponseHandler(wrappedHandler, guardrail, activeStreamId, activeStreamRegistry)
                 : wrappedHandler;
-
-        // 若当前未显式设置 streamId，但 handler 为带有 streamId 的 SseTokenStreamBridge，则自动填充与排空上下文
-        boolean locallySetStreamId = false;
-        if (StreamContextHolder.getStreamId() == null && handler instanceof SseTokenStreamBridge bridge && bridge.getStreamId() != null) {
-            StreamContextHolder.setStreamId(bridge.getStreamId());
-            locallySetStreamId = true;
-        }
 
         try {
             model.generate(messages, guardrailHandler);
@@ -1595,43 +1609,48 @@ public class AiTemplate {
     }
 
     /**
-     * 流式调用内容安全护栏响应处理器包装器
+     * 流式调用内容安全护栏响应处理器包装器（支持 onNext 阶段实时增量检测、即时断流与 REPLACE 控制事件下发）
      */
     private static class GuardrailStreamingResponseHandler implements StreamingResponseHandler<AiMessage> {
 
         private final StreamingResponseHandler<AiMessage> delegate;
-        private final AiGuardrail guardrail;
-        private final StringBuilder fullContent = new StringBuilder();
+        private final StreamingGuardrailSession guardrailSession;
+        private final String streamId;
+        private final ActiveStreamRegistry activeStreamRegistry;
 
         GuardrailStreamingResponseHandler(StreamingResponseHandler<AiMessage> delegate, AiGuardrail guardrail) {
+            this(delegate, guardrail, null, null);
+        }
+
+        GuardrailStreamingResponseHandler(StreamingResponseHandler<AiMessage> delegate,
+                                          AiGuardrail guardrail,
+                                          String streamId,
+                                          ActiveStreamRegistry activeStreamRegistry) {
             this.delegate = delegate;
-            this.guardrail = guardrail;
+            this.guardrailSession = new StreamingGuardrailSession(guardrail);
+            this.streamId = streamId;
+            this.activeStreamRegistry = activeStreamRegistry;
         }
 
         @Override
         public void onNext(String token) {
-            if (token != null) {
-                fullContent.append(token);
+            if (guardrailSession.isTerminated()) {
+                return;
+            }
+            StreamingGuardrailSession.Decision decision = guardrailSession.evaluateNext(token, this::cancelStreamPhysically);
+            if (handleViolationIfAny(decision)) {
+                return;
             }
             delegate.onNext(token);
         }
 
         @Override
         public void onComplete(Response<AiMessage> response) {
-            String fullText = fullContent.toString();
-            GuardrailResult postResult = guardrail.inspectResponse(fullText);
-            if (postResult.getAction() == GuardrailAction.BLOCK) {
-                delegate.onError(new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, postResult.getReason()));
+            if (guardrailSession.isTerminated()) {
                 return;
             }
-            if (postResult.getAction() == GuardrailAction.REPLACE) {
-                String safeText = postResult.getSafeContent();
-                Response<AiMessage> sanitizedResponse = Response.from(
-                        AiMessage.from(safeText != null ? safeText : ""),
-                        response != null ? response.tokenUsage() : null,
-                        response != null ? response.finishReason() : null
-                );
-                delegate.onComplete(sanitizedResponse);
+            StreamingGuardrailSession.Decision decision = guardrailSession.evaluateComplete(this::cancelStreamPhysically);
+            if (handleViolationIfAny(decision)) {
                 return;
             }
             delegate.onComplete(response);
@@ -1639,7 +1658,50 @@ public class AiTemplate {
 
         @Override
         public void onError(Throwable error) {
+            if (guardrailSession.isTerminated()) {
+                return;
+            }
             delegate.onError(error);
+        }
+
+        private boolean handleViolationIfAny(StreamingGuardrailSession.Decision decision) {
+            if (decision == null || decision.status() == StreamingGuardrailSession.DecisionStatus.ALLOW) {
+                return false;
+            }
+            if (decision.status() == StreamingGuardrailSession.DecisionStatus.TERMINATED) {
+                return true;
+            }
+            if (decision.status() == StreamingGuardrailSession.DecisionStatus.BLOCK) {
+                delegate.onError(new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, decision.reason()));
+                return true;
+            }
+            if (decision.status() == StreamingGuardrailSession.DecisionStatus.REPLACE) {
+                String safeText = decision.safeContent();
+                SseTokenStreamBridge bridge = unwrapSseBridge(delegate);
+                if (bridge != null) {
+                    bridge.onGuardrailReplaced(safeText, decision.reason());
+                } else {
+                    delegate.onComplete(Response.from(AiMessage.from(safeText)));
+                }
+                return true;
+            }
+            return false;
+        }
+
+        private void cancelStreamPhysically() {
+            if (activeStreamRegistry != null && StringUtils.hasText(streamId)) {
+                activeStreamRegistry.cancel(streamId);
+            }
+        }
+
+        private static SseTokenStreamBridge unwrapSseBridge(StreamingResponseHandler<AiMessage> handler) {
+            if (handler instanceof SseTokenStreamBridge bridge) {
+                return bridge;
+            }
+            if (handler instanceof QuotaTrackingStreamingResponseHandler quotaHandler) {
+                return unwrapSseBridge(quotaHandler.delegate);
+            }
+            return null;
         }
     }
 }

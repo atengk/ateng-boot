@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static org.bsc.langgraph4j.StateGraph.END;
 import static org.bsc.langgraph4j.StateGraph.START;
@@ -59,6 +60,7 @@ public abstract class DebateConsensusWorkflow<S extends BaseGraphState> extends 
 
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
+    private final ReentrantLock debatersLock = new ReentrantLock();
     private volatile List<DebateParticipant<S>> cachedDebaters;
 
     /**
@@ -111,7 +113,8 @@ public abstract class DebateConsensusWorkflow<S extends BaseGraphState> extends 
     public List<DebateParticipant<S>> getDebaters() {
         List<DebateParticipant<S>> result = cachedDebaters;
         if (result == null) {
-            synchronized (this) {
+            debatersLock.lock();
+            try {
                 result = cachedDebaters;
                 if (result == null) {
                     List<DebateParticipant<S>> registered = registerDebaters();
@@ -120,6 +123,10 @@ public abstract class DebateConsensusWorkflow<S extends BaseGraphState> extends 
                     }
                     result = Collections.unmodifiableList(new ArrayList<>(registered));
                     cachedDebaters = result;
+                }
+            } finally {
+                if (debatersLock.isHeldByCurrentThread()) {
+                    debatersLock.unlock();
                 }
             }
         }

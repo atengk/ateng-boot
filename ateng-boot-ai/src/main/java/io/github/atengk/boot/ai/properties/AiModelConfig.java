@@ -110,6 +110,18 @@ public class AiModelConfig {
     private AiResponseFormat responseFormat = AiResponseFormat.TEXT;
 
     /**
+     * 是否在 JSON_SCHEMA 模式下向模型请求体注入原生 response_format.json_schema 结构（需底层模型兼容 OpenAI Structured Outputs，默认关闭）
+     */
+    private Boolean strictNativeJsonSchema;
+
+    /**
+     * 是否启用原生 JSON Schema 协议注入（默认 false，未配置时返回 false 以便在配置合并时保留上级默认值）
+     */
+    public boolean isStrictNativeJsonSchema() {
+        return Boolean.TRUE.equals(strictNativeJsonSchema);
+    }
+
+    /**
      * 故障自动转移备选模型名称序列 (按优先级排序，例如 [backup-a, backup-b])
      */
     private List<String> fallbacks = new ArrayList<>();
@@ -213,6 +225,9 @@ public class AiModelConfig {
         }
         if (source.getResponseFormat() != null) {
             this.responseFormat = source.getResponseFormat();
+        }
+        if (source.getStrictNativeJsonSchema() != null) {
+            this.strictNativeJsonSchema = source.getStrictNativeJsonSchema();
         }
         if (source.getTotalTimeout() != null) {
             this.totalTimeout = source.getTotalTimeout();

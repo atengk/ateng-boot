@@ -15,6 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static org.bsc.langgraph4j.StateGraph.END;
 import static org.bsc.langgraph4j.StateGraph.START;
@@ -45,6 +46,7 @@ public abstract class SequentialPipelineWorkflow<S extends BaseGraphState> exten
      */
     public static final String NODE_FAILED = "failed";
 
+    private final ReentrantLock stagesLock = new ReentrantLock();
     private volatile List<PipelineStage<S>> cachedStages;
 
     /**
@@ -72,7 +74,8 @@ public abstract class SequentialPipelineWorkflow<S extends BaseGraphState> exten
     public List<PipelineStage<S>> getStages() {
         List<PipelineStage<S>> result = cachedStages;
         if (result == null) {
-            synchronized (this) {
+            stagesLock.lock();
+            try {
                 result = cachedStages;
                 if (result == null) {
                     List<PipelineStage<S>> registered = registerStages();
@@ -81,6 +84,10 @@ public abstract class SequentialPipelineWorkflow<S extends BaseGraphState> exten
                     }
                     result = Collections.unmodifiableList(new ArrayList<>(registered));
                     cachedStages = result;
+                }
+            } finally {
+                if (stagesLock.isHeldByCurrentThread()) {
+                    stagesLock.unlock();
                 }
             }
         }

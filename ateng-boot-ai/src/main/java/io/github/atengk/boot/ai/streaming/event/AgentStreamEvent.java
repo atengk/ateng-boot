@@ -112,6 +112,16 @@ public record AgentStreamEvent(
     }
 
     /**
+     * 构建内容安全护栏流式安全替换控制事件
+     *
+     * @param safeContent 安全替换文案
+     * @return 流式事件
+     */
+    public static AgentStreamEvent guardrailReplaced(String safeContent) {
+        return of(AgentStreamEventType.GUARDRAIL_REPLACED.getEventName(), safeContent != null ? safeContent : "");
+    }
+
+    /**
      * 构建正常结束事件
      *
      * @return 流式事件

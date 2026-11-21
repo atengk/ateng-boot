@@ -17,7 +17,9 @@ import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
 import io.github.atengk.boot.ai.properties.VectorStoreProperties;
+import io.github.atengk.boot.ai.quota.AiQuotaChecker;
 import io.github.atengk.boot.ai.rag.filter.DynamicFilterContentRetriever;
+import io.github.atengk.boot.ai.ratelimit.AiRateLimiter;
 import io.github.atengk.boot.ai.rag.fusion.Bm25KeywordRetriever;
 import io.github.atengk.boot.ai.rag.fusion.HybridContentRetriever;
 import io.github.atengk.boot.ai.rag.parser.DocumentParser;
@@ -243,13 +245,24 @@ public class AtengAiRagAutoConfiguration {
             ObjectProvider<EmbeddingModel> embeddingModelProvider,
             ObjectProvider<EmbeddingModelRegistry> embeddingModelRegistryProvider,
             ObjectProvider<EmbeddingStore<TextSegment>> embeddingStoreProvider,
-            AtengAiProperties properties) {
+            AtengAiProperties properties,
+            ObjectProvider<AiQuotaChecker> quotaCheckerProvider,
+            ObjectProvider<AiRateLimiter> rateLimiterProvider) {
         EmbeddingModel embeddingModel = embeddingModelProvider.getIfAvailable();
         EmbeddingModelRegistry registry = embeddingModelRegistryProvider.getIfAvailable();
         if (embeddingModel == null && (registry == null || registry.size() == 0)) {
             log.info("ateng-boot-ai 未检测到任何有效的大模型 API Key 配置，EmbeddingTemplate 处于待命状态。");
         }
-        return new EmbeddingTemplate(embeddingModel, registry, embeddingStoreProvider, properties);
+        return new EmbeddingTemplate(
+                embeddingModel,
+                registry,
+                embeddingStoreProvider,
+                null,
+                properties != null ? properties.getRag() : null,
+                properties != null ? properties.getModel() : null,
+                quotaCheckerProvider.getIfAvailable(),
+                rateLimiterProvider.getIfAvailable()
+        );
     }
 
     /**

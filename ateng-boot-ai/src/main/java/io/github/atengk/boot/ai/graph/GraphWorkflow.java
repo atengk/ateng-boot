@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 认知状态图工作流通用抽象基类
@@ -49,6 +50,7 @@ public abstract class GraphWorkflow<S extends BaseGraphState> implements Initial
 
     private final String workflowName;
     private final AgentStateFactory<S> stateFactory;
+    private final ReentrantLock compileLock = new ReentrantLock();
     private volatile CompiledGraph<S> compiledGraph;
     private BaseCheckpointSaver checkpointSaver;
 
@@ -254,35 +256,45 @@ public abstract class GraphWorkflow<S extends BaseGraphState> implements Initial
         return compiledGraph;
     }
 
-    private synchronized void ensureCompiled() {
+    private void ensureCompiled() {
         if (compiledGraph != null) {
             return;
         }
+        compileLock.lock();
         try {
-            StateGraph<S> stateGraph = new StateGraph<>(stateFactory);
-            initGraph(stateGraph);
-
-            CompileConfig.Builder compileBuilder = CompileConfig.builder();
-            if (checkpointSaver != null) {
-                compileBuilder.checkpointSaver(checkpointSaver);
+            if (compiledGraph != null) {
+                return;
             }
+            try {
+                StateGraph<S> stateGraph = new StateGraph<>(stateFactory);
+                initGraph(stateGraph);
 
-            List<String> before = interruptBeforeNodes();
-            if (!before.isEmpty()) {
-                compileBuilder.interruptBefore(before.toArray(new String[0]));
+                CompileConfig.Builder compileBuilder = CompileConfig.builder();
+                if (checkpointSaver != null) {
+                    compileBuilder.checkpointSaver(checkpointSaver);
+                }
+
+                List<String> before = interruptBeforeNodes();
+                if (!before.isEmpty()) {
+                    compileBuilder.interruptBefore(before.toArray(new String[0]));
+                }
+
+                List<String> after = interruptAfterNodes();
+                if (!after.isEmpty()) {
+                    compileBuilder.interruptAfter(after.toArray(new String[0]));
+                }
+
+                this.compiledGraph = stateGraph.compile(compileBuilder.build());
+                this.compiledGraph.setMaxIterations(maxIterations());
+                log.info("认知状态图 [{}] 拓扑编译完成 [interruptBefore={}, interruptAfter={}]",
+                        workflowName, before, after);
+            } catch (Exception e) {
+                throw new IllegalStateException("认知状态图 [" + workflowName + "] 编译失败: " + e.getMessage(), e);
             }
-
-            List<String> after = interruptAfterNodes();
-            if (!after.isEmpty()) {
-                compileBuilder.interruptAfter(after.toArray(new String[0]));
+        } finally {
+            if (compileLock.isHeldByCurrentThread()) {
+                compileLock.unlock();
             }
-
-            this.compiledGraph = stateGraph.compile(compileBuilder.build());
-            this.compiledGraph.setMaxIterations(maxIterations());
-            log.info("认知状态图 [{}] 拓扑编译完成 [interruptBefore={}, interruptAfter={}]",
-                    workflowName, before, after);
-        } catch (Exception e) {
-            throw new IllegalStateException("认知状态图 [" + workflowName + "] 编译失败: " + e.getMessage(), e);
         }
     }
 

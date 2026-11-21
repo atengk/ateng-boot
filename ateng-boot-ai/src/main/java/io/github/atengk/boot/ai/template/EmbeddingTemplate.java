@@ -4,6 +4,7 @@ import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
+import dev.langchain4j.model.output.TokenUsage;
 import dev.langchain4j.store.embedding.EmbeddingMatch;
 import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
 import dev.langchain4j.store.embedding.EmbeddingSearchResult;
@@ -13,11 +14,15 @@ import io.github.atengk.boot.ai.context.AiContextHolder;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiExceptionTranslator;
 import io.github.atengk.boot.ai.exception.AiResultCode;
+import io.github.atengk.boot.ai.observability.FallbackTokenEstimator;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
+import io.github.atengk.boot.ai.quota.AiQuotaChecker;
 import io.github.atengk.boot.ai.rag.filter.DynamicFilterContextHolder;
+import io.github.atengk.boot.ai.ratelimit.AiRateLimiter;
 import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.RetryUtil;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.util.StringUtils;
@@ -26,6 +31,7 @@ import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * 统一向量化嵌入门面 (EmbeddingTemplate)
@@ -45,6 +51,9 @@ public class EmbeddingTemplate {
     private final ObjectProvider<EmbeddingStore<TextSegment>> defaultStoreProvider;
     private final EmbeddingStore<TextSegment> defaultStore;
     private final RetryUtil.RetryConfig retryConfig;
+    private final String defaultModelName;
+    private final AiQuotaChecker quotaChecker;
+    private final AiRateLimiter rateLimiter;
 
     /**
      * 使用默认重试策略构建向量化门面
@@ -52,7 +61,7 @@ public class EmbeddingTemplate {
      * @param embeddingModel 底层向量化模型实例
      */
     public EmbeddingTemplate(EmbeddingModel embeddingModel) {
-        this(embeddingModel, null, null, null, null, null);
+        this(embeddingModel, null, null, null, null, null, null, null);
     }
 
     /**
@@ -62,18 +71,18 @@ public class EmbeddingTemplate {
      * @param properties     AI 根配置属性
      */
     public EmbeddingTemplate(EmbeddingModel embeddingModel, AtengAiProperties properties) {
-        this(embeddingModel, null, null, null, properties != null ? properties.getRag() : null, properties != null ? properties.getModel() : null);
+        this(embeddingModel, null, null, null, properties != null ? properties.getRag() : null, properties != null ? properties.getModel() : null, null, null);
     }
 
     /**
      * 基于专属 RAG 配置与全局主模型配置构建向量化门面
      *
-     * @param embeddingModel 底层向量化模型实例
-     * @param ragProperties  RAG 专属配置属性
+     * @param embeddingModel  底层向量化模型实例
+     * @param ragProperties   RAG 专属配置属性
      * @param rootModelConfig 全局主模型配置
      */
     public EmbeddingTemplate(EmbeddingModel embeddingModel, AtengAiRagProperties ragProperties, AiModelConfig rootModelConfig) {
-        this(embeddingModel, null, null, null, ragProperties, rootModelConfig);
+        this(embeddingModel, null, null, null, ragProperties, rootModelConfig, null, null);
     }
 
     /**
@@ -90,7 +99,8 @@ public class EmbeddingTemplate {
                              AtengAiProperties properties) {
         this(embeddingModel, embeddingModelRegistry, defaultStoreProvider, null,
                 properties != null ? properties.getRag() : null,
-                properties != null ? properties.getModel() : null);
+                properties != null ? properties.getModel() : null,
+                null, null);
     }
 
     /**
@@ -107,11 +117,12 @@ public class EmbeddingTemplate {
                              AtengAiProperties properties) {
         this(embeddingModel, embeddingModelRegistry, null, defaultStore,
                 properties != null ? properties.getRag() : null,
-                properties != null ? properties.getModel() : null);
+                properties != null ? properties.getModel() : null,
+                null, null);
     }
 
     /**
-     * 全参核心构造器
+     * 含标准重试参数的核心构造器
      */
     public EmbeddingTemplate(EmbeddingModel embeddingModel,
                              EmbeddingModelRegistry embeddingModelRegistry,
@@ -119,11 +130,30 @@ public class EmbeddingTemplate {
                              EmbeddingStore<TextSegment> defaultStore,
                              AtengAiRagProperties ragProperties,
                              AiModelConfig rootModelConfig) {
+        this(embeddingModel, embeddingModelRegistry, defaultStoreProvider, defaultStore, ragProperties, rootModelConfig, null, null);
+    }
+
+    /**
+     * 全参核心构造器 (接入微观限流与租户配额风控治理)
+     */
+    public EmbeddingTemplate(EmbeddingModel embeddingModel,
+                             EmbeddingModelRegistry embeddingModelRegistry,
+                             ObjectProvider<EmbeddingStore<TextSegment>> defaultStoreProvider,
+                             EmbeddingStore<TextSegment> defaultStore,
+                             AtengAiRagProperties ragProperties,
+                             AiModelConfig rootModelConfig,
+                             AiQuotaChecker quotaChecker,
+                             AiRateLimiter rateLimiter) {
         this.embeddingModel = embeddingModel;
         this.embeddingModelRegistry = embeddingModelRegistry;
         this.defaultStoreProvider = defaultStoreProvider;
         this.defaultStore = defaultStore;
         this.retryConfig = resolveRetryConfig(ragProperties, rootModelConfig);
+        this.defaultModelName = (ragProperties != null && StringUtils.hasText(ragProperties.getModelName()))
+                ? ragProperties.getModelName().trim()
+                : AtengAiRagProperties.DEFAULT_EMBEDDING_MODEL;
+        this.quotaChecker = quotaChecker;
+        this.rateLimiter = rateLimiter;
     }
 
     /**
@@ -245,11 +275,8 @@ public class EmbeddingTemplate {
             throw new IllegalArgumentException("待向量化文本不能为空");
         }
         EmbeddingModel model = ensureModelAvailable();
-        try {
-            return RetryUtil.execute(() -> model.embed(text), retryConfig);
-        } catch (Throwable t) {
-            throw AiExceptionTranslator.translate("单文本向量化计算失败", t);
-        }
+        int estimatedTokens = FallbackTokenEstimator.estimateTokens(text);
+        return executeGovernedEmbedding("单文本向量化计算失败", estimatedTokens, () -> model.embed(text));
     }
 
     /**
@@ -279,11 +306,8 @@ public class EmbeddingTemplate {
             throw new IllegalArgumentException("TextSegment 文本片段对象不能为空");
         }
         EmbeddingModel model = ensureModelAvailable();
-        try {
-            return RetryUtil.execute(() -> model.embed(segment), retryConfig);
-        } catch (Throwable t) {
-            throw AiExceptionTranslator.translate("文本片段向量化计算失败", t);
-        }
+        int estimatedTokens = FallbackTokenEstimator.estimateTokens(segment.text());
+        return executeGovernedEmbedding("文本片段向量化计算失败", estimatedTokens, () -> model.embed(segment));
     }
 
     /**
@@ -297,11 +321,48 @@ public class EmbeddingTemplate {
             return Response.from(Collections.emptyList());
         }
         EmbeddingModel model = ensureModelAvailable();
-        try {
-            return RetryUtil.execute(() -> model.embedAll(segments), retryConfig);
-        } catch (Throwable t) {
-            throw AiExceptionTranslator.translate("批量文本片段向量化计算失败", t);
+        int estimatedTokens = 0;
+        for (TextSegment seg : segments) {
+            if (seg != null && StringUtils.hasText(seg.text())) {
+                estimatedTokens += FallbackTokenEstimator.estimateTokens(seg.text());
+            }
         }
+        return executeGovernedEmbedding("批量文本片段向量化计算失败", estimatedTokens, () -> model.embedAll(segments));
+    }
+
+    private <T> Response<T> executeGovernedEmbedding(String errorMessage, int estimatedTokens, Supplier<Response<T>> action) {
+        String effectiveModelName = resolveEffectiveEmbeddingModelName();
+        String tenantId = !TenantContextHolder.isIgnoreTenant() ? TenantContextHolder.getTenantId() : null;
+        int tokens = Math.max(1, estimatedTokens);
+
+        if (rateLimiter != null) {
+            rateLimiter.acquire(tenantId, effectiveModelName, tokens);
+        }
+        if (quotaChecker != null) {
+            quotaChecker.checkQuota(tenantId, effectiveModelName, tokens);
+        }
+
+        try {
+            Response<T> response = RetryUtil.execute(action::get, retryConfig);
+            if (quotaChecker != null) {
+                TokenUsage usage = response != null ? response.tokenUsage() : null;
+                int actualTokens = (usage != null && usage.totalTokenCount() != null)
+                        ? usage.totalTokenCount()
+                        : tokens;
+                quotaChecker.recordUsage(tenantId, effectiveModelName, actualTokens);
+            }
+            return response;
+        } catch (Throwable t) {
+            throw AiExceptionTranslator.translate(errorMessage, t);
+        }
+    }
+
+    private String resolveEffectiveEmbeddingModelName() {
+        String activeModelName = AiContextHolder.getEmbeddingModelName();
+        if (StringUtils.hasText(activeModelName)) {
+            return activeModelName.trim();
+        }
+        return defaultModelName;
     }
 
     /**

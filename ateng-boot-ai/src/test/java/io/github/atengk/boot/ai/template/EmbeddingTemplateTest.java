@@ -460,4 +460,39 @@ class EmbeddingTemplateTest {
                 .isInstanceOf(AiException.class)
                 .hasMessageContaining("未检测到任何可用的 EmbeddingStore 向量存储库 Bean");
     }
+
+    @Test
+    @DisplayName("EmbeddingTemplate 应统一接入 AiRateLimiter 限流与 AiQuotaChecker 配额扣减保护")
+    void testEmbeddingEnforcesRateLimitAndQuota() {
+        io.github.atengk.boot.ai.properties.AtengAiRateLimitProperties rlProps = new io.github.atengk.boot.ai.properties.AtengAiRateLimitProperties();
+        rlProps.setEnabled(true);
+        rlProps.setDefaultRps(1);
+        io.github.atengk.boot.ai.ratelimit.AiRateLimiter rateLimiter = new io.github.atengk.boot.ai.ratelimit.DefaultAiRateLimiter(rlProps);
+
+        io.github.atengk.boot.ai.properties.AtengAiQuotaProperties quotaProps = new io.github.atengk.boot.ai.properties.AtengAiQuotaProperties();
+        quotaProps.setEnabled(true);
+        quotaProps.setDailyRequestLimit(2);
+        io.github.atengk.boot.ai.quota.DefaultAiQuotaChecker quotaChecker = new io.github.atengk.boot.ai.quota.DefaultAiQuotaChecker(quotaProps);
+
+        AtengAiProperties props = new AtengAiProperties();
+        EmbeddingTemplate governedTemplate = new EmbeddingTemplate(
+                mockEmbeddingModel, null, null, null, props.getRag(), props.getModel(), quotaChecker, rateLimiter);
+
+        when(mockEmbeddingModel.embed(anyString())).thenReturn(Response.from(new Embedding(new float[]{0.5f, 0.5f})));
+
+        io.github.atengk.boot.core.context.TenantContextHolder.setTenantId("tenant-embed");
+        try {
+            // 首次调用成功并记录配额
+            governedTemplate.embed("向量化测试");
+            assertThat(quotaChecker.getDailyRequests("tenant-embed")).isEqualTo(1);
+
+            // 第二次受 RPS=1 限流拦截
+            assertThatThrownBy(() -> governedTemplate.embed("第二次立即调用"))
+                    .isInstanceOf(AiException.class)
+                    .extracting("code")
+                    .isEqualTo(AiResultCode.AI_RATE_LIMIT_EXCEEDED.getCode());
+        } finally {
+            io.github.atengk.boot.core.context.TenantContextHolder.clear();
+        }
+    }
 }

@@ -9,15 +9,20 @@ import dev.langchain4j.service.TokenStream;
 import dev.langchain4j.service.tool.ToolExecution;
 import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiExceptionTranslator;
+import io.github.atengk.boot.ai.exception.AiResultCode;
+import io.github.atengk.boot.ai.guardrail.AiGuardrail;
+import io.github.atengk.boot.ai.guardrail.StreamingGuardrailSession;
 import io.github.atengk.boot.ai.rag.citation.Citation;
 import io.github.atengk.boot.ai.rag.citation.CitationExtractor;
 import io.github.atengk.boot.ai.streaming.event.AgentStreamEvent;
 import io.github.atengk.boot.ai.streaming.event.AgentStreamEventType;
 import io.github.atengk.boot.ai.streaming.event.AgentStreamListener;
 import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.util.StringUtils;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -25,6 +30,7 @@ import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 
 /**
@@ -47,9 +53,12 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
     private final ReasonerTokenExtractor extractor;
     private final AtomicBoolean completed = new AtomicBoolean(false);
     private final AtomicBoolean normalCompleted = new AtomicBoolean(false);
+    private final AtomicBoolean guardrailTerminated = new AtomicBoolean(false);
     private final AsyncContext.ContextSnapshot contextSnapshot;
     private final StringBuilder textAccumulator = new StringBuilder();
     private final List<AgentStreamListener> listeners = new CopyOnWriteArrayList<>();
+    private final ReentrantLock sendLock = new ReentrantLock();
+    private volatile StreamingGuardrailSession guardrailSession;
     private List<TextSegment> citationCandidates;
     private Function<String, List<Citation>> citationExtractor;
 
@@ -151,6 +160,30 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
     }
 
     /**
+     * 挂载内容安全护栏，在流式推流 onNext 阶段实时执行累计文本增量检测与即刻物理断流
+     *
+     * @param guardrail 内容安全护栏实例
+     * @return 当前 SseTokenStreamBridge 实例
+     */
+    public SseTokenStreamBridge withGuardrail(AiGuardrail guardrail) {
+        this.guardrailSession = guardrail != null ? new StreamingGuardrailSession(guardrail) : null;
+        return this;
+    }
+
+    /**
+     * 当外部流式护栏在 REPLACE 模式下命中违规时，向前端下发安全替换控制事件并物理切断上游连接
+     *
+     * @param safeContent 安全替代文案
+     * @param reason      拦截原因描述
+     */
+    public void onGuardrailReplaced(String safeContent, String reason) {
+        if (completed.get()) {
+            return;
+        }
+        runWithContext(() -> onGuardrailReplacedInternal(safeContent, reason));
+    }
+
+    /**
      * 将 LangChain4j 的声明式智能体 TokenStream 流式管道自动绑定并桥接到 Spring SseEmitter
      *
      * @param tokenStream 智能体 TokenStream 流
@@ -178,7 +211,34 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
             ActiveStreamRegistry streamRegistry,
             AgentStreamListener... listeners) {
         Objects.requireNonNull(tokenStream, "TokenStream 不能为空");
-        SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, streamId, streamRegistry);
+        TokenStream effectiveStream = tokenStream;
+        AiGuardrail unwrappedGuardrail = null;
+        String effectiveStreamId = streamId;
+        ActiveStreamRegistry effectiveRegistry = streamRegistry;
+        if (tokenStream instanceof GuardrailedTokenStream guarded) {
+            unwrappedGuardrail = guarded.getGuardrail();
+            if (!StringUtils.hasText(effectiveStreamId)) {
+                effectiveStreamId = guarded.getStreamId();
+            }
+            if (effectiveRegistry == null) {
+                effectiveRegistry = guarded.getStreamRegistry();
+            }
+            effectiveStream = guarded.unwrap();
+        }
+        if (!StringUtils.hasText(effectiveStreamId)) {
+            String contextStreamId = StreamContextHolder.getStreamId();
+            if (StringUtils.hasText(contextStreamId)) {
+                effectiveStreamId = contextStreamId;
+            } else if (StringUtils.hasText(MDC.get("traceId"))) {
+                effectiveStreamId = MDC.get("traceId");
+            } else if (effectiveRegistry != null || unwrappedGuardrail != null) {
+                effectiveStreamId = IdUtil.fastSimpleUUID();
+            }
+        }
+        SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, effectiveStreamId, effectiveRegistry);
+        if (unwrappedGuardrail != null) {
+            bridge.withGuardrail(unwrappedGuardrail);
+        }
         if (listeners != null) {
             for (AgentStreamListener listener : listeners) {
                 if (listener != null) {
@@ -186,23 +246,59 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
                 }
             }
         }
-        tokenStream
-                .onNext(bridge::onNext)
-                .onRetrieved(bridge::onRetrieved)
-                .onToolExecuted(bridge::onToolExecuted)
-                .onComplete(bridge::onComplete)
-                .onError(bridge::onError)
-                .start();
+        String previousStreamId = StreamContextHolder.getStreamId();
+        boolean boundStreamId = false;
+        if (StringUtils.hasText(effectiveStreamId) && !effectiveStreamId.equals(previousStreamId)) {
+            StreamContextHolder.setStreamId(effectiveStreamId);
+            boundStreamId = true;
+        }
+        try {
+            effectiveStream
+                    .onNext(bridge::onNext)
+                    .onRetrieved(bridge::onRetrieved)
+                    .onToolExecuted(bridge::onToolExecuted)
+                    .onComplete(bridge::onComplete)
+                    .onError(bridge::onError)
+                    .start();
+        } finally {
+            if (boundStreamId) {
+                if (StringUtils.hasText(previousStreamId)) {
+                    StreamContextHolder.setStreamId(previousStreamId);
+                } else {
+                    StreamContextHolder.clear();
+                }
+            }
+        }
         return bridge;
     }
 
     @Override
     public void onNext(String token) {
-        if (completed.get() || token == null) {
+        if (completed.get() || guardrailTerminated.get() || token == null) {
             return;
         }
 
         runWithContext(() -> {
+            if (guardrailTerminated.get() || completed.get()) {
+                return;
+            }
+            StreamingGuardrailSession session = this.guardrailSession;
+            if (session != null) {
+                StreamingGuardrailSession.Decision decision = session.evaluateNext(token, this::cancelStreamPhysically);
+                if (decision.status() == StreamingGuardrailSession.DecisionStatus.BLOCK) {
+                    guardrailTerminated.set(true);
+                    onErrorInternal(new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, decision.reason()));
+                    return;
+                }
+                if (decision.status() == StreamingGuardrailSession.DecisionStatus.REPLACE) {
+                    guardrailTerminated.set(true);
+                    onGuardrailReplacedInternal(decision.safeContent(), decision.reason());
+                    return;
+                }
+                if (decision.status() == StreamingGuardrailSession.DecisionStatus.TERMINATED) {
+                    return;
+                }
+            }
             List<StreamToken> tokens = extractor.feed(token);
             for (StreamToken streamToken : tokens) {
                 if (streamToken.channel() == TokenChannel.TEXT) {
@@ -289,7 +385,7 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
 
     @Override
     public void onComplete(Response<AiMessage> response) {
-        if (completed.get()) {
+        if (completed.get() || guardrailTerminated.get()) {
             return;
         }
 
@@ -349,32 +445,53 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
 
     @Override
     public void onError(Throwable error) {
-        if (completed.get()) {
+        if (completed.get() || guardrailTerminated.get()) {
             return;
         }
 
-        runWithContext(() -> {
-            for (AgentStreamListener listener : listeners) {
-                try {
-                    listener.onError(error);
-                } catch (Throwable t) {
-                    log.warn("AgentStreamListener onError 回调异常: {}", t.getMessage());
-                }
-            }
+        runWithContext(() -> onErrorInternal(error));
+    }
 
-            AiException aiEx = AiExceptionTranslator.translate(error);
-            log.error("大模型流式输出发生未决异常: {}", aiEx.getMessage());
-
-            sendEvent("error", aiEx.getMessage());
-
+    private void onErrorInternal(Throwable error) {
+        for (AgentStreamListener listener : listeners) {
             try {
-                emitter.completeWithError(aiEx);
-            } catch (Throwable ignored) {
-            } finally {
-                completed.set(true);
-                cancelStreamPhysically();
+                listener.onError(error);
+            } catch (Throwable t) {
+                log.warn("AgentStreamListener onError 回调异常: {}", t.getMessage());
             }
-        });
+        }
+
+        AiException aiEx = AiExceptionTranslator.translate(error);
+        log.error("大模型流式输出发生未决异常: {}", aiEx.getMessage());
+
+        sendEvent("error", aiEx.getMessage());
+
+        try {
+            emitter.completeWithError(aiEx);
+        } catch (Throwable ignored) {
+        } finally {
+            completed.set(true);
+            cancelStreamPhysically();
+        }
+    }
+
+    private void onGuardrailReplacedInternal(String safeContent, String reason) {
+        guardrailTerminated.set(true);
+        cancelStreamPhysically();
+        String safe = safeContent != null ? safeContent : "";
+        log.warn("AI 流式响应触发内容安全护栏替换 [streamId={}]: {}", streamId, reason);
+        for (AgentStreamListener listener : listeners) {
+            try {
+                listener.onEvent(AgentStreamEvent.guardrailReplaced(safe));
+            } catch (Throwable t) {
+                log.warn("AgentStreamListener guardrail_replaced 回调异常: {}", t.getMessage());
+            }
+        }
+        sendEvent(AgentStreamEventType.GUARDRAIL_REPLACED.getEventName(), safe);
+        sendEvent("done", "[DONE]");
+        normalCompleted.set(true);
+        closeSafely();
+        cleanupStreamSafely();
     }
 
     private void notifyListenersText(String text) {
@@ -413,20 +530,27 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
      * @param eventName 事件名称 (reasoning / text / tool_call / tool_result / rag_retrieved / citation / done / error)
      * @param data      事件数据
      */
-    private synchronized void sendEvent(String eventName, Object data) {
-        if (completed.get()) {
-            return;
-        }
+    private void sendEvent(String eventName, Object data) {
+        sendLock.lock();
         try {
-            emitter.send(SseEmitter.event().name(eventName).data(data));
-        } catch (IOException | IllegalStateException ex) {
-            log.debug("客户端已断开 SSE 连接: {}", ex.getMessage());
-            closeSafely();
-            cancelStreamPhysically();
-        } catch (Throwable t) {
-            log.warn("发送 SSE 分片异常: {}", t.getMessage());
-            closeSafely();
-            cancelStreamPhysically();
+            if (completed.get()) {
+                return;
+            }
+            try {
+                emitter.send(SseEmitter.event().name(eventName).data(data));
+            } catch (IOException | IllegalStateException ex) {
+                log.debug("客户端已断开 SSE 连接: {}", ex.getMessage());
+                closeSafely();
+                cancelStreamPhysically();
+            } catch (Throwable t) {
+                log.warn("发送 SSE 分片异常: {}", t.getMessage());
+                closeSafely();
+                cancelStreamPhysically();
+            }
+        } finally {
+            if (sendLock.isHeldByCurrentThread()) {
+                sendLock.unlock();
+            }
         }
     }
 

@@ -33,6 +33,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 企业 OpenAPI 3.0 与 Swagger 2.0 契约转 Agent 受管沙箱工具适配器
@@ -56,6 +57,7 @@ public class OpenApiToolAdapter {
     private final OpenApiToolProperties properties;
     private final String rawSpecJson;
     private final RestClient restClient;
+    private final ReentrantLock initLock = new ReentrantLock();
 
     private final Map<String, OpenApiOperationMeta> operationsMap = new ConcurrentHashMap<>();
     private volatile Map<ToolSpecification, ToolExecutor> sandboxedTools = Collections.emptyMap();
@@ -197,63 +199,70 @@ public class OpenApiToolAdapter {
     /**
      * 初始化解析全部工具
      */
-    private synchronized void initializeTools() {
-        Map<String, OpenApiOperationMeta> localOperationsMap = new ConcurrentHashMap<>();
-        Map<ToolSpecification, ToolExecutor> localSandboxedTools = new LinkedHashMap<>();
-        Map<String, ToolExecutor> localExecutorByOperationId = new ConcurrentHashMap<>();
+    private void initializeTools() {
+        initLock.lock();
+        try {
+            Map<String, OpenApiOperationMeta> localOperationsMap = new ConcurrentHashMap<>();
+            Map<ToolSpecification, ToolExecutor> localSandboxedTools = new LinkedHashMap<>();
+            Map<String, ToolExecutor> localExecutorByOperationId = new ConcurrentHashMap<>();
 
-        List<OpenApiOperationMeta> operations = OpenApiSchemaConverter.parseOperations(rootSpecNode);
-        for (OpenApiOperationMeta op : operations) {
-            String opId = op.getOperationId();
-            String method = op.getHttpMethod().toUpperCase(Locale.ROOT);
+            List<OpenApiOperationMeta> operations = OpenApiSchemaConverter.parseOperations(rootSpecNode);
+            for (OpenApiOperationMeta op : operations) {
+                String opId = op.getOperationId();
+                String method = op.getHttpMethod().toUpperCase(Locale.ROOT);
 
-            // 1. 过滤只读模式限制
-            if (properties.isReadOnly() && !SAFE_METHODS.contains(method)) {
-                log.debug("[AI-OPENAPI-TOOL] 适配器 [{}] 处于只读模式，忽略非安全写操作: {} {}", properties.getName(), method, op.getPath());
-                continue;
-            }
-
-            // 2. 过滤 HTTP 请求方法白名单
-            if (properties.getAllowedMethods() != null && !properties.getAllowedMethods().isEmpty()) {
-                if (!properties.getAllowedMethods().contains(method)) {
-                    log.debug("[AI-OPENAPI-TOOL] 操作 {} {} 不在允许的方法白名单内，忽略", method, op.getPath());
+                // 1. 过滤只读模式限制
+                if (properties.isReadOnly() && !SAFE_METHODS.contains(method)) {
+                    log.debug("[AI-OPENAPI-TOOL] 适配器 [{}] 处于只读模式，忽略非安全写操作: {} {}", properties.getName(), method, op.getPath());
                     continue;
                 }
-            }
 
-            // 3. 过滤操作包含白名单与排除黑名单
-            if (properties.getIncludeOperations() != null && !properties.getIncludeOperations().isEmpty()) {
-                if (!properties.getIncludeOperations().contains(opId)) {
+                // 2. 过滤 HTTP 请求方法白名单
+                if (properties.getAllowedMethods() != null && !properties.getAllowedMethods().isEmpty()) {
+                    if (!properties.getAllowedMethods().contains(method)) {
+                        log.debug("[AI-OPENAPI-TOOL] 操作 {} {} 不在允许的方法白名单内，忽略", method, op.getPath());
+                        continue;
+                    }
+                }
+
+                // 3. 过滤操作包含白名单与排除黑名单
+                if (properties.getIncludeOperations() != null && !properties.getIncludeOperations().isEmpty()) {
+                    if (!properties.getIncludeOperations().contains(opId)) {
+                        continue;
+                    }
+                }
+                if (properties.getExcludeOperations() != null && properties.getExcludeOperations().contains(opId)) {
                     continue;
                 }
+
+                // 4. 转换为 ToolSpecification
+                ToolSpecification specification = OpenApiSchemaConverter.toToolSpecification(op, rootSpecNode);
+
+                // 5. 构造执行器并用受管沙箱包装
+                ToolExecutor rawExecutor = (request, memoryId) -> executeRequest(op, request);
+                ToolExecutor sandboxed = SandboxedToolExecutor.wrap(opId, rawExecutor);
+
+                localOperationsMap.put(opId, op);
+                localSandboxedTools.put(specification, sandboxed);
+                localExecutorByOperationId.put(opId, sandboxed);
+
+                log.debug("[AI-OPENAPI-TOOL] 适配器 [{}] 成功转换受管工具: [{}] -> {} {}",
+                        properties.getName(), opId, method, op.getPath());
             }
-            if (properties.getExcludeOperations() != null && properties.getExcludeOperations().contains(opId)) {
-                continue;
+
+            this.operationsMap.clear();
+            this.operationsMap.putAll(localOperationsMap);
+            this.executorByOperationId.clear();
+            this.executorByOperationId.putAll(localExecutorByOperationId);
+            this.sandboxedTools = Collections.unmodifiableMap(localSandboxedTools);
+
+            log.info("[AI-OPENAPI-TOOL] 适配器 [{}] 解析完成，共注册 {} 个受管 OpenAPI 沙箱工具 (baseUrl: {})",
+                    properties.getName(), localSandboxedTools.size(), resolvedBaseUrl);
+        } finally {
+            if (initLock.isHeldByCurrentThread()) {
+                initLock.unlock();
             }
-
-            // 4. 转换为 ToolSpecification
-            ToolSpecification specification = OpenApiSchemaConverter.toToolSpecification(op, rootSpecNode);
-
-            // 5. 构造执行器并用受管沙箱包装
-            ToolExecutor rawExecutor = (request, memoryId) -> executeRequest(op, request);
-            ToolExecutor sandboxed = SandboxedToolExecutor.wrap(opId, rawExecutor);
-
-            localOperationsMap.put(opId, op);
-            localSandboxedTools.put(specification, sandboxed);
-            localExecutorByOperationId.put(opId, sandboxed);
-
-            log.debug("[AI-OPENAPI-TOOL] 适配器 [{}] 成功转换受管工具: [{}] -> {} {}",
-                    properties.getName(), opId, method, op.getPath());
         }
-
-        this.operationsMap.clear();
-        this.operationsMap.putAll(localOperationsMap);
-        this.executorByOperationId.clear();
-        this.executorByOperationId.putAll(localExecutorByOperationId);
-        this.sandboxedTools = Collections.unmodifiableMap(localSandboxedTools);
-
-        log.info("[AI-OPENAPI-TOOL] 适配器 [{}] 解析完成，共注册 {} 个受管 OpenAPI 沙箱工具 (baseUrl: {})",
-                properties.getName(), localSandboxedTools.size(), resolvedBaseUrl);
     }
 
     /**
@@ -503,7 +512,7 @@ public class OpenApiToolAdapter {
     /**
      * 重新解析契约文档并刷新工具注册表
      */
-    public synchronized void reload() {
+    public void reload() {
         initializeTools();
     }
 

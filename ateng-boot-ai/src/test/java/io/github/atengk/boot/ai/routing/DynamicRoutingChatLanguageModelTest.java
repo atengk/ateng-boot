@@ -258,4 +258,62 @@ class DynamicRoutingChatLanguageModelTest {
             io.github.atengk.boot.core.context.TenantContextHolder.clear();
         }
     }
+
+    @Test
+    @DisplayName("动态路由同步与流式模型应强制接入 AiRateLimiter 微观限流保护")
+    void testDynamicRoutingEnforcesRateLimiter() {
+        io.github.atengk.boot.ai.properties.AtengAiRateLimitProperties rlProps = new io.github.atengk.boot.ai.properties.AtengAiRateLimitProperties();
+        rlProps.setEnabled(true);
+        rlProps.setDefaultRps(1);
+        io.github.atengk.boot.ai.ratelimit.AiRateLimiter rateLimiter = new io.github.atengk.boot.ai.ratelimit.DefaultAiRateLimiter(rlProps);
+
+        when(defaultModel.generate(anyList())).thenReturn(Response.from(AiMessage.from("ok")));
+        DynamicRoutingChatLanguageModel router = new DynamicRoutingChatLanguageModel(registry, "default", null, null, rateLimiter);
+
+        io.github.atengk.boot.core.context.TenantContextHolder.setTenantId("tenant-rl");
+        try {
+            assertThat(router.generate(List.of(UserMessage.from("first"))).content().text()).isEqualTo("ok");
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> router.generate(List.of(UserMessage.from("second"))))
+                    .isInstanceOf(io.github.atengk.boot.ai.exception.AiException.class)
+                    .extracting("code")
+                    .isEqualTo(io.github.atengk.boot.ai.exception.AiResultCode.AI_RATE_LIMIT_EXCEEDED.getCode());
+        } finally {
+            io.github.atengk.boot.core.context.TenantContextHolder.clear();
+        }
+    }
+
+    @Test
+    @DisplayName("流式动态路由模型应强制接入 AiRateLimiter 微观限流保护")
+    @SuppressWarnings("unchecked")
+    void testDynamicRoutingStreamingEnforcesRateLimiter() {
+        dev.langchain4j.model.chat.StreamingChatLanguageModel streamingModel =
+                mock(dev.langchain4j.model.chat.StreamingChatLanguageModel.class);
+        registry.register("default", defaultModel, streamingModel);
+
+        io.github.atengk.boot.ai.properties.AtengAiRateLimitProperties rlProps =
+                new io.github.atengk.boot.ai.properties.AtengAiRateLimitProperties();
+        rlProps.setEnabled(true);
+        rlProps.setDefaultRps(1);
+        io.github.atengk.boot.ai.ratelimit.AiRateLimiter rateLimiter =
+                new io.github.atengk.boot.ai.ratelimit.DefaultAiRateLimiter(rlProps);
+
+        DynamicRoutingStreamingChatLanguageModel streamingRouter =
+                new DynamicRoutingStreamingChatLanguageModel(registry, "default", null, null, rateLimiter);
+
+        io.github.atengk.boot.core.context.TenantContextHolder.setTenantId("tenant-stream-rl");
+        try {
+            dev.langchain4j.model.StreamingResponseHandler<AiMessage> handler =
+                    mock(dev.langchain4j.model.StreamingResponseHandler.class);
+            streamingRouter.generate(List.of(UserMessage.from("first")), handler);
+            verify(streamingModel).generate(anyList(), org.mockito.ArgumentMatchers.eq(handler));
+
+            org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                            streamingRouter.generate(List.of(UserMessage.from("second")), handler))
+                    .isInstanceOf(io.github.atengk.boot.ai.exception.AiException.class)
+                    .extracting("code")
+                    .isEqualTo(io.github.atengk.boot.ai.exception.AiResultCode.AI_RATE_LIMIT_EXCEEDED.getCode());
+        } finally {
+            io.github.atengk.boot.core.context.TenantContextHolder.clear();
+        }
+    }
 }

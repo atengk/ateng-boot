@@ -27,6 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 基于 HTTP JSON-RPC 2.0 的远程 MCP 客户端适配器实现
@@ -49,6 +50,8 @@ public class HttpMcpClientAdapter implements McpClientAdapter {
     private final String transport;
     private final HttpClient httpClient;
     private final Map<ToolSpecification, ToolExecutor> toolsMap = new ConcurrentHashMap<>();
+    private final ReentrantLock toolsLock = new ReentrantLock();
+    private final ReentrantLock endpointLock = new ReentrantLock();
     private volatile String resolvedPostUrl;
 
     public HttpMcpClientAdapter(String serverName, String endpointUrl) {
@@ -91,9 +94,14 @@ public class HttpMcpClientAdapter implements McpClientAdapter {
     @Override
     public Map<ToolSpecification, ToolExecutor> getTools() {
         if (toolsMap.isEmpty()) {
-            synchronized (toolsMap) {
+            toolsLock.lock();
+            try {
                 if (toolsMap.isEmpty()) {
                     refreshTools();
+                }
+            } finally {
+                if (toolsLock.isHeldByCurrentThread()) {
+                    toolsLock.unlock();
                 }
             }
         }
@@ -310,16 +318,26 @@ public class HttpMcpClientAdapter implements McpClientAdapter {
      *
      * @return 实际 POST 目标 URL
      */
-    public synchronized String getEffectiveEndpointUrl() {
+    public String getEffectiveEndpointUrl() {
         if (resolvedPostUrl != null) {
             return resolvedPostUrl;
         }
-        if (!isSseEndpoint()) {
-            this.resolvedPostUrl = this.endpointUrl;
+        endpointLock.lock();
+        try {
+            if (resolvedPostUrl != null) {
+                return resolvedPostUrl;
+            }
+            if (!isSseEndpoint()) {
+                this.resolvedPostUrl = this.endpointUrl;
+                return this.resolvedPostUrl;
+            }
+            this.resolvedPostUrl = discoverSseMessageEndpoint();
             return this.resolvedPostUrl;
+        } finally {
+            if (endpointLock.isHeldByCurrentThread()) {
+                endpointLock.unlock();
+            }
         }
-        this.resolvedPostUrl = discoverSseMessageEndpoint();
-        return this.resolvedPostUrl;
     }
 
     /**

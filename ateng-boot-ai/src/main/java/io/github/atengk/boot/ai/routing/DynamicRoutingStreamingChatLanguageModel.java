@@ -8,6 +8,7 @@ import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import dev.langchain4j.model.output.Response;
 import io.github.atengk.boot.ai.observability.FallbackTokenEstimator;
 import io.github.atengk.boot.ai.quota.AiQuotaChecker;
+import io.github.atengk.boot.ai.ratelimit.AiRateLimiter;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.tenant.AiTenantModelResolver;
 import io.github.atengk.boot.core.context.TenantContextHolder;
@@ -34,21 +35,29 @@ public class DynamicRoutingStreamingChatLanguageModel implements StreamingChatLa
     private final String configuredModelName;
     private final AiTenantModelResolver tenantModelResolver;
     private final AiQuotaChecker quotaChecker;
+    private final AiRateLimiter rateLimiter;
 
     public DynamicRoutingStreamingChatLanguageModel(AiModelRegistry registry, String configuredModelName) {
-        this(registry, configuredModelName, null, null);
+        this(registry, configuredModelName, null, null, null);
     }
 
     public DynamicRoutingStreamingChatLanguageModel(AiModelRegistry registry, String configuredModelName, AiTenantModelResolver tenantModelResolver) {
-        this(registry, configuredModelName, tenantModelResolver, null);
+        this(registry, configuredModelName, tenantModelResolver, null, null);
     }
 
     public DynamicRoutingStreamingChatLanguageModel(AiModelRegistry registry, String configuredModelName,
                                                    AiTenantModelResolver tenantModelResolver, AiQuotaChecker quotaChecker) {
+        this(registry, configuredModelName, tenantModelResolver, quotaChecker, null);
+    }
+
+    public DynamicRoutingStreamingChatLanguageModel(AiModelRegistry registry, String configuredModelName,
+                                                   AiTenantModelResolver tenantModelResolver, AiQuotaChecker quotaChecker,
+                                                   AiRateLimiter rateLimiter) {
         this.registry = Objects.requireNonNull(registry, "AiModelRegistry 不能为空");
         this.configuredModelName = StringUtils.hasText(configuredModelName) ? configuredModelName.trim() : "";
         this.tenantModelResolver = tenantModelResolver;
         this.quotaChecker = quotaChecker;
+        this.rateLimiter = rateLimiter;
     }
 
     /**
@@ -112,8 +121,13 @@ public class DynamicRoutingStreamingChatLanguageModel implements StreamingChatLa
         StreamingChatLanguageModel model = resolveModel(modelName);
 
         String tenantId = !TenantContextHolder.isIgnoreTenant() ? TenantContextHolder.getTenantId() : null;
+        int promptTokens = (rateLimiter != null || (quotaChecker != null && StringUtils.hasText(tenantId)))
+                ? FallbackTokenEstimator.estimatePromptTokens(preprocessed)
+                : 0;
+        if (rateLimiter != null) {
+            rateLimiter.acquire(tenantId, modelName, promptTokens);
+        }
         if (quotaChecker != null && StringUtils.hasText(tenantId)) {
-            int promptTokens = FallbackTokenEstimator.estimatePromptTokens(preprocessed);
             quotaChecker.checkQuota(tenantId.trim(), modelName, promptTokens);
         }
 
