@@ -318,6 +318,76 @@ class SocialAppFactoryTest {
     }
 
     @Test
+    @DisplayName("验证并发动态切源时配置指纹与专有 RestClient 原子一致性")
+    void testConcurrentDynamicConfigFingerprintConsistency() throws Exception {
+        SocialAppConfigProvider mockProvider = mock(SocialAppConfigProvider.class);
+        StaticListableBeanFactory providerFactory = new StaticListableBeanFactory();
+        providerFactory.addBean("provider", mockProvider);
+
+        SocialAppFactory dynamicFactory = new SocialAppFactory(
+                properties,
+                providerFactory.getBeanProvider(SocialAppConfigProvider.class),
+                stateCacheProvider,
+                httpClientAdapter
+        );
+
+        SocialAppConfig configA = SocialAppConfig.builder()
+                .appKey("concurrent-app")
+                .source("GITEE")
+                .clientId("c1")
+                .clientSecret("s1")
+                .redirectUri("https://example.com/cb")
+                .connectTimeout(Duration.ofSeconds(2))
+                .readTimeout(Duration.ofSeconds(2))
+                .build();
+        SocialAppConfig configB = SocialAppConfig.builder()
+                .appKey("concurrent-app")
+                .source("GITEE")
+                .clientId("c1")
+                .clientSecret("s1")
+                .redirectUri("https://example.com/cb")
+                .connectTimeout(Duration.ofSeconds(6))
+                .readTimeout(Duration.ofSeconds(6))
+                .build();
+
+        java.util.concurrent.atomic.AtomicInteger counter = new java.util.concurrent.atomic.AtomicInteger(0);
+        when(mockProvider.getAppConfig("concurrent-app"))
+                .thenAnswer(inv -> (counter.getAndIncrement() % 2 == 0) ? configA : configB);
+
+        org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor executor =
+                new org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(8);
+        executor.setMaxPoolSize(8);
+        executor.setThreadNamePrefix("social-fp-test-");
+        executor.initialize();
+        try {
+            java.util.concurrent.CountDownLatch startLatch = new java.util.concurrent.CountDownLatch(1);
+            java.util.List<java.util.concurrent.Future<?>> futures = new java.util.ArrayList<>();
+            for (int i = 0; i < 32; i++) {
+                futures.add(executor.submit(() -> {
+                    startLatch.await();
+                    dynamicFactory.createAuthRequest("concurrent-app");
+                    return CurrentSocialAppContextHolder.runWithAppKey("concurrent-app", () -> httpClientAdapter.obtainClient());
+                }));
+            }
+            startLatch.countDown();
+            for (java.util.concurrent.Future<?> future : futures) {
+                assertThat(future.get()).isNotNull();
+            }
+
+            // 切回确定态后，最终注册的 RestClient 必收敛至对应指纹实例且与未配置代理回退一致
+            when(mockProvider.getAppConfig("concurrent-app")).thenReturn(configB);
+            dynamicFactory.createAuthRequest("concurrent-app");
+            RestClient stableClient = CurrentSocialAppContextHolder.runWithAppKey("concurrent-app", () -> httpClientAdapter.obtainClient());
+            dynamicFactory.createAuthRequest("concurrent-app");
+            assertThat(CurrentSocialAppContextHolder.runWithAppKey("concurrent-app", () -> httpClientAdapter.obtainClient()))
+                    .isSameAs(stableClient);
+        } finally {
+            executor.shutdown();
+        }
+    }
+
+    @Test
     @DisplayName("验证企业级平台专有配置 (PKCE / 微软 Entra / 企微V2 / 钉钉V2 / Apple / Okta) 100% 映射至 AuthConfig")
     void testEnterprisePlatformSpecificPropertiesMapping() {
         SocialAppItemProperties enterpriseProps = new SocialAppItemProperties();

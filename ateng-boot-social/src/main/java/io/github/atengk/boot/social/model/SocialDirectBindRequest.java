@@ -69,7 +69,7 @@ public class SocialDirectBindRequest implements Serializable {
     @JsonIgnore
     @AssertTrue(message = "授权凭证 (code / authCode / oauthToken) 不能为空")
     public boolean isCredentialPresent() {
-        return hasText(code) || hasText(authCode) || hasText(oauthToken);
+        return SocialDirectCallbackSupport.isCredentialPresent(code, authCode, oauthToken);
     }
 
     /**
@@ -79,7 +79,7 @@ public class SocialDirectBindRequest implements Serializable {
      */
     @JsonIgnore
     public boolean hasExtendedCallbackFields() {
-        return hasText(authCode) || hasText(oauthToken) || hasText(oauthVerifier) || hasText(user);
+        return SocialDirectCallbackSupport.hasExtendedCallbackFields(authCode, oauthToken, oauthVerifier, user);
     }
 
     /**
@@ -88,17 +88,6 @@ public class SocialDirectBindRequest implements Serializable {
      * @return AuthCallback 实例
      */
     public AuthCallback toAuthCallback() {
-        return AuthCallback.builder()
-                .code(code)
-                .state(state)
-                .auth_code(authCode)
-                .oauth_token(oauthToken)
-                .oauth_verifier(oauthVerifier)
-                .user(user)
-                .build();
-    }
-
-    private static boolean hasText(String str) {
-        return str != null && !str.isBlank();
+        return SocialDirectCallbackSupport.toAuthCallback(code, state, authCode, oauthToken, oauthVerifier, user);
     }
 }

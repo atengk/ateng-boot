@@ -43,7 +43,10 @@ import org.springframework.context.ApplicationEventPublisherAware;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /**
@@ -843,7 +846,7 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             SocialUser socialUser = SocialUser.fromAuthUser(authResponse.getData(), appConfig.getSource());
             if (socialUser != null) {
                 socialUser.setAppKey(appKey);
-                if (socialUser.isSnapshotUser() && isRejectSnapshotUserEnabled(appKey, appConfig)) {
+                if (socialUser.isSnapshotUser() && isRejectSnapshotUserEnabled(appConfig)) {
                     log.warn("Rejected social snapshot virtual user: appKey=[{}], source=[{}], openId=[{}]",
                             appKey, socialUser.getSource(), socialUser.getOpenId());
                     throw new SocialSnapshotUserException(appKey, socialUser.getOpenId());
@@ -861,27 +864,27 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             return;
         }
         String source = appConfig.getSource();
-        if (source != null && !source.isBlank()) {
-            String trimmed = source.trim();
-            stateCache.removeContext(trimmed + ":code_verifier:" + state);
-            stateCache.removeContext(trimmed.toUpperCase(java.util.Locale.ROOT) + ":code_verifier:" + state);
-            stateCache.removeContext(trimmed.toLowerCase(java.util.Locale.ROOT) + ":code_verifier:" + state);
+        if (source == null || source.isBlank()) {
+            return;
+        }
+        Set<String> candidateSources = new LinkedHashSet<>();
+        if (socialAppFactory != null) {
+            String resolvedName = socialAppFactory.resolveSourceName(source);
+            if (resolvedName != null && !resolvedName.isBlank()) {
+                candidateSources.add(resolvedName);
+            }
+        }
+        String trimmed = source.trim();
+        candidateSources.add(trimmed);
+        candidateSources.add(trimmed.toUpperCase(Locale.ROOT));
+        for (String candidate : candidateSources) {
+            stateCache.removeContext(candidate + ":code_verifier:" + state);
         }
     }
 
-    private boolean isRejectSnapshotUserEnabled(String appKey, SocialAppConfig appConfig) {
+    private boolean isRejectSnapshotUserEnabled(SocialAppConfig appConfig) {
         if (appConfig != null && appConfig.getRejectSnapshotUser() != null) {
             return appConfig.getRejectSnapshotUser();
-        }
-        if (appKey != null && !appKey.isBlank()) {
-            try {
-                SocialAppConfig latestConfig = socialAppFactory.getAppConfig(appKey);
-                if (latestConfig != null && latestConfig.getRejectSnapshotUser() != null) {
-                    return latestConfig.getRejectSnapshotUser();
-                }
-            } catch (Exception ex) {
-                log.debug("获取应用配置失败，回退至全局 rejectSnapshotUser 配置: appKey=[{}], cause=[{}]", appKey, ex.getMessage());
-            }
         }
         return properties != null && properties.isRejectSnapshotUser();
     }

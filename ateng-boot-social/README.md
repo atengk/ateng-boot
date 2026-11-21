@@ -25,7 +25,7 @@
 | **扩展 SPI** | 自定义 OAuth2 平台接入 | `AuthSource` | `apps.<appKey>.source=<CUSTOM_NAME>` | 实现 `AuthSource` 注册为 Spring Bean 或调用 `SocialAppFactory.registerExtendSource`，优先级高于内置枚举 | `SocialAppFactoryTest` / `SampleEnterpriseSsoAuthSource` |
 | **扩展 SPI** | 用户身份与持久化映射 | `SocialUserDetailsService` | 无 (Spring 容器注册接管) | `loadUserIdBySocialUser`, `canUnbind`, `bind`, `bindSocialUser`, `unbind`, `autoRegisterUser`, `listBoundAccounts` | `SampleSocialUserDetailsService` |
 | **扩展 SPI** | 登录会话与凭据签发 | `SocialSessionManager` | 无 (默认装配 `SaTokenSocialSessionManager`) | `createSession(userId, options, socialUser)` | `SaTokenSocialSessionManagerTest` |
-| **扩展 SPI** | 防伪状态与 PKCE 缓存 | `SocialAuthStateCache` | `state-timeout`, `state-cache-key-prefix`, `max-in-memory-cache-size` | `generateState`, `cache`, `containsKey`, `get`, `getContext`, `removeContext`（自动物理隔离 `:code_verifier:` 命名空间） | `InMemorySocialAuthStateCacheTest` / `RedisSocialAuthStateCacheTest` |
+| **扩展 SPI** | 防伪状态与 PKCE 缓存 | `SocialAuthStateCache` | `state-timeout`, `state-cache-key-prefix`, `max-in-memory-cache-size` | `generateState`, `cache`, `containsKey`, `get`, `getContext`, `removeContext`（通过 `StateContext.rawStateValue` 隔离非深链原生键值） | `InMemorySocialAuthStateCacheTest` / `RedisSocialAuthStateCacheTest` |
 | **扩展 SPI** | 两阶段绑定票据存储 | `BindTicketStore` | `bind-ticket-timeout`, `bind-ticket-key-prefix` | `createTicket`, `contains`, `get`, `remove` | `InMemoryBindTicketStoreTest` / `RedisBindTicketStoreTest` |
 | **扩展 SPI** | SaaS 多租户动态应用配置 | `SocialAppConfigProvider` | 无 (Spring 容器注入) | `getAppConfig(appKey)`（配合配置指纹自动热更新专有 `RestClient`） | `SocialAppFactoryTest` / `SampleSocialAppConfigProvider` |
 | **安全防卫** | 微信快照页虚拟号阻断 | `SocialSnapshotUserException` | `reject-snapshot-user`, `apps.<appKey>.reject-snapshot-user` | 命中 `snapshotUser=true` (`is_snapshotuser=1`) 时刚性抛出错误码 `7009` | `SocialAuthTemplateTest` / `SocialMiniProgramAuthController` |
@@ -241,7 +241,7 @@ public class CustomDynamicSocialAppProvider implements SocialAppConfigProvider {
 
 #### 机制与边界说明
 
-- **多租户客户端配置指纹热更新**：当 `SocialAppConfigProvider` 动态返回的应用包含专有 `connectTimeout`、`readTimeout` 或 `proxy` 时，`SpringRestClientHttpImpl` 基于 `(connectTimeout, readTimeout, proxyType, proxyHost, proxyPort)` 构建不可变配置指纹 `ClientConfigFingerprint`；仅在租户后台热修改网络配置导致指纹变更时才原子重建专有 `RestClient`，若租户移除专有网络配置则自动卸载并回退至全局默认客户端；
+- **多租户客户端配置指纹热更新**：当 `SocialAppConfigProvider` 动态返回的应用包含专有 `connectTimeout`、`readTimeout` 或 `proxy` 时，`SocialAppFactory` 基于 `(connectTimeout, readTimeout, proxy)` 构建不可变配置指纹 `AppClientFingerprint` 并原子比对；仅在租户后台热修改网络配置导致指纹变更时才重建并替换 `SpringRestClientHttpImpl` 中的专有 `RestClient`，若租户移除专有网络配置则自动卸载并回退至全局默认客户端；
 - **对称驱逐 API**：`SocialAppFactory` 暴露 `unregisterAppRestClient(appKey)` 与 `clearAppRestClients()`，支持租户下线时主动释放专有 HTTP 客户端。
 
 ---
@@ -311,6 +311,10 @@ public class SampleEnterpriseSsoAuthSource implements AuthSource {
 
     public static class EnterpriseSsoAuthRequest extends AuthDefaultRequest {
 
+        public EnterpriseSsoAuthRequest(AuthConfig config) {
+            super(config, INSTANCE);
+        }
+
         public EnterpriseSsoAuthRequest(AuthConfig config, AuthStateCache authStateCache) {
             super(config, INSTANCE, authStateCache);
         }
@@ -334,12 +338,17 @@ public class SampleEnterpriseSsoAuthSource implements AuthSource {
             String response = doGetUserInfo(authToken);
             JsonNode object = toNode(response);
             validateResponse(object);
+            String openId = getStringValue(object, "sub");
+            if (openId == null || openId.isBlank()) {
+                openId = authToken.getOpenId();
+            }
             return AuthUser.builder()
                     .rawUserInfo(object)
-                    .uuid(getStringValue(object, "sub"))
+                    .uuid(openId)
                     .username(getStringValue(object, "username"))
                     .nickname(getStringValue(object, "nickname"))
                     .email(getStringValue(object, "email"))
+                    .avatar(getStringValue(object, "avatar"))
                     .token(authToken)
                     .source(SOURCE_NAME)
                     .build();
@@ -735,7 +744,7 @@ public Result<SocialAuthResult> completeWebLogin(
 
 #### 机制与边界说明
 
-- **PKCE 状态缓存物理隔离**：`InMemorySocialAuthStateCache` 与 `RedisSocialAuthStateCache` 自动识别 `:code_verifier:` 命名空间，将 OAuth 2.1 PKCE 原始 `code_verifier` 字符串与 `StateContext` JSON 物理隔离，杜绝 JSON 解析污染；
+- **PKCE 状态缓存隔离**：`SocialAuthStateCache.cache(key, value)` 将非深链原生键值（如 OAuth 2.1 PKCE `code_verifier`）专职写入 `StateContext.rawStateValue`，不写入 `redirectUrl`，在保留内存与 Redis 双模统一存取契约的同时杜绝深链地址污染；
 - **code_verifier 阅后即焚**：在 `login` / `getSocialUser` / `bindDirect` 的 `finally` 块中，框架确定性删除 `<SOURCE>:code_verifier:<state>`，实现 PKCE 校验码单次消费即焚；
 - **OIDC `idToken` 完整透传**：`SocialToken` 完整保留第三方 OIDC 平台（华为 V3、微软 Entra、Apple、Google、企业 SSO 等）签发的 `idToken`。
 
@@ -1060,7 +1069,7 @@ ateng:
           ding-talk-exclusive-login: false # 钉钉 V2 是否开启专属帐号登录
           ding-talk-exclusive-corp-id: ""  # 钉钉 V2 专属帐号企业 CorpId
           domain-prefix: ""           # Okta / Coding 平台域名前缀 (可选)
-          auth-server-id: ""          # Okta 授权服务器 ID (可选)
+          auth-server-id: "default"   # Okta 授权服务器 ID (默认 default)
           device-id: ""               # 喜马拉雅等平台设备唯一标识 (可选)
           client-os-type: 3           # 喜马拉雅客户端操作系统类型 (1-iOS, 2-Android, 3-Web)
           pack-id: ""                 # 喜马拉雅客户端包名 (可选)

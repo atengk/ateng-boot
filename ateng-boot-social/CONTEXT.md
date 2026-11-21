@@ -13,7 +13,7 @@ _Avoid_: OAuthService, SocialUtil, SocialManager, ThirdPartyLoginHelper
 _Avoid_: AuthRequestFactory, SocialClientBuilder, OAuthAppRegistry
 
 **SocialUser**:
-标准化第三方用户画像领域模型，统一收敛 `openId`、`unionId`、`source`、`uuid`、`username`、`nickname`、`avatar`、`email`、`snapshotUser`（微信快照虚拟号标识）等核心身份字段，并内聚 `token`（`SocialToken`）、原始 `rawToken` 与 `rawUserInfo` 快照。
+标准化第三方用户画像领域模型，统一收敛 `openId`、`unionId`、`source`、`uuid`、`username`、`nickname`、`avatar`、`email`、`snapshotUser`（微信快照虚拟号标识）等核心身份字段，并内聚原始 `rawToken` 与 `rawUserInfo` 快照。
 _Avoid_: AuthUser, ThirdPartyUser, OAuthUserInfo, OpenUser
 
 **SocialToken**:

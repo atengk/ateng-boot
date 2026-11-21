@@ -197,9 +197,9 @@ public interface SocialAuthTemplate {
    - 自动发现 Spring 容器中的 `AuthSource` Bean，并提供 `registerExtendSource` / `unregisterExtendSource` / `getExtendSourceNames` 对称编程式 API；
    - 确立 `自定义扩展源 > 内置自愈补丁 > AuthDefaultSource` 的三级路由优先级，解决上游 `AuthRequestBuilder` 内置枚举遮蔽同名自定义源的问题。
 3. **多租户动态 `RestClient` 配置指纹热更新**：
-   - `SpringRestClientHttpImpl` 基于 `(connectTimeout, readTimeout, proxyType, proxyHost, proxyPort)` 构建不可变配置指纹 `ClientConfigFingerprint`；当 `SocialAppConfigProvider` 动态变更应用超时或代理时自动热替换，移除专有配置时自动回退至全局默认客户端，并配套对称注销接口 `unregisterAppRestClient` / `clearAppRestClients`。
+   - `SocialAppFactory` 基于 `(connectTimeout, readTimeout, proxy)` 构建不可变配置指纹 `AppClientFingerprint` 并原子比对；当 `SocialAppConfigProvider` 动态变更应用超时或代理时自动热替换 `SpringRestClientHttpImpl` 中的专有 `RestClient`，移除专有配置时自动回退至全局默认客户端，并配套对称注销接口 `unregisterAppRestClient` / `clearAppRestClients`。
 4. **OAuth 2.1 PKCE 状态解耦与 `code_verifier` 阅后即焚**：
-   - `InMemorySocialAuthStateCache` 与 `RedisSocialAuthStateCache` 通过识别 `:code_verifier:` 命名空间，将 OAuth 2.1 PKCE 原始字符串存储与 `StateContext` JSON 存储物理隔离；
+   - `StateContext` 新增 `rawStateValue` 字段，由 `SocialAuthStateCache.cache(key, value)` 专职承载 OAuth 2.1 PKCE `code_verifier` 等非深链原生键值，杜绝污染 `redirectUrl`；
    - `SocialAuthTemplate` 在 `login` / `getSocialUser` / `bindDirect` 的 `finally` 块中确定性清除 `<SOURCE>:code_verifier:<state>`，实现 PKCE 校验码单次消费即焚。
 5. **企业级平台专有属性对齐、OIDC `idToken` 与微信快照虚拟号防卫**：
    - `SocialAppItemProperties` 与 `SocialAppConfig` 全量补齐 `pkce`、微软 Entra `microsoftTenantId`、Apple `kid`/`teamId`、企微 V2 `loginType`/`lang`、钉钉 V2 `dingTalkCorpId`/`dingTalkExclusiveLogin`、Okta `domainPrefix`/`authServerId` 等属性；`SocialToken` 补齐 OIDC `idToken`；

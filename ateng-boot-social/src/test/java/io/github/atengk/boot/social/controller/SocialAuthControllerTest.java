@@ -23,6 +23,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -31,6 +32,7 @@ import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 import java.util.Collections;
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -523,6 +525,9 @@ class SocialAuthControllerTest {
 
         SocialDirectLoginRequest directLoginReq = SocialDirectLoginRequest.builder()
                 .authCode("alipay_auth_code_999")
+                .oauthToken("tw_oauth_token_111")
+                .oauthVerifier("tw_oauth_verifier_222")
+                .user("{\"name\":{\"firstName\":\"San\"}}")
                 .deviceType("APP")
                 .build();
 
@@ -533,7 +538,12 @@ class SocialAuthControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.userId").value("user_ali_001"));
 
-        verify(authTemplate).directLogin(eq("alipay_app"), any(AuthCallback.class), any(SocialLoginOptions.class));
+        ArgumentCaptor<AuthCallback> loginCallbackCaptor = ArgumentCaptor.forClass(AuthCallback.class);
+        verify(authTemplate).directLogin(eq("alipay_app"), loginCallbackCaptor.capture(), any(SocialLoginOptions.class));
+        assertThat(loginCallbackCaptor.getValue().getAuth_code()).isEqualTo("alipay_auth_code_999");
+        assertThat(loginCallbackCaptor.getValue().getOauth_token()).isEqualTo("tw_oauth_token_111");
+        assertThat(loginCallbackCaptor.getValue().getOauth_verifier()).isEqualTo("tw_oauth_verifier_222");
+        assertThat(loginCallbackCaptor.getValue().getUser()).isEqualTo("{\"name\":{\"firstName\":\"San\"}}");
 
         when(authTemplate.bindDirect(eq("user_ali_001"), eq("alipay_app"), any(AuthCallback.class), eq(false)))
                 .thenReturn(alipayUser);
@@ -541,6 +551,9 @@ class SocialAuthControllerTest {
         SocialDirectBindRequest directBindReq = SocialDirectBindRequest.builder()
                 .userId("user_ali_001")
                 .authCode("alipay_bind_auth_code_888")
+                .oauthToken("tw_bind_token_333")
+                .oauthVerifier("tw_bind_verifier_444")
+                .user("{\"name\":{\"lastName\":\"Zhang\"}}")
                 .build();
 
         mockMvc.perform(post("/auth/social/bind-direct/alipay_app")
@@ -550,6 +563,11 @@ class SocialAuthControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.openId").value("alipay_uid_001"));
 
-        verify(authTemplate).bindDirect(eq("user_ali_001"), eq("alipay_app"), any(AuthCallback.class), eq(false));
+        ArgumentCaptor<AuthCallback> bindCallbackCaptor = ArgumentCaptor.forClass(AuthCallback.class);
+        verify(authTemplate).bindDirect(eq("user_ali_001"), eq("alipay_app"), bindCallbackCaptor.capture(), eq(false));
+        assertThat(bindCallbackCaptor.getValue().getAuth_code()).isEqualTo("alipay_bind_auth_code_888");
+        assertThat(bindCallbackCaptor.getValue().getOauth_token()).isEqualTo("tw_bind_token_333");
+        assertThat(bindCallbackCaptor.getValue().getOauth_verifier()).isEqualTo("tw_bind_verifier_444");
+        assertThat(bindCallbackCaptor.getValue().getUser()).isEqualTo("{\"name\":{\"lastName\":\"Zhang\"}}");
     }
 }

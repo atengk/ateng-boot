@@ -260,6 +260,25 @@ public class SocialAppFactory {
     }
 
     /**
+     * 解析实际生效的平台源名称（优先返回自定义 AuthSource 的原始 getName，用于精确对齐上游缓存键）
+     *
+     * @param rawSource 配置中的平台标识
+     * @return 实际平台源名称；入参为空时返回 null
+     */
+    public String resolveSourceName(String rawSource) {
+        if (rawSource == null || rawSource.isBlank()) {
+            return null;
+        }
+        String trimmed = rawSource.trim();
+        String normalizedSource = trimmed.toUpperCase(Locale.ROOT);
+        AuthSource customSource = extendSources.get(normalizedSource);
+        if (customSource != null && customSource.getName() != null && !customSource.getName().isBlank()) {
+            return customSource.getName();
+        }
+        return normalizedSource;
+    }
+
+    /**
      * 获取当前所有已注册的静态应用标识列表
      *
      * @return 应用标识集合
@@ -280,24 +299,28 @@ public class SocialAppFactory {
         if (appKey == null || appKey.isBlank()) {
             return;
         }
-        appClientFingerprints.remove(appKey);
-        if (httpClientAdapter != null) {
-            httpClientAdapter.unregisterAppRestClient(appKey);
-        }
+        appClientFingerprints.compute(appKey, (key, previous) -> {
+            if (httpClientAdapter != null) {
+                httpClientAdapter.unregisterAppRestClient(key);
+            }
+            return null;
+        });
     }
 
     /**
      * 清空全部应用级专属 RestClient 缓存
      */
     public void clearAppRestClients() {
-        appClientFingerprints.clear();
+        for (String appKey : appClientFingerprints.keySet()) {
+            unregisterAppRestClient(appKey);
+        }
         if (httpClientAdapter != null) {
             httpClientAdapter.clearAppRestClients();
         }
     }
 
     /**
-     * 若应用配置了专有网络代理或超时，按配置指纹自动注册或热更新至适配器；若已移除专有配置则对称卸载
+     * 若应用配置了专有网络代理或超时，按配置指纹原子注册或热更新至适配器；若已移除专有配置则对称卸载
      */
     private void ensureAppProxyRegistered(String appKey, SocialAppConfig appConfig) {
         if (httpClientAdapter == null || appKey == null || appKey.isBlank()) {
@@ -309,21 +332,23 @@ public class SocialAppFactory {
         Duration connectTimeout = appConfig.getConnectTimeout();
         Duration readTimeout = appConfig.getReadTimeout();
 
-        if (proxy != null || connectTimeout != null || readTimeout != null) {
-            AppClientFingerprint currentFingerprint = new AppClientFingerprint(connectTimeout, readTimeout, proxy);
-            AppClientFingerprint previousFingerprint = appClientFingerprints.get(appKey);
-            if (!currentFingerprint.equals(previousFingerprint)) {
-                httpClientAdapter.registerAppRestClient(appKey, connectTimeout, readTimeout, proxy);
-                appClientFingerprints.put(appKey, currentFingerprint);
-                log.info("Registered or updated dedicated RestClient for social appKey: [{}], proxy: [{}], timeout: [{}, {}]",
-                        appKey, proxy != null ? proxy.type() : "DIRECT", connectTimeout, readTimeout);
+        appClientFingerprints.compute(appKey, (key, previousFingerprint) -> {
+            if (proxy != null || connectTimeout != null || readTimeout != null) {
+                AppClientFingerprint currentFingerprint = new AppClientFingerprint(connectTimeout, readTimeout, proxy);
+                if (!currentFingerprint.equals(previousFingerprint)) {
+                    httpClientAdapter.registerAppRestClient(key, connectTimeout, readTimeout, proxy);
+                    log.info("Registered or updated dedicated RestClient for social appKey: [{}], proxy: [{}], timeout: [{}, {}]",
+                            key, proxy != null ? proxy.type() : "DIRECT", connectTimeout, readTimeout);
+                    return currentFingerprint;
+                }
+                return previousFingerprint;
             }
-        } else {
-            if (appClientFingerprints.remove(appKey) != null) {
-                httpClientAdapter.unregisterAppRestClient(appKey);
-                log.info("Evicted dedicated RestClient for social appKey: [{}], reverted to default client", appKey);
+            if (previousFingerprint != null) {
+                httpClientAdapter.unregisterAppRestClient(key);
+                log.info("Evicted dedicated RestClient for social appKey: [{}], reverted to default client", key);
             }
-        }
+            return null;
+        });
     }
 
     /**

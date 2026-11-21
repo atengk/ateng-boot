@@ -36,8 +36,17 @@ import io.github.atengk.boot.social.ticket.BindTicketStore;
 import io.github.atengk.boot.social.ticket.InMemoryBindTicketStore;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
+import okhttp3.mockwebserver.RecordedRequest;
+import org.dromara.anduin.cache.AuthStateCache;
+import org.dromara.anduin.config.AuthConfig;
+import org.dromara.anduin.config.AuthSource;
 import org.dromara.anduin.model.AuthCallback;
 import org.dromara.anduin.model.AuthToken;
+import org.dromara.anduin.model.AuthUser;
+import org.dromara.anduin.request.AuthDefaultRequest;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -1402,13 +1411,18 @@ class SocialAuthTemplateTest {
         assertThat(result.getUserId()).isEqualTo("user_hw_101");
         assertThat(result.getStateContext().getRedirectUrl()).isEqualTo("https://ateng.example.com/welcome");
 
+        // 校验出站换码请求中确实携带了 PKCE code_verifier 参数
+        RecordedRequest tokenRequest = mockWebServer.takeRequest();
+        String combinedPayload = tokenRequest.getPath() + "&" + tokenRequest.getBody().readUtf8();
+        assertThat(combinedPayload).contains("code_verifier=");
+
         // 验证换码成功后，主 state 与 PKCE code_verifier 缓存键均已被阅后即焚物理销毁
         assertThat(stateCache.containsKey(state)).isFalse();
         assertThat(stateCache.containsKey(verifierCacheKey)).isFalse();
     }
 
     @Test
-    @DisplayName("50. 快照虚拟号防卫: rejectSnapshotUser 开启时刚性抛出 SocialSnapshotUserException (7009)")
+    @DisplayName("50. 快照虚拟号防卫: 全局与局部 rejectSnapshotUser 开关级联生效与覆盖")
     void testRejectSnapshotUserGuard() {
         SocialAppItemProperties wechatWebProps = new SocialAppItemProperties();
         wechatWebProps.setSource("WECHAT_MP");
@@ -1419,7 +1433,7 @@ class SocialAuthTemplateTest {
         wechatWebProps.setRejectSnapshotUser(true);
         authTemplate.getProperties().getApps().put("wechat_web_app", wechatWebProps);
 
-        // 模拟微信返回 is_snapshotuser = 1 的虚拟快照页账号
+        // 1. 应用级开启 rejectSnapshotUser=true -> 刚性阻断 7009
         mockWebServer.enqueue(new MockResponse()
                 .setResponseCode(200)
                 .setHeader("Content-Type", "application/json;charset=UTF-8")
@@ -1437,7 +1451,8 @@ class SocialAuthTemplateTest {
                     assertThat(snapEx.getResultCode().getCode()).isEqualTo(7009);
                 });
 
-        // 当关闭 rejectSnapshotUser 时，允许放行并标记 snapshotUser=true
+        // 2. 应用级显式关闭 (false) 覆写全局开启 (true) -> 放行并标记 snapshotUser=true
+        authTemplate.getProperties().setRejectSnapshotUser(true);
         wechatWebProps.setRejectSnapshotUser(false);
         mockWebServer.enqueue(new MockResponse()
                 .setResponseCode(200)
@@ -1450,6 +1465,242 @@ class SocialAuthTemplateTest {
 
         SocialAuthResult allowedResult = authTemplate.directLogin("wechat_web_app", "wx_snap_code");
         assertThat(allowedResult.getSocialUser().isSnapshotUser()).isTrue();
+
+        // 3. 应用级未显式设置 (null) 时，回退全局 rejectSnapshotUser=true -> 刚性阻断 7009
+        wechatWebProps.setRejectSnapshotUser(null);
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"access_token\":\"wx_snap_token\",\"expires_in\":7200,\"openid\":\"wx_virtual_snap_02\",\"is_snapshotuser\":1}"));
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"openid\":\"wx_virtual_snap_02\",\"nickname\":\"微信虚拟用户2\",\"sex\":0,\"is_snapshotuser\":1}"));
+
+        assertThatThrownBy(() -> authTemplate.directLogin("wechat_web_app", "wx_snap_code_2"))
+                .isInstanceOf(SocialSnapshotUserException.class)
+                .satisfies(ex -> assertThat(((SocialSnapshotUserException) ex).getResultCode().getCode()).isEqualTo(7009));
+    }
+
+    @Test
+    @DisplayName("51. PKCE 失败清理与混合大小写自定义 AuthSource 校验码阅后即焚")
+    void testPkceCleanupOnExchangeFailureAndMixedCaseCustomSource() {
+        SocialAppItemProperties huaweiPkceProps = new SocialAppItemProperties();
+        huaweiPkceProps.setSource("HUAWEI_V3");
+        huaweiPkceProps.setClientId("hw_pkce_fail_cid");
+        huaweiPkceProps.setClientSecret("hw_pkce_fail_sec");
+        huaweiPkceProps.setRedirectUri("https://ateng.example.com/oauth/huawei/callback");
+        huaweiPkceProps.setPkce(true);
+        authTemplate.getProperties().getApps().put("huawei_pkce_fail_app", huaweiPkceProps);
+
+        String authorizeUrl = authTemplate.getAuthorizeUrl("huawei_pkce_fail_app");
+        String state = extractQueryParam(authorizeUrl, "state");
+        String verifierCacheKey = "HUAWEI_V3:code_verifier:" + state;
+        assertThat(stateCache.containsKey(verifierCacheKey)).isTrue();
+
+        // 模拟第三方平台换码失败（返回 500 错误）
+        mockWebServer.enqueue(new MockResponse().setResponseCode(500).setBody("{\"error\":\"server_error\"}"));
+
+        assertThatThrownBy(() -> authTemplate.login("huawei_pkce_fail_app",
+                AuthCallback.builder().code("bad_code").state(state).build()))
+                .isInstanceOf(SocialAuthException.class);
+
+        // 即使换码失败，finally 块仍确定性销毁主 state 与 code_verifier
+        assertThat(stateCache.containsKey(state)).isFalse();
+        assertThat(stateCache.containsKey(verifierCacheKey)).isFalse();
+
+        // 验证混合大小写自定义 AuthSource.getName() 的 PKCE code_verifier 同样 100% 清除
+        AuthSource mixedCaseSource = new AuthSource() {
+            @Override
+            public String authorize() {
+                return "https://mixed.example.com/auth";
+            }
+
+            @Override
+            public String accessToken() {
+                return "https://mixed.example.com/token";
+            }
+
+            @Override
+            public String userInfo() {
+                return "https://mixed.example.com/userinfo";
+            }
+
+            @Override
+            public String getName() {
+                return "MixedCaseSso";
+            }
+
+            @Override
+            public Class<? extends AuthDefaultRequest> getTargetClass() {
+                return MixedCasePkceRequest.class;
+            }
+        };
+        authTemplate.registerExtendSource(mixedCaseSource);
+        try {
+            SocialAppItemProperties mixedProps = new SocialAppItemProperties();
+            mixedProps.setSource("mixedcasesso");
+            mixedProps.setClientId("mixed_cid");
+            mixedProps.setClientSecret("mixed_sec");
+            mixedProps.setRedirectUri("https://ateng.example.com/oauth/mixed/callback");
+            mixedProps.setPkce(true);
+            authTemplate.getProperties().getApps().put("mixed_pkce_app", mixedProps);
+
+            String mixedUrl = authTemplate.getAuthorizeUrl("mixed_pkce_app");
+            String mixedState = extractQueryParam(mixedUrl, "state");
+            String mixedVerifierKey = "MixedCaseSso:code_verifier:" + mixedState;
+            assertThat(stateCache.containsKey(mixedVerifierKey)).isTrue();
+
+            when(userDetailsService.loadUserIdBySocialUser(eq("mixed_pkce_app"), any(SocialUser.class)))
+                    .thenReturn("user_mixed_001");
+
+            SocialAuthResult mixedResult = authTemplate.login("mixed_pkce_app",
+                    AuthCallback.builder().code("mixed_code").state(mixedState).build());
+            assertThat(mixedResult.isLoggedIn()).isTrue();
+            assertThat(stateCache.containsKey(mixedState)).isFalse();
+            assertThat(stateCache.containsKey(mixedVerifierKey)).isFalse();
+        } finally {
+            authTemplate.unregisterExtendSource("MixedCaseSso");
+        }
+    }
+
+    @Test
+    @DisplayName("52. RedisSocialAuthStateCache 端到端 PKCE 全链路隔离与阅后即焚")
+    @SuppressWarnings("unchecked")
+    void testPkceEndToEndWithRedisStateCache() throws InterruptedException {
+        Map<String, String> redisStore = new java.util.concurrent.ConcurrentHashMap<>();
+        StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+        ValueOperations<String, String> valueOps = mock(ValueOperations.class);
+        when(redisTemplate.opsForValue()).thenReturn(valueOps);
+
+        org.mockito.Mockito.doAnswer(inv -> {
+            redisStore.put(inv.getArgument(0), inv.getArgument(1));
+            return null;
+        }).when(valueOps).set(any(), any(), any(Duration.class));
+        when(valueOps.get(any())).thenAnswer(inv -> redisStore.get(inv.getArgument(0)));
+        when(redisTemplate.hasKey(any())).thenAnswer(inv -> redisStore.containsKey(inv.getArgument(0)));
+        when(redisTemplate.execute(any(DefaultRedisScript.class), any(List.class)))
+                .thenAnswer(inv -> {
+                    List<String> keys = inv.getArgument(1);
+                    return redisStore.remove(keys.get(0));
+                });
+
+        io.github.atengk.boot.social.cache.RedisSocialAuthStateCache redisStateCache =
+                new io.github.atengk.boot.social.cache.RedisSocialAuthStateCache(redisTemplate);
+        AtengSocialProperties redisProps = new AtengSocialProperties();
+        SocialAppItemProperties huaweiProps = new SocialAppItemProperties();
+        huaweiProps.setSource("HUAWEI_V3");
+        huaweiProps.setClientId("hw_redis_cid");
+        huaweiProps.setClientSecret("hw_redis_sec");
+        huaweiProps.setRedirectUri("https://ateng.example.com/oauth/huawei/callback");
+        huaweiProps.setPkce(true);
+        redisProps.getApps().put("huawei_redis_pkce", huaweiProps);
+
+        StaticListableBeanFactory cacheBeanFactory = new StaticListableBeanFactory();
+        cacheBeanFactory.addBean("stateCache", redisStateCache);
+        StaticListableBeanFactory userBeanFactory = new StaticListableBeanFactory();
+        userBeanFactory.addBean("userDetailsService", userDetailsService);
+
+        SocialAppFactory redisAppFactory = new SocialAppFactory(
+                redisProps,
+                new StaticListableBeanFactory().getBeanProvider(io.github.atengk.boot.social.spi.SocialAppConfigProvider.class),
+                cacheBeanFactory.getBeanProvider(AuthStateCache.class),
+                httpAdapter
+        );
+        SocialAuthTemplate redisTemplateFacade = new SocialAuthTemplate(
+                redisAppFactory,
+                redisStateCache,
+                bindTicketStore,
+                userBeanFactory.getBeanProvider(SocialUserDetailsService.class),
+                sessionManager,
+                redisProps,
+                eventPublisher
+        );
+
+        String authorizeUrl = redisTemplateFacade.getAuthorizeUrl("huawei_redis_pkce",
+                StateContext.builder().redirectUrl("https://ateng.example.com/redis-pkce").build());
+        String state = extractQueryParam(authorizeUrl, "state");
+        String verifierKey = "HUAWEI_V3:code_verifier:" + state;
+
+        assertThat(redisStateCache.containsKey(state)).isTrue();
+        assertThat(redisStateCache.containsKey(verifierKey)).isTrue();
+        assertThat(redisStateCache.getContext(verifierKey).getRedirectUrl()).isNull();
+        assertThat(redisStateCache.getContext(verifierKey).getRawStateValue()).isNotBlank();
+
+        String payloadBase64 = java.util.Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("{\"sub\":\"hw_redis_open_101\",\"name\":\"华为RedisPKCE用户\",\"nickname\":\"HW_REDIS_PKCE\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        String mockIdToken = "eyJhbGciOiJSUzI1NiJ9." + payloadBase64 + ".signature";
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"access_token\":\"hw_redis_tok\",\"expires_in\":3600,\"refresh_token\":\"hw_redis_ref\",\"id_token\":\"" + mockIdToken + "\"}"));
+        when(userDetailsService.loadUserIdBySocialUser(eq("huawei_redis_pkce"), any(SocialUser.class)))
+                .thenReturn("user_redis_pkce_01");
+
+        SocialAuthResult result = redisTemplateFacade.login("huawei_redis_pkce",
+                AuthCallback.builder().code("redis_pkce_code").state(state).build());
+        assertThat(result.isLoggedIn()).isTrue();
+
+        RecordedRequest tokenRequest = mockWebServer.takeRequest();
+        String combinedPayload = tokenRequest.getPath() + "&" + tokenRequest.getBody().readUtf8();
+        assertThat(combinedPayload).contains("code_verifier=");
+
+        assertThat(redisStateCache.containsKey(state)).isFalse();
+        assertThat(redisStateCache.containsKey(verifierKey)).isFalse();
+    }
+
+    public static class MixedCasePkceRequest extends AuthDefaultRequest {
+
+        private static final AuthSource MIXED_SOURCE = new AuthSource() {
+            @Override
+            public String authorize() {
+                return "https://mixed.example.com/auth";
+            }
+
+            @Override
+            public String accessToken() {
+                return "https://mixed.example.com/token";
+            }
+
+            @Override
+            public String userInfo() {
+                return "https://mixed.example.com/userinfo";
+            }
+
+            @Override
+            public String getName() {
+                return "MixedCaseSso";
+            }
+
+            @Override
+            public Class<? extends AuthDefaultRequest> getTargetClass() {
+                return MixedCasePkceRequest.class;
+            }
+        };
+
+        public MixedCasePkceRequest(AuthConfig config, AuthStateCache authStateCache) {
+            super(config, MIXED_SOURCE, authStateCache);
+        }
+
+        @Override
+        public String authorize(String state) {
+            if (config.isPkce()) {
+                authStateCache.cache(source.getName() + ":code_verifier:" + state, "mixed_verifier_" + state);
+            }
+            return super.authorize(state);
+        }
+
+        @Override
+        public AuthToken getAccessToken(AuthCallback authCallback) {
+            String verifier = authStateCache.get(source.getName() + ":code_verifier:" + authCallback.getState());
+            assertThat(verifier).isEqualTo("mixed_verifier_" + authCallback.getState());
+            return AuthToken.builder().accessToken("mixed_acc_tok").openId("mixed_open_1").build();
+        }
+
+        @Override
+        public AuthUser getUserInfo(AuthToken authToken) {
+            return AuthUser.builder().uuid("mixed_open_1").username("mixed_user").token(authToken).source(source.getName()).build();
+        }
     }
 
     private String extractQueryParam(String url, String paramName) {
