@@ -11,6 +11,7 @@ import io.github.atengk.boot.observability.health.RealtimeHealthIndicator;
 import io.github.atengk.boot.observability.health.RedisSafeHealthIndicator;
 import io.github.atengk.boot.observability.health.RocketmqHealthIndicator;
 import io.github.atengk.boot.observability.health.SearchSafeHealthIndicator;
+import io.github.atengk.boot.observability.health.SmsSafeHealthIndicator;
 import io.github.atengk.boot.observability.health.StorageHealthIndicator;
 import io.github.atengk.boot.observability.properties.ObservabilityProperties;
 import io.github.atengk.boot.realtime.cluster.RealtimeClusterBroadcaster;
@@ -18,6 +19,9 @@ import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
 import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
 import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
 import io.github.atengk.boot.search.spi.SearchEngineClient;
+import io.github.atengk.boot.sms.guard.SmsChannelCircuitBreaker;
+import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
+import io.github.atengk.boot.sms.template.SmsTemplate;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.factory.StorageDriverFactory;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
@@ -253,6 +257,32 @@ public class AtengHealthAutoConfiguration {
                 ObservabilityProperties properties,
                 @Qualifier(HEALTH_PROBE_EXECUTOR_BEAN_NAME) ObjectProvider<Executor> executorProvider) {
             return new MailSafeHealthIndicator(registryProvider, properties, executorProvider.getIfAvailable());
+        }
+    }
+
+    /**
+     * ateng-boot-sms 专属静态渠道安全健康探针装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(SmsChannelRegistry.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.observability.health.sms", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public static class SmsHealthIndicatorConfiguration {
+
+        @Bean(name = {"smsHealthIndicator", "smsHealthContributor"})
+        @ConditionalOnMissingBean(name = "smsHealthIndicator")
+        public SmsSafeHealthIndicator smsHealthIndicator(
+                ObjectProvider<SmsChannelRegistry> registryProvider,
+                ObjectProvider<SmsChannelCircuitBreaker> circuitBreakerProvider,
+                ObjectProvider<SmsTemplate> smsTemplateProvider,
+                ObservabilityProperties properties,
+                @Qualifier(HEALTH_PROBE_EXECUTOR_BEAN_NAME) ObjectProvider<Executor> executorProvider) {
+            return new SmsSafeHealthIndicator(
+                    registryProvider,
+                    circuitBreakerProvider,
+                    smsTemplateProvider,
+                    properties,
+                    executorProvider.getIfAvailable()
+            );
         }
     }
 }

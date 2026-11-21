@@ -224,6 +224,12 @@ public class ObservabilityProperties {
          */
         @NestedConfigurationProperty
         private MailHealthProperties mail = new MailHealthProperties();
+
+        /**
+         * 企业级短信基础设施（ateng-boot-sms）健康探针配置
+         */
+        @NestedConfigurationProperty
+        private SmsHealthProperties sms = new SmsHealthProperties();
     }
 
     /**
@@ -346,6 +352,29 @@ public class ObservabilityProperties {
          * 邮件健康探针防刷缓存有效期（强类型 Duration，默认 60s 以防高频探活触发公网邮件服务商认证限流；设为 0s 可关闭缓存）
          */
         private Duration cacheTtl = Duration.ofSeconds(60);
+    }
+
+    /**
+     * 企业级短信基础设施（ateng-boot-sms）探针配置
+     */
+    @Getter
+    @Setter
+    public static class SmsHealthProperties {
+
+        /**
+         * 是否启用短信静态渠道安全健康探针（默认开启）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 短信健康探针防刷缓存有效期（强类型 Duration，默认 60s 以防高频探活压垮外部短信网关；设为 0s 可关闭缓存）
+         */
+        private Duration cacheTtl = Duration.ofSeconds(60);
+
+        /**
+         * 是否对支持只读余额查询接口的静态短信渠道顺带探查账户余额（默认关闭，开启后也绝不发送计费短信）
+         */
+        private boolean probeBalance = false;
     }
 
     /**

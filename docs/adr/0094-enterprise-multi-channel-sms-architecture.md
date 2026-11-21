@@ -255,3 +255,7 @@ ateng:
 
 ### 妥协成本 (Compromises & Liabilities)
 1. **签名算法自研维保**：不使用官方 SDK 意味着必须自行维护阿里云 POP HMAC-SHA1、腾讯云 TC3-HMAC-SHA256 与华为云 WSSE 签名逻辑。由于三大公有云短信鉴权协议高度成熟稳定（近几年均无破坏性变更），维护自研算法代码量均在百行以内，ROI 极高。
+
+---
+
+> **演进注记 (Evolution Note, 2026-11-21)**：自本 ADR 确立基线以来，`ateng-boot-sms` 已完成 15 大内建驱动生态扩充、动态租户热驱逐、周期配额与测试安全沙箱、双模可取消延迟调度、主动回执/只读余额探查及 Micrometer / `SmsSafeHealthIndicator` 全观测闭环，完整新增决策、两阶段调度不变量及边界收敛参见 [ADR-0110](./0110-sms-enterprise-evolution-and-observability-architecture.md)。

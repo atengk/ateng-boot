@@ -7,11 +7,15 @@ import io.github.atengk.boot.core.util.BatchSliceUtil;
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.sms.context.SmsContextHolder;
+import io.github.atengk.boot.sms.delay.MemorySmsDelayScheduler;
+import io.github.atengk.boot.sms.delay.SmsDelayScheduler;
+import io.github.atengk.boot.sms.delay.SmsScheduledReceipt;
 import io.github.atengk.boot.sms.event.SmsChannelEvictEvent;
 import io.github.atengk.boot.sms.event.SmsSendAuditEvent;
 import io.github.atengk.boot.sms.exception.SmsBudgetExceededException;
 import io.github.atengk.boot.sms.exception.SmsException;
 import io.github.atengk.boot.sms.exception.SmsIdempotentException;
+import io.github.atengk.boot.sms.exception.SmsRateLimitException;
 import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.exception.SmsSendException;
 import io.github.atengk.boot.sms.failover.SmsFailoverChain;
@@ -22,8 +26,11 @@ import io.github.atengk.boot.sms.interceptor.SmsSendInterceptor;
 import io.github.atengk.boot.sms.limiter.InMemorySmsRateLimiter;
 import io.github.atengk.boot.sms.limiter.SmsRateLimiter;
 import io.github.atengk.boot.sms.loadbalancer.SmsChannelLoadBalancer;
+import io.github.atengk.boot.sms.metrics.SmsMetricsRecorder;
+import io.github.atengk.boot.sms.metrics.SmsSendOutcome;
 import io.github.atengk.boot.sms.model.*;
 import io.github.atengk.boot.sms.properties.SmsProperties;
+import io.github.atengk.boot.sms.provider.AbstractHttpSmsProvider;
 import io.github.atengk.boot.sms.provider.SmsProvider;
 import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
 import io.github.atengk.boot.sms.registry.SmsChannelResolver;
@@ -31,6 +38,7 @@ import io.github.atengk.boot.sms.registry.TenantSmsChannelResolver;
 import io.github.atengk.boot.sms.support.SmsDesensitizeSupport;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -40,6 +48,7 @@ import org.springframework.util.StringUtils;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalTime;
 
 import java.util.*;
@@ -57,7 +66,7 @@ import java.util.function.Supplier;
  * @since 2026-11-02
  */
 @Slf4j
-public class SmsTemplate {
+public class SmsTemplate implements DisposableBean {
 
     /**
      * 负载均衡虚拟渠道标识
@@ -113,6 +122,14 @@ public class SmsTemplate {
     @Getter
     private final SmsQuotaGuard quotaGuard;
 
+    @Getter
+    private final SmsDelayScheduler delayScheduler;
+
+    private final boolean ownsDelayScheduler;
+
+    @Getter
+    private final SmsMetricsRecorder metricsRecorder;
+
     public SmsTemplate(SmsProperties properties,
                        List<SmsProvider> providers,
                        SmsChannelRegistry channelRegistry,
@@ -128,13 +145,19 @@ public class SmsTemplate {
                        Clock clock,
                        List<SmsSendInterceptor> sendInterceptors,
                        SmsRateLimiter rateLimiter,
-                       SmsQuotaGuard quotaGuard) {
+                       SmsQuotaGuard quotaGuard,
+                       SmsDelayScheduler delayScheduler,
+                       SmsMetricsRecorder metricsRecorder) {
         this.properties = properties != null ? properties : new SmsProperties();
         this.clock = clock != null ? clock : Clock.systemDefaultZone();
+        this.metricsRecorder = metricsRecorder != null ? metricsRecorder : SmsMetricsRecorder.noop();
         if (providers != null) {
             for (SmsProvider provider : providers) {
                 if (provider != null && provider.getSupplier() != null) {
                     this.providerMap.putIfAbsent(provider.getSupplier(), provider);
+                }
+                if (provider instanceof AbstractHttpSmsProvider httpProvider) {
+                    httpProvider.setMetricsRecorder(this.metricsRecorder);
                 }
             }
         }
@@ -151,9 +174,10 @@ public class SmsTemplate {
 
         this.failureHandlers = failureHandlers != null ? Collections.unmodifiableList(new ArrayList<>(failureHandlers)) : Collections.emptyList();
         this.circuitBreaker = circuitBreaker != null ? circuitBreaker : new SmsChannelCircuitBreaker(this.properties.getGuard(), this.clock);
+        this.circuitBreaker.setMetricsRecorder(this.metricsRecorder);
         this.quotaGuard = quotaGuard != null ? quotaGuard : new InMemorySmsQuotaGuard(this.properties.getGuard().getInMemoryMaxEntries(), this.clock);
         this.loadBalancer = loadBalancer != null ? loadBalancer : new SmsChannelLoadBalancer(this.channelRegistry, this.circuitBreaker, this.quotaGuard);
-        this.failoverChain = new SmsFailoverChain(this.channelRegistry, providers, this.failureHandlers, this.circuitBreaker, this.quotaGuard);
+        this.failoverChain = new SmsFailoverChain(this.channelRegistry, providers, this.failureHandlers, this.circuitBreaker, this.quotaGuard, this.metricsRecorder);
         this.channelRegistry.addEvictListener(chName -> {
             this.loadBalancer.reset(chName);
             this.circuitBreaker.reset(chName);
@@ -169,6 +193,41 @@ public class SmsTemplate {
         this.sendInterceptors = Collections.unmodifiableList(interceptorList);
         this.rateLimiter = rateLimiter != null ? rateLimiter : new InMemorySmsRateLimiter(
                 this.properties.getRateLimit(), this.properties.getGuard().getInMemoryMaxEntries(), this.clock);
+        this.ownsDelayScheduler = delayScheduler == null;
+        this.delayScheduler = delayScheduler != null ? delayScheduler : new MemorySmsDelayScheduler(this.properties.getDelay(), this.clock);
+        this.delayScheduler.bindDispatchers(this::send, this::sendBatch);
+    }
+
+    @Override
+    public void destroy() {
+        if (ownsDelayScheduler && delayScheduler instanceof DisposableBean disposable) {
+            try {
+                disposable.destroy();
+            } catch (Exception ex) {
+                log.warn("[SmsTemplate] 停机销毁内置默认延迟调度器异常: {}", ex.getMessage());
+            }
+        }
+    }
+
+    public SmsTemplate(SmsProperties properties,
+                       List<SmsProvider> providers,
+                       SmsChannelRegistry channelRegistry,
+                       List<SmsChannelResolver> channelResolvers,
+                       List<SmsSendFailureHandler> failureHandlers,
+                       SmsBlacklistProvider blacklistProvider,
+                       DailyBudgetBreaker dailyBudgetBreaker,
+                       SmsChannelCircuitBreaker circuitBreaker,
+                       SmsChannelLoadBalancer loadBalancer,
+                       SmsIdempotentGuard idempotentGuard,
+                       ApplicationEventPublisher eventPublisher,
+                       Executor executor,
+                       Clock clock,
+                       List<SmsSendInterceptor> sendInterceptors,
+                       SmsRateLimiter rateLimiter,
+                       SmsQuotaGuard quotaGuard) {
+        this(properties, providers, channelRegistry, channelResolvers, failureHandlers, blacklistProvider,
+                dailyBudgetBreaker, circuitBreaker, loadBalancer, idempotentGuard, eventPublisher, executor, clock,
+                sendInterceptors, rateLimiter, quotaGuard, null, null);
     }
 
     public SmsTemplate(SmsProperties properties,
@@ -349,6 +408,8 @@ public class SmsTemplate {
         boolean lockAcquired = false;
         SmsSendContext sendContext = null;
         int executedInterceptors = 0;
+        String blockCategory = null;
+        boolean quotaPhase = false;
 
         try {
             // 1. 三级级联解析目标发信渠道并校检模板/纯文本发送模式
@@ -369,6 +430,7 @@ public class SmsTemplate {
                             String reason = sendContext.getBlockReason() != null ? sendContext.getBlockReason() : "被发送拦截器阻断";
                             result = SmsResult.blocked(channel.getName(), reason);
                         }
+                        blockCategory = (result != null && result.getDeliveryStatus() == SmsDeliveryStatus.MOCKED) ? "sandbox" : "interceptor";
                         invokePostSend(executedInterceptors, sendContext, result);
                         return result;
                     }
@@ -390,6 +452,7 @@ public class SmsTemplate {
                                     DesensitizeUtil.mobilePhone(p), reason);
                         }
                         result = SmsResult.blocked(channel.getName(), reason);
+                        blockCategory = "blacklist";
                         invokePostSend(executedInterceptors, sendContext, result);
                         return result;
                     }
@@ -404,6 +467,7 @@ public class SmsTemplate {
                             DesensitizeUtil.mobilePhone(effectiveRequest.getPhone()), quietReason);
                 }
                 result = SmsResult.blocked(channel.getName(), quietReason);
+                blockCategory = "quiet_hours";
                 invokePostSend(executedInterceptors, sendContext, result);
                 return result;
             }
@@ -436,6 +500,7 @@ public class SmsTemplate {
             if (dailyBudgetBreaker != null) {
                 dailyBudgetBreaker.checkAndIncrement(effectiveRequest.getPhones().size());
             }
+            quotaPhase = true;
 
             // 8. 经由高可用顺延容灾链执行物理发信
             if (log.isDebugEnabled()) {
@@ -468,9 +533,11 @@ public class SmsTemplate {
             throw new SmsSendException(channel != null ? channel.getName() : effectiveRequest.getChannel(),
                     "UNEXPECTED_ERROR", ex.getMessage(), SmsResultCode.SMS_SEND_ERROR, ex.getMessage(), ex);
         } finally {
+            long cost = clock.millis() - startTime;
+            recordMetricsForOutcome(channel, effectiveRequest.getChannel(), blockCategory,
+                    result != null && result.isSuccess(), failure, quotaPhase, cost);
             // 9. 广播全链路出站发信审计事件（按配置脱敏内容与敏感变量）
             if (eventPublisher != null) {
-                long cost = clock.millis() - startTime;
                 String channelName = channel != null ? channel.getName() : effectiveRequest.getChannel();
                 SmsSupplier supplier = resolveEffectiveSupplier(channel);
                 SmsRequest auditRequest = properties.getGuard().isLogDesensitizeContent()
@@ -576,6 +643,8 @@ public class SmsTemplate {
         boolean lockAcquired = false;
         SmsSendContext sendContext = null;
         int executedInterceptors = 0;
+        String blockCategory = null;
+        boolean quotaPhase = false;
 
         try {
             // 1. 三级级联解析目标渠道
@@ -605,7 +674,9 @@ public class SmsTemplate {
                                     List.of(SmsResult.blocked(targetChannel.getName(), reason))
                             );
                         }
-                        invokePostSend(executedInterceptors, sendContext, representativeBatchResult(batchResult, targetChannel));
+                        SmsResult rep = representativeBatchResult(batchResult, targetChannel);
+                        blockCategory = (rep != null && rep.getDeliveryStatus() == SmsDeliveryStatus.MOCKED) ? "sandbox" : "interceptor";
+                        invokePostSend(executedInterceptors, sendContext, rep);
                         return batchResult;
                     }
                 }
@@ -631,6 +702,7 @@ public class SmsTemplate {
                         Collections.emptyList(),
                         List.of(SmsResult.blocked(channel.getName(), quietReason))
                 );
+                blockCategory = "quiet_hours";
                 invokePostSend(executedInterceptors, sendContext, representativeBatchResult(batchResult, targetChannel));
                 return batchResult;
             }
@@ -663,6 +735,7 @@ public class SmsTemplate {
                         blacklistedPhones,
                         List.of(SmsResult.blocked(channel.getName(), "全部目标手机号均处于出站黑名单中"))
                 );
+                blockCategory = "blacklist";
                 invokePostSend(executedInterceptors, sendContext, representativeBatchResult(batchResult, targetChannel));
                 return batchResult;
             }
@@ -687,6 +760,7 @@ public class SmsTemplate {
             if (dailyBudgetBreaker != null) {
                 dailyBudgetBreaker.checkAndIncrement(allowedPhones.size());
             }
+            quotaPhase = true;
 
             // 6. 个性化批量发信分支（每个号码拥有独立的动态参数模型，统一受容灾链、熔断器与单渠道配额守卫治理）
             if (effectiveRequest.isPersonalized()) {
@@ -816,9 +890,12 @@ public class SmsTemplate {
             throw new SmsSendException(channel != null ? channel.getName() : effectiveRequest.getChannel(),
                     "BATCH_UNEXPECTED_ERROR", ex.getMessage(), SmsResultCode.SMS_SEND_ERROR, ex.getMessage(), ex);
         } finally {
+            long cost = clock.millis() - startTime;
+            boolean batchOk = batchResult != null && (batchResult.isSuccess() || batchResult.getSuccessCount() > 0);
+            recordMetricsForOutcome(channel, effectiveRequest.getChannel(), blockCategory,
+                    batchOk, failure, quotaPhase, cost);
             // 9. 广播全链路出站批量发信审计事件（按配置脱敏内容与敏感变量）
             if (eventPublisher != null) {
-                long cost = clock.millis() - startTime;
                 String channelName = channel != null ? channel.getName() : effectiveRequest.getChannel();
                 SmsSupplier supplier = resolveEffectiveSupplier(channel);
                 BatchSmsRequest auditRequest = properties.getGuard().isLogDesensitizeContent()
@@ -1315,6 +1392,150 @@ public class SmsTemplate {
      */
     public SmsProvider getProvider(String providerCode) {
         return failoverChain.getProvider(providerCode);
+    }
+
+    /**
+     * 提交延迟发送单条短信任务（两阶段校验：提交期仅做参数/模板/渠道 Fail-Fast 校验，不预先扣减预算与配额；到点触发完整实时发送安全链）
+     *
+     * @param request 发信请求值对象
+     * @param delay   延迟等待时长（非负）
+     * @return 可取消的延迟调度回执句柄
+     */
+    public SmsScheduledReceipt sendDelayed(SmsRequest request, Duration delay) {
+        BusinessAssert.notNull(delay, "延迟发送时长 delay 不能为空");
+        BusinessAssert.isTrue(!delay.isNegative(), "延迟发送时长 delay 不能为负数");
+        return sendAt(request, clock.instant().plus(delay));
+    }
+
+    /**
+     * 提交指定未来/即时触发时刻的定时发送单条短信任务
+     *
+     * @param request   发信请求值对象
+     * @param triggerAt 预定触发时刻
+     * @return 可取消的延迟调度回执句柄
+     */
+    public SmsScheduledReceipt sendAt(SmsRequest request, Instant triggerAt) {
+        BusinessAssert.notNull(request, "发信请求 SmsRequest 不能为空");
+        BusinessAssert.hasText(request.getPhone(), "目标手机号不能为空");
+        BusinessAssert.notNull(triggerAt, "预定触发时刻 triggerAt 不能为空");
+        SmsChannel resolvedChannel = resolveChannel(request.getChannel());
+        validateAndResolveMode(resolvedChannel, request.getTemplateId(), request.getContent());
+        return delayScheduler.scheduleSingle(request, triggerAt, resolvedChannel.getName());
+    }
+
+    /**
+     * 提交延迟发送批量短信任务（两阶段校验：提交期不做实时黑名单与预算配额扣减，到点走完整批量实时链路）
+     *
+     * @param request 批量发信请求
+     * @param delay   延迟等待时长（非负）
+     * @return 可取消的延迟调度回执句柄
+     */
+    public SmsScheduledReceipt sendBatchDelayed(BatchSmsRequest request, Duration delay) {
+        BusinessAssert.notNull(delay, "延迟发送时长 delay 不能为空");
+        BusinessAssert.isTrue(!delay.isNegative(), "延迟发送时长 delay 不能为负数");
+        return sendBatchAt(request, clock.instant().plus(delay));
+    }
+
+    /**
+     * 提交指定触发时刻的定时批量短信发送任务
+     *
+     * @param request   批量发信请求
+     * @param triggerAt 预定触发时刻
+     * @return 可取消的延迟调度回执句柄
+     */
+    public SmsScheduledReceipt sendBatchAt(BatchSmsRequest request, Instant triggerAt) {
+        BusinessAssert.notNull(request, "批量发信请求 BatchSmsRequest 不能为空");
+        BusinessAssert.notEmpty(request.getPhones(), "目标手机号列表不能为空");
+        BusinessAssert.notNull(triggerAt, "预定触发时刻 triggerAt 不能为空");
+        SmsChannel resolvedChannel = resolveChannel(request.getChannel());
+        validateAndResolveMode(resolvedChannel, request.getTemplateId(), request.getContent());
+        return delayScheduler.scheduleBatch(request, triggerAt, resolvedChannel.getName());
+    }
+
+    /**
+     * 根据调度任务 ID 撤销取消尚未执行的延迟或定时短信任务
+     *
+     * @param taskId 调度任务 ID
+     * @return true 表示取消成功，false 表示任务已触发、已完成或不存在
+     */
+    public boolean cancelScheduled(String taskId) {
+        return delayScheduler != null && delayScheduler.cancel(taskId);
+    }
+
+    /**
+     * 主动查询云厂商单条短信发送状态与送达回执详情
+     *
+     * @param channelName 渠道名称（为空时走级联默认渠道解析）
+     * @param phone       目标手机号
+     * @param bizId       业务回执流水号
+     * @param sendDate    发送日期（可空，默认当日）
+     * @return SmsDeliveryQueryResult 主动查询结果（不支持查询的厂商返回 supported=false 明确契约）
+     */
+    public SmsDeliveryQueryResult querySendStatus(String channelName, String phone, String bizId, LocalDate sendDate) {
+        SmsChannel resolved = resolveChannel(channelName);
+        SmsProvider provider = failoverChain.resolveProvider(resolved);
+        if (provider == null) {
+            throw new SmsSendException(resolved.getName(), "PROVIDER_NOT_FOUND",
+                    "未找到云厂商驱动: " + resolved.resolveProviderCode(),
+                    SmsResultCode.SMS_CHANNEL_NOT_FOUND,
+                    "未找到云厂商驱动: " + resolved.resolveProviderCode());
+        }
+        return provider.querySendStatus(phone, bizId, sendDate, resolved);
+    }
+
+    /**
+     * 只读探查指定渠道的云厂商账户余额或剩余短信条数
+     *
+     * @param channelName 渠道名称（为空时走级联默认渠道解析）
+     * @return SmsBalanceResult 余额探查结果（不支持查询的厂商返回 supported=false 明确契约）
+     */
+    public SmsBalanceResult queryBalance(String channelName) {
+        SmsChannel resolved = resolveChannel(channelName);
+        SmsProvider provider = failoverChain.resolveProvider(resolved);
+        if (provider == null) {
+            throw new SmsSendException(resolved.getName(), "PROVIDER_NOT_FOUND",
+                    "未找到云厂商驱动: " + resolved.resolveProviderCode(),
+                    SmsResultCode.SMS_CHANNEL_NOT_FOUND,
+                    "未找到云厂商驱动: " + resolved.resolveProviderCode());
+        }
+        return provider.queryBalance(resolved);
+    }
+
+    private void recordMetricsForOutcome(SmsChannel channel,
+                                         String fallbackChannelName,
+                                         String blockCategory,
+                                         boolean success,
+                                         Throwable failure,
+                                         boolean quotaPhase,
+                                         long costMillis) {
+        if (metricsRecorder == null) {
+            return;
+        }
+        String chName = channel != null ? channel.getName() : fallbackChannelName;
+        String supplierCode = channel != null ? channel.resolveProviderCode() : null;
+        Duration duration = Duration.ofMillis(Math.max(0L, costMillis));
+
+        if (blockCategory != null) {
+            metricsRecorder.recordBlocked(chName, blockCategory);
+            metricsRecorder.recordSend(chName, supplierCode, SmsSendOutcome.BLOCKED, duration);
+            return;
+        }
+        if (failure == null) {
+            SmsSendOutcome outcome = success ? SmsSendOutcome.SUCCESS : SmsSendOutcome.FAILURE;
+            metricsRecorder.recordSend(chName, supplierCode, outcome, duration);
+            return;
+        }
+        if (failure instanceof SmsRateLimitException) {
+            metricsRecorder.recordRateLimited("notify", chName);
+            metricsRecorder.recordSend(chName, supplierCode, SmsSendOutcome.RATE_LIMITED, duration);
+        } else if (failure instanceof SmsIdempotentException) {
+            metricsRecorder.recordSend(chName, supplierCode, SmsSendOutcome.IDEMPOTENT_REJECTED, duration);
+        } else if (failure instanceof SmsBudgetExceededException) {
+            SmsSendOutcome outcome = quotaPhase ? SmsSendOutcome.QUOTA_EXCEEDED : SmsSendOutcome.BUDGET_EXCEEDED;
+            metricsRecorder.recordSend(chName, supplierCode, outcome, duration);
+        } else {
+            metricsRecorder.recordSend(chName, supplierCode, SmsSendOutcome.FAILURE, duration);
+        }
     }
 
     private String validateAndResolveMode(SmsChannel channel, String templateId, String content) {

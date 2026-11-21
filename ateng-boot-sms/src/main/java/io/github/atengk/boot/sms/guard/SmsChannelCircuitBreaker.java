@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sms.guard;
 
 import io.github.atengk.boot.core.util.BusinessAssert;
+import io.github.atengk.boot.sms.metrics.SmsMetricsRecorder;
 import io.github.atengk.boot.sms.properties.SmsGuardProperties;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -47,6 +48,7 @@ public class SmsChannelCircuitBreaker {
     private final SmsGuardProperties properties;
     private final Clock clock;
     private final ConcurrentHashMap<String, ChannelHealth> channelHealthMap = new ConcurrentHashMap<>();
+    private volatile SmsMetricsRecorder metricsRecorder = SmsMetricsRecorder.noop();
 
     public SmsChannelCircuitBreaker(SmsGuardProperties properties, Clock clock) {
         this.properties = properties != null ? properties : new SmsGuardProperties();
@@ -62,6 +64,15 @@ public class SmsChannelCircuitBreaker {
     }
 
     /**
+     * 绑定低基数度量指标记录器（采集熔断状态机迁移指标）
+     *
+     * @param metricsRecorder 度量记录器（为 null 时回退 No-Op）
+     */
+    public void setMetricsRecorder(SmsMetricsRecorder metricsRecorder) {
+        this.metricsRecorder = metricsRecorder != null ? metricsRecorder : SmsMetricsRecorder.noop();
+    }
+
+    /**
      * 判断指定渠道当前是否允许发起网络发信请求
      *
      * @param channelName 渠道名称
@@ -74,7 +85,7 @@ public class SmsChannelCircuitBreaker {
         BusinessAssert.hasText(channelName, "渠道名称不能为空");
         ChannelHealth health = channelHealthMap.computeIfAbsent(channelName, k -> new ChannelHealth(clock));
         long openDurationMillis = getOpenDurationMillis();
-        return health.allowRequest(true, openDurationMillis);
+        return health.allowRequest(true, openDurationMillis, channelName, metricsRecorder);
     }
 
     /**
@@ -89,9 +100,10 @@ public class SmsChannelCircuitBreaker {
         BusinessAssert.hasText(channelName, "渠道名称不能为空");
         ChannelHealth health = channelHealthMap.get(channelName);
         if (health != null) {
-            State previousState = health.getState(getOpenDurationMillis());
+            State previousState = health.getState(getOpenDurationMillis(), channelName, metricsRecorder);
             health.recordSuccess();
             if (previousState == State.HALF_OPEN || previousState == State.OPEN) {
+                metricsRecorder.recordCircuitBreakerTransition(channelName, previousState, State.CLOSED);
                 log.info("[SmsChannelCircuitBreaker] 渠道 [{}] 探测发信成功，熔断状态自愈复位: {} -> CLOSED",
                         channelName, previousState);
             }
@@ -112,11 +124,12 @@ public class SmsChannelCircuitBreaker {
         int threshold = Math.max(1, properties.getCircuitBreakerFailureThreshold());
         long openDurationMillis = getOpenDurationMillis();
 
-        State previousState = health.getState(openDurationMillis);
+        State previousState = health.getState(openDurationMillis, channelName, metricsRecorder);
         health.recordFailure(threshold);
-        State currentState = health.getState(openDurationMillis);
+        State currentState = health.getState(openDurationMillis, channelName, metricsRecorder);
 
         if (previousState != State.OPEN && currentState == State.OPEN) {
+            metricsRecorder.recordCircuitBreakerTransition(channelName, previousState, State.OPEN);
             log.warn("[SmsChannelCircuitBreaker] 渠道 [{}] 连续发信失败达阈值 ({}/{})，触发短时开路熔断 (OPEN)，冷却时长: {} 秒",
                     channelName, health.getConsecutiveFailures(), threshold, openDurationMillis / 1000);
         }
@@ -137,7 +150,7 @@ public class SmsChannelCircuitBreaker {
         if (health == null) {
             return false;
         }
-        return health.isOpen(true, getOpenDurationMillis());
+        return health.isOpen(true, getOpenDurationMillis(), channelName, metricsRecorder);
     }
 
     /**
@@ -155,7 +168,7 @@ public class SmsChannelCircuitBreaker {
         if (health == null) {
             return State.CLOSED;
         }
-        return health.getState(getOpenDurationMillis());
+        return health.getState(getOpenDurationMillis(), channelName, metricsRecorder);
     }
 
     /**
@@ -167,7 +180,11 @@ public class SmsChannelCircuitBreaker {
         BusinessAssert.hasText(channelName, "渠道名称不能为空");
         ChannelHealth health = channelHealthMap.get(channelName);
         if (health != null) {
+            State prev = health.state.get();
             health.reset();
+            if (prev != State.CLOSED) {
+                metricsRecorder.recordCircuitBreakerTransition(channelName, prev, State.CLOSED);
+            }
             log.info("[SmsChannelCircuitBreaker] 渠道 [{}] 熔断状态已被手动重置为 CLOSED", channelName);
         }
     }
@@ -177,7 +194,11 @@ public class SmsChannelCircuitBreaker {
      */
     public void resetAll() {
         for (Map.Entry<String, ChannelHealth> entry : channelHealthMap.entrySet()) {
+            State prev = entry.getValue().state.get();
             entry.getValue().reset();
+            if (prev != State.CLOSED) {
+                metricsRecorder.recordCircuitBreakerTransition(entry.getKey(), prev, State.CLOSED);
+            }
         }
         log.info("[SmsChannelCircuitBreaker] 所有短信渠道熔断状态已被全部手动重置为 CLOSED");
     }
@@ -211,12 +232,15 @@ public class SmsChannelCircuitBreaker {
             this.clock = clock;
         }
 
-        State getState(long openDurationMillis) {
+        State getState(long openDurationMillis, String channelName, SmsMetricsRecorder recorder) {
             State current = state.get();
             if (current == State.OPEN) {
                 long elapsed = clock.millis() - lastOpenTimestamp.get();
                 if (elapsed >= openDurationMillis) {
                     if (state.compareAndSet(State.OPEN, State.HALF_OPEN)) {
+                        if (recorder != null) {
+                            recorder.recordCircuitBreakerTransition(channelName, State.OPEN, State.HALF_OPEN);
+                        }
                         return State.HALF_OPEN;
                     }
                     return state.get();
@@ -225,11 +249,11 @@ public class SmsChannelCircuitBreaker {
             return current;
         }
 
-        boolean allowRequest(boolean enabled, long openDurationMillis) {
+        boolean allowRequest(boolean enabled, long openDurationMillis, String channelName, SmsMetricsRecorder recorder) {
             if (!enabled) {
                 return true;
             }
-            State current = getState(openDurationMillis);
+            State current = getState(openDurationMillis, channelName, recorder);
             return current != State.OPEN;
         }
 
@@ -255,11 +279,11 @@ public class SmsChannelCircuitBreaker {
             }
         }
 
-        boolean isOpen(boolean enabled, long openDurationMillis) {
+        boolean isOpen(boolean enabled, long openDurationMillis, String channelName, SmsMetricsRecorder recorder) {
             if (!enabled) {
                 return false;
             }
-            return getState(openDurationMillis) == State.OPEN;
+            return getState(openDurationMillis, channelName, recorder) == State.OPEN;
         }
 
         void reset() {

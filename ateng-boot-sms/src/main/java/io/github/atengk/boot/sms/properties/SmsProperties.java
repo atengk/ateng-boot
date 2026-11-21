@@ -71,4 +71,10 @@ public class SmsProperties implements Serializable {
      */
     @NestedConfigurationProperty
     private SmsRegistryProperties registry = new SmsRegistryProperties();
+
+    /**
+     * 双模可取消延迟与定时发信调度配置
+     */
+    @NestedConfigurationProperty
+    private SmsDelayProperties delay = new SmsDelayProperties();
 }

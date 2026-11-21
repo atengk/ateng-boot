@@ -12,6 +12,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 
+import java.math.BigDecimal;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -285,5 +286,75 @@ public class YunpianSmsProvider extends AbstractHttpSmsProvider {
             return "";
         }
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    @Override
+    public SmsBalanceResult queryBalance(SmsChannel channel) {
+        BusinessAssert.notNull(channel, "短信渠道 SmsChannel 不能为空");
+        String apiKey = StringUtils.hasText(channel.getAccessKeyId()) ? channel.getAccessKeyId() : channel.getAccessKeySecret();
+        BusinessAssert.hasText(apiKey, "云片网短信 apikey (AccessKeyId) 不能为空");
+
+        String endpoint = resolveActionUrlWithPrefix(
+                normalizeEndpoint(channel.getEndpoint(), DEFAULT_ENDPOINT),
+                "/v2",
+                "/user/get.json"
+        );
+        String body = "apikey=" + urlEncode(apiKey.trim());
+        RestClient client = buildRestClient(channel);
+        String responseBody;
+        try {
+            responseBody = executeWithRetry(channel, "QueryBalance", () -> client.post()
+                    .uri(endpoint)
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .body(body)
+                    .retrieve()
+                    .body(String.class));
+        } catch (RestClientResponseException e) {
+            parseAndThrowExceptionIfPossible(channel.getName(), e.getResponseBodyAsString(), e);
+            throw new SmsSendException(channel.getName(), "HTTP_" + e.getStatusCode().value(),
+                    e.getStatusText(), SmsResultCode.SMS_SEND_ERROR, "云片网账户余额查询响应异常: " + e.getMessage(), e);
+        } catch (SmsSendException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new SmsSendException(channel.getName(), "HTTP_CLIENT_ERROR", e.getMessage(),
+                    SmsResultCode.SMS_SEND_ERROR, "云片网账户余额查询网络异常: " + e.getMessage(), e);
+        }
+
+        Map<String, Object> rootMap = parseJsonSafely(responseBody);
+        if (rootMap.containsKey("code")) {
+            Object codeObj = rootMap.get("code");
+            int code;
+            try {
+                code = codeObj instanceof Number n ? n.intValue() : Integer.parseInt(String.valueOf(codeObj).trim());
+            } catch (NumberFormatException nfe) {
+                throw new SmsSendException(channel.getName(), "INVALID_RESPONSE", "云片网余额响应 code 非合法整数",
+                        SmsResultCode.SMS_SEND_ERROR, "云片网账户余额查询响应格式异常: " + responseBody, nfe);
+            }
+            if (code != 0) {
+                String msg = String.valueOf(rootMap.get("msg"));
+                throw new SmsSendException(channel.getName(), String.valueOf(code), msg,
+                        SmsResultCode.SMS_SEND_ERROR, "云片网账户余额查询失败: [" + code + "] " + msg);
+            }
+        }
+        Object balanceObj = rootMap.get("balance");
+        if (balanceObj == null) {
+            throw new SmsSendException(channel.getName(), "INVALID_RESPONSE", "云片网余额响应缺少 balance 字段",
+                    SmsResultCode.SMS_SEND_ERROR, "云片网余额响应格式异常: " + responseBody);
+        }
+        BigDecimal balance;
+        try {
+            balance = new BigDecimal(String.valueOf(balanceObj).trim());
+        } catch (NumberFormatException nfe) {
+            throw new SmsSendException(channel.getName(), "INVALID_RESPONSE", "云片网余额字段非合法数值",
+                    SmsResultCode.SMS_SEND_ERROR, "云片网余额字段格式异常: " + balanceObj, nfe);
+        }
+        return SmsBalanceResult.builder()
+                .supported(true)
+                .channelName(channel.getName())
+                .supplier(SmsSupplier.YUNPIAN)
+                .balance(balance)
+                .unit("CNY")
+                .message("OK")
+                .build();
     }
 }

@@ -41,7 +41,12 @@ public enum SmsDeliveryStatus implements IBaseEnum<String> {
     /**
      * 本地沙箱模拟成功
      */
-    MOCKED("MOCKED", "沙箱模拟");
+    MOCKED("MOCKED", "沙箱模拟"),
+
+    /**
+     * 未知或待查询状态
+     */
+    UNKNOWN("UNKNOWN", "状态未知");
 
     @JsonValue
     private final String code;

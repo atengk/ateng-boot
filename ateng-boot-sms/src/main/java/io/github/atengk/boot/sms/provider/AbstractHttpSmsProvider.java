@@ -6,6 +6,7 @@ import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.exception.SmsSendException;
+import io.github.atengk.boot.sms.metrics.SmsMetricsRecorder;
 import io.github.atengk.boot.sms.model.SmsChannel;
 import io.github.atengk.boot.sms.properties.SmsProxyProperties;
 import lombok.extern.slf4j.Slf4j;
@@ -45,6 +46,7 @@ public abstract class AbstractHttpSmsProvider implements SmsProvider {
 
     protected final RestClient.Builder restClientBuilder;
     private final ConcurrentLruCache<ClientCacheKey, RestClient> restClientCache;
+    private volatile SmsMetricsRecorder metricsRecorder = SmsMetricsRecorder.noop();
 
     protected AbstractHttpSmsProvider(RestClient.Builder restClientBuilder) {
         this(restClientBuilder, DEFAULT_MAX_CLIENT_CACHE_SIZE);
@@ -53,6 +55,15 @@ public abstract class AbstractHttpSmsProvider implements SmsProvider {
     protected AbstractHttpSmsProvider(RestClient.Builder restClientBuilder, int maxClientCacheSize) {
         this.restClientBuilder = restClientBuilder != null ? restClientBuilder : RestClient.builder();
         this.restClientCache = new ConcurrentLruCache<>(maxClientCacheSize > 0 ? maxClientCacheSize : DEFAULT_MAX_CLIENT_CACHE_SIZE);
+    }
+
+    /**
+     * 绑定低基数度量指标记录器（用于采集物理 HTTP 重试事件）
+     *
+     * @param metricsRecorder 度量记录器（为 null 时回退 No-Op）
+     */
+    public void setMetricsRecorder(SmsMetricsRecorder metricsRecorder) {
+        this.metricsRecorder = metricsRecorder != null ? metricsRecorder : SmsMetricsRecorder.noop();
     }
 
     /**
@@ -205,6 +216,12 @@ public abstract class AbstractHttpSmsProvider implements SmsProvider {
                     return target instanceof Exception ex && isRetryableException(ex);
                 })
                 .onRetry((attempt, error) -> {
+                    if (metricsRecorder != null) {
+                        metricsRecorder.recordRetry(
+                                channel != null ? channel.getName() : null,
+                                getProviderCode()
+                        );
+                    }
                     Throwable target = (error instanceof RuntimeException && error.getCause() instanceof Exception) ? error.getCause() : error;
                     if (log.isWarnEnabled()) {
                         log.warn("[AbstractHttpSmsProvider] 渠道 [{}] 执行 [{}] 遭遇瞬态异常 ({})，准备进行第 {}/{} 次重试 (等待: {}ms)",

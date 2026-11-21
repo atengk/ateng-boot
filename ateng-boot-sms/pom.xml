@@ -83,6 +83,13 @@
             <artifactId>jakarta.servlet-api</artifactId>
             <optional>true</optional>
         </dependency>
+
+        <!-- Micrometer Core (可选依赖，存在时启用 SmsMetrics 低基数度量指标采集) -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <optional>true</optional>
+        </dependency>
         <dependency>
             <groupId>org.springframework</groupId>
             <artifactId>spring-webmvc</artifactId>

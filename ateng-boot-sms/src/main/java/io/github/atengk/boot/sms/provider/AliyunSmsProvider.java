@@ -20,6 +20,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -376,5 +377,139 @@ public class AliyunSmsProvider extends AbstractHttpSmsProvider {
             }
         }
         return null;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public SmsDeliveryQueryResult querySendStatus(String phone, String bizId, LocalDate sendDate, SmsChannel channel) {
+        BusinessAssert.notNull(channel, "短信渠道 SmsChannel 不能为空");
+        BusinessAssert.hasText(channel.getAccessKeyId(), "阿里云短信 AccessKeyId 不能为空");
+        BusinessAssert.hasText(channel.getAccessKeySecret(), "阿里云短信 AccessKeySecret 不能为空");
+        BusinessAssert.hasText(phone, "查询短信回执的目标手机号不能为空");
+
+        Map<String, String> params = new HashMap<>();
+        params.put("Action", "QuerySendDetails");
+        params.put("Version", API_VERSION);
+        params.put("Format", "JSON");
+        params.put("SignatureMethod", SIGNATURE_METHOD);
+        params.put("SignatureVersion", "1.0");
+        params.put("SignatureNonce", UUID.randomUUID().toString());
+        params.put("Timestamp", UTC_FORMATTER.format(Instant.now()));
+        params.put("AccessKeyId", channel.getAccessKeyId());
+        params.put("RegionId", StringUtils.hasText(channel.getRegion()) ? channel.getRegion() : "cn-hangzhou");
+        params.put("PhoneNumber", SmsPhoneNormalizer.toAliyunFormat(phone, channel));
+        params.put("SendDate", (sendDate != null ? sendDate : LocalDate.now()).format(DateTimeFormatter.BASIC_ISO_DATE));
+        params.put("PageSize", "10");
+        params.put("CurrentPage", "1");
+        if (StringUtils.hasText(bizId)) {
+            params.put("BizId", bizId.trim());
+        }
+
+        String signature = generateSignature(params, "POST", channel.getAccessKeySecret());
+        StringBuilder formBody = new StringBuilder();
+        formBody.append("Signature=").append(percentEncode(signature));
+        for (Map.Entry<String, String> entry : params.entrySet()) {
+            if (entry.getValue() != null) {
+                formBody.append("&")
+                        .append(percentEncode(entry.getKey()))
+                        .append("=")
+                        .append(percentEncode(entry.getValue()));
+            }
+        }
+
+        String endpoint = normalizeEndpoint(channel.getEndpoint(), DEFAULT_ENDPOINT);
+        RestClient client = buildRestClient(channel);
+        String responseBody;
+        try {
+            responseBody = executeWithRetry(channel, "QuerySendDetails", () -> client.post()
+                    .uri(endpoint)
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .body(formBody.toString())
+                    .retrieve()
+                    .body(String.class));
+        } catch (RestClientResponseException e) {
+            parseAndThrowExceptionIfPossible(channel.getName(), e.getResponseBodyAsString(), e);
+            throw new SmsSendException(channel.getName(), "HTTP_" + e.getStatusCode().value(),
+                    e.getStatusText(), SmsResultCode.SMS_SEND_ERROR, "阿里云短信状态查询响应异常: " + e.getMessage(), e);
+        } catch (SmsSendException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new SmsSendException(channel.getName(), "NETWORK_ERROR", e.getMessage(),
+                    SmsResultCode.SMS_SEND_ERROR, "阿里云短信状态查询网络异常: " + e.getMessage(), e);
+        }
+
+        Map<String, Object> respMap = parseJsonSafely(responseBody);
+        String code = getFieldIgnoreCase(respMap, "Code");
+        String message = getFieldIgnoreCase(respMap, "Message");
+        if (!"OK".equalsIgnoreCase(code)) {
+            throw new SmsSendException(channel.getName(), code != null ? code : "QUERY_ERROR",
+                    message, SmsResultCode.SMS_SEND_ERROR,
+                    "阿里云短信状态查询失败: [" + code + "] " + message);
+        }
+
+        List<Map<String, Object>> detailsList = Collections.emptyList();
+        Object dtosObj = respMap.get("SmsSendDetailDTOs");
+        if (dtosObj instanceof Map<?, ?> dtosMap) {
+            Object dtoArr = dtosMap.get("SmsSendDetailDTO");
+            if (dtoArr instanceof List<?> rawList) {
+                List<Map<String, Object>> normalized = new ArrayList<>(rawList.size());
+                for (Object item : rawList) {
+                    if (item instanceof Map<?, ?> itemMap) {
+                        Map<String, Object> copy = new LinkedHashMap<>();
+                        itemMap.forEach((k, v) -> copy.put(String.valueOf(k), v));
+                        normalized.add(copy);
+                    }
+                }
+                detailsList = Collections.unmodifiableList(normalized);
+            }
+        }
+
+        if (detailsList.isEmpty()) {
+            return SmsDeliveryQueryResult.builder()
+                    .supported(true)
+                    .channelName(channel.getName())
+                    .supplier(SmsSupplier.ALIYUN)
+                    .phone(phone)
+                    .bizId(bizId)
+                    .deliveryStatus(SmsDeliveryStatus.UNKNOWN)
+                    .message("未查询到匹配的阿里云发送回执明细")
+                    .details(Collections.emptyList())
+                    .build();
+        }
+
+        Map<String, Object> first = detailsList.get(0);
+        Object sendStatusObj = first.get("SendStatus");
+        int sendStatusVal = 0;
+        if (sendStatusObj instanceof Number n) {
+            sendStatusVal = n.intValue();
+        } else if (sendStatusObj != null) {
+            try {
+                sendStatusVal = Integer.parseInt(String.valueOf(sendStatusObj).trim());
+            } catch (NumberFormatException nfe) {
+                throw new SmsSendException(channel.getName(), "INVALID_RESPONSE", "阿里云 SendStatus 非合法整数",
+                        SmsResultCode.SMS_SEND_ERROR, "阿里云短信状态回查响应 SendStatus 非法: " + sendStatusObj, nfe);
+            }
+        }
+        SmsDeliveryStatus status = switch (sendStatusVal) {
+            case 3 -> SmsDeliveryStatus.DELIVERED;
+            case 2 -> SmsDeliveryStatus.FAILED;
+            case 1 -> SmsDeliveryStatus.ACCEPTED;
+            default -> SmsDeliveryStatus.UNKNOWN;
+        };
+
+        return SmsDeliveryQueryResult.builder()
+                .supported(true)
+                .channelName(channel.getName())
+                .supplier(SmsSupplier.ALIYUN)
+                .phone(getFieldIgnoreCase(first, "PhoneNum") != null ? getFieldIgnoreCase(first, "PhoneNum") : phone)
+                .bizId(getFieldIgnoreCase(first, "OutId") != null ? getFieldIgnoreCase(first, "OutId") : bizId)
+                .deliveryStatus(status)
+                .rawStatusCode(getFieldIgnoreCase(first, "ErrCode"))
+                .rawStatusDesc(getFieldIgnoreCase(first, "Content"))
+                .sendTime(getFieldIgnoreCase(first, "SendDate"))
+                .receiveTime(getFieldIgnoreCase(first, "ReceiveDate"))
+                .message(message)
+                .details(detailsList)
+                .build();
     }
 }

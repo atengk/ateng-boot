@@ -3,6 +3,7 @@ package io.github.atengk.boot.sms.template;
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.sms.exception.SmsException;
+import io.github.atengk.boot.sms.exception.SmsRateLimitException;
 import io.github.atengk.boot.sms.exception.SmsVerifyCodeException;
 import io.github.atengk.boot.sms.limiter.SmsRateLimiter;
 import io.github.atengk.boot.sms.model.SmsChannel;
@@ -107,7 +108,14 @@ public class SmsVerifyCodeTemplate {
 
         // 2. 滑动窗口频控防刷检查（使用独立 verify: 命名空间与普通通知频控严格隔离，支持手机号与 IP 协同）
         if (rateLimiter != null) {
-            rateLimiter.acquire("verify", phone, ip);
+            try {
+                rateLimiter.acquire("verify", phone, ip);
+            } catch (SmsRateLimitException rateEx) {
+                if (smsTemplate != null && smsTemplate.getMetricsRecorder() != null) {
+                    smsTemplate.getMetricsRecorder().recordRateLimited("verify", channel);
+                }
+                throw rateEx;
+            }
         }
 
         // 3. 生成随机安全验证码并写入仓储

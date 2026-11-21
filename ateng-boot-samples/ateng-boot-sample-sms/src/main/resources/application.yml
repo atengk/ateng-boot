@@ -42,3 +42,11 @@ ateng:
       callback:
         enabled: true
         path-prefix: /ateng-sms/callback
+      delay:
+        mode: memory
+        pool-size: 2
+        await-termination: 15s
+      registry:
+        dynamic-cache-enabled: true
+        dynamic-cache-max-size: 1024
+        dynamic-cache-ttl: 30m

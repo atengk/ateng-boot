@@ -2,7 +2,10 @@ package io.github.atengk.boot.sms.provider;
 
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.sms.model.SmsBalanceResult;
 import io.github.atengk.boot.sms.model.SmsChannel;
+import io.github.atengk.boot.sms.model.SmsDeliveryQueryResult;
+import io.github.atengk.boot.sms.model.SmsDeliveryStatus;
 import io.github.atengk.boot.sms.model.SmsParam;
 import io.github.atengk.boot.sms.model.SmsRequest;
 import io.github.atengk.boot.sms.model.SmsResult;
@@ -12,9 +15,13 @@ import io.github.atengk.boot.sms.support.SmsDesensitizeSupport;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
@@ -28,7 +35,12 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 public class MockSmsProvider implements SmsProvider {
 
     private final ConcurrentLinkedQueue<SmsRequest> sentRequests = new ConcurrentLinkedQueue<>();
+    private final Map<String, SmsDeliveryStatus> mockStatusByBizId = new ConcurrentHashMap<>();
+    private final Map<String, SmsDeliveryStatus> mockStatusByPhone = new ConcurrentHashMap<>();
     private final SmsGuardProperties guardProperties;
+    private volatile BigDecimal mockBalance = new BigDecimal("1000.00");
+    private volatile Long mockRemainingCount = 10000L;
+    private volatile RuntimeException mockBalanceFailure;
 
     public MockSmsProvider() {
         this(new SmsGuardProperties());
@@ -61,8 +73,14 @@ public class MockSmsProvider implements SmsProvider {
                 ? request.getSignName()
                 : (channel != null ? channel.getSignName() : "MOCK");
 
-        // 纯内存记录真明文请求
+        // 纯内存记录真明文请求与模拟回执索引
         sentRequests.offer(request);
+        mockStatusByBizId.put(bizId, SmsDeliveryStatus.DELIVERED);
+        if (request.getPhones() != null) {
+            for (String p : request.getPhones()) {
+                mockStatusByPhone.put(p, SmsDeliveryStatus.DELIVERED);
+            }
+        }
 
         SmsParam loggedParams = guardProperties.isLogDesensitizeContent()
                 ? SmsDesensitizeSupport.maskSensitiveParams(
@@ -90,6 +108,72 @@ public class MockSmsProvider implements SmsProvider {
         }
 
         return SmsResult.mock(channelName, bizId, requestId);
+    }
+
+    @Override
+    public SmsDeliveryQueryResult querySendStatus(String phone, String bizId, LocalDate sendDate, SmsChannel channel) {
+        String chName = channel != null ? channel.getName() : "mock";
+        SmsDeliveryStatus status = null;
+        if (StringUtils.hasText(bizId)) {
+            status = mockStatusByBizId.get(bizId.trim());
+        }
+        if (status == null && StringUtils.hasText(phone)) {
+            status = mockStatusByPhone.get(phone.trim());
+        }
+        if (status == null) {
+            return SmsDeliveryQueryResult.builder()
+                    .supported(true)
+                    .channelName(chName)
+                    .supplier(SmsSupplier.MOCK)
+                    .phone(phone)
+                    .bizId(bizId)
+                    .deliveryStatus(SmsDeliveryStatus.UNKNOWN)
+                    .message("未找到匹配的 Mock 发信记录")
+                    .build();
+        }
+        return SmsDeliveryQueryResult.builder()
+                .supported(true)
+                .channelName(chName)
+                .supplier(SmsSupplier.MOCK)
+                .phone(phone)
+                .bizId(bizId)
+                .deliveryStatus(status)
+                .rawStatusCode("DELIVRD")
+                .rawStatusDesc("Mock 模拟运营商已送达")
+                .message("OK")
+                .build();
+    }
+
+    @Override
+    public SmsBalanceResult queryBalance(SmsChannel channel) {
+        if (mockBalanceFailure != null) {
+            throw mockBalanceFailure;
+        }
+        String chName = channel != null ? channel.getName() : "mock";
+        return SmsBalanceResult.builder()
+                .supported(true)
+                .channelName(chName)
+                .supplier(SmsSupplier.MOCK)
+                .balance(mockBalance)
+                .remainingCount(mockRemainingCount)
+                .unit("MOCK")
+                .message("OK")
+                .build();
+    }
+
+    /**
+     * 设置 Mock 账户余额（供单元测试或样例演练自定义余量）
+     */
+    public void setMockBalance(BigDecimal balance, Long remainingCount) {
+        this.mockBalance = balance;
+        this.mockRemainingCount = remainingCount;
+    }
+
+    /**
+     * 模拟余额探查故障（仅用于健康探针与异常脱敏测试）
+     */
+    public void setMockBalanceFailure(RuntimeException failure) {
+        this.mockBalanceFailure = failure;
     }
 
     /**
@@ -125,5 +209,10 @@ public class MockSmsProvider implements SmsProvider {
      */
     public void clear() {
         sentRequests.clear();
+        mockStatusByBizId.clear();
+        mockStatusByPhone.clear();
+        mockBalance = new BigDecimal("1000.00");
+        mockRemainingCount = 10000L;
+        mockBalanceFailure = null;
     }
 }

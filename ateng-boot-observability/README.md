@@ -23,6 +23,7 @@
 | **数据源探针** | 动态多数据源与连接池连通性探针 | `DynamicDatasourceHealthIndicator` | `health.dynamic-datasource.enabled` | 探查连接池 `isValid(1)`，联动 `DynamicDatasourceGuard` 诊断多数据源路由与连接状态 | `DynamicDatasourceHealthIndicatorTest`<br>`ObservabilityScenarioTest` |
 | **RocketMQ 探针** | RocketMQ 5.x 客户端与消费监听容器探针 | `RocketmqHealthIndicator` | `health.rocketmq.enabled` | 弱探测 `RocketmqTemplate` 的 `Producer` 实例及 `RocketmqConsumerContainer` 的消费运行状态与活跃端点数 | `RocketmqHealthIndicatorTest` |
 | **邮件探针** | 邮件静态账号防假死安全健康探针（含 60s 防刷缓存） | `MailSafeHealthIndicator` | `health.mail.enabled`<br>`health.mail.cache-ttl`（默认 `60s`） | 仅探测 `MailAccountRegistry` 静态预热账号 SMTP 握手（跳过动态租户账号），内置 `60s` 防刷缓存并强制脱敏异常详情中的邮箱与凭据 | `MailSafeHealthIndicatorTest`<br>`AtengHealthAutoConfigurationTest`<br>`SampleMailIntegrationTest` |
+| **短信探针** | 短信静态渠道安全健康探针（零计费、60s 防刷缓存） | `SmsSafeHealthIndicator` | `health.sms.enabled`<br>`health.sms.cache-ttl`（默认 `60s`）<br>`health.sms.probe-balance`（默认 `false`） | 仅评估 `SmsChannelRegistry` 静态注册渠道配置合法性与熔断态（跳过动态租户缓存、空静态池返回 `UNKNOWN`），可选只读余额探查，绝对禁止发送计费短信并强制脱敏密钥 | `SmsSafeHealthIndicatorTest`<br>`AtengHealthAutoConfigurationTest` |
 | **CIDR 匹配器** | 直接复用 Core 底座零依赖 CIDR IP 匹配器 | `io.github.atengk.boot.core.util.CidrMatcher` | - | 基于 Core 底座 `CidrMatcher(Collection<String>)` 执行 IPv4/IPv6 网段与单 IP 位运算无锁匹配 | `ObservabilityScenarioTest` |
 | **双层安全守卫** | Actuator 端点防伪造、隐身与双层认证过滤器 | `ActuatorEndpointSecurityFilter` | `security.lockdown-enabled`<br>`security.token`<br>`security.allowed-ip-ranges`<br>`security.trust-proxy-headers`<br>`security.trusted-proxies`<br>`security.stealth-mode`<br>`security.whitelisted-endpoints`<br>`security.basic-auth.*` | 优先级 `HIGHEST_PRECEDENCE + 20`；默认采信直连 `RemoteAddr`，仅在开启 `trust-proxy-headers` 或直连命中 `trusted-proxies` 时解析代理头；白名单端点免密放行（`/actuator` 根索引始终拦截）；未授权支持 `403` 或 `404` 隐身 JSON 响应并广播 `ActuatorAccessDeniedEvent` | `ActuatorEndpointSecurityFilterTest`<br>`AtengSecurityAutoConfigurationTest`<br>`ObservabilityScenarioTest` |
 | **SBA 握手拦截器** | Spring Boot Admin 客户端出站握手密钥拦截器 | `AdminClientSecretHttpRequestInterceptor` | `admin-client.enabled`<br>`admin-client.client-secret`<br>`admin-client.service-url`<br>`admin-client.management-url` | `intercept(...)`：幂等向发往 SBA Server 的 HTTP 请求头附加 `X-Admin-Client-Secret`，并注入 `actuator-token` 至 `InstanceProperties` 元数据 | `AdminClientSecretHttpRequestInterceptorTest`<br>`AtengAdminClientAutoConfigurationTest`<br>`ObservabilityScenarioTest` |
@@ -613,7 +614,8 @@ ateng:
 - **Storage (`StorageHealthIndicator`)**：校验 Local 模式目录可写性与 S3 连通性，自动对 Secret 进行脱敏掩码；
 - **Realtime (`RealtimeHealthIndicator`)**：弱探测 `RealtimeSessionManager` 活跃会话数及 `RealtimeClusterBroadcaster` 集群广播存活状态；
 - **DynamicDatasource (`DynamicDatasourceHealthIndicator`)**：基于 `isValid(1)` 探测连接池连通性，联动 `DynamicDatasourceGuard` 多数据源守护；
-- **Mail (`MailSafeHealthIndicator`)**：仅探测 `MailAccountRegistry` 静态预热账号 SMTP 物理连通性（跳过动态租户账号防单点拖垮），默认启用 `60s` `cache-ttl` 防刷公网邮件服务商限流，并对异常消息中的凭据、Token 与邮箱地址自动脱敏掩码。
+- **Mail (`MailSafeHealthIndicator`)**：仅探测 `MailAccountRegistry` 静态预热账号 SMTP 物理连通性（跳过动态租户账号防单点拖垮），默认启用 `60s` `cache-ttl` 防刷公网邮件服务商限流，并对异常消息中的凭据、Token 与邮箱地址自动脱敏掩码；
+- **SMS (`SmsSafeHealthIndicator`)**：仅检查 `SmsChannelRegistry` 静态渠道凭据、熔断健康态与可选只读余额（跳过动态租户缓存、空白静态池上报 `UNKNOWN`、全熔断上报 `DOWN`），默认启用 `60s` `cache-ttl` 防刷并承诺全程触发 0 条计费短信且对异常/明细中 AK/SK/代理口令执行脱敏掩码。
 
 ---
 
@@ -819,6 +821,9 @@ public class ObservabilityAlertEventListener {
 | `ateng.boot.observability.health.search.enabled` | `boolean` | `true` | 是否启用 Elasticsearch 防假死安全健康探针 |
 | `ateng.boot.observability.health.mail.enabled` | `boolean` | `true` | 是否启用邮件静态账号防假死安全健康探针（`MailSafeHealthIndicator`） |
 | `ateng.boot.observability.health.mail.cache-ttl` | `Duration` | `60s` | 邮件探针专有防刷缓存 TTL（防止高频健康检查触发公网邮件网关认证限流，`0s` 可关闭缓存） |
+| `ateng.boot.observability.health.sms.enabled` | `boolean` | `true` | 是否启用短信静态渠道安全健康探针（`SmsSafeHealthIndicator`） |
+| `ateng.boot.observability.health.sms.cache-ttl` | `Duration` | `60s` | 短信探针专有防刷缓存 TTL（防止高频健康检查冲击外部短信网关，`0s` 可关闭缓存） |
+| `ateng.boot.observability.health.sms.probe-balance` | `boolean` | `false` | 是否开启静态渠道只读余额顺带探查（绝不发送计费短信） |
 | `ateng.boot.observability.security.lockdown-enabled` | `boolean` | `true` | 是否启用高危敏感端点（`/env`, `/beans` 等）生产加固守卫 |
 | `ateng.boot.observability.security.token` | `String` | `""` | 访问高危敏感端点所需的授权 Token 密钥（请求头：`X-Actuator-Token`） |
 | `ateng.boot.observability.security.allowed-ip-ranges` | `List<String>` | `[]` | 免密访问高危端点的内网 IP 或 CIDR 网段白名单 |

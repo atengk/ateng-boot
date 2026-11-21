@@ -5,7 +5,7 @@
 ## Language
 
 **SmsTemplate**:
-短信操作核心门面具体类，提供命令式纯净 API（`send`、`sendBatch`、`sendAsync`、`sendAfterCommit`）、动态渠道路由、四维跨线程上下文透传及本地事务感知发信。
+短信操作核心门面具体类，提供命令式纯净 API（`send`、`sendBatch`、`sendAsync`、`sendAfterCommit`、`sendDelayed`/`sendAt`/`cancelScheduled`、`querySendStatus`、`queryBalance`、`evictChannelCache`）、动态渠道路由、四维与渠道上下文透传及本地事务感知发信。
 _Avoid_: SmsUtil, SmsHelper, SmsClient, SmsService
 
 **SmsVerifyCodeTemplate**:
@@ -61,8 +61,8 @@ _Avoid_: SmsAccount, SmsConfig, ChannelDTO
 _Avoid_: ChannelManager, SmsConfigRegistry, ChannelPool
 
 **SmsChannelResolver**:
-多租户与业务上下文短信渠道动态解析器 SPI，根据当前线程租户或业务标识动态决策目标渠道。
-_Avoid_: TenantSmsResolver, ChannelRouter, SmsDispatcher
+多租户与业务上下文短信渠道动态解析器 SPI，按“请求显式渠道 -> `SmsContextHolder` -> `TenantContextHolder` 绑定渠道 -> 默认渠道”优先级决策目标渠道（默认实现为 `TenantSmsChannelResolver`）。
+_Avoid_: ChannelRouter, SmsDispatcher, SmsRouteResolver
 
 **SmsContextHolder**:
 短信渠道线程级动态切源上下文持有者，依托 ThreadLocal 显式指定当前线程使用的短信渠道。
@@ -115,3 +115,87 @@ _Avoid_: IdempotentChecker, DuplicateFilter, SmsDeduplicator
 **SmsSendAuditEvent**:
 全链路出站发信审计领域事件，广播每次单条与批量发信的执行终态、MDC 快照、渠道标识与物理耗时。
 _Avoid_: SmsLogEvent, AuditNotice, SendTrackEvent
+
+**BaiduSmsProvider**:
+百度智能云短信（BCE SMS v3）纯原生驱动实现，基于 BCE-AUTH-V1 HMAC-SHA256 鉴权协议直连官方网关。
+_Avoid_: BaiduSmsClient, BceSmsSender
+
+**JdCloudSmsProvider**:
+京东云短信纯原生驱动实现，基于 JDCLOUD2-HMAC-SHA256 签名协议直连官方网关。
+_Avoid_: JdSmsClient, JdCloudSender
+
+**QiniuSmsProvider**:
+七牛云短信纯原生驱动实现，基于 Qiniu AccessToken HMAC-SHA1 鉴权直连官方网关。
+_Avoid_: QiniuSmsClient, QiniuSender
+
+**NeteaseSmsProvider**:
+网易云信短信纯原生驱动实现，基于 CurTime + Nonce + CheckSum SHA1 校验直连官方网关。
+_Avoid_: NeteaseSmsClient, ImSmsSender
+
+**CloopenSmsProvider**:
+容联云短信纯原生驱动实现，基于 MD5 SigParameter 与 Base64 Authorization 直连官方 REST API。
+_Avoid_: CloopenClient, YuntongxunSender
+
+**ChuanglanSmsProvider**:
+创蓝 253 云通讯纯原生驱动实现，支持模板与无模板纯文本正文直发。
+_Avoid_: ChuanglanClient, Cl253Sender
+
+**MasSmsProvider**:
+中国移动云 MAS 短信纯原生驱动实现，支持 ecName/apId/secretKey 摘要签发与纯文本正文直发。
+_Avoid_: MasClient, ChinaMobileMasSender
+
+**UnismsSmsProvider**:
+合一短信（UniSMS）纯原生驱动实现，支持 Simple Key 与 HMAC-SHA256 双模验签。
+_Avoid_: UniSmsClient, UnimtxSender
+
+**ZhutongSmsProvider**:
+助通科技短信纯原生驱动实现，基于 Timestamp + MD5 tKey 协议支持模板、个性化批量、纯文本直发及只读余额探查（`/v2/balance`）。
+_Avoid_: ZhutongClient, ZtSmsSender
+
+**SmsChannelProvider**:
+动态短信渠道按需供给 SPI 接口，支持多租户在运行时从数据库或配置中心按渠道名热加载 `SmsChannel`。
+_Avoid_: ChannelLoader, DynamicChannelSource, SmsAccountProvider
+
+**SmsQuotaGuard**:
+单渠道周期发信配额硬熔断门卫（支持 `DAILY` 自然日重置与 `TOTAL` 总量包干），超限立即抛出 `SmsBudgetExceededException`。
+_Avoid_: ChannelQuotaManager, SmsAllowanceGuard, QuotaCounter
+
+**SmsSandboxInterceptor**:
+非生产环境出站测试安全沙箱拦截器，支持 `log-only` 纯日志空跑、通配符测试号白名单穿透与非白名单号码重定向防误发。
+_Avoid_: MockSandboxFilter, DevInterceptFilter, TestPhoneGuard
+
+**SmsPhoneNormalizer**:
+国际及港澳台 E.164 手机号归一化工具组件，按渠道 `internationalEnabled` 与 `defaultRegionCode` 统一规范号段格式。
+_Avoid_: PhoneFormatUtil, IntlPhoneHelper, MobileNormalizer
+
+**SmsDelayScheduler**:
+双模可取消延迟与定时短信调度核心接口（`MEMORY` 受管线程池与 `REDIS` ZSet + Lua 分布式持久化双模），严格履行入队轻校验与到点四维上下文重入防线。
+_Avoid_: SmsTimer, DelayQueueManager, SmsJobScheduler
+
+**SmsScheduledReceipt**:
+延迟/定时短信调度受理凭证模型，封装唯一任务标识 `taskId`、触发时刻 `triggerAt`、调度状态与渠道名称。
+_Avoid_: DelayReceipt, SmsTaskToken, ScheduleAck
+
+**SmsDeliveryQueryResult**:
+主动回查单条短信送达状态的标准化契约结果模型，未实现的厂商驱动统一平滑降级返回 `supported=false`。
+_Avoid_: DeliveryQueryDTO, SmsStatusVO, QueryReportResult
+
+**SmsBalanceResult**:
+只读探查云厂商账户余额或剩余条数的标准化结果模型，探查过程绝对禁止触发任何计费发信动作。
+_Avoid_: BalanceDTO, SmsAccountBalanceVO, QuotaProbeResult
+
+**SmsMetrics**:
+基于 Micrometer 的短信基础设施低基数度量指标采集器，静态渠道保留原名、动态渠道收敛为 `dynamic`、独立追踪溢出折叠为 `other`，杜绝高基数指标爆炸。
+_Avoid_: SmsTelemetry, SmsPromExporter, MetricCollector
+
+**SmsMetricsRecorder**:
+短信指标无侵入采集端口接口，在未引入 Micrometer 时提供空实现 `noop()` 平滑降级。
+_Avoid_: TelemetryRecorder, MetricsSink
+
+**SmsSendInterceptor**:
+短信出站发送链路前后拦截扩展点 SPI（按 `Ordered` 排序），支撑安全沙箱截断、敏感内容合规审查与拓展上报。
+_Avoid_: SmsFilter, OutboundHook, SendPlugin
+
+**SmsCallbackVerifier**:
+短信 Webhook 入站回调安全校验器 SPI（默认实现为 `DefaultSmsCallbackVerifier`），串联来源 CIDR、恒定时间令牌与厂商签名核验。
+_Avoid_: CallbackAuthFilter, WebhookSignatureGuard

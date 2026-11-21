@@ -13,6 +13,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.*;
 
@@ -33,6 +34,7 @@ public class ZhutongSmsProvider extends AbstractHttpSmsProvider {
     public static final String DEFAULT_ENDPOINT = "https://api.mix2.zthysms.com";
     private static final String PATH_TEMPLATE = "/v2/sendSmsTp";
     private static final String PATH_PLAIN = "/v2/sendSms";
+    private static final String PATH_BALANCE = "/v2/balance";
 
     public ZhutongSmsProvider(RestClient.Builder restClientBuilder) {
         super(restClientBuilder);
@@ -195,5 +197,76 @@ public class ZhutongSmsProvider extends AbstractHttpSmsProvider {
                     channelName, DesensitizeUtil.mobilePhone(phone), templateLabel, msgId);
         }
         return SmsResult.success(channelName, SmsSupplier.ZHUTONG, msgId, msgId, phoneCount);
+    }
+
+    @Override
+    public SmsBalanceResult queryBalance(SmsChannel channel) {
+        BusinessAssert.notNull(channel, "短信渠道 SmsChannel 不能为空");
+        BusinessAssert.hasText(channel.getAccessKeyId(), "助通短信账号 username (accessKeyId) 不能为空");
+        BusinessAssert.hasText(channel.getAccessKeySecret(), "助通短信密码 password (accessKeySecret) 不能为空");
+
+        String tKey = String.valueOf(Instant.now().getEpochSecond());
+        Map<String, Object> bodyMap = new LinkedHashMap<>(3);
+        bodyMap.put("username", channel.getAccessKeyId().trim());
+        bodyMap.put("tKey", tKey);
+        bodyMap.put("password", signPassword(channel.getAccessKeySecret().trim(), tKey));
+
+        String url = resolveActionUrl(normalizeEndpoint(channel.getEndpoint(), DEFAULT_ENDPOINT), PATH_BALANCE);
+        String responseBody = executePostWithRetry(
+                channel, "助通科技", "v2/balance", url, "application/json;charset=utf-8",
+                null, JsonUtil.toJsonString(bodyMap),
+                httpEx -> throwJsonHttpErrorIfPresent(channel, "助通科技", httpEx, "code", "msg")
+        );
+
+        Map<String, Object> root = parseJsonSafely(responseBody);
+        String code = root.get("code") != null ? String.valueOf(root.get("code")) : "UNKNOWN";
+        if (!"200".equals(code)) {
+            String msg = root.get("msg") != null ? String.valueOf(root.get("msg")) : "Zhutong balance query failed";
+            throw new SmsSendException(channel.getName(), code, msg, SmsResultCode.SMS_SEND_ERROR,
+                    "助通科技余额查询失败: [" + code + "] " + msg);
+        }
+
+        Long remainingCount = parseLongOrNull(root.get("sumSms"));
+        BigDecimal balance = parseBigDecimalOrNull(root.get("balance"));
+        if (remainingCount == null) {
+            remainingCount = parseLongOrNull(root.get("data"));
+        }
+
+        return SmsBalanceResult.builder()
+                .supported(true)
+                .channelName(channel.getName())
+                .supplier(SmsSupplier.ZHUTONG)
+                .remainingCount(remainingCount)
+                .balance(balance)
+                .unit(remainingCount != null ? "COUNT" : "CNY")
+                .message("OK")
+                .build();
+    }
+
+    private static Long parseLongOrNull(Object val) {
+        if (val == null) {
+            return null;
+        }
+        if (val instanceof Number num) {
+            return num.longValue();
+        }
+        try {
+            String text = String.valueOf(val).trim();
+            return StringUtils.hasText(text) ? Long.parseLong(text) : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private static BigDecimal parseBigDecimalOrNull(Object val) {
+        if (val == null) {
+            return null;
+        }
+        try {
+            String text = String.valueOf(val).trim();
+            return StringUtils.hasText(text) ? new BigDecimal(text) : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 }

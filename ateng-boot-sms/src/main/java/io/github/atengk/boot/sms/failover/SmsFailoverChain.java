@@ -9,6 +9,7 @@ import io.github.atengk.boot.sms.exception.SmsSendException;
 import io.github.atengk.boot.sms.guard.SmsChannelCircuitBreaker;
 import io.github.atengk.boot.sms.guard.SmsQuotaGuard;
 import io.github.atengk.boot.sms.handler.SmsSendFailureHandler;
+import io.github.atengk.boot.sms.metrics.SmsMetricsRecorder;
 import io.github.atengk.boot.sms.model.BatchSmsRequest;
 import io.github.atengk.boot.sms.model.BatchSmsResult;
 import io.github.atengk.boot.sms.model.SmsChannel;
@@ -42,16 +43,19 @@ public class SmsFailoverChain {
     private final SmsChannelCircuitBreaker circuitBreaker;
     @Getter
     private final SmsQuotaGuard quotaGuard;
+    private volatile SmsMetricsRecorder metricsRecorder;
 
     public SmsFailoverChain(SmsChannelRegistry channelRegistry,
                             List<SmsProvider> providers,
                             List<SmsSendFailureHandler> failureHandlers,
                             SmsChannelCircuitBreaker circuitBreaker,
-                            SmsQuotaGuard quotaGuard) {
+                            SmsQuotaGuard quotaGuard,
+                            SmsMetricsRecorder metricsRecorder) {
         this.channelRegistry = channelRegistry;
         this.failureHandlers = failureHandlers != null ? failureHandlers : Collections.emptyList();
         this.circuitBreaker = circuitBreaker;
         this.quotaGuard = quotaGuard;
+        this.metricsRecorder = metricsRecorder != null ? metricsRecorder : SmsMetricsRecorder.noop();
         if (providers != null) {
             for (SmsProvider provider : providers) {
                 String code = resolveProviderCode(provider);
@@ -60,6 +64,18 @@ public class SmsFailoverChain {
                 }
             }
         }
+    }
+
+    public SmsFailoverChain(SmsChannelRegistry channelRegistry,
+                            List<SmsProvider> providers,
+                            List<SmsSendFailureHandler> failureHandlers,
+                            SmsChannelCircuitBreaker circuitBreaker,
+                            SmsQuotaGuard quotaGuard) {
+        this(channelRegistry, providers, failureHandlers, circuitBreaker, quotaGuard, null);
+    }
+
+    public void setMetricsRecorder(SmsMetricsRecorder metricsRecorder) {
+        this.metricsRecorder = metricsRecorder != null ? metricsRecorder : SmsMetricsRecorder.noop();
     }
 
     public SmsFailoverChain(SmsChannelRegistry channelRegistry,
@@ -162,6 +178,7 @@ public class SmsFailoverChain {
         SmsChannel currentChannel = initialChannel;
         Exception lastException = null;
         SmsRequest lastAttemptRequest = request;
+        boolean failoverAttempted = false;
         boolean isPlainText = !StringUtils.hasText(request.getTemplateId()) && StringUtils.hasText(request.getContent());
 
         while (currentChannel != null) {
@@ -184,6 +201,7 @@ public class SmsFailoverChain {
                                     "渠道处于短时熔断开路态: " + attemptChannel.getName(),
                                     SmsResultCode.SMS_SEND_ERROR,
                                     "渠道处于短时熔断开路态: " + attemptChannel.getName());
+                            failoverAttempted = true;
                             currentChannel = backupChannel;
                             continue;
                         }
@@ -241,7 +259,10 @@ public class SmsFailoverChain {
                         if (circuitBreaker != null) {
                             circuitBreaker.recordSuccess(attemptChannel.getName());
                         }
-                        if (!attemptChannel.getName().equals(initialChannel.getName())) {
+                        if (failoverAttempted || !attemptChannel.getName().equals(initialChannel.getName())) {
+                            if (metricsRecorder != null) {
+                                metricsRecorder.recordFailover(initialChannel.getName(), initialChannel.resolveProviderCode(), true);
+                            }
                             log.warn("[SmsFailoverChain] 顺延容灾降级投递成功 -> 主渠道: [{}], 降级渠道: [{}], 驱动: {}, 目标号码: {}",
                                     initialChannel.getName(),
                                     attemptChannel.getName(),
@@ -297,7 +318,12 @@ public class SmsFailoverChain {
                     backupChannel.getName(),
                     DesensitizeUtil.mobilePhone(request.getPhone()));
 
+            failoverAttempted = true;
             currentChannel = backupChannel;
+        }
+
+        if (failoverAttempted && metricsRecorder != null) {
+            metricsRecorder.recordFailover(initialChannel.getName(), initialChannel.resolveProviderCode(), false);
         }
 
         // 容灾链全部尝试失败，触发最终失败补偿处理器

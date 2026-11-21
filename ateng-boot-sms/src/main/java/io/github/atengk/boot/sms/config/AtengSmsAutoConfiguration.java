@@ -3,6 +3,9 @@ package io.github.atengk.boot.sms.config;
 import io.github.atengk.boot.sms.callback.DefaultSmsCallbackVerifier;
 import io.github.atengk.boot.sms.callback.SmsCallbackController;
 import io.github.atengk.boot.sms.callback.SmsCallbackVerifier;
+import io.github.atengk.boot.sms.delay.MemorySmsDelayScheduler;
+import io.github.atengk.boot.sms.delay.RedisSmsDelayScheduler;
+import io.github.atengk.boot.sms.delay.SmsDelayScheduler;
 import io.github.atengk.boot.sms.guard.*;
 import io.github.atengk.boot.sms.handler.LoggingSmsSendFailureHandler;
 import io.github.atengk.boot.sms.handler.SmsSendFailureHandler;
@@ -13,6 +16,8 @@ import io.github.atengk.boot.sms.limiter.RedisSmsRateLimiter;
 import io.github.atengk.boot.sms.limiter.SmsRateLimiter;
 import io.github.atengk.boot.sms.listener.SmsChannelEvictListener;
 import io.github.atengk.boot.sms.loadbalancer.SmsChannelLoadBalancer;
+import io.github.atengk.boot.sms.metrics.SmsMetrics;
+import io.github.atengk.boot.sms.metrics.SmsMetricsRecorder;
 import io.github.atengk.boot.sms.properties.SmsProperties;
 import io.github.atengk.boot.sms.provider.*;
 import io.github.atengk.boot.sms.registry.SmsChannelEvictBroadcaster;
@@ -54,7 +59,8 @@ import java.util.concurrent.Executor;
 @EnableConfigurationProperties(SmsProperties.class)
 @Import({
         AtengSmsAutoConfiguration.RedisSmsConfiguration.class,
-        AtengSmsAutoConfiguration.InMemorySmsConfiguration.class
+        AtengSmsAutoConfiguration.InMemorySmsConfiguration.class,
+        AtengSmsAutoConfiguration.MicrometerSmsConfiguration.class
 })
 public class AtengSmsAutoConfiguration {
 
@@ -362,6 +368,20 @@ public class AtengSmsAutoConfiguration {
     }
 
     /**
+     * 自动装配默认内存延迟与定时短信调度器（若启用 Redis 持久化调度则自动让位）
+     *
+     * @param properties    配置属性
+     * @param clockProvider 可选时钟提供者
+     * @return SmsDelayScheduler
+     */
+    @Bean
+    @ConditionalOnMissingBean(SmsDelayScheduler.class)
+    public SmsDelayScheduler memorySmsDelayScheduler(SmsProperties properties,
+                                                     ObjectProvider<Clock> clockProvider) {
+        return new MemorySmsDelayScheduler(properties.getDelay(), clockProvider.getIfAvailable(Clock::systemDefaultZone));
+    }
+
+    /**
      * 自动装配顶层短信操作门面
      *
      * @param properties               配置属性
@@ -379,6 +399,9 @@ public class AtengSmsAutoConfiguration {
      * @param clockProvider            可选时钟提供者
      * @param sendInterceptorsProvider 统一发送拦截器列表提供者
      * @param rateLimiterProvider      频控限流器提供者
+     * @param quotaGuardProvider       单渠道配额守卫提供者
+     * @param delaySchedulerProvider   延迟与定时短信调度器提供者
+     * @param metricsRecorderProvider  低基数度量指标记录器提供者
      * @return SmsTemplate
      */
     @Bean
@@ -398,7 +421,9 @@ public class AtengSmsAutoConfiguration {
                                    ObjectProvider<Clock> clockProvider,
                                    ObjectProvider<List<SmsSendInterceptor>> sendInterceptorsProvider,
                                    ObjectProvider<SmsRateLimiter> rateLimiterProvider,
-                                   ObjectProvider<SmsQuotaGuard> quotaGuardProvider) {
+                                   ObjectProvider<SmsQuotaGuard> quotaGuardProvider,
+                                   ObjectProvider<SmsDelayScheduler> delaySchedulerProvider,
+                                   ObjectProvider<SmsMetricsRecorder> metricsRecorderProvider) {
         return new SmsTemplate(
                 properties,
                 providers,
@@ -415,7 +440,9 @@ public class AtengSmsAutoConfiguration {
                 clockProvider.getIfAvailable(Clock::systemDefaultZone),
                 sendInterceptorsProvider.getIfAvailable(),
                 rateLimiterProvider.getIfAvailable(),
-                quotaGuardProvider.getIfAvailable()
+                quotaGuardProvider.getIfAvailable(),
+                delaySchedulerProvider.getIfAvailable(),
+                metricsRecorderProvider.getIfAvailable()
         );
     }
 
@@ -534,6 +561,21 @@ public class AtengSmsAutoConfiguration {
 
         @Bean
         @ConditionalOnMissingBean
+        @ConditionalOnProperty(prefix = "ateng.boot.sms.delay", name = "mode", havingValue = "redis")
+        public SmsDelayScheduler redisSmsDelayScheduler(
+                org.springframework.data.redis.core.StringRedisTemplate redisTemplate,
+                SmsProperties properties,
+                ObjectProvider<Clock> clockProvider) {
+            return new RedisSmsDelayScheduler(
+                    redisTemplate,
+                    properties.getDelay(),
+                    clockProvider.getIfAvailable(Clock::systemDefaultZone),
+                    true
+            );
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
         @ConditionalOnProperty(prefix = "ateng.boot.sms.registry", name = "evict-pub-sub-enabled", havingValue = "true", matchIfMissing = true)
         public io.github.atengk.boot.sms.registry.RedisSmsChannelEvictBroadcaster redisSmsChannelEvictBroadcaster(
                 org.springframework.data.redis.core.StringRedisTemplate redisTemplate,
@@ -634,6 +676,22 @@ public class AtengSmsAutoConfiguration {
                     properties.getGuard().getInMemoryMaxEntries(),
                     clockProvider.getIfAvailable(Clock::systemDefaultZone)
             );
+        }
+    }
+
+    /**
+     * Micrometer 低基数度量指标条件装配配置类（仅当类路径与容器均存在 MeterRegistry 时激活，隔离反射依赖）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "io.micrometer.core.instrument.MeterRegistry")
+    @ConditionalOnBean(type = "io.micrometer.core.instrument.MeterRegistry")
+    static class MicrometerSmsConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(SmsMetricsRecorder.class)
+        public SmsMetrics smsMetrics(io.micrometer.core.instrument.MeterRegistry meterRegistry,
+                                     SmsChannelRegistry channelRegistry) {
+            return new SmsMetrics(meterRegistry, channelRegistry);
         }
     }
 }

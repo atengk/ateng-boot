@@ -4,14 +4,15 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.sample.sms.dto.*;
 import io.github.atengk.boot.sample.sms.listener.SampleSmsEventListener;
-import io.github.atengk.boot.sample.sms.vo.SmsChannelQuotaVO;
-import io.github.atengk.boot.sample.sms.vo.SmsChannelVO;
-import io.github.atengk.boot.sample.sms.vo.SmsCircuitBreakerStatusVO;
-import io.github.atengk.boot.sample.sms.vo.SmsSendAuditVO;
+import io.github.atengk.boot.sample.sms.vo.*;
+import io.github.atengk.boot.sms.delay.SmsScheduledReceipt;
 import io.github.atengk.boot.sms.exception.SmsException;
 import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.guard.SmsChannelCircuitBreaker;
+import io.github.atengk.boot.sms.interceptor.SmsSandboxInterceptor;
+import io.github.atengk.boot.sms.interceptor.SmsSendContext;
 import io.github.atengk.boot.sms.model.*;
+import io.github.atengk.boot.sms.properties.SmsSandboxProperties;
 import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
 import io.github.atengk.boot.sms.template.SmsTemplate;
 import io.github.atengk.boot.sms.template.SmsVerifyCodeTemplate;
@@ -20,6 +21,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 
@@ -430,6 +434,100 @@ public class SmsScenarioService {
         return eventListener.getAuditEvents().stream()
                 .map(SmsSendAuditVO::fromEvent)
                 .toList();
+    }
+
+    /**
+     * 提交延迟发送短信任务（两阶段校验）
+     */
+    public SmsScheduledReceiptVO scheduleDelayedSms(DelaySmsRequest req) {
+        SmsRequest smsReq = SmsRequest.builder()
+                .phone(req.getPhone())
+                .templateId(req.getTemplateId())
+                .content(req.getContent())
+                .signName(req.getSignName())
+                .channel(req.getChannel())
+                .bizId(req.getBizId())
+                .urgent(req.isUrgent())
+                .params(toSmsParam(req.getParams()))
+                .build();
+        SmsScheduledReceipt receipt = smsTemplate.sendDelayed(smsReq, Duration.ofSeconds(Math.max(0L, req.getDelaySeconds())));
+        return SmsScheduledReceiptVO.fromReceipt(receipt);
+    }
+
+    /**
+     * 提交定时发送短信任务
+     */
+    public SmsScheduledReceiptVO scheduleAtTimeSms(DelaySmsRequest req) {
+        SmsRequest smsReq = SmsRequest.builder()
+                .phone(req.getPhone())
+                .templateId(req.getTemplateId())
+                .content(req.getContent())
+                .signName(req.getSignName())
+                .channel(req.getChannel())
+                .bizId(req.getBizId())
+                .urgent(req.isUrgent())
+                .params(toSmsParam(req.getParams()))
+                .build();
+        Instant triggerAt = req.getTriggerAt() != null
+                ? req.getTriggerAt()
+                : Instant.now().plusSeconds(Math.max(0L, req.getDelaySeconds()));
+        SmsScheduledReceipt receipt = smsTemplate.sendAt(smsReq, triggerAt);
+        return SmsScheduledReceiptVO.fromReceipt(receipt);
+    }
+
+    /**
+     * 取消尚未触发的延迟或定时短信任务
+     */
+    public boolean cancelScheduledSms(String taskId) {
+        return smsTemplate.cancelScheduled(taskId);
+    }
+
+    /**
+     * 发送无模板纯文本或国际 E.164 号码短信
+     */
+    public SmsResult sendPlainOrInternationalSms(PlainOrIntlSmsRequest req) {
+        SmsRequest smsReq = SmsRequest.builder()
+                .phone(req.getPhone())
+                .templateId(req.getTemplateId())
+                .content(req.getContent())
+                .signName(req.getSignName())
+                .channel(req.getChannel())
+                .bizId(req.getBizId())
+                .urgent(req.isUrgent())
+                .params(toSmsParam(req.getParams()))
+                .build();
+        return smsTemplate.send(smsReq);
+    }
+
+    /**
+     * 主动查询单条短信送达回执（返回脱敏视图对象）
+     */
+    public SmsDeliveryQueryVO queryDeliveryStatus(String channelName, String phone, String bizId, LocalDate sendDate) {
+        return SmsDeliveryQueryVO.fromResult(smsTemplate.querySendStatus(channelName, phone, bizId, sendDate));
+    }
+
+    /**
+     * 只读探查指定渠道账户余额
+     */
+    public SmsBalanceVO queryChannelBalance(String channelName) {
+        return SmsBalanceVO.fromResult(smsTemplate.queryBalance(channelName));
+    }
+
+    /**
+     * 安全沙箱零外发模拟演练（模拟 log-only 沙箱短路脱敏，绝不真实下发外部短信）
+     */
+    public SmsResult simulateSandboxDryRun(SendSmsRequest req) {
+        SmsRequest smsReq = buildRequest(req);
+        SmsChannel resolvedChannel = smsTemplate.resolveChannel(req.getChannel());
+        SmsSandboxProperties dryRunSandbox = new SmsSandboxProperties();
+        dryRunSandbox.setEnabled(true);
+        dryRunSandbox.setLogOnly(true);
+        SmsSandboxInterceptor dryRunInterceptor = new SmsSandboxInterceptor(dryRunSandbox, smsTemplate.getProperties().getGuard());
+        SmsSendContext context = SmsSendContext.forSingle(smsReq, resolvedChannel);
+        dryRunInterceptor.preSend(context);
+        return context.getShortCircuitResult() != null
+                ? context.getShortCircuitResult()
+                : SmsResult.mock(resolvedChannel.getName(), "DRY_RUN_BIZ", "DRY_RUN_REQ");
     }
 
     private SmsRequest buildRequest(SendSmsRequest req) {

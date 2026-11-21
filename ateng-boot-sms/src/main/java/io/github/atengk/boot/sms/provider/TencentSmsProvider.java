@@ -6,6 +6,8 @@ import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.exception.SmsSendException;
 import io.github.atengk.boot.sms.model.SmsChannel;
+import io.github.atengk.boot.sms.model.SmsDeliveryQueryResult;
+import io.github.atengk.boot.sms.model.SmsDeliveryStatus;
 import io.github.atengk.boot.sms.model.SmsRequest;
 import io.github.atengk.boot.sms.model.SmsResult;
 import io.github.atengk.boot.sms.model.SmsSupplier;
@@ -23,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -349,5 +352,136 @@ public class TencentSmsProvider extends AbstractHttpSmsProvider {
 
     private static String bytesToHex(byte[] bytes) {
         return HexFormat.of().formatHex(bytes);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public SmsDeliveryQueryResult querySendStatus(String phone, String bizId, LocalDate sendDate, SmsChannel channel) {
+        BusinessAssert.notNull(channel, "短信渠道 SmsChannel 不能为空");
+        BusinessAssert.hasText(channel.getAccessKeyId(), "腾讯云短信 SecretId (AccessKeyId) 不能为空");
+        BusinessAssert.hasText(channel.getAccessKeySecret(), "腾讯云短信 SecretKey (AccessKeySecret) 不能为空");
+        BusinessAssert.hasText(channel.getAppId(), "腾讯云短信 SmsSdkAppId 不能为空，请在渠道配置 appId 中指定");
+
+        Map<String, Object> payloadMap = new LinkedHashMap<>(2);
+        payloadMap.put("Limit", 100);
+        payloadMap.put("SmsSdkAppId", channel.getAppId().trim());
+        String payloadJson = JsonUtil.toJsonString(payloadMap);
+
+        String endpoint = normalizeEndpoint(channel.getEndpoint(), DEFAULT_ENDPOINT);
+        URI uri = URI.create(endpoint);
+        final String finalHost = resolveHostHeader(uri);
+        Instant now = Instant.now();
+        long timestamp = now.getEpochSecond();
+        String date = UTC_DATE_FORMATTER.format(now);
+        String authorization = generateAuthorization(
+                channel.getAccessKeyId(),
+                channel.getAccessKeySecret(),
+                finalHost,
+                payloadJson,
+                timestamp,
+                date
+        );
+
+        RestClient client = buildRestClient(channel);
+        String region = StringUtils.hasText(channel.getRegion()) ? channel.getRegion() : "ap-guangzhou";
+        String responseBody;
+        try {
+            responseBody = executeWithRetry(channel, "PullSmsSendStatus", () -> client.post()
+                    .uri(endpoint)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .header("Host", finalHost)
+                    .header("X-TC-Action", "PullSmsSendStatus")
+                    .header("X-TC-Version", API_VERSION)
+                    .header("X-TC-Timestamp", String.valueOf(timestamp))
+                    .header("X-TC-Region", region)
+                    .header("Authorization", authorization)
+                    .body(payloadJson)
+                    .retrieve()
+                    .body(String.class));
+        } catch (RestClientResponseException e) {
+            parseAndThrowExceptionIfPossible(channel.getName(), e.getResponseBodyAsString(), e);
+            throw new SmsSendException(channel.getName(), "HTTP_" + e.getStatusCode().value(),
+                    e.getStatusText(), SmsResultCode.SMS_SEND_ERROR, "腾讯云短信状态查询响应异常: " + e.getMessage(), e);
+        } catch (SmsSendException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new SmsSendException(channel.getName(), "NETWORK_ERROR", e.getMessage(),
+                    SmsResultCode.SMS_SEND_ERROR, "腾讯云短信状态查询网络异常: " + e.getMessage(), e);
+        }
+
+        Map<String, Object> rootMap = parseJsonSafely(responseBody);
+        Map<String, Object> responseMap = (Map<String, Object>) rootMap.get("Response");
+        if (responseMap == null) {
+            throw new SmsSendException(channel.getName(), "INVALID_RESPONSE", "腾讯云状态查询响应缺少 Response 根节点",
+                    SmsResultCode.SMS_SEND_ERROR, "腾讯云状态查询响应格式解析失败: " + responseBody);
+        }
+        if (responseMap.containsKey("Error")) {
+            Map<String, Object> errorMap = (Map<String, Object>) responseMap.get("Error");
+            String errCode = errorMap != null ? String.valueOf(errorMap.get("Code")) : "UNKNOWN_ERROR";
+            String errMsg = errorMap != null ? String.valueOf(errorMap.get("Message")) : "未知错误";
+            throw new SmsSendException(channel.getName(), errCode, errMsg, SmsResultCode.SMS_SEND_ERROR,
+                    "腾讯云短信状态查询失败: [" + errCode + "] " + errMsg);
+        }
+
+        List<Map<String, Object>> rawSet = (List<Map<String, Object>>) responseMap.get("PullSmsSendStatusSet");
+        if (rawSet == null || rawSet.isEmpty()) {
+            return SmsDeliveryQueryResult.builder()
+                    .supported(true)
+                    .channelName(channel.getName())
+                    .supplier(SmsSupplier.TENCENT)
+                    .phone(phone)
+                    .bizId(bizId)
+                    .deliveryStatus(SmsDeliveryStatus.UNKNOWN)
+                    .message("暂未拉取到腾讯云送达回执")
+                    .details(Collections.emptyList())
+                    .build();
+        }
+
+        String normalizedTarget = StringUtils.hasText(phone) ? SmsPhoneNormalizer.toE164(phone, channel) : null;
+        Map<String, Object> matched = null;
+        for (Map<String, Object> item : rawSet) {
+            String serialNo = item.get("SerialNo") != null ? String.valueOf(item.get("SerialNo")) : null;
+            String itemPhone = item.get("PhoneNumber") != null ? String.valueOf(item.get("PhoneNumber")) : null;
+            String subPhone = item.get("SubscriberNumber") != null ? String.valueOf(item.get("SubscriberNumber")) : null;
+            boolean bizMatched = StringUtils.hasText(bizId) && bizId.trim().equals(serialNo);
+            boolean phoneMatched = normalizedTarget != null
+                    && (normalizedTarget.equals(itemPhone) || phone.trim().equals(subPhone) || phone.trim().equals(itemPhone));
+            if ((StringUtils.hasText(bizId) && bizMatched)
+                    || (!StringUtils.hasText(bizId) && (phoneMatched || normalizedTarget == null))) {
+                matched = item;
+                break;
+            }
+        }
+        if (matched == null) {
+            return SmsDeliveryQueryResult.builder()
+                    .supported(true)
+                    .channelName(channel.getName())
+                    .supplier(SmsSupplier.TENCENT)
+                    .phone(phone)
+                    .bizId(bizId)
+                    .deliveryStatus(SmsDeliveryStatus.UNKNOWN)
+                    .message("拉取结果中未命中指定流水号或手机号")
+                    .details(rawSet)
+                    .build();
+        }
+
+        String reportStatus = matched.get("ReportStatus") != null ? String.valueOf(matched.get("ReportStatus")) : "";
+        SmsDeliveryStatus status = "SUCCESS".equalsIgnoreCase(reportStatus)
+                ? SmsDeliveryStatus.DELIVERED
+                : ("FAIL".equalsIgnoreCase(reportStatus) ? SmsDeliveryStatus.FAILED : SmsDeliveryStatus.ACCEPTED);
+
+        return SmsDeliveryQueryResult.builder()
+                .supported(true)
+                .channelName(channel.getName())
+                .supplier(SmsSupplier.TENCENT)
+                .phone(matched.get("PhoneNumber") != null ? String.valueOf(matched.get("PhoneNumber")) : phone)
+                .bizId(matched.get("SerialNo") != null ? String.valueOf(matched.get("SerialNo")) : bizId)
+                .deliveryStatus(status)
+                .rawStatusCode(reportStatus)
+                .rawStatusDesc(matched.get("Description") != null ? String.valueOf(matched.get("Description")) :
+                        (matched.get("Errmsg") != null ? String.valueOf(matched.get("Errmsg")) : null))
+                .receiveTime(matched.get("UserReceiveTime") != null ? String.valueOf(matched.get("UserReceiveTime")) : null)
+                .details(rawSet)
+                .build();
     }
 }
