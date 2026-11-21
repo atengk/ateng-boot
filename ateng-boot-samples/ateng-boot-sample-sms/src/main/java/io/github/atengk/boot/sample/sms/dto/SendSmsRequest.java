@@ -59,4 +59,10 @@ public class SendSmsRequest {
      */
     @Builder.Default
     private boolean urgent = false;
+
+    /**
+     * 是否跳过通知滑窗频控拦截
+     */
+    @Builder.Default
+    private boolean skipRateLimit = false;
 }

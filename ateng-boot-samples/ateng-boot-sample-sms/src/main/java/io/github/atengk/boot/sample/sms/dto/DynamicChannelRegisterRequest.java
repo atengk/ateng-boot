@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.sms.dto;
 
+import io.github.atengk.boot.sms.model.SmsQuotaResetCycle;
 import io.github.atengk.boot.sms.model.SmsSupplier;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -36,6 +37,11 @@ public class DynamicChannelRegisterRequest implements Serializable {
      */
     @NotNull(message = "服务商类型不能为空")
     private SmsSupplier supplier;
+
+    /**
+     * 自定义短信驱动路由编码（可为空）
+     */
+    private String providerCode;
 
     /**
      * 访问凭据 Key / SecretId / AppKey
@@ -76,6 +82,16 @@ public class DynamicChannelRegisterRequest implements Serializable {
      * 负载均衡权重（默认 1）
      */
     private Integer weight;
+
+    /**
+     * 单渠道发信配额上限（0 表示不限制）
+     */
+    private Long maxQuota;
+
+    /**
+     * 单渠道配额重置周期（DAILY | TOTAL）
+     */
+    private SmsQuotaResetCycle quotaResetCycle;
 
     /**
      * 模板逻辑标识与服务商物理模板ID映射关系

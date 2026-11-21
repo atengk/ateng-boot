@@ -57,6 +57,36 @@ public interface SmsRateLimiter {
     }
 
     /**
+     * 按业务命名空间协同强校验获取手机号与客户端 IP 的发信许可（实现验证码 verify: 与通知 notify: 严格隔离）
+     *
+     * @param namespace 频控命名空间（如 "verify"、"notify"，可为空）
+     * @param phone     目标手机号
+     * @param ip        客户端 IP（为 null 时仅校验手机号）
+     * @throws SmsRateLimitException 频控超限异常
+     */
+    default void acquire(String namespace, String phone, String ip) {
+        String prefix = (namespace != null && !namespace.isBlank()) ? namespace.trim() + ":" : "";
+        acquire(prefix + phone);
+        if (ip != null && !ip.isBlank()) {
+            acquire(prefix + "ip:" + ip.trim());
+        }
+    }
+
+    /**
+     * 按业务命名空间重置指定手机号的频控状态
+     *
+     * @param namespace 频控命名空间（如 "verify"、"notify"，可为空）
+     * @param phone     目标手机号
+     */
+    default void reset(String namespace, String phone) {
+        if (phone == null) {
+            return;
+        }
+        String prefix = (namespace != null && !namespace.isBlank()) ? namespace.trim() + ":" : "";
+        reset(prefix + phone);
+    }
+
+    /**
      * 重置指定手机号的频控状态（用于测试断言或运维封禁解除）
      *
      * @param phone 目标手机号

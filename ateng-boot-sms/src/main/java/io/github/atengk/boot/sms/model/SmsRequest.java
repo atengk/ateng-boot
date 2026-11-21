@@ -68,8 +68,15 @@ public class SmsRequest implements Serializable {
      */
     private final String content;
 
+    /**
+     * 是否跳过通知频控拦截（默认 false；验证码及高优系统消息可声明豁免）
+     */
+    @Builder.Default
+    private final boolean skipRateLimit = false;
+
     public SmsRequest(String phone, List<String> phones, String templateId, SmsParam params,
-                      String signName, String channel, String bizId, boolean urgent, String content) {
+                      String signName, String channel, String bizId, boolean urgent, String content,
+                      boolean skipRateLimit) {
         this.templateId = (templateId != null && !templateId.isBlank()) ? templateId.trim() : null;
         this.params = params != null ? params : SmsParam.create();
         this.signName = signName != null ? signName.trim() : null;
@@ -77,6 +84,7 @@ public class SmsRequest implements Serializable {
         this.bizId = bizId != null ? bizId.trim() : null;
         this.urgent = urgent;
         this.content = (content != null && !content.isBlank()) ? content.trim() : null;
+        this.skipRateLimit = skipRateLimit;
 
         if (phones != null && !phones.isEmpty()) {
             this.phones = Collections.unmodifiableList(phones);
@@ -86,6 +94,11 @@ public class SmsRequest implements Serializable {
             this.phone = phone.trim();
             this.phones = List.of(this.phone);
         }
+    }
+
+    public SmsRequest(String phone, List<String> phones, String templateId, SmsParam params,
+                      String signName, String channel, String bizId, boolean urgent, String content) {
+        this(phone, phones, templateId, params, signName, channel, bizId, urgent, content, false);
     }
 
     public SmsRequest(String phone, List<String> phones, String templateId, SmsParam params,
@@ -112,7 +125,7 @@ public class SmsRequest implements Serializable {
      */
     public SmsRequest withTemplateSignAndChannel(String targetTemplateId, String targetSignName, String targetChannel) {
         return new SmsRequest(this.phone, this.phones, targetTemplateId, this.params, targetSignName,
-                targetChannel, this.bizId, this.urgent, this.content);
+                targetChannel, this.bizId, this.urgent, this.content, this.skipRateLimit);
     }
 
     /**
@@ -134,7 +147,7 @@ public class SmsRequest implements Serializable {
      */
     public SmsRequest withChannel(String targetChannel) {
         return new SmsRequest(this.phone, this.phones, this.templateId, this.params, this.signName,
-                targetChannel, this.bizId, this.urgent, this.content);
+                targetChannel, this.bizId, this.urgent, this.content, this.skipRateLimit);
     }
 
     /**
@@ -145,7 +158,7 @@ public class SmsRequest implements Serializable {
      */
     public SmsRequest withUrgent(boolean urgent) {
         return new SmsRequest(this.phone, this.phones, this.templateId, this.params, this.signName,
-                this.channel, this.bizId, urgent, this.content);
+                this.channel, this.bizId, urgent, this.content, this.skipRateLimit);
     }
 
     /**
@@ -156,7 +169,18 @@ public class SmsRequest implements Serializable {
      */
     public SmsRequest withContent(String content) {
         return new SmsRequest(this.phone, this.phones, this.templateId, this.params, this.signName,
-                this.channel, this.bizId, this.urgent, content);
+                this.channel, this.bizId, this.urgent, content, this.skipRateLimit);
+    }
+
+    /**
+     * 基于当前发信请求复制并设置跳过通知频控标志
+     *
+     * @param skipRateLimit 是否跳过通知频控
+     * @return 新的 SmsRequest 实例
+     */
+    public SmsRequest withSkipRateLimit(boolean skipRateLimit) {
+        return new SmsRequest(this.phone, this.phones, this.templateId, this.params, this.signName,
+                this.channel, this.bizId, this.urgent, this.content, skipRateLimit);
     }
 
     /**

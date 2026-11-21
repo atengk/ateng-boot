@@ -2,11 +2,15 @@ package io.github.atengk.boot.sms.failover;
 
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
+import io.github.atengk.boot.sms.exception.SmsBudgetExceededException;
 import io.github.atengk.boot.sms.exception.SmsException;
 import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.exception.SmsSendException;
 import io.github.atengk.boot.sms.guard.SmsChannelCircuitBreaker;
+import io.github.atengk.boot.sms.guard.SmsQuotaGuard;
 import io.github.atengk.boot.sms.handler.SmsSendFailureHandler;
+import io.github.atengk.boot.sms.model.BatchSmsRequest;
+import io.github.atengk.boot.sms.model.BatchSmsResult;
 import io.github.atengk.boot.sms.model.SmsChannel;
 import io.github.atengk.boot.sms.model.SmsRequest;
 import io.github.atengk.boot.sms.model.SmsResult;
@@ -36,14 +40,18 @@ public class SmsFailoverChain {
     private final List<SmsSendFailureHandler> failureHandlers;
     @Getter
     private final SmsChannelCircuitBreaker circuitBreaker;
+    @Getter
+    private final SmsQuotaGuard quotaGuard;
 
     public SmsFailoverChain(SmsChannelRegistry channelRegistry,
                             List<SmsProvider> providers,
                             List<SmsSendFailureHandler> failureHandlers,
-                            SmsChannelCircuitBreaker circuitBreaker) {
+                            SmsChannelCircuitBreaker circuitBreaker,
+                            SmsQuotaGuard quotaGuard) {
         this.channelRegistry = channelRegistry;
         this.failureHandlers = failureHandlers != null ? failureHandlers : Collections.emptyList();
         this.circuitBreaker = circuitBreaker;
+        this.quotaGuard = quotaGuard;
         if (providers != null) {
             for (SmsProvider provider : providers) {
                 String code = resolveProviderCode(provider);
@@ -55,12 +63,20 @@ public class SmsFailoverChain {
     }
 
     public SmsFailoverChain(SmsChannelRegistry channelRegistry,
+                            List<SmsProvider> providers,
+                            List<SmsSendFailureHandler> failureHandlers,
+                            SmsChannelCircuitBreaker circuitBreaker) {
+        this(channelRegistry, providers, failureHandlers, circuitBreaker, null);
+    }
+
+    public SmsFailoverChain(SmsChannelRegistry channelRegistry,
                             Map<SmsSupplier, SmsProvider> providerMap,
                             List<SmsSendFailureHandler> failureHandlers,
                             SmsChannelCircuitBreaker circuitBreaker) {
         this.channelRegistry = channelRegistry;
         this.failureHandlers = failureHandlers != null ? failureHandlers : Collections.emptyList();
         this.circuitBreaker = circuitBreaker;
+        this.quotaGuard = null;
         if (providerMap != null) {
             providerMap.forEach((supplier, provider) -> {
                 if (provider != null) {
@@ -204,6 +220,11 @@ public class SmsFailoverChain {
                     throw unsupportedEx;
                 }
                 lastException = unsupportedEx;
+            } else if (quotaGuard != null && !quotaGuard.tryAcquire(attemptChannel, request.getPhones().size())) {
+                long used = quotaGuard.getUsedQuota(attemptChannel);
+                log.warn("[SmsFailoverChain] 渠道 [{}] 已达配额上限 (已用: {}, 上限: {})，跳过并尝试顺延备用渠道",
+                        attemptChannel.getName(), used, attemptChannel.getMaxQuota());
+                lastException = new SmsBudgetExceededException(attemptChannel.getMaxQuota(), used);
             } else {
                 try {
                     if (log.isDebugEnabled()) {
@@ -230,7 +251,8 @@ public class SmsFailoverChain {
                         return result;
                     }
 
-                    // 厂商未抛异常但显式返回失败
+                    // 厂商未抛异常但显式返回失败，对称释放预扣配额并记入熔断计数
+                    releaseQuotaSafely(attemptChannel, request.getPhones().size());
                     if (circuitBreaker != null) {
                         circuitBreaker.recordFailure(attemptChannel.getName());
                     }
@@ -239,6 +261,7 @@ public class SmsFailoverChain {
                     lastException = new SmsSendException(attemptChannel.getName(), rawCode, rawMsg,
                             SmsResultCode.SMS_SEND_ERROR, rawMsg);
                 } catch (Exception ex) {
+                    releaseQuotaSafely(attemptChannel, request.getPhones().size());
                     if (circuitBreaker != null) {
                         circuitBreaker.recordFailure(attemptChannel.getName());
                     }
@@ -292,6 +315,9 @@ public class SmsFailoverChain {
             }
         }
 
+        if (lastException instanceof SmsBudgetExceededException sbee) {
+            throw sbee;
+        }
         if (lastException instanceof SmsSendException sse) {
             throw sse;
         }
@@ -300,5 +326,131 @@ public class SmsFailoverChain {
                 SmsResultCode.SMS_SEND_ERROR,
                 lastException != null ? lastException.getMessage() : "Failover exhausted",
                 lastException);
+    }
+
+    /**
+     * 在高可用顺延容灾链中执行原生个性化批量发信（统一受熔断器与单渠道配额守卫保护）
+     *
+     * @param request        已过滤黑名单的批量发信请求
+     * @param initialChannel 初始主发信渠道
+     * @return 原生个性化批量结果；若链路上存在渠道但当前尝试渠道不支持原生个性化批量，则返回 null 交由上层单条并发降级
+     * @throws SmsBudgetExceededException 当主备渠道均触达配额上限时抛出
+     */
+    public BatchSmsResult executePersonalizedBatch(BatchSmsRequest request, SmsChannel initialChannel) {
+        BusinessAssert.notNull(request, "批量发信请求 BatchSmsRequest 不能为空");
+        BusinessAssert.notNull(initialChannel, "初始渠道 SmsChannel 不能为空");
+
+        Set<String> visitedChannels = new HashSet<>();
+        SmsChannel currentChannel = initialChannel;
+        Exception lastException = null;
+        boolean isPlainText = !StringUtils.hasText(request.getTemplateId()) && StringUtils.hasText(request.getContent());
+        int count = request.getPhones().size();
+
+        while (currentChannel != null) {
+            final SmsChannel attemptChannel = currentChannel;
+            visitedChannels.add(attemptChannel.getName());
+
+            if (circuitBreaker != null && !circuitBreaker.allowRequest(attemptChannel.getName())) {
+                lastException = new SmsSendException(attemptChannel.getName(), "CIRCUIT_BREAKER_OPEN",
+                        "渠道处于短时熔断开路态: " + attemptChannel.getName(),
+                        SmsResultCode.SMS_SEND_ERROR,
+                        "渠道处于短时熔断开路态: " + attemptChannel.getName());
+            } else {
+                String targetTemplateId = isPlainText ? null : attemptChannel.resolveTemplateId(request.getTemplateId());
+                String targetSignName = attemptChannel.resolveSignName(request.getTemplateId(), request.getSignName());
+                SmsProvider provider = resolveProvider(attemptChannel);
+                if (provider == null) {
+                    String missingCode = attemptChannel.resolveProviderCode();
+                    lastException = new SmsSendException(attemptChannel.getName(), "PROVIDER_NOT_FOUND",
+                            "未找到云厂商驱动: " + missingCode, SmsResultCode.SMS_CHANNEL_NOT_FOUND,
+                            "未找到云厂商驱动: " + missingCode);
+                } else if (isPlainText && !provider.supportsPlainText()) {
+                    SmsException unsupportedEx = new SmsException(SmsResultCode.SMS_PARAM_INVALID,
+                            "短信厂商 [" + attemptChannel.resolveProviderCode() + "] 仅支持模板发送，不支持无模板纯文本直发");
+                    if (visitedChannels.size() == 1) {
+                        throw unsupportedEx;
+                    }
+                    lastException = unsupportedEx;
+                } else if (quotaGuard != null && !quotaGuard.tryAcquire(attemptChannel, count)) {
+                    long used = quotaGuard.getUsedQuota(attemptChannel);
+                    log.warn("[SmsFailoverChain] 个性化批量渠道 [{}] 已达配额上限 (已用: {}, 上限: {})，跳过并尝试顺延备用渠道",
+                            attemptChannel.getName(), used, attemptChannel.getMaxQuota());
+                    lastException = new SmsBudgetExceededException(attemptChannel.getMaxQuota(), used);
+                } else {
+                    try {
+                        BatchSmsRequest channelRequest = request.withTemplateSignAndChannel(
+                                targetTemplateId, targetSignName, attemptChannel.getName());
+                        BatchSmsResult nativeResult = provider.sendPersonalizedBatch(channelRequest, attemptChannel);
+                        if (nativeResult == null) {
+                            // 驱动不支持原生个性化批量发送：归还刚才预扣配额，返回 null 交由上层单条并发链（每条会各自走 execute 扣减配额）
+                            releaseQuotaSafely(attemptChannel, count);
+                            return null;
+                        }
+                        if (nativeResult.isSuccess() || nativeResult.getSuccessCount() > 0) {
+                            if (circuitBreaker != null) {
+                                circuitBreaker.recordSuccess(attemptChannel.getName());
+                            }
+                            return nativeResult;
+                        }
+                        releaseQuotaSafely(attemptChannel, count);
+                        if (circuitBreaker != null) {
+                            circuitBreaker.recordFailure(attemptChannel.getName());
+                        }
+                        lastException = new SmsSendException(attemptChannel.getName(), "BATCH_FAILED",
+                                "个性化批量发信全部失败", SmsResultCode.SMS_SEND_ERROR, "个性化批量发信全部失败");
+                    } catch (Exception ex) {
+                        releaseQuotaSafely(attemptChannel, count);
+                        if (circuitBreaker != null) {
+                            circuitBreaker.recordFailure(attemptChannel.getName());
+                        }
+                        lastException = ex;
+                    }
+                }
+            }
+
+            SmsChannel backup = resolveNextBackupChannel(currentChannel, visitedChannels);
+            if (backup == null) {
+                break;
+            }
+            currentChannel = backup;
+        }
+
+        if (lastException instanceof SmsBudgetExceededException sbee) {
+            throw sbee;
+        }
+        if (lastException instanceof SmsSendException sse) {
+            throw sse;
+        }
+        if (lastException instanceof RuntimeException re) {
+            throw re;
+        }
+        throw new SmsSendException(initialChannel.getName(), "FAILOVER_EXHAUSTED",
+                "个性化批量发信链路全部投递失败", SmsResultCode.SMS_SEND_ERROR, "个性化批量发信链路全部投递失败", lastException);
+    }
+
+    private SmsChannel resolveNextBackupChannel(SmsChannel currentChannel, Set<String> visitedChannels) {
+        String failoverChannelName = currentChannel.getFailoverChannel();
+        if (failoverChannelName == null || failoverChannelName.isBlank()) {
+            return null;
+        }
+        String nextName = failoverChannelName.trim();
+        if (visitedChannels.contains(nextName)) {
+            log.error("[SmsFailoverChain] 检测到渠道容灾配置环路引用 [{}] -> [{}]，终止顺延降级",
+                    currentChannel.getName(), nextName);
+            return null;
+        }
+        SmsChannel backupChannel = channelRegistry != null ? channelRegistry.get(nextName) : null;
+        if (backupChannel == null) {
+            log.error("[SmsFailoverChain] 渠道 [{}] 配置的容灾备用渠道 [{}] 不存在，终止顺延降级",
+                    currentChannel.getName(), nextName);
+            return null;
+        }
+        return backupChannel;
+    }
+
+    private void releaseQuotaSafely(SmsChannel channel, int count) {
+        if (quotaGuard != null && channel != null && count > 0) {
+            quotaGuard.release(channel, count);
+        }
     }
 }

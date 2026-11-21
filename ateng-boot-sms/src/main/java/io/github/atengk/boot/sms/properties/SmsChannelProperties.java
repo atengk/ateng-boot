@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sms.properties;
 
+import io.github.atengk.boot.sms.model.SmsQuotaResetCycle;
 import io.github.atengk.boot.sms.model.SmsSupplier;
 import lombok.Data;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
@@ -114,6 +115,16 @@ public class SmsChannelProperties implements Serializable {
      * 开启国际短信适配时未带区号号码的默认国家码，默认 "+86"
      */
     private String defaultRegionCode = "+86";
+
+    /**
+     * 单渠道发信配额上限（0 表示不设上限），默认 0
+     */
+    private long maxQuota = 0L;
+
+    /**
+     * 单渠道配额重置周期（DAILY 自然日清零 | TOTAL 总量包干），默认 DAILY
+     */
+    private SmsQuotaResetCycle quotaResetCycle = SmsQuotaResetCycle.DAILY;
 
     /**
      * 渠道级独立 HTTP 出站代理配置

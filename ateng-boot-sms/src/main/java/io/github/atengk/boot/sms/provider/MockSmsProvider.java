@@ -3,9 +3,12 @@ package io.github.atengk.boot.sms.provider;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.sms.model.SmsChannel;
+import io.github.atengk.boot.sms.model.SmsParam;
 import io.github.atengk.boot.sms.model.SmsRequest;
 import io.github.atengk.boot.sms.model.SmsResult;
 import io.github.atengk.boot.sms.model.SmsSupplier;
+import io.github.atengk.boot.sms.properties.SmsGuardProperties;
+import io.github.atengk.boot.sms.support.SmsDesensitizeSupport;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
 
@@ -25,6 +28,15 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 public class MockSmsProvider implements SmsProvider {
 
     private final ConcurrentLinkedQueue<SmsRequest> sentRequests = new ConcurrentLinkedQueue<>();
+    private final SmsGuardProperties guardProperties;
+
+    public MockSmsProvider() {
+        this(new SmsGuardProperties());
+    }
+
+    public MockSmsProvider(SmsGuardProperties guardProperties) {
+        this.guardProperties = guardProperties != null ? guardProperties : new SmsGuardProperties();
+    }
 
     @Override
     public SmsSupplier getSupplier() {
@@ -52,13 +64,20 @@ public class MockSmsProvider implements SmsProvider {
         // 纯内存记录真明文请求
         sentRequests.offer(request);
 
+        SmsParam loggedParams = guardProperties.isLogDesensitizeContent()
+                ? SmsDesensitizeSupport.maskSensitiveParams(
+                request.getParams(),
+                channel != null ? channel.getParamOrder(request.getTemplateId()) : null,
+                guardProperties.getSensitiveParamKeys())
+                : request.getParams();
+
         if (request.getPhones() != null && request.getPhones().size() > 1) {
             log.info("[MockSmsProvider] 模拟批量发信成功 -> 渠道: {}, 目标号码数: {}, 模板ID: {}, 签名: {}, 动态参数: {}, 模拟流水号: {}",
                     channelName,
                     request.getPhones().size(),
                     templateLabel,
                     sign,
-                    request.getParams(),
+                    loggedParams,
                     bizId);
         } else {
             log.info("[MockSmsProvider] 模拟发信成功 -> 渠道: {}, 目标号码: {}, 模板ID: {}, 签名: {}, 动态参数: {}, 模拟流水号: {}",
@@ -66,7 +85,7 @@ public class MockSmsProvider implements SmsProvider {
                     maskedPhone,
                     templateLabel,
                     sign,
-                    request.getParams(),
+                    loggedParams,
                     bizId);
         }
 

@@ -5,16 +5,23 @@ import io.github.atengk.boot.sms.model.SmsChannel;
 import io.github.atengk.boot.sms.model.SmsSupplier;
 import io.github.atengk.boot.sms.properties.SmsChannelProperties;
 import io.github.atengk.boot.sms.properties.SmsProperties;
+import io.github.atengk.boot.sms.properties.SmsRegistryProperties;
 import io.github.atengk.boot.sms.properties.SmsTemplateProperties;
+import io.github.atengk.boot.sms.support.BoundedLruMap;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 
 /**
  * 多命名短信渠道注册中心
  * 统一纳管 ateng.boot.sms.channels.* 命名的多云、多账号渠道配置
- * 支持多渠道实例的生命周期纳管、缓存寻址、动态热注册与注销
+ * 支持静态渠道注册注销、{@link SmsChannelProvider} 按需动态加载（受有界 LRU 与 TTL 约束）及渠道驱逐联动通知
  *
  * @author Ateng
  * @since 2026-11-02
@@ -23,11 +30,35 @@ import java.util.concurrent.ConcurrentHashMap;
 public class SmsChannelRegistry {
 
     private final Map<String, SmsChannel> channelMap = new ConcurrentHashMap<>();
+    @Getter
+    private final SmsRegistryProperties registryProperties;
+    private final SmsChannelProvider channelProvider;
+    private final Clock clock;
+    private final BoundedLruMap<String, CachedDynamicChannel> dynamicCache;
+    private final List<Consumer<String>> evictListeners = new CopyOnWriteArrayList<>();
 
     public SmsChannelRegistry() {
+        this((SmsProperties) null, null, Clock.systemDefaultZone());
     }
 
     public SmsChannelRegistry(SmsProperties properties) {
+        this(properties, null, Clock.systemDefaultZone());
+    }
+
+    public SmsChannelRegistry(SmsProperties properties, SmsChannelProvider channelProvider) {
+        this(properties, channelProvider, Clock.systemDefaultZone());
+    }
+
+    public SmsChannelRegistry(SmsProperties properties, SmsChannelProvider channelProvider, Clock clock) {
+        this.registryProperties = (properties != null && properties.getRegistry() != null)
+                ? properties.getRegistry()
+                : new SmsRegistryProperties();
+        this.channelProvider = channelProvider;
+        this.clock = clock != null ? clock : Clock.systemDefaultZone();
+        int maxSize = this.registryProperties.getDynamicCacheMaxSize() > 0
+                ? this.registryProperties.getDynamicCacheMaxSize()
+                : 1024;
+        this.dynamicCache = new BoundedLruMap<>(maxSize);
         if (properties != null && properties.getChannels() != null) {
             initFromProperties(properties.getChannels());
         }
@@ -80,6 +111,10 @@ public class SmsChannelRegistry {
                         .retryInterval(prop.getRetryInterval() != null ? prop.getRetryInterval() : java.time.Duration.ofSeconds(1))
                         .internationalEnabled(prop.isInternationalEnabled())
                         .defaultRegionCode(prop.getDefaultRegionCode())
+                        .maxQuota(prop.getMaxQuota())
+                        .quotaResetCycle(prop.getQuotaResetCycle() != null
+                                ? prop.getQuotaResetCycle()
+                                : io.github.atengk.boot.sms.model.SmsQuotaResetCycle.DAILY)
                         .proxy(prop.getProxy() != null ? prop.getProxy().copy() : null)
                         .extras(prop.getExtras() != null ? Collections.unmodifiableMap(new LinkedHashMap<>(prop.getExtras())) : Collections.emptyMap())
                         .templates(prop.getTemplates() != null ? Collections.unmodifiableMap(new LinkedHashMap<>(prop.getTemplates())) : Collections.emptyMap())
@@ -101,7 +136,10 @@ public class SmsChannelRegistry {
         BusinessAssert.isTrue(channel.getSupplier() != null || org.springframework.util.StringUtils.hasText(channel.getProviderCode()),
                 "短信渠道对应的服务商 SmsSupplier 与 providerCode 不能同时为空");
 
-        channelMap.put(channel.getName().trim(), channel);
+        String name = channel.getName().trim();
+        channelMap.put(name, channel);
+        dynamicCache.remove(name);
+        notifyEvictListeners(name);
         if (log.isInfoEnabled()) {
             log.info("[SmsChannelRegistry] 成功注册/更新短信渠道 [名称: {}, 驱动编码: {}, 服务商: {}, 容灾备用: {}]",
                     channel.getName(), channel.resolveProviderCode(), channel.getSupplier(), channel.getFailoverChannel());
@@ -118,7 +156,10 @@ public class SmsChannelRegistry {
         if (channelName == null || channelName.isBlank()) {
             return null;
         }
-        SmsChannel removed = channelMap.remove(channelName.trim());
+        String name = channelName.trim();
+        SmsChannel removed = channelMap.remove(name);
+        dynamicCache.remove(name);
+        notifyEvictListeners(name);
         if (removed != null && log.isInfoEnabled()) {
             log.info("[SmsChannelRegistry] 成功注销短信渠道 [名称: {}]", channelName);
         }
@@ -127,7 +168,7 @@ public class SmsChannelRegistry {
 
     /**
      * 获取指定名称的渠道配置
-     * 若未找到且名称为 "mock"，保底返回内存 Mock 渠道
+     * 优先命中静态注册渠道；未命中且名称为 "mock" 返回默认内存 Mock 渠道；否则通过 SmsChannelProvider 动态加载并进入有界 TTL LRU 缓存
      *
      * @param channelName 渠道名称
      * @return SmsChannel 渠道对象，未找到返回 null
@@ -149,21 +190,120 @@ public class SmsChannelRegistry {
                     .signName("MOCK")
                     .build();
         }
-        return null;
+        return resolveDynamicChannel(name);
     }
 
     /**
-     * 判断是否已注册指定名称的渠道
+     * 判断是否已注册或可动态供给指定名称的渠道
      *
      * @param channelName 渠道名称
-     * @return true 表示已存在
+     * @return true 表示已存在或可加载
      */
     public boolean contains(String channelName) {
         if (channelName == null || channelName.isBlank()) {
             return false;
         }
         String name = channelName.trim();
-        return channelMap.containsKey(name) || "mock".equalsIgnoreCase(name);
+        if (channelMap.containsKey(name) || "mock".equalsIgnoreCase(name)) {
+            return true;
+        }
+        return resolveDynamicChannel(name) != null;
+    }
+
+    /**
+     * 精确驱逐指定动态渠道缓存
+     *
+     * @param channelName 渠道名称
+     */
+    public void evictDynamic(String channelName) {
+        if (channelName == null || channelName.isBlank()) {
+            return;
+        }
+        dynamicCache.remove(channelName.trim());
+    }
+
+    /**
+     * 全量清空动态渠道缓存
+     */
+    public void evictAllDynamic() {
+        dynamicCache.clear();
+    }
+
+    /**
+     * 获取当前动态渠道缓存条目数
+     *
+     * @return 动态缓存数量
+     */
+    public int dynamicSize() {
+        return dynamicCache.size();
+    }
+
+    /**
+     * 注册渠道变更/驱逐联动回调监听器
+     *
+     * @param listener 回调接收发生变更或注销的渠道名
+     */
+    public void addEvictListener(Consumer<String> listener) {
+        if (listener != null) {
+            evictListeners.add(listener);
+        }
+    }
+
+    private SmsChannel resolveDynamicChannel(String name) {
+        if (channelProvider == null) {
+            return null;
+        }
+        if (!registryProperties.isDynamicCacheEnabled()) {
+            return channelProvider.loadChannel(name);
+        }
+
+        long ttlMillis = resolveTtlMillis();
+        long now = clock.millis();
+        SmsChannel cached = dynamicCache.withLock(view -> {
+            CachedDynamicChannel entry = view.get(name);
+            if (entry == null) {
+                return null;
+            }
+            if (isEntryExpired(entry, now, ttlMillis)) {
+                view.remove(name);
+                return null;
+            }
+            return entry.channel();
+        });
+        if (cached != null) {
+            return cached;
+        }
+
+        SmsChannel loaded = channelProvider.loadChannel(name);
+        if (loaded == null) {
+            return null;
+        }
+        long storeTime = clock.millis();
+        dynamicCache.put(name, new CachedDynamicChannel(loaded, storeTime),
+                entry -> isEntryExpired(entry, storeTime, ttlMillis));
+        return loaded;
+    }
+
+    private long resolveTtlMillis() {
+        Duration ttl = registryProperties.getDynamicCacheTtl();
+        return ttl != null && !ttl.isNegative() && !ttl.isZero() ? ttl.toMillis() : 0L;
+    }
+
+    private boolean isEntryExpired(CachedDynamicChannel entry, long nowMillis, long ttlMillis) {
+        return entry == null || (ttlMillis > 0 && (nowMillis - entry.loadedAtMillis()) >= ttlMillis);
+    }
+
+    private void notifyEvictListeners(String channelName) {
+        for (Consumer<String> listener : evictListeners) {
+            try {
+                listener.accept(channelName);
+            } catch (Exception ex) {
+                log.warn("[SmsChannelRegistry] 执行渠道驱逐回调异常 -> 渠道: {}, 错误: {}", channelName, ex.getMessage());
+            }
+        }
+    }
+
+    private record CachedDynamicChannel(SmsChannel channel, long loadedAtMillis) {
     }
 
     /**
@@ -198,5 +338,6 @@ public class SmsChannelRegistry {
      */
     public void clear() {
         channelMap.clear();
+        dynamicCache.clear();
     }
 }

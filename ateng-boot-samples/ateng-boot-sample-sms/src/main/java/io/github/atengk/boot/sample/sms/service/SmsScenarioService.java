@@ -4,9 +4,12 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.sample.sms.dto.*;
 import io.github.atengk.boot.sample.sms.listener.SampleSmsEventListener;
+import io.github.atengk.boot.sample.sms.vo.SmsChannelQuotaVO;
 import io.github.atengk.boot.sample.sms.vo.SmsChannelVO;
 import io.github.atengk.boot.sample.sms.vo.SmsCircuitBreakerStatusVO;
 import io.github.atengk.boot.sample.sms.vo.SmsSendAuditVO;
+import io.github.atengk.boot.sms.exception.SmsException;
+import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.guard.SmsChannelCircuitBreaker;
 import io.github.atengk.boot.sms.model.*;
 import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
@@ -222,6 +225,7 @@ public class SmsScenarioService {
         SmsChannel channel = SmsChannel.builder()
                 .name(req.getName())
                 .supplier(req.getSupplier())
+                .providerCode(req.getProviderCode())
                 .accessKeyId(req.getAccessKeyId())
                 .accessKeySecret(req.getAccessKeySecret())
                 .signName(req.getSignName())
@@ -231,6 +235,8 @@ public class SmsScenarioService {
                 .failoverChannel(req.getFailoverChannel())
                 .templates(templateMap)
                 .weight(req.getWeight() != null ? req.getWeight() : 1)
+                .maxQuota(req.getMaxQuota() != null ? req.getMaxQuota() : 0L)
+                .quotaResetCycle(req.getQuotaResetCycle() != null ? req.getQuotaResetCycle() : SmsQuotaResetCycle.DAILY)
                 .build();
         channelRegistry.register(channel);
     }
@@ -243,6 +249,54 @@ public class SmsScenarioService {
     public void unregisterChannel(String channelName) {
         log.info("[SmsScenarioService] 动态注销短信渠道 -> 名称: {}", channelName);
         channelRegistry.unregister(channelName);
+    }
+
+    /**
+     * 主动驱逐动态渠道缓存（并联动清理负载均衡权重与熔断健康态）
+     *
+     * @param channelName 指定渠道名称（为空时全量清空）
+     */
+    public void evictChannelCache(String channelName) {
+        if (channelName != null && !channelName.isBlank()) {
+            log.info("[SmsScenarioService] 触发渠道 [{}] 热驱逐缓存清理", channelName);
+            smsTemplate.evictChannelCache(channelName);
+        } else {
+            log.info("[SmsScenarioService] 触发全量渠道热驱逐缓存清理");
+            smsTemplate.evictAllChannelCache();
+        }
+    }
+
+    /**
+     * 查询指定渠道当前配额使用情况
+     *
+     * @param channelName 渠道名称
+     * @return 渠道配额视图对象
+     */
+    public SmsChannelQuotaVO getChannelQuota(String channelName) {
+        SmsChannel channel = channelRegistry.get(channelName);
+        if (channel == null) {
+            throw new BusinessException(SmsResultCode.SMS_CHANNEL_NOT_FOUND, "未找到短信渠道: " + channelName);
+        }
+        long used = smsTemplate.getChannelQuotaUsed(channel.getName());
+        long max = channel.getMaxQuota();
+        long remaining = max > 0 ? Math.max(0L, max - used) : -1L;
+        return SmsChannelQuotaVO.builder()
+                .channelName(channel.getName())
+                .maxQuota(max)
+                .usedQuota(used)
+                .remainingQuota(remaining)
+                .quotaResetCycle(channel.getQuotaResetCycle())
+                .build();
+    }
+
+    /**
+     * 重置指定渠道（或全部渠道）的配额计数
+     *
+     * @param channelName 渠道名称（为空时重置全部渠道）
+     */
+    public void resetChannelQuota(String channelName) {
+        log.info("[SmsScenarioService] 重置渠道配额计数 -> 渠道: {}", channelName);
+        smsTemplate.resetChannelQuota(channelName);
     }
 
     /**
@@ -263,12 +317,15 @@ public class SmsScenarioService {
                     return SmsChannelVO.builder()
                             .name(c.getName())
                             .supplier(c.getSupplier())
+                            .providerCode(c.resolveProviderCode())
                             .signName(c.getSignName())
                             .appId(c.getAppId())
                             .region(c.getRegion())
                             .endpoint(c.getEndpoint())
                             .failoverChannel(c.getFailoverChannel())
                             .weight(c.getWeight())
+                            .maxQuota(c.getMaxQuota())
+                            .quotaResetCycle(c.getQuotaResetCycle())
                             .templates(tplMap)
                             .build();
                 })
@@ -383,6 +440,7 @@ public class SmsScenarioService {
                 .channel(req.getChannel())
                 .bizId(req.getBizId())
                 .urgent(req.isUrgent())
+                .skipRateLimit(req.isSkipRateLimit())
                 .params(toSmsParam(req.getParams()))
                 .build();
     }

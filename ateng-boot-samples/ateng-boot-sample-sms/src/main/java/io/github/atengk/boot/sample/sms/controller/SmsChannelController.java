@@ -4,12 +4,15 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.sms.dto.DynamicChannelRegisterRequest;
 import io.github.atengk.boot.sample.sms.dto.SendSmsRequest;
 import io.github.atengk.boot.sample.sms.service.SmsScenarioService;
+import io.github.atengk.boot.sample.sms.vo.SmsChannelQuotaVO;
 import io.github.atengk.boot.sample.sms.vo.SmsChannelVO;
 import io.github.atengk.boot.sample.sms.vo.SmsCircuitBreakerStatusVO;
 import io.github.atengk.boot.sms.model.SmsResult;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Collection;
@@ -23,6 +26,7 @@ import java.util.Map;
  * @since 2026-11-07
  */
 @Slf4j
+@Validated
 @RestController
 @RequestMapping("/sample/sms/channel")
 @RequiredArgsConstructor
@@ -104,6 +108,45 @@ public class SmsChannelController {
     public Result<Void> resetCircuitBreaker(@RequestParam(name = "channelName", required = false) String channelName) {
         log.info("[SmsChannelController] 收到渠道熔断重置请求 -> 渠道: {}", channelName);
         smsScenarioService.resetCircuitBreaker(channelName);
+        return Result.success();
+    }
+
+    /**
+     * 主动驱逐动态渠道缓存并联动清理负载权重与熔断态
+     *
+     * @param channelName 指定渠道名称（不传或为空时全量清空）
+     * @return 空结果成功标识
+     */
+    @PostMapping("/evict")
+    public Result<Void> evictChannelCache(@RequestParam(name = "channelName", required = false) String channelName) {
+        log.info("[SmsChannelController] 收到动态渠道缓存驱逐请求 -> 渠道: {}", channelName);
+        smsScenarioService.evictChannelCache(channelName);
+        return Result.success();
+    }
+
+    /**
+     * 查询指定渠道当前配额使用状态
+     *
+     * @param channelName 渠道名称
+     * @return 渠道配额视图对象
+     */
+    @GetMapping("/quota")
+    public Result<SmsChannelQuotaVO> getChannelQuota(
+            @RequestParam(name = "channelName") @NotBlank(message = "渠道名称不能为空") String channelName) {
+        log.info("[SmsChannelController] 查询渠道配额状态 -> 渠道: {}", channelName);
+        return Result.success(smsScenarioService.getChannelQuota(channelName));
+    }
+
+    /**
+     * 手动重置指定渠道（或全部渠道）的配额计数
+     *
+     * @param channelName 指定渠道名称（不传或为空时重置全部渠道）
+     * @return 空结果成功标识
+     */
+    @PostMapping("/quota/reset")
+    public Result<Void> resetChannelQuota(@RequestParam(name = "channelName", required = false) String channelName) {
+        log.info("[SmsChannelController] 收到渠道配额重置请求 -> 渠道: {}", channelName);
+        smsScenarioService.resetChannelQuota(channelName);
         return Result.success();
     }
 }

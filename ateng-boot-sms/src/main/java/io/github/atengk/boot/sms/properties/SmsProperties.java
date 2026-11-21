@@ -59,4 +59,16 @@ public class SmsProperties implements Serializable {
      */
     @NestedConfigurationProperty
     private SmsCallbackProperties callback = new SmsCallbackProperties();
+
+    /**
+     * 出站测试安全沙箱配置
+     */
+    @NestedConfigurationProperty
+    private SmsSandboxProperties sandbox = new SmsSandboxProperties();
+
+    /**
+     * 动态渠道供给与有界 LRU 缓存配置
+     */
+    @NestedConfigurationProperty
+    private SmsRegistryProperties registry = new SmsRegistryProperties();
 }

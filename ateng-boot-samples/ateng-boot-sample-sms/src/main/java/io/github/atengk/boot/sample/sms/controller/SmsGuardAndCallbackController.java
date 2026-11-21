@@ -114,6 +114,32 @@ public class SmsGuardAndCallbackController {
     }
 
     /**
+     * 测试安全沙箱演练发信接口（受 ateng.boot.sms.sandbox.* 控制，演示白名单放行、重定向或 log-only 模拟）
+     *
+     * @param request 发信请求传输对象
+     * @return 统一响应体包装的短信发信结果
+     */
+    @PostMapping("/sandbox")
+    public Result<SmsResult> sendWithSandbox(@Valid @RequestBody SendSmsRequest request) {
+        log.info("[SmsGuardAndCallbackController] 收到安全沙箱演练发信请求 -> 模板: {}", request.getTemplateId());
+        SmsResult result = smsScenarioService.sendSingleSms(request);
+        return Result.success(result);
+    }
+
+    /**
+     * 非验证码业务通知频控防卫发信接口（演示 notify: 独立命名空间限流与 skipRateLimit 豁免）
+     *
+     * @param request 发信请求传输对象
+     * @return 统一响应体包装的短信发信结果
+     */
+    @PostMapping("/notify")
+    public Result<SmsResult> sendNotifyWithRateLimit(@Valid @RequestBody SendSmsRequest request) {
+        log.info("[SmsGuardAndCallbackController] 收到通知频控策略发信请求 -> skipRateLimit: {}", request.isSkipRateLimit());
+        SmsResult result = smsScenarioService.sendSingleSms(request);
+        return Result.success(result);
+    }
+
+    /**
      * 查询全链路发信审计事件流水
      *
      * @return 发信审计视图对象列表

@@ -84,4 +84,21 @@ public class SmsGuardProperties implements Serializable {
      * 批量短信并发分片聚合超时上限，默认 30 秒
      */
     private java.time.Duration batchTimeout = java.time.Duration.ofSeconds(30);
+
+    /**
+     * 是否对非验证码业务通知短信启用单号滑动窗口频控（使用独立 notify: 命名空间与验证码隔离），默认 false 保持向后兼容
+     */
+    private boolean notifyRateLimitEnabled = false;
+
+    /**
+     * 日志输出及 SmsSendAuditEvent 审计快照中是否对正文 content 与敏感参数执行掩码遮罩，默认 true
+     */
+    private boolean logDesensitizeContent = true;
+
+    /**
+     * 触发参数值脱敏遮罩的敏感键名关键词集合
+     */
+    private java.util.List<String> sensitiveParamKeys = new java.util.ArrayList<>(
+            java.util.List.of("code", "captcha", "pwd", "password", "pin", "token", "secret")
+    );
 }

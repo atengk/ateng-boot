@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.sms.vo;
 
+import io.github.atengk.boot.sms.model.SmsQuotaResetCycle;
 import io.github.atengk.boot.sms.model.SmsSupplier;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -34,6 +35,11 @@ public class SmsChannelVO implements Serializable {
     private SmsSupplier supplier;
 
     /**
+     * 驱动路由编码
+     */
+    private String providerCode;
+
+    /**
      * 默认短信签名
      */
     private String signName;
@@ -62,6 +68,16 @@ public class SmsChannelVO implements Serializable {
      * 负载均衡权重
      */
     private int weight;
+
+    /**
+     * 单渠道配额上限（0 表示不限制）
+     */
+    private long maxQuota;
+
+    /**
+     * 单渠道配额重置周期
+     */
+    private SmsQuotaResetCycle quotaResetCycle;
 
     /**
      * 模板逻辑标识与服务商物理模板ID映射关系

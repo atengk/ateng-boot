@@ -136,6 +136,18 @@ public class SmsChannel implements Serializable {
     private final String defaultRegionCode = "+86";
 
     /**
+     * 单渠道发信配额上限（0 表示不限制），默认 0
+     */
+    @Builder.Default
+    private final long maxQuota = 0L;
+
+    /**
+     * 单渠道配额重置周期（DAILY 自然日清零 | TOTAL 总量包干），默认 DAILY
+     */
+    @Builder.Default
+    private final SmsQuotaResetCycle quotaResetCycle = SmsQuotaResetCycle.DAILY;
+
+    /**
      * 渠道级独立 HTTP 出站代理配置
      */
     private final SmsProxyProperties proxy;

@@ -1,30 +1,22 @@
 package io.github.atengk.boot.sms.config;
 
+import io.github.atengk.boot.sms.callback.DefaultSmsCallbackVerifier;
 import io.github.atengk.boot.sms.callback.SmsCallbackController;
+import io.github.atengk.boot.sms.callback.SmsCallbackVerifier;
 import io.github.atengk.boot.sms.guard.*;
 import io.github.atengk.boot.sms.handler.LoggingSmsSendFailureHandler;
 import io.github.atengk.boot.sms.handler.SmsSendFailureHandler;
+import io.github.atengk.boot.sms.interceptor.SmsSandboxInterceptor;
+import io.github.atengk.boot.sms.interceptor.SmsSendInterceptor;
 import io.github.atengk.boot.sms.limiter.InMemorySmsRateLimiter;
 import io.github.atengk.boot.sms.limiter.RedisSmsRateLimiter;
 import io.github.atengk.boot.sms.limiter.SmsRateLimiter;
+import io.github.atengk.boot.sms.listener.SmsChannelEvictListener;
 import io.github.atengk.boot.sms.loadbalancer.SmsChannelLoadBalancer;
 import io.github.atengk.boot.sms.properties.SmsProperties;
-import io.github.atengk.boot.sms.provider.AliyunSmsProvider;
-import io.github.atengk.boot.sms.provider.BaiduSmsProvider;
-import io.github.atengk.boot.sms.provider.ChuanglanSmsProvider;
-import io.github.atengk.boot.sms.provider.CloopenSmsProvider;
-import io.github.atengk.boot.sms.provider.CtyunSmsProvider;
-import io.github.atengk.boot.sms.provider.HuaweiSmsProvider;
-import io.github.atengk.boot.sms.provider.JdCloudSmsProvider;
-import io.github.atengk.boot.sms.provider.MasSmsProvider;
-import io.github.atengk.boot.sms.provider.MockSmsProvider;
-import io.github.atengk.boot.sms.provider.NeteaseSmsProvider;
-import io.github.atengk.boot.sms.provider.QiniuSmsProvider;
-import io.github.atengk.boot.sms.provider.SmsProvider;
-import io.github.atengk.boot.sms.provider.TencentSmsProvider;
-import io.github.atengk.boot.sms.provider.UnismsSmsProvider;
-import io.github.atengk.boot.sms.provider.YunpianSmsProvider;
-import io.github.atengk.boot.sms.provider.ZhutongSmsProvider;
+import io.github.atengk.boot.sms.provider.*;
+import io.github.atengk.boot.sms.registry.SmsChannelEvictBroadcaster;
+import io.github.atengk.boot.sms.registry.SmsChannelProvider;
 import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
 import io.github.atengk.boot.sms.registry.SmsChannelResolver;
 import io.github.atengk.boot.sms.registry.TenantSmsChannelResolver;
@@ -44,7 +36,6 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.web.client.RestClient;
 
 import java.time.Clock;
@@ -74,8 +65,9 @@ public class AtengSmsAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
-    public MockSmsProvider mockSmsProvider() {
-        return new MockSmsProvider();
+    public MockSmsProvider mockSmsProvider(ObjectProvider<SmsProperties> propertiesProvider) {
+        SmsProperties props = propertiesProvider.getIfAvailable();
+        return new MockSmsProvider(props != null ? props.getGuard() : null);
     }
 
     /**
@@ -261,15 +253,47 @@ public class AtengSmsAutoConfiguration {
     }
 
     /**
-     * 自动装配多命名短信渠道注册中心
+     * 自动装配多命名短信渠道注册中心（支持可选 SmsChannelProvider 按需动态供给与有界 TTL LRU 缓存）
      *
-     * @param properties 配置属性
+     * @param properties      配置属性
+     * @param providerHolder  可选动态渠道供给 SPI
+     * @param clockProvider   可选时钟提供者
      * @return SmsChannelRegistry
      */
     @Bean
     @ConditionalOnMissingBean
-    public SmsChannelRegistry smsChannelRegistry(SmsProperties properties) {
-        return new SmsChannelRegistry(properties);
+    public SmsChannelRegistry smsChannelRegistry(SmsProperties properties,
+                                                 ObjectProvider<SmsChannelProvider> providerHolder,
+                                                 ObjectProvider<Clock> clockProvider) {
+        return new SmsChannelRegistry(
+                properties,
+                providerHolder.getIfAvailable(),
+                clockProvider.getIfAvailable(Clock::systemDefaultZone)
+        );
+    }
+
+    /**
+     * 自动装配动态短信渠道缓存热驱逐监听器（联动清理注册中心动态缓存、负载均衡权重与熔断态）
+     *
+     * @param channelRegistry    渠道注册中心
+     * @param loadBalancer       负载均衡器
+     * @param circuitBreaker     渠道熔断器
+     * @param broadcasterHolder  可选 Redis Pub/Sub 集群广播器
+     * @return SmsChannelEvictListener
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SmsChannelEvictListener smsChannelEvictListener(
+            SmsChannelRegistry channelRegistry,
+            SmsChannelLoadBalancer loadBalancer,
+            SmsChannelCircuitBreaker circuitBreaker,
+            ObjectProvider<SmsChannelEvictBroadcaster> broadcasterHolder) {
+        return new SmsChannelEvictListener(
+                channelRegistry,
+                loadBalancer,
+                circuitBreaker,
+                broadcasterHolder.getIfAvailable()
+        );
     }
 
     /**
@@ -319,8 +343,22 @@ public class AtengSmsAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public SmsChannelLoadBalancer smsChannelLoadBalancer(SmsChannelRegistry channelRegistry,
-                                                         SmsChannelCircuitBreaker circuitBreaker) {
-        return new SmsChannelLoadBalancer(channelRegistry, circuitBreaker);
+                                                         SmsChannelCircuitBreaker circuitBreaker,
+                                                         ObjectProvider<SmsQuotaGuard> quotaGuardProvider) {
+        return new SmsChannelLoadBalancer(channelRegistry, circuitBreaker, quotaGuardProvider.getIfAvailable());
+    }
+
+    /**
+     * 自动装配测试安全沙箱发信拦截器（默认关闭，开启 ateng.boot.sms.sandbox.enabled=true 后激活）
+     *
+     * @param properties 配置属性
+     * @return SmsSandboxInterceptor
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.sms.sandbox", name = "enabled", havingValue = "true")
+    public SmsSandboxInterceptor smsSandboxInterceptor(SmsProperties properties) {
+        return new SmsSandboxInterceptor(properties.getSandbox(), properties.getGuard());
     }
 
     /**
@@ -339,6 +377,8 @@ public class AtengSmsAutoConfiguration {
      * @param eventPublisherProvider   事件发布器提供者
      * @param taskExecutorProvider     异步执行器提供者
      * @param clockProvider            可选时钟提供者
+     * @param sendInterceptorsProvider 统一发送拦截器列表提供者
+     * @param rateLimiterProvider      频控限流器提供者
      * @return SmsTemplate
      */
     @Bean
@@ -355,7 +395,10 @@ public class AtengSmsAutoConfiguration {
                                    ObjectProvider<SmsIdempotentGuard> idempotentGuardProvider,
                                    ObjectProvider<ApplicationEventPublisher> eventPublisherProvider,
                                    ObjectProvider<Executor> taskExecutorProvider,
-                                   ObjectProvider<Clock> clockProvider) {
+                                   ObjectProvider<Clock> clockProvider,
+                                   ObjectProvider<List<SmsSendInterceptor>> sendInterceptorsProvider,
+                                   ObjectProvider<SmsRateLimiter> rateLimiterProvider,
+                                   ObjectProvider<SmsQuotaGuard> quotaGuardProvider) {
         return new SmsTemplate(
                 properties,
                 providers,
@@ -369,27 +412,52 @@ public class AtengSmsAutoConfiguration {
                 idempotentGuardProvider.getIfAvailable(),
                 eventPublisherProvider.getIfAvailable(),
                 taskExecutorProvider.getIfAvailable(),
-                clockProvider.getIfAvailable(Clock::systemDefaultZone)
+                clockProvider.getIfAvailable(Clock::systemDefaultZone),
+                sendInterceptorsProvider.getIfAvailable(),
+                rateLimiterProvider.getIfAvailable(),
+                quotaGuardProvider.getIfAvailable()
         );
+    }
+
+    /**
+     * 自动装配默认入站回调安全校验器
+     *
+     * @param properties 配置属性
+     * @return DefaultSmsCallbackVerifier
+     */
+    @Bean
+    @ConditionalOnMissingBean(SmsCallbackVerifier.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.sms.callback", name = "enabled", havingValue = "true")
+    public DefaultSmsCallbackVerifier defaultSmsCallbackVerifier(SmsProperties properties) {
+        return new DefaultSmsCallbackVerifier(properties.getCallback());
     }
 
     /**
      * 自动装配入站 Webhook 回调网关控制器
      *
-     * @param channelRegistry   渠道注册中心
-     * @param eventPublisher    领域事件发布器
-     * @param blacklistProvider 出站黑名单过滤器提供者
-     * @param properties        配置属性
+     * @param channelRegistry          渠道注册中心
+     * @param eventPublisher           领域事件发布器
+     * @param blacklistProvider        出站黑名单过滤器提供者
+     * @param properties               配置属性
+     * @param callbackVerifiersProvider 回调安全校验器列表提供者
      * @return SmsCallbackController
      */
     @Bean
     @ConditionalOnMissingBean
+    @ConditionalOnClass(name = "jakarta.servlet.http.HttpServletRequest")
     @ConditionalOnProperty(prefix = "ateng.boot.sms.callback", name = "enabled", havingValue = "true")
     public SmsCallbackController smsCallbackController(SmsChannelRegistry channelRegistry,
                                                        ApplicationEventPublisher eventPublisher,
                                                        ObjectProvider<SmsBlacklistProvider> blacklistProvider,
-                                                       SmsProperties properties) {
-        return new SmsCallbackController(channelRegistry, eventPublisher, blacklistProvider.getIfAvailable(), properties);
+                                                       SmsProperties properties,
+                                                       ObjectProvider<List<SmsCallbackVerifier>> callbackVerifiersProvider) {
+        return new SmsCallbackController(
+                channelRegistry,
+                eventPublisher,
+                blacklistProvider.getIfAvailable(),
+                properties,
+                callbackVerifiersProvider.getIfAvailable()
+        );
     }
 
     /**
@@ -417,12 +485,13 @@ public class AtengSmsAutoConfiguration {
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(name = "org.springframework.data.redis.core.StringRedisTemplate")
     @ConditionalOnBean(type = "org.springframework.data.redis.core.StringRedisTemplate")
+    @Import(RedisPubSubSmsConfiguration.class)
     static class RedisSmsConfiguration {
 
         @Bean
         @ConditionalOnMissingBean
         public DailyBudgetBreaker redisDailyBudgetBreaker(SmsProperties properties,
-                                                          StringRedisTemplate redisTemplate,
+                                                          org.springframework.data.redis.core.StringRedisTemplate redisTemplate,
                                                           ObjectProvider<ApplicationEventPublisher> eventPublisherProvider,
                                                           ObjectProvider<Clock> clockProvider) {
             return new RedisDailyBudgetBreaker(redisTemplate, properties.getGuard(),
@@ -431,27 +500,81 @@ public class AtengSmsAutoConfiguration {
 
         @Bean
         @ConditionalOnMissingBean
-        public SmsRateLimiter redisSmsRateLimiter(SmsProperties properties, StringRedisTemplate redisTemplate) {
+        public SmsRateLimiter redisSmsRateLimiter(SmsProperties properties,
+                                                  org.springframework.data.redis.core.StringRedisTemplate redisTemplate) {
             return new RedisSmsRateLimiter(redisTemplate, properties.getRateLimit());
         }
 
         @Bean
         @ConditionalOnMissingBean
-        public SmsVerifyCodeRepository redisSmsVerifyCodeRepository(StringRedisTemplate redisTemplate,
+        public SmsVerifyCodeRepository redisSmsVerifyCodeRepository(org.springframework.data.redis.core.StringRedisTemplate redisTemplate,
                                                                     ObjectProvider<Clock> clockProvider) {
             return new RedisSmsVerifyCodeRepository(redisTemplate, clockProvider.getIfAvailable(Clock::systemDefaultZone));
         }
 
         @Bean
         @ConditionalOnMissingBean
-        public SmsBlacklistProvider redisSmsBlacklistProvider(SmsProperties properties, StringRedisTemplate redisTemplate) {
+        public SmsBlacklistProvider redisSmsBlacklistProvider(SmsProperties properties,
+                                                              org.springframework.data.redis.core.StringRedisTemplate redisTemplate) {
             return new RedisSmsBlacklistProvider(redisTemplate, properties.getGuard());
         }
 
         @Bean
         @ConditionalOnMissingBean
-        public SmsIdempotentGuard redisSmsIdempotentGuard(StringRedisTemplate redisTemplate) {
+        public SmsIdempotentGuard redisSmsIdempotentGuard(org.springframework.data.redis.core.StringRedisTemplate redisTemplate) {
             return new RedisSmsIdempotentGuard(redisTemplate);
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        public SmsQuotaGuard redisSmsQuotaGuard(org.springframework.data.redis.core.StringRedisTemplate redisTemplate,
+                                                ObjectProvider<Clock> clockProvider) {
+            return new RedisSmsQuotaGuard(redisTemplate, clockProvider.getIfAvailable(Clock::systemDefaultZone));
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        @ConditionalOnProperty(prefix = "ateng.boot.sms.registry", name = "evict-pub-sub-enabled", havingValue = "true", matchIfMissing = true)
+        public io.github.atengk.boot.sms.registry.RedisSmsChannelEvictBroadcaster redisSmsChannelEvictBroadcaster(
+                org.springframework.data.redis.core.StringRedisTemplate redisTemplate,
+                ApplicationEventPublisher eventPublisher,
+                SmsProperties properties) {
+            return new io.github.atengk.boot.sms.registry.RedisSmsChannelEvictBroadcaster(
+                    redisTemplate,
+                    eventPublisher,
+                    properties.getRegistry().getEvictTopic()
+            );
+        }
+    }
+
+    /**
+     * Redis Pub/Sub 集群渠道驱逐监听容器自动装配（隔离 RedisConnectionFactory 反射扫描边界）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = {
+            "org.springframework.data.redis.connection.RedisConnectionFactory",
+            "org.springframework.data.redis.listener.RedisMessageListenerContainer"
+    })
+    @ConditionalOnBean(type = {
+            "org.springframework.data.redis.connection.RedisConnectionFactory",
+            "io.github.atengk.boot.sms.registry.RedisSmsChannelEvictBroadcaster"
+    })
+    @ConditionalOnProperty(prefix = "ateng.boot.sms.registry", name = "evict-pub-sub-enabled", havingValue = "true", matchIfMissing = true)
+    static class RedisPubSubSmsConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(name = "smsChannelEvictRedisMessageListenerContainer")
+        public org.springframework.data.redis.listener.RedisMessageListenerContainer smsChannelEvictRedisMessageListenerContainer(
+                org.springframework.data.redis.connection.RedisConnectionFactory connectionFactory,
+                io.github.atengk.boot.sms.registry.RedisSmsChannelEvictBroadcaster broadcaster) {
+            org.springframework.data.redis.listener.RedisMessageListenerContainer container =
+                    new org.springframework.data.redis.listener.RedisMessageListenerContainer();
+            container.setConnectionFactory(connectionFactory);
+            container.addMessageListener(
+                    broadcaster,
+                    new org.springframework.data.redis.listener.ChannelTopic(broadcaster.getTopic())
+            );
+            return container;
         }
     }
 
@@ -501,6 +624,16 @@ public class AtengSmsAutoConfiguration {
                                                              ObjectProvider<Clock> clockProvider) {
             return new InMemorySmsIdempotentGuard(properties.getGuard().getInMemoryMaxEntries(),
                     clockProvider.getIfAvailable(Clock::systemDefaultZone));
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        public SmsQuotaGuard inMemorySmsQuotaGuard(SmsProperties properties,
+                                                   ObjectProvider<Clock> clockProvider) {
+            return new InMemorySmsQuotaGuard(
+                    properties.getGuard().getInMemoryMaxEntries(),
+                    clockProvider.getIfAvailable(Clock::systemDefaultZone)
+            );
         }
     }
 }

@@ -105,9 +105,9 @@ public class SmsVerifyCodeTemplate {
         // 1. 前置重发冷却防刷拦截（前置于滑动窗口，避免虚耗频控配额）
         repository.checkCooldown(phone, bizType);
 
-        // 2. 滑动窗口频控防刷检查（1m/1h/1d，支持手机号与 IP 协同）
+        // 2. 滑动窗口频控防刷检查（使用独立 verify: 命名空间与普通通知频控严格隔离，支持手机号与 IP 协同）
         if (rateLimiter != null) {
-            rateLimiter.acquire(phone, ip);
+            rateLimiter.acquire("verify", phone, ip);
         }
 
         // 3. 生成随机安全验证码并写入仓储
@@ -132,6 +132,7 @@ public class SmsVerifyCodeTemplate {
                     .signName(signName)
                     .bizId(bizType)
                     .urgent(true)
+                    .skipRateLimit(true)
                     .build();
 
             log.info("[SmsVerifyCodeTemplate] 触发验证码短信投递 -> 目标号码: {}, 业务类型: {}, 模板ID: {}",

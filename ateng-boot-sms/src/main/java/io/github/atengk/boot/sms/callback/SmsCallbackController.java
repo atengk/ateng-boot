@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sms.callback;
 
+import io.github.atengk.boot.core.util.CidrMatcher;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.sms.event.SmsDeliveryReportEvent;
@@ -11,8 +12,10 @@ import io.github.atengk.boot.sms.properties.SmsCallbackProperties;
 import io.github.atengk.boot.sms.properties.SmsGuardProperties;
 import io.github.atengk.boot.sms.properties.SmsProperties;
 import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -30,7 +33,7 @@ import java.util.*;
  * 统一运营商短信异步送达回执与用户上行回复 Webhook 控制器
  * 统一接入端点：${ateng.boot.sms.callback.path-prefix:/ateng-sms/callback}/{channel}
  * 自动识别并转译各云厂商推送报文，向 Spring 容器广播标准领域事件
- * 支持捕获用户上行退订回复 (TD/退订/T) 自动闭环将手机号写入出站黑名单
+ * 支持捕获用户上行退订回复 (TD/退订/T) 自动闭环将手机号写入出站黑名单，并内置 CIDR 白名单、恒定时间令牌与厂商签名安全验签
  *
  * @author Ateng
  * @since 2026-11-02
@@ -45,16 +48,35 @@ public class SmsCallbackController {
     private final SmsBlacklistProvider blacklistProvider;
     private final SmsCallbackProperties callbackProperties;
     private final SmsGuardProperties guardProperties;
+    private final List<SmsCallbackVerifier> callbackVerifiers;
 
     public SmsCallbackController(SmsChannelRegistry channelRegistry,
                                  ApplicationEventPublisher eventPublisher,
                                  SmsBlacklistProvider blacklistProvider,
-                                 SmsProperties properties) {
+                                 SmsProperties properties,
+                                 List<SmsCallbackVerifier> callbackVerifiers) {
         this.channelRegistry = channelRegistry;
         this.eventPublisher = eventPublisher;
         this.blacklistProvider = blacklistProvider;
         this.callbackProperties = properties != null && properties.getCallback() != null ? properties.getCallback() : new SmsCallbackProperties();
         this.guardProperties = properties != null && properties.getGuard() != null ? properties.getGuard() : new SmsGuardProperties();
+        this.callbackVerifiers = buildVerifierChain(this.callbackProperties, callbackVerifiers);
+    }
+
+    public SmsCallbackController(SmsChannelRegistry channelRegistry,
+                                 ApplicationEventPublisher eventPublisher,
+                                 SmsBlacklistProvider blacklistProvider,
+                                 SmsProperties properties,
+                                 SmsCallbackVerifier callbackVerifier) {
+        this(channelRegistry, eventPublisher, blacklistProvider, properties,
+                callbackVerifier != null ? List.of(callbackVerifier) : null);
+    }
+
+    public SmsCallbackController(SmsChannelRegistry channelRegistry,
+                                 ApplicationEventPublisher eventPublisher,
+                                 SmsBlacklistProvider blacklistProvider,
+                                 SmsProperties properties) {
+        this(channelRegistry, eventPublisher, blacklistProvider, properties, (List<SmsCallbackVerifier>) null);
     }
 
     public SmsCallbackController(SmsChannelRegistry channelRegistry,
@@ -65,15 +87,16 @@ public class SmsCallbackController {
         this.blacklistProvider = null;
         this.callbackProperties = callbackProperties != null ? callbackProperties : new SmsCallbackProperties();
         this.guardProperties = new SmsGuardProperties();
+        this.callbackVerifiers = buildVerifierChain(this.callbackProperties, null);
     }
 
     public SmsCallbackController(SmsChannelRegistry channelRegistry,
                                  ApplicationEventPublisher eventPublisher) {
-        this(channelRegistry, eventPublisher, null);
+        this(channelRegistry, eventPublisher, (SmsCallbackProperties) null);
     }
 
     /**
-     * 接收统一短信回调请求（支持 JSON Body 与表单提交）
+     * 接收统一短信回调请求（支持 JSON Body 与表单提交，无 Servlet 请求参数向后兼容重载）
      *
      * @param channelName 渠道名称
      * @param rawBody     原始请求体
@@ -81,12 +104,31 @@ public class SmsCallbackController {
      * @param headers     请求头
      * @return 厂商规范约定的响应应答报文
      */
+    public ResponseEntity<Map<String, Object>> handleCallback(
+            String channelName,
+            String rawBody,
+            MultiValueMap<String, String> formParams,
+            HttpHeaders headers) {
+        return handleCallback(channelName, rawBody, formParams, headers, null);
+    }
+
+    /**
+     * 接收统一短信回调请求（支持 JSON Body 与表单提交，集成来源 IP CIDR、恒定时间令牌与厂商签名安全验签）
+     *
+     * @param channelName    渠道名称
+     * @param rawBody        原始请求体
+     * @param formParams     表单参数（备用兼容）
+     * @param headers        请求头
+     * @param servletRequest Servlet 请求对象（用于提取来源 IP 与原始 Query String）
+     * @return 厂商规范约定的响应应答报文
+     */
     @PostMapping(value = "/{channel}", consumes = {MediaType.APPLICATION_JSON_VALUE, MediaType.APPLICATION_FORM_URLENCODED_VALUE, MediaType.ALL_VALUE})
     public ResponseEntity<Map<String, Object>> handleCallback(
             @PathVariable("channel") String channelName,
             @RequestBody(required = false) String rawBody,
             @RequestParam(required = false) MultiValueMap<String, String> formParams,
-            @RequestHeader HttpHeaders headers) {
+            @RequestHeader HttpHeaders headers,
+            HttpServletRequest servletRequest) {
 
         // 1. 渠道合法性前置防卫 (Fail-Fast)
         SmsChannel channel = channelRegistry != null ? channelRegistry.get(channelName) : null;
@@ -96,16 +138,23 @@ public class SmsCallbackController {
                     .body(Map.of("code", 400, "message", "Channel not found: " + channelName));
         }
 
-        // 2. 回调安全令牌防伪防刷校验 (若配置了 callback.token)
-        if (StringUtils.hasText(callbackProperties.getToken())) {
-            String token = headers.getFirst("X-Callback-Token");
-            if (!StringUtils.hasText(token) && formParams != null) {
-                token = formParams.getFirst("token");
-            }
-            if (!callbackProperties.getToken().equals(token)) {
-                log.warn("[SmsCallbackController] 渠道 [{}] 回调安全令牌校验失败，拒绝伪造请求", channelName);
-                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                        .body(Map.of("code", 401, "message", "Invalid callback token"));
+        // 2. 回调来源 IP 白名单、恒定时间令牌与签名安全验签校验
+        SmsCallbackVerificationContext verificationContext;
+        try {
+            verificationContext = buildVerificationContext(
+                    channelName, channel, rawBody, formParams, headers, servletRequest
+            );
+        } catch (IllegalArgumentException ex) {
+            log.warn("[SmsCallbackController] 渠道 [{}] 回调请求 Query 参数编码非法: {}", channelName, ex.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of("code", 400, "message", "Invalid callback query encoding"));
+        }
+        for (SmsCallbackVerifier verifier : callbackVerifiers) {
+            SmsCallbackVerificationResult verifyResult = verifier.verify(verificationContext);
+            if (verifyResult != null && !verifyResult.isAllowed()) {
+                int status = verifyResult.getHttpStatus() > 0 ? verifyResult.getHttpStatus() : 401;
+                return ResponseEntity.status(status)
+                        .body(Map.of("code", status, "message", verifyResult.getReason()));
             }
         }
 
@@ -406,5 +455,73 @@ public class SmsCallbackController {
             case CTYUN -> Map.of("code", "0", "message", "OK");
             default -> Map.of("code", 0, "message", "OK");
         };
+    }
+
+    private static List<SmsCallbackVerifier> buildVerifierChain(SmsCallbackProperties callbackProps,
+                                                                List<SmsCallbackVerifier> verifiers) {
+        List<SmsCallbackVerifier> chain = new ArrayList<>();
+        boolean hasCustomVerifier = false;
+        boolean hasDefaultVerifier = false;
+        if (verifiers != null) {
+            for (SmsCallbackVerifier v : verifiers) {
+                if (v != null) {
+                    if (v instanceof DefaultSmsCallbackVerifier) {
+                        hasDefaultVerifier = true;
+                    } else {
+                        hasCustomVerifier = true;
+                    }
+                    chain.add(v);
+                }
+            }
+        }
+        AnnotationAwareOrderComparator.sort(chain);
+        if (!hasDefaultVerifier) {
+            // 若未显式注入 DefaultSmsCallbackVerifier，前置挂载默认 CIDR 与恒定时间令牌防卫；
+            // 仅当不存在自定义厂商签名校验器时，由默认校验器执行 X-Callback-Signature 兜底校验
+            chain.add(0, new DefaultSmsCallbackVerifier(callbackProps, !hasCustomVerifier));
+        }
+        return Collections.unmodifiableList(chain);
+    }
+
+    private SmsCallbackVerificationContext buildVerificationContext(String channelName,
+                                                                  SmsChannel channel,
+                                                                  String rawBody,
+                                                                  MultiValueMap<String, String> formParams,
+                                                                  HttpHeaders headers,
+                                                                  HttpServletRequest servletRequest) {
+        String remoteIp = servletRequest != null ? CidrMatcher.stripPort(servletRequest.getRemoteAddr()) : null;
+        QueryTokenInfo queryTokenInfo = servletRequest != null
+                ? extractQueryToken(servletRequest.getQueryString())
+                : new QueryTokenInfo(false, null);
+        return SmsCallbackVerificationContext.builder()
+                .channelName(channelName)
+                .channel(channel)
+                .rawBody(rawBody)
+                .formParams(formParams)
+                .headers(headers)
+                .remoteIp(remoteIp)
+                .queryTokenPresent(queryTokenInfo.present())
+                .queryToken(queryTokenInfo.value())
+                .build();
+    }
+
+    private static QueryTokenInfo extractQueryToken(String queryString) {
+        if (!StringUtils.hasText(queryString)) {
+            return new QueryTokenInfo(false, null);
+        }
+        String[] pairs = queryString.split("&");
+        for (String pair : pairs) {
+            int eqIdx = pair.indexOf('=');
+            String rawKey = eqIdx >= 0 ? pair.substring(0, eqIdx) : pair;
+            String decodedKey = URLDecoder.decode(rawKey, StandardCharsets.UTF_8);
+            if ("token".equals(decodedKey)) {
+                String rawVal = eqIdx >= 0 ? pair.substring(eqIdx + 1) : "";
+                return new QueryTokenInfo(true, URLDecoder.decode(rawVal, StandardCharsets.UTF_8));
+            }
+        }
+        return new QueryTokenInfo(false, null);
+    }
+
+    private record QueryTokenInfo(boolean present, String value) {
     }
 }
