@@ -4,10 +4,16 @@ import cn.dev33.satoken.filter.SaServletFilter;
 import de.codecentric.boot.admin.server.config.AdminServerMarkerConfiguration;
 import de.codecentric.boot.admin.server.config.AdminServerProperties;
 import de.codecentric.boot.admin.server.domain.entities.InstanceRepository;
+import de.codecentric.boot.admin.server.eventstore.InstanceEventStore;
+import de.codecentric.boot.admin.server.notify.Notifier;
 import io.github.atengk.boot.admin.admission.AdminAdmissionResult;
 import io.github.atengk.boot.admin.admission.AdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicy;
+import io.github.atengk.boot.admin.cluster.AdminClusterCoordinator;
+import io.github.atengk.boot.admin.cluster.InMemoryAdminClusterCoordinator;
+import io.github.atengk.boot.admin.cluster.RedisAdminClusterCoordinator;
 import io.github.atengk.boot.admin.controller.AdminLoginController;
+import io.github.atengk.boot.admin.eventstore.AtengInMemoryEventStore;
 import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AdminAuthProvider;
@@ -16,6 +22,8 @@ import io.github.atengk.boot.admin.provider.DefaultPropertiesAdminAuthProvider;
 import io.github.atengk.boot.admin.scheduler.ZombieInstanceCleanupScheduler;
 import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
 import io.github.atengk.boot.admin.security.AdminWriteGuardFilter;
+import io.github.atengk.boot.admin.silence.AdminSilenceManager;
+import io.github.atengk.boot.admin.silence.DefaultAdminSilenceManager;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -23,6 +31,8 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.util.unit.DataSize;
 
 import java.time.Duration;
@@ -111,8 +121,32 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(properties.getAlert().getIncludedServices()).isEmpty();
                     assertThat(properties.getAlert().getExcludedServices()).isEmpty();
                     assertThat(properties.getAlert().getNotifyStatuses()).containsExactly("DOWN", "OFFLINE");
+                    assertThat(properties.getAlert().getDeregistrationSilenceDuration()).isEqualTo(Duration.ofSeconds(60));
+                    assertThat(properties.getAlert().getReminder().isEnabled()).isFalse();
+                    assertThat(properties.getAlert().getReminder().getInterval()).isEqualTo(Duration.ofMinutes(15));
+                    assertThat(properties.getAlert().getReminder().getMaxCount()).isEqualTo(3);
+                    assertThat(properties.getAlert().getStormAggregation().isEnabled()).isFalse();
+                    assertThat(properties.getAlert().getStormAggregation().getWindow()).isEqualTo(Duration.ofSeconds(10));
+                    assertThat(properties.getAlert().getStormAggregation().getThreshold()).isEqualTo(5);
+                    assertThat(properties.getEventStore().getMaxLogSizePerAggregate()).isEqualTo(100);
+                    assertThat(properties.getEventStore().getMaxRetainedDeregistered()).isEqualTo(1000);
+                    assertThat(properties.getCluster().isEnabled()).isFalse();
+                    assertThat(properties.getCluster().getKeyPrefix()).isEqualTo("ateng:admin:");
+                    assertThat(properties.getCluster().getCleanupLockTtl()).isEqualTo(Duration.ofSeconds(30));
+                    assertThat(properties.getCluster().getAlertDedupTtl()).isEqualTo(Duration.ofSeconds(60));
+                    assertThat(properties.getCluster().getSilenceRuleDefaultTtl()).isEqualTo(Duration.ofHours(2));
 
-                    // 验证认证与登录组件自动装配
+                    // 验证认证、集群协调、静默管理与独立调度器装配
+                    assertThat(context).hasSingleBean(AdminClusterCoordinator.class);
+                    assertThat(context.getBean(AdminClusterCoordinator.class))
+                            .isInstanceOf(InMemoryAdminClusterCoordinator.class);
+                    assertThat(context).hasSingleBean(AdminSilenceManager.class);
+                    assertThat(context.getBean(AdminSilenceManager.class))
+                            .isInstanceOf(DefaultAdminSilenceManager.class);
+                    assertThat(context).hasBean("sbaNotificationTaskScheduler");
+                    assertThat(context).hasBean("sbaCleanupTaskScheduler");
+                    assertThat(context.getBean("sbaCleanupTaskScheduler", ThreadPoolTaskScheduler.class))
+                            .isNotSameAs(context.getBean("sbaNotificationTaskScheduler", ThreadPoolTaskScheduler.class));
                     assertThat(context).hasSingleBean(AdminAuthProvider.class);
                     assertThat(context.getBean(AdminAuthProvider.class)).isInstanceOf(DefaultPropertiesAdminAuthProvider.class);
                     assertThat(context).hasSingleBean(AdminLoginController.class);
@@ -190,7 +224,25 @@ class AtengAdminServerAutoConfigurationTest {
                         "ateng.boot.admin.server.cleanup.zombie-threshold=12h",
                         "ateng.boot.admin.server.alert.included-services[0]=order-*",
                         "ateng.boot.admin.server.alert.excluded-services[0]=temp-*",
-                        "ateng.boot.admin.server.alert.notify-statuses[0]=DOWN"
+                        "ateng.boot.admin.server.alert.notify-statuses[0]=DOWN",
+                        "ateng.boot.admin.server.alert.deregistration-silence-duration=90s",
+                        "ateng.boot.admin.server.alert.console-base-url=https://ops.example.com/sba",
+                        "ateng.boot.admin.server.alert.reminder.enabled=true",
+                        "ateng.boot.admin.server.alert.reminder.interval=5m",
+                        "ateng.boot.admin.server.alert.reminder.max-count=4",
+                        "ateng.boot.admin.server.alert.storm-aggregation.enabled=true",
+                        "ateng.boot.admin.server.alert.storm-aggregation.window=15s",
+                        "ateng.boot.admin.server.alert.storm-aggregation.threshold=8",
+                        "ateng.boot.admin.server.alert.routes[0].service-pattern=order-*",
+                        "ateng.boot.admin.server.alert.routes[0].channel=order-ding",
+                        "ateng.boot.admin.server.alert.routes[0].mention-all=true",
+                        "ateng.boot.admin.server.event-store.max-log-size-per-aggregate=50",
+                        "ateng.boot.admin.server.event-store.max-retained-deregistered=200",
+                        "ateng.boot.admin.server.cluster.enabled=true",
+                        "ateng.boot.admin.server.cluster.key-prefix=custom:admin:",
+                        "ateng.boot.admin.server.cluster.cleanup-lock-ttl=45s",
+                        "ateng.boot.admin.server.cluster.alert-dedup-ttl=90s",
+                        "ateng.boot.admin.server.cluster.silence-rule-default-ttl=30m"
                 )
                 .run(context -> {
                     assertThat(context).hasSingleBean(AtengAdminServerProperties.class);
@@ -218,6 +270,26 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(properties.getAlert().getIncludedServices()).containsExactly("order-*");
                     assertThat(properties.getAlert().getExcludedServices()).containsExactly("temp-*");
                     assertThat(properties.getAlert().getNotifyStatuses()).containsExactly("DOWN");
+                    assertThat(properties.getAlert().getDeregistrationSilenceDuration()).isEqualTo(Duration.ofSeconds(90));
+                    assertThat(properties.getAlert().getConsoleBaseUrl()).isEqualTo("https://ops.example.com/sba");
+                    assertThat(properties.getAlert().getReminder().isEnabled()).isTrue();
+                    assertThat(properties.getAlert().getReminder().getInterval()).isEqualTo(Duration.ofMinutes(5));
+                    assertThat(properties.getAlert().getReminder().getMaxCount()).isEqualTo(4);
+                    assertThat(properties.getAlert().getStormAggregation().isEnabled()).isTrue();
+                    assertThat(properties.getAlert().getStormAggregation().getWindow()).isEqualTo(Duration.ofSeconds(15));
+                    assertThat(properties.getAlert().getStormAggregation().getThreshold()).isEqualTo(8);
+                    assertThat(properties.getAlert().getRoutes()).hasSize(1);
+                    assertThat(properties.getAlert().getRoutes().get(0).getChannel()).isEqualTo("order-ding");
+                    assertThat(properties.getEventStore().getMaxLogSizePerAggregate()).isEqualTo(50);
+                    assertThat(properties.getEventStore().getMaxRetainedDeregistered()).isEqualTo(200);
+                    assertThat(properties.getCluster().isEnabled()).isTrue();
+                    assertThat(properties.getCluster().getKeyPrefix()).isEqualTo("custom:admin:");
+                    assertThat(properties.getCluster().getCleanupLockTtl()).isEqualTo(Duration.ofSeconds(45));
+                    assertThat(properties.getCluster().getAlertDedupTtl()).isEqualTo(Duration.ofSeconds(90));
+                    assertThat(properties.getCluster().getSilenceRuleDefaultTtl()).isEqualTo(Duration.ofMinutes(30));
+                    // 即使开启 cluster.enabled=true，但容器中不存在 StringRedisTemplate 时依然平滑退回单机内存协调器
+                    assertThat(context.getBean(AdminClusterCoordinator.class))
+                            .isInstanceOf(InMemoryAdminClusterCoordinator.class);
                     assertThat(context).hasSingleBean(ZombieInstanceCleanupScheduler.class);
                 });
     }
@@ -334,6 +406,52 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(client.instance(instance).get().uri("health")
                             .exchangeToMono(reactor.core.publisher.Mono::just).block().statusCode())
                             .isEqualTo(org.springframework.http.HttpStatus.OK);
+                    assertThat(context).hasSingleBean(InstanceEventStore.class);
+                    assertThat(context.getBean(InstanceEventStore.class)).isInstanceOf(AtengInMemoryEventStore.class);
+                    assertThat(context).hasSingleBean(Notifier.class);
+                    assertThat(context.getBean(Notifier.class)).isInstanceOf(AtengAdminNotificationNotifier.class);
+                    assertThat(context).doesNotHaveBean("filteringNotifier");
+                });
+    }
+
+    @Test
+    @DisplayName("开启 cluster.enabled=true 且存在 StringRedisTemplate Bean 时激活 Fail-Open Redis 集群协调器")
+    void shouldActivateRedisClusterCoordinatorWhenEnabledAndRedisPresent() {
+        webContextRunner.withUserConfiguration(MarkerTestConfiguration.class)
+                .withBean(StringRedisTemplate.class, () -> org.mockito.Mockito.mock(StringRedisTemplate.class))
+                .withPropertyValues(
+                        "ateng.boot.admin.server.cluster.enabled=true",
+                        "ateng.boot.admin.server.cluster.key-prefix=prod:admin:"
+                )
+                .run(context -> {
+                    assertThat(context).hasSingleBean(AdminClusterCoordinator.class);
+                    assertThat(context.getBean(AdminClusterCoordinator.class))
+                            .isInstanceOf(RedisAdminClusterCoordinator.class);
+                });
+    }
+
+    @Test
+    @DisplayName("存在 StringRedisTemplate 但未开启 cluster.enabled=true 时保持单机内存协调器，且支持自定义协调器与静默管理器覆盖")
+    void shouldKeepInMemoryCoordinatorWhenClusterDisabledAndAllowCustomOverrides() {
+        webContextRunner.withUserConfiguration(MarkerTestConfiguration.class)
+                .withBean(StringRedisTemplate.class, () -> org.mockito.Mockito.mock(StringRedisTemplate.class))
+                .withPropertyValues("ateng.boot.admin.server.cluster.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(AdminClusterCoordinator.class);
+                    assertThat(context.getBean(AdminClusterCoordinator.class))
+                            .isInstanceOf(InMemoryAdminClusterCoordinator.class);
+                });
+
+        AdminClusterCoordinator customCoordinator = org.mockito.Mockito.mock(AdminClusterCoordinator.class);
+        AdminSilenceManager customSilenceManager = org.mockito.Mockito.mock(AdminSilenceManager.class);
+        webContextRunner.withUserConfiguration(MarkerTestConfiguration.class)
+                .withBean("customCoordinator", AdminClusterCoordinator.class, () -> customCoordinator)
+                .withBean("customSilenceManager", AdminSilenceManager.class, () -> customSilenceManager)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(AdminClusterCoordinator.class);
+                    assertThat(context.getBean(AdminClusterCoordinator.class)).isSameAs(customCoordinator);
+                    assertThat(context).hasSingleBean(AdminSilenceManager.class);
+                    assertThat(context.getBean(AdminSilenceManager.class)).isSameAs(customSilenceManager);
                 });
     }
 }

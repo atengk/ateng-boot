@@ -63,6 +63,15 @@ final class SampleAdminTestSupport {
                 properties.getAlert().getIncludedServices().clear();
                 properties.getAlert().setExcludedServices(new ArrayList<>(List.of("silent-*")));
                 properties.getAlert().setNotifyStatuses(new ArrayList<>(List.of("DOWN", "OFFLINE")));
+                properties.getAlert().setDeregistrationSilenceDuration(Duration.ofSeconds(60));
+                properties.getAlert().setConsoleBaseUrl(null);
+                properties.getAlert().getReminder().setEnabled(false);
+                properties.getAlert().getReminder().setInterval(Duration.ofMinutes(15));
+                properties.getAlert().getReminder().setMaxCount(3);
+                properties.getAlert().getStormAggregation().setEnabled(false);
+                properties.getAlert().getStormAggregation().setWindow(Duration.ofSeconds(10));
+                properties.getAlert().getStormAggregation().setThreshold(5);
+                properties.getAlert().getRoutes().clear();
             }
         }
     }

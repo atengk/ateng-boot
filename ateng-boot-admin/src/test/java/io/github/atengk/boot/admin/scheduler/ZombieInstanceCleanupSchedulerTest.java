@@ -222,4 +222,48 @@ class ZombieInstanceCleanupSchedulerTest {
 
         assertThat(scheduler.isRunning()).isFalse();
     }
+
+    @Test
+    @DisplayName("禁止使用 synchronized 防虚拟线程 Pinning，并在集群抢锁胜出后联动清理 EventStore 与注册后回调")
+    void shouldUseReentrantLockCoordinateClusterLockAndPurgeResidualState() {
+        for (java.lang.reflect.Method method : ZombieInstanceCleanupScheduler.class.getDeclaredMethods()) {
+            assertThat(java.lang.reflect.Modifier.isSynchronized(method.getModifiers()))
+                    .as("Method %s must not use synchronized (ADR-0029)", method.getName())
+                    .isFalse();
+        }
+
+        io.github.atengk.boot.admin.cluster.AdminClusterCoordinator coordinator =
+                org.mockito.Mockito.mock(io.github.atengk.boot.admin.cluster.AdminClusterCoordinator.class);
+        io.github.atengk.boot.admin.eventstore.AtengInMemoryEventStore eventStore =
+                org.mockito.Mockito.mock(io.github.atengk.boot.admin.eventstore.AtengInMemoryEventStore.class);
+        java.util.List<InstanceId> purgedNotifierIds = new java.util.ArrayList<>();
+
+        ZombieInstanceCleanupScheduler coordinatedScheduler = new ZombieInstanceCleanupScheduler(
+                repository,
+                registry,
+                properties,
+                null,
+                coordinator,
+                eventStore,
+                purgedNotifierIds::add
+        );
+
+        // 1. 抢锁失败（其他副本正在清理）-> 跳过查询与清理
+        when(coordinator.tryAcquireLock(any(), any(), any())).thenReturn(false);
+        assertThat(coordinatedScheduler.cleanZombies()).isZero();
+        verify(repository, never()).findAll();
+
+        // 2. 抢锁成功 -> 驱逐僵尸、清理 EventStore 与通知器缓存，并确定性释放锁
+        when(coordinator.tryAcquireLock(any(), any(), any())).thenReturn(true);
+        Instance zombie = createInstance("inst-z-clean", StatusInfo.ofOffline(), Instant.now().minus(Duration.ofMillis(100)));
+        when(repository.findAll()).thenReturn(Flux.just(zombie));
+        when(registry.deregister(InstanceId.of("inst-z-clean"))).thenReturn(Mono.just(InstanceId.of("inst-z-clean")));
+
+        int evicted = coordinatedScheduler.cleanZombies();
+
+        assertThat(evicted).isEqualTo(1);
+        verify(eventStore, times(1)).evict(InstanceId.of("inst-z-clean"));
+        assertThat(purgedNotifierIds).containsExactly(InstanceId.of("inst-z-clean"));
+        verify(coordinator, times(1)).releaseLock(any(), any());
+    }
 }

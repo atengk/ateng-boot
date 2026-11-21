@@ -2,11 +2,13 @@ package io.github.atengk.boot.admin.autoconfigure;
 
 import de.codecentric.boot.admin.server.config.AdminServerMarkerConfiguration;
 import de.codecentric.boot.admin.server.domain.entities.Instance;
+import de.codecentric.boot.admin.server.eventstore.InstanceEventStore;
 import de.codecentric.boot.admin.server.services.InstanceFilter;
 import de.codecentric.boot.admin.server.web.client.BasicAuthHttpHeaderProvider;
 import io.github.atengk.boot.admin.admission.AdminAdmissionInstanceFilter;
 import io.github.atengk.boot.admin.admission.AdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicy;
+import io.github.atengk.boot.admin.eventstore.AtengInMemoryEventStore;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.security.AdminOutboundSsrfFilterFunction;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -59,6 +61,19 @@ public class AtengAdminServerDefenseAutoConfiguration {
     public AdminOutboundSsrfFilterFunction adminOutboundSsrfFilterFunction(AdminInstanceAdmissionPolicy admissionPolicy,
                                                                            AtengAdminServerProperties properties) {
         return new AdminOutboundSsrfFilterFunction(admissionPolicy, properties);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(InstanceEventStore.class)
+    public AtengInMemoryEventStore eventStore(AtengAdminServerProperties properties) {
+        AtengAdminServerProperties.EventStoreProperties storeProps = properties != null ? properties.getEventStore() : null;
+        int maxLogSize = storeProps != null
+                ? storeProps.getMaxLogSizePerAggregate()
+                : AtengInMemoryEventStore.DEFAULT_MAX_LOG_SIZE_PER_AGGREGATE;
+        int maxRetainedDeregistered = storeProps != null
+                ? storeProps.getMaxRetainedDeregistered()
+                : AtengInMemoryEventStore.DEFAULT_MAX_RETAINED_DEREGISTERED;
+        return new AtengInMemoryEventStore(maxLogSize, maxRetainedDeregistered);
     }
 
     /**

@@ -121,6 +121,18 @@ public class AtengAdminServerProperties {
     private AlertProperties alert = new AlertProperties();
 
     /**
+     * 事件仓库内存淘汰保护配置
+     */
+    @NestedConfigurationProperty
+    private EventStoreProperties eventStore = new EventStoreProperties();
+
+    /**
+     * 多副本集群无脑裂分布式协调配置（默认关闭，开启且存在 StringRedisTemplate 时激活 Redis Fail-Open 协调）
+     */
+    @NestedConfigurationProperty
+    private ClusterProperties cluster = new ClusterProperties();
+
+    /**
      * 告警通知过滤规则配置属性
      *
      * @author Ateng
@@ -144,6 +156,121 @@ public class AtengAdminServerProperties {
          * 触发告警通知的目标实例状态列表（默认包含 DOWN 与 OFFLINE）
          */
         private List<String> notifyStatuses = new ArrayList<>(List.of("DOWN", "OFFLINE"));
+
+        /**
+         * 实例受控注销后的发版静默窗口期（默认 60 秒）
+         */
+        private Duration deregistrationSilenceDuration = Duration.ofSeconds(60);
+
+        /**
+         * Admin Server 控制台外部访问基准 URL（用于故障卡片生成详情直达链接，留空则不附加按钮）
+         */
+        private String consoleBaseUrl;
+
+        /**
+         * 持续未恢复故障的重提醒升级配置
+         */
+        @NestedConfigurationProperty
+        private ReminderProperties reminder = new ReminderProperties();
+
+        /**
+         * 微窗口告警雪崩折叠聚合配置
+         */
+        @NestedConfigurationProperty
+        private StormAggregationProperties stormAggregation = new StormAggregationProperties();
+
+        /**
+         * 按服务名通配路由至指定通知渠道与群 @ 人的规则列表
+         */
+        private List<AlertRouteProperties> routes = new ArrayList<>();
+    }
+
+    /**
+     * 持续故障升级重提醒配置属性
+     *
+     * @author Ateng
+     * @since 2026-11-21
+     */
+    @Getter
+    @Setter
+    public static class ReminderProperties {
+
+        /**
+         * 是否开启持续未恢复故障重提醒（默认 false）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 重提醒间隔时长（默认 15 分钟）
+         */
+        private Duration interval = Duration.ofMinutes(15);
+
+        /**
+         * 同一故障周期内的最大重提醒次数上限（默认 3 次）
+         */
+        private int maxCount = 3;
+    }
+
+    /**
+     * 微窗口告警雪崩折叠聚合配置属性
+     *
+     * @author Ateng
+     * @since 2026-11-21
+     */
+    @Getter
+    @Setter
+    public static class StormAggregationProperties {
+
+        /**
+         * 是否开启微窗口雪崩折叠聚合（默认 false）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 雪崩聚合统计微窗口时长（默认 10 秒）
+         */
+        private Duration window = Duration.ofSeconds(10);
+
+        /**
+         * 触发折叠摘要卡片的故障实例数阈值（默认 5 个）
+         */
+        private int threshold = 5;
+    }
+
+    /**
+     * 服务粒度的通知渠道与 @ 提醒路由配置
+     *
+     * @author Ateng
+     * @since 2026-11-21
+     */
+    @Getter
+    @Setter
+    public static class AlertRouteProperties {
+
+        /**
+         * 服务名通配模式（支持 *、? 通配符或精确匹配，默认 *）
+         */
+        private String servicePattern = "*";
+
+        /**
+         * 命中的通知渠道名称（留空则沿用全局默认通知渠道）
+         */
+        private String channel;
+
+        /**
+         * 是否 @ 全员
+         */
+        private boolean mentionAll = false;
+
+        /**
+         * 需要 @ 的手机号列表
+         */
+        private List<String> mentionMobiles = new ArrayList<>();
+
+        /**
+         * 需要 @ 的用户 ID 列表
+         */
+        private List<String> mentionUserIds = new ArrayList<>();
     }
 
     /**
@@ -170,5 +297,62 @@ public class AtengAdminServerProperties {
          * 判定为僵尸实例的持续离线超期阈值（默认 24 小时）
          */
         private Duration zombieThreshold = Duration.ofHours(24);
+    }
+
+    /**
+     * 内存事件仓库有界淘汰策略配置属性
+     *
+     * @author Ateng
+     * @since 2026-11-21
+     */
+    @Getter
+    @Setter
+    public static class EventStoreProperties {
+
+        /**
+         * 单个实例最多保留的事件日志条数（默认 100，对齐 SBA 原生默认值）
+         */
+        private int maxLogSizePerAggregate = 100;
+
+        /**
+         * 已注销实例的历史事件最多保留实例个数（默认 1000，超出按 FIFO 淘汰最旧已注销实例事件）
+         */
+        private int maxRetainedDeregistered = 1000;
+    }
+
+    /**
+     * 多副本无脑裂集群协调配置属性
+     *
+     * @author Ateng
+     * @since 2026-11-21
+     */
+    @Getter
+    @Setter
+    public static class ClusterProperties {
+
+        /**
+         * 是否启用 Redis 分布式协调器（默认 false 单机内存自洽；开启且容器存在 StringRedisTemplate 时激活）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 分布式协调 Redis Key 前缀（默认 ateng:admin:）
+         */
+        private String keyPrefix = "ateng:admin:";
+
+        /**
+         * 僵尸清理分布式互斥锁自动过期 TTL（默认 30 秒）
+         */
+        private Duration cleanupLockTtl = Duration.ofSeconds(30);
+
+        /**
+         * 多副本告警发信去重记忆窗口 TTL（默认 60 秒）
+         */
+        private Duration alertDedupTtl = Duration.ofSeconds(60);
+
+        /**
+         * 动态维护静默规则未显式指定时长时的默认有效期（默认 2 小时）
+         */
+        private Duration silenceRuleDefaultTtl = Duration.ofHours(2);
     }
 }

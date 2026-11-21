@@ -8,7 +8,10 @@ import de.codecentric.boot.admin.server.domain.events.InstanceStatusChangedEvent
 import de.codecentric.boot.admin.server.domain.values.InstanceId;
 import de.codecentric.boot.admin.server.domain.values.StatusInfo;
 import de.codecentric.boot.admin.server.notify.AbstractStatusChangeNotifier;
+import io.github.atengk.boot.admin.cluster.AdminClusterCoordinator;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
+import io.github.atengk.boot.admin.silence.AdminSilenceManager;
+import io.github.atengk.boot.notification.model.CardColor;
 import io.github.atengk.boot.notification.model.CardMessage;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
 import lombok.extern.slf4j.Slf4j;
@@ -20,15 +23,21 @@ import org.springframework.util.PatternMatchUtils;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Mono;
 
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -55,6 +64,9 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
 
     private final ObjectProvider<NotificationTemplate> notificationTemplateProvider;
     private final AtengAdminServerProperties properties;
+    private final AdminSilenceManager silenceManager;
+    private final AdminClusterCoordinator clusterCoordinator;
+    private final Clock clock;
     private volatile ScheduledExecutorService scheduler;
     private final boolean internalScheduler;
     private final AtomicReference<LifecycleState> lifecycleState = new AtomicReference<>(LifecycleState.CREATED);
@@ -66,6 +78,18 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
     private final Map<InstanceId, ScheduledFuture<?>> pendingTasks = new ConcurrentHashMap<>();
 
     /**
+     * 持续故障升级重提醒任务映射表：InstanceId -> ScheduledFuture
+     */
+    private final Map<InstanceId, ScheduledFuture<?>> reminderTasks = new ConcurrentHashMap<>();
+
+    /**
+     * 实例当前所处故障周期编号（用于在震荡/恢复交替场景隔离过期提醒任务）
+     */
+    private final Map<InstanceId, Long> faultCycleVersions = new ConcurrentHashMap<>();
+
+    private final AtomicLong faultCycleSequence = new AtomicLong(0L);
+
+    /**
      * 已确认发出过宕机告警的实例集合：用于保证仅对真正报过错的服务发送“恢复通知”
      */
     private final Set<InstanceId> alertedInstances = ConcurrentHashMap.newKeySet();
@@ -74,6 +98,13 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
      * K8s 优雅下线实例缓存：InstanceId -> 优雅注销时间戳
      */
     private final Map<InstanceId, Long> deregisteredInstances = new ConcurrentHashMap<>();
+
+    /**
+     * 微窗口告警雪崩聚合状态（仅在 lifecycleLock 持锁期间读写）
+     */
+    private Instant stormWindowStart;
+    private boolean stormSummaryTriggered;
+    private final Map<InstanceId, StormFaultEntry> stormWindowEntries = new LinkedHashMap<>();
 
     /**
      * 实例元数据敏感键集合（防止凭据与密钥泄露至协作群机器人卡片中）
@@ -92,17 +123,41 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
                                           ObjectProvider<NotificationTemplate> notificationTemplateProvider,
                                           AtengAdminServerProperties properties,
                                           ThreadPoolTaskScheduler taskScheduler) {
-        this(repository, notificationTemplateProvider, properties,
-                taskScheduler != null ? taskScheduler.getScheduledExecutor() : null);
+        this(repository, notificationTemplateProvider, properties, taskScheduler, null, null, null);
     }
 
     public AtengAdminNotificationNotifier(InstanceRepository repository,
                                           ObjectProvider<NotificationTemplate> notificationTemplateProvider,
                                           AtengAdminServerProperties properties,
                                           ScheduledExecutorService scheduler) {
+        this(repository, notificationTemplateProvider, properties, scheduler, null, null, null);
+    }
+
+    public AtengAdminNotificationNotifier(InstanceRepository repository,
+                                          ObjectProvider<NotificationTemplate> notificationTemplateProvider,
+                                          AtengAdminServerProperties properties,
+                                          ThreadPoolTaskScheduler taskScheduler,
+                                          AdminSilenceManager silenceManager,
+                                          AdminClusterCoordinator clusterCoordinator,
+                                          Clock clock) {
+        this(repository, notificationTemplateProvider, properties,
+                taskScheduler != null ? taskScheduler.getScheduledExecutor() : null,
+                silenceManager, clusterCoordinator, clock);
+    }
+
+    public AtengAdminNotificationNotifier(InstanceRepository repository,
+                                          ObjectProvider<NotificationTemplate> notificationTemplateProvider,
+                                          AtengAdminServerProperties properties,
+                                          ScheduledExecutorService scheduler,
+                                          AdminSilenceManager silenceManager,
+                                          AdminClusterCoordinator clusterCoordinator,
+                                          Clock clock) {
         super(repository);
         this.notificationTemplateProvider = notificationTemplateProvider;
         this.properties = properties;
+        this.silenceManager = silenceManager;
+        this.clusterCoordinator = clusterCoordinator;
+        this.clock = clock != null ? clock : Clock.systemUTC();
         if (scheduler != null) {
             this.scheduler = scheduler;
             this.internalScheduler = false;
@@ -153,15 +208,28 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             }
             evictExpiredDeregistrations();
             InstanceId id = event.getInstance();
-            deregisteredInstances.put(id, System.currentTimeMillis());
+            deregisteredInstances.put(id, clock.millis());
             log.info("[SBA Notifier] 实例 [{}] 收到受控注销信号，标记进入发版静默状态", id);
 
-            // 取消该实例现存的防抖定时任务
-            ScheduledFuture<?> future = pendingTasks.remove(id);
-            if (future != null) {
-                future.cancel(true);
-            }
-            alertedInstances.remove(id);
+            clearFaultCycleLocked(id);
+        } finally {
+            lifecycleLock.unlock();
+        }
+    }
+
+    /**
+     * 彻底清理指定实例的所有防抖、静默、告警与重提醒状态（供僵尸实例清理回调防止内存滞留）
+     *
+     * @param id 实例标识
+     */
+    public void purgeInstanceState(InstanceId id) {
+        if (id == null) {
+            return;
+        }
+        lifecycleLock.lock();
+        try {
+            clearFaultCycleLocked(id);
+            deregisteredInstances.remove(id);
         } finally {
             lifecycleLock.unlock();
         }
@@ -180,10 +248,10 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             InstanceId id = instance.getId();
             String currentStatus = statusEvent.getStatusInfo().getStatus();
 
-            // 1. 检查是否在发版静默期内（注销后 60 秒内）
+            // 1. 检查是否在发版静默期内
             Long deregisteredAt = deregisteredInstances.get(id);
             if (deregisteredAt != null) {
-                if (System.currentTimeMillis() - deregisteredAt < DEFAULT_DEREGISTRATION_SILENCE_WINDOW.toMillis()) {
+                if (clock.millis() - deregisteredAt < resolveDeregistrationSilenceMillis()) {
                     String appName = resolveInstanceName(instance, id);
                     log.info("[SBA Notifier] 实例 [{}] 属于正常优雅下线排空，静默忽略状态变迁", appName);
                     return;
@@ -206,9 +274,13 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
         String appName = resolveInstanceName(instance, id);
         String status = statusEvent.getStatusInfo().getStatus();
 
-        // 1. 前置名单规则校验：未在白名单或命中黑名单直接跳过防抖告警
+        // 1. 前置名单与动态维护静默校验：未通过直接跳过防抖排期
         if (!isServiceAlertAllowed(appName)) {
             log.info("[SBA Notifier] 实例 [{}] 命中告警名单过滤规则，静默跳过防抖告警", appName);
+            return;
+        }
+        if (isMaintenanceSilenced(appName)) {
+            log.info("[SBA Notifier] 实例 [{}] 处于动态维护静默窗口期，静默跳过故障排期", appName);
             return;
         }
 
@@ -222,24 +294,21 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
                 return;
             }
 
-            long delaySeconds = properties != null && properties.getDebounceDuration() != null
-                    ? properties.getDebounceDuration().toSeconds()
-                    : 30L;
-
-            // 取消先前可能存在的未决任务
-            ScheduledFuture<?> existing = pendingTasks.remove(id);
-            if (existing != null) {
-                existing.cancel(true);
+            // 同一故障周期内（防抖等待中或已发出首报未恢复），抑制 DOWN <-> OFFLINE 等震荡导致的重复排期
+            if (pendingTasks.containsKey(id) || alertedInstances.contains(id)) {
+                log.debug("[SBA Notifier] 实例 [{}] 处于同一故障周期震荡状态 [{}]，抑制重复排期与告警", appName, status);
+                return;
             }
 
-            log.warn("[SBA Notifier] 实例 [{}] 状态异常 [{}]，开启 {} 秒防抖倒计时...", appName, status, delaySeconds);
+            long delayMillis = resolveDebounceDelayMillis();
+            log.warn("[SBA Notifier] 实例 [{}] 状态异常 [{}]，开启 {} 毫秒防抖倒计时...", appName, status, delayMillis);
 
             ScheduledFuture<?>[] selfRef = new ScheduledFuture<?>[1];
             try {
                 ScheduledFuture<?> scheduledTask = activeScheduler.schedule(
                         () -> executeDebouncedAlert(instance, statusEvent, id, status, selfRef),
-                        delaySeconds,
-                        TimeUnit.SECONDS
+                        delayMillis,
+                        TimeUnit.MILLISECONDS
                 );
                 selfRef[0] = scheduledTask;
                 if (scheduledTask != null && !scheduledTask.isDone()) {
@@ -258,6 +327,11 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
                                        InstanceId id,
                                        String status,
                                        ScheduledFuture<?>[] selfRef) {
+        long cycleVersion;
+        StormEvaluation stormEvaluation;
+        String currentAppName = resolveInstanceName(instance, id);
+        boolean maintenanceSilenced = isMaintenanceSilenced(currentAppName);
+
         lifecycleLock.lock();
         try {
             ScheduledFuture<?> self = selfRef[0];
@@ -269,24 +343,183 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             } else {
                 pendingTasks.remove(id);
             }
-            String currentAppName = resolveInstanceName(instance, id);
-            // 2. 防抖超时触发前二次名单校验，防止等待期间配置动态变更
+            // 防抖超时触发前二次名单与动态维护静默校验，防止等待期间配置/规则变更（静默判定提前在锁外完成，避免持锁阻塞 Redis I/O）
             if (!isServiceAlertAllowed(currentAppName)) {
                 log.info("[SBA Notifier] 实例 [{}] 在防抖超时后命中告警名单过滤规则，静默取消告警", currentAppName);
                 return;
             }
+            if (maintenanceSilenced) {
+                log.info("[SBA Notifier] 实例 [{}] 在防抖超时后命中维护静默规则，静默取消告警", currentAppName);
+                return;
+            }
+
             alertedInstances.add(id);
+            cycleVersion = faultCycleSequence.incrementAndGet();
+            faultCycleVersions.put(id, cycleVersion);
+
+            stormEvaluation = evaluateStormAggregationLocked(id, currentAppName, status, instance);
+            scheduleNextReminderLocked(instance, statusEvent, id, status, cycleVersion, 1);
         } finally {
             lifecycleLock.unlock();
         }
-        if (lifecycleState.get() != LifecycleState.STOPPED) {
-            sendNotification(instance, "🚨 微服务实例异常宕机告警", status, statusEvent.getStatusInfo());
+
+        if (lifecycleState.get() == LifecycleState.STOPPED) {
+            return;
         }
+
+        if (stormEvaluation.action == StormAction.SUPPRESS) {
+            log.warn("[SBA Notifier] 微窗口告警雪崩已触发折叠，吸收散落实例 [{}] 告警", currentAppName);
+            return;
+        }
+
+        if (stormEvaluation.action == StormAction.DISPATCH_SUMMARY) {
+            long windowMillis = Math.max(1L, stormEvaluation.windowMillis);
+            long bucket = stormEvaluation.windowStartMillis / windowMillis;
+            String stormDedupKey = "alert:storm:" + windowMillis + ":" + bucket;
+            if (tryClaimClusterDispatch(stormDedupKey)) {
+                sendStormSummaryNotification(stormEvaluation.entries);
+            }
+            return;
+        }
+
+        String dedupKey = "alert:fault:" + id.getValue() + ":" + statusEvent.getVersion() + ":"
+                + (status != null ? status.toUpperCase(Locale.ROOT) : "UNKNOWN");
+        if (tryClaimClusterDispatch(dedupKey)) {
+            sendNotification(instance, "🚨 微服务实例异常宕机告警", status, statusEvent.getStatusInfo(), CardColor.RED);
+        }
+    }
+
+    private void executeEscalationReminder(Instance instance,
+                                           InstanceStatusChangedEvent statusEvent,
+                                           InstanceId id,
+                                           String status,
+                                           long cycleVersion,
+                                           int reminderCount,
+                                           ScheduledFuture<?>[] selfRef) {
+        String appName = resolveInstanceName(instance, id);
+        int maxCount = resolveReminderMaxCount();
+        boolean maintenanceSilenced = isMaintenanceSilenced(appName);
+
+        lifecycleLock.lock();
+        try {
+            ScheduledFuture<?> self = selfRef[0];
+            if (lifecycleState.get() == LifecycleState.STOPPED
+                    || (self != null && self.isCancelled())
+                    || !alertedInstances.contains(id)
+                    || !Objects.equals(cycleVersion, faultCycleVersions.get(id))) {
+                return;
+            }
+            if (self != null) {
+                reminderTasks.remove(id, self);
+            } else {
+                reminderTasks.remove(id);
+            }
+            if (!isServiceAlertAllowed(appName) || maintenanceSilenced) {
+                log.info("[SBA Notifier] 实例 [{}] 在故障重提醒阶段被过滤或维护静默拦截，停止升级重提醒", appName);
+                return;
+            }
+            if (reminderCount < maxCount) {
+                scheduleNextReminderLocked(instance, statusEvent, id, status, cycleVersion, reminderCount + 1);
+            }
+        } finally {
+            lifecycleLock.unlock();
+        }
+
+        if (lifecycleState.get() == LifecycleState.STOPPED) {
+            return;
+        }
+        String dedupKey = "alert:reminder:" + id.getValue() + ":" + statusEvent.getVersion() + ":" + reminderCount;
+        if (tryClaimClusterDispatch(dedupKey)) {
+            String title = String.format("⚠️ 微服务持续故障升级重提醒 (%d/%d)", reminderCount, maxCount);
+            sendNotification(instance, title, status, statusEvent.getStatusInfo(), CardColor.ORANGE);
+        }
+    }
+
+    private void scheduleNextReminderLocked(Instance instance,
+                                            InstanceStatusChangedEvent statusEvent,
+                                            InstanceId id,
+                                            String status,
+                                            long cycleVersion,
+                                            int nextCount) {
+        AtengAdminServerProperties.ReminderProperties reminder = properties != null && properties.getAlert() != null
+                ? properties.getAlert().getReminder()
+                : null;
+        if (reminder == null || !reminder.isEnabled() || nextCount > resolveReminderMaxCount()) {
+            return;
+        }
+        Duration interval = reminder.getInterval();
+        long intervalMillis = interval != null && !interval.isNegative() && !interval.isZero()
+                ? interval.toMillis()
+                : Duration.ofMinutes(15).toMillis();
+
+        ScheduledExecutorService activeScheduler = this.scheduler;
+        if (activeScheduler == null || activeScheduler.isShutdown()) {
+            return;
+        }
+
+        ScheduledFuture<?>[] selfRef = new ScheduledFuture<?>[1];
+        try {
+            ScheduledFuture<?> future = activeScheduler.schedule(
+                    () -> executeEscalationReminder(instance, statusEvent, id, status, cycleVersion, nextCount, selfRef),
+                    intervalMillis,
+                    TimeUnit.MILLISECONDS
+            );
+            selfRef[0] = future;
+            if (future != null && !future.isDone()) {
+                reminderTasks.put(id, future);
+            }
+        } catch (RejectedExecutionException ex) {
+            log.debug("[SBA Notifier] 调度器拒绝排期故障重提醒，实例 [{}]: {}", resolveInstanceName(instance, id), ex.getMessage());
+        }
+    }
+
+    private StormEvaluation evaluateStormAggregationLocked(InstanceId id,
+                                                             String appName,
+                                                             String status,
+                                                             Instance instance) {
+        AtengAdminServerProperties.StormAggregationProperties storm = properties != null && properties.getAlert() != null
+                ? properties.getAlert().getStormAggregation()
+                : null;
+        if (storm == null || !storm.isEnabled()) {
+            return new StormEvaluation(StormAction.DISPATCH_SINGLE, 0L, 10_000L, List.of());
+        }
+
+        long windowMillis = positiveMillis(storm.getWindow(), Duration.ofSeconds(10));
+        int threshold = Math.max(1, storm.getThreshold());
+
+        Instant now = clock.instant();
+        Instant bucketStart = Instant.ofEpochMilli((now.toEpochMilli() / windowMillis) * windowMillis);
+        if (stormWindowStart == null || !stormWindowStart.equals(bucketStart)) {
+            stormWindowStart = bucketStart;
+            stormWindowEntries.clear();
+            stormSummaryTriggered = false;
+        }
+
+        if (stormSummaryTriggered) {
+            return new StormEvaluation(StormAction.SUPPRESS, stormWindowStart.toEpochMilli(), windowMillis, List.of());
+        }
+
+        String serviceUrl = instance != null && instance.isRegistered() && instance.getRegistration() != null
+                ? instance.getRegistration().getServiceUrl()
+                : "-";
+        stormWindowEntries.put(id, new StormFaultEntry(id.getValue(), appName, status, serviceUrl, now));
+
+        if (stormWindowEntries.size() >= threshold) {
+            stormSummaryTriggered = true;
+            return new StormEvaluation(
+                    StormAction.DISPATCH_SUMMARY,
+                    stormWindowStart.toEpochMilli(),
+                    windowMillis,
+                    new ArrayList<>(stormWindowEntries.values())
+            );
+        }
+        return new StormEvaluation(StormAction.DISPATCH_SINGLE, stormWindowStart.toEpochMilli(), windowMillis, List.of());
     }
 
     private void handleRecoveryStatus(Instance instance, InstanceStatusChangedEvent statusEvent) {
         InstanceId id = instance.getId();
         String appName = resolveInstanceName(instance, id);
+        boolean maintenanceSilenced = isMaintenanceSilenced(appName);
         boolean shouldSendRecovery;
 
         lifecycleLock.lock();
@@ -294,35 +527,45 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             if (lifecycleState.get() == LifecycleState.STOPPED) {
                 return;
             }
-            // 1. 取消挂起的防抖告警任务（成功自愈，不发宕机告警）
             ScheduledFuture<?> scheduled = pendingTasks.remove(id);
             if (scheduled != null) {
                 scheduled.cancel(true);
                 log.info("[SBA Notifier] 实例 [{}] 在防抖期内成功恢复 UP，已撤销报警任务", appName);
             }
+            cancelReminderLocked(id);
+            faultCycleVersions.remove(id);
 
-            // 2. 仅当该实例先前确实发送过宕机告警时，才发送恢复卡片
-            shouldSendRecovery = alertedInstances.remove(id) && isServiceAlertAllowed(appName);
+            shouldSendRecovery = alertedInstances.remove(id)
+                    && isServiceAlertAllowed(appName)
+                    && !maintenanceSilenced;
         } finally {
             lifecycleLock.unlock();
         }
 
         if (shouldSendRecovery && lifecycleState.get() != LifecycleState.STOPPED) {
-            sendNotification(instance, "🟢 微服务实例恢复正常通知", "UP", statusEvent.getStatusInfo());
+            String dedupKey = "alert:recovery:" + id.getValue() + ":" + statusEvent.getVersion();
+            if (tryClaimClusterDispatch(dedupKey)) {
+                sendNotification(instance, "🟢 微服务实例恢复正常通知", "UP", statusEvent.getStatusInfo(), CardColor.GREEN);
+            }
         }
     }
 
-    private void sendNotification(Instance instance, String title, String status, StatusInfo statusInfo) {
+    private void sendNotification(Instance instance,
+                                  String title,
+                                  String status,
+                                  StatusInfo statusInfo,
+                                  CardColor headerColor) {
         NotificationTemplate notifier = notificationTemplateProvider != null ? notificationTemplateProvider.getIfAvailable() : null;
         if (notifier == null) {
             return;
         }
 
-        String appName = resolveInstanceName(instance, instance != null ? instance.getId() : null);
+        InstanceId id = instance != null ? instance.getId() : null;
+        String appName = resolveInstanceName(instance, id);
         String serviceUrl = instance != null && instance.isRegistered() && instance.getRegistration() != null
                 ? instance.getRegistration().getServiceUrl()
                 : "-";
-        String timeStr = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        String timeStr = LocalDateTime.now(clock).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
 
         StringBuilder contentBuilder = new StringBuilder();
         contentBuilder.append(String.format("""
@@ -351,8 +594,143 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             contentBuilder.append("\n**实例元数据**：\n").append(metadataSummary).append("\n");
         }
 
-        CardMessage card = CardMessage.of(title, contentBuilder.toString().trim());
+        CardMessage card = CardMessage.of(title, contentBuilder.toString().trim())
+                .headerColor(headerColor);
+        applyConsoleDetailAction(card, id);
+        applyRouteOptions(card, appName);
         notifier.sendAsync(card);
+    }
+
+    private void sendStormSummaryNotification(List<StormFaultEntry> entries) {
+        NotificationTemplate notifier = notificationTemplateProvider != null ? notificationTemplateProvider.getIfAvailable() : null;
+        if (notifier == null || entries.isEmpty()) {
+            return;
+        }
+        String timeStr = LocalDateTime.now(clock).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("**聚合数量**：%d 个故障实例已折叠，同窗口后续散落故障告警将被自动抑制\n", entries.size()));
+        sb.append(String.format("**聚合时间**：%s\n\n**涉及故障实例**：\n", timeStr));
+        for (StormFaultEntry entry : entries) {
+            sb.append(String.format("- **%s** (`%s`, `%s`, %s)\n",
+                    entry.appName, entry.instanceId, entry.status, entry.serviceUrl));
+        }
+
+        CardMessage card = CardMessage.of("⛈️ 微服务告警雪崩折叠摘要", sb.toString().trim())
+                .headerColor(CardColor.RED);
+        applyRouteOptions(card, entries.get(0).appName);
+        notifier.sendAsync(card);
+    }
+
+    private void applyConsoleDetailAction(CardMessage card, InstanceId id) {
+        String consoleBaseUrl = properties != null && properties.getAlert() != null
+                ? properties.getAlert().getConsoleBaseUrl()
+                : null;
+        if (!StringUtils.hasText(consoleBaseUrl) || id == null || !StringUtils.hasText(id.getValue())) {
+            return;
+        }
+        String normalizedBase = consoleBaseUrl.trim();
+        while (normalizedBase.endsWith("/")) {
+            normalizedBase = normalizedBase.substring(0, normalizedBase.length() - 1);
+        }
+        String detailUrl = normalizedBase + "/#/instances/" + id.getValue() + "/details";
+        card.singleAction("查看控制台详情", detailUrl);
+    }
+
+    private void applyRouteOptions(CardMessage card, String appName) {
+        if (properties == null || properties.getAlert() == null || properties.getAlert().getRoutes() == null) {
+            return;
+        }
+        for (AtengAdminServerProperties.AlertRouteProperties route : properties.getAlert().getRoutes()) {
+            if (route == null || !matchServiceName(route.getServicePattern(), appName)) {
+                continue;
+            }
+            if (StringUtils.hasText(route.getChannel())) {
+                card.channel(route.getChannel().trim());
+            }
+            if (route.isMentionAll()) {
+                card.atAll();
+            }
+            if (route.getMentionMobiles() != null && !route.getMentionMobiles().isEmpty()) {
+                card.atMobiles(route.getMentionMobiles());
+            }
+            if (route.getMentionUserIds() != null && !route.getMentionUserIds().isEmpty()) {
+                card.atUserIds(route.getMentionUserIds());
+            }
+            return;
+        }
+    }
+
+    private boolean isMaintenanceSilenced(String serviceName) {
+        return silenceManager != null && silenceManager.isSilenced(serviceName);
+    }
+
+    private boolean tryClaimClusterDispatch(String dedupKey) {
+        if (clusterCoordinator == null) {
+            return true;
+        }
+        Duration ttl = properties != null && properties.getCluster() != null && properties.getCluster().getAlertDedupTtl() != null
+                ? properties.getCluster().getAlertDedupTtl()
+                : Duration.ofSeconds(60);
+        return clusterCoordinator.tryMarkAlertDispatched(dedupKey, ttl);
+    }
+
+    private long resolveDebounceDelayMillis() {
+        if (properties != null && properties.getDebounceDuration() != null && !properties.getDebounceDuration().isNegative()) {
+            return properties.getDebounceDuration().toMillis();
+        }
+        return 30_000L;
+    }
+
+    private long resolveDeregistrationSilenceMillis() {
+        if (properties != null
+                && properties.getAlert() != null
+                && properties.getAlert().getDeregistrationSilenceDuration() != null
+                && !properties.getAlert().getDeregistrationSilenceDuration().isNegative()) {
+            return properties.getAlert().getDeregistrationSilenceDuration().toMillis();
+        }
+        return DEFAULT_DEREGISTRATION_SILENCE_WINDOW.toMillis();
+    }
+
+    private int resolveReminderMaxCount() {
+        if (properties != null && properties.getAlert() != null && properties.getAlert().getReminder() != null) {
+            return Math.max(0, properties.getAlert().getReminder().getMaxCount());
+        }
+        return 3;
+    }
+
+    private void clearFaultCycleLocked(InstanceId id) {
+        ScheduledFuture<?> future = pendingTasks.remove(id);
+        if (future != null) {
+            future.cancel(true);
+        }
+        cancelReminderLocked(id);
+        faultCycleVersions.remove(id);
+        alertedInstances.remove(id);
+    }
+
+    private long positiveMillis(Duration duration, Duration fallback) {
+        return duration != null && !duration.isNegative() && !duration.isZero()
+                ? duration.toMillis()
+                : fallback.toMillis();
+    }
+
+    private void cancelReminderLocked(InstanceId id) {
+        ScheduledFuture<?> reminderFuture = reminderTasks.remove(id);
+        if (reminderFuture != null) {
+            reminderFuture.cancel(true);
+        }
+    }
+
+    private enum StormAction {
+        DISPATCH_SINGLE,
+        DISPATCH_SUMMARY,
+        SUPPRESS
+    }
+
+    private record StormEvaluation(StormAction action, long windowStartMillis, long windowMillis, List<StormFaultEntry> entries) {
+    }
+
+    private record StormFaultEntry(String instanceId, String appName, String status, String serviceUrl, Instant occurredAt) {
     }
 
     private boolean isFaultStatus(String status) {
@@ -494,8 +872,8 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
      * 防御性驱逐超过发版静默窗口期的历史下线实例，防止长时间运行造成内存滞留
      */
     private void evictExpiredDeregistrations() {
-        long now = System.currentTimeMillis();
-        long silenceWindowMillis = DEFAULT_DEREGISTRATION_SILENCE_WINDOW.toMillis();
+        long now = clock.millis();
+        long silenceWindowMillis = resolveDeregistrationSilenceMillis();
         deregisteredInstances.entrySet().removeIf(entry -> now - entry.getValue() > silenceWindowMillis);
     }
 
@@ -539,9 +917,19 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
                     future.cancel(true);
                 }
             }
+            for (ScheduledFuture<?> reminderFuture : this.reminderTasks.values()) {
+                if (reminderFuture != null) {
+                    reminderFuture.cancel(true);
+                }
+            }
             this.pendingTasks.clear();
+            this.reminderTasks.clear();
+            this.faultCycleVersions.clear();
             this.alertedInstances.clear();
             this.deregisteredInstances.clear();
+            this.stormWindowEntries.clear();
+            this.stormWindowStart = null;
+            this.stormSummaryTriggered = false;
             if (this.internalScheduler && this.scheduler != null && !this.scheduler.isShutdown()) {
                 this.scheduler.shutdownNow();
             }

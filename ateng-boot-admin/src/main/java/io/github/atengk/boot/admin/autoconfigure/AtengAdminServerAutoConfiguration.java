@@ -9,7 +9,11 @@ import de.codecentric.boot.admin.server.domain.entities.InstanceRepository;
 import de.codecentric.boot.admin.server.services.InstanceRegistry;
 import io.github.atengk.boot.admin.admission.AdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicy;
+import io.github.atengk.boot.admin.cluster.AdminClusterCoordinator;
+import io.github.atengk.boot.admin.cluster.InMemoryAdminClusterCoordinator;
+import io.github.atengk.boot.admin.cluster.RedisAdminClusterCoordinator;
 import io.github.atengk.boot.admin.controller.AdminLoginController;
+import io.github.atengk.boot.admin.eventstore.AtengInMemoryEventStore;
 import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AdminAuthProvider;
@@ -19,6 +23,8 @@ import io.github.atengk.boot.admin.scheduler.ZombieInstanceCleanupScheduler;
 import io.github.atengk.boot.admin.security.AdminPathMatcher;
 import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
 import io.github.atengk.boot.admin.security.AdminWriteGuardFilter;
+import io.github.atengk.boot.admin.silence.AdminSilenceManager;
+import io.github.atengk.boot.admin.silence.DefaultAdminSilenceManager;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.ObjectProvider;
@@ -31,11 +37,15 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.util.StringUtils;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.util.concurrent.ScheduledExecutorService;
 
 /**
@@ -103,12 +113,59 @@ public class AtengAdminServerAutoConfiguration {
         return new AdminWriteGuardFilter(properties, adminServerProperties);
     }
 
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(StringRedisTemplate.class)
+    @ConditionalOnBean(StringRedisTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.admin.server.cluster", name = "enabled", havingValue = "true")
+    static class RedisClusterCoordinatorConfiguration {
+
+        @Bean(name = "adminClusterCoordinator")
+        @ConditionalOnMissingBean(AdminClusterCoordinator.class)
+        public AdminClusterCoordinator redisAdminClusterCoordinator(StringRedisTemplate stringRedisTemplate,
+                                                                   AtengAdminServerProperties properties,
+                                                                   ObjectProvider<Clock> clockProvider) {
+            String keyPrefix = properties != null && properties.getCluster() != null
+                    ? properties.getCluster().getKeyPrefix()
+                    : "ateng:admin:";
+            Clock clock = clockProvider.getIfAvailable(Clock::systemUTC);
+            return new RedisAdminClusterCoordinator(stringRedisTemplate, keyPrefix, clock);
+        }
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(AdminClusterCoordinator.class)
+    public AdminClusterCoordinator inMemoryAdminClusterCoordinator(ObjectProvider<Clock> clockProvider) {
+        return new InMemoryAdminClusterCoordinator(clockProvider.getIfAvailable(Clock::systemUTC));
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(AdminSilenceManager.class)
+    public AdminSilenceManager adminSilenceManager(AdminClusterCoordinator clusterCoordinator,
+                                                   AtengAdminServerProperties properties,
+                                                   ObjectProvider<Clock> clockProvider) {
+        Duration defaultTtl = properties != null && properties.getCluster() != null
+                ? properties.getCluster().getSilenceRuleDefaultTtl()
+                : Duration.ofHours(2);
+        return new DefaultAdminSilenceManager(clusterCoordinator, defaultTtl, clockProvider.getIfAvailable(Clock::systemUTC));
+    }
+
     @Bean(name = "sbaNotificationTaskScheduler", destroyMethod = "destroy")
     @ConditionalOnMissingBean(name = "sbaNotificationTaskScheduler")
     public ThreadPoolTaskScheduler sbaNotificationTaskScheduler() {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
         scheduler.setPoolSize(1);
         scheduler.setThreadNamePrefix("sba-notify-debounce-");
+        scheduler.setDaemon(true);
+        scheduler.initialize();
+        return scheduler;
+    }
+
+    @Bean(name = "sbaCleanupTaskScheduler", destroyMethod = "destroy")
+    @ConditionalOnMissingBean(name = "sbaCleanupTaskScheduler")
+    public ThreadPoolTaskScheduler sbaCleanupTaskScheduler() {
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(1);
+        scheduler.setThreadNamePrefix("sba-zombie-cleanup-");
         scheduler.setDaemon(true);
         scheduler.initialize();
         return scheduler;
@@ -122,10 +179,21 @@ public class AtengAdminServerAutoConfiguration {
             ObjectProvider<NotificationTemplate> notificationTemplateProvider,
             AtengAdminServerProperties properties,
             @Qualifier("sbaNotificationTaskScheduler") ObjectProvider<ThreadPoolTaskScheduler> schedulerProvider,
-            ObjectProvider<ScheduledExecutorService> scheduledExecutorProvider) {
+            ObjectProvider<ScheduledExecutorService> scheduledExecutorProvider,
+            ObjectProvider<AdminSilenceManager> silenceManagerProvider,
+            ObjectProvider<AdminClusterCoordinator> clusterCoordinatorProvider,
+            ObjectProvider<Clock> clockProvider) {
         ThreadPoolTaskScheduler taskScheduler = schedulerProvider.getIfAvailable();
         ScheduledExecutorService executor = taskScheduler != null ? taskScheduler.getScheduledExecutor() : scheduledExecutorProvider.getIfAvailable();
-        return new AtengAdminNotificationNotifier(repository, notificationTemplateProvider, properties, executor);
+        return new AtengAdminNotificationNotifier(
+                repository,
+                notificationTemplateProvider,
+                properties,
+                executor,
+                silenceManagerProvider.getIfAvailable(),
+                clusterCoordinatorProvider.getIfAvailable(),
+                clockProvider.getIfAvailable()
+        );
     }
 
     @Bean
@@ -135,13 +203,20 @@ public class AtengAdminServerAutoConfiguration {
     public ZombieInstanceCleanupScheduler zombieInstanceCleanupScheduler(
             InstanceRepository repository,
             ObjectProvider<InstanceRegistry> registryProvider,
-            @Qualifier("sbaNotificationTaskScheduler") ObjectProvider<ThreadPoolTaskScheduler> taskSchedulerProvider,
-            AtengAdminServerProperties properties) {
+            @Qualifier("sbaCleanupTaskScheduler") ObjectProvider<ThreadPoolTaskScheduler> cleanupSchedulerProvider,
+            AtengAdminServerProperties properties,
+            ObjectProvider<AdminClusterCoordinator> clusterCoordinatorProvider,
+            ObjectProvider<AtengInMemoryEventStore> eventStoreProvider,
+            ObjectProvider<AtengAdminNotificationNotifier> notifierProvider) {
+        AtengAdminNotificationNotifier notifier = notifierProvider.getIfAvailable();
         return new ZombieInstanceCleanupScheduler(
                 repository,
                 registryProvider.getIfAvailable(),
                 properties,
-                taskSchedulerProvider.getIfAvailable()
+                cleanupSchedulerProvider.getIfAvailable(),
+                clusterCoordinatorProvider.getIfAvailable(),
+                eventStoreProvider.getIfAvailable(),
+                notifier != null ? notifier::purgeInstanceState : null
         );
     }
 

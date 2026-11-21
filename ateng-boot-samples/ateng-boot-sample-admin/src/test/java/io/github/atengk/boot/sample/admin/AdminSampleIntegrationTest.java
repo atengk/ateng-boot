@@ -16,6 +16,8 @@ import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
 import io.github.atengk.boot.admin.scheduler.ZombieInstanceCleanupScheduler;
 import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
+import io.github.atengk.boot.admin.silence.AdminSilenceManager;
+import io.github.atengk.boot.admin.silence.SilenceRule;
 import io.github.atengk.boot.sample.admin.config.RecordingNotificationTemplate;
 import io.github.atengk.boot.sample.admin.dto.RecordedAlertCardVO;
 import jakarta.servlet.http.Cookie;
@@ -699,6 +701,64 @@ class AdminSampleIntegrationTest {
                 .source("discovery")
                 .build()).block();
         assertThat(registry.getInstance(discBlockedId).block()).isNull();
+    }
+
+    @Test
+    @DisplayName("场景 14：Slice 3 告警防风暴、维护静默、有界事件仓库与虚拟线程安全清理联调闭环")
+    void shouldVerifySlice3AntiStormSilenceBoundedStoreAndZombiePurgeEndToEnd(
+            @Autowired de.codecentric.boot.admin.server.eventstore.InstanceEventStore eventStore,
+            @Autowired io.github.atengk.boot.admin.cluster.AdminClusterCoordinator clusterCoordinator,
+            @Autowired AdminSilenceManager silenceManager,
+            @Autowired org.springframework.context.ApplicationContext applicationContext) throws Exception {
+        // 1. 验证 Slice 3 核心装配拓扑（替换无界 EventStore、默认单机内存协调器、唯一 Notifier、隔离清理线程池）
+        assertThat(eventStore).isInstanceOf(io.github.atengk.boot.admin.eventstore.AtengInMemoryEventStore.class);
+        assertThat(clusterCoordinator).isInstanceOf(io.github.atengk.boot.admin.cluster.InMemoryAdminClusterCoordinator.class);
+        assertThat(silenceManager).isInstanceOf(io.github.atengk.boot.admin.silence.DefaultAdminSilenceManager.class);
+        assertThat(applicationContext.getBeansOfType(de.codecentric.boot.admin.server.notify.Notifier.class)).hasSize(1);
+        assertThat(applicationContext.containsBean("filteringNotifier")).isFalse();
+        assertThat(applicationContext.getBean("sbaCleanupTaskScheduler"))
+                .isNotSameAs(applicationContext.getBean("sbaNotificationTaskScheduler"));
+
+        // 2. 验证动态维护静默创建、拦截故障排期、撤销恢复以及 50ms 毫秒级防抖发信
+        SilenceRule rule = silenceManager.createSilence("slice3-order-*", Duration.ofMinutes(5), "常规巡检维护", "ops-admin");
+        try {
+            InstanceId instId = InstanceId.of("slice3-inst-01");
+            Instance inst = Instance.create(instId)
+                    .register(Registration.create("slice3-order-svc", "http://127.0.0.1:8080/actuator/health")
+                            .serviceUrl("http://127.0.0.1:8080/")
+                            .build());
+            instanceRepository.save(inst).block();
+
+            notificationNotifier.notify(new InstanceStatusChangedEvent(instId, 1L, StatusInfo.ofDown())).block();
+            assertThat(notificationNotifier.getPendingTasks()).doesNotContainKey(instId);
+
+            // 撤销维护静默并切换 50ms 毫秒级防抖，验证故障卡片投递
+            silenceManager.revokeSilence(rule.getId());
+            if (recordingNotificationTemplate != null) {
+                properties.setDebounceDuration(Duration.ofMillis(50));
+                long baseline = recordingNotificationTemplate.getTotalRecordedCount();
+                notificationNotifier.notify(new InstanceStatusChangedEvent(instId, 2L, StatusInfo.ofDown())).block();
+                assertThat(recordingNotificationTemplate.awaitRecordedCountAfter(baseline, Duration.ofSeconds(3))).isTrue();
+            }
+
+            // 3. 验证僵尸实例驱逐联动清理 EventStore 与 Notifier 状态
+            io.github.atengk.boot.admin.eventstore.AtengInMemoryEventStore boundedStore =
+                    (io.github.atengk.boot.admin.eventstore.AtengInMemoryEventStore) eventStore;
+            assertThat(boundedStore.find(instId).collectList().block()).isNotEmpty();
+
+            instanceRepository.compute(instId, (id, curr) -> Mono.just(curr.withStatusInfo(StatusInfo.ofOffline()))).block();
+            properties.getCleanup().setZombieThreshold(Duration.ofMillis(10));
+            Thread.sleep(30);
+
+            int evicted = zombieCleanupScheduler.cleanZombies();
+            assertThat(evicted).isGreaterThanOrEqualTo(1);
+            assertThat(boundedStore.find(instId).collectList().block()).isEmpty();
+            assertThat(notificationNotifier.getPendingTasks()).doesNotContainKey(instId);
+            assertThat(notificationNotifier.getAlertedInstances()).doesNotContain(instId);
+            assertThat(notificationNotifier.getDeregisteredInstances()).doesNotContainKey(instId);
+        } finally {
+            silenceManager.revokeSilence(rule.getId());
+        }
     }
 
     private List<RecordedAlertCardVO> waitForRecordedCards(RecordingNotificationTemplate recorder) throws InterruptedException {
