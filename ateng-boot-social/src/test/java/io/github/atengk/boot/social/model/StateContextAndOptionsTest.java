@@ -1,5 +1,7 @@
 package io.github.atengk.boot.social.model;
 
+import io.github.atengk.boot.core.enums.IBaseEnum;
+import io.github.atengk.boot.core.util.EnumUtil;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -47,5 +49,18 @@ class StateContextAndOptionsTest {
         assertThat(options.getTimeout()).isEqualTo(Duration.ofHours(2));
         assertThat(options.getIsLastingCookie()).isTrue();
         assertThat(options.getExtraData()).containsEntry("ip", "127.0.0.1");
+    }
+
+    @Test
+    @DisplayName("验证 SocialAuthState 实现 IBaseEnum 强类型通用枚举契约")
+    void testSocialAuthStateImplementsIBaseEnum() {
+        assertThat(SocialAuthState.LOGGED_IN).isInstanceOf(IBaseEnum.class);
+        assertThat(SocialAuthState.LOGGED_IN.getCode()).isEqualTo("LOGGED_IN");
+        assertThat(SocialAuthState.LOGGED_IN.getValue()).isEqualTo("LOGGED_IN");
+        assertThat(SocialAuthState.LOGGED_IN.getLabel()).isNotBlank();
+        assertThat(SocialAuthState.LOGGED_IN.getDescription()).isEqualTo(SocialAuthState.LOGGED_IN.getLabel());
+        assertThat(SocialAuthState.REQUIRE_BIND.getCode()).isEqualTo("REQUIRE_BIND");
+        assertThat(EnumUtil.fromCode(SocialAuthState.class, "LOGGED_IN")).contains(SocialAuthState.LOGGED_IN);
+        assertThat(EnumUtil.isValidCode(SocialAuthState.class, "REQUIRE_BIND")).isTrue();
     }
 }

@@ -39,6 +39,11 @@ public class StateContext implements Serializable {
     private String redirectUrl;
 
     /**
+     * 底层协议引擎写入的原生状态键值（如 OAuth 2.1 PKCE code_verifier 校验码，与 redirectUrl 物理隔离防污染）
+     */
+    private String rawStateValue;
+
+    /**
      * 业务自定义扩展上下文参数字典（如推广渠道来源、邀请人 ID、一次性防伪码等）
      */
     @Builder.Default

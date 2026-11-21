@@ -55,6 +55,11 @@ public enum SocialResultCode implements IResultCode {
     SOCIAL_REDIRECT_URI_INVALID(7008, "非法的授权回调重定向地址"),
 
     /**
+     * 第三方平台快照虚拟账号被拒绝
+     */
+    SOCIAL_SNAPSHOT_USER_REJECTED(7009, "当前为第三方平台快照虚拟账号，请完成完整授权后再试"),
+
+    /**
      * 社交登录内部异常
      */
     SOCIAL_ERROR(7000, "第三方社交登录异常");

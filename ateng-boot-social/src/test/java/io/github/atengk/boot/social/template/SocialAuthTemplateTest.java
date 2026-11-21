@@ -13,6 +13,7 @@ import io.github.atengk.boot.social.exception.SocialAlreadyBoundException;
 import io.github.atengk.boot.social.exception.SocialAuthException;
 import io.github.atengk.boot.social.exception.SocialException;
 import io.github.atengk.boot.social.exception.SocialRedirectUriInvalidException;
+import io.github.atengk.boot.social.exception.SocialSnapshotUserException;
 import io.github.atengk.boot.social.exception.SocialStateExpiredException;
 import io.github.atengk.boot.social.exception.SocialUnbindRejectedException;
 import io.github.atengk.boot.social.factory.SocialAppFactory;
@@ -1350,6 +1351,105 @@ class SocialAuthTemplateTest {
         assertThat(qqResult.getUserId()).isEqualTo("local_qq_user");
         assertThat(qqResult.getSocialUser().getOpenId()).isEqualTo("qq_open_888");
         assertThat(qqResult.getSocialUser().getUnionId()).isEqualTo("qq_union_999");
+    }
+
+    @Test
+    @DisplayName("49. OAuth 2.1 PKCE 模式端到端授权、code_verifier 提交与阅后即焚清理")
+    void testPkceAuthorizeAndCodeVerifierBurnAfterReading() throws InterruptedException {
+        SocialAppItemProperties huaweiPkceProps = new SocialAppItemProperties();
+        huaweiPkceProps.setSource("HUAWEI_V3");
+        huaweiPkceProps.setClientId("hw_pkce_client");
+        huaweiPkceProps.setClientSecret("hw_pkce_secret");
+        huaweiPkceProps.setRedirectUri("https://ateng.example.com/oauth/huawei/callback");
+        huaweiPkceProps.setPkce(true);
+        authTemplate.getProperties().getApps().put("huawei_pkce_app", huaweiPkceProps);
+
+        StateContext context = StateContext.builder()
+                .tenantId("tenant_pkce")
+                .redirectUrl("https://ateng.example.com/welcome")
+                .build();
+
+        String authorizeUrl = authTemplate.getAuthorizeUrl("huawei_pkce_app", context);
+        assertThat(authorizeUrl)
+                .contains("code_challenge=")
+                .contains("code_challenge_method=S256");
+
+        String state = extractQueryParam(authorizeUrl, "state");
+        String verifierCacheKey = "HUAWEI_V3:code_verifier:" + state;
+
+        // 验证 PKCE code_verifier 已缓存且未污染主 state 的 redirectUrl
+        assertThat(stateCache.containsKey(verifierCacheKey)).isTrue();
+        assertThat(stateCache.get(verifierCacheKey)).isNotBlank();
+        assertThat(stateCache.getContext(verifierCacheKey).getRedirectUrl()).isNull();
+        assertThat(stateCache.getContext(state).getRedirectUrl()).isEqualTo("https://ateng.example.com/welcome");
+
+        // 模拟华为 V3 Token (携带 OIDC id_token) 响应
+        String payloadBase64 = java.util.Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("{\"sub\":\"hw_open_101\",\"name\":\"华为PKCE用户\",\"nickname\":\"HW_PKCE\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        String mockIdToken = "eyJhbGciOiJSUzI1NiJ9." + payloadBase64 + ".signature";
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"access_token\":\"hw_acc_token\",\"expires_in\":3600,\"refresh_token\":\"hw_ref\",\"id_token\":\"" + mockIdToken + "\"}"));
+
+        when(userDetailsService.loadUserIdBySocialUser(eq("huawei_pkce_app"), any(SocialUser.class)))
+                .thenReturn("user_hw_101");
+
+        SocialAuthResult result = authTemplate.login("huawei_pkce_app",
+                AuthCallback.builder().code("hw_code_123").state(state).build());
+
+        assertThat(result.isLoggedIn()).isTrue();
+        assertThat(result.getUserId()).isEqualTo("user_hw_101");
+        assertThat(result.getStateContext().getRedirectUrl()).isEqualTo("https://ateng.example.com/welcome");
+
+        // 验证换码成功后，主 state 与 PKCE code_verifier 缓存键均已被阅后即焚物理销毁
+        assertThat(stateCache.containsKey(state)).isFalse();
+        assertThat(stateCache.containsKey(verifierCacheKey)).isFalse();
+    }
+
+    @Test
+    @DisplayName("50. 快照虚拟号防卫: rejectSnapshotUser 开启时刚性抛出 SocialSnapshotUserException (7009)")
+    void testRejectSnapshotUserGuard() {
+        SocialAppItemProperties wechatWebProps = new SocialAppItemProperties();
+        wechatWebProps.setSource("WECHAT_MP");
+        wechatWebProps.setClientId("wx_mp_web_id");
+        wechatWebProps.setClientSecret("wx_mp_web_sec");
+        wechatWebProps.setRedirectUri("https://ateng.example.com/oauth/wx/callback");
+        wechatWebProps.setIgnoreCheckState(true);
+        wechatWebProps.setRejectSnapshotUser(true);
+        authTemplate.getProperties().getApps().put("wechat_web_app", wechatWebProps);
+
+        // 模拟微信返回 is_snapshotuser = 1 的虚拟快照页账号
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"access_token\":\"wx_snap_token\",\"expires_in\":7200,\"openid\":\"wx_virtual_snap_01\",\"is_snapshotuser\":1}"));
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"openid\":\"wx_virtual_snap_01\",\"nickname\":\"微信虚拟用户\",\"sex\":0,\"is_snapshotuser\":1}"));
+
+        assertThatThrownBy(() -> authTemplate.directLogin("wechat_web_app", "wx_snap_code"))
+                .isInstanceOf(SocialSnapshotUserException.class)
+                .satisfies(ex -> {
+                    SocialSnapshotUserException snapEx = (SocialSnapshotUserException) ex;
+                    assertThat(snapEx.getResultCode()).isEqualTo(SocialResultCode.SOCIAL_SNAPSHOT_USER_REJECTED);
+                    assertThat(snapEx.getResultCode().getCode()).isEqualTo(7009);
+                });
+
+        // 当关闭 rejectSnapshotUser 时，允许放行并标记 snapshotUser=true
+        wechatWebProps.setRejectSnapshotUser(false);
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"access_token\":\"wx_snap_token\",\"expires_in\":7200,\"openid\":\"wx_virtual_snap_01\",\"is_snapshotuser\":1}"));
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody("{\"openid\":\"wx_virtual_snap_01\",\"nickname\":\"微信虚拟用户\",\"sex\":0,\"is_snapshotuser\":1}"));
+
+        SocialAuthResult allowedResult = authTemplate.directLogin("wechat_web_app", "wx_snap_code");
+        assertThat(allowedResult.getSocialUser().isSnapshotUser()).isTrue();
     }
 
     private String extractQueryParam(String url, String paramName) {

@@ -92,6 +92,99 @@ public class SocialAppConfig implements Serializable {
     private boolean unionId;
 
     /**
+     * 是否开启 OAuth 2.1 PKCE 增强模式，默认 false
+     */
+    private boolean pkce;
+
+    /**
+     * Microsoft Entra ID（原微软 Azure AD）目录租户 ID（优先于 tenantId）
+     */
+    private String microsoftTenantId;
+
+    /**
+     * Microsoft Entra ID 目录租户 ID 兼容字段
+     */
+    private String tenantId;
+
+    /**
+     * 苹果开发者账号密钥标识符 (Key ID)
+     */
+    private String kid;
+
+    /**
+     * 苹果开发者账号团队 ID (Team ID)
+     */
+    private String teamId;
+
+    /**
+     * 新版企业微信 Web 登录类型（CorpApp / ServiceApp，默认 CorpApp）
+     */
+    @Builder.Default
+    private String loginType = "CorpApp";
+
+    /**
+     * 企业微信语言编码（默认 zh）
+     */
+    @Builder.Default
+    private String lang = "zh";
+
+    /**
+     * 企业微信第三方授权用户类型（member|admin）
+     */
+    private String usertype;
+
+    /**
+     * 钉钉组织类型（如 management）
+     */
+    private String dingTalkOrgType;
+
+    /**
+     * 钉钉指定组织 corpId
+     */
+    private String dingTalkCorpId;
+
+    /**
+     * 钉钉是否专属账号登录
+     */
+    private boolean dingTalkExclusiveLogin;
+
+    /**
+     * 钉钉专属账号组织 corpId
+     */
+    private String dingTalkExclusiveCorpId;
+
+    /**
+     * 域名前缀（Coding / Okta）
+     */
+    private String domainPrefix;
+
+    /**
+     * Okta 授权服务器 ID（默认 default）
+     */
+    @Builder.Default
+    private String authServerId = "default";
+
+    /**
+     * 设备唯一标识 ID
+     */
+    private String deviceId;
+
+    /**
+     * 客户端操作系统类型（1-iOS，2-Android，3-Web）
+     */
+    private Integer clientOsType;
+
+    /**
+     * 客户端包名或 Bundle ID
+     */
+    private String packId;
+
+    /**
+     * Stack Overflow Key
+     */
+    private String stackOverflowKey;
+
+    /**
      * 应用专有出站网络代理（可选，若配置则覆盖全局代理）
      */
     private SocialProxyConfig proxy;
@@ -112,6 +205,11 @@ public class SocialAppConfig implements Serializable {
     private Boolean autoSignUp;
 
     /**
+     * 当前应用是否拒绝第三方平台快照虚拟账号（可选，若配置则覆盖全局 rejectSnapshotUser）
+     */
+    private Boolean rejectSnapshotUser;
+
+    /**
      * 将本配置转换为 Anduin 原生所需的 AuthConfig 对象
      *
      * @return Anduin AuthConfig
@@ -120,6 +218,19 @@ public class SocialAppConfig implements Serializable {
         boolean ignoreRedirect = this.ignoreCheckRedirectUri
                 || this.redirectUri == null
                 || this.redirectUri.isBlank();
+
+        String resolvedMsTenantId = (this.microsoftTenantId != null && !this.microsoftTenantId.isBlank())
+                ? this.microsoftTenantId
+                : this.tenantId;
+        String resolvedLoginType = (this.loginType != null && !this.loginType.isBlank())
+                ? this.loginType
+                : "CorpApp";
+        String resolvedLang = (this.lang != null && !this.lang.isBlank())
+                ? this.lang
+                : "zh";
+        String resolvedAuthServerId = (this.authServerId != null && !this.authServerId.isBlank())
+                ? this.authServerId
+                : "default";
 
         return AuthConfig.builder()
                 .clientId(this.clientId)
@@ -132,6 +243,23 @@ public class SocialAppConfig implements Serializable {
                 .agentId(this.agentId)
                 .alipayPublicKey(this.alipayPublicKey)
                 .unionId(this.unionId)
+                .pkce(this.pkce)
+                .tenantId(resolvedMsTenantId)
+                .kid(this.kid)
+                .teamId(this.teamId)
+                .loginType(resolvedLoginType)
+                .lang(resolvedLang)
+                .usertype(this.usertype)
+                .dingTalkOrgType(this.dingTalkOrgType)
+                .dingTalkCorpId(this.dingTalkCorpId)
+                .dingTalkExclusiveLogin(this.dingTalkExclusiveLogin)
+                .dingTalkExclusiveCorpId(this.dingTalkExclusiveCorpId)
+                .domainPrefix(this.domainPrefix)
+                .authServerId(resolvedAuthServerId)
+                .deviceId(this.deviceId)
+                .clientOsType(this.clientOsType)
+                .packId(this.packId)
+                .stackOverflowKey(this.stackOverflowKey)
                 .build();
     }
 }

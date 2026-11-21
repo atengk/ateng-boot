@@ -140,6 +140,21 @@ class RedisSocialAuthStateCacheTest {
         // 3. 不存在 -> 返回 null
         when(valueOperations.get("social:state:s_none")).thenReturn(null);
         assertThat(cache.get("s_none")).isNull();
+
+        // 4. PKCE code_verifier 等非 URL 原生键值写入 rawStateValue，不污染 redirectUrl
+        String pkceKey = "HUAWEI_V3:code_verifier:state_redis_1";
+        String verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        when(valueOperations.get("social:state:" + pkceKey)).thenReturn(null);
+        cache.cache(pkceKey, verifier);
+
+        ArgumentCaptor<String> pkceJsonCaptor = ArgumentCaptor.forClass(String.class);
+        verify(valueOperations).set(eq("social:state:" + pkceKey), pkceJsonCaptor.capture(), eq(SocialAuthStateCache.DEFAULT_STATE_TIMEOUT));
+        StateContext pkceSaved = JsonUtil.parseObject(pkceJsonCaptor.getValue(), StateContext.class);
+        assertThat(pkceSaved.getRawStateValue()).isEqualTo(verifier);
+        assertThat(pkceSaved.getRedirectUrl()).isNull();
+
+        when(valueOperations.get("social:state:" + pkceKey)).thenReturn(pkceJsonCaptor.getValue());
+        assertThat(cache.get(pkceKey)).isEqualTo(verifier);
     }
 
     @Test

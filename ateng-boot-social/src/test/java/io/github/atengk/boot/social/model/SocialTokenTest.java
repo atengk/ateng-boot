@@ -41,6 +41,9 @@ class SocialTokenTest {
                 .openId("open_id_789")
                 .unionId("union_id_abc")
                 .scope("read,write")
+                .tokenType("Bearer")
+                .idToken("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig")
+                .corpId("ding_corp_001")
                 .build();
 
         SocialToken socialToken = SocialToken.fromAuthToken(authToken);
@@ -52,6 +55,9 @@ class SocialTokenTest {
         assertThat(socialToken.getOpenId()).isEqualTo("open_id_789");
         assertThat(socialToken.getUnionId()).isEqualTo("union_id_abc");
         assertThat(socialToken.getScope()).isEqualTo("read,write");
+        assertThat(socialToken.getTokenType()).isEqualTo("Bearer");
+        assertThat(socialToken.getIdToken()).isEqualTo("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig");
+        assertThat(socialToken.getCorpId()).isEqualTo("ding_corp_001");
         assertThat(socialToken.getRawToken()).isSameAs(authToken);
 
         AuthToken converted = socialToken.toAuthToken();
@@ -61,6 +67,9 @@ class SocialTokenTest {
         assertThat(converted.getOpenId()).isEqualTo("open_id_789");
         assertThat(converted.getUnionId()).isEqualTo("union_id_abc");
         assertThat(converted.getScope()).isEqualTo("read,write");
+        assertThat(converted.getTokenType()).isEqualTo("Bearer");
+        assertThat(converted.getIdToken()).isEqualTo("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig");
+        assertThat(converted.getCorpId()).isEqualTo("ding_corp_001");
     }
 
     @Test

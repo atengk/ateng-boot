@@ -85,6 +85,16 @@ class InMemorySocialAuthStateCacheTest {
 
         cache.expire(key);
         assertThat(cache.containsKey(key)).isFalse();
+
+        // 验证 PKCE code_verifier 等非 URL 原生键值写入 rawStateValue，不污染 redirectUrl
+        String pkceKey = "HUAWEI_V3:code_verifier:state_123";
+        String codeVerifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        cache.cache(pkceKey, codeVerifier);
+        assertThat(cache.get(pkceKey)).isEqualTo(codeVerifier);
+        StateContext pkceCtx = cache.getContext(pkceKey);
+        assertThat(pkceCtx).isNotNull();
+        assertThat(pkceCtx.getRawStateValue()).isEqualTo(codeVerifier);
+        assertThat(pkceCtx.getRedirectUrl()).isNull();
     }
 
     @Test

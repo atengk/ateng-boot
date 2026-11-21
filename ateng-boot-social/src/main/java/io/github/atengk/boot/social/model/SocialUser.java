@@ -103,6 +103,11 @@ public class SocialUser implements Serializable {
     private String gender;
 
     /**
+     * 是否为第三方平台快照虚拟账号（如微信公众号未关注弹窗的虚拟快照页账号或钉钉访客标识）
+     */
+    private boolean snapshotUser;
+
+    /**
      * 原始第三方授权 Token 凭证快照（可强转为 AuthToken 获取 accessToken、refreshToken 等）
      */
     private Object rawToken;
@@ -170,6 +175,7 @@ public class SocialUser implements Serializable {
 
         String uuid = authUser.getUuid() != null && !authUser.getUuid().isBlank() ? authUser.getUuid() : openId;
         String genderDesc = authUser.getGender() != null ? authUser.getGender().name() : null;
+        boolean snapshotUser = resolveSnapshotUser(authUser, rawMap);
 
         return SocialUser.builder()
                 .openId(openId)
@@ -185,9 +191,26 @@ public class SocialUser implements Serializable {
                 .email(authUser.getEmail())
                 .remark(authUser.getRemark())
                 .gender(genderDesc)
+                .snapshotUser(snapshotUser)
                 .rawToken(token)
                 .rawUserInfo(rawMap)
                 .build();
+    }
+
+    private static boolean resolveSnapshotUser(AuthUser authUser, Map<String, Object> rawMap) {
+        if (authUser.isSnapshotUser()) {
+            return true;
+        }
+        if (rawMap != null && !rawMap.isEmpty()) {
+            Object rawSnapshot = rawMap.get("is_snapshotuser");
+            if (rawSnapshot != null && ("1".equals(String.valueOf(rawSnapshot)) || Boolean.TRUE.equals(rawSnapshot))) {
+                return true;
+            }
+            if (Boolean.TRUE.equals(rawMap.get("visitor"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

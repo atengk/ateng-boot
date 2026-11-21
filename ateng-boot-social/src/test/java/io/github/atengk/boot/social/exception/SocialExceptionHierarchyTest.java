@@ -87,4 +87,19 @@ class SocialExceptionHierarchyTest {
         SocialRedirectUriInvalidException exWithCause = new SocialRedirectUriInvalidException("URI格式错误", cause);
         assertThat(exWithCause.getCause()).isSameAs(cause);
     }
+
+    @Test
+    @DisplayName("6. SocialSnapshotUserException: 验证快照虚拟账号拦截异常 (7009)")
+    void testSocialSnapshotUserException() {
+        SocialSnapshotUserException ex = new SocialSnapshotUserException("wechat_mp_app", "wx_snap_001");
+        assertThat(ex).isInstanceOf(SocialException.class);
+        assertThat(ex.getResultCode()).isEqualTo(SocialResultCode.SOCIAL_SNAPSHOT_USER_REJECTED);
+        assertThat(ex.getResultCode().getCode()).isEqualTo(7009);
+        assertThat(ex.getMessage()).contains("wechat_mp_app").contains("wx_snap_001");
+
+        Throwable cause = new RuntimeException("Snapshot restriction");
+        SocialSnapshotUserException exWithCause = new SocialSnapshotUserException("快照虚拟号禁止登录", cause);
+        assertThat(exWithCause.getResultCode()).isEqualTo(SocialResultCode.SOCIAL_SNAPSHOT_USER_REJECTED);
+        assertThat(exWithCause.getCause()).isSameAs(cause);
+    }
 }

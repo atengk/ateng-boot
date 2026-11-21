@@ -90,23 +90,36 @@ public interface SocialAuthStateCache extends AuthStateCache {
         StateContext existing = getContext(key);
         if (existing != null) {
             // 若已预存结构化上下文，保留原有租户与扩展数据，仅在未设置跳转地址且传入有效深链时补充并持久化写回
-            if (existing.getRedirectUrl() == null && isCustomRedirectUrl(key, value)) {
+            if (existing.getRedirectUrl() == null && isRedirectUrlCandidate(key, value)) {
                 existing.setRedirectUrl(value);
                 set(key, existing, DEFAULT_STATE_TIMEOUT);
             }
             return;
         }
+        boolean redirectCandidate = isRedirectUrlCandidate(key, value);
         StateContext fallbackContext = StateContext.builder()
-                .redirectUrl(isCustomRedirectUrl(key, value) ? value : null)
+                .rawStateValue(isCustomRedirectUrl(key, value) ? value : null)
+                .redirectUrl(redirectCandidate ? value : null)
                 .build();
         set(key, fallbackContext, DEFAULT_STATE_TIMEOUT);
     }
 
     /**
-     * 判断传入的 value 是否为自定义回调/跳转 URL（过滤 Anduin 默认以 key 作为 value 的占位行为）
+     * 判断传入的 value 是否为非空且不同于 key 本身的自定义状态值
      */
     static boolean isCustomRedirectUrl(String key, String value) {
         return value != null && !value.isBlank() && !value.equals(key);
+    }
+
+    /**
+     * 判断传入的 value 是否为合法的重定向 URL 候选值（排除 PKCE code_verifier 等随机串，避免污染 redirectUrl）
+     */
+    static boolean isRedirectUrlCandidate(String key, String value) {
+        if (!isCustomRedirectUrl(key, value)) {
+            return false;
+        }
+        String trimmed = value.trim();
+        return trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("/");
     }
 
     @Override
@@ -114,6 +127,9 @@ public interface SocialAuthStateCache extends AuthStateCache {
         StateContext ctx = getContext(key);
         if (ctx == null) {
             return null;
+        }
+        if (ctx.getRawStateValue() != null && !ctx.getRawStateValue().isBlank()) {
+            return ctx.getRawStateValue();
         }
         return ctx.getRedirectUrl() != null ? ctx.getRedirectUrl() : key;
     }

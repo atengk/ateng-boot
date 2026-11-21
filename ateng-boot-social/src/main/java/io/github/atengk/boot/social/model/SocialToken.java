@@ -58,6 +58,21 @@ public class SocialToken implements Serializable {
     private String scope;
 
     /**
+     * 访问令牌类型（如 Bearer）
+     */
+    private String tokenType;
+
+    /**
+     * OIDC 身份令牌（ID Token，适用于 Apple、Okta、华为 V3、Line 等支持 OpenID Connect 的平台）
+     */
+    private String idToken;
+
+    /**
+     * 企业组织标识（适用于钉钉 V2 等企业协同平台）
+     */
+    private String corpId;
+
+    /**
      * 原始第三方授权 Token 凭据快照（如 Anduin AuthToken 原生对象）
      */
     private Object rawToken;
@@ -79,6 +94,9 @@ public class SocialToken implements Serializable {
                 .openId(authToken.getOpenId())
                 .unionId(authToken.getUnionId())
                 .scope(authToken.getScope())
+                .tokenType(authToken.getTokenType())
+                .idToken(authToken.getIdToken())
+                .corpId(authToken.getCorpId())
                 .rawToken(authToken)
                 .build();
     }
@@ -96,6 +114,9 @@ public class SocialToken implements Serializable {
                 .openId(this.openId)
                 .unionId(this.unionId)
                 .scope(this.scope)
+                .tokenType(this.tokenType)
+                .idToken(this.idToken)
+                .corpId(this.corpId)
                 .build();
     }
 

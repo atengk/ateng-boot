@@ -89,5 +89,31 @@ class SocialUserTest {
         assertThat(result.getOpenId()).isEqualTo("only-uuid");
         assertThat(result.getUnionId()).isNull();
         assertThat(result.getRawUserInfo()).isNotNull().isEmpty();
+        assertThat(result.isSnapshotUser()).isFalse();
+    }
+
+    @Test
+    @DisplayName("验证微信快照虚拟号与钉钉访客 snapshotUser 标识提取")
+    void testFromAuthUser_SnapshotUserExtraction() {
+        // 1. AuthUser 原生 snapshotUser = true
+        AuthUser dingVisitor = AuthUser.builder()
+                .uuid("ding_visitor_01")
+                .source("DINGTALK_V2")
+                .snapshotUser(true)
+                .build();
+        SocialUser user1 = SocialUser.fromAuthUser(dingVisitor);
+        assertThat(user1.isSnapshotUser()).isTrue();
+
+        // 2. 微信 rawUserInfo 中携带 is_snapshotuser = 1
+        ObjectNode wxRaw = objectMapper.createObjectNode();
+        wxRaw.put("openid", "wx_snap_open_01");
+        wxRaw.put("is_snapshotuser", 1);
+        AuthUser wxSnapshot = AuthUser.builder()
+                .uuid("wx_snap_open_01")
+                .source("WECHAT_MP")
+                .rawUserInfo(wxRaw)
+                .build();
+        SocialUser user2 = SocialUser.fromAuthUser(wxSnapshot);
+        assertThat(user2.isSnapshotUser()).isTrue();
     }
 }

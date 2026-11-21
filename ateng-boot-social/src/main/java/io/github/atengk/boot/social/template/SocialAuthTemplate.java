@@ -13,6 +13,7 @@ import io.github.atengk.boot.social.event.SocialUnboundEvent;
 import io.github.atengk.boot.social.exception.SocialAlreadyBoundException;
 import io.github.atengk.boot.social.exception.SocialAuthException;
 import io.github.atengk.boot.social.exception.SocialException;
+import io.github.atengk.boot.social.exception.SocialSnapshotUserException;
 import io.github.atengk.boot.social.exception.SocialStateExpiredException;
 import io.github.atengk.boot.social.exception.SocialUnbindRejectedException;
 import io.github.atengk.boot.social.factory.SocialAppFactory;
@@ -245,21 +246,17 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             }
         }
 
-        // 2. 调用第三方平台换码获取标准化用户画像（若换码异常则确定性清理 State 阅后即焚防重放）
+        // 2. 调用第三方平台换码获取标准化用户画像（若换码异常则确定性清理 State 与 PKCE code_verifier 阅后即焚防重放）
         SocialUser socialUser;
+        StateContext stateContext = null;
         try {
             socialUser = exchangeSocialUser(appKey, appConfig, callback);
-        } catch (Throwable ex) {
+        } finally {
+            // 3. 换码结束，原子消费并销毁防伪 StateContext 与 PKCE code_verifier（阅后即焚）
             if (state != null && !state.isBlank()) {
-                stateCache.removeContext(state);
+                stateContext = stateCache.removeContext(state);
+                cleanupPkceCodeVerifier(appConfig, state);
             }
-            throw ex;
-        }
-
-        // 3. 换码成功后，原子消费并销毁防伪 StateContext（阅后即焚）
-        StateContext stateContext = null;
-        if (state != null && !state.isBlank()) {
-            stateContext = stateCache.removeContext(state);
         }
 
         // 4. 联动持久化 SPI 检索绑定的本地用户
@@ -384,7 +381,7 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
         // 2. 解析生效的应用标识并防御跨应用篡改
         if (appKey != null && !appKey.isBlank() && socialUser.getAppKey() != null && !appKey.equals(socialUser.getAppKey())) {
             log.warn("BindTicket appKey mismatch: ticketAppKey=[{}], paramAppKey=[{}]", socialUser.getAppKey(), appKey);
-            throw new SocialException("绑定凭据关联的应用标识与当前参数不匹配");
+            throw new SocialException(SocialResultCode.SOCIAL_BIND_TICKET_INVALID, "绑定凭据关联的应用标识与当前参数不匹配");
         }
         String effectiveAppKey = (appKey != null && !appKey.isBlank()) ? appKey : socialUser.getAppKey();
         if (effectiveAppKey == null || effectiveAppKey.isBlank()) {
@@ -465,9 +462,10 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
         try {
             socialUser = exchangeSocialUser(appKey, appConfig, callback);
         } finally {
-            // 换码后原子消费并销毁防伪 StateContext（阅后即焚防重放）
+            // 换码后原子消费并销毁防伪 StateContext 与 PKCE code_verifier（阅后即焚防重放）
             if (state != null && !state.isBlank()) {
                 stateCache.removeContext(state);
+                cleanupPkceCodeVerifier(appConfig, state);
             }
         }
 
@@ -630,9 +628,15 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
                 log.warn("OAuth2 state invalid or expired: appKey=[{}], state=[{}]", appKey, state);
                 throw new SocialStateExpiredException(state);
             }
-            stateCache.removeContext(state);
         }
-        return exchangeSocialUser(appKey, appConfig, callback);
+        try {
+            return exchangeSocialUser(appKey, appConfig, callback);
+        } finally {
+            if (state != null && !state.isBlank()) {
+                stateCache.removeContext(state);
+                cleanupPkceCodeVerifier(appConfig, state);
+            }
+        }
     }
 
     /**
@@ -826,9 +830,47 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             SocialUser socialUser = SocialUser.fromAuthUser(authResponse.getData(), appConfig.getSource());
             if (socialUser != null) {
                 socialUser.setAppKey(appKey);
+                if (socialUser.isSnapshotUser() && isRejectSnapshotUserEnabled(appKey, appConfig)) {
+                    log.warn("Rejected social snapshot virtual user: appKey=[{}], source=[{}], openId=[{}]",
+                            appKey, socialUser.getSource(), socialUser.getOpenId());
+                    throw new SocialSnapshotUserException(appKey, socialUser.getOpenId());
+                }
             }
             return socialUser;
         });
+    }
+
+    /**
+     * 确定性销毁 OAuth 2.1 PKCE 模式生成的 code_verifier 缓存键（阅后即焚）
+     */
+    private void cleanupPkceCodeVerifier(SocialAppConfig appConfig, String state) {
+        if (state == null || state.isBlank() || appConfig == null) {
+            return;
+        }
+        String source = appConfig.getSource();
+        if (source != null && !source.isBlank()) {
+            String trimmed = source.trim();
+            stateCache.removeContext(trimmed + ":code_verifier:" + state);
+            stateCache.removeContext(trimmed.toUpperCase(java.util.Locale.ROOT) + ":code_verifier:" + state);
+            stateCache.removeContext(trimmed.toLowerCase(java.util.Locale.ROOT) + ":code_verifier:" + state);
+        }
+    }
+
+    private boolean isRejectSnapshotUserEnabled(String appKey, SocialAppConfig appConfig) {
+        if (appConfig != null && appConfig.getRejectSnapshotUser() != null) {
+            return appConfig.getRejectSnapshotUser();
+        }
+        if (appKey != null && !appKey.isBlank()) {
+            try {
+                SocialAppConfig latestConfig = socialAppFactory.getAppConfig(appKey);
+                if (latestConfig != null && latestConfig.getRejectSnapshotUser() != null) {
+                    return latestConfig.getRejectSnapshotUser();
+                }
+            } catch (Exception ex) {
+                log.debug("获取应用配置失败，回退至全局 rejectSnapshotUser 配置: appKey=[{}], cause=[{}]", appKey, ex.getMessage());
+            }
+        }
+        return properties != null && properties.isRejectSnapshotUser();
     }
 
     /**

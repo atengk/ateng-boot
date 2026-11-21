@@ -317,6 +317,70 @@ class SocialAppFactoryTest {
                 .isSameAs(defaultClient);
     }
 
+    @Test
+    @DisplayName("验证企业级平台专有配置 (PKCE / 微软 Entra / 企微V2 / 钉钉V2 / Apple / Okta) 100% 映射至 AuthConfig")
+    void testEnterprisePlatformSpecificPropertiesMapping() {
+        SocialAppItemProperties enterpriseProps = new SocialAppItemProperties();
+        enterpriseProps.setSource("MICROSOFT");
+        enterpriseProps.setClientId("ms-client-id");
+        enterpriseProps.setClientSecret("ms-client-secret");
+        enterpriseProps.setRedirectUri("https://ateng.example.com/oauth/ms/callback");
+        enterpriseProps.setPkce(true);
+        enterpriseProps.setMicrosoftTenantId("ms-directory-tenant-guid");
+        enterpriseProps.setTenantId("legacy-fallback-tenant");
+        enterpriseProps.setKid("apple-kid-123");
+        enterpriseProps.setTeamId("apple-team-456");
+        enterpriseProps.setLoginType("ServiceApp");
+        enterpriseProps.setLang("en");
+        enterpriseProps.setUsertype("admin");
+        enterpriseProps.setDingTalkOrgType("management");
+        enterpriseProps.setDingTalkCorpId("ding-corp-1");
+        enterpriseProps.setDingTalkExclusiveLogin(true);
+        enterpriseProps.setDingTalkExclusiveCorpId("ding-excl-corp-2");
+        enterpriseProps.setDomainPrefix("ateng-okta");
+        enterpriseProps.setAuthServerId("custom-auth-srv");
+        enterpriseProps.setDeviceId("dev-001");
+        enterpriseProps.setClientOsType(1);
+        enterpriseProps.setPackId("io.github.atengk.app");
+        enterpriseProps.setStackOverflowKey("so-key-999");
+        enterpriseProps.setRejectSnapshotUser(true);
+
+        properties.getApps().put("enterprise-ms", enterpriseProps);
+
+        SocialAppConfig appConfig = factory.getAppConfig("enterprise-ms");
+        assertThat(appConfig.isPkce()).isTrue();
+        assertThat(appConfig.getMicrosoftTenantId()).isEqualTo("ms-directory-tenant-guid");
+        assertThat(appConfig.getRejectSnapshotUser()).isTrue();
+
+        AuthConfig authConfig = appConfig.toAuthConfig();
+        assertThat(authConfig.isPkce()).isTrue();
+        // 优先取 microsoftTenantId
+        assertThat(authConfig.getTenantId()).isEqualTo("ms-directory-tenant-guid");
+        assertThat(authConfig.getKid()).isEqualTo("apple-kid-123");
+        assertThat(authConfig.getTeamId()).isEqualTo("apple-team-456");
+        assertThat(authConfig.getLoginType()).isEqualTo("ServiceApp");
+        assertThat(authConfig.getLang()).isEqualTo("en");
+        assertThat(authConfig.getUsertype()).isEqualTo("admin");
+        assertThat(authConfig.getDingTalkOrgType()).isEqualTo("management");
+        assertThat(authConfig.getDingTalkCorpId()).isEqualTo("ding-corp-1");
+        assertThat(authConfig.isDingTalkExclusiveLogin()).isTrue();
+        assertThat(authConfig.getDingTalkExclusiveCorpId()).isEqualTo("ding-excl-corp-2");
+        assertThat(authConfig.getDomainPrefix()).isEqualTo("ateng-okta");
+        assertThat(authConfig.getAuthServerId()).isEqualTo("custom-auth-srv");
+        assertThat(authConfig.getDeviceId()).isEqualTo("dev-001");
+        assertThat(authConfig.getClientOsType()).isEqualTo(1);
+        assertThat(authConfig.getPackId()).isEqualTo("io.github.atengk.app");
+        assertThat(authConfig.getStackOverflowKey()).isEqualTo("so-key-999");
+
+        // 当 microsoftTenantId 未设置时，平滑回退至 tenantId
+        SocialAppConfig fallbackMsConfig = SocialAppConfig.builder()
+                .clientId("c")
+                .clientSecret("s")
+                .tenantId("fallback-ms-tenant")
+                .build();
+        assertThat(fallbackMsConfig.toAuthConfig().getTenantId()).isEqualTo("fallback-ms-tenant");
+    }
+
     public enum CustomEnterpriseSource implements AuthSource {
         KEYCLOAK,
         GITHUB;

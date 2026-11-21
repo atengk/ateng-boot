@@ -72,6 +72,11 @@ public class AtengSocialProperties {
     private boolean autoSignUp = false;
 
     /**
+     * 全局默认是否拒绝第三方平台快照虚拟账号（如微信公众号未关注快照页虚拟号或钉钉访客），默认 false
+     */
+    private boolean rejectSnapshotUser = false;
+
+    /**
      * 全局默认出站代理配置（可选）
      */
     @NestedConfigurationProperty
