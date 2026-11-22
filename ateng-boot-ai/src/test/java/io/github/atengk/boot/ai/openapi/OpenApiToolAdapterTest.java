@@ -552,18 +552,18 @@ class OpenApiToolAdapterTest {
     @Test
     @DisplayName("SSRF 防卫：阻断 3xx 重定向跳转私网元数据端点")
     void testSsrfBlocksHttpRedirectToPrivateNetwork() {
-        RestClient.Builder builder = RestClient.builder().baseUrl("https://api.partner.com/api/v1");
+        RestClient.Builder builder = RestClient.builder().baseUrl("https://203.0.113.10/api/v1");
         MockRestServiceServer mockServer = MockRestServiceServer.bindTo(builder).build();
         RestClient restClient = builder.build();
 
         OpenApiToolProperties props = OpenApiToolProperties.builder()
-                .baseUrl("https://api.partner.com/api/v1")
+                .baseUrl("https://203.0.113.10/api/v1")
                 .blockPrivateNetwork(true)
-                .allowedHosts(java.util.Set.of("api.partner.com"))
+                .allowedHosts(java.util.Set.of("203.0.113.10"))
                 .build();
 
         OpenApiToolAdapter adapter = OpenApiToolAdapter.fromString(OPENAPI_V3_SPEC, props, restClient);
-        mockServer.expect(requestTo("https://api.partner.com/api/v1/orders/1"))
+        mockServer.expect(requestTo("https://203.0.113.10/api/v1/orders/1"))
                 .andExpect(method(HttpMethod.GET))
                 .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators
                         .withStatus(org.springframework.http.HttpStatus.FOUND)
