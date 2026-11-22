@@ -769,4 +769,59 @@ class SearchBulkProcessorTest {
         assertThat(MDC.get("traceId")).isNull();
         assertThat(TenantContextHolder.getTenantId()).isNull();
     }
+
+    @Test
+    @DisplayName("测试手动 flush 等待后台异步在途批次及死信回调全部完成后返回且支持回调内重入")
+    void testFlushWaitsForInFlightAsyncBatchAndDeadLetterCallbackWithoutSelfDeadlock() throws Exception {
+        // Mget (strict ownership off or default): UserDoc 无租户字段，直接使用 400 致命错误并延迟 150ms 触发异步窗口
+        mockWebServer.enqueue(esResponse(400, "{\"error\":{\"type\":\"illegal_argument_exception\",\"reason\":\"simulated fatal bulk failure\"}}")
+                .setBodyDelay(150, TimeUnit.MILLISECONDS));
+
+        CountDownLatch workerEnteredBeforeBulk = new CountDownLatch(1);
+        AtomicInteger batchFailureCount = new AtomicInteger(0);
+        AtomicInteger afterBulkCount = new AtomicInteger(0);
+        AtomicReference<SearchBulkProcessor> processorRef = new AtomicReference<>();
+
+        processor = searchTemplate.newBulkProcessorBuilder()
+                .batchSize(1)
+                .flushInterval(Duration.ofDays(1))
+                .concurrentRequests(1)
+                .maxRetries(0)
+                .listener(new BulkListener() {
+                    @Override
+                    public void beforeBulk(long executionId, int numberOfActions) {
+                        workerEnteredBeforeBulk.countDown();
+                    }
+
+                    @Override
+                    public void afterBulk(long executionId, int numberOfActions, Throwable failure) {
+                        afterBulkCount.incrementAndGet();
+                        // 验证同一执行线程在回调内重入调用 flush() 不会自锁
+                        processorRef.get().flush();
+                    }
+                })
+                .deadLetterHandler(new BulkDeadLetterHandler() {
+                    @Override
+                    public void onBatchFailure(long executionId, List<SearchBulkAction> actions, Throwable failure) {
+                        try {
+                            Thread.sleep(60);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                        batchFailureCount.incrementAndGet();
+                    }
+                })
+                .build();
+        processorRef.set(processor);
+
+        processor.add(UserDoc.builder().id(99L).username("async_race").build());
+        assertThat(workerEnteredBeforeBulk.await(5, TimeUnit.SECONDS)).isTrue();
+
+        // 此时队列已被异步线程抽空，flush() 必须等待在途批次及死信回调完成后再返回
+        processor.flush();
+
+        assertThat(afterBulkCount.get()).isEqualTo(1);
+        assertThat(batchFailureCount.get()).isEqualTo(1);
+        assertThat(processor.getQueueSize()).isZero();
+    }
 }

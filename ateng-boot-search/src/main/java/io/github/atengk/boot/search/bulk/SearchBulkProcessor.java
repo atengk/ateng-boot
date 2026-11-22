@@ -46,6 +46,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -93,6 +94,9 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
 
     private final Semaphore concurrentSemaphore;
     private final ReentrantLock flushLock = new ReentrantLock();
+    private final ReentrantLock inFlightLock = new ReentrantLock();
+    private final Condition inFlightDrainedCondition = inFlightLock.newCondition();
+    private final ThreadLocal<Integer> currentThreadExecutionDepth = new ThreadLocal<>();
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -545,6 +549,10 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
         List<SearchBulkAction> batch;
         try {
             batch = pollBatch(batchSize, bufferSizeInBytes);
+            // 在持锁抽取的同时登记在途计数，消除队列清空后到工作线程进入执行之间的观测空窗
+            if (!batch.isEmpty()) {
+                inFlightRequests.incrementAndGet();
+            }
         } finally {
             flushLock.unlock();
         }
@@ -554,7 +562,7 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
         }
 
         // 物理提交当前批次
-        executeBatch(batch);
+        executeReservedBatch(batch);
 
         // 若抽取后队列中仍有足够数据满足批处理阈值，级联触发下一次 Flush
         if (currentCount.get() >= batchSize || currentBytes.get() >= bufferSizeInBytes) {
@@ -562,14 +570,17 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
         }
     }
 
-    private void executeBatch(List<SearchBulkAction> batch) {
+    private void executeReservedBatch(List<SearchBulkAction> batch) {
         if (batch == null || batch.isEmpty()) {
+            signalInFlightCompleted();
             return;
         }
 
         long executionId = executionCounter.incrementAndGet();
-        inFlightRequests.incrementAndGet();
         boolean acquired = false;
+        Integer previousDepthObj = currentThreadExecutionDepth.get();
+        int previousDepth = previousDepthObj != null ? previousDepthObj : 0;
+        currentThreadExecutionDepth.set(previousDepth + 1);
         AsyncContext.ContextSnapshot previousContext = AsyncContext.capturePrevious();
         try {
             if (concurrentSemaphore != null) {
@@ -600,14 +611,38 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
             log.error("Bulk execution [{}] failed for {} actions: {}", executionId, batch.size(), t.getMessage(), t);
         } finally {
             try {
-                previousContext.restore();
+                try {
+                    previousContext.restore();
+                } finally {
+                    if (previousDepth == 0) {
+                        currentThreadExecutionDepth.remove();
+                    } else {
+                        currentThreadExecutionDepth.set(previousDepth);
+                    }
+                }
             } finally {
                 if (acquired && concurrentSemaphore != null) {
                     concurrentSemaphore.release();
                 }
-                inFlightRequests.decrementAndGet();
+                signalInFlightCompleted();
             }
         }
+    }
+
+    private void signalInFlightCompleted() {
+        if (inFlightRequests.decrementAndGet() <= 0) {
+            inFlightLock.lock();
+            try {
+                inFlightDrainedCondition.signalAll();
+            } finally {
+                inFlightLock.unlock();
+            }
+        }
+    }
+
+    private boolean isCurrentThreadExecutingBatch() {
+        Integer depth = currentThreadExecutionDepth.get();
+        return depth != null && depth > 0;
     }
 
     private void applyEffectiveBatchContext(List<SearchBulkAction> batch) {
@@ -938,14 +973,29 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
     }
 
     /**
-     * 手动同步强制刷盘，排空当前缓冲队列中累积的所有数据
+     * 手动同步强制刷盘，排空当前缓冲队列并等待在途异步批次执行及回调完成
      */
     public void flush() {
+        while (true) {
+            drainQueueSynchronously();
+            if (isCurrentThreadExecutingBatch() || inFlightRequests.get() <= 0) {
+                break;
+            }
+            if (!awaitInFlightDrain()) {
+                break;
+            }
+        }
+    }
+
+    private void drainQueueSynchronously() {
         while (!queue.isEmpty() || activeProducers.get() > 0) {
             flushLock.lock();
             List<SearchBulkAction> batch;
             try {
                 batch = pollBatch(batchSize, bufferSizeInBytes);
+                if (!batch.isEmpty()) {
+                    inFlightRequests.incrementAndGet();
+                }
             } finally {
                 flushLock.unlock();
             }
@@ -957,7 +1007,22 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
                 }
                 break;
             }
-            executeBatch(batch);
+            executeReservedBatch(batch);
+        }
+    }
+
+    private boolean awaitInFlightDrain() {
+        inFlightLock.lock();
+        try {
+            while (queue.isEmpty() && !isCurrentThreadExecutingBatch() && inFlightRequests.get() > 0) {
+                inFlightDrainedCondition.await(50, TimeUnit.MILLISECONDS);
+            }
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        } finally {
+            inFlightLock.unlock();
         }
     }
 
@@ -984,8 +1049,8 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
                 Thread.onSpinWait();
             }
 
-            // 3. 强制刷盘排空队列剩余残留
-            flush();
+            // 3. 强制刷盘排空队列剩余残留（在途异步请求交由步骤 5 按 timeout 统一等待）
+            drainQueueSynchronously();
 
             // 4. 关闭内部受管资源（独立 Builder 创建时自行回收；Spring 容器装配场景由容器管理）
             if (ownsScheduler) {
