@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -193,8 +194,20 @@ class LocalJobOverlappingAndFacadeTest {
                 jobTemplate.updateCron(dynamicJobName, "invalid cron expression"));
         assertThat(jobTemplate.getJob(dynamicJobName).getFixedDelay()).isEqualTo(Duration.ofMillis(300));
 
-        // 4. 手动触发
-        JobResult triggerResult = jobTemplate.trigger(dynamicJobName);
+        // 4. 手动触发（等待注册瞬间已调度的首轮执行结束，避免与 DISCARD 并发冲突）
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        JobResult triggerResult = null;
+        while (System.nanoTime() < deadline && !Thread.currentThread().isInterrupted()) {
+            if (!jobTemplate.isExecuting(dynamicJobName)) {
+                triggerResult = jobTemplate.trigger(dynamicJobName);
+                if (triggerResult.isSuccess()
+                        || !"Skipped due to overlapping DISCARD policy".equals(triggerResult.getMessage())) {
+                    break;
+                }
+            }
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(10));
+        }
+        assertThat(triggerResult).isNotNull();
         assertThat(triggerResult.isSuccess()).isTrue();
         assertThat(dynamicCount.get()).isGreaterThanOrEqualTo(1);
 
