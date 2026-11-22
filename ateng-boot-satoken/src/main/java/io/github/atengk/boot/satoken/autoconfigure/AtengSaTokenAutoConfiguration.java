@@ -106,6 +106,11 @@ public class AtengSaTokenAutoConfiguration {
         LoginHelper.setPrimaryLoginType(properties.getPrimaryLoginType());
         LoginHelper.setSuperAdminRoles(properties.getSuperAdminRoles());
         LoginHelper.setSuperAdminPermissions(properties.getSuperAdminPermissions());
+        if (properties.getOnlineSession() != null) {
+            LoginHelper.setOnlineSessionMaxScanLimit(properties.getOnlineSession().getMaxScanLimit());
+        } else {
+            LoginHelper.resetOnlineSessionConfig();
+        }
 
         // 根据配置注册或恢复 Sa-Token 鉴权注解多账号自动路由策略
         if (properties.getInterceptor() != null && properties.getInterceptor().isAutoRouteAnnotationType()) {

@@ -33,6 +33,7 @@ class SaTokenPropertiesTest {
         io.github.atengk.boot.core.context.UserContextHolder.clear();
         io.github.atengk.boot.core.context.TenantContextHolder.clear();
         io.github.atengk.boot.satoken.util.LoginHelper.resetSuperAdminConfig();
+        io.github.atengk.boot.satoken.util.LoginHelper.resetOnlineSessionConfig();
         io.github.atengk.boot.satoken.context.SaTokenRouteContextHolder.clear();
         io.github.atengk.boot.satoken.strategy.SaTokenAnnotationAutoRouteRegistrar.restoreDefaultsIfManaged();
     }
@@ -293,6 +294,22 @@ class SaTokenPropertiesTest {
                     assertThat(context).hasNotFailed();
                     SaTokenProperties props = context.getBean(SaTokenProperties.class);
                     assertThat(props.getPermissionCache().isTenantScoped()).isTrue();
+                });
+    }
+
+    @Test
+    @DisplayName("验证 online-session.max-scan-limit 默认值 2000 及自定义绑定桥接至 LoginHelper")
+    void testOnlineSessionPropertiesBindingAndBridging() {
+        SaTokenProperties defaults = new SaTokenProperties();
+        assertThat(defaults.getOnlineSession().getMaxScanLimit()).isEqualTo(2000);
+
+        contextRunner
+                .withPropertyValues("ateng.boot.satoken.online-session.max-scan-limit=5000")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    SaTokenProperties props = context.getBean(SaTokenProperties.class);
+                    assertThat(props.getOnlineSession().getMaxScanLimit()).isEqualTo(5000);
+                    assertThat(io.github.atengk.boot.satoken.util.LoginHelper.getOnlineSessionMaxScanLimit()).isEqualTo(5000);
                 });
     }
 }

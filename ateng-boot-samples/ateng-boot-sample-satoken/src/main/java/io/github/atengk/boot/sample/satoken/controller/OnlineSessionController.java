@@ -5,6 +5,7 @@ import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.satoken.vo.DisableStatusVO;
 import io.github.atengk.boot.satoken.model.OnlineUser;
+import io.github.atengk.boot.satoken.model.OnlineUserQuery;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
@@ -47,24 +48,98 @@ public class OnlineSessionController {
     }
 
     /**
-     * 分页检索在线用户列表（增量游标 SCAN 检索与分页切片，支持按 loginType 过滤）
+     * 分页检索在线用户列表（支持多租户精确隔离、CIDR IP/设备条件检索与增量游标 SCAN 分页切片）
      *
-     * @param loginType 账号体系类型标识（可选，默认主体系）
-     * @param keyword   模糊匹配关键字（账号、用户名、用户 ID、Token）
-     * @param page      当前页码
-     * @param size      每页记录数
+     * @param loginType    账号体系类型标识（可选，默认主体系）
+     * @param tenantId     归属租户标识（可选，精确过滤）
+     * @param keyword      模糊匹配关键字（账号、用户名、用户 ID、Token）
+     * @param userId       用户唯一标识（精确过滤）
+     * @param userAccount  登录账号（模糊过滤）
+     * @param userName     用户姓名（模糊过滤）
+     * @param loginDevice  终端设备类型（如 PC / APP）
+     * @param loginIp      登录客户端 IP 或 CIDR 网段（如 10.10.5.0/24）
+     * @param maxScanLimit 单次条件检索最大扫描上限覆盖值（可选）
+     * @param page         当前页码
+     * @param size         每页记录数
      * @return 分页结果
      */
     @GetMapping("/page")
     public Result<PageResult<OnlineUser>> searchOnlineUserPage(
             @RequestParam(value = "loginType", required = false) String loginType,
+            @RequestParam(value = "tenantId", required = false) String tenantId,
             @RequestParam(value = "keyword", required = false) String keyword,
+            @RequestParam(value = "userId", required = false) String userId,
+            @RequestParam(value = "userAccount", required = false) String userAccount,
+            @RequestParam(value = "userName", required = false) String userName,
+            @RequestParam(value = "loginDevice", required = false) String loginDevice,
+            @RequestParam(value = "loginIp", required = false) String loginIp,
+            @RequestParam(value = "maxScanLimit", required = false) Integer maxScanLimit,
             @RequestParam(value = "page", defaultValue = "1") int page,
             @RequestParam(value = "size", defaultValue = "10") int size) {
+        OnlineUserQuery query = OnlineUserQuery.builder()
+                .loginType(loginType)
+                .tenantId(tenantId)
+                .keyword(keyword)
+                .userId(userId)
+                .userAccount(userAccount)
+                .userName(userName)
+                .loginDevice(loginDevice)
+                .loginIp(loginIp)
+                .maxScanLimit(maxScanLimit)
+                .build();
+        if (!query.hasNoFilterCriteria()) {
+            return Result.success(LoginHelper.searchOnlineUserPage(loginType, query, page, size));
+        }
         if (loginType != null && !loginType.isBlank()) {
             return Result.success(LoginHelper.searchOnlineUserPage(loginType, keyword, page, size));
         }
         return Result.success(LoginHelper.searchOnlineUserPage(keyword, page, size));
+    }
+
+    /**
+     * 根据 Token 查询关联的在线会话详情（含归属租户信息）
+     *
+     * @param tokenValue 目标会话凭据
+     * @param loginType  账号体系标识（可选，默认主体系）
+     * @return 在线会话模型（Token 已过期或无效时 data 为 null）
+     */
+    @GetMapping("/token-info")
+    public Result<OnlineUser> getOnlineUserByToken(
+            @NotBlank(message = "Token 凭据不能为空") @RequestParam("tokenValue") String tokenValue,
+            @RequestParam(value = "loginType", required = false) String loginType) {
+        return Result.success(LoginHelper.getOnlineUserByToken(loginType, tokenValue));
+    }
+
+    /**
+     * 带归属租户防越权校验地强制指定 Token 下线
+     *
+     * @param tokenValue       目标会话凭据
+     * @param expectedTenantId 操作方预期归属租户标识
+     * @param loginType        账号体系标识（可选，默认主体系）
+     * @return true 表示校验通过并成功踢出；false 表示 Token 已不存在（幂等）
+     */
+    @PostMapping("/kickout-token-for-tenant")
+    public Result<Boolean> kickoutByTokenForTenant(
+            @NotBlank(message = "Token 凭据不能为空") @RequestParam("tokenValue") String tokenValue,
+            @NotBlank(message = "期望归属租户不能为空") @RequestParam("expectedTenantId") String expectedTenantId,
+            @RequestParam(value = "loginType", required = false) String loginType) {
+        return Result.success(LoginHelper.kickoutByTokenForTenant(loginType, tokenValue, expectedTenantId));
+    }
+
+    /**
+     * 带归属租户防越权校验地主动注销指定 Token
+     *
+     * @param tokenValue       目标会话凭据
+     * @param expectedTenantId 操作方预期归属租户标识
+     * @param loginType        账号体系标识（可选，默认主体系）
+     * @return true 表示校验通过并成功注销；false 表示 Token 已不存在（幂等）
+     */
+    @PostMapping("/logout-token-for-tenant")
+    public Result<Boolean> logoutByTokenValueForTenant(
+            @NotBlank(message = "Token 凭据不能为空") @RequestParam("tokenValue") String tokenValue,
+            @NotBlank(message = "期望归属租户不能为空") @RequestParam("expectedTenantId") String expectedTenantId,
+            @RequestParam(value = "loginType", required = false) String loginType) {
+        return Result.success(LoginHelper.logoutByTokenValueForTenant(loginType, tokenValue, expectedTenantId));
     }
 
     /**

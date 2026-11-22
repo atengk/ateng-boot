@@ -270,4 +270,20 @@ class SaTokenClusterSyncTest {
         assertThat(logoutBroadcast.getLoginType()).isEqualTo("member");
         assertThat(logoutBroadcast.getTargetKey()).isEqualTo("user_88");
     }
+
+    @Test
+    @DisplayName("onMessage: 携带 tenantId 的用户刷新与下线事件定向清理目标租户用户本地缓存")
+    void testRemoteTenantScopedUserInvalidation() {
+        SaTokenClusterMessage remoteUserMsg = SaTokenClusterMessage.of("remote-node-9999", SaTokenClusterEventType.USER_PERMISSION_REFRESH, "admin", "88001");
+        remoteUserMsg.setTenantId("tenant_B");
+        subscriber.onMessage(new DefaultMessage("ateng:satoken:cluster-sync".getBytes(StandardCharsets.UTF_8),
+                JsonUtil.toJsonString(remoteUserMsg).getBytes(StandardCharsets.UTF_8)), null);
+        verify(cacheService).clearLocalUserCache("admin", "tenant_B", "88001");
+
+        SaTokenClusterMessage remoteLogoutMsg = SaTokenClusterMessage.of("remote-node-9999", SaTokenClusterEventType.LOGOUT, null, "operator_88001");
+        remoteLogoutMsg.setTenantId("tenant_B");
+        subscriber.onMessage(new DefaultMessage("ateng:satoken:cluster-sync".getBytes(StandardCharsets.UTF_8),
+                JsonUtil.toJsonString(remoteLogoutMsg).getBytes(StandardCharsets.UTF_8)), null);
+        verify(cacheService).clearLocalUserCache(null, "tenant_B", "operator_88001");
+    }
 }

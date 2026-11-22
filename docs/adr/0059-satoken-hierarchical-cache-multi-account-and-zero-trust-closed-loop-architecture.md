@@ -143,6 +143,16 @@ flowchart TD
   - `LoginFailureLockService` 全量补齐 9 组 `(tenantId, loginType, account, ...)` 对称重载，采用十进制长度前缀定界编码 `scoped:{len}:{tenantId}|{len}:{loginType}|{len}:{account}` 防止冒号/空串键碰撞；
   - `PermissionCacheProperties` 新增 `tenantScoped`（默认 `false`），开启时严格聚焦隔离 `role-perms` 缓存键（`tenantId` 优先取会话所属租户 `LoginHelper.getTenantId(loginType)` 防超管切租户串缓存，回退 `TenantContextHolder.getTenantId()`），同步扩展 `UserRolePermissionLoader` 三参方法与 `SaTokenClusterMessage.tenantId` 集群精准驱逐。
 
+### 11. 复合 `loginId` 鉴权缓存闭环、切租户回源隔离与在线会话多租户防越权治理 (#1164 / #1166)
+- **复合 `loginId` 统合拆解与缓存键严格对称 (#1164)**：
+  - `LoginHelper` 暴露公开不可变 `ParsedLoginId(tenantId, userId, rawLoginId)` 与 `parseCompositeLoginId(Object loginId)`；解析时优先借助活跃会话中 `LoginUser.getTenantId()` 精确匹配 `{tenantId}_` 前缀，彻底消除 `tenantId`（如 `tenant_B`）与 `userId`（如 `operator_88001`）双侧均含下划线 `"_"` 的切分二义性，无会话时按首个 `"_"` 兼容切分；
+  - `CachedStpInterface` 剥离租户前缀向 `UserRolePermissionLoader`（新增带 `tenantId` 的 `default` 三参 `loadRolesByUserId` / `loadDirectPermissionsByUserId` 重载，并强化 `DefaultUserRolePermissionLoader` / `DefaultStpInterface` 的复合 `SaSession` 回退解析）传入真实业务 `userId`；用户角色与直属权限缓存键向 `role-perms:<tenantId>:<roleCode>` 对齐为 `ateng:satoken:cache:[<loginType>:]user-roles:[<tenantId>:]<userId>` 与 `user-perms`；`PermissionCacheService` 补齐 `(loginType, tenantId, userId)` 清理/刷新重载（旧无 `tenantId` 签名自动兼容性清理解除漏清隐患），`SaTokenClusterSyncListener` 同步提取并广播 `tenantId`。
+- **切租户视角下鉴权 DB 回源的归属租户栈隔离 (#1164)**：
+  - 当超管通过 `AtengSaTokenInterceptor` 将 `TenantContextHolder` 切至工作租户 B，触发 `@SaCheckPermission` 二级缓存未命中回调 `UserRolePermissionLoader` 查库时，`CachedStpInterface` 通过 `TenantContextHolder.runWithTenant(ownerTenantId, ...)` 压栈临时切换至权限主体归属租户 A，执行完毕于 `finally` 精准恢复工作租户 B（不干扰外层 `ignoreDepth`），从根本上杜绝 MyBatis-Plus 行级多租户过滤导致的跨租户鉴权串味。
+- **在线会话条件分页与租户防越权强退 (#1166)**：
+  - 新增 `OnlineUserQuery`（支持 `tenantId` 精确筛选、`keyword` 综合匹配、`userId`/`userAccount`/`userName`/`loginDevice` 细化、结合 Core `CidrMatcher` 支持精确与网段匹配的 `loginIp` 过滤及 `maxScanLimit` 覆盖）与 `SaTokenProperties.OnlineSessionProperties`（`online-session.max-scan-limit`，默认 `2000`，替代硬编码 `500` 截断）；
+  - 新增 `getOnlineUserByToken`、`getTokenTenantId`、`isTokenBelongsToTenant` 与带租户归属守护的 `kickoutByTokenForTenant` / `logoutByTokenValueForTenant`：校验令牌归属与 `expectedTenantId` 不一致（含会话缺租户属性）时 Fail-Fast 抛出 `BusinessException(403)` 阻断越权踢人，令牌已过期则幂等返回 `false`。
+
 ---
 
 ## 后果与权衡 (Consequences & Trade-offs)

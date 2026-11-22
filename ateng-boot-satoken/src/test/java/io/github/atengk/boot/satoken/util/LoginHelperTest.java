@@ -5,6 +5,7 @@ import cn.dev33.satoken.stp.parameter.SaLoginParameter;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.satoken.constant.SaTokenConstant;
 import io.github.atengk.boot.satoken.model.LoginUser;
+import io.github.atengk.boot.satoken.model.ParsedLoginId;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
@@ -548,6 +549,62 @@ class LoginHelperTest {
             assertThat(LoginHelper.isSuperAdmin()).isTrue();
         } finally {
             LoginHelper.resetSuperAdminConfig();
+        }
+    }
+
+    @Test
+    @DisplayName("19. parseCompositeLoginId 精确拆解复合 loginId：会话优先消歧与无会话保底")
+    void testParseCompositeLoginId() {
+        try (MockedStatic<StpUtil> stpUtilMock = mockStatic(StpUtil.class)) {
+            cn.dev33.satoken.session.SaSession tenantSession = mock(cn.dev33.satoken.session.SaSession.class);
+            LoginUser tenantBUser = LoginUser.builder()
+                    .tenantId("tenant_B")
+                    .userId("operator_88001")
+                    .build();
+            when(tenantSession.get(SaTokenConstant.LOGIN_USER_KEY)).thenReturn(tenantBUser);
+            stpUtilMock.when(() -> StpUtil.getSessionByLoginId("tenant_B_operator_88001", false))
+                    .thenReturn(tenantSession);
+
+            // 1. 租户与用户 ID 均含下划线时，依据会话真实 tenantId 精确前缀剥离
+            ParsedLoginId withBothUnderscores = LoginHelper.parseCompositeLoginId("tenant_B_operator_88001");
+            assertThat(withBothUnderscores.tenantId()).isEqualTo("tenant_B");
+            assertThat(withBothUnderscores.userId()).isEqualTo("operator_88001");
+            assertThat(withBothUnderscores.rawLoginId()).isEqualTo("tenant_B_operator_88001");
+
+            // 2. 非租户用户且 userId 含下划线时，不被误拆为租户前缀
+            cn.dev33.satoken.session.SaSession plainSession = mock(cn.dev33.satoken.session.SaSession.class);
+            LoginUser plainUser = LoginUser.builder()
+                    .tenantId(null)
+                    .userId("cluster_user_888")
+                    .build();
+            when(plainSession.get(SaTokenConstant.LOGIN_USER_KEY)).thenReturn(plainUser);
+            stpUtilMock.when(() -> StpUtil.getSessionByLoginId("cluster_user_888", false))
+                    .thenReturn(plainSession);
+
+            ParsedLoginId nonTenantUnderscore = LoginHelper.parseCompositeLoginId("cluster_user_888");
+            assertThat(nonTenantUnderscore.tenantId()).isNull();
+            assertThat(nonTenantUnderscore.userId()).isEqualTo("cluster_user_888");
+            assertThat(nonTenantUnderscore.rawLoginId()).isEqualTo("cluster_user_888");
+
+            // 3. 无会话时按首个下划线降级拆解
+            stpUtilMock.when(() -> StpUtil.getSessionByLoginId("tenantA_u1001", false)).thenReturn(null);
+            ParsedLoginId fallback = LoginHelper.parseCompositeLoginId("tenantA_u1001");
+            assertThat(fallback.tenantId()).isEqualTo("tenantA");
+            assertThat(fallback.userId()).isEqualTo("u1001");
+
+            // 4. 无分隔符纯 userId 与空边界入参
+            ParsedLoginId pure = LoginHelper.parseCompositeLoginId("1001");
+            assertThat(pure.tenantId()).isNull();
+            assertThat(pure.userId()).isEqualTo("1001");
+
+            ParsedLoginId nullParsed = LoginHelper.parseCompositeLoginId(null);
+            assertThat(nullParsed.tenantId()).isNull();
+            assertThat(nullParsed.userId()).isNull();
+            assertThat(nullParsed.rawLoginId()).isNull();
+
+            ParsedLoginId blankParsed = LoginHelper.parseCompositeLoginId("   ");
+            assertThat(blankParsed.tenantId()).isNull();
+            assertThat(blankParsed.userId()).isNull();
         }
     }
 }

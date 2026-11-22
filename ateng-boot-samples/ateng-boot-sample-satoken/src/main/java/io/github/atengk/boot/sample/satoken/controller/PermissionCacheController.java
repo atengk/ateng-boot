@@ -4,6 +4,7 @@ import cn.dev33.satoken.stp.StpUtil;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.satoken.cache.PermissionCacheService;
 import io.github.atengk.boot.satoken.util.LoginHelper;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
@@ -69,7 +70,7 @@ public class PermissionCacheController {
      */
     @PostMapping("/refresh-role")
     public Result<String> refreshRole(
-            @RequestParam("roleCode") String roleCode,
+            @NotBlank(message = "角色编码不能为空") @RequestParam("roleCode") String roleCode,
             @RequestParam(value = "loginType", required = false) String loginType,
             @RequestParam(value = "tenantId", required = false) String tenantId) {
         if ((tenantId != null && !tenantId.isBlank()) || (loginType != null && !loginType.isBlank())) {
@@ -81,14 +82,23 @@ public class PermissionCacheController {
     }
 
     /**
-     * 精准刷新指定用户的角色与直属权限缓存
+     * 精准刷新指定用户的角色与直属权限缓存（支持按 loginType 与 tenantId 精确定向刷新）
      *
-     * @param userId 目标用户标识
+     * @param userId    目标用户标识（剥离租户前缀的纯净业务主键）
+     * @param loginType 账号体系标识（可选）
+     * @param tenantId  租户唯一标识（可选）
      * @return 业务结果
      */
     @PostMapping("/refresh-user")
-    public Result<String> refreshUser(@RequestParam("userId") String userId) {
-        permissionCacheService.refreshUserPermissions(userId);
+    public Result<String> refreshUser(
+            @NotBlank(message = "用户标识不能为空") @RequestParam("userId") String userId,
+            @RequestParam(value = "loginType", required = false) String loginType,
+            @RequestParam(value = "tenantId", required = false) String tenantId) {
+        if ((tenantId != null && !tenantId.isBlank()) || (loginType != null && !loginType.isBlank())) {
+            permissionCacheService.refreshUserPermissions(loginType, tenantId, userId);
+        } else {
+            permissionCacheService.refreshUserPermissions(userId);
+        }
         return Result.success("用户权限缓存已刷新: " + userId);
     }
 

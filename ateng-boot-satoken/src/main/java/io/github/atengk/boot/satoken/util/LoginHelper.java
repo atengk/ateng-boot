@@ -9,12 +9,16 @@ import cn.dev33.satoken.stp.StpLogic;
 import cn.dev33.satoken.stp.StpUtil;
 import cn.dev33.satoken.stp.parameter.SaLoginParameter;
 import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.PageResult;
+import io.github.atengk.boot.core.util.CidrMatcher;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.satoken.constant.SaTokenConstant;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.model.OnlineUser;
+import io.github.atengk.boot.satoken.model.OnlineUserQuery;
+import io.github.atengk.boot.satoken.model.ParsedLoginId;
 import io.github.atengk.boot.web.util.IpUtil;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
@@ -28,6 +32,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
@@ -672,6 +677,164 @@ public final class LoginHelper {
     }
 
     /**
+     * 获取当前主账号体系下指定 Token 对应的在线会话聚合模型
+     *
+     * @param tokenValue Token 凭据
+     * @return 在线用户模型，Token 无效或已失效时返回 null
+     */
+    public static OnlineUser getOnlineUserByToken(String tokenValue) {
+        return getOnlineUserByToken(StpUtil.TYPE, tokenValue);
+    }
+
+    /**
+     * 获取指定账号体系下指定 Token 对应的在线会话聚合模型
+     *
+     * @param loginType  账号体系标识（为空时回退默认 {@code "login"} 体系）
+     * @param tokenValue Token 凭据
+     * @return 在线用户模型，Token 无效或已失效时返回 null
+     */
+    public static OnlineUser getOnlineUserByToken(String loginType, String tokenValue) {
+        if (tokenValue == null || tokenValue.isBlank()) {
+            return null;
+        }
+        StpLogic logic = getStpLogic(loginType);
+        Object loginId = logic.getLoginIdByToken(tokenValue);
+        if (!isValidOnlineLoginId(loginId)) {
+            return null;
+        }
+        return buildOnlineUser(logic, loginId, tokenValue);
+    }
+
+    /**
+     * 提取当前主账号体系下指定 Token 所属的归属租户标识
+     *
+     * @param tokenValue Token 凭据
+     * @return 归属租户标识，Token 无效、已过期或未绑定租户时返回 null
+     */
+    public static String getTokenTenantId(String tokenValue) {
+        return getTokenTenantId(StpUtil.TYPE, tokenValue);
+    }
+
+    /**
+     * 提取指定账号体系下指定 Token 所属的归属租户标识
+     *
+     * @param loginType  账号体系标识
+     * @param tokenValue Token 凭据
+     * @return 归属租户标识，Token 无效、已过期或未绑定租户时返回 null
+     */
+    public static String getTokenTenantId(String loginType, String tokenValue) {
+        OnlineUser onlineUser = getOnlineUserByToken(loginType, tokenValue);
+        if (onlineUser == null || onlineUser.getTenantId() == null || onlineUser.getTenantId().isBlank()) {
+            return null;
+        }
+        return onlineUser.getTenantId().trim();
+    }
+
+    /**
+     * 判定当前主账号体系下指定 Token 是否归属于期望租户
+     *
+     * @param tokenValue       Token 凭据
+     * @param expectedTenantId 期望归属租户标识
+     * @return true 表示 Token 有效且归属该租户
+     */
+    public static boolean isTokenBelongsToTenant(String tokenValue, String expectedTenantId) {
+        return isTokenBelongsToTenant(StpUtil.TYPE, tokenValue, expectedTenantId);
+    }
+
+    /**
+     * 判定指定账号体系下指定 Token 是否归属于期望租户
+     *
+     * @param loginType        账号体系标识
+     * @param tokenValue       Token 凭据
+     * @param expectedTenantId 期望归属租户标识
+     * @return true 表示 Token 有效且归属该租户
+     */
+    public static boolean isTokenBelongsToTenant(String loginType, String tokenValue, String expectedTenantId) {
+        if (expectedTenantId == null || expectedTenantId.isBlank()) {
+            return false;
+        }
+        String actualTenantId = getTokenTenantId(loginType, tokenValue);
+        return expectedTenantId.trim().equals(actualTenantId);
+    }
+
+    /**
+     * 带归属租户防越权校验地将指定 Token 踢下线（默认账号体系）
+     *
+     * @param tokenValue       Token 凭据
+     * @param expectedTenantId 期望归属租户标识
+     * @return true 表示存在有效会话且校验通过并完成踢下线；false 表示 Token 已不存在或过期（幂等返回）
+     * @throws BusinessException 当活跃 Token 无租户归属或与 {@code expectedTenantId} 不匹配时抛出 403 越权异常
+     */
+    public static boolean kickoutByTokenForTenant(String tokenValue, String expectedTenantId) {
+        return kickoutByTokenForTenant(StpUtil.TYPE, tokenValue, expectedTenantId);
+    }
+
+    /**
+     * 带归属租户防越权校验地将指定账号体系下的 Token 踢下线
+     *
+     * @param loginType        账号体系标识
+     * @param tokenValue       Token 凭据
+     * @param expectedTenantId 期望归属租户标识
+     * @return true 表示存在有效会话且校验通过并完成踢下线；false 表示 Token 已不存在或过期（幂等返回）
+     * @throws BusinessException 当活跃 Token 无租户归属或与 {@code expectedTenantId} 不匹配时抛出 403 越权异常
+     */
+    public static boolean kickoutByTokenForTenant(String loginType, String tokenValue, String expectedTenantId) {
+        return terminateTokenForTenant(loginType, tokenValue, expectedTenantId, true);
+    }
+
+    /**
+     * 带归属租户防越权校验地将指定 Token 注销下线（默认账号体系）
+     *
+     * @param tokenValue       Token 凭据
+     * @param expectedTenantId 期望归属租户标识
+     * @return true 表示存在有效会话且校验通过并完成注销；false 表示 Token 已不存在或过期（幂等返回）
+     * @throws BusinessException 当活跃 Token 无租户归属或与 {@code expectedTenantId} 不匹配时抛出 403 越权异常
+     */
+    public static boolean logoutByTokenValueForTenant(String tokenValue, String expectedTenantId) {
+        return logoutByTokenValueForTenant(StpUtil.TYPE, tokenValue, expectedTenantId);
+    }
+
+    /**
+     * 带归属租户防越权校验地将指定账号体系下的 Token 注销下线
+     *
+     * @param loginType        账号体系标识
+     * @param tokenValue       Token 凭据
+     * @param expectedTenantId 期望归属租户标识
+     * @return true 表示存在有效会话且校验通过并完成注销；false 表示 Token 已不存在或过期（幂等返回）
+     * @throws BusinessException 当活跃 Token 无租户归属或与 {@code expectedTenantId} 不匹配时抛出 403 越权异常
+     */
+    public static boolean logoutByTokenValueForTenant(String loginType, String tokenValue, String expectedTenantId) {
+        return terminateTokenForTenant(loginType, tokenValue, expectedTenantId, false);
+    }
+
+    private static boolean terminateTokenForTenant(String loginType, String tokenValue,
+                                                   String expectedTenantId, boolean kickout) {
+        if (tokenValue == null || tokenValue.isBlank()) {
+            return false;
+        }
+        StpLogic logic = getStpLogic(loginType);
+        Object loginId = logic.getLoginIdByToken(tokenValue);
+        if (!isValidOnlineLoginId(loginId)) {
+            return false;
+        }
+        OnlineUser onlineUser = buildOnlineUser(logic, loginId, tokenValue);
+        String actualTenantId = (onlineUser != null && onlineUser.getTenantId() != null && !onlineUser.getTenantId().isBlank())
+                ? onlineUser.getTenantId().trim()
+                : null;
+        if (expectedTenantId == null || expectedTenantId.isBlank()
+                || actualTenantId == null
+                || !expectedTenantId.trim().equals(actualTenantId)) {
+            throw new BusinessException(CommonResultCode.FORBIDDEN, "越权操作：目标会话不属于当前租户或未绑定租户归属");
+        }
+        if (kickout) {
+            kickoutByToken(loginType, tokenValue);
+        } else {
+            logoutByTokenValue(loginType, tokenValue);
+        }
+        return true;
+    }
+
+    /**
      * 将指定登录账号在指定设备端上的会话踢下线
      *
      * @param loginId    登录账号唯一标识
@@ -953,26 +1116,7 @@ public final class LoginHelper {
         if (!isLogin()) {
             return null;
         }
-        SaSession session = StpUtil.getSession(false);
-        if (session == null) {
-            return null;
-        }
-        Object rawVal = session.get(SaTokenConstant.LOGIN_USER_KEY);
-        if (rawVal == null) {
-            return null;
-        }
-        if (clazz.isInstance(rawVal)) {
-            return clazz.cast(rawVal);
-        }
-        if (rawVal instanceof String jsonStr) {
-            try {
-                return JsonUtil.parseObject(jsonStr, clazz);
-            } catch (Exception e) {
-                log.warn("LoginUser 反序列化失败: json={}, targetClass={}", jsonStr, clazz.getName(), e);
-                return null;
-            }
-        }
-        return null;
+        return extractLoginUserFromSession(StpUtil.getSession(false), clazz, StpUtil.TYPE);
     }
 
     /**
@@ -990,8 +1134,160 @@ public final class LoginHelper {
         if (!isLogin(loginType)) {
             return null;
         }
-        SaSession session = getStpLogic(loginType).getSession(false);
-        if (session == null) {
+        return extractLoginUserFromSession(getStpLogic(loginType).getSession(false), clazz, loginType);
+    }
+
+    /**
+     * 根据目标 loginId 从其活跃 Account-Session 中无侵入提取强类型 LoginUser（不新建空 Session）
+     *
+     * @param loginId   完整 loginId（支持普通 userId 或多租户复合 {@code tenantId_userId}）
+     * @param loginType 账号体系标识（为空时回退默认 {@code "login"} 体系）
+     * @return 会话绑定的 LoginUser，未找到或反序列化失败时返回 null
+     */
+    public static LoginUser getSessionLoginUser(String loginId, String loginType) {
+        if (loginId == null || loginId.isBlank()) {
+            return null;
+        }
+        try {
+            SaSession session = (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType))
+                    ? StpUtil.getSessionByLoginId(loginId, false)
+                    : getStpLogic(loginType).getSessionByLoginId(loginId, false);
+            return extractLoginUserFromSession(session, LoginUser.class, loginType);
+        } catch (RuntimeException ex) {
+            log.debug("读取会话 LoginUser 失败（安全降级）: loginId={}, loginType={}, error={}",
+                    loginId, loginType, ex.toString());
+            return null;
+        }
+    }
+
+    /**
+     * 根据目标用户标识、账号体系与可选租户归属解析目标 {@link LoginUser}
+     * <p>
+     * 解析顺序：
+     * 1. 若当前请求线程已登录且身份与目标 userId/tenantId 兼容，直接复用当前会话快照；
+     * 2. 否则按原始标识、纯净 {@code userId} 及 {@code {tenantId}_{userId}} 复合登录标识依次从 Account-Session 回退检索，
+     *    杜绝跨用户权限误读与复合 loginId 找不到会话问题。
+     * </p>
+     *
+     * @param loginIdOrUserId 原始 loginId 或剥离后的纯净 userId
+     * @param loginType       账号体系标识（为空时回退默认 {@code "login"} 体系）
+     * @param tenantId        目标主体归属租户标识（可选，为空时回退尝试 {@link TenantContextHolder#getTenantId()}）
+     * @return 匹配的 LoginUser，未命中返回 null
+     */
+    public static LoginUser resolveTargetLoginUser(String loginIdOrUserId, String loginType, String tenantId) {
+        if (loginIdOrUserId == null || loginIdOrUserId.isBlank()) {
+            return null;
+        }
+        String rawInput = loginIdOrUserId.trim();
+        String normalizedTenant = (tenantId != null && !tenantId.isBlank()) ? tenantId.trim() : null;
+
+        // 1. 当显式指定归属租户时，优先检索 {tenantId}_{userId} 复合会话，避免同名无租户/他租户裸会话误匹配
+        if (normalizedTenant != null) {
+            String candidateComposite = buildCompositeLoginId(normalizedTenant, rawInput);
+            LoginUser explicitCompositeUser = getSessionLoginUser(candidateComposite, loginType);
+            if (explicitCompositeUser != null) {
+                return explicitCompositeUser;
+            }
+            if (rawInput.startsWith(normalizedTenant + SaTokenConstant.TENANT_DELIMITER)) {
+                LoginUser directCompositeUser = getSessionLoginUser(rawInput, loginType);
+                if (directCompositeUser != null) {
+                    return directCompositeUser;
+                }
+            }
+        } else {
+            // 未显式指定租户时，优先按原始标识尝试命中（兼容直接传入完整 {tenantId}_{userId}）
+            LoginUser directSessionUser = getSessionLoginUser(rawInput, loginType);
+            if (directSessionUser != null) {
+                return directSessionUser;
+            }
+            String contextTenant = TenantContextHolder.getTenantId();
+            if (contextTenant != null && !contextTenant.isBlank()) {
+                LoginUser contextCompositeUser = getSessionLoginUser(
+                        buildCompositeLoginId(contextTenant, rawInput), loginType);
+                if (contextCompositeUser != null) {
+                    return contextCompositeUser;
+                }
+            }
+        }
+
+        // 2. 解析复合 loginId，验证当前线程活跃会话或按拆解结果受控回退检索
+        ParsedLoginId parsed = parseCompositeLoginId(rawInput, loginType);
+        String effectiveUserId = (normalizedTenant != null) ? rawInput : parsed.userId();
+        String effectiveTenantId = normalizedTenant != null ? normalizedTenant : parsed.tenantId();
+
+        LoginUser threadUser = resolveActiveThreadLoginUser(loginType);
+        if (isCompatibleLoginUser(threadUser, parsed, effectiveUserId, effectiveTenantId)) {
+            return threadUser;
+        }
+
+        // 3. 若显式传入租户，回退检索裸 userId 会话前必须校验其租户归属一致性
+        if (normalizedTenant != null) {
+            LoginUser byRawForTenant = getSessionLoginUser(rawInput, loginType);
+            if (isCompatibleLoginUser(byRawForTenant, parsed, rawInput, normalizedTenant)) {
+                return byRawForTenant;
+            }
+            return null;
+        }
+
+        String contextTenant = TenantContextHolder.getTenantId();
+        if (parsed.userId() != null && !parsed.userId().equals(rawInput)) {
+            if (contextTenant != null && !contextTenant.isBlank()) {
+                LoginUser byContextParsed = getSessionLoginUser(
+                        buildCompositeLoginId(contextTenant, parsed.userId()), loginType);
+                if (byContextParsed != null) {
+                    return byContextParsed;
+                }
+            }
+            LoginUser byPlain = getSessionLoginUser(parsed.userId(), loginType);
+            if (isCompatibleLoginUser(byPlain, parsed, parsed.userId(), effectiveTenantId)) {
+                return byPlain;
+            }
+        }
+        if (effectiveTenantId != null && parsed.userId() != null) {
+            return getSessionLoginUser(buildCompositeLoginId(effectiveTenantId, parsed.userId()), loginType);
+        }
+        return null;
+    }
+
+    private static LoginUser resolveActiveThreadLoginUser(String loginType) {
+        if (loginType != null && !loginType.isBlank()) {
+            LoginUser typedUser = getLoginUser(loginType);
+            if (typedUser != null) {
+                return typedUser;
+            }
+        }
+        String activeLoginType = getActiveLoginType();
+        if (activeLoginType != null && !activeLoginType.isBlank()) {
+            LoginUser activeUser = getLoginUser(activeLoginType);
+            if (activeUser != null) {
+                return activeUser;
+            }
+        }
+        return getLoginUser();
+    }
+
+    private static boolean isCompatibleLoginUser(LoginUser candidate, ParsedLoginId parsed,
+                                                 String effectiveUserId, String effectiveTenantId) {
+        if (candidate == null) {
+            return false;
+        }
+        if (effectiveUserId != null && candidate.getUserId() != null && !candidate.getUserId().isBlank()) {
+            String candidateUser = candidate.getUserId().trim();
+            if (!candidateUser.equals(effectiveUserId) && !candidateUser.equals(parsed.rawLoginId())) {
+                return false;
+            }
+        }
+        if (effectiveTenantId != null) {
+            if (candidate.getTenantId() == null || candidate.getTenantId().isBlank()) {
+                return false;
+            }
+            return effectiveTenantId.equals(candidate.getTenantId().trim());
+        }
+        return true;
+    }
+
+    private static <T> T extractLoginUserFromSession(SaSession session, Class<T> clazz, String loginType) {
+        if (session == null || clazz == null) {
             return null;
         }
         Object rawVal = session.get(SaTokenConstant.LOGIN_USER_KEY);
@@ -1001,7 +1297,7 @@ public final class LoginHelper {
         if (clazz.isInstance(rawVal)) {
             return clazz.cast(rawVal);
         }
-        if (rawVal instanceof String jsonStr) {
+        if (rawVal instanceof String jsonStr && !jsonStr.isBlank()) {
             try {
                 return JsonUtil.parseObject(jsonStr, clazz);
             } catch (Exception e) {
@@ -2212,6 +2508,68 @@ public final class LoginHelper {
         return userId.trim();
     }
 
+    /**
+     * 安全拆解多租户复合 LoginId（默认账号体系）
+     *
+     * @param loginId 待解析的 Sa-Token 原生 loginId
+     * @return 不可变 {@link ParsedLoginId} 拆解结果
+     */
+    public static ParsedLoginId parseCompositeLoginId(Object loginId) {
+        return parseCompositeLoginId(loginId, null);
+    }
+
+    /**
+     * 安全拆解多租户复合 LoginId（支持会话优先精准消歧）
+     * <p>
+     * 解析优先级：
+     * 1. 优先从活跃 Account-Session 读取 {@link LoginUser}：若存在明确归属租户且 {@code rawLoginId} 以
+     *    {@code {tenantId}_} 开头，则按真实租户前缀长度精确剥离（兼容 tenantId 与 userId 均含下划线场景）；
+     *    若会话明确无租户且 {@code userId} 与 {@code rawLoginId} 一致，则整串视为纯用户 ID 不作切分；
+     * 2. 当无活跃会话或会话无可用上下文时，回退按首个 {@code _} 分隔符拆解。
+     * </p>
+     *
+     * @param loginId   待解析的 Sa-Token 原生 loginId
+     * @param loginType 账号体系类型标识（为空时回退默认 {@code "login"} 体系）
+     * @return 不可变 {@link ParsedLoginId} 拆解结果
+     */
+    public static ParsedLoginId parseCompositeLoginId(Object loginId, String loginType) {
+        if (loginId == null) {
+            return new ParsedLoginId(null, null, null);
+        }
+        String rawLoginId = String.valueOf(loginId).trim();
+        if (rawLoginId.isEmpty()) {
+            return new ParsedLoginId(null, null, null);
+        }
+        LoginUser sessionUser = getSessionLoginUser(rawLoginId, loginType);
+        return parseCompositeLoginIdWithSession(rawLoginId, sessionUser);
+    }
+
+    private static ParsedLoginId parseCompositeLoginIdWithSession(String rawLoginId, LoginUser sessionUser) {
+        if (sessionUser != null) {
+            String sessionTenantId = sessionUser.getTenantId();
+            if (sessionTenantId != null && !sessionTenantId.isBlank()) {
+                String normalizedTenantId = sessionTenantId.trim();
+                String prefix = normalizedTenantId + SaTokenConstant.TENANT_DELIMITER;
+                if (rawLoginId.startsWith(prefix) && rawLoginId.length() > prefix.length()) {
+                    return new ParsedLoginId(normalizedTenantId, rawLoginId.substring(prefix.length()), rawLoginId);
+                }
+                if (sessionUser.getUserId() != null && rawLoginId.equals(sessionUser.getUserId().trim())) {
+                    return new ParsedLoginId(normalizedTenantId, rawLoginId, rawLoginId);
+                }
+            } else if (sessionUser.getUserId() != null && rawLoginId.equals(sessionUser.getUserId().trim())) {
+                return new ParsedLoginId(null, rawLoginId, rawLoginId);
+            }
+        }
+        int delimiterIdx = rawLoginId.indexOf(SaTokenConstant.TENANT_DELIMITER);
+        if (delimiterIdx > 0 && delimiterIdx < rawLoginId.length() - 1) {
+            String tenantId = rawLoginId.substring(0, delimiterIdx);
+            if (!tenantId.isBlank()) {
+                return new ParsedLoginId(tenantId.trim(), rawLoginId.substring(delimiterIdx + 1), rawLoginId);
+            }
+        }
+        return new ParsedLoginId(null, rawLoginId, rawLoginId);
+    }
+
     // ==================== 身份所有权与多租户校验 (Self & Tenant Assertions) ====================
 
     /**
@@ -2808,9 +3166,39 @@ public final class LoginHelper {
     }
 
     /**
-     * 关键字检索在线会话最大安全扫描上限（防御海量 Token 场景下的慢查询与拒绝服务风险）
+     * 在线会话条件检索默认最大安全扫描上限（默认 2000，防御海量 Token 场景下的慢查询与拒绝服务风险）
      */
-    private static final int MAX_KEYWORD_SCAN_LIMIT = 500;
+    public static final int DEFAULT_ONLINE_SESSION_MAX_SCAN_LIMIT = 2000;
+
+    /**
+     * 当前全局生效的在线会话条件检索单次安全扫描上限
+     */
+    private static volatile int onlineSessionMaxScanLimit = DEFAULT_ONLINE_SESSION_MAX_SCAN_LIMIT;
+
+    /**
+     * 获取当前全局生效的在线会话条件检索最大安全扫描上限
+     *
+     * @return 单次最大安全扫描条数
+     */
+    public static int getOnlineSessionMaxScanLimit() {
+        return onlineSessionMaxScanLimit;
+    }
+
+    /**
+     * 设置全局在线会话条件检索最大安全扫描上限（非正数时自动回退默认值 {@value #DEFAULT_ONLINE_SESSION_MAX_SCAN_LIMIT}）
+     *
+     * @param maxScanLimit 单次最大安全扫描条数
+     */
+    public static void setOnlineSessionMaxScanLimit(int maxScanLimit) {
+        onlineSessionMaxScanLimit = maxScanLimit > 0 ? maxScanLimit : DEFAULT_ONLINE_SESSION_MAX_SCAN_LIMIT;
+    }
+
+    /**
+     * 重置在线会话监控扫描上限配置为框架默认值
+     */
+    public static void resetOnlineSessionConfig() {
+        onlineSessionMaxScanLimit = DEFAULT_ONLINE_SESSION_MAX_SCAN_LIMIT;
+    }
 
     /**
      * 分页查询指定账号体系的在线用户列表（支持按账号/用户名/用户标识/Token 关键字过滤）
@@ -2822,42 +3210,13 @@ public final class LoginHelper {
      * @return 分页在线用户列表（空安全保底，无匹配时返回空集合）
      */
     public static List<OnlineUser> searchOnlineUsers(String loginType, String keyword, int page, int size) {
-        if (page <= 0 || size <= 0) {
-            return Collections.emptyList();
-        }
-        int actualSize = Math.min(size, 100);
-        int start = (page - 1) * actualSize;
-
-        StpLogic logic = getStpLogic(loginType);
-        boolean hasKeyword = keyword != null && !keyword.isBlank();
-
-        if (!hasKeyword) {
-            // 常规分页无关键字场景：按需延迟组装当前页，彻底杜绝 N+1 重型 Session 查询风暴
-            List<String> rawTokens = logic.searchTokenValue("", 0, -1, true);
-            List<String> validTokens = filterValidTokens(logic, rawTokens);
-            if (start >= validTokens.size()) {
-                return Collections.emptyList();
-            }
-            int end = Math.min(start + actualSize, validTokens.size());
-            List<OnlineUser> records = new ArrayList<>(end - start);
-            for (int i = start; i < end; i++) {
-                String tokenValue = validTokens.get(i);
-                Object loginId = logic.getLoginIdByToken(tokenValue);
-                OnlineUser user = buildOnlineUser(logic, loginId, tokenValue);
-                if (user != null) {
-                    records.add(user);
-                }
-            }
-            return records;
-        }
-
-        // 带关键字检索场景：带采样上限安全扫描与全真匹配
-        List<OnlineUser> matchedList = collectOnlineUsersWithKeyword(logic, keyword.trim().toLowerCase());
-        if (start >= matchedList.size()) {
-            return Collections.emptyList();
-        }
-        int end = Math.min(start + actualSize, matchedList.size());
-        return matchedList.subList(start, end);
+        OnlineUserQuery query = (keyword != null && !keyword.isBlank())
+                ? OnlineUserQuery.builder().keyword(keyword).build()
+                : null;
+        PageResult<OnlineUser> pageResult = searchOnlineUserPage(loginType, query, page, size);
+        return pageResult != null && pageResult.getRecords() != null
+                ? pageResult.getRecords()
+                : Collections.emptyList();
     }
 
     /**
@@ -2880,7 +3239,7 @@ public final class LoginHelper {
      * @return 强类型 PageResult 对象
      */
     public static PageResult<OnlineUser> searchOnlineUserPage(int page, int size) {
-        return searchOnlineUserPage(StpUtil.TYPE, null, page, size);
+        return searchOnlineUserPage(StpUtil.TYPE, (String) null, page, size);
     }
 
     /**
@@ -2892,7 +3251,7 @@ public final class LoginHelper {
      * @return 强类型 PageResult 对象
      */
     public static PageResult<OnlineUser> searchOnlineUserPageByLoginType(String loginType, int page, int size) {
-        return searchOnlineUserPage(loginType, null, page, size);
+        return searchOnlineUserPage(loginType, (String) null, page, size);
     }
 
     /**
@@ -2905,17 +3264,49 @@ public final class LoginHelper {
      * @return 强类型 PageResult 对象
      */
     public static PageResult<OnlineUser> searchOnlineUserPage(String loginType, String keyword, int page, int size) {
+        OnlineUserQuery query = (keyword != null && !keyword.isBlank())
+                ? OnlineUserQuery.builder().keyword(keyword).build()
+                : null;
+        return searchOnlineUserPage(loginType, query, page, size);
+    }
+
+    /**
+     * 分页查询满足多维过滤条件的在线用户 PageResult（默认采用 {@code query.getLoginType()} 或主账号体系）
+     *
+     * @param page  当前页码
+     * @param size  每页显示条数
+     * @param query 多维组合查询条件（支持 tenantId 精确筛选、keyword 模糊检索、userId/账号/姓名/设备与精确 IP/CIDR 网段匹配）
+     * @return 强类型 PageResult 对象
+     */
+    public static PageResult<OnlineUser> searchOnlineUserPage(int page, int size, OnlineUserQuery query) {
+        return searchOnlineUserPage(null, query, page, size);
+    }
+
+    /**
+     * 分页查询指定账号体系下满足多维过滤条件的在线用户 PageResult
+     *
+     * @param loginType 账号体系标识（为空时回退使用 {@code query.getLoginType()} 或默认 {@code "login"}）
+     * @param query     多维组合查询条件（允许为 null）
+     * @param page      当前页码
+     * @param size      每页显示条数
+     * @return 强类型 PageResult 对象
+     */
+    public static PageResult<OnlineUser> searchOnlineUserPage(String loginType, OnlineUserQuery query, int page, int size) {
         if (page <= 0 || size <= 0) {
             return PageResult.empty(Math.max(page, 1), Math.max(size, 10));
         }
         int actualSize = Math.min(size, 100);
         int start = (page - 1) * actualSize;
 
-        StpLogic logic = getStpLogic(loginType);
-        boolean hasKeyword = keyword != null && !keyword.isBlank();
+        String effectiveLoginType = (loginType != null && !loginType.isBlank())
+                ? loginType.trim()
+                : (query != null && query.getLoginType() != null && !query.getLoginType().isBlank()
+                ? query.getLoginType().trim()
+                : StpUtil.TYPE);
+        StpLogic logic = getStpLogic(effectiveLoginType);
 
-        if (!hasKeyword) {
-            // 常规分页无关键字场景：先获取有效总数，仅对当前页做重型 Session 组装
+        if (query == null || query.hasNoFilterCriteria()) {
+            // 常规无过滤分页：先获取有效总数，仅对当前页做重型 Session 组装
             List<String> rawTokens = logic.searchTokenValue("", 0, -1, true);
             List<String> validTokens = filterValidTokens(logic, rawTokens);
             int total = validTokens.size();
@@ -2937,15 +3328,15 @@ public final class LoginHelper {
             return PageResult.of(records, total, page, actualSize);
         }
 
-        // 带关键字过滤检索
-        List<OnlineUser> matchedList = collectOnlineUsersWithKeyword(logic, keyword.trim().toLowerCase());
+        // 条件过滤检索：受全局/单次 maxScanLimit 安全采样上限约束
+        List<OnlineUser> matchedList = collectOnlineUsers(logic, query);
         int total = matchedList.size();
         List<OnlineUser> records;
         if (start >= total) {
             records = Collections.emptyList();
         } else {
             int end = Math.min(start + actualSize, total);
-            records = matchedList.subList(start, end);
+            records = new ArrayList<>(matchedList.subList(start, end));
         }
         return PageResult.of(records, total, page, actualSize);
     }
@@ -2993,20 +3384,24 @@ public final class LoginHelper {
         return validTokens;
     }
 
-    private static List<OnlineUser> collectOnlineUsersWithKeyword(StpLogic logic, String kw) {
+    private static List<OnlineUser> collectOnlineUsers(StpLogic logic, OnlineUserQuery query) {
         List<String> rawTokens = logic.searchTokenValue("", 0, -1, true);
         if (rawTokens == null || rawTokens.isEmpty()) {
             return Collections.emptyList();
         }
+
+        int scanLimit = (query.getMaxScanLimit() != null && query.getMaxScanLimit() > 0)
+                ? Math.min(query.getMaxScanLimit(), onlineSessionMaxScanLimit)
+                : onlineSessionMaxScanLimit;
 
         String tokenPrefix = logic.splicingKeyTokenValue("");
         List<OnlineUser> matchedList = new ArrayList<>();
         int scannedCount = 0;
 
         for (String rawKey : rawTokens) {
-            if (++scannedCount > MAX_KEYWORD_SCAN_LIMIT) {
-                log.warn("【在线用户监控】关键字检索已达到最大安全扫描采样上限 {}，终止后续扫描: keyword={}",
-                        MAX_KEYWORD_SCAN_LIMIT, kw);
+            if (++scannedCount > scanLimit) {
+                log.warn("【在线用户监控】条件检索已达到最大安全扫描采样上限 {}，终止后续扫描: tenantId={}, keyword={}",
+                        scanLimit, query.getTenantId(), query.getKeyword());
                 break;
             }
 
@@ -3017,19 +3412,60 @@ public final class LoginHelper {
             }
 
             OnlineUser onlineUser = buildOnlineUser(logic, loginId, tokenValue);
-            if (onlineUser == null) {
-                continue;
-            }
-
-            boolean match = (onlineUser.getUserId() != null && onlineUser.getUserId().toLowerCase().contains(kw))
-                    || (onlineUser.getUserAccount() != null && onlineUser.getUserAccount().toLowerCase().contains(kw))
-                    || (onlineUser.getUserName() != null && onlineUser.getUserName().toLowerCase().contains(kw))
-                    || (onlineUser.getTokenValue() != null && onlineUser.getTokenValue().toLowerCase().contains(kw));
-            if (match) {
+            if (onlineUser != null && matchesOnlineUserQuery(onlineUser, query)) {
                 matchedList.add(onlineUser);
             }
         }
         return matchedList;
+    }
+
+    private static boolean matchesOnlineUserQuery(OnlineUser user, OnlineUserQuery query) {
+        if (query.getTenantId() != null && !query.getTenantId().isBlank()) {
+            String actualTenant = user.getTenantId() != null ? user.getTenantId().trim() : null;
+            if (!Objects.equals(query.getTenantId().trim(), actualTenant)) {
+                return false;
+            }
+        }
+        if (query.getUserId() != null && !query.getUserId().isBlank()) {
+            String actualUserId = user.getUserId() != null ? user.getUserId().trim() : null;
+            if (!Objects.equals(query.getUserId().trim(), actualUserId)) {
+                return false;
+            }
+        }
+        if (query.getLoginDevice() != null && !query.getLoginDevice().isBlank()) {
+            if (user.getLoginDevice() == null
+                    || !query.getLoginDevice().trim().equalsIgnoreCase(user.getLoginDevice().trim())) {
+                return false;
+            }
+        }
+        if (query.getUserAccount() != null && !query.getUserAccount().isBlank()) {
+            String targetAcct = query.getUserAccount().trim().toLowerCase();
+            if (user.getUserAccount() == null || !user.getUserAccount().toLowerCase().contains(targetAcct)) {
+                return false;
+            }
+        }
+        if (query.getUserName() != null && !query.getUserName().isBlank()) {
+            String targetName = query.getUserName().trim().toLowerCase();
+            if (user.getUserName() == null || !user.getUserName().toLowerCase().contains(targetName)) {
+                return false;
+            }
+        }
+        if (query.getLoginIp() != null && !query.getLoginIp().isBlank()) {
+            if (!CidrMatcher.matches(user.getLoginIp(), query.getLoginIp().trim())) {
+                return false;
+            }
+        }
+        if (query.getKeyword() != null && !query.getKeyword().isBlank()) {
+            String kw = query.getKeyword().trim().toLowerCase();
+            boolean keywordMatched = (user.getUserId() != null && user.getUserId().toLowerCase().contains(kw))
+                    || (user.getUserAccount() != null && user.getUserAccount().toLowerCase().contains(kw))
+                    || (user.getUserName() != null && user.getUserName().toLowerCase().contains(kw))
+                    || (user.getTokenValue() != null && user.getTokenValue().toLowerCase().contains(kw));
+            if (!keywordMatched) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static OnlineUser buildOnlineUser(StpLogic logic, Object loginId, String tokenValue) {
@@ -3055,15 +3491,7 @@ public final class LoginHelper {
         SaSession userSession = logic.getSessionByLoginId(loginId, false);
         LoginUser loginUser = null;
         if (userSession != null) {
-            Object rawVal = userSession.get(SaTokenConstant.LOGIN_USER_KEY);
-            if (rawVal instanceof LoginUser u) {
-                loginUser = u;
-            } else if (rawVal instanceof String jsonStr && !jsonStr.isBlank()) {
-                try {
-                    loginUser = JsonUtil.parseObject(jsonStr, LoginUser.class);
-                } catch (Exception ignored) {
-                }
-            }
+            loginUser = extractLoginUserFromSession(userSession, LoginUser.class, loginType);
 
             SaTerminalInfo term = userSession.getTerminal(tokenValue);
             if (term != null) {
@@ -3086,15 +3514,7 @@ public final class LoginHelper {
         if (loginUser == null) {
             SaSession tokenSession = logic.getTokenSessionByToken(tokenValue, false);
             if (tokenSession != null) {
-                Object rawVal = tokenSession.get(SaTokenConstant.LOGIN_USER_KEY);
-                if (rawVal instanceof LoginUser u) {
-                    loginUser = u;
-                } else if (rawVal instanceof String jsonStr && !jsonStr.isBlank()) {
-                    try {
-                        loginUser = JsonUtil.parseObject(jsonStr, LoginUser.class);
-                    } catch (Exception ignored) {
-                    }
-                }
+                loginUser = extractLoginUserFromSession(tokenSession, LoginUser.class, loginType);
                 if (tokenSession.get("loginIp") != null) {
                     loginIp = String.valueOf(tokenSession.get("loginIp"));
                 }
@@ -3104,22 +3524,22 @@ public final class LoginHelper {
             }
         }
 
+        ParsedLoginId parsed = parseCompositeLoginIdWithSession(loginId.toString().trim(), loginUser);
         if (loginUser != null) {
-            userId = loginUser.getUserId();
+            userId = (loginUser.getUserId() != null && !loginUser.getUserId().isBlank())
+                    ? loginUser.getUserId() : parsed.userId();
             userAccount = loginUser.getUserAccount();
             userName = loginUser.getUserName();
-            tenantId = loginUser.getTenantId();
+            tenantId = (loginUser.getTenantId() != null && !loginUser.getTenantId().isBlank())
+                    ? loginUser.getTenantId() : parsed.tenantId();
             if ((loginIp == null || loginIp.isBlank()) && loginUser.getExtraData() != null && loginUser.getExtraData().get("loginIp") != null) {
                 loginIp = String.valueOf(loginUser.getExtraData().get("loginIp"));
             }
         } else {
-            userId = stripTenantPrefix(loginId.toString());
-            tenantId = extractTenantPrefix(loginId.toString());
+            userId = parsed.userId();
+            tenantId = parsed.tenantId();
             userAccount = userId;
             userName = userId;
-        }
-        if ((tenantId == null || tenantId.isBlank()) && loginId != null) {
-            tenantId = extractTenantPrefix(loginId.toString());
         }
 
         if (loginTime == null) {
@@ -3156,20 +3576,5 @@ public final class LoginHelper {
         }
         String str = loginId.toString();
         return !"-1".equals(str) && !"-2".equals(str) && !"-3".equals(str) && !"-4".equals(str) && !"-5".equals(str);
-    }
-
-    private static String stripTenantPrefix(String loginId) {
-        if (loginId != null && loginId.contains(SaTokenConstant.TENANT_DELIMITER)) {
-            return loginId.substring(loginId.indexOf(SaTokenConstant.TENANT_DELIMITER) + 1);
-        }
-        return loginId;
-    }
-
-    private static String extractTenantPrefix(String loginId) {
-        if (loginId != null && loginId.contains(SaTokenConstant.TENANT_DELIMITER)) {
-            String prefix = loginId.substring(0, loginId.indexOf(SaTokenConstant.TENANT_DELIMITER));
-            return !prefix.isBlank() ? prefix : null;
-        }
-        return null;
     }
 }

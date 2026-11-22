@@ -11,9 +11,11 @@ import cn.dev33.satoken.dao.SaTokenDao;
 import cn.dev33.satoken.stp.StpLogic;
 import cn.dev33.satoken.stp.StpUtil;
 import cn.dev33.satoken.stp.parameter.SaLoginParameter;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.model.OnlineUser;
+import io.github.atengk.boot.satoken.model.OnlineUserQuery;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -25,6 +27,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -431,5 +434,141 @@ class LoginHelperOnlineUserTest {
         } finally {
             org.springframework.web.context.request.RequestContextHolder.resetRequestAttributes();
         }
+    }
+
+    @Test
+    @DisplayName("7. OnlineUserQuery 多维度组合分页筛选（tenantId 精确 / CIDR IP / 设备 / 关键字与字段）")
+    void testSearchOnlineUserPageWithQueryFilters() {
+        LoginHelper.login(LoginUser.builder()
+                        .userId("u-701").tenantId("tenant-a").userAccount("alice_a").userName("Alice").build(),
+                new SaLoginParameter().setDeviceType("PC").setTerminalExtra("loginIp", "10.10.2.55"));
+        LoginHelper.login(LoginUser.builder()
+                        .userId("u-702").tenantId("tenant-a").userAccount("bob_a").userName("Bob").build(),
+                new SaLoginParameter().setDeviceType("APP").setTerminalExtra("loginIp", "10.10.2.88"));
+        LoginHelper.login(LoginUser.builder()
+                        .userId("u-703").tenantId("tenant-b").userAccount("alice_b").userName("Alice B").build(),
+                new SaLoginParameter().setDeviceType("PC").setTerminalExtra("loginIp", "10.10.2.55"));
+        LoginHelper.login(LoginUser.builder()
+                        .userId("u-704").tenantId("tenant-a").userAccount("carol_a").userName("Carol").build(),
+                new SaLoginParameter().setDeviceType("PC").setTerminalExtra("loginIp", "192.168.9.10"));
+
+        // 1. 按 tenantId 精确隔离，仅返回租户 A 三条会话
+        PageResult<OnlineUser> tenantAResult = LoginHelper.searchOnlineUserPage(
+                1, 10, OnlineUserQuery.builder().tenantId("tenant-a").build());
+        assertThat(tenantAResult.getTotal()).isEqualTo(3);
+        assertThat(tenantAResult.getRecords()).extracting(OnlineUser::getUserId)
+                .containsExactlyInAnyOrder("u-701", "u-702", "u-704");
+
+        // 2. tenantId + CIDR 子网 + 设备组合筛选
+        PageResult<OnlineUser> cidrDeviceResult = LoginHelper.searchOnlineUserPage(
+                "login",
+                OnlineUserQuery.builder()
+                        .tenantId("tenant-a")
+                        .loginIp("10.10.2.0/24")
+                        .loginDevice("PC")
+                        .build(),
+                1, 10);
+        assertThat(cidrDeviceResult.getTotal()).isEqualTo(1);
+        assertThat(cidrDeviceResult.getRecords().get(0).getUserId()).isEqualTo("u-701");
+
+        // 3. 精确 IP 与 userAccount/keyword 筛选
+        PageResult<OnlineUser> exactIpResult = LoginHelper.searchOnlineUserPage(
+                1, 10, OnlineUserQuery.builder().loginIp("10.10.2.55").userAccount("alice").build());
+        assertThat(exactIpResult.getTotal()).isEqualTo(2);
+
+        PageResult<OnlineUser> exactUserResult = LoginHelper.searchOnlineUserPage(
+                1, 10, OnlineUserQuery.builder().tenantId("tenant-a").userId("u-702").keyword("bob").build());
+        assertThat(exactUserResult.getTotal()).isEqualTo(1);
+        assertThat(exactUserResult.getRecords().get(0).getUserName()).isEqualTo("Bob");
+
+        // 4. 空条件查询对象兼容常规无过滤分页
+        PageResult<OnlineUser> allResult = LoginHelper.searchOnlineUserPage(1, 2, new OnlineUserQuery());
+        assertThat(allResult.getTotal()).isEqualTo(4);
+        assertThat(allResult.getRecords()).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("8. 可配置 maxScanLimit 突破旧 500 硬编码限制并支持单次查询 maxScanLimit 覆盖")
+    void testConfigurableMaxScanLimitBeyondLegacy500() {
+        try {
+            assertThat(LoginHelper.getOnlineSessionMaxScanLimit()).isEqualTo(2000);
+            for (int i = 1; i <= 520; i++) {
+                LoginHelper.login(LoginUser.builder()
+                        .userId("batch-" + i)
+                        .tenantId(i <= 510 ? "tenant-bulk-1" : "tenant-bulk-target")
+                        .userAccount("acct-" + i)
+                        .userName("User " + i)
+                        .build());
+            }
+
+            // 在默认 2000 上限下可检索到超过 500 索引位置的租户会话
+            PageResult<OnlineUser> found = LoginHelper.searchOnlineUserPage(
+                    1, 20, OnlineUserQuery.builder().tenantId("tenant-bulk-target").build());
+            assertThat(found.getTotal()).isEqualTo(10);
+
+            // 验证单次查询 maxScanLimit 生效及全局 Setter 生效
+            PageResult<OnlineUser> cappedByQuery = LoginHelper.searchOnlineUserPage(
+                    1, 20, OnlineUserQuery.builder().tenantId("tenant-bulk-1").maxScanLimit(5).build());
+            assertThat(cappedByQuery.getTotal()).isLessThanOrEqualTo(5);
+
+            LoginHelper.setOnlineSessionMaxScanLimit(10);
+            assertThat(LoginHelper.getOnlineSessionMaxScanLimit()).isEqualTo(10);
+            PageResult<OnlineUser> cannotExceedGlobalCeiling = LoginHelper.searchOnlineUserPage(
+                    1, 20, OnlineUserQuery.builder().tenantId("tenant-bulk-1").maxScanLimit(999999).build());
+            assertThat(cannotExceedGlobalCeiling.getTotal()).isLessThanOrEqualTo(10);
+        } finally {
+            LoginHelper.resetOnlineSessionConfig();
+        }
+    }
+
+    @Test
+    @DisplayName("9. 归属租户 Token 探测与跨租户踢出/注销 Fail-Fast 防越权守卫")
+    void testTokenTenantOwnershipAndFailFastGuards() {
+        LoginHelper.login("admin", LoginUser.builder()
+                .userId("801").tenantId("tenant-a").userAccount("admin_a").userName("Admin A").build());
+        String tokenA = LoginHelper.getTokenValue("admin");
+
+        LoginHelper.login(LoginUser.builder()
+                .userId("802").tenantId("tenant-b").userAccount("user_b").userName("User B").build());
+        String tokenB = LoginHelper.getTokenValue();
+
+        LoginHelper.login(LoginUser.builder()
+                .userId("803").userAccount("no_tenant_user").userName("No Tenant").build());
+        String noTenantToken = LoginHelper.getTokenValue();
+
+        // 1. Token 归属查询
+        OnlineUser infoA = LoginHelper.getOnlineUserByToken("admin", tokenA);
+        assertThat(infoA).isNotNull();
+        assertThat(infoA.getTenantId()).isEqualTo("tenant-a");
+        assertThat(LoginHelper.getTokenTenantId("admin", tokenA)).isEqualTo("tenant-a");
+        assertThat(LoginHelper.isTokenBelongsToTenant("admin", tokenA, "tenant-a")).isTrue();
+        assertThat(LoginHelper.isTokenBelongsToTenant("admin", tokenA, "tenant-b")).isFalse();
+        assertThat(LoginHelper.isTokenBelongsToTenant(tokenB, "tenant-b")).isTrue();
+
+        // 2. 跨租户与无租户 Token 强退/注销必须立即抛出 403 BusinessException，且目标 Token 保持在线
+        final String finalTokenA = tokenA;
+        assertThatThrownBy(() -> LoginHelper.kickoutByTokenForTenant("admin", finalTokenA, "tenant-b"))
+                .isInstanceOf(BusinessException.class)
+                .hasFieldOrPropertyWithValue("code", 403);
+        assertThat(LoginHelper.getOnlineUserByToken("admin", tokenA)).isNotNull();
+
+        assertThatThrownBy(() -> LoginHelper.logoutByTokenValueForTenant(tokenB, "tenant-a"))
+                .isInstanceOf(BusinessException.class)
+                .hasFieldOrPropertyWithValue("code", 403);
+        assertThat(LoginHelper.getOnlineUserByToken(tokenB)).isNotNull();
+
+        assertThatThrownBy(() -> LoginHelper.kickoutByTokenForTenant(noTenantToken, "tenant-a"))
+                .isInstanceOf(BusinessException.class)
+                .hasFieldOrPropertyWithValue("code", 403);
+
+        // 3. 归属租户匹配时成功踢出/注销并返回 true，再次操作幂等返回 false
+        assertThat(LoginHelper.kickoutByTokenForTenant("admin", tokenA, "tenant-a")).isTrue();
+        assertThat(LoginHelper.getOnlineUserByToken("admin", tokenA)).isNull();
+        assertThat(LoginHelper.kickoutByTokenForTenant("admin", tokenA, "tenant-a")).isFalse();
+
+        assertThat(LoginHelper.logoutByTokenValueForTenant(tokenB, "tenant-b")).isTrue();
+        assertThat(LoginHelper.getOnlineUserByToken(tokenB)).isNull();
+        assertThat(LoginHelper.logoutByTokenValueForTenant(tokenB, "tenant-b")).isFalse();
+        assertThat(LoginHelper.logoutByTokenValueForTenant("non-existent-token", "tenant-b")).isFalse();
     }
 }

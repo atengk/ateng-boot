@@ -6,8 +6,12 @@ import io.github.atengk.boot.satoken.cluster.broadcaster.SaTokenClusterBroadcast
 import io.github.atengk.boot.satoken.cluster.enums.SaTokenClusterEventType;
 import io.github.atengk.boot.satoken.cluster.listener.SaTokenClusterSyncListener;
 import io.github.atengk.boot.satoken.cluster.model.SaTokenClusterMessage;
+import io.github.atengk.boot.satoken.constant.SaTokenConstant;
+import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
 import io.github.atengk.boot.satoken.util.LoginHelper;
+import cn.dev33.satoken.session.SaSession;
+import cn.dev33.satoken.stp.StpUtil;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -203,5 +207,53 @@ class TenantScopedRolePermissionCacheTest {
         assertThat(legacyStp.getPermissionsByRole("editor", "admin")).containsExactly("doc:edit");
         assertThat(cacheService.get(PermissionCacheService.buildRolePermsKey("editor", "admin"))).isNotNull();
         assertThat(cacheService.get(PermissionCacheService.buildRolePermsKey("editor", "admin", "tenant-a"))).isNull();
+    }
+
+    @Test
+    @DisplayName("5. 超管切租户下触发复合 loginId 权限回源：全程锁定主租户 0 并隔离两租户同名用户缓存")
+    void shouldPinOwnerTenantForSuperAdminSwitchedTenantAndIsolateSameUserIdAcrossTenants() {
+        SaSession superSession = mock(SaSession.class);
+        LoginUser superUser = LoginUser.builder().tenantId("0").userId("1").build();
+        when(superSession.get(SaTokenConstant.LOGIN_USER_KEY)).thenReturn(superUser);
+
+        SaSession tenantBSession = mock(SaSession.class);
+        LoginUser bUser = LoginUser.builder().tenantId("tenant-b").userId("1").build();
+        when(tenantBSession.get(SaTokenConstant.LOGIN_USER_KEY)).thenReturn(bUser);
+
+        TenantContextHolder.setTenantId("tenant-biz");
+        try (MockedStatic<StpUtil> stpMock = mockStatic(StpUtil.class)) {
+            stpMock.when(() -> StpUtil.getSessionByLoginId("0_1", false)).thenReturn(superSession);
+            stpMock.when(() -> StpUtil.getSessionByLoginId("tenant-b_1", false)).thenReturn(tenantBSession);
+
+            when(loader.loadRolesByUserId("1", "login", "0")).thenAnswer(inv -> {
+                assertThat(TenantContextHolder.getExplicit()).isEqualTo("0");
+                return List.of("platform_admin");
+            });
+            when(loader.loadPermissionsByRole("platform_admin", "login", "0")).thenAnswer(inv -> {
+                assertThat(TenantContextHolder.getExplicit()).isEqualTo("0");
+                return List.of("platform:all");
+            });
+            when(loader.loadDirectPermissionsByUserId("1", "login", "0")).thenAnswer(inv -> {
+                assertThat(TenantContextHolder.getExplicit()).isEqualTo("0");
+                return List.of("platform:root");
+            });
+
+            when(loader.loadRolesByUserId("1", "login", "tenant-b")).thenReturn(List.of("biz_viewer"));
+            when(loader.loadPermissionsByRole("biz_viewer", "login", "tenant-b")).thenReturn(List.of("biz:read"));
+            when(loader.loadDirectPermissionsByUserId("1", "login", "tenant-b")).thenReturn(List.of());
+
+            List<String> superPerms = cachedStpInterface.getPermissionList("0_1", "login");
+            assertThat(superPerms).containsExactlyInAnyOrder("platform:all", "platform:root");
+            assertThat(TenantContextHolder.getExplicit()).isEqualTo("tenant-biz");
+
+            // 相同 userId="1" 在 tenant-b 下必须读取自己角色权限，严禁串用超管缓存
+            List<String> bPerms = cachedStpInterface.getPermissionList("tenant-b_1", "login");
+            assertThat(bPerms).containsExactly("biz:read");
+
+            String keySuper = PermissionCacheService.buildUserRolesKey("1", "login", "0");
+            String keyTenantB = PermissionCacheService.buildUserRolesKey("1", "login", "tenant-b");
+            assertThat(cacheService.get(keySuper)).isEqualTo("[\"platform_admin\"]");
+            assertThat(cacheService.get(keyTenantB)).isEqualTo("[\"biz_viewer\"]");
+        }
     }
 }

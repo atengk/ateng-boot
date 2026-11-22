@@ -6,6 +6,9 @@ import io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager;
 import io.github.atengk.boot.redis.cache.twolevel.l1.L1MemoryCache;
 import io.github.atengk.boot.satoken.cluster.broadcaster.SaTokenClusterBroadcaster;
 import io.github.atengk.boot.satoken.cluster.enums.SaTokenClusterEventType;
+import io.github.atengk.boot.satoken.model.LoginUser;
+import io.github.atengk.boot.satoken.model.ParsedLoginId;
+import io.github.atengk.boot.satoken.util.LoginHelper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.core.Cursor;
@@ -160,6 +163,25 @@ public class PermissionCacheService {
     }
 
     /**
+     * 构建租户隔离维度的用户角色列表缓存键
+     * <p>
+     * 当 {@code tenantId} 为空或空白时安全回退至既有键格式；
+     * 非空时生成 {@code ateng:satoken:cache:[<loginType>:]user-roles:<tenantId>:<userId>}。
+     * </p>
+     *
+     * @param userId    剥离租户前缀后的业务侧纯净用户唯一标识
+     * @param loginType 账号体系类型标识
+     * @param tenantId  租户唯一标识
+     * @return 权限缓存键
+     */
+    public static String buildUserRolesKey(String userId, String loginType, String tenantId) {
+        if (tenantId == null || tenantId.isBlank()) {
+            return buildUserRolesKey(userId, loginType);
+        }
+        return buildScopedKey(loginType, "user-roles:", tenantId.trim() + ":" + userId);
+    }
+
+    /**
      * 构建角色权限列表缓存键（默认体系保持兼容格式，非默认体系按 loginType 物理隔离）
      *
      * @param roleCode  角色编码
@@ -200,6 +222,25 @@ public class PermissionCacheService {
         return buildScopedKey(loginType, "user-perms:", userId);
     }
 
+    /**
+     * 构建租户隔离维度的用户直属权限列表缓存键
+     * <p>
+     * 当 {@code tenantId} 为空或空白时安全回退至既有键格式；
+     * 非空时生成 {@code ateng:satoken:cache:[<loginType>:]user-perms:<tenantId>:<userId>}。
+     * </p>
+     *
+     * @param userId    剥离租户前缀后的业务侧纯净用户唯一标识
+     * @param loginType 账号体系类型标识
+     * @param tenantId  租户唯一标识
+     * @return 权限缓存键
+     */
+    public static String buildUserPermsKey(String userId, String loginType, String tenantId) {
+        if (tenantId == null || tenantId.isBlank()) {
+            return buildUserPermsKey(userId, loginType);
+        }
+        return buildScopedKey(loginType, "user-perms:", tenantId.trim() + ":" + userId);
+    }
+
     private static String buildScopedKey(String loginType, String segment, String key) {
         if (isDefaultLoginType(loginType)) {
             return CACHE_PREFIX + segment + key;
@@ -218,24 +259,47 @@ public class PermissionCacheService {
 
     /**
      * 即时刷新指定账号体系下用户的角色与直属权限缓存
+     * <p>
+     * 兼容历史直接传入复合 {@code {tenantId}_{userId}}：若对应活跃会话归属非空租户，将连带精准清理租户隔离维度键。
+     * </p>
      *
      * @param loginType 账号体系类型标识
-     * @param userId    用户唯一标识
+     * @param userId    用户唯一标识（或复合 loginId）
      */
     public void refreshUserPermissions(String loginType, String userId) {
         if (userId == null || userId.isBlank()) {
             return;
         }
-        String userRolesKey = buildUserRolesKey(userId, loginType);
-        String userPermsKey = buildUserPermsKey(userId, loginType);
+        refreshUserPermissions(loginType, null, userId);
+
+        ParsedLoginId parsed = LoginHelper.parseCompositeLoginId(userId, loginType);
+        if (parsed.hasTenant() && parsed.userId() != null && !parsed.userId().isBlank()) {
+            refreshUserPermissions(loginType, parsed.tenantId(), parsed.userId());
+        }
+    }
+
+    /**
+     * 即时刷新指定账号体系与租户下用户的角色与直属权限缓存
+     *
+     * @param loginType 账号体系类型标识
+     * @param tenantId  租户唯一标识（为空时按非租户隔离键刷新）
+     * @param userId    剥离租户前缀后的纯净用户唯一标识
+     */
+    public void refreshUserPermissions(String loginType, String tenantId, String userId) {
+        if (userId == null || userId.isBlank()) {
+            return;
+        }
+        String normalizedTenant = (tenantId != null && !tenantId.isBlank()) ? tenantId.trim() : null;
+        String userRolesKey = buildUserRolesKey(userId, loginType, normalizedTenant);
+        String userPermsKey = buildUserPermsKey(userId, loginType, normalizedTenant);
 
         delete(userRolesKey);
         delete(userPermsKey);
-        clearLocalUserCache(loginType, userId);
-        log.info("即时清理用户权限缓存完成: loginType={}, userId={}",
-                isDefaultLoginType(loginType) ? StpUtil.TYPE : loginType.trim(), userId);
+        clearLocalUserCache(loginType, normalizedTenant, userId);
+        log.info("即时清理用户权限缓存完成: loginType={}, tenantId={}, userId={}",
+                isDefaultLoginType(loginType) ? StpUtil.TYPE : loginType.trim(), normalizedTenant, userId);
 
-        broadcastRefresh(SaTokenClusterEventType.USER_PERMISSION_REFRESH, loginType, userId);
+        broadcastRefresh(SaTokenClusterEventType.USER_PERMISSION_REFRESH, loginType, normalizedTenant, userId);
     }
 
     /**
@@ -329,8 +393,27 @@ public class PermissionCacheService {
         if (userId == null || userId.isBlank()) {
             return;
         }
-        getAdapter().evictLocal(buildUserRolesKey(userId, loginType));
-        getAdapter().evictLocal(buildUserPermsKey(userId, loginType));
+        clearLocalUserCache(loginType, null, userId);
+
+        ParsedLoginId parsed = LoginHelper.parseCompositeLoginId(userId, loginType);
+        if (parsed.hasTenant() && parsed.userId() != null && !parsed.userId().isBlank()) {
+            clearLocalUserCache(loginType, parsed.tenantId(), parsed.userId());
+        }
+    }
+
+    /**
+     * 精准清理指定账号体系与租户下用户的本地内存权限缓存（异地节点协同）
+     *
+     * @param loginType 账号体系类型标识
+     * @param tenantId  租户唯一标识
+     * @param userId    剥离租户前缀后的纯净用户唯一标识
+     */
+    public void clearLocalUserCache(String loginType, String tenantId, String userId) {
+        if (userId == null || userId.isBlank()) {
+            return;
+        }
+        getAdapter().evictLocal(buildUserRolesKey(userId, loginType, tenantId));
+        getAdapter().evictLocal(buildUserPermsKey(userId, loginType, tenantId));
     }
 
     /**
@@ -393,6 +476,17 @@ public class PermissionCacheService {
     }
 
     /**
+     * 清理指定账号体系与租户下用户的角色与直属权限缓存（别名方法）
+     *
+     * @param loginType 账号体系类型标识
+     * @param tenantId  租户唯一标识
+     * @param userId    剥离租户前缀后的纯净用户唯一标识
+     */
+    public void clearUserCache(String loginType, String tenantId, String userId) {
+        refreshUserPermissions(loginType, tenantId, userId);
+    }
+
+    /**
      * 清理指定用户的角色与直属权限缓存（Long 用户标识重载）
      *
      * @param userId 用户唯一标识
@@ -412,6 +506,19 @@ public class PermissionCacheService {
     public void clearUserCache(String loginType, Long userId) {
         if (userId != null) {
             refreshUserPermissions(loginType, String.valueOf(userId));
+        }
+    }
+
+    /**
+     * 清理指定账号体系与租户下用户的角色与直属权限缓存（Long 用户标识重载）
+     *
+     * @param loginType 账号体系类型标识
+     * @param tenantId  租户唯一标识
+     * @param userId    用户唯一标识
+     */
+    public void clearUserCache(String loginType, String tenantId, Long userId) {
+        if (userId != null) {
+            refreshUserPermissions(loginType, tenantId, String.valueOf(userId));
         }
     }
 

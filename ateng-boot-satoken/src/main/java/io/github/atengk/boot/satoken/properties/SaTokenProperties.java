@@ -103,6 +103,12 @@ public class SaTokenProperties {
     private TenantProperties tenant = new TenantProperties();
 
     /**
+     * 在线会话监控与条件检索安全防卫配置
+     */
+    @NestedConfigurationProperty
+    private OnlineSessionProperties onlineSession = new OnlineSessionProperties();
+
+    /**
      * 路由拦截器详细配置属性
      */
     @Data
@@ -432,5 +438,17 @@ public class SaTokenProperties {
          * Token 风格（支持: uuid, simple-uuid, random-32, random-64, random-128, tik 等，默认: uuid）
          */
         private String tokenStyle = "uuid";
+    }
+
+    /**
+     * 在线会话监控与条件检索安全防卫配置属性
+     */
+    @Data
+    public static class OnlineSessionProperties {
+
+        /**
+         * 条件检索在线会话的单次最大安全扫描采样上限（默认: 2000，防御海量 Token 场景慢查询与 DoS）
+         */
+        private int maxScanLimit = 2000;
     }
 }

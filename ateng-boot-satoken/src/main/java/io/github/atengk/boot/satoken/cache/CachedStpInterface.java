@@ -3,6 +3,7 @@ package io.github.atengk.boot.satoken.cache;
 import cn.dev33.satoken.stp.StpInterface;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.satoken.model.ParsedLoginId;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import lombok.RequiredArgsConstructor;
@@ -42,9 +43,21 @@ public class CachedStpInterface implements StpInterface {
         if (loginId == null) {
             return Collections.emptyList();
         }
-        String userId = String.valueOf(loginId);
-        String cacheKey = PermissionCacheService.buildUserRolesKey(userId, loginType);
-        return getOrLoadCachedList(cacheKey, () -> loader.loadRolesByUserId(userId, loginType));
+        ParsedLoginId parsed = LoginHelper.parseCompositeLoginId(loginId, loginType);
+        String ownerTenantId = resolveOwnerTenantId(parsed, loginType);
+        return getRoleList(parsed, loginType, ownerTenantId);
+    }
+
+    private List<String> getRoleList(ParsedLoginId parsed, String loginType, String ownerTenantId) {
+        String userId = parsed != null ? parsed.userId() : null;
+        if (userId == null || userId.isBlank()) {
+            return Collections.emptyList();
+        }
+        String cacheKey = PermissionCacheService.buildUserRolesKey(userId, loginType, ownerTenantId);
+        return getOrLoadCachedList(cacheKey, () -> runInTenantScope(ownerTenantId, () ->
+                ownerTenantId != null
+                        ? loader.loadRolesByUserId(userId, loginType, ownerTenantId)
+                        : loader.loadRolesByUserId(userId, loginType)));
     }
 
     @Override
@@ -52,10 +65,15 @@ public class CachedStpInterface implements StpInterface {
         if (loginId == null) {
             return Collections.emptyList();
         }
-        String userId = String.valueOf(loginId);
+        ParsedLoginId parsed = LoginHelper.parseCompositeLoginId(loginId, loginType);
+        String userId = parsed.userId();
+        if (userId == null || userId.isBlank()) {
+            return Collections.emptyList();
+        }
+        String ownerTenantId = resolveOwnerTenantId(parsed, loginType);
 
         // 1. 获取用户所属角色列表
-        List<String> roles = getRoleList(loginId, loginType);
+        List<String> roles = getRoleList(parsed, loginType, ownerTenantId);
 
         // 2. 汇总各角色关联的权限集
         Set<String> permissionSet = new LinkedHashSet<>();
@@ -64,12 +82,12 @@ public class CachedStpInterface implements StpInterface {
                 if (roleCode == null || roleCode.isBlank()) {
                     continue;
                 }
-                permissionSet.addAll(getPermissionsByRole(roleCode, loginType));
+                permissionSet.addAll(getPermissionsByRole(roleCode, loginType, ownerTenantId));
             }
         }
 
         // 3. 汇总用户个人特有的额外直属权限集
-        permissionSet.addAll(getDirectPermissions(userId, loginType));
+        permissionSet.addAll(getDirectPermissions(parsed, loginType, ownerTenantId));
 
         return new ArrayList<>(permissionSet);
     }
@@ -92,21 +110,45 @@ public class CachedStpInterface implements StpInterface {
      * @return 权限码集合
      */
     public List<String> getPermissionsByRole(String roleCode, String loginType) {
+        return getPermissionsByRole(roleCode, loginType, null);
+    }
+
+    private List<String> getPermissionsByRole(String roleCode, String loginType, String explicitOwnerTenantId) {
         if (roleCode == null || roleCode.isBlank()) {
             return Collections.emptyList();
         }
         if (isTenantScopedEnabled()) {
-            String tenantId = resolveCurrentTenantId(loginType);
+            String tenantId = (explicitOwnerTenantId != null && !explicitOwnerTenantId.isBlank())
+                    ? explicitOwnerTenantId.trim()
+                    : resolveCurrentTenantId(loginType);
             if (tenantId != null) {
                 String cacheKey = PermissionCacheService.buildRolePermsKey(roleCode, loginType, tenantId);
-                return getOrLoadCachedList(cacheKey, () -> loader.loadPermissionsByRole(roleCode, loginType, tenantId));
+                return getOrLoadCachedList(cacheKey, () -> runInTenantScope(tenantId,
+                        () -> loader.loadPermissionsByRole(roleCode, loginType, tenantId)));
             }
         }
         String cacheKey = PermissionCacheService.buildRolePermsKey(roleCode, loginType);
-        return getOrLoadCachedList(cacheKey, () ->
+        return getOrLoadCachedList(cacheKey, () -> runInTenantScope(explicitOwnerTenantId, () ->
                 (loginType == null || loginType.isBlank())
                         ? loader.loadPermissionsByRole(roleCode)
-                        : loader.loadPermissionsByRole(roleCode, loginType));
+                        : loader.loadPermissionsByRole(roleCode, loginType)));
+    }
+
+    private String resolveOwnerTenantId(ParsedLoginId parsed, String loginType) {
+        if (parsed != null && parsed.hasTenant()) {
+            return parsed.tenantId().trim();
+        }
+        if (isTenantScopedEnabled()) {
+            return resolveCurrentTenantId(loginType);
+        }
+        return null;
+    }
+
+    private <T> T runInTenantScope(String tenantId, Supplier<T> supplier) {
+        if (tenantId == null || tenantId.isBlank()) {
+            return supplier.get();
+        }
+        return TenantContextHolder.runWithTenant(tenantId.trim(), supplier);
     }
 
     private boolean isTenantScopedEnabled() {
@@ -151,8 +193,21 @@ public class CachedStpInterface implements StpInterface {
         if (userId == null || userId.isBlank()) {
             return Collections.emptyList();
         }
-        String cacheKey = PermissionCacheService.buildUserPermsKey(userId, loginType);
-        return getOrLoadCachedList(cacheKey, () -> loader.loadDirectPermissionsByUserId(userId, loginType));
+        ParsedLoginId parsed = LoginHelper.parseCompositeLoginId(userId, loginType);
+        String ownerTenantId = resolveOwnerTenantId(parsed, loginType);
+        return getDirectPermissions(parsed, loginType, ownerTenantId);
+    }
+
+    private List<String> getDirectPermissions(ParsedLoginId parsed, String loginType, String ownerTenantId) {
+        String plainUserId = parsed != null ? parsed.userId() : null;
+        if (plainUserId == null || plainUserId.isBlank()) {
+            return Collections.emptyList();
+        }
+        String cacheKey = PermissionCacheService.buildUserPermsKey(plainUserId, loginType, ownerTenantId);
+        return getOrLoadCachedList(cacheKey, () -> runInTenantScope(ownerTenantId, () ->
+                ownerTenantId != null
+                        ? loader.loadDirectPermissionsByUserId(plainUserId, loginType, ownerTenantId)
+                        : loader.loadDirectPermissionsByUserId(plainUserId, loginType)));
     }
 
     private List<String> getOrLoadCachedList(String cacheKey, Supplier<List<String>> sourceSupplier) {

@@ -349,4 +349,46 @@ class PermissionCacheServiceTest {
         assertThat(service.get(PermissionCacheService.buildUserRolesKey("2002", "admin"))).isNull();
         assertThat(service.get(PermissionCacheService.buildUserRolesKey("2002", "member"))).isEqualTo("[\"r4\"]");
     }
+
+    @Test
+    @DisplayName("7. 用户级缓存键与刷新/清理三参租户维度对称隔离验证")
+    void testTenantScopedUserKeyAndSelectiveRefresh() {
+        assertThat(PermissionCacheService.buildUserRolesKey("operator_88001", "login", "tenant_B"))
+                .isEqualTo("ateng:satoken:cache:user-roles:tenant_B:operator_88001");
+        assertThat(PermissionCacheService.buildUserPermsKey("operator_88001", "admin", "tenant_B"))
+                .isEqualTo("ateng:satoken:cache:admin:user-perms:tenant_B:operator_88001");
+        assertThat(PermissionCacheService.buildUserRolesKey("operator_88001", "login", "  "))
+                .isEqualTo("ateng:satoken:cache:user-roles:operator_88001");
+
+        doAnswer(invocation -> {
+            java.util.function.Consumer<SaTokenClusterBroadcaster> consumer = invocation.getArgument(0);
+            consumer.accept(clusterBroadcaster);
+            return null;
+        }).when(broadcasterProvider).ifAvailable(any());
+
+        PermissionCacheService service = new PermissionCacheService(null, null, broadcasterProvider);
+        String keyA = PermissionCacheService.buildUserRolesKey("88001", "admin", "tenant-a");
+        String permsA = PermissionCacheService.buildUserPermsKey("88001", "admin", "tenant-a");
+        String keyB = PermissionCacheService.buildUserRolesKey("88001", "admin", "tenant-b");
+        service.set(keyA, "[\"role_a\"]", 300);
+        service.set(permsA, "[\"perm_a\"]", 300);
+        service.set(keyB, "[\"role_b\"]", 300);
+
+        service.refreshUserPermissions("admin", "tenant-a", "88001");
+        assertThat(service.get(keyA)).isNull();
+        assertThat(service.get(permsA)).isNull();
+        assertThat(service.get(keyB)).isEqualTo("[\"role_b\"]");
+        verify(clusterBroadcaster).broadcast(SaTokenClusterEventType.USER_PERMISSION_REFRESH, "admin", "tenant-a", "88001", null);
+
+        // 校验 clearUserCache 与 clearLocalUserCache 三参重载
+        service.set(keyA, "[\"role_a2\"]", 300);
+        service.clearLocalUserCache("admin", "tenant-a", "88001");
+        assertThat(service.get(keyA)).isNull();
+        assertThat(service.get(keyB)).isEqualTo("[\"role_b\"]");
+
+        service.set(keyA, "[\"role_a3\"]", 300);
+        service.clearUserCache("admin", "tenant-a", 88001L);
+        assertThat(service.get(keyA)).isNull();
+        assertThat(service.get(keyB)).isEqualTo("[\"role_b\"]");
+    }
 }

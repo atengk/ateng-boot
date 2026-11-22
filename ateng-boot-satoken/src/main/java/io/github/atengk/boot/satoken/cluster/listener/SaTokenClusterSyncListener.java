@@ -1,15 +1,20 @@
 package io.github.atengk.boot.satoken.cluster.listener;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.satoken.cache.PermissionCacheService;
 import io.github.atengk.boot.satoken.cluster.broadcaster.SaTokenClusterBroadcaster;
 import io.github.atengk.boot.satoken.cluster.enums.SaTokenClusterEventType;
 import io.github.atengk.boot.satoken.cluster.model.SaTokenClusterMessage;
+import io.github.atengk.boot.satoken.constant.SaTokenConstant;
 import io.github.atengk.boot.satoken.event.SaDisableEvent;
 import io.github.atengk.boot.satoken.event.SaKickoutEvent;
 import io.github.atengk.boot.satoken.event.SaLogoutEvent;
 import io.github.atengk.boot.satoken.event.SaReplacedEvent;
 import io.github.atengk.boot.satoken.event.SaUntieDisableEvent;
+import io.github.atengk.boot.satoken.model.LoginUser;
+import io.github.atengk.boot.satoken.model.ParsedLoginId;
+import io.github.atengk.boot.satoken.util.LoginHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
@@ -59,7 +64,28 @@ public class SaTokenClusterSyncListener {
 
     private void broadcastLifecycle(SaTokenClusterEventType eventType, String loginType, Object loginIdObj) {
         String loginId = loginIdObj != null ? String.valueOf(loginIdObj) : null;
-        if (PermissionCacheService.isDefaultLoginType(loginType)) {
+        boolean defaultType = PermissionCacheService.isDefaultLoginType(loginType);
+        if (loginId != null && !loginId.isBlank()) {
+            LoginUser sessionUser = LoginHelper.getSessionLoginUser(loginId, loginType);
+            if (sessionUser != null && sessionUser.getTenantId() != null && !sessionUser.getTenantId().isBlank()) {
+                ParsedLoginId parsed = LoginHelper.parseCompositeLoginId(loginIdObj, loginType);
+                broadcaster.broadcast(eventType, defaultType ? null : loginType.trim(), parsed.tenantId(), parsed.userId(), null);
+                return;
+            }
+            if (sessionUser == null) {
+                String contextTenant = TenantContextHolder.getTenantId();
+                if (contextTenant != null && !contextTenant.isBlank()) {
+                    String normalizedTenant = contextTenant.trim();
+                    String prefix = normalizedTenant + SaTokenConstant.TENANT_DELIMITER;
+                    if (loginId.startsWith(prefix) && loginId.length() > prefix.length()) {
+                        broadcaster.broadcast(eventType, defaultType ? null : loginType.trim(),
+                                normalizedTenant, loginId.substring(prefix.length()), null);
+                        return;
+                    }
+                }
+            }
+        }
+        if (defaultType) {
             broadcaster.broadcast(eventType, loginId);
         } else {
             broadcaster.broadcast(eventType, loginType.trim(), loginId);
@@ -116,7 +142,10 @@ public class SaTokenClusterSyncListener {
         switch (clusterMessage.getEventType()) {
             case USER_PERMISSION_REFRESH, KICKOUT, LOGOUT, REPLACED, DISABLE, UNTIE_DISABLE -> {
                 if (targetKey != null && !targetKey.isBlank()) {
-                    if (defaultType) {
+                    String tenantId = clusterMessage.getTenantId();
+                    if (tenantId != null && !tenantId.isBlank()) {
+                        cacheService.clearLocalUserCache(defaultType ? null : loginType.trim(), tenantId.trim(), targetKey);
+                    } else if (defaultType) {
                         cacheService.clearLocalUserCache(targetKey);
                     } else {
                         cacheService.clearLocalUserCache(loginType.trim(), targetKey);

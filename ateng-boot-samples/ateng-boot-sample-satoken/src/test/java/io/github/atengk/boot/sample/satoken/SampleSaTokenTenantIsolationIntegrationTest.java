@@ -94,8 +94,29 @@ class SampleSaTokenTenantIsolationIntegrationTest {
                     }
                     return delegate.loadPermissionsByRole(roleCode, loginType, tenantId);
                 }
+
+                @Override
+                public List<String> loadRolesByUserId(String userId, String loginType, String tenantId) {
+                    if ("operator_88001".equals(userId) && tenantId != null) {
+                        // 断言 DB 回源期间当前线程 TenantContextHolder 已被精确锁定为主体归属租户
+                        LAST_DB_CONTEXT_TENANT.set(TenantContextHolder.getExplicit());
+                        return List.of("tenant_manager");
+                    }
+                    return delegate.loadRolesByUserId(userId, loginType, tenantId);
+                }
+
+                @Override
+                public List<String> loadDirectPermissionsByUserId(String userId, String loginType, String tenantId) {
+                    if ("operator_88001".equals(userId) && tenantId != null) {
+                        return List.of(tenantId + ":user:direct");
+                    }
+                    return delegate.loadDirectPermissionsByUserId(userId, loginType, tenantId);
+                }
             };
         }
+
+        static final java.util.concurrent.atomic.AtomicReference<String> LAST_DB_CONTEXT_TENANT =
+                new java.util.concurrent.atomic.AtomicReference<>();
     }
 
     @Autowired
@@ -109,6 +130,9 @@ class SampleSaTokenTenantIsolationIntegrationTest {
 
     @Autowired
     private PermissionCacheService permissionCacheService;
+
+    @Autowired
+    private cn.dev33.satoken.stp.StpInterface stpInterface;
 
     private String tenantAToken;
     private String tenantBToken;
@@ -137,6 +161,7 @@ class SampleSaTokenTenantIsolationIntegrationTest {
             TenantScopedLoaderTestConfig.TENANT_ROLE_PERMS.put("tenant-a:tenant_manager", List.of("tenantA:finance:approve"));
             TenantScopedLoaderTestConfig.TENANT_ROLE_PERMS.put("tenant-b:tenant_manager", List.of("tenantB:inventory:view"));
             TenantScopedLoaderTestConfig.LOAD_COUNT.set(0);
+            TenantScopedLoaderTestConfig.LAST_DB_CONTEXT_TENANT.set(null);
         } finally {
             tenantAToken = null;
             tenantBToken = null;
@@ -272,6 +297,137 @@ class SampleSaTokenTenantIsolationIntegrationTest {
                 .andExpect(jsonPath("$.data[0]").value("tenantB:inventory:view"));
 
         assertThat(TenantScopedLoaderTestConfig.LOAD_COUNT.get()).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("3. 复合 loginId 下划线消歧、切租户回源主租户锁定与用户级三参定向刷新")
+    void shouldResolveCompositeUnderscoreIdsAndIsolateUserCacheAcrossTenantsViaHttp() throws Exception {
+        tenantAToken = extractToken(mockMvc.perform(post("/sample/satoken/multi-account/admin/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userId\":\"operator_88001\",\"username\":\"opA\",\"tenantId\":\"tenant-a\","
+                                + "\"roles\":[\"tenant_manager\"],\"permissions\":[]}"))
+                .andExpect(status().isOk())
+                .andReturn());
+
+        tenantBToken = extractToken(mockMvc.perform(post("/sample/satoken/multi-account/admin/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userId\":\"operator_88001\",\"username\":\"opB\",\"tenantId\":\"tenant-b\","
+                                + "\"roles\":[\"tenant_manager\"],\"permissions\":[]}"))
+                .andExpect(status().isOk())
+                .andReturn());
+
+        // 通过 HTTP 触发租户 A 权限缓存回源，DB 回源锁定主体归属 tenant-a，MockMvc 请求结束后由拦截器统一清理上下文
+        mockMvc.perform(get("/sample/satoken/permission-cache/permissions")
+                        .param("loginType", "admin")
+                        .header("satoken-admin", tenantAToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.hasItems(
+                        "tenantA:finance:approve", "tenant-a:user:direct")));
+        assertThat(TenantScopedLoaderTestConfig.LAST_DB_CONTEXT_TENANT.get()).isEqualTo("tenant-a");
+
+        // 同名 operator_88001 在 tenant-b 读取自己专属角色与直属权限
+        mockMvc.perform(get("/sample/satoken/permission-cache/permissions")
+                        .param("loginType", "admin")
+                        .header("satoken-admin", tenantBToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.hasItems(
+                        "tenantB:inventory:view", "tenant-b:user:direct")));
+
+        // 用户级三参刷新仅作用于 tenant-a:operator_88001
+        mockMvc.perform(post("/sample/satoken/permission-cache/refresh-user")
+                        .param("userId", "operator_88001")
+                        .param("loginType", "admin")
+                        .param("tenantId", "tenant-a")
+                        .header("satoken-admin", tenantAToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        assertThat(permissionCacheService.get(
+                PermissionCacheService.buildUserPermsKey("operator_88001", "admin", "tenant-a"))).isNull();
+        assertThat(permissionCacheService.get(
+                PermissionCacheService.buildUserPermsKey("operator_88001", "admin", "tenant-b"))).isNotNull();
+
+        // 在显式切换外层工作租户为 tenant-other 下再次回源 tenant-a，DB 回调锁定 tenant-a 并在返回后精准恢复外层 tenant-other
+        TenantScopedLoaderTestConfig.LAST_DB_CONTEXT_TENANT.set(null);
+        TenantContextHolder.runWithTenant("tenant-other", () -> {
+            List<String> perms = stpInterface.getPermissionList("tenant-a_operator_88001", "admin");
+            assertThat(perms).contains("tenantA:finance:approve", "tenant-a:user:direct");
+            assertThat(TenantScopedLoaderTestConfig.LAST_DB_CONTEXT_TENANT.get()).isEqualTo("tenant-a");
+            assertThat(TenantContextHolder.getExplicit()).isEqualTo("tenant-other");
+        });
+    }
+
+    @Test
+    @DisplayName("4. 在线会话多租户/IP 条件分页及跨租户 Token 防越权强退与注销")
+    void shouldFilterOnlineSessionsByTenantAndCidrAndGuardCrossTenantKickoutViaHttp() throws Exception {
+        tenantAToken = extractToken(mockMvc.perform(post("/sample/satoken/multi-account/admin/login")
+                        .header("X-Forwarded-For", "10.10.5.10")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userId\":\"online-a1\",\"username\":\"online_alice\",\"tenantId\":\"tenant-a\"}"))
+                .andExpect(status().isOk())
+                .andReturn());
+
+        tenantBToken = extractToken(mockMvc.perform(post("/sample/satoken/multi-account/admin/login")
+                        .header("X-Forwarded-For", "10.10.6.20")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userId\":\"online-b1\",\"username\":\"online_bob\",\"tenantId\":\"tenant-b\"}"))
+                .andExpect(status().isOk())
+                .andReturn());
+
+        // 1. 按 tenantId + CIDR 子网组合检索，仅返回 tenant-a 会话
+        mockMvc.perform(get("/sample/satoken/online/page")
+                        .param("loginType", "admin")
+                        .param("tenantId", "tenant-a")
+                        .param("loginIp", "10.10.5.0/24")
+                        .param("page", "1")
+                        .param("size", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.records[0].tenantId").value("tenant-a"))
+                .andExpect(jsonPath("$.data.records[0].userId").value("online-a1"));
+
+        // 2. 查询 token-info 确认归属租户
+        mockMvc.perform(get("/sample/satoken/online/token-info")
+                        .param("loginType", "admin")
+                        .param("tokenValue", tenantAToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.tenantId").value("tenant-a"));
+
+        // 3. 跨租户尝试强退 tenantAToken（声称属于 tenant-b）必须返回 403 越权拦截
+        mockMvc.perform(post("/sample/satoken/online/kickout-token-for-tenant")
+                        .param("loginType", "admin")
+                        .param("tokenValue", tenantAToken)
+                        .param("expectedTenantId", "tenant-b"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(403));
+
+        // 4. 目标租户 tenant-a 合法强退成功并返回 true，二次操作幂等返回 false
+        mockMvc.perform(post("/sample/satoken/online/kickout-token-for-tenant")
+                        .param("loginType", "admin")
+                        .param("tokenValue", tenantAToken)
+                        .param("expectedTenantId", "tenant-a"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        mockMvc.perform(post("/sample/satoken/online/kickout-token-for-tenant")
+                        .param("loginType", "admin")
+                        .param("tokenValue", tenantAToken)
+                        .param("expectedTenantId", "tenant-a"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(false));
+
+        // 5. 同租户安全注销 tenantBToken 成功
+        mockMvc.perform(post("/sample/satoken/online/logout-token-for-tenant")
+                        .param("loginType", "admin")
+                        .param("tokenValue", tenantBToken)
+                        .param("expectedTenantId", "tenant-b"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
     }
 
     private String extractToken(MvcResult result) throws Exception {

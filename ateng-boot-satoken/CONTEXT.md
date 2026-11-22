@@ -25,8 +25,12 @@ _Avoid_: TenantSwitchFilter, TenantValidator
 _Avoid_: DataScopeSync, MyBatisPlusBridge
 
 **LoginHelper**:
-基于 Sa-Token 强类型扩展的高级登录与上下文门面工具类，提供开箱即用的登录会话构建（自动嗅探并固化终端 `loginIp`）、多账号体系解耦（多 `loginType` 重载路由与 `registerStpLogic` 显式注册）、多终端会话隔离、强类型会话载荷读写（`LoginUser`）、Token 与会话有效期续签（`renewTimeout` / `renewTimeoutByToken`）、二级安全认证治理（`openSafe`/`checkSafe`/`closeSafe`）、可配置超管角色/权限判定（`isSuperAdmin` 支持 `super-admin-roles`/`super-admin-permissions`）、数据所有权校验断言（`checkSelf`/`checkBelongsToTenant`）、身份模拟（`switchTo`/`runAs`）与上下文清理。内置对多租户复合主键模式（`{tenantId}_{userId}`）的双向对称解析与剥离，确保 `getUserId()` 始终返回纯净的业务主键。彻底杜绝将未类型化的裸 Map 或易失性散落数据写入底层 Session。
+基于 Sa-Token 强类型扩展的高级登录与上下文门面工具类，提供开箱即用的登录会话构建（自动嗅探并固化终端 `loginIp`）、多账号体系解耦（多 `loginType` 重载路由与 `registerStpLogic` 显式注册）、多终端会话隔离、强类型会话载荷读写（`LoginUser`）、Token 与会话有效期续签（`renewTimeout` / `renewTimeoutByToken`）、二级安全认证治理（`openSafe`/`checkSafe`/`closeSafe`）、可配置超管角色/权限判定（`isSuperAdmin` 支持 `super-admin-roles`/`super-admin-permissions`）、数据所有权校验断言（`checkSelf`/`checkBelongsToTenant`）、身份模拟（`switchTo`/`runAs`）、条件分页在线会话治理（`searchOnlineUserPage` + `OnlineUserQuery`、`getOnlineUserByToken`、`isTokenBelongsToTenant`、`kickoutByTokenForTenant`/`logoutByTokenValueForTenant`）与上下文清理。内置对多租户复合主键模式（`{tenantId}_{userId}`）的双向对称解析与剥离（公开 `ParsedLoginId` / `parseCompositeLoginId`，结合会话 `LoginUser.tenantId` 精确前缀消除 `_` 歧义），确保 `getUserId()` 始终返回纯净的业务主键。彻底杜绝将未类型化的裸 Map 或易失性散落数据写入底层 Session。
 _Avoid_: AuthHelper, SessionManager, SecurityUtils, TokenHelper
+
+**ParsedLoginId**:
+不可变多租户复合登录标识拆解载体（含 `tenantId`、`userId` 与 `rawLoginId`），统一支撑 `LoginHelper`、`CachedStpInterface`、`PermissionCacheService` 与 `SaTokenClusterSyncListener` 对 `{tenantId}_{userId}` 的一致拆解与向后兼容解析。
+_Avoid_: CompositeIdParts, LoginIdTuple, TenantUserId
 
 **TempTokenHelper**:
 面向短效一次性或限时业务凭据场景（如大文件私有下载短链、跨系统回调 Ticket、敏感操作扫码确认、密码重置凭据）的强类型临时令牌对称门面。底层基于 `SaTempUtil` 与 `JsonUtil` 纯净 JSON 封包构建，提供 `createTempToken`（支持 `Duration` 与任意强类型载荷，零 `@class` 污染）、`parseTempToken`、`getTempTokenTimeout` 与 `deleteTempToken` 完整读写销毁闭环。
@@ -41,11 +45,15 @@ _Avoid_: UserSession, PrincipalVO, AuthUser, SessionUser
 _Avoid_: RedisDao, SaRedisTemplate, RedisSessionStore
 
 **CachedStpInterface**:
-高性能两级角色与权限数据源切片适配器，构建 `[loginType : 用户ID -> 角色编码集]` 与 `[loginType : (可选 tenantId :) 角色编码 -> 权限码集]` 两级多账号/多租户隔离缓存切片（开启 `permission-cache.tenant-scoped` 时优先取会话归属租户防超管切租户串缓存），大幅降低重复权限计算开销；内置 `__EMPTY__` 短 TTL 哨兵防穿透机制与 10%~20% 动态 Jitter 随机抖动防雪崩机制，杜绝鉴权对底层数据库的周期性风暴冲击与跨账号/跨租户权限串染。
+高性能两级角色与权限数据源切片适配器，先经由 `LoginHelper.parseCompositeLoginId` 拆解出纯净 `userId` 与归属 `tenantId` 传入 `UserRolePermissionLoader`，并在 DB 回源期间通过 `TenantContextHolder.runWithTenant(ownerTenantId, ...)` 压栈保护主体归属租户（`finally` 精准恢复切租户视角下的工作租户上下文）；构建 `[loginType : (可选 tenantId :) userId -> 角色编码/直属权限集]` 与 `[loginType : (可选 tenantId :) 角色编码 -> 权限码集]` 对称两级隔离缓存切片；内置 `__EMPTY__` 短 TTL 哨兵防穿透机制与 10%~20% 动态 Jitter 随机抖动防雪崩机制，杜绝跨账号/跨租户权限串染。
 _Avoid_: StpInterfaceImpl, PermissionDataSource, SaPermissionProvider
 
+**UserRolePermissionLoader**:
+用户角色、角色权限与直属权限数据库回源 SPI 接口，统一以剥离租户前缀的纯净 `userId`、`loginType` 与可选主体归属 `tenantId` 作为契约入参，提供默认委托旧两参签名的 `default` 扩展重载；默认开箱实现 `DefaultUserRolePermissionLoader` 兼容纯净与 `{tenantId}_{userId}` 复合 `SaSession` 会话回退查询。
+_Avoid_: PermissionLoader, RoleDao, AuthLoaderSpi
+
 **PermissionCacheService**:
-高性能两级级联权限与角色即时热刷新治理服务，构建 L1（JVM 进程内微缓存，带防 OOM 边界与极短 TTL）+ L2（Redis 分布式缓存）级联架构。提供面向默认体系、多账号体系（`loginType`）及可选租户维度（`tenantId`）的用户维度（`refreshUserPermissions`）、角色维度（`refreshRolePermissions` / `clearRoleCache`）及全域游标增量清空（`clearAll`）的极简门面；本地更新即时淘汰 L1+L2，并通过 `SaTokenClusterBroadcaster` 触发 Redis Pub/Sub 全集群广播以秒级驱逐所有异地节点的 L1 微缓存。
+高性能两级级联权限与角色即时热刷新治理服务，构建 L1（JVM 进程内微缓存，带防 OOM 边界与极短 TTL）+ L2（Redis 分布式缓存）级联架构。提供与 `CachedStpInterface` 键格式 100% 对称的默认体系、多账号体系（`loginType`）及显式租户维度（`(loginType, tenantId, userId)` 与 `roleCode`）刷新/淘汰门面及全域游标增量清空（`clearAll`），既有无 `tenantId` 签名兼容自动/当前上下文清理；本地更新即时淘汰 L1+L2，并通过 `SaTokenClusterBroadcaster` 透传 `tenantId` 触发 Redis Pub/Sub 全集群广播以秒级驱逐异地节点 L1 微缓存。
 _Avoid_: CacheCleaner, PermissionCacheManager, RefreshService
 
 **@CheckDataOwner**:
@@ -71,6 +79,14 @@ _Avoid_: PathPermissionChecker, UrlAuthService, DynamicRbacSPI
 **OnlineUser**:
 企业级在线会话聚合模型，封装在线用户 `userId`、`userAccount`、`userName`、`tenantId`、`loginType`、`tokenValue`、`loginDevice`、`loginIp`、`loginTime` 及当前 Token 剩余有效时间（`tokenTimeout`），专供管理后台在线用户列表监控与强退治理。
 _Avoid_: OnlineSessionVO, ActiveUser, SessionDetail
+
+**OnlineUserQuery**:
+强类型在线会话条件分页检索条件模型，封装可选 `tenantId` 精确过滤、综合关键词（匹配 `userId`/`userAccount`/`userName`/`tokenValue`）、单列细化条件（`userId`/`userAccount`/`userName`/`loginDevice`）、`loginIp` 精确及复用 Core `CidrMatcher` 的网段匹配，以及单次扫描上限覆盖（`maxScanLimit`）。
+_Avoid_: OnlineSessionQuery, SessionFilterDTO, ActiveUserCriteria
+
+**OnlineSessionProperties**:
+定义于 `SaTokenProperties.OnlineSessionProperties`（前缀 `ateng.boot.satoken.online-session`）的在线会话检索治理配置属性组，统管条件分页检索的最大扫描令牌上限（`maxScanLimit`，默认 `2000`），替代早期硬编码 500 截断限制。
+_Avoid_: SessionScanProperties, OnlineQueryConfig
 
 **Multi-Account Isolation (loginType)**:
 企业级多账号体系隔离机制。通过在同一进程内显式指定 `loginType`（如 `admin` 运营后台、`member` 商城会员），实现多端会话 Cookie/Header 隔离、独立 Token 密钥空间以及独立的 `StpInterface` 角色与权限隔离加载，杜绝多端用户串号越权。

@@ -1,11 +1,18 @@
 package io.github.atengk.boot.satoken.cache;
 
+import cn.dev33.satoken.session.SaSession;
+import cn.dev33.satoken.stp.StpUtil;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.satoken.constant.SaTokenConstant;
+import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -239,5 +246,76 @@ class CachedStpInterfaceTest {
         assertThat(cachedStpInterface.getPermissionsByRole("manager", "admin")).containsExactly("sys:user:all");
         assertThat(cachedStpInterface.getPermissionsByRole("manager", "member")).containsExactly("shop:order:read");
         verify(loader, times(1)).loadPermissionsByRole("manager", "member");
+    }
+
+    @AfterEach
+    void tearDownTenantContext() {
+        TenantContextHolder.clear();
+    }
+
+    @Test
+    @DisplayName("9. 复合 loginId 自动拆解租户前缀，并在切租户回源时锁定主体归属租户与异常安全还原")
+    void testCompositeLoginIdStrippingAndTenantContextIsolationDuringFallback() {
+        try (MockedStatic<StpUtil> stpUtilMock = mockStatic(StpUtil.class)) {
+            SaSession session = mock(SaSession.class);
+            LoginUser operatorUser = LoginUser.builder()
+                    .tenantId("tenant_B")
+                    .userId("operator_88001")
+                    .build();
+            when(session.get(SaTokenConstant.LOGIN_USER_KEY)).thenReturn(operatorUser);
+            stpUtilMock.when(() -> StpUtil.getSessionByLoginId("tenant_B_operator_88001", false))
+                    .thenReturn(session);
+
+            when(loader.loadRolesByUserId("operator_88001", "login", "tenant_B"))
+                    .thenAnswer(inv -> {
+                        assertThat(TenantContextHolder.getExplicit()).isEqualTo("tenant_B");
+                        assertThat(TenantContextHolder.isIgnoreTenant()).isTrue();
+                        return List.of("role_ops");
+                    });
+            when(loader.loadPermissionsByRole("role_ops", "login"))
+                    .thenAnswer(inv -> {
+                        assertThat(TenantContextHolder.getExplicit()).isEqualTo("tenant_B");
+                        return List.of("ops:deploy");
+                    });
+            when(loader.loadDirectPermissionsByUserId("operator_88001", "login", "tenant_B"))
+                    .thenAnswer(inv -> {
+                        assertThat(TenantContextHolder.getExplicit()).isEqualTo("tenant_B");
+                        return List.of("ops:direct");
+                    });
+
+            // 外层切到 tenant_working 且开启 ignoreTenant
+            TenantContextHolder.setTenantId("tenant_working");
+            TenantContextHolder.runWithoutTenant(() -> {
+                List<String> perms = cachedStpInterface.getPermissionList("tenant_B_operator_88001", "login");
+                assertThat(perms).containsExactlyInAnyOrder("ops:deploy", "ops:direct");
+
+                // 返回外层后立即恢复 tenant_working 且不破坏 ignoreDepth
+                assertThat(TenantContextHolder.getExplicit()).isEqualTo("tenant_working");
+                assertThat(TenantContextHolder.isIgnoreTenant()).isTrue();
+            });
+            assertThat(TenantContextHolder.isIgnoreTenant()).isFalse();
+
+            // 验证缓存键按主体租户隔离存储，且剥离前缀
+            assertThat(cacheService.get(PermissionCacheService.buildUserRolesKey("operator_88001", "login", "tenant_B")))
+                    .isEqualTo("[\"role_ops\"]");
+            assertThat(cacheService.get(PermissionCacheService.buildUserPermsKey("operator_88001", "login", "tenant_B")))
+                    .isEqualTo("[\"ops:direct\"]");
+
+            // 异常场景下亦必须严格恢复外层工作租户
+            SaSession errSession = mock(SaSession.class);
+            LoginUser errUser = LoginUser.builder()
+                    .tenantId("tenant_err")
+                    .userId("u99")
+                    .build();
+            when(errSession.get(SaTokenConstant.LOGIN_USER_KEY)).thenReturn(errUser);
+            stpUtilMock.when(() -> StpUtil.getSessionByLoginId("tenant_err_u99", false)).thenReturn(errSession);
+            when(loader.loadRolesByUserId("u99", "login", "tenant_err"))
+                    .thenThrow(new IllegalStateException("db down"));
+
+            org.assertj.core.api.Assertions.assertThatThrownBy(
+                    () -> cachedStpInterface.getRoleList("tenant_err_u99", "login"))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThat(TenantContextHolder.getExplicit()).isEqualTo("tenant_working");
+        }
     }
 }

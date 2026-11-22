@@ -32,6 +32,20 @@ public interface UserRolePermissionLoader {
     }
 
     /**
+     * 根据用户 ID、账号体系标识与租户标识加载其拥有的角色编码列表（多租户与多账号隔离扩展）
+     *
+     * @param userId    剥离租户前缀后的业务侧纯净用户唯一标识
+     * @param loginType 账号体系类型标识（如 admin / member）
+     * @param tenantId  用户主体归属租户标识（可能为 null）
+     * @return 角色列表
+     */
+    default List<String> loadRolesByUserId(String userId, String loginType, String tenantId) {
+        return (loginType == null || loginType.isBlank())
+                ? loadRolesByUserId(userId)
+                : loadRolesByUserId(userId, loginType);
+    }
+
+    /**
      * 根据角色编码加载该角色关联的权限码列表
      *
      * @param roleCode 角色编码
@@ -83,5 +97,19 @@ public interface UserRolePermissionLoader {
      */
     default List<String> loadDirectPermissionsByUserId(String userId, String loginType) {
         return loadDirectPermissionsByUserId(userId);
+    }
+
+    /**
+     * 根据用户 ID、账号体系标识与租户标识加载用户个人特有的额外直属权限码列表（多租户与多账号隔离扩展）
+     *
+     * @param userId    剥离租户前缀后的业务侧纯净用户唯一标识
+     * @param loginType 账号体系类型标识（如 admin / member）
+     * @param tenantId  用户主体归属租户标识（可能为 null）
+     * @return 直属权限码列表
+     */
+    default List<String> loadDirectPermissionsByUserId(String userId, String loginType, String tenantId) {
+        return (loginType == null || loginType.isBlank())
+                ? loadDirectPermissionsByUserId(userId)
+                : loadDirectPermissionsByUserId(userId, loginType);
     }
 }
