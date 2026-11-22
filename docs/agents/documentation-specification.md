@@ -95,21 +95,19 @@
 
 ### 2.7 零源码依赖治理构件定制规范 (`DependencyGovernanceArtifact`)
 
-`ateng-boot-bom`（`<packaging>pom</packaging>`）与 `ateng-boot-all`（`<packaging>jar</packaging>` 零编译源码）作为全局依赖管控与全家桶聚合构件，不暴露传统 Java 业务类与 `@ConfigurationProperties`，其五维 `README.md` 遵循以下专职等价映射，且第 1 节必须提供同步至最新稳定版的标准 Maven 引入坐标：
+`ateng-boot-bom`（`<packaging>pom</packaging>`）与 `ateng-boot-all`（`<packaging>jar</packaging>` 零编译源码）作为全局依赖管控与全家桶聚合构件，面向开发者接入选型与快速起步，**遵循“先上手、再配场景、后查清单、零内部噪音”动线**，且第 1/2 节标准 Maven 与折叠 Gradle 引入坐标必须保证 `<artifactId>ateng-boot-(all|bom)</artifactId>` 紧邻下一行 `<version>...</version>`（及 `io.github.atengk:ateng-boot-(all|bom):...`）以便发版脚本原地同步：
 
-1. **`ateng-boot-bom`（BOM 管控清单，`packaging=pom`）五维骨架**：
-   - **第 0 节（维度零：100% 全量纳管坐标全景速查矩阵）**：按领域完整列出 BOM 显式声明的全部 `io.github.atengk:*` Starter 坐标、第三方核心中间件坐标与锁定版本号（包含 `spring-boot-dependencies` 基准对齐），并声明**内部依赖与测试替身防泄漏隔离清单**（由 `mvn help:effective-pom -f ateng-boot-bom/pom.xml` 验证）。
-   - **第 1 节（维度一：最小可用引入与快速起步）**：给出非侵入式 `<type>pom</type><scope>import</scope>` 标准 Maven 声明（`<artifactId>ateng-boot-bom</artifactId>` 紧随 `<version>`），说明多模块微服务统一导入范式。
-   - **第 2 节（维度二：依赖边界、隔离与定制覆盖机制）**：阐明 Parent vs BOM Import 解耦契约、本地版本显式覆盖（属性/声明前置优先）与 `<exclusions>` 剔除模式。
-   - **第 3 节（维度三：按业务拓扑组装 Starter 组合配方）**：提供纯后端 API、有状态数据应用、异步/消息微服务等场景化按需组装建议。
-   - **第 4 节（维度四：基线兼容性矩阵与高频冲突排障）**：锁定 JDK、Spring Boot 与核心引擎基线版本（参见 [ADR-0006](../adr/0006-dependency-baseline-and-upgrade-strategy.md)），给出冲突排查命令（`mvn dependency:tree`、`mvn help:effective-pom`）。
+1. **`ateng-boot-bom`（BOM 管控清单，`packaging=pom`）文档骨架**：
+   - **第 1 节（快速接入）**：给出非侵入式 `<type>pom</type><scope>import</scope>` 标准 Maven 声明与子模块免配 `<version>` 用法，并附折叠的 Gradle（Kotlin/Groovy DSL `platform(...)`）示例。
+   - **第 2 节（按业务场景的推荐组装配方）**：提供无状态网关/BFF、核心有状态业务微服务、AI 智能体与知识库、独立文件/调度服务等场景化组装建议。
+   - **第 3 节（版本覆盖、Parent 共存与冲突排障）**：阐明零继承绑架（兼容 `spring-boot-starter-parent` 与企业母 POM，注意如实描述不虚构无 `<parent>`）、先声明优先的版本覆盖规则、与不同版本 Parent 共存顺序，以及 `mvn dependency:tree` / `mvn help:effective-pom` 排障命令。
+   - **第 4 节（基线兼容与全量纳管清单附录）**：锁定 JDK、Spring Boot 与核心引擎兼容基线，给出 2 项基准导入 BOM，并将 37 项 `io.github.atengk:*` 分发坐标与 35 项第三方中间件坐标收纳至文末附录或 `<details>` 折叠面板（不暴露内部测试替身隔离与 ADR 链接；内部防泄漏由 `mvn help:effective-pom -f ateng-boot-bom/pom.xml` 在构建/审查期核验）。
    - *Sample 映射*：纯 POM 清单无运行时行为与 HTTP 端点，豁免独立专职 Sample（由 `ateng-boot-samples` 统一通过 `<scope>import</scope>` 反向验真）。
-2. **`ateng-boot-all`（全景核心聚合全家桶，`packaging=jar` 零编译源码）五维骨架**：
-   - **第 0 节（维度零：核心捆绑成员与按需扩展选型矩阵）**：精确列出默认透传的 **6 大核心 Starter**（`core`、`web`、`mybatis-plus`、`redis`、`excel`、`satoken`），并给出未纳入默认绑定、需按需独立引入的全仓剩余业务 Starter 完整选型对照表。
-   - **第 1 节（维度一：Maven 引入与最小可用体验）**：提供“BOM + `ateng-boot-all` 免版写法”与“独立显式版本号写法”（`<artifactId>ateng-boot-all</artifactId>` 紧随 `<version>`），并逆向提取自 [`ateng-boot-sample-smoke-test`](../../ateng-boot-samples/ateng-boot-sample-smoke-test/README.md) 的最小可用配置与核心契约演示代码。
-   - **第 2 节（维度二：聚合装配拓扑与零冲突协调原理）**：展示 6 大底座通过 Core 四维上下文、SPI 自动桥接与 `@AutoConfiguration` 有序装配构成的协同架构（严禁遗留已退役第三方库引用）。
-   - **第 3 节（维度三：全真跨模块端到端闭环场景）**：基于 `ateng-boot-sample-smoke-test` 跑通的真实闭环（统一响应/校验 -> Sa-Token 登录上下文自动透传 -> MyBatis-Plus 审计与 `PageResult` 分页 -> Apache Fesod 脱敏流式导出），展示多模块无胶水联动。
-   - **第 4 节（维度四：适用边界、局部排除与拆分演进指南）**：明确适用单体/快速原型边界，提供 `<exclusions>` 精确剔除不需要默认底座（如剔除 `redis` 或 `excel`）的配方及向微服务拆分迁移路径。
+2. **`ateng-boot-all`（核心全家桶聚合，`packaging=jar` 零编译源码）文档骨架**：
+   - **第 1 节（核心成员与选型边界）**：开篇展示默认透传的 **6 大核心 Starter**（`core`、`web`、`mybatis-plus`、`redis`、`excel`、`satoken`）一览表，并清晰界定何时选择 `ateng-boot-all` vs `ateng-boot-bom`（不再重复铺陈未捆绑的 30 个扩展模块对比大表）。
+   - **第 2 节（快速开始）**：提供“BOM + `ateng-boot-all` 免版写法”与“独立显式版本号写法”以及折叠的 Gradle DSL 示例，并 1:1 逆向提取自 [`ateng-boot-sample-smoke-test`](../../ateng-boot-samples/ateng-boot-sample-smoke-test/README.md) 的完整双模 `application.yml`（含 `!local` 与 `local` Redis 配置）及核心契约演示代码。
+   - **第 3 节（多模块零胶水协同实战）**：展示 6 大底座协同拓扑，并 1:1 提取 `ateng-boot-sample-smoke-test` 跑通的真实闭环（Sa-Token 会话自动打通审计人 -> 实体隔离 `PageResult` 分页 -> Apache Fesod `@ExcelSensitive` 脱敏流式导出），剔除内部 ADR 引用。
+   - **第 4 节（按需扩展、局部裁剪与配套示例）**：指引按需叠加扩展 Starter（回链根 `README.md` 与 BOM 清单）、提供 `<exclusions>` 精确剔除不需要默认底座（如剔除 `excel`/`redis` 并警示切勿排除 `core`）及配套 Sample 链接。
    - *Sample 映射*：严格 1:1 锚定 [`ateng-boot-samples/ateng-boot-sample-smoke-test`](../../ateng-boot-samples/ateng-boot-sample-smoke-test/README.md)（多领域 Controller `/sample/smoke/...` + 按需 Starter 共存门禁 + Redis 双模降级）。
 
 ---
@@ -118,16 +116,17 @@
 
 根目录 [`README.md`](../../README.md) 与 [`llms.txt`](../../llms.txt) 是面向终端开发者选型与外部 AI 编程助手检索的**“项目第一门面与全景索引枢纽”**，**严禁复用 Starter 5D 长篇契约或演变为内部工程治理看板**：
 
-1. **门面去噪与禁区红线**：根目录 `README.md` **严禁堆砌全量 ADR 决策清单、40 行级特性痛点-ADR 矩阵、以及内部开发流程/提交流水线细则**；全量 ADR 收口至 [`docs/adr/README.md`](../adr/README.md)，模块上下文边界收口至 [`CONTEXT-MAP.md`](../../CONTEXT-MAP.md)，贡献与研发规范收口至 [`CONTRIBUTING.md`](../../CONTRIBUTING.md)，首页底部仅保留 1 组极简相对路径导航链接。
+1. **门面去噪与禁区红线**：根目录 `README.md` **严禁出现内部 `ADR` 决策看板/链接、`CONTEXT-MAP`/限界上下文、全量 39 行默认展开大矩阵、以及内部开发提交流水线细则**；首页底部仅保留面向社区的极简相对路径导航（示例工程总览、[`CONTRIBUTING.md`](../../CONTRIBUTING.md)、`LICENSE`）。
 2. **标准门面五段结构**：
-   - **第一屏价值宣言与能力全景**：高信噪比全局徽章（含 `Starters` 与 `llms.txt` 入口）、核心选型亮点与高层次领域架构图；
-   - **60 秒极速上手**：提供 `ateng-boot-all` 与 `ateng-boot-bom` 双模 Maven 引入坐标（**`<artifactId>ateng-boot-(all|bom)</artifactId>` 必须紧邻下一行 `<version>...</version>`**，确保 [`scripts/release.sh`](../../scripts/release.sh) 自动原地更新版本号）、10 行级真实可用示例与离线 Sample 一键启动命令；
-   - **分领域模块目录**：按业务能力域拆分为简洁 3 列表格（`ArtifactId` / 核心能力一句话定位 / 文档与 Sample 链接），100% 覆盖全部已分发模块与 `ateng-boot-samples`；
-   - **AI-Ready 引导专章**：标注 `llms.txt`、`CONTEXT-MAP.md` 与子模块 `README.md` 寻址路径，并附开箱可用的短规则提示卡片；
+   - **第一屏价值宣言与痛点对比**：高信噪比全局徽章（含 `Starters` 与 `llms.txt` 入口）、5 行左右“传统痛点 vs 开箱体验”对比表与精简分层架构图；
+   - **60 秒极速上手**：明确环境基线（JDK / Spring Boot / 构建工具），提供 `ateng-boot-all` 与 `ateng-boot-bom` 双模 Maven 引入坐标（**`<artifactId>ateng-boot-(all|bom)</artifactId>` 必须紧邻下一行 `<version>...</version>`**，确保 [`scripts/release.sh`](../../scripts/release.sh) 自动原地更新版本号）、双场景极简代码与 5 行级 YAML 配置及离线 Sample 一键启动命令；
+   - **全栈能力版图**：默认呈现紧凑的 **7 行能力域总览表**，并将全部 **36 个 Starter** 的详细分组目录收纳进 `<details>` 折叠区（100% 覆盖全部已分发模块与 Sample 链接，纯用户价值视角文案）；
+   - **面向 AI 时代（AI-Ready 接入专章）**：采用工具中立的通用表述，同时提供可远程喂给外部项目 AI 的 GitHub Raw `llms.txt` 地址（适配文档索引、URL 抓取与各类 Coding Agent）、仓内 `./llms.txt` 路径，以及一段精确对齐真实注解与 API 签名的通用规则模板（建议放入 `AGENTS.md` 或 `.agents/rules/`）；
    - **延伸阅读与参与贡献**：极简导航尾注。
-3. **机读 AI 索引 (`llms.txt`) 双原则**：
-   - **纯相对路径**：严格遵循 [llmstxt.org](https://llmstxt.org/) 分组格式，全量使用仓库相对路径（`./...`）索引全局文档与每个模块的 `README.md` / `CONTEXT.md` / Sample `README.md`，保障本地 AI IDE 与在线平台通用可读；
-   - **免硬编码版本号**：`llms.txt` 不写死具体版本号，统一引导 AI 从根 `pom.xml` 或 `ateng-boot-bom/README.md` 获取版本真源，避免跨发版维护漂移。
+3. **消费者优先的机读 AI 索引 (`llms.txt`) 三原则**：
+   - **剥离内部研发噪音**：遵循 [llmstxt.org](https://llmstxt.org/) 标准，主干仅面向**引入 `ateng-boot` 的业务应用开发者与 AI 助手**，严禁将内部 `AGENTS.md`、文档规范或 `docs/adr/` 置于主干干扰消费端 AI（贡献指南最多收敛至文末 `## Optional`）；
+   - **纯相对路径与真实符号**：全量使用仓库相对路径（`./...`）索引核心使用约定与全部模块 `README.md` / Sample `README.md`，所有注解与类签名必须与源码 100% 一致；
+   - **免硬编码发行版本号**：`llms.txt` 不写死 `ateng-boot` 自身具体版本号，统一引导 AI 从根 `pom.xml` 或 `ateng-boot-bom/README.md` 获取版本真源，避免跨发版维护漂移。
 
 ---
 
@@ -224,5 +223,5 @@ flowchart LR
 - [ ] **12. 传输契约绝对解耦**：Controller 传输边界是否 100% 杜绝直接接收或返回持久层实体（Entity）？
 
 > **[非代码依赖治理构件口径映射 (`ateng-boot-bom` / `ateng-boot-all`)]**：
-> - **`ateng-boot-bom`**（纯 POM 清单）：第 1/2/3/5/6/9/10/11/12 项豁免运行时 Java/Sample/Controller 要求，第 4/7 项映射为“第 1 节 `<scope>import</scope>` 坐标 + 第 0 节全量纳管坐标与防泄漏隔离清单 + `mvn help:effective-pom -f ateng-boot-bom/pom.xml` 无内部/单测依赖泄露实测”。
-> - **`ateng-boot-all`**（零编译源码聚合 JAR）：第 1/2/3/6/10/11/12 项 1:1 锚定 `ateng-boot-samples/ateng-boot-sample-smoke-test` 的多 Controller 集成校验、Redis `!local` 降级与 DTO/VO 隔离；第 4/7 项映射为“第 1 节 BOM/独立引入坐标 + 第 0 节 6 大 CoreBundle 与全部按需 Starter 选型对比矩阵 + `<exclusions>` 排除配方”。
+> - **`ateng-boot-bom`**（纯 POM 清单）：第 1/2/3/5/6/9/10/11/12 项豁免运行时 Java/Sample/Controller 要求，第 4/7 项映射为“第 1 节 `<scope>import</scope>` 与折叠 Gradle 坐标 + 第 4 节兼容基线与全量 74 项纳管坐标附录 + 构建/审查期执行 `mvn help:effective-pom -f ateng-boot-bom/pom.xml` 验证无内部/单测依赖泄露”。
+> - **`ateng-boot-all`**（零编译源码聚合 JAR）：第 1/2/3/6/10/11/12 项 1:1 锚定 `ateng-boot-samples/ateng-boot-sample-smoke-test` 的多 Controller 集成校验、Redis `!local` 降级与 DTO/VO 隔离；第 4/7 项映射为“第 1 节 6 大核心捆绑成员与 `bom` 选型边界 + 第 2 节 BOM/独立 Maven 与折叠 Gradle 坐标 + 第 4 节按需扩展引导与 `<exclusions>` 排除配方”。

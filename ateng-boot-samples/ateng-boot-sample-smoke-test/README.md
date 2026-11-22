@@ -28,7 +28,7 @@
 
 ## 3. 核心 Controller 接口与一键体验
 
-> 本地启动后可直接访问 OpenAPI 文档 Schema：`http://localhost:8080/v3/api-docs` 或 Swagger UI：`http://localhost:8080/doc.html` / `/swagger-ui.html`。
+> 本地启动后可直接访问 OpenAPI 文档 Schema：`http://localhost:8080/v3/api-docs` 或 Swagger UI：`http://localhost:8080/docs`（重定向至 `/swagger-ui/index.html`）。
 
 | 功能场景 | Controller 类 / 端点组件 | 请求方式与路径 | 快速体验 cURL 命令 |
 | :--- | :--- | :--- | :--- |

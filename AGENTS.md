@@ -13,7 +13,7 @@
 - **显式响应契约**：Controller 统一显式返回强类型 `Result<T>`；严禁引入 `@ResponseBodyAdvice` 全局自动包装（ADR-0002）。
 - **零臃肿与底座优先**：100% 依托 JDK 17 与 Spring 6 原生能力，严禁引入 `hutool-all`、`guava`、`commons-collections` 等重型工具包；工具类就近内聚于归属模块（ADR-0011）；跨模块原语（`UserContextHolder`、`TenantContextHolder`、`JsonUtil`、`DesensitizeUtil`、`RetryUtil`、`BatchSliceUtil`、`IdUtil`、`FileUtil`）强制收敛于 `ateng-boot-core` 并向下游复用（ADR-0021、ADR-0025）。
 - **分层双防校验（ADR-0027）**：第一道防线（Controller）使用 JSR-303 注解 Fail-Fast，批量列表强制使用 `ValidList<E>`，分组校验使用 `ValidationGroups`；第二道防线（Service/非 Web 消费）使用 `BusinessAssert` 业务断言与 `ValidatorUtil.validate(obj)` 编程式校验。
-- **数据安全与“内存真明文”不变量**：业务层与实体在内存中始终保持 100% 原始明文（严禁在业务逻辑中直接对属性打星号）；存储加密收敛于持久层（`@FieldEncrypt` 入库密文、出库明文），展示脱敏收敛于 Jackson（`@Sensitive`）与导出拦截器（`@ExcelSensitive`，ADR-0012、ADR-0023）。
+- **数据安全与“内存真明文”不变量**：业务层与实体在内存中始终保持 100% 原始明文（严禁在业务逻辑中直接对属性打星号）；存储加密收敛于持久层（`@FieldEncrypt` 入库密文、出库明文），展示脱敏收敛于 Jackson（`@FieldSensitive`）与导出拦截器（`@ExcelSensitive`，ADR-0012、ADR-0023）。
 - **传输契约与持久层绝对解耦（Zero-Entity-Leakage）**：Controller 边界 **100% 严禁接收或返回 ORM 实体（Entity）**；入参统一使用 Request/DTO/Command，出参使用 VO/Response（分页入参 `PageQuery`，返回 `PageResult<VO>`，ADR-0010）。
 - **强类型通用枚举契约**：业务枚举统一实现 `IBaseEnum<T>`，配合 `EnumUtil`、`@InEnum` 校验、`@EnumAlias` Web 字典暴露与 Jackson 强类型反序列化（ADR-0060）。
 - **无状态安全与设备治理**：公共单例与 Sa-Token 会话保持无状态；跨微服务标配 Same-Token 请求头防内网穿透；多端多账号登录经由 `LoginHelper` 治理（ADR-0024、ADR-0059）。
