@@ -12,6 +12,7 @@ import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
 import io.github.atengk.boot.ai.context.AiContextHolder;
 import io.github.atengk.boot.ai.observability.AiPiiMasker;
+import io.github.atengk.boot.ai.observability.AtengAiObservabilityListener;
 import io.github.atengk.boot.ai.properties.AiAuditProperties;
 import io.github.atengk.boot.ai.properties.AiCacheProperties;
 import io.github.atengk.boot.ai.properties.AiModelConfig;
@@ -489,18 +490,8 @@ public class AiSemanticCache {
         if (registry == null) {
             return;
         }
-        String tenantTag = resolveTenantTag(rawTenantId);
+        String tenantTag = AtengAiObservabilityListener.resolveTenantTag(rawTenantId, auditProperties);
         MicrometerRecorder.record(registry, outcome, modelName, tenantTag);
-    }
-
-    private String resolveTenantTag(String tenantId) {
-        if (!StringUtils.hasText(tenantId)) {
-            return "default";
-        }
-        if (auditProperties == null || auditProperties.isAggregateTenantMetrics()) {
-            return "tenant";
-        }
-        return tenantId.trim();
     }
 
     private record CacheRequestContext(

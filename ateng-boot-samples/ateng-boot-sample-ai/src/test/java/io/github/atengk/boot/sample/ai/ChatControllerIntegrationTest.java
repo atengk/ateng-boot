@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.ai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.sample.ai.dto.AiChatRequestDto;
 import io.github.atengk.boot.sample.ai.dto.UserAnalysisRequestDto;
 import okhttp3.mockwebserver.Dispatcher;
@@ -8,6 +9,7 @@ import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -59,6 +61,9 @@ class ChatControllerIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired(required = false)
+    private AiModelRegistry aiModelRegistry;
 
     @BeforeAll
     static void startServer() throws IOException {
@@ -202,6 +207,8 @@ class ChatControllerIntegrationTest {
     @Test
     @DisplayName("端到端验证 POST /sample/ai/chat/sync 指定命名模型对话")
     void testSyncChatWithNamedModel() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile() || (aiModelRegistry != null && aiModelRegistry.hasChatModel("deepseek")),
+                "local 环境未配置 deepseek 命名模型，跳过命名模型联调断言");
         AiChatRequestDto request = AiChatRequestDto.builder()
                 .prompt("求解高阶微积分难题")
                 .model("deepseek")

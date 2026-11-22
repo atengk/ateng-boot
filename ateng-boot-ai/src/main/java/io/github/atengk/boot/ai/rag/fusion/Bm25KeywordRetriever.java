@@ -130,7 +130,9 @@ public class Bm25KeywordRetriever implements ContentRetriever {
             ensureStatefulInitializedLocked();
             corpus.addAll(segments);
         } finally {
-            lock.unlock();
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
@@ -150,7 +152,9 @@ public class Bm25KeywordRetriever implements ContentRetriever {
             ensureStatefulInitializedLocked();
             return corpus.removeByDocId(normalizedDocId);
         } finally {
-            lock.unlock();
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
@@ -168,7 +172,9 @@ public class Bm25KeywordRetriever implements ContentRetriever {
                 this.corpus.addAll(segments);
             }
         } finally {
-            lock.unlock();
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
@@ -181,7 +187,9 @@ public class Bm25KeywordRetriever implements ContentRetriever {
             this.statefulIndex = true;
             this.corpus.clear();
         } finally {
-            lock.unlock();
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
@@ -199,7 +207,9 @@ public class Bm25KeywordRetriever implements ContentRetriever {
                 return this.corpus.size();
             }
         } finally {
-            lock.unlock();
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
         if (this.segmentsSupplier == null) {
             return 0;
@@ -228,7 +238,9 @@ public class Bm25KeywordRetriever implements ContentRetriever {
                 return scoreAndRetrieve(this.corpus, queryTokens, activeFilter);
             }
         } finally {
-            lock.unlock();
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
 
         if (this.segmentsSupplier == null) {

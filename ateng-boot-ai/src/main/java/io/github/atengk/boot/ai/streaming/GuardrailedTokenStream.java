@@ -32,6 +32,8 @@ public class GuardrailedTokenStream implements TokenStream {
     private final String streamId;
     private final ActiveStreamRegistry streamRegistry;
     private final StreamingGuardrailSession guardrailSession;
+    private final String preReplacedContent;
+    private final String preReplacedReason;
 
     private Consumer<String> nextHandler;
     private Consumer<Response<AiMessage>> completeHandler;
@@ -46,6 +48,56 @@ public class GuardrailedTokenStream implements TokenStream {
         this.streamId = streamId;
         this.streamRegistry = streamRegistry;
         this.guardrailSession = new StreamingGuardrailSession(guardrail);
+        this.preReplacedContent = null;
+        this.preReplacedReason = null;
+    }
+
+    private GuardrailedTokenStream(String preReplacedContent, String preReplacedReason) {
+        this.delegate = null;
+        this.guardrail = null;
+        this.streamId = null;
+        this.streamRegistry = null;
+        this.guardrailSession = null;
+        this.preReplacedContent = preReplacedContent != null ? preReplacedContent : "";
+        this.preReplacedReason = preReplacedReason;
+    }
+
+    /**
+     * 构造前置护栏 REPLACE 短路流式句柄（不触发下游大模型网络调用）
+     *
+     * @param safeContent 安全替代文案
+     * @param reason      拦截原因
+     * @return 短路后的 GuardrailedTokenStream 实例
+     */
+    public static GuardrailedTokenStream replaced(String safeContent, String reason) {
+        return new GuardrailedTokenStream(safeContent, reason);
+    }
+
+    /**
+     * 是否为前置护栏直接替换短路的流
+     *
+     * @return true 表示命中前置 REPLACE 短路
+     */
+    public boolean isPreReplaced() {
+        return delegate == null;
+    }
+
+    /**
+     * 获取前置 REPLACE 替换后的安全文案
+     *
+     * @return 安全替代文案
+     */
+    public String getPreReplacedContent() {
+        return preReplacedContent;
+    }
+
+    /**
+     * 获取前置 REPLACE 触发原因
+     *
+     * @return 拦截原因
+     */
+    public String getPreReplacedReason() {
+        return preReplacedReason;
     }
 
     /**
@@ -92,13 +144,17 @@ public class GuardrailedTokenStream implements TokenStream {
 
     @Override
     public TokenStream onRetrieved(Consumer<List<Content>> contentHandler) {
-        delegate.onRetrieved(contentHandler);
+        if (delegate != null) {
+            delegate.onRetrieved(contentHandler);
+        }
         return this;
     }
 
     @Override
     public TokenStream onToolExecuted(Consumer<ToolExecution> toolExecuteHandler) {
-        delegate.onToolExecuted(toolExecuteHandler);
+        if (delegate != null) {
+            delegate.onToolExecuted(toolExecuteHandler);
+        }
         return this;
     }
 
@@ -116,12 +172,23 @@ public class GuardrailedTokenStream implements TokenStream {
 
     @Override
     public TokenStream ignoreErrors() {
-        delegate.ignoreErrors();
+        if (delegate != null) {
+            delegate.ignoreErrors();
+        }
         return this;
     }
 
     @Override
     public void start() {
+        if (isPreReplaced()) {
+            if (nextHandler != null) {
+                nextHandler.accept(preReplacedContent);
+            }
+            if (completeHandler != null) {
+                completeHandler.accept(Response.from(AiMessage.from(preReplacedContent)));
+            }
+            return;
+        }
         delegate.onNext(token -> {
             if (guardrailSession.isTerminated() || token == null) {
                 return;

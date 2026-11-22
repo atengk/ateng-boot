@@ -530,4 +530,63 @@ class AiTemplateTest {
                 .extracting("code")
                 .isEqualTo(AiResultCode.AI_CONTENT_RISK_DETECTED.getCode());
     }
+
+    @Test
+    @DisplayName("streamWithTools：前置 REPLACE 下发控制事件且后置流式 onNext 命中违禁词触发物理断流")
+    void testStreamWithToolsGuardrailProtection() throws Exception {
+        io.github.atengk.boot.ai.guardrail.AiGuardrailProperties guardrailProps = new io.github.atengk.boot.ai.guardrail.AiGuardrailProperties();
+        guardrailProps.setEnabled(true);
+        guardrailProps.setMode(io.github.atengk.boot.ai.guardrail.GuardrailMode.REPLACE);
+        guardrailProps.setBlockResponseText("安全替代说明");
+        guardrailProps.setBannedKeywords(List.of("违禁输出"));
+        io.github.atengk.boot.ai.guardrail.AiGuardrail guardrail = new io.github.atengk.boot.ai.guardrail.DefaultAiGuardrail(guardrailProps);
+
+        io.github.atengk.boot.ai.streaming.ActiveStreamRegistry streamRegistry = new io.github.atengk.boot.ai.streaming.ActiveStreamRegistry();
+        java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
+        streamRegistry.register("tool-stream-1", () -> cancelled.set(true));
+
+        AiTemplate governedTemplate = new AiTemplate(registry, properties, null, null, streamRegistry, guardrail, null);
+
+        // 1. 前置 REPLACE 不触发模型调用
+        SseEmitter preEmitter = new SseEmitter(5000L);
+        governedTemplate.streamWithTools((String) null, "违禁输出问题", List.of(), preEmitter, "tool-pre-1");
+        verifyNoInteractions(defaultStreamingModel);
+
+        // 2. 后置流式 onNext 命中违禁词应物理断流
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            StreamingResponseHandler<AiMessage> handler = invocation.getArgument(1);
+            handler.onNext("安全工具首段");
+            handler.onNext("违禁输出");
+            return null;
+        }).when(defaultStreamingModel).generate(anyList(), any());
+
+        SseEmitter postEmitter = new SseEmitter(5000L);
+        governedTemplate.streamWithTools((String) null, "正常工具查询", List.of(), postEmitter, "tool-stream-1");
+        assertThat(cancelled.get()).isTrue();
+    }
+
+    @Test
+    @DisplayName("IgnoreTenant 上下文开启时 AiTemplate 不按原租户扣减配额与限流")
+    void testIgnoreTenantSkipsTenantQuotaAndRateLimit() {
+        io.github.atengk.boot.ai.properties.AtengAiQuotaProperties quotaProps = new io.github.atengk.boot.ai.properties.AtengAiQuotaProperties();
+        quotaProps.setEnabled(true);
+        quotaProps.setDailyRequestLimit(1L);
+        DefaultAiQuotaChecker quotaChecker = new DefaultAiQuotaChecker(quotaProps);
+        AiTemplate governedTemplate = new AiTemplate(registry, properties, null, quotaChecker);
+
+        when(defaultChatModel.generate(anyList())).thenReturn(Response.from(AiMessage.from("ok")));
+
+        TenantContextHolder.setTenantId("tenant-strict");
+        // 先耗尽 tenant-strict 配额
+        assertThat(governedTemplate.chat("首次正常调用")).isEqualTo("ok");
+        assertThatThrownBy(() -> governedTemplate.chat("超额调用"))
+                .isInstanceOf(AiException.class)
+                .extracting("code")
+                .isEqualTo(AiResultCode.AI_QUOTA_EXCEEDED.getCode());
+
+        // 开启 IgnoreTenant 后，不再归属 tenant-strict 配额桶
+        TenantContextHolder.setIgnoreTenant(true);
+        assertThat(governedTemplate.chat("忽略租户放行")).isEqualTo("ok");
+    }
 }

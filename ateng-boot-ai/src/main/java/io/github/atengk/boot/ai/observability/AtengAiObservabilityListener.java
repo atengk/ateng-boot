@@ -307,15 +307,25 @@ public class AtengAiObservabilityListener implements ChatModelListener {
         }
     }
 
-    private String resolveTenantTag(String tenantId) {
+    /**
+     * 解析低基数安全租户指标标签
+     *
+     * @param tenantId   原始租户标识
+     * @param auditProps 审计配置属性（为 null 或开启 aggregateTenantMetrics 时将非空租户折叠为 {@code "tenant"}）
+     * @return 归一化后的 {@code tenant_id} 标签值
+     */
+    public static String resolveTenantTag(String tenantId, AiAuditProperties auditProps) {
         if (tenantId == null || tenantId.isBlank()) {
             return "default";
         }
-        AiAuditProperties auditProps = getAuditProperties();
         if (auditProps == null || auditProps.isAggregateTenantMetrics()) {
             return "tenant";
         }
         return tenantId.trim();
+    }
+
+    private String resolveTenantTag(String tenantId) {
+        return resolveTenantTag(tenantId, getAuditProperties());
     }
 
     private static String sanitizeAndTruncate(String rawPayload, AiAuditProperties auditProps) {

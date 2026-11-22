@@ -35,6 +35,7 @@ import io.github.atengk.boot.ai.sanitizer.JsonPayloadSanitizer;
 import io.github.atengk.boot.ai.sanitizer.JsonSchemaGenerator;
 import io.github.atengk.boot.ai.sanitizer.NativeJsonSchemaContext;
 import io.github.atengk.boot.ai.streaming.ActiveStreamRegistry;
+import io.github.atengk.boot.ai.streaming.GuardrailedTokenStream;
 import io.github.atengk.boot.ai.streaming.SseTokenStreamBridge;
 import io.github.atengk.boot.ai.streaming.StreamContextHolder;
 import io.github.atengk.boot.ai.streaming.event.AgentStreamListener;
@@ -1006,7 +1007,7 @@ public class AiTemplate {
         }
 
         String effectiveModelName = resolveEffectiveModelName(modelName);
-        String tenantId = TenantContextHolder.getTenantId();
+        String tenantId = resolveEffectiveTenantId();
 
         // 1. 前置配额与微观突发限流风控防卫 (Fail-Fast)
         int promptTokens = estimatePromptTokens(Collections.singletonList(UserMessage.from(prompt.trim())));
@@ -1186,10 +1187,15 @@ public class AiTemplate {
                 bridge.onError(new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, preResult.getReason()));
                 return;
             }
+            if (preResult.getAction() == GuardrailAction.REPLACE) {
+                SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, effectiveStreamId, activeStreamRegistry);
+                bridge.onGuardrailReplaced(preResult.getSafeContent(), preResult.getReason());
+                return;
+            }
         }
 
         String effectiveModelName = resolveEffectiveModelName(modelName);
-        String tenantId = TenantContextHolder.getTenantId();
+        String tenantId = resolveEffectiveTenantId();
 
         // 1. 前置配额与微观突发限流防卫
         int promptTokens = estimatePromptTokens(Collections.singletonList(UserMessage.from(prompt.trim())));
@@ -1215,8 +1221,11 @@ public class AiTemplate {
             DynamicToolStreamService service = builder.build();
             TokenStream tokenStream = service.stream(prompt.trim());
 
-            // 3. 将 TokenStream 管道接入 SseTokenStreamBridge
-            SseTokenStreamBridge.pipe(tokenStream, emitter, effectiveStreamId, activeStreamRegistry, listeners);
+            // 3. 挂载流式后置实时内容安全护栏并将 TokenStream 管道接入 SseTokenStreamBridge
+            TokenStream effectiveTokenStream = (guardrail != null)
+                    ? new GuardrailedTokenStream(tokenStream, guardrail, effectiveStreamId, activeStreamRegistry)
+                    : tokenStream;
+            SseTokenStreamBridge.pipe(effectiveTokenStream, emitter, effectiveStreamId, activeStreamRegistry, listeners);
         } catch (Throwable t) {
             SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, effectiveStreamId, activeStreamRegistry);
             bridge.onError(AiExceptionTranslator.translate(t));
@@ -1503,7 +1512,7 @@ public class AiTemplate {
         }
 
         String effectiveModelName = resolveEffectiveModelName(modelName);
-        String tenantId = TenantContextHolder.getTenantId();
+        String tenantId = resolveEffectiveTenantId();
 
         // 1. 前置配额与微观突发限流风控防卫 (Fail-Fast)
         int promptTokens = estimatePromptTokens(messages);
@@ -1591,7 +1600,7 @@ public class AiTemplate {
             }
         }
 
-        String tenantId = TenantContextHolder.getTenantId();
+        String tenantId = resolveEffectiveTenantId();
 
         // 1. 前置配额与微观突发限流风控防卫 (Fail-Fast)
         int promptTokens = estimatePromptTokens(messages);
@@ -1688,13 +1697,15 @@ public class AiTemplate {
             return threadModel;
         }
         String target = modelName;
-        if (tenantModelResolver != null && !TenantContextHolder.isIgnoreTenant()) {
-            String tenantId = TenantContextHolder.getTenantId();
-            if (StringUtils.hasText(tenantId)) {
-                target = tenantModelResolver.resolveModel(tenantId, target);
-            }
+        String tenantId = resolveEffectiveTenantId();
+        if (tenantModelResolver != null && StringUtils.hasText(tenantId)) {
+            target = tenantModelResolver.resolveModel(tenantId, target);
         }
         return target;
+    }
+
+    private static String resolveEffectiveTenantId() {
+        return TenantContextHolder.isIgnoreTenant() ? null : TenantContextHolder.getTenantId();
     }
 
     private ChatLanguageModel resolveChatModel(String modelName) {

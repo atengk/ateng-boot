@@ -3,8 +3,9 @@ package io.github.atengk.boot.ai.mcp;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.service.tool.ToolExecutor;
 import io.github.atengk.boot.ai.exception.AiResultCode;
-import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
+import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.util.AsyncUtil;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import org.slf4j.Logger;
@@ -35,10 +36,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
-import java.util.concurrent.SynchronousQueue;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -67,28 +65,9 @@ public class HttpMcpClientAdapter implements McpClientAdapter, AutoCloseable, Di
     private static final String MCP_PROTOCOL_VERSION = "2024-11-05";
     private static final String HEADER_MCP_SESSION_ID = "Mcp-Session-Id";
 
-    private static final ExecutorService SHARED_HTTP_EXECUTOR = new ThreadPoolExecutor(
-            2,
-            Math.max(16, Runtime.getRuntime().availableProcessors() * 4),
-            60L,
-            TimeUnit.SECONDS,
-            new SynchronousQueue<>(),
-            new NamedThreadFactory("ai-mcp-http", true),
-            new ThreadPoolExecutor.CallerRunsPolicy()
-    );
-
-    private static final ExecutorService SHARED_SSE_EXECUTOR = new ThreadPoolExecutor(
-            2,
-            64,
-            60L,
-            TimeUnit.SECONDS,
-            new SynchronousQueue<>(),
-            new NamedThreadFactory("ai-mcp-sse", true)
-    );
-
     private static final HttpClient SHARED_HTTP_CLIENT = HttpClient.newBuilder()
             .connectTimeout(DEFAULT_CONNECT_TIMEOUT)
-            .executor(SHARED_HTTP_EXECUTOR)
+            .executor(task -> AsyncUtil.getExecutor().execute(AsyncContext.wrap(task)))
             .build();
 
     private final String serverName;
@@ -662,7 +641,10 @@ public class HttpMcpClientAdapter implements McpClientAdapter, AutoCloseable, Di
         closeSseStreamInternal();
 
         CompletableFuture<String> endpointFuture = new CompletableFuture<>();
-        this.sseReaderFuture = SHARED_SSE_EXECUTOR.submit(() -> runPersistentSseLoop(endpointFuture));
+        this.sseReaderFuture = CompletableFuture.runAsync(
+                AsyncContext.wrap(() -> runPersistentSseLoop(endpointFuture)),
+                AsyncUtil.getExecutor()
+        );
 
         try {
             long waitMs = Math.min(timeout.toMillis(), 10000L);

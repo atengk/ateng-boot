@@ -311,8 +311,10 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
 
             // 0. 前置内容安全护栏检查 (PRE_PROMPT 防注入/越狱/超长，覆盖 String、ChatMessage 与复合 POJO/DTO 入参)
             AiGuardrail guardrail = resolveGuardrail();
+            Map<Integer, String> sanitizedArgReplacements = null;
             if (guardrail != null && args != null) {
-                String replacedOutput = inspectPrePromptGuardrail(guardrail, method, args);
+                sanitizedArgReplacements = new HashMap<>();
+                Object replacedOutput = inspectPrePromptGuardrail(guardrail, method, args, sanitizedArgReplacements);
                 if (replacedOutput != null) {
                     return replacedOutput;
                 }
@@ -349,8 +351,8 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
                     EpisodicMemoryContext.setInjectedPrompt(personaPrompt);
                 }
 
-                // 提取复杂对象参数并构建 JSON 替换映射
-                Map<String, String> replacements = buildArgumentReplacements(args);
+                // 提取复杂对象参数并构建 JSON 替换映射（若已触发 REPLACE 脱敏则注入安全替代文案）
+                Map<String, String> replacements = buildArgumentReplacements(args, sanitizedArgReplacements);
 
                 // 按需打开原生 JSON Schema 作用域，并在 try-with-resources 中确定性清理 ThreadLocal
                 try (NativeJsonSchemaContext.Scope nativeSchemaScope = openNativeSchemaScopeIfNeeded(method, routingModel);
@@ -421,9 +423,12 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
     /**
      * 对代理方法入参（String / ChatMessage / 复合 POJO/DTO）执行前置内容安全护栏校验
      *
-     * @return 若命中 REPLACE 且方法返回类型为 String 则直接返回安全替代文案；否则返回 null 继续正常执行
+     * @return 若命中 REPLACE 且方法返回类型为 String 或 TokenStream，直接返回对应安全替代结果；否则返回 null 继续执行
      */
-    private String inspectPrePromptGuardrail(AiGuardrail guardrail, Method method, Object[] args) {
+    private Object inspectPrePromptGuardrail(AiGuardrail guardrail,
+                                             Method method,
+                                             Object[] args,
+                                             Map<Integer, String> sanitizedArgReplacements) {
         java.lang.reflect.Parameter[] parameters = method.getParameters();
         for (int i = 0; i < args.length; i++) {
             if (i < parameters.length && (parameters[i].isAnnotationPresent(io.github.atengk.boot.ai.annotation.UserId.class)
@@ -455,8 +460,13 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
                 if (method.getReturnType() == String.class) {
                     return preResult.getSafeContent();
                 }
+                if (dev.langchain4j.service.TokenStream.class.isAssignableFrom(method.getReturnType())) {
+                    return GuardrailedTokenStream.replaced(preResult.getSafeContent(), preResult.getReason());
+                }
                 if (arg instanceof String) {
                     args[i] = preResult.getSafeContent();
+                } else if (isComplexObject(arg)) {
+                    sanitizedArgReplacements.put(i, preResult.getSafeContent());
                 } else {
                     throw new AiException(AiResultCode.AI_CONTENT_RISK_DETECTED, preResult.getReason());
                 }
@@ -490,13 +500,18 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
     /**
      * 将复合对象（JavaBean / Record）序列化为 JSON 字符串并建立 toString 映射
      */
-    private Map<String, String> buildArgumentReplacements(Object[] args) {
+    private Map<String, String> buildArgumentReplacements(Object[] args, Map<Integer, String> sanitizedArgReplacements) {
         if (args == null || args.length == 0) {
             return Collections.emptyMap();
         }
         Map<String, String> replacements = new HashMap<>();
-        for (Object arg : args) {
+        for (int i = 0; i < args.length; i++) {
+            Object arg = args[i];
             if (arg != null && isComplexObject(arg)) {
+                if (sanitizedArgReplacements != null && sanitizedArgReplacements.containsKey(i)) {
+                    replacements.put(arg.toString(), sanitizedArgReplacements.get(i));
+                    continue;
+                }
                 try {
                     String json = JsonUtil.toJsonString(arg);
                     replacements.put(arg.toString(), json);

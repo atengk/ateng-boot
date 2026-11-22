@@ -25,7 +25,7 @@
 - 通过 `AiCacheStore` SPI 实现单机有界 LRU（`InMemoryAiCacheStore`，`ReentrantLock` 防 Pinning）与分布式 Redis（`RedisAiCacheStore`，强类型 `Duration` TTL）自适应双模切换，上报低基数指标 `ateng.ai.cache.requests.total`。
 
 ### 2.2 动态提示词托管中心与安全加固体系 (`PromptRegistry` / SSRF / MCP 只读契约)
-- 新增 `PromptRegistry`、`PromptProvider` SPI（内置本地 YAML/MD Classpath 实现，支持外部 Nacos/DB 接管）与不可变 `PromptDefinition`，支持按编码、版本号与标签路由、`renderStrict`（缺失必填变量立即抛 `AI_INVALID_PAYLOAD`）、`AiTemplate#chatByPromptCode` 及 `@AiAgent(promptCode=..., promptVersion=...)`；
+- 新增 `PromptRegistry`、`PromptProvider` SPI（内置本地 YAML/MD Classpath 实现，支持外部 Nacos/DB 接管）与不可变 `PromptDefinition`，支持按编码、版本号与标签路由、`renderStrict`（缺失必填变量立即抛 `AI_INVALID_PAYLOAD`）、`AiTemplate#chatByPromptCode` / `streamByPromptCode` 及 `@AiAgent(promptCode=...)`；
 - 新增 `AiModelConfig#strictNativeJsonSchema`（配合 `NativeJsonSchemaContext`）启用原生网关严格 Schema 解码；为 `OpenApiToolProperties` 增加 `blockPrivateNetwork` 与 `allowedHosts` SSRF 防线；扩展 `McpClientAdapter` 支持 MCP 只读 `listResources` / `readResource` / `listPrompts` / `getPrompt`。
 
 ### 2.3 低基数可观测收敛与零扣费 AI 安全健康探针 (`AiSafeHealthIndicator`)

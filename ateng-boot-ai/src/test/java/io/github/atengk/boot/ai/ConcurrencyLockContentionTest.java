@@ -42,6 +42,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.ApplicationContext;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -54,8 +55,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -162,7 +161,12 @@ class ConcurrencyLockContentionTest {
     @DisplayName("ReentrantLock 改造组件在多线程高并发争用下均无死锁且数据一致")
     void testConcurrentContentionAcrossLockUpgradedComponents() throws Exception {
         int threads = 8;
-        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        ThreadPoolTaskExecutor pool = new ThreadPoolTaskExecutor();
+        pool.setCorePoolSize(threads);
+        pool.setMaxPoolSize(threads);
+        pool.setQueueCapacity(threads);
+        pool.setThreadNamePrefix("lock-contention-test-");
+        pool.initialize();
         try {
             // 1. DefaultAiGuardrail 并发动态加词与读写检查
             AiGuardrailProperties guardrailProps = new AiGuardrailProperties();
@@ -269,7 +273,7 @@ class ConcurrencyLockContentionTest {
             }
             bridge.onComplete(Response.from(AiMessage.from("done")));
         } finally {
-            pool.shutdownNow();
+            pool.shutdown();
         }
     }
 

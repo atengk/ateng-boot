@@ -190,15 +190,15 @@ class CacheControllerIntegrationTest {
             assertThat(CHAT_CALL_COUNTER.get()).isEqualTo(1);
         }
 
-        // 3. 语义相似提问（tenantA）：向量语义缓存命中
-        AiCacheChatRequest semanticReq = new AiCacheChatRequest("请问如何办理退货", null, "tenant-a", false);
-        mockMvc.perform(post("/sample/ai/cache/chat")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(semanticReq)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value("200"))
-                .andExpect(jsonPath("$.data.cacheHit").value(true));
+        // 3. 语义相似提问（tenantA）：向量语义缓存命中（依赖 MockWebServer 合成高相似向量；local 真实嵌入模型由精确缓存与隔离场景覆盖）
         if (!isLocalProfile()) {
+            AiCacheChatRequest semanticReq = new AiCacheChatRequest("请问如何办理退货", null, "tenant-a", false);
+            mockMvc.perform(post("/sample/ai/cache/chat")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(semanticReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value("200"))
+                    .andExpect(jsonPath("$.data.cacheHit").value(true));
             assertThat(CHAT_CALL_COUNTER.get()).isEqualTo(1);
         }
 

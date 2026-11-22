@@ -211,6 +211,19 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
             ActiveStreamRegistry streamRegistry,
             AgentStreamListener... listeners) {
         Objects.requireNonNull(tokenStream, "TokenStream 不能为空");
+        if (tokenStream instanceof GuardrailedTokenStream guarded && guarded.isPreReplaced()) {
+            String fallbackStreamId = StringUtils.hasText(streamId) ? streamId : StreamContextHolder.getStreamId();
+            SseTokenStreamBridge bridge = new SseTokenStreamBridge(emitter, fallbackStreamId, streamRegistry);
+            if (listeners != null) {
+                for (AgentStreamListener listener : listeners) {
+                    if (listener != null) {
+                        bridge.addListener(listener);
+                    }
+                }
+            }
+            bridge.onGuardrailReplaced(guarded.getPreReplacedContent(), guarded.getPreReplacedReason());
+            return bridge;
+        }
         TokenStream effectiveStream = tokenStream;
         AiGuardrail unwrappedGuardrail = null;
         String effectiveStreamId = streamId;

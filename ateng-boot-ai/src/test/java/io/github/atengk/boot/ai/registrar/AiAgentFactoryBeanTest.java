@@ -550,4 +550,48 @@ class AiAgentFactoryBeanTest {
                 .extracting("code")
                 .isEqualTo(AiResultCode.AI_CONTENT_RISK_DETECTED.getCode());
     }
+
+    @Test
+    @DisplayName("@AiAgent 在 REPLACE 模式下对 POJO 入参（结构化返回与 TokenStream 返回）均安全替换且不泄漏原输入")
+    void testPojoPrePromptGuardrailReplaceMode() {
+        io.github.atengk.boot.ai.guardrail.AiGuardrailProperties guardrailProps = new io.github.atengk.boot.ai.guardrail.AiGuardrailProperties();
+        guardrailProps.setEnabled(true);
+        guardrailProps.setMode(io.github.atengk.boot.ai.guardrail.GuardrailMode.REPLACE);
+        guardrailProps.setBlockResponseText("安全合规替代提示");
+        guardrailProps.setBannedKeywords(List.of("敏感违禁词"));
+        io.github.atengk.boot.ai.guardrail.AiGuardrail guardrail = new io.github.atengk.boot.ai.guardrail.DefaultAiGuardrail(guardrailProps);
+
+        @SuppressWarnings("unchecked")
+        org.springframework.beans.factory.ObjectProvider<io.github.atengk.boot.ai.guardrail.AiGuardrail> guardrailProvider = mock(org.springframework.beans.factory.ObjectProvider.class);
+        when(guardrailProvider.getIfAvailable()).thenReturn(guardrail);
+        when(applicationContext.getBeanProvider(io.github.atengk.boot.ai.guardrail.AiGuardrail.class)).thenReturn(guardrailProvider);
+
+        // 1. TokenStream 返回：POJO 或 String 入参命中 REPLACE 直接短路返回替换流，不触发大模型调用
+        AiAgentFactoryBean<TestStreamingAgent> streamingFactory = new AiAgentFactoryBean<>();
+        streamingFactory.setAgentInterface(TestStreamingAgent.class);
+        streamingFactory.setApplicationContext(applicationContext);
+        streamingFactory.afterPropertiesSet();
+        TestStreamingAgent streamingAgent = streamingFactory.getObject();
+
+        StringBuilder streamBuf = new StringBuilder();
+        streamingAgent.streamAsk("包含敏感违禁词的输入")
+                .onNext(streamBuf::append)
+                .onComplete(r -> {})
+                .onError(e -> {})
+                .start();
+        assertThat(streamBuf.toString()).isEqualTo("安全合规替代提示");
+        verifyNoInteractions(defaultStreamingModel);
+
+        // 2. 结构化返回：POJO 入参命中 REPLACE 时替换传入模型的占位文本，绝不抛出 AI_CONTENT_RISK_DETECTED
+        AiAgentFactoryBean<TestAuditAgent> auditFactory = new AiAgentFactoryBean<>();
+        auditFactory.setAgentInterface(TestAuditAgent.class);
+        auditFactory.setApplicationContext(applicationContext);
+        auditFactory.afterPropertiesSet();
+        TestAuditAgent auditAgent = auditFactory.getObject();
+
+        when(defaultChatModel.generate(anyList()))
+                .thenReturn(Response.from(AiMessage.from("{\"conclusion\":\"已脱敏拦截\",\"riskScore\":0}")));
+        AuditResult auditResult = auditAgent.auditOrder(new AuditRequest("包含敏感违禁词", 100.0));
+        assertThat(auditResult.conclusion()).isEqualTo("已脱敏拦截");
+    }
 }
