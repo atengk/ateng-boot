@@ -85,8 +85,16 @@ _Avoid_: PasswordEncoder, PwdUtil, BcryptUtil, PassUtil
 _Avoid_: TreeBuilder, NodeUtil, MenuTreeUtil
 
 **JsonUtil**:
-纯 JDK 与 Jackson 原生安全封装的静态门面工具类，内置东八区时区、JSR-310 日期时间模块与未知属性容错，支持 `reset()` 对称复位、二进制字节数组泛型/集合反序列化（`parseObject`/`parseList`/`parseMap`）及安全深克隆（`deepClone`），彻底杜绝 `@class` 漏洞。
+纯 JDK 与 Jackson 原生安全封装的静态门面工具类，内置东八区时区、JSR-310 日期时间模块、上下文感知的长整型转字符串序列化支持（`@JsonFormat(shape = JsonFormat.Shape.NUMBER / NUMBER_INT)` 与 `@JsonSerialize(using = NumericLongSerializer.class)` 数值保真）与未知属性容错，支持 `reset()` 对称复位、二进制字节数组泛型/集合反序列化（`parseObject`/`parseList`/`parseMap`）及安全深克隆（`deepClone`），彻底杜绝 `@class` 漏洞。
 _Avoid_: JacksonUtil, JSON, FastJsonUtil, JsonHelper
+
+**NumericLongSerializer**:
+纯原生零参 Jackson 长整型数值保真序列化器，始终将 `Long`/`long` 以 JSON `number` 输出；配合 `@JsonSerialize(using = NumericLongSerializer.class)` 标注于非主键统计与契约字段（如 `Result.timestamp`、`PageResult` 分页要素、`PageQuery`、审计耗时与行数、`ThreadPoolStatus.completedTaskCount` 及 `SnowflakeIdInfo` 非 `id` 元数据），覆盖全局 `longToString` 策略且保持与 `JacksonCustomizer` / `JsonUtil` 上下文感知转串机制正交。
+_Avoid_: LongAsNumberSerializer, NumberLongSerializer, RawLongSerializer
+
+**ContextualLongToStringSerializer**:
+上下文感知的长整型转字符串 Jackson 序列化器，供 `JsonUtil` 与 `JacksonCustomizer` 统一复用；默认将 `Long`/`long`/`BigInteger` 输出为 JSON 字符串防前端精度丢失，并在字段或类型标注 `@JsonFormat(shape = JsonFormat.Shape.NUMBER / NUMBER_INT)` 时让位输出 JSON `number`。
+_Avoid_: SmartLongSerializer, AdaptiveLongSerializer
 
 **TenantContextHolder**:
 基于惰性初始化 ThreadLocal 维护当前线程显式租户标识（嵌套栈）及忽略过滤深度（整型计数器）的持有者，支持未设置时的 CurrentTenantProvider 回退兜底、只读无残留、编程式闭包与跨线程隔离，与 UserContextHolder 保持双维镜像对称。
@@ -217,7 +225,7 @@ _Avoid_: TxUtil, TransactionHelper, TxHelper, TransactionalUtil
 _Avoid_: AuditActionEnum, LogTypeEnum, ActionType, OperationType, BusinessType
 
 **OperateLogModel**:
-结构化操作审计日志元数据模型 POJO，承载跨层（Web 切面、事件总线、持久层落库）流转的 18 项全要素审计元数据契约，包含全链路追踪、租户、操作人、模块端点、出入参、状态耗时、扩展字典与时间戳。
+结构化操作审计日志元数据模型 POJO，承载跨层（Web 切面、事件总线、持久层落库）流转的全要素审计元数据契约，包含全链路追踪、租户、操作人、模块端点、出入参、状态耗时、客户端 UA 元数据（`userAgent`、`browser`、`os`）、扩展字典与时间戳。
 _Avoid_: AuditLog, SysLog, OperationLogVO, AuditRecord, OperationAudit, AccessLog, SystemLog, AuditTrail
 
 **SqlTypeEnum**:
@@ -472,6 +480,14 @@ _Avoid_: ChainResult, ExecutionResult, PipeOutcome
 **PipelineErrorHandler**:
 管道阶段未捕获异常拦截与自定义错误处理函数式回调契约，支持在阶段失败时感知阶段对象、上下文与原始异常因果。
 _Avoid_: StageExceptionHandler, PipelineExceptionCallback
+
+**UserAgentUtil**:
+纯 JDK 17 零外部规则库依赖的轻量级 User-Agent 解析门面工具类，基于有界字符串匹配识别常见桌面与移动端浏览器、操作系统及设备类型，对 `null`、控制字符、畸形或超长 UA 执行安全防 ReDoS 截断并确定性返回保底值 `"Unknown"`。
+_Avoid_: ClientInfoUtil, BrowserParser, UaDetector
+
+**UserAgentInfo**:
+不可变客户端 User-Agent 解析结果契约 Record，封装标准化的浏览器名称（`browser`）、浏览器版本（`browserVersion`）、操作系统（`os`）、系统版本（`osVersion`）、设备类型（`deviceType`）、移动端标记（`mobile`）及受长度约束的原始 UA 串（`rawUserAgent`）。
+_Avoid_: ClientInfo, UserAgentVO, BrowserInfo, DeviceAgent
 
 
 

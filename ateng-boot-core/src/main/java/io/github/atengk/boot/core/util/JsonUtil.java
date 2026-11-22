@@ -8,7 +8,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.introspect.Annotated;
 import com.fasterxml.jackson.databind.introspect.JacksonAnnotationIntrospector;
-import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
@@ -19,6 +18,7 @@ import com.fasterxml.jackson.datatype.jsr310.ser.LocalTimeSerializer;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.constant.DatePattern;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.jackson.ContextualLongToStringSerializer;
 import io.github.atengk.boot.core.jackson.SensitiveJsonSerializer;
 
 import java.io.IOException;
@@ -151,9 +151,9 @@ public final class JsonUtil {
         javaTimeModule.addDeserializer(LocalTime.class, new LocalTimeDeserializer(DatePattern.NORM_TIME_FORMATTER));
 
         if (longToString) {
-            javaTimeModule.addSerializer(Long.class, ToStringSerializer.instance);
-            javaTimeModule.addSerializer(Long.TYPE, ToStringSerializer.instance);
-            javaTimeModule.addSerializer(BigInteger.class, ToStringSerializer.instance);
+            javaTimeModule.addSerializer(Long.class, ContextualLongToStringSerializer.INSTANCE);
+            javaTimeModule.addSerializer(Long.TYPE, ContextualLongToStringSerializer.INSTANCE);
+            javaTimeModule.addSerializer(BigInteger.class, ContextualLongToStringSerializer.INSTANCE);
         }
 
         mapper.registerModule(javaTimeModule);

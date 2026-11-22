@@ -2,6 +2,8 @@ package io.github.atengk.boot.core.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import io.github.atengk.boot.core.jackson.NumericLongSerializer;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
@@ -37,21 +39,25 @@ public class PageResult<T> implements Serializable {
     /**
      * 总记录数
      */
+    @JsonSerialize(using = NumericLongSerializer.class)
     private long total;
 
     /**
      * 每页显示条数（默认 10）
      */
+    @JsonSerialize(using = NumericLongSerializer.class)
     private long size = 10L;
 
     /**
      * 当前页码（从 1 开始，默认 1）
      */
+    @JsonSerialize(using = NumericLongSerializer.class)
     private long current = 1L;
 
     /**
      * 总页数
      */
+    @JsonSerialize(using = NumericLongSerializer.class)
     private long pages;
 
     /**

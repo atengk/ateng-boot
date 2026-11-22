@@ -353,6 +353,11 @@ public class WebProperties {
     public static class OperateLogProperties {
 
         /**
+         * 默认保存的 User-Agent 最大字符长度
+         */
+        public static final int DEFAULT_USER_AGENT_MAX_LENGTH = 512;
+
+        /**
          * 是否启用结构化操作审计切面（默认 true）
          */
         private boolean enabled = true;
@@ -361,6 +366,21 @@ public class WebProperties {
          * 全局默认敏感排除参数列表（与 @OperateLog#excludeParams 合并并忽略大小写匹配）
          */
         private List<String> defaultExcludeParams = new ArrayList<>(DEFAULT_SENSITIVE_EXCLUDE_PARAMS);
+
+        /**
+         * 是否在进入目标方法前同步采集 HTTP User-Agent 请求头（默认 true）
+         */
+        private boolean collectUserAgent = true;
+
+        /**
+         * 是否使用轻量原生 UserAgentUtil 自动解析浏览器与操作系统名称（默认 true；仅在 collectUserAgent 开启时生效）
+         */
+        private boolean parseUserAgent = true;
+
+        /**
+         * 采集保存的 User-Agent 最大长度限制（默认 512，防超长恶意头污染存储；<= 0 时回退默认上限 512）
+         */
+        private int userAgentMaxLength = DEFAULT_USER_AGENT_MAX_LENGTH;
     }
 
     /**

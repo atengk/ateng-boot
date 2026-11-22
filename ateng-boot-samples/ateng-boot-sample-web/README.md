@@ -128,6 +128,7 @@
 | **可信反向代理真实 IP 逆向提取** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/client-ip/trusted` | `curl "http://localhost:8080/sample/web/routing/client-ip/trusted?trustedProxies=10.0.0.0/8" -H "X-Forwarded-For: 203.0.113.195, 10.0.0.1"` |
 | **RFC 6266 安全防乱码下载** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/download` | `curl -i "http://localhost:8080/sample/web/routing/download"` |
 | **CIDR 子网掩码范围匹配** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/ip-check` | `curl "http://localhost:8080/sample/web/routing/ip-check?ip=192.168.1.50&cidr=192.168.1.0/24"` |
+| **请求头 User-Agent 提取与零依赖解析** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/user-agent` | `curl "http://localhost:8080/sample/web/routing/user-agent" -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.2592.81"` |
 
 ### 3.6 云原生生命周期治理与安全防呆自检 (`WebCloudLifecycleController` & 内置端点)
 

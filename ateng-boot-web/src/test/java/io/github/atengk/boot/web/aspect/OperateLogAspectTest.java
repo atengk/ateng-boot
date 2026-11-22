@@ -21,10 +21,17 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.aop.aspectj.annotation.AspectJProxyFactory;
+import org.springframework.beans.factory.support.StaticListableBeanFactory;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -144,6 +151,7 @@ class OperateLogAspectTest {
 
     @AfterEach
     void tearDown() {
+        RequestContextHolder.resetRequestAttributes();
         UserContextHolder.clear();
         UserContextHolder.setUserProvider(null);
         TenantContextHolder.clear();
@@ -386,5 +394,83 @@ class OperateLogAspectTest {
         String cycleParams = capturedModel.get().getRequestParams();
         assertThat(cycleParams).isNotBlank();
         assertThat(cycleParams).doesNotContain("secret-cycle-token");
+    }
+
+    @Test
+    @DisplayName("异步派发前同步采集并解析 User-Agent（含控制字符净化、截断、异步线程隔离与开关控制）")
+    void shouldCaptureAndParseUserAgentSynchronouslyBeforeAsyncDispatch() throws Exception {
+        String chromeUa = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader("User-Agent", chromeUa + "\r\nEvilHeader: 1");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+
+        // 1. 异步线程池中 RequestContextHolder 已销毁的场景仍可完整获取 UA 与解析结果
+        CountDownLatch firstLatch = new CountDownLatch(1);
+        CountDownLatch secondLatch = new CountDownLatch(2);
+        AtomicReference<OperateLogModel> asyncCaptured = new AtomicReference<>();
+        AtomicReference<Boolean> requestAttrsPresentInAsync = new AtomicReference<>(true);
+
+        Executor asyncExecutor = task -> java.util.concurrent.CompletableFuture.runAsync(() -> {
+            requestAttrsPresentInAsync.set(RequestContextHolder.getRequestAttributes() != null);
+            task.run();
+            firstLatch.countDown();
+            secondLatch.countDown();
+        });
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        beanFactory.addBean("asyncExecutor", asyncExecutor);
+
+        WebProperties props = new WebProperties();
+        OperateLogAspect asyncAspect = new OperateLogAspect(
+                asyncCaptured::set,
+                beanFactory.getBeanProvider(Executor.class),
+                JsonUtil.getObjectMapper(),
+                null,
+                props
+        );
+        AspectJProxyFactory asyncProxy = new AspectJProxyFactory(new OperateLogServiceImpl());
+        asyncProxy.setProxyTargetClass(true);
+        asyncProxy.addAspect(asyncAspect);
+        OperateLogService asyncService = asyncProxy.getProxy();
+
+        asyncService.createUser("ua-user", "secret");
+        assertThat(firstLatch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(requestAttrsPresentInAsync.get()).isFalse();
+
+        OperateLogModel asyncModel = asyncCaptured.get();
+        assertThat(asyncModel).isNotNull();
+        assertThat(asyncModel.getUserAgent()).doesNotContain("\r", "\n");
+        assertThat(asyncModel.getUserAgent()).startsWith(chromeUa);
+        assertThat(asyncModel.getBrowser()).isEqualTo("Chrome");
+        assertThat(asyncModel.getOs()).isEqualTo("Windows");
+
+        // 2. 最大长度截断与关闭 parseUserAgent
+        props.getOperateLog().setUserAgentMaxLength(32);
+        props.getOperateLog().setParseUserAgent(false);
+        asyncService.noSaveMethod("truncate-check");
+        assertThat(secondLatch.await(3, TimeUnit.SECONDS)).isTrue();
+        OperateLogModel truncatedModel = asyncCaptured.get();
+        assertThat(truncatedModel.getUserAgent()).hasSize(32);
+        assertThat(truncatedModel.getBrowser()).isNull();
+        assertThat(truncatedModel.getOs()).isNull();
+
+        // 3. 关闭 collectUserAgent
+        WebProperties disabledUaProps = new WebProperties();
+        disabledUaProps.getOperateLog().setCollectUserAgent(false);
+        OperateLogAspect disabledUaAspect = new OperateLogAspect(
+                capturedModel::set, null, JsonUtil.getObjectMapper(), null, disabledUaProps);
+        AspectJProxyFactory disabledUaProxy = new AspectJProxyFactory(new OperateLogServiceImpl());
+        disabledUaProxy.setProxyTargetClass(true);
+        disabledUaProxy.addAspect(disabledUaAspect);
+        ((OperateLogService) disabledUaProxy.getProxy()).createUser("no-ua", "pwd");
+        assertThat(capturedModel.get().getUserAgent()).isNull();
+        assertThat(capturedModel.get().getBrowser()).isNull();
+        assertThat(capturedModel.get().getOs()).isNull();
+
+        // 4. 无 RequestAttributes / 无 UA 头平滑降级
+        RequestContextHolder.resetRequestAttributes();
+        targetService.createUser("non-web", "pwd");
+        assertThat(capturedModel.get().getUserAgent()).isNull();
+        assertThat(capturedModel.get().getBrowser()).isNull();
+        assertThat(capturedModel.get().getOs()).isNull();
     }
 }

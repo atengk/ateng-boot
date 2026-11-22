@@ -31,6 +31,7 @@ public final class ServletUtil {
     public static final String HEADER_ACCEPT = "Accept";
     public static final String HEADER_CONTENT_TYPE = "Content-Type";
     public static final String HEADER_CONTENT_DISPOSITION = "Content-Disposition";
+    public static final String HEADER_USER_AGENT = "User-Agent";
     public static final String HEADER_X_REQUESTED_WITH = "X-Requested-With";
     public static final String XML_HTTP_REQUEST = "XMLHttpRequest";
 
@@ -87,6 +88,25 @@ public final class ServletUtil {
             return null;
         }
         return request.getHeader(name);
+    }
+
+    /**
+     * 获取当前 HTTP 请求上下文中的 User-Agent 请求头
+     *
+     * @return User-Agent 请求头值；无对应值或无请求上下文时返回 null
+     */
+    public static String getUserAgent() {
+        return getUserAgent(getRequest());
+    }
+
+    /**
+     * 获取指定 HTTP 请求中的 User-Agent 请求头
+     *
+     * @param request HTTP 请求对象
+     * @return User-Agent 请求头值；无对应值或请求为 null 时返回 null
+     */
+    public static String getUserAgent(HttpServletRequest request) {
+        return getHeader(request, HEADER_USER_AGENT);
     }
 
     /**

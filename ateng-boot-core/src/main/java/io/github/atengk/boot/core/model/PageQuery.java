@@ -1,5 +1,7 @@
 package io.github.atengk.boot.core.model;
 
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import io.github.atengk.boot.core.jackson.NumericLongSerializer;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -29,6 +31,7 @@ public class PageQuery implements Serializable {
      * 当前页码（从 1 开始，默认 1）
      */
     @Min(value = 1, message = "当前页码必须大于或等于 1")
+    @JsonSerialize(using = NumericLongSerializer.class)
     private long current = 1L;
 
     /**
@@ -36,6 +39,7 @@ public class PageQuery implements Serializable {
      */
     @Min(value = 1, message = "单页条数必须大于或等于 1")
     @Max(value = 1000, message = "单页条数最大不能超过 1000")
+    @JsonSerialize(using = NumericLongSerializer.class)
     private long size = 10L;
 
     /**

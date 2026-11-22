@@ -160,7 +160,7 @@ class MpLifecycleAndSecurityControllerTest {
                         .param("size", "10"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(200)))
-                .andExpect(jsonPath("$.data.total", equalTo("2")))
+                .andExpect(jsonPath("$.data.total", equalTo(2)))
                 .andExpect(jsonPath("$.data.records", hasSize(2)));
 
         // 2.3 先将第二代活跃记录也软删除，然后按 ID 恢复第一代记录

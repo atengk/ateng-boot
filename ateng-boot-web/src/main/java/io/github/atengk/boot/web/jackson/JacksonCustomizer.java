@@ -8,7 +8,6 @@ import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.module.SimpleDeserializers;
 import com.fasterxml.jackson.databind.module.SimpleModule;
-import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalTimeDeserializer;
@@ -17,6 +16,7 @@ import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalTimeSerializer;
 import io.github.atengk.boot.core.constant.DatePattern;
 import io.github.atengk.boot.core.enums.IBaseEnum;
+import io.github.atengk.boot.core.jackson.ContextualLongToStringSerializer;
 import io.github.atengk.boot.web.properties.WebProperties;
 import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
 import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
@@ -53,11 +53,11 @@ public class JacksonCustomizer implements Jackson2ObjectMapperBuilderCustomizer 
         // 1. 统一全局默认时区为东八区
         builder.timeZone(TimeZone.getTimeZone(DEFAULT_TIME_ZONE));
 
-        // 2. 长整型防精度丢失定制（默认启用）
+        // 2. 长整型防精度丢失定制（默认启用，支持 @JsonFormat(shape = NUMBER) 数值覆写）
         if (webProperties.isLongToString()) {
-            builder.serializerByType(Long.class, ToStringSerializer.instance);
-            builder.serializerByType(Long.TYPE, ToStringSerializer.instance);
-            builder.serializerByType(BigInteger.class, ToStringSerializer.instance);
+            builder.serializerByType(Long.class, ContextualLongToStringSerializer.INSTANCE);
+            builder.serializerByType(Long.TYPE, ContextualLongToStringSerializer.INSTANCE);
+            builder.serializerByType(BigInteger.class, ContextualLongToStringSerializer.INSTANCE);
         }
 
         // 3. BigDecimal 防科学计数法平铺输出（默认启用）

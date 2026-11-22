@@ -1,6 +1,8 @@
 package io.github.atengk.boot.sample.web.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.model.UserAgentInfo;
+import io.github.atengk.boot.core.util.UserAgentUtil;
 import io.github.atengk.boot.web.util.IpUtil;
 import io.github.atengk.boot.web.util.ServletUtil;
 import jakarta.servlet.http.HttpServletRequest;
@@ -83,5 +85,17 @@ public class WebRoutingAndUtilityController {
         map.put("cidr", cidr);
         map.put("inRange", inRange);
         return Result.success(map);
+    }
+
+    /**
+     * 提取并零依赖解析当前请求的客户端 User-Agent 元数据端点
+     *
+     * @param request HTTP 请求上下文
+     * @return 解析后的不可变客户端元数据
+     */
+    @GetMapping("/user-agent")
+    public Result<UserAgentInfo> getUserAgentInfo(HttpServletRequest request) {
+        String rawUa = ServletUtil.getUserAgent(request);
+        return Result.success(UserAgentUtil.parse(rawUa));
     }
 }

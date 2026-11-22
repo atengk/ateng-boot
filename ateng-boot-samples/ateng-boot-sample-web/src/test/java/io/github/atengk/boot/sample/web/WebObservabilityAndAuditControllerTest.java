@@ -264,7 +264,8 @@ class WebObservabilityAndAuditControllerTest {
         mockMvc.perform(post("/sample/web/observability/audit/operator")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json)
-                        .header("X-Trace-Id", "trace-audit-001"))
+                        .header("X-Trace-Id", "trace-audit-001")
+                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.phone").value("138****5678")); // 出库动态脱敏
@@ -279,6 +280,9 @@ class WebObservabilityAndAuditControllerTest {
         assertThat(lastLog.getOperateType()).isEqualTo(OperateTypeEnum.INSERT);
         assertThat(lastLog.getStatus()).isEqualTo(0); // 成功
         assertThat(lastLog.getClientIp()).isNotBlank();
+        assertThat(lastLog.getUserAgent()).contains("Chrome/126.0.0.0");
+        assertThat(lastLog.getBrowser()).isEqualTo("Chrome");
+        assertThat(lastLog.getOs()).isEqualTo("Windows");
         assertThat(lastLog.getCostTime()).isGreaterThanOrEqualTo(0L);
 
         // 验证入参中敏感字段 password 被排除替换为 [EXCLUDED]

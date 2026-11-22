@@ -5,7 +5,9 @@ import io.github.atengk.boot.core.audit.OperateLogEvent;
 import io.github.atengk.boot.core.audit.OperateLogModel;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.model.UserAgentInfo;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.core.util.UserAgentUtil;
 import io.github.atengk.boot.web.annotation.OperateLog;
 import io.github.atengk.boot.web.audit.DefaultOperateLogStorageProvider;
 import io.github.atengk.boot.web.audit.OperateLogStorageProvider;
@@ -130,6 +132,33 @@ public class OperateLogAspect implements Ordered {
         String requestUrl = request != null ? request.getRequestURI() : "";
         String clientIp = IpUtil.getClientIp(request);
 
+        // 异步派发前于请求线程同步采集 User-Agent 并执行防注入净化与限长截断
+        WebProperties.OperateLogProperties operateLogProps = webProperties.getOperateLog();
+        boolean collectUa = operateLogProps == null || operateLogProps.isCollectUserAgent();
+        boolean parseUa = operateLogProps == null || operateLogProps.isParseUserAgent();
+        int uaMaxLength = operateLogProps != null && operateLogProps.getUserAgentMaxLength() > 0
+                ? operateLogProps.getUserAgentMaxLength()
+                : WebProperties.OperateLogProperties.DEFAULT_USER_AGENT_MAX_LENGTH;
+        String userAgent = null;
+        String browser = null;
+        String os = null;
+        if (collectUa && request != null) {
+            String rawUa = ServletUtil.getUserAgent(request);
+            if (parseUa) {
+                UserAgentInfo uaInfo = UserAgentUtil.parse(rawUa, uaMaxLength);
+                if (StringUtils.hasText(uaInfo.rawUserAgent())) {
+                    userAgent = uaInfo.rawUserAgent();
+                    browser = uaInfo.browser();
+                    os = uaInfo.os();
+                }
+            } else {
+                String sanitizedUa = UserAgentUtil.sanitize(rawUa, uaMaxLength);
+                if (StringUtils.hasText(sanitizedUa)) {
+                    userAgent = sanitizedUa;
+                }
+            }
+        }
+
         String module = StringUtils.hasText(operateLog.module()) ? operateLog.module()
                 : (StringUtils.hasText(operateLog.title()) ? operateLog.title() : operateLog.value());
 
@@ -178,6 +207,9 @@ public class OperateLogAspect implements Ordered {
             logModel.setRequestMethod(requestMethod);
             logModel.setRequestUrl(requestUrl);
             logModel.setClientIp(clientIp);
+            logModel.setUserAgent(userAgent);
+            logModel.setBrowser(browser);
+            logModel.setOs(os);
             logModel.setRequestParams(paramsJson);
             logModel.setCostTime(costTime);
             logModel.setOperateTime(LocalDateTime.now());

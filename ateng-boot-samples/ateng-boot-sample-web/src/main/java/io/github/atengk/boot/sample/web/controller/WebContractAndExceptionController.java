@@ -113,6 +113,7 @@ public class WebContractAndExceptionController {
     public Result<DateTimeDemoVO> getDateTimeDemo() {
         DateTimeDemoVO vo = DateTimeDemoVO.builder()
                 .id(1846182948192841920L)
+                .itemCount(42L)
                 .amount(new BigDecimal("1E+7"))
                 .dateTime(LocalDateTime.of(2026, 10, 19, 14, 30, 0))
                 .date(LocalDate.of(2026, 10, 19))

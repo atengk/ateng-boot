@@ -1,8 +1,11 @@
 package io.github.atengk.boot.web.jackson;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.enums.IBaseEnum;
+import io.github.atengk.boot.core.model.PageResult;
+import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.web.properties.WebProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -187,5 +190,62 @@ class JacksonCustomizerTest {
 
         String sciJson = sciMapper.writeValueAsString(model);
         assertTrue(sciJson.contains("1E+7"));
+    }
+
+    static class JsonFormatNumberModel {
+        private Long businessId;
+        @JsonFormat(shape = JsonFormat.Shape.NUMBER)
+        private Long totalCount;
+        @JsonFormat(shape = JsonFormat.Shape.NUMBER_INT)
+        private long pageSize;
+        @JsonFormat(shape = JsonFormat.Shape.NUMBER)
+        private BigInteger bigMetric;
+
+        public Long getBusinessId() { return businessId; }
+        public void setBusinessId(Long businessId) { this.businessId = businessId; }
+        public Long getTotalCount() { return totalCount; }
+        public void setTotalCount(Long totalCount) { this.totalCount = totalCount; }
+        public long getPageSize() { return pageSize; }
+        public void setPageSize(long pageSize) { this.pageSize = pageSize; }
+        public BigInteger getBigMetric() { return bigMetric; }
+        public void setBigMetric(BigInteger bigMetric) { this.bigMetric = bigMetric; }
+    }
+
+    @Test
+    @DisplayName("开启 longToString 时支持 @JsonFormat(shape = NUMBER/NUMBER_INT) 覆写且保持 Result<PageResult<?>> 契约数值保真")
+    void shouldRespectJsonFormatNumberAndKeepPageResultNumericWhenLongToStringEnabled() throws Exception {
+        ObjectMapper enabledMapper = createConfiguredMapper(true);
+
+        JsonFormatNumberModel item = new JsonFormatNumberModel();
+        item.setBusinessId(1846123456789012345L);
+        item.setTotalCount(88L);
+        item.setPageSize(20L);
+        item.setBigMetric(new BigInteger("123456"));
+
+        PageResult<JsonFormatNumberModel> page = PageResult.of(java.util.List.of(item), 88L, 1L, 20L);
+        Result<PageResult<JsonFormatNumberModel>> result = Result.success(page);
+
+        JsonNode root = enabledMapper.readTree(enabledMapper.writeValueAsString(result));
+        assertTrue(root.get("timestamp").isNumber(), "Result.timestamp 必须为 JSON number");
+
+        JsonNode data = root.get("data");
+        assertTrue(data.get("total").isNumber());
+        assertTrue(data.get("size").isNumber());
+        assertTrue(data.get("current").isNumber());
+        assertTrue(data.get("pages").isNumber());
+
+        JsonNode record = data.get("records").get(0);
+        assertTrue(record.get("businessId").isTextual(), "普通业务 Long 主键必须转为 JSON string");
+        assertEquals("1846123456789012345", record.get("businessId").asText());
+        assertTrue(record.get("totalCount").isNumber(), "@JsonFormat(NUMBER) 必须输出 JSON number");
+        assertTrue(record.get("pageSize").isNumber(), "@JsonFormat(NUMBER_INT) 必须输出 JSON number");
+        assertTrue(record.get("bigMetric").isNumber(), "@JsonFormat(NUMBER) BigInteger 必须输出 JSON number");
+
+        // 对照组：关闭 longToString 时全部保持 JSON number
+        ObjectMapper disabledMapper = createConfiguredMapper(false);
+        JsonNode disabledRoot = disabledMapper.readTree(disabledMapper.writeValueAsString(result));
+        assertTrue(disabledRoot.get("timestamp").isNumber());
+        assertTrue(disabledRoot.get("data").get("total").isNumber());
+        assertTrue(disabledRoot.get("data").get("records").get(0).get("businessId").isNumber());
     }
 }

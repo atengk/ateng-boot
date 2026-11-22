@@ -21,7 +21,7 @@
 | **命名线程工厂** | 线程池命名与异常处理标准件 | `NamedThreadFactory` | - | `NamedThreadFactory(prefix)`, `newThread(runnable)`（支持自定义前缀、守护属性与 UncaughtExceptionHandler，消除匿名线程池） | `NamedThreadFactoryTest.java`, `CoreContextScenarioServiceTest.java` |
 | **上下文持有者** | 用户身份与多租户双维栈式隔离与惰性防泄漏 | `UserContextHolder`, `TenantContextHolder`, `UserSnapshot`, `TenantSnapshot` | - | `UserContextHolder`: `set(String/Long)`, `setUserId(String/Long)`, `get()`, `getExplicit()`, `getUserId()`, `getUserIdAsLong()`, `isRunAs()`, `getOriginalUserId()`, `runWithUser(String/Long, ...)`, `capture()`, `capturePrevious()`, `restore(UserSnapshot)`, `clear()`; `TenantContextHolder`: `setTenantId(String/Long)`, `getTenantId()`, `get()`, `getExplicit()`, `getAsLong()`, `getTenantIdAsLong()`, `isIgnoreTenant()`, `setIgnoreTenant(boolean)`, `runWithTenant(String/Long, ...)`, `runWithoutTenant(...)`, `capture()`, `capturePrevious()`, `restore(TenantSnapshot)`, `clear()` | `UserContextHolderTest.java`, `TenantContextHolderTest.java`, `CoreContextScenarioServiceTest.java` |
 | **审计/租户 SPI** | 跨中间件解耦上下文扩展点 | `CurrentUserProvider`, `CurrentTenantProvider` | - | `CurrentUserProvider`: `getCurrentUser()`, `getOriginalUser()`, `isRunAs()`; `CurrentTenantProvider`: `getCurrentTenantId()`（供下游 Sa-Token / MyBatis-Plus 无缝对接） | `UserContextHolderTest.java`, `TenantContextHolderTest.java`, `CoreContextScenarioServiceTest.java` |
-| **安全序列化与内存深克隆** | 零 `@class` 污染高性能 Jackson 门面与脱敏安全深克隆 | `JsonUtil` | - | `toJsonString(obj)`, `toJsonBytes(obj)`, `toPrettyJsonString(obj)`, `parseObject(...)`（含 `byte[]` + `TypeReference`）, `parseList(...)`（含 `byte[]`）, `parseMap(...)`（含 `byte[]`）, `reset()`, `isValidJson(json)`, `readTree(...)`, `deepClone(obj)`（内存真明文深克隆，杜绝掩码星号污染） | `JsonUtilTest.java`, `JsonUtilDeepCloneTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` (`POST /sample/core/data/json-and-bean`) |
+| **安全序列化与内存深克隆** | 零 `@class` 污染高性能 Jackson 门面、上下文感知长整型转串与数值保真序列化 | `JsonUtil`, `NumericLongSerializer`, `ContextualLongToStringSerializer` | - | `toJsonString(obj)`, `toJsonStringWithLongToString(obj)`, `toJsonBytes(obj)`, `toPrettyJsonString(obj)`, `createLongToStringObjectMapper()`, `parseObject(...)`（含 `byte[]` + `TypeReference`）, `parseList(...)`（含 `byte[]`）, `parseMap(...)`（含 `byte[]`）, `reset()`, `isValidJson(json)`, `readTree(...)`, `deepClone(obj)`；`NumericLongSerializer` 保真 `Result.timestamp`、`PageResult`/`PageQuery`、审计耗时与非主键元数据为 JSON `number`，`ContextualLongToStringSerializer` 响应 `@JsonFormat(shape = NUMBER / NUMBER_INT)` 覆写 | `JsonUtilTest.java`, `JsonUtilDeepCloneTest.java`, `NumericLongSerializerTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` (`POST /sample/core/data/json-and-bean`) |
 | **敏感数据脱敏** | 15 大类敏感信息动态掩码与内存真明文防护 | `@FieldSensitive`, `DesensitizeUtil`, `SensitiveJsonSerializer`, `SensitiveType` | - | `DesensitizeUtil.mobilePhone(str)`, `idCard(str)`, `unifiedCreditCode(str)`, `secretKey(str)`, `passport(str)` 等，保证“内存真明文”防脏写 | `DesensitizeUtilTest.java`, `SensitiveJsonSerializerTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **退避指数重试** | 纯原生轻量无第三方重试与动态退避配置 | `RetryUtil`, `RetryUtil.RetryConfig`, `RetryUtil.RetryListener` | - | `execute(supplier, config, fallback)`, `executeAction(runnable, config, fallback)`; `RetryConfig.builder().maxAttempts(...).delay(...).multiplier(...).maxDelay(...).jitter(...).retryPredicate(...).onRetry(...).delayFunction(ex -> Duration)` 支持 Equal Jitter 抖动、自定义异常驱动退避函数与 Fallback 降级 | `RetryUtilTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
 | **加解密与十六进制** | 原生 AES、国密 SM4/SM3 与 Hex 编解码 | `CryptoUtil`, `DigestUtil`, `HexUtil` | - | `CryptoUtil`: `generateKey`, `generateSm4Key`, `generateIv`, `generateGcmIv`, `encryptGcm/decryptGcm`（含 `aad` 重载）, `encryptCbc/decryptCbc`, `encryptSm4Cbc/decryptSm4Cbc`, `encryptSm4Ecb/decryptSm4Ecb` (`SM4_KEY_SIZE`, `SM4_IV_SIZE`); `DigestUtil`: `sha256Hex`, `md5Hex`, `sm3(byte[]/byte[].../String)`, `sm3Hex(byte[]/String)`; `HexUtil`: `encodeHex`, `decodeHex` | `CryptoUtilTest.java`, `DigestUtilTest.java`, `HexUtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/crypto`), `CoreSecurityScenarioServiceTest.java` |
@@ -33,7 +33,8 @@
 | **高性能随机件** | 无锁安全随机与列表抽样洗牌 | `RandomUtil` | - | `RandomUtil.randomNumbers(len)`, `randomString(len)`, `randomInt(min, max)`, `randomEle(list)`, `randomEles(list, count)`, `shuffle(list)`, `shuffleNew(list)` | `RandomUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **通用辅助原语** | 对象属性安全拷贝、不可变元组与 Spring 容器门面 | `BeanUtil`, `Pair`, `Triple`, `SpringUtil`, `AtengCoreAutoConfiguration` | - | `BeanUtil.copy(...)`, `copyList(...)`, `BeanUtil.copyIgnoreNull(source, target)`, `Pair.of(...)`, `Triple.of(...)`, `SpringUtil.getBean(...)`, `containsBean(...)`, `isDev/isProd/isTest()`, `getServerPort()` | `BeanUtilTest.java`, `PairTripleTest.java`, `SpringUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **事务同步门面与状态枚举** | 事务生命周期门面、上下文穿透与事务状态枚举 | `TransactionUtil`, `TransactionCompletionStatus` | - | `executeBeforeCommit(task)`, `executeAfterCommit(task)`, `executeAfterRollback(task)`, `executeAfterCompletion(action)`, `executeAfterCommitAsync(task)` / `executeAfterCommitAsync(task, executor)`, `publishAfterCommit(event)`, `isActualTransactionActive()`, `isSynchronizationActive()`, `TransactionCompletionStatus.COMMITTED/ROLLED_BACK/UNKNOWN` | `TransactionUtilTest.java`, `CoreContextScenarioServiceTest.java`, `CoreAsyncAndContextControllerTest.java` |
-| **操作审计契约与事件发布** | 操作日志模型、操作动作枚举与解耦事件 | `OperateLogModel`, `OperateTypeEnum`, `OperateLogEvent` | - | `OperateLogModel.builder()`, `model.isSuccess()`, `model.addExtra(k, v)`, `OperateTypeEnum.of(code)`, `new OperateLogEvent(source, model)` 异步事件解耦发布 | `OperateLogModelTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
+| **操作审计契约与事件发布** | 操作日志模型、操作动作枚举与解耦事件 | `OperateLogModel`, `OperateTypeEnum`, `OperateLogEvent` | - | `OperateLogModel.builder()`, `getUserAgent()/getBrowser()/getOs()`, `model.isSuccess()`, `model.addExtra(k, v)`, `OperateTypeEnum.of(code)`, `new OperateLogEvent(source, model)` 异步事件解耦发布（`costTime` 标配 `NumericLongSerializer`） | `OperateLogModelTest.java`, `NumericLongSerializerTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
+| **客户端 UA 解析** | 纯 JDK 17 零外部依赖防 ReDoS User-Agent 净化与解析 | `UserAgentUtil`, `UserAgentInfo` | - | `UserAgentUtil.parse(ua[, maxLength])`, `sanitize(ua, maxLength)`, `parseBrowser(ua)`, `parseOs(ua)`, `isMobile(ua)`；`UserAgentInfo(browser, browserVersion, os, osVersion, deviceType, mobile, rawUserAgent)`（空值或未知保底返回 `"Unknown"`） | `UserAgentUtilTest.java`, `CoreSystemAndAuditControllerTest.java` (`GET /sample/core/system/user-agent`) |
 | **持久层无侵入 SQL 审计** | SQL 审计结构体与语法类型判定 | `SqlLogModel`, `SqlTypeEnum` | - | `SqlLogModel.builder()`, `model.getSql()`, `model.getCostTime()`, `SqlTypeEnum.of(code)`, `SqlTypeEnum.fromValue(value)`, `isDml()`, `isQuery()` 识别 SELECT/INSERT/UPDATE/DELETE/OTHER | `SqlLogModelTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **进程内滑动窗口流控** | 高性能单机内存滑动窗口限流器 | `SlidingWindowCounter` | - | `SlidingWindowCounter(duration, sliceCount)`, `incrementAndGet(delta)`, `tryAcquire(delta, threshold)`, `getCount()`, `reset()` (基于环形时间切片，零外部中间件平滑限流与防刷) | `SlidingWindowCounterTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
 | **纳秒级任务秒表** | 阶梯多任务秒表与函数剖析门面 | `StopWatch` | - | `new StopWatch(id)`, `start(taskName)`, `stop()`, `getTotalTimeMillis()`, `prettyPrint()`, `measureMillis(runnable)`, `measure(supplier)` | `StopWatchTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
@@ -2132,7 +2133,7 @@ NamedThreadFactory daemonFactory = new NamedThreadFactory("mq-pull", true, (thre
 若各子系统或分层自行定义散落的 Map 或不规范 POJO，极易导致字段命名割裂、操作动作歧义、Jackson 序列化 `@class` 漏洞污染以及缺失租户和全链路 TraceId 透传。
 `ateng-boot-core` 下沉通用审计元数据标准契约：
 - **标准枚举与多源安全解析**：`OperateTypeEnum` 集中收敛 11 种通用操作动作（`OTHER(0)`、`INSERT(1)`、`UPDATE(2)`、`DELETE(3)`、`QUERY(4)`、`EXPORT(5)`、`IMPORT(6)`、`LOGIN(7)`、`LOGOUT(8)`、`GRANT(9)`、`CLEAN(10)`），支持按 code 数值或名称大小写安全匹配，提供 `@JsonCreator` 兼容解析；
-- **18 项全要素结构化元数据**：`OperateLogModel` 覆盖全链路追踪（`traceId`）、多租户（`tenantId`）、操作人（`userId`, `userName`）、功能模块与描述（`module`, `description`）、网络端点（`requestMethod`, `requestUrl`, `clientIp`, `operateLocation`）、出入参摘要（`requestParams`, `responseResult`）、执行度量（`status`, `costTime`, `errorMsg`）、扩展字典（`extra`）与时间戳（`operateTime`）；
+- **全要素结构化元数据**：`OperateLogModel` 覆盖全链路追踪（`traceId`）、多租户（`tenantId`）、操作人（`userId`, `userName`, `originalUserId`）、功能模块与描述（`module`, `description`）、网络与客户端端点（`requestMethod`, `requestUrl`, `clientIp`, `userAgent`, `browser`, `os`, `operateLocation`）、出入参摘要（`requestParams`, `responseResult`）、执行度量（`status`, `costTime`, `errorMsg`）、扩展字典（`extra`）与时间戳（`operateTime`）；
 - **语法糖与无失真序列化**：提供 `isSuccess()` 语法糖判定（`status == 0`，标配 `@JsonIgnore` 防派生字段污染），支持 `addExtra(k, v)` 便捷链式扩展，100% 适配 Jackson 规范序列化与未知属性容错。
 
 #### 核心代码范式
@@ -2155,6 +2156,9 @@ OperateLogModel logModel = OperateLogModel.builder()
         .requestMethod("POST")
         .requestUrl("/api/users")
         .clientIp("192.168.1.100")
+        .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0")
+        .browser("Chrome")
+        .os("Windows")
         .operateLocation("中国北京北京")
         .requestParams("{\"username\":\"zhangsan\"}")
         .responseResult("{\"code\":200,\"msg\":\"操作成功\"}")
@@ -2497,8 +2501,8 @@ ateng:
 - **配置外置化自动热绑定**：Spring 容器启动时，`CoreCacheInitializer` 自动读取 `ateng.boot.core.cache` 属性并通过 `SpelUtil.configureCache` 注入最大容量与存活 TTL，保障生产高并发环境下的缓存自适应；
 - **可信逃逸舱边界审计**：非受信用户输入严禁调用 `evaluateTrusted`，该方法仅限系统内网白名单环境执行受信任脚本。
 
-### 7.18 安全序列化门面与脱敏安全深克隆 (`JsonUtil` & `deepClone`)
-基于东八区、JSR-310 日期模块与零 `@class` 漏洞的生产级 Jackson 门面。支持 `byte[]` 二进制反序列化、容器与测试场景静态隔离复位（`JsonUtil.reset()`），并独家提供严格遵从 [ADR-0012](../docs/adr/0012-lifecycle-separated-data-security.md) “内存真明文”不变量的脱敏安全深克隆（`deepClone`），在内存中克隆对象时无条件抑制 `@FieldSensitive` 打码序列化器，彻底消除掩码星号污染业务层与持久层的隐患：
+### 7.18 安全序列化门面、数值保真与脱敏安全深克隆 (`JsonUtil`, `NumericLongSerializer` & `deepClone`)
+基于东八区、JSR-310 日期模块与零 `@class` 漏洞的生产级 Jackson 门面。提供上下文感知长整型转字符串支持（`toJsonStringWithLongToString` / `createLongToStringObjectMapper()` 支持字段级 `@JsonFormat(shape = JsonFormat.Shape.NUMBER / NUMBER_INT)` 与 `@JsonSerialize(using = NumericLongSerializer.class)` 数值保真，确保 `Result.timestamp`、`PageResult` 分页要素、`PageQuery`、审计耗时行数、`ThreadPoolStatus.completedTaskCount` 与 `SnowflakeIdInfo` 非主键元数据始终输出 JSON `number`）、`byte[]` 二进制反序列化、容器与测试场景静态隔离复位（`JsonUtil.reset()`），并独家提供严格遵从 [ADR-0012](../docs/adr/0012-lifecycle-separated-data-security.md) “内存真明文”不变量的脱敏安全深克隆（`deepClone`），在内存中克隆对象时无条件抑制 `@FieldSensitive` 打码序列化器，彻底消除掩码星号污染业务层与持久层的隐患：
 
 代码锚定样例：[`CoreDataAndTreeController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreDataAndTreeController.java)（`POST /sample/core/data/json-and-bean`）、[`CoreDataProcessingScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/service/CoreDataProcessingScenarioService.java)
 
@@ -2524,12 +2528,34 @@ byte[] metadataBytes = JsonUtil.toJsonBytes(Map.of("channel", "open-api", "versi
 Map<String, String> typedMap = JsonUtil.parseMap(metadataBytes, String.class, String.class);
 Map<String, Object> rawMap = JsonUtil.parseMap(metadataBytes);
 
-// 2. 内存脱敏安全深克隆（内存真明文保障）
+// 2. 防前端 53 位精度丢失转串（同时保留 Result/PageResult 与 @JsonFormat(Shape.NUMBER) 数值契约）
+String webSafeJson = JsonUtil.toJsonStringWithLongToString(Result.success(userDto));
+
+// 3. 内存脱敏安全深克隆（内存真明文保障）
 SampleUserDTO clonedUser = JsonUtil.deepClone(userDto);
 // clonedUser 获得完全独立的深拷贝对象，且手机号等敏感字段依然保持 100% 原始真实明文，绝不变成 "138****5678"
 
-// 3. 容器定制与测试隔离复位（恢复默认受管 ObjectMapper）
+// 4. 容器定制与测试隔离复位（恢复默认受管 ObjectMapper）
 // JsonUtil.reset();
+```
+
+### 7.19 纯 JDK 零依赖 User-Agent 解析与净化 (`UserAgentUtil` & `UserAgentInfo`)
+遵循 [ADR-0011](../docs/adr/0011-zero-bloat-and-co-located-utilities.md) 严禁引入重型外部 UA 规则库原则，基于纯 JDK 17 有界线性扫描实现常见桌面/移动端浏览器、操作系统、设备类型（`Desktop`、`Mobile`、`Tablet`、`CLI`、`Bot`）识别，并在解析前强制过滤 ASCII 控制字符（`\r`、`\n`、`\t` 等）及截断超长头防 ReDoS 与日志注入；`null` 或未识别内容确定性返回 `"Unknown"`。
+
+代码锚定样例：[`CoreSystemAndAuditController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSystemAndAuditController.java)（`GET /sample/core/system/user-agent`）
+
+```java
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.model.UserAgentInfo;
+import io.github.atengk.boot.core.util.UserAgentUtil;
+
+@GetMapping("/user-agent")
+public Result<UserAgentInfo> parseUserAgent(
+        @RequestParam(required = false) String ua,
+        @RequestHeader(value = "User-Agent", required = false) String headerUa) {
+    String targetUa = StringUtils.hasText(ua) ? ua : headerUa;
+    return Result.success(UserAgentUtil.parse(targetUa));
+}
 ```
 
 ---

@@ -1,5 +1,6 @@
 package io.github.atengk.boot.core.util;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -310,5 +311,45 @@ class JsonUtilTest {
                 () -> JsonUtil.parseMap(invalidBytes, String.class, String.class));
         assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex4.getCode());
         assertNotNull(ex4.getCause());
+    }
+
+    static class ContextualFormatSample {
+        private Long id;
+        @JsonFormat(shape = JsonFormat.Shape.NUMBER)
+        private Long boxedCount;
+        @JsonFormat(shape = JsonFormat.Shape.NUMBER_INT)
+        private long primitiveTotal;
+        @JsonFormat(shape = JsonFormat.Shape.NUMBER)
+        private java.math.BigInteger bigCount;
+
+        ContextualFormatSample(Long id, Long boxedCount, long primitiveTotal, java.math.BigInteger bigCount) {
+            this.id = id;
+            this.boxedCount = boxedCount;
+            this.primitiveTotal = primitiveTotal;
+            this.bigCount = bigCount;
+        }
+
+        public Long getId() { return id; }
+        public Long getBoxedCount() { return boxedCount; }
+        public long getPrimitiveTotal() { return primitiveTotal; }
+        public java.math.BigInteger getBigCount() { return bigCount; }
+    }
+
+    @Test
+    @DisplayName("toJsonStringWithLongToString 支持 @JsonFormat(shape = NUMBER/NUMBER_INT) 上下文覆写")
+    void shouldRespectJsonFormatNumberOverrideInLongToStringMapper() {
+        ContextualFormatSample sample = new ContextualFormatSample(
+                1846123456789012345L,
+                42L,
+                100L,
+                new java.math.BigInteger("9999")
+        );
+        String json = JsonUtil.toJsonStringWithLongToString(sample);
+        JsonNode root = JsonUtil.readTree(json);
+        assertNotNull(root);
+        assertTrue(root.get("id").isTextual());
+        assertTrue(root.get("boxedCount").isNumber(), "@JsonFormat(NUMBER) Long 必须保持 JSON number");
+        assertTrue(root.get("primitiveTotal").isNumber(), "@JsonFormat(NUMBER_INT) long 必须保持 JSON number");
+        assertTrue(root.get("bigCount").isNumber(), "@JsonFormat(NUMBER) BigInteger 必须保持 JSON number");
     }
 }

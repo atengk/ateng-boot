@@ -278,4 +278,28 @@ class CoreSystemAndAuditControllerTest {
 
         assertThat(slowAlertEventListener.getEventCount()).isZero();
     }
+
+    @Test
+    @DisplayName("测试 UserAgentUtil 轻量零依赖客户端 User-Agent 解析与防注入净化端点")
+    void testParseUserAgent_Success() throws Exception {
+        String chromeUa = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+        mockMvc.perform(get("/sample/core/system/user-agent")
+                        .header("User-Agent", chromeUa))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.data.browser", is("Chrome")))
+                .andExpect(jsonPath("$.data.browserVersion", is("126.0.0.0")))
+                .andExpect(jsonPath("$.data.os", is("Windows")))
+                .andExpect(jsonPath("$.data.deviceType", is("Desktop")))
+                .andExpect(jsonPath("$.data.mobile", is(false)));
+
+        String iphoneUa = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+        mockMvc.perform(get("/sample/core/system/user-agent")
+                        .param("ua", iphoneUa))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.data.browser", is("Safari")))
+                .andExpect(jsonPath("$.data.os", is("iOS")))
+                .andExpect(jsonPath("$.data.mobile", is(true)));
+    }
 }

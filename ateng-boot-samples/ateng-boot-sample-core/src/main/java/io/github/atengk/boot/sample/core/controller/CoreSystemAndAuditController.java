@@ -1,6 +1,8 @@
 package io.github.atengk.boot.sample.core.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.model.UserAgentInfo;
+import io.github.atengk.boot.core.util.UserAgentUtil;
 import io.github.atengk.boot.sample.core.dto.AuditAndDiagnoseRequest;
 import io.github.atengk.boot.sample.core.dto.SlowAlertAndFileRequest;
 import io.github.atengk.boot.sample.core.dto.SlowAlertSampleRequest;
@@ -11,10 +13,12 @@ import io.github.atengk.boot.sample.core.vo.SlowAlertSampleVO;
 import io.github.atengk.boot.sample.core.vo.SystemBaselineAndNetVO;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.util.StringUtils;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -83,5 +87,21 @@ public class CoreSystemAndAuditController {
     @PostMapping("/slow-alert")
     public Result<SlowAlertSampleVO> executeSlowAlertAndDiagnostic(@RequestBody @Valid SlowAlertSampleRequest request) {
         return Result.success(systemScenarioService.executeSlowAlertAndDiagnostic(request));
+    }
+
+    /**
+     * 轻量级零依赖 User-Agent 解析与防注入净化端点
+     * 优先解析显式传入的 ua 查询参数，未传时自动读取请求头 User-Agent
+     *
+     * @param ua       可选待解析 User-Agent 字符串
+     * @param headerUa HTTP 请求头 User-Agent
+     * @return 解析后的不可变客户端元数据
+     */
+    @GetMapping("/user-agent")
+    public Result<UserAgentInfo> parseUserAgent(
+            @RequestParam(required = false) String ua,
+            @RequestHeader(value = "User-Agent", required = false) String headerUa) {
+        String targetUa = StringUtils.hasText(ua) ? ua : headerUa;
+        return Result.success(UserAgentUtil.parse(targetUa));
     }
 }

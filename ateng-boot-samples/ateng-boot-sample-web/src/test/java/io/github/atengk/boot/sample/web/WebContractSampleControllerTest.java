@@ -222,6 +222,11 @@ class WebContractSampleControllerTest {
         String content = result.getResponse().getContentAsString();
         // 验证 64 位雪花 ID 为严格 JSON 字符串形式，避免 JS IEEE 754 截断
         assertThat(content).contains("\"id\":\"1846182948192841920\"");
+        // 验证 Result.timestamp 与标注 @JsonFormat(Shape.NUMBER) 的计数长整型维持 JSON number
+        JsonNode rootNode = objectMapper.readTree(content);
+        assertThat(rootNode.get("timestamp").isNumber()).isTrue();
+        assertThat(rootNode.path("data").get("itemCount").isNumber()).isTrue();
+        assertThat(rootNode.path("data").get("itemCount").asLong()).isEqualTo(42L);
         // 验证 BigDecimal("1E+7") 以平原十进制 10000000 输出，杜绝科学计数法
         assertThat(content).contains("\"amount\":10000000");
         assertThat(content).doesNotContain("1E+7");

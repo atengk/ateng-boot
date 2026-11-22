@@ -429,7 +429,7 @@ class MpGovernanceAndQueryControllerTest {
         mockMvc.perform(get("/sample/mybatis-plus/query/multi-table/page?current=1&size=900&sort=age:desc"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(200)))
-                .andExpect(jsonPath("$.data.size", equalTo("500")));
+                .andExpect(jsonPath("$.data.size", equalTo(500)));
 
         // 7.2 外部动态 SQL 分页：传入超限 size=900 与排序参数，验证 size 被钳制为 500 且无 SQL 语法冲突
         mockMvc.perform(get("/sample/mybatis-plus/query/dynamic-sql/page")
@@ -439,6 +439,6 @@ class MpGovernanceAndQueryControllerTest {
                         .param("sorts[0].direction", "ASC"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", equalTo(200)))
-                .andExpect(jsonPath("$.data.size", equalTo("500")));
+                .andExpect(jsonPath("$.data.size", equalTo(500)));
     }
 }

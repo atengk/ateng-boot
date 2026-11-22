@@ -20,6 +20,7 @@ flowchart TD
         DesensitizeUtil["DesensitizeUtil (全场景动态脱敏)"]
         CryptoUtil["CryptoUtil (纯 JDK 原生 AES 加解密)"]
         TreeUtil["TreeUtil (O(N) 线性泛型树构建)"]
+        UserAgentUtil["UserAgentUtil (纯 JDK 零依赖 UA 解析)"]
         BusinessAssert["BusinessAssert (业务前置断言)"]
     end
 
@@ -40,6 +41,7 @@ flowchart TD
 - **彻底杜绝全量外部工具依赖**：不引入 `hutool-all`、`guava`、`commons-lang3` 等重型依赖；
 - **纯 JDK 原生加解密 (`CryptoUtil`)**：直接依托 `javax.crypto.Cipher`，提供 `AES/CBC/PKCS5Padding` 与带认证标签的 `AES/GCM/NoPadding`，内置安全随机 IV 与 Base64 编解码，无需 Bouncy Castle；
 - **纯 JDK 动态脱敏 (`DesensitizeUtil`)**：纯字符数组指针算法，极速无额外垃圾回收压力，覆盖手机号、身份证、银行卡、姓名、邮箱、固话与密码；
+- **纯 JDK 原生 UA 解析 (`UserAgentUtil` & `UserAgentInfo`)**：遵循零重型外部 UA 规则库禁令，纯 JDK 17 有界字符串匹配常见桌面/移动端浏览器、操作系统与设备类型（含畸形与超长头防 ReDoS 降级），由 `core` 收敛供 `web` / `satoken` / `admin` 跨模块复用；
 - **高效树装配 (`TreeUtil`)**：纯函数式接口两遍哈希扫描，以 $O(N)$ 线性时间复杂度实现扁平列表到嵌套树形结构的高性能组装。
 
 ### 2. 依赖运行时上下文就近内聚 (Co-location)

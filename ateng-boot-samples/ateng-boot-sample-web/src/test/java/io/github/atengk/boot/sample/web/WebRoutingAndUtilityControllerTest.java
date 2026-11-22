@@ -90,4 +90,18 @@ class WebRoutingAndUtilityControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("127.0.0.1"));
     }
+
+    @Test
+    @DisplayName("6. ServletUtil + UserAgentUtil 客户端 UA 提取与零依赖解析")
+    void shouldExtractAndParseUserAgent() throws Exception {
+        String edgeUa = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.2592.81";
+        mockMvc.perform(get("/sample/web/routing/user-agent")
+                        .header("User-Agent", edgeUa))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.browser").value("Edge"))
+                .andExpect(jsonPath("$.data.os").value("Windows"))
+                .andExpect(jsonPath("$.data.deviceType").value("Desktop"))
+                .andExpect(jsonPath("$.data.mobile").value(false));
+    }
 }

@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.web.vo;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -27,6 +28,12 @@ public class DateTimeDemoVO {
      * 超大 64 位雪花 ID（如 1846182948192841920L，序列化为 String）
      */
     private Long id;
+
+    /**
+     * 业务明细统计条数（标注 @JsonFormat(Shape.NUMBER)，覆盖 longToString 保留 JSON 数字输出）
+     */
+    @JsonFormat(shape = JsonFormat.Shape.NUMBER)
+    private Long itemCount;
 
     /**
      * 高精度订单金额（如 new BigDecimal("1E+7")，开启 WRITE_BIGDECIMAL_AS_PLAIN 后平铺输出为 10000000）

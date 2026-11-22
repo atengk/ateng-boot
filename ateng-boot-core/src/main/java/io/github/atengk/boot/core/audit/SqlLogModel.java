@@ -2,7 +2,9 @@ package io.github.atengk.boot.core.audit;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import io.github.atengk.boot.core.enums.SqlTypeEnum;
+import io.github.atengk.boot.core.jackson.NumericLongSerializer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -72,11 +74,13 @@ public class SqlLogModel implements Serializable {
     /**
      * 物理执行耗时（毫秒）
      */
+    @JsonSerialize(using = NumericLongSerializer.class)
     private Long costTime;
 
     /**
      * 影响行数（更新/删除/插入）或返回行数（查询）
      */
+    @JsonSerialize(using = NumericLongSerializer.class)
     private Long affectedRows;
 
     /**

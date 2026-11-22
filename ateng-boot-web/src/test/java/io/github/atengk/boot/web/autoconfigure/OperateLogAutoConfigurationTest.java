@@ -89,4 +89,27 @@ class OperateLogAutoConfigurationTest {
                     assertThat(properties.getLog().getDefaultExcludeParams()).containsExactly("customSecret");
                 });
     }
+
+    @Test
+    @DisplayName("默认开启 User-Agent 同步采集与解析，支持通过配置覆盖开关与最大长度")
+    void shouldBindUserAgentProperties() {
+        contextRunner.run(context -> {
+            WebProperties properties = context.getBean(WebProperties.class);
+            assertThat(properties.getOperateLog().isCollectUserAgent()).isTrue();
+            assertThat(properties.getOperateLog().isParseUserAgent()).isTrue();
+            assertThat(properties.getOperateLog().getUserAgentMaxLength()).isEqualTo(512);
+        });
+
+        contextRunner.withPropertyValues(
+                        "ateng.boot.web.operate-log.collect-user-agent=false",
+                        "ateng.boot.web.operate-log.parse-user-agent=false",
+                        "ateng.boot.web.operate-log.user-agent-max-length=128"
+                )
+                .run(context -> {
+                    WebProperties properties = context.getBean(WebProperties.class);
+                    assertThat(properties.getOperateLog().isCollectUserAgent()).isFalse();
+                    assertThat(properties.getOperateLog().isParseUserAgent()).isFalse();
+                    assertThat(properties.getOperateLog().getUserAgentMaxLength()).isEqualTo(128);
+                });
+    }
 }

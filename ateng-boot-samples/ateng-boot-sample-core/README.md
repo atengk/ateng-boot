@@ -62,6 +62,7 @@
 | **慢方法告警与受管安全文件治理** | `CoreSystemAndAuditController` | `POST /sample/core/system/slow-alert-and-file` | `curl -X POST "http://localhost:8080/sample/core/system/slow-alert-and-file" -H "Content-Type: application/json" -d '{"taskId":"bench-task-999","secretToken":"secretToken-ABC-123456","filename":"../../malicious/path/export-audit.txt","content":"Ateng-Boot 2026 Core Baseline Audit File Content","maxReadBytes":512}'` |
 | **结构化操作/SQL 审计与异常诊断** | `CoreSystemAndAuditController` | `POST /sample/core/system/audit-and-diagnose` | `curl -X POST "http://localhost:8080/sample/core/system/audit-and-diagnose" -H "Content-Type: application/json" -d '{"module":"系统基线管理","operateType":"INSERT","description":"新增系统参数配置","sql":"SELECT id, config_key, config_value FROM sys_config WHERE id = 1","errorMessage":"底层数据库连接池耗尽拒绝连接"}'` |
 | **慢调用事件消费与慢 Bean 启动诊断** | `CoreSystemAndAuditController` | `POST /sample/core/system/slow-alert` | `curl -X POST "http://localhost:8080/sample/core/system/slow-alert" -H "Content-Type: application/json" -d '{"taskId":"slow-diag-001","secretToken":"secretToken-Demo-950"}'` |
+| **轻量级零依赖 User-Agent 解析与净化** | `CoreSystemAndAuditController` | `GET /sample/core/system/user-agent` | `curl "http://localhost:8080/sample/core/system/user-agent" -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0 Safari/537.36"` |
 
 ---
 

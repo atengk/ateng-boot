@@ -13,7 +13,7 @@ _Avoid_: LogFilter, TraceInterceptor, MDCFilter
 _Avoid_: ExceptionAdvice, ErrorHandler, WebExceptionHandler
 
 **JacksonCustomizer**:
-基于 Spring 标准构建器定制器挂载的长整型转字符串（防雪花失真）、高精度 `BigDecimal` 防科学计数法平原输出（`WRITE_BIGDECIMAL_AS_PLAIN`）、Java 8 全量日期东八区标准化配置与 `IBaseEnum` 通用枚举自动发现。
+基于 Spring 标准构建器定制器挂载的上下文感知长整型转字符串（响应 `@JsonFormat(shape = JsonFormat.Shape.NUMBER / NUMBER_INT)` 与 Core `NumericLongSerializer` 显式数值保真覆写，兼顾主键防雪花失真与分页/时间戳等度量字段保真）、高精度 `BigDecimal` 防科学计数法平原输出（`WRITE_BIGDECIMAL_AS_PLAIN`）、Java 8 全量日期东八区标准化配置与 `IBaseEnum` 通用枚举自动发现。
 _Avoid_: ObjectMapperConfig, JsonConfig, JacksonConfig
 
 **CorsConfiguration**:
@@ -29,7 +29,7 @@ _Avoid_: TraceHelper, MdcUtil, LogTraceUtil
 _Avoid_: AddressUtil, NetworkUtil, ClientIpUtil
 
 **ServletUtil**:
-Servlet 上下文与请求响应静态操作门面，基于 RequestContextHolder 安全获取当前 Request/Response 并提供 Header、Cookie、JSON/AJAX 请求识别、JSON 文本直接写入，以及基于 RFC 6266 / RFC 5987 双重文件名防乱码编码的安全流式文件下载与导出辅助（setDownloadHeader / writeDownload）。
+Servlet 上下文与请求响应静态操作门面，基于 RequestContextHolder 安全获取当前 Request/Response 并提供 Header（含 `HEADER_USER_AGENT` 与 `getUserAgent` 快捷提取）、Cookie、JSON/AJAX 请求识别、JSON 文本直接写入，以及基于 RFC 6266 / RFC 5987 双重文件名防乱码编码的安全流式文件下载与导出辅助（setDownloadHeader / writeDownload）。
 _Avoid_: WebUtil, HttpUtil, RequestUtil
 
 **WebLog**:
@@ -109,8 +109,12 @@ _Avoid_: BodyCacheFilter, ReReadFilter, RequestWrapperFilter
 _Avoid_: OperationLog, SysLog, UserLog, ActionLog
 
 **OperateLogAspect**:
-基于 AOP 环绕拦截的结构化操作审计切面，自动关联四维全链路上下文并在出参联动视图脱敏（守卫 ADR-0012 内存真明文）。
+基于 AOP 环绕拦截的结构化操作审计切面，在异步派发前于请求线程同步采集四维全链路上下文与净化限长后的 `User-Agent` / 解析结果（委托 Core `UserAgentUtil`，受 `OperateLogProperties` 开关与最大长度约束），并在出参联动视图脱敏（守卫 ADR-0012 内存真明文）。
 _Avoid_: SysLogAspect, AuditAspect, ActionAspect
+
+**OperateLogProperties**:
+定义于 `WebProperties.OperateLogProperties`（前缀 `ateng.boot.web.operate-log`）的操作审计强类型配置属性组，统管总开关（`enabled`）、11 项默认脱敏基线（`defaultExcludeParams`）及同步客户端 UA 采集与解析防御参数（`collectUserAgent`、`parseUserAgent`、`userAgentMaxLength`）。
+_Avoid_: AuditProperties, LogAspectProperties, OperateLogConfig
 
 **OperateLogStorageProvider**:
 操作审计存储解耦 `@FunctionalInterface` SPI 接口，以 `store(OperateLogModel)` 作为唯一抽象契约，支持自定义接入数据库、ES 或 Kafka。
@@ -401,7 +405,7 @@ _Avoid_: CaptchaConfig, CaptchaAutoConfig
 - **OperateLogStorageProvider#save**: 已净切移除的历史别名方法，统一使用唯一抽象契约 `store(OperateLogModel)`。
 - **EnumItemVO**: 历史拟定枚举字典视图模型；当前模块统一复用 Core 底座提供的强类型 `OptionItem<T>` 标准选项模型（参见 ADR-0060）。
 - **MultipartConfig**: 历史拟定文件上传配置类；100% 依托 Spring Boot 原生 `spring.servlet.multipart.*` 机制，不额外引入无谓配置包装类。
-- **UserAgentUtil / ClientInfo**: 历史拟定客户端解析原语；为遵守“零臃肿依赖与底座优先”铁律（ADR-0011），模块严禁引入重型外部 UA 规则库，推荐业务侧按需轻量处理。
+- **UserAgentUtil / UserAgentInfo**: 已解除早期 Errata 搁置限制，仍严格禁止引入重型外部 UA 规则库（ADR-0011）；现由 `ateng-boot-core` 统一提供纯 JDK 17 零依赖原生解析原语 `UserAgentUtil` 与不可变记录 `UserAgentInfo`，并由本模块 `ServletUtil` 与 `OperateLogAspect` 同步采集衔接（历史废弃别名 **`ClientInfo`** 仍保持禁用）。
 
 
 

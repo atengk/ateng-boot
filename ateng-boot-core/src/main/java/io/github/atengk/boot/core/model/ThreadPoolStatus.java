@@ -1,5 +1,7 @@
 package io.github.atengk.boot.core.model;
 
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import io.github.atengk.boot.core.jackson.NumericLongSerializer;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
@@ -31,7 +33,7 @@ public record ThreadPoolStatus(
         int activeCount,
         int queueSize,
         int remainingQueueCapacity,
-        long completedTaskCount,
+        @JsonSerialize(using = NumericLongSerializer.class) long completedTaskCount,
         boolean isSaturated,
         boolean virtual,
         int concurrencyLimit

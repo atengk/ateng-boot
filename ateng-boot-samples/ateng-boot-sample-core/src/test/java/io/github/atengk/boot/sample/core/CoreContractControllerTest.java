@@ -90,9 +90,9 @@ class CoreContractControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code", is(200)))
                 .andExpect(jsonPath("$.success", is(true)))
-                .andExpect(jsonPath("$.data.current", is("1")))
-                .andExpect(jsonPath("$.data.size", is("10")))
-                .andExpect(jsonPath("$.data.total", is("100")))
+                .andExpect(jsonPath("$.data.current", is(1)))
+                .andExpect(jsonPath("$.data.size", is(10)))
+                .andExpect(jsonPath("$.data.total", is(100)))
                 .andExpect(jsonPath("$.data.records", hasSize(2)))
                 .andExpect(jsonPath("$.data.records[0].orderNo", is("ORD-20261107-1001")))
                 .andExpect(jsonPath("$.data.records[0].statusDesc", is("已支付")));
