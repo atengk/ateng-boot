@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.excel.enums.HeaderValidationStrategy;
 import io.github.atengk.boot.excel.model.ExcelErrorRow;
 import io.github.atengk.boot.excel.model.ExcelReadResult;
+import io.github.atengk.boot.excel.model.ExcelRowData;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.excel.util.ExcelWebUtil;
 import io.github.atengk.boot.sample.excel.enums.SampleGenderEnum;
@@ -27,8 +28,10 @@ import java.io.InputStream;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -229,6 +232,45 @@ public class OnboardingImportController {
             result = ExcelUtil.readWithResult(in, OnboardingImportVO.class);
         }
         return ExcelWebUtil.toResponseEntityErrorFeedback(fileName, new ByteArrayInputStream(bytes), result.getErrors());
+    }
+
+    /**
+     * 端点 7C：两阶段校验（JSR-303 格式校验 + 物理行号追踪下的批内唯一性业务校验）并精确标红回写
+     *
+     * @param file     上传的 Excel 文件
+     * @param fileName 反馈文件名
+     * @return 包含两阶段合并错题批注的流式响应实体
+     * @throws IOException IO 异常
+     */
+    @PostMapping(value = "/import-two-phase-feedback", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @WebLog(value = "两阶段校验与精确行号回写", printParams = false, printResult = false, printCostTime = true)
+    public ResponseEntity<StreamingResponseBody> importTwoPhaseFeedback(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "fileName", defaultValue = "员工入职两阶段校验反馈.xlsx") String fileName) throws IOException {
+        byte[] bytes = file.getBytes();
+        ExcelReadResult<OnboardingImportVO> result;
+        try (InputStream in = new ByteArrayInputStream(bytes)) {
+            result = ExcelUtil.readWithResult(in, OnboardingImportVO.class);
+        }
+
+        // 阶段一错误 + 阶段二（依托 ExcelRowData 1-based 物理行号与 ExcelErrorRow.of 自动定位）
+        List<ExcelErrorRow> mergedErrors = new ArrayList<>(result.getErrors());
+        Set<String> seenPhones = new HashSet<>();
+        for (ExcelRowData<OnboardingImportVO> record : result.getRowRecords()) {
+            OnboardingImportVO vo = record.data();
+            String phone = vo.getPhone();
+            if (phone != null && !seenPhones.add(phone)) {
+                mergedErrors.add(ExcelErrorRow.of(
+                        OnboardingImportVO.class,
+                        record.rowIndex(),
+                        OnboardingImportVO::getPhone,
+                        phone,
+                        "手机号与前序有效行重复，请修改后重传",
+                        vo
+                ));
+            }
+        }
+        return ExcelWebUtil.toResponseEntityErrorFeedback(fileName, new ByteArrayInputStream(bytes), mergedErrors);
     }
 
     /**

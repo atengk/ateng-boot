@@ -37,6 +37,12 @@ public class ExcelReadResult<T> implements Serializable {
     private List<T> data = new ArrayList<>();
 
     /**
+     * 携带真实 1-based 物理行号的合法数据只读视图列表
+     */
+    @Builder.Default
+    private List<ExcelRowData<T>> rowRecords = new ArrayList<>();
+
+    /**
      * 校验失败的错误行信息列表
      */
     @Builder.Default
@@ -47,6 +53,17 @@ public class ExcelReadResult<T> implements Serializable {
      */
     @Builder.Default
     private boolean circuitBroken = false;
+
+    /**
+     * 向后兼容三参构造函数
+     *
+     * @param data          合法数据列表
+     * @param errors        校验错误列表
+     * @param circuitBroken 是否触发熔断
+     */
+    public ExcelReadResult(List<T> data, List<ExcelErrorRow> errors, boolean circuitBroken) {
+        this(data, new ArrayList<>(), errors, circuitBroken);
+    }
 
     /**
      * 是否存在校验错误
@@ -62,6 +79,15 @@ public class ExcelReadResult<T> implements Serializable {
      */
     public List<T> getData() {
         return data != null ? Collections.unmodifiableList(data) : Collections.emptyList();
+    }
+
+    /**
+     * 获取不可修改的物理行号绑定记录列表（防御性返回空集合）
+     *
+     * @return 包含 1-based 物理行号与实体的 {@link ExcelRowData} 列表
+     */
+    public List<ExcelRowData<T>> getRowRecords() {
+        return rowRecords != null ? Collections.unmodifiableList(rowRecords) : Collections.emptyList();
     }
 
     /**

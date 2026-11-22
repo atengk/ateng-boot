@@ -9,12 +9,12 @@
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.excel.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **基础运维** | 自动装配与主配置 | `ExcelProperties`<br>`AtengExcelAutoConfiguration` | `enabled`<br>`default-batch-size`<br>`max-sync-rows`<br>`temp-dir` | Starter 自动装配入口，受管临时目录贯通；标配 `@ConditionalOnMissingBean` 守卫，时序自动对齐 Redis 与 `MessageSource` | `AtengExcelAutoConfigurationTest`<br>`ExcelUtilTest` |
-| **核心导出** | 强类型流式导出与元数据缓存 | `ExcelUtil`<br>`ExcelColumnMetadataResolver` | - | `export(out, list, clazz)` / `export(out, sheetName, list, clazz)`：流式写出并自适应释放底层流与临时资源；`ExcelColumnMetadataResolver.resolve(clazz)` 类级缓存统一对齐实体列序（含 `@ExcelIgnore` / `@ExcelIgnoreUnannotated` / 乱序 `index`） | `ExcelUtilTest`<br>`ExcelHardeningSlice1Test`<br>`EmployeeRosterController` |
+| **核心导出** | 强类型流式导出与元数据缓存 | `ExcelUtil`<br>`ExcelColumnMetadataResolver` | - | `export(out, list, clazz)` / `export(out, sheetName, list, clazz)`：流式写出并自适应释放底层流与临时资源；`ExcelColumnMetadataResolver.resolve(clazz)` 类级缓存统一对齐实体列序（含父子类同名字段遮蔽与 `@ExcelIgnore` 覆盖、`@ExcelIgnoreUnannotated`、乱序 `index`） | `ExcelUtilTest`<br>`ExcelHardeningSlice1Test`<br>`ExcelRowTrackingAndErrorFactoryTest`<br>`EmployeeRosterController` |
 | **动态列裁剪** | 强类型 VO 动态列投影与紧凑裁剪 | `ExcelUtil.export`<br>`ExcelUtil.resolveProjectedColumns` | - | `export(out, sheetName, list, clazz, includeColumns, excludeColumns)`：支持白名单包含与黑名单排除模式，自适应紧凑无缝排列，避免空列与类型擦除 | `ExcelColumnProjectionTest`<br>`EmployeeRosterController`<br>`SampleExcelIntegrationTest` |
 | **Web 门面** | Web `ResponseEntity` 与流式下载断连防卫 | `ExcelWebUtil` | - | 一等公民全面提供对称 `toResponseEntity*` 系列：`toResponseEntity`（含回调/`cleanupHook`/裁剪/AES 加密）、`toResponseEntityDynamic`、`toResponseEntityTemplate`、`toResponseEntityFailedRows`、`toResponseEntityErrorFeedback`、`toResponseEntityFill`、`toResponseEntityStreaming`、`toResponseEntityStreamingByCursor`、`toResponseEntityWithWatermark`；另含 `prepareWebResponse`、`createDownloadHeaders`、`export`、`builder`；RFC 5987 / 6266 防乱码与 `ClientAbortException`/`Broken pipe` 静默抑制 | `ExcelWebUtilTest`<br>`EmployeeRosterController`<br>`OnboardingImportController`<br>`WorkbookReportController`<br>`PayrollSecurityController`<br>`OrderStreamingController` |
 | **核心读取** | 同步全量与流式分批读取 | `ExcelUtil` | `default-batch-size`<br>`max-sync-rows` | `read(in, clazz)`（超限自动 Fail-Fast 阻断防 OOM）；`readBatch(in, clazz, batchSize, consumer)`（每次达到批次回调并即刻清空内存引用）；均支持带 `password` 透明解密重载 | `ExcelUtilTest`<br>`SampleExcelIntegrationTest` |
 | **多表流式读取** | 异构多工作表校验读取构建器 | `ExcelReaderBuilder`<br>`ExcelMultiSheetResult`<br>`ExcelUtil.reader` | `default-batch-size`<br>`max-sync-rows`<br>`validation.header-strategy`<br>`validation.max-error-rows` | `ExcelUtil.reader(in, [password]).validate().headerStrategy(s).maxErrorRows(n).sheet(0, ClassA).sheet(1, ClassB, consumer).read()`：按 Sheet 绑定独立 VO 与每 Sheet 专属校验配置（`validate`/`failFast`/`headerStrategy`）；通过 `ExcelMultiSheetResult` 的 `getSheetErrors`、`getAllErrors`、`hasErrors`、`isCircuitBroken` 聚合跨表误差；默认全局 `maxTotalRows` 上限 `200,000` 行 | `ExcelReaderBuilderTest`<br>`WorkbookReportController`<br>`SampleExcelIntegrationTest` |
-| **数据校验** | JSR-303 行级校验导入 | `ExcelUtil`<br>`BatchValidationListener`<br>`ExcelReadResult`<br>`ExcelErrorRow` | `validation.max-error-rows` | `readWithValidation(in, clazz)` / `readWithResult(in, clazz)` / `readBatchWithValidation(in, clazz, size, dataConsumer, errConsumer)`：精准捕获行号与列字段，聚合校验错误行与合法数据；均支持带 `password` 透明解密重载 | `ExcelValidationTest`<br>`OnboardingImportController`<br>`SampleExcelIntegrationTest` |
+| **数据校验** | JSR-303 行级校验与物理行号追踪 | `ExcelUtil`<br>`BatchValidationListener`<br>`ExcelReadResult`<br>`ExcelRowData`<br>`ExcelRowAware`<br>`ExcelErrorRow` | `validation.max-error-rows` | `readWithValidation` / `readWithResult` / `readBatchWithValidation`：按 1-based 物理行号聚合错误并保留有效行视图 `ExcelReadResult#getRowRecords()`（兼容跳过空行与多级表头）及 `ExcelRowAware#setRowIndex` 回填；提供 `ExcelErrorRow.of(modelClass, rowIndex, fieldName\|PropertyFunc, ...)`（未知字段 Fail-Fast 防错回 A 列）与 `ofRow(rowIndex, message)` | `ExcelValidationTest`<br>`ExcelRowTrackingAndErrorFactoryTest`<br>`OnboardingImportController`<br>`SampleExcelIntegrationTest` |
 | **错题集隔离** | 差错数据隔离提取与无损标红回写 | `ExcelUtil`<br>`ExcelWebUtil`<br>`ExcelFeedbackUtil`<br>`FailSplitRowWriteHandler`<br>`TypeConvertUtil` | - | `exportFailedRows` / `toResponseEntityFailedRows`（仅提取失败数据生成独立纠错文件并高亮）；`exportErrorFeedback` / `toResponseEntityErrorFeedback`（通过 `ExcelFeedbackUtil.getOrCreateErrorHighlightStyle` 复用单元格字体边框并填充 ROSE 浅粉底色与浮动批注回写） | `ExcelFailSplitTest`<br>`OnboardingImportController`<br>`SampleExcelIntegrationTest` |
 | **数据安全** | 导出动态脱敏 | `@ExcelSensitive`<br>`SensitiveCellWriteHandler` | - | `@ExcelSensitive(type, keepHead, keepTail, maskChar)`：写出时流式拦截掩码，源实体在 JVM 内存中 100% 保持原始明文不变量，彻底根除掩码脏写 | `ExcelSensitiveTest`<br>`EmployeeRosterController`<br>`SampleExcelIntegrationTest` |
 | **企业主题** | 模版主题与智能列宽 | `@ExcelTheme`<br>`ExcelThemeEnum`<br>`ExcelThemeWriteHandler`<br>`SmartAutoColumnWidthWriteHandler` | `style.enabled`<br>`style.theme`<br>`style.zebra-stripe`<br>`style.auto-column-width`<br>`style.min-column-width`<br>`style.max-column-width`<br>`style.padding-column-width`<br>`style.font-name` | 5 套企业级内置主题（`MINIMAL_CLEAN`, `BUSINESS_BLUE`, `CLASSIC_GREY`, `FRESH_GREEN`, `WARM_ORANGE`）；中英文双字节补偿列宽防数值变 `###` | `ExcelThemeWriteHandlerTest`<br>`EmployeeRosterController`<br>`SampleExcelIntegrationTest` |
@@ -744,33 +744,53 @@ public ResponseEntity<StreamingResponseBody> exportFailedRowsEntity(
 
 ---
 
-### 5.5 原表浅红高亮与浮动批注错题集回写 (`exportErrorFeedback` & `toResponseEntityErrorFeedback`)
+### 5.5 原表浅红高亮与浮动批注错题集回写 (`exportErrorFeedback` & 两阶段行号闭环)
 
 #### 实战业务代码范式（逆向提取自 `OnboardingImportController`）
 ```java
+import io.github.atengk.boot.excel.model.ExcelErrorRow;
 import io.github.atengk.boot.excel.model.ExcelReadResult;
+import io.github.atengk.boot.excel.model.ExcelRowData;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.excel.util.ExcelWebUtil;
 import io.github.atengk.boot.sample.excel.vo.OnboardingImportVO;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
-@PostMapping("/export-feedback-entity")
-public ResponseEntity<StreamingResponseBody> exportErrorFeedbackEntity(
-        @RequestParam("file") MultipartFile file) throws Exception {
+@PostMapping(value = "/import-two-phase-feedback", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+public ResponseEntity<StreamingResponseBody> importTwoPhaseFeedback(
+        @RequestParam("file") MultipartFile file,
+        @RequestParam(value = "fileName", defaultValue = "员工入职两阶段校验反馈.xlsx") String fileName) throws IOException {
     byte[] bytes = file.getBytes();
     ExcelReadResult<OnboardingImportVO> result;
     try (InputStream in = new ByteArrayInputStream(bytes)) {
         result = ExcelUtil.readWithResult(in, OnboardingImportVO.class);
     }
 
-    // 原表无损回写：通过 ExcelFeedbackUtil.getOrCreateErrorHighlightStyle 保留原字体与边框，仅填充浅粉底色（ROSE）并挂载批注
-    try (InputStream originalIn = new ByteArrayInputStream(bytes)) {
-        return ExcelWebUtil.toResponseEntityErrorFeedback(
-                "入职导入错误反馈_标红批注.xlsx", originalIn, result.getErrors());
+    // 阶段一错误 + 阶段二（依托 ExcelRowData 1-based 物理行号与 ExcelErrorRow.of 自动定位）
+    List<ExcelErrorRow> mergedErrors = new ArrayList<>(result.getErrors());
+    Set<String> seenPhones = new HashSet<>();
+    for (ExcelRowData<OnboardingImportVO> record : result.getRowRecords()) {
+        OnboardingImportVO vo = record.data();
+        String phone = vo.getPhone();
+        if (phone != null && !seenPhones.add(phone)) {
+            mergedErrors.add(ExcelErrorRow.of(
+                    OnboardingImportVO.class,
+                    record.rowIndex(),
+                    OnboardingImportVO::getPhone,
+                    phone,
+                    "手机号与前序有效行重复，请修改后重传",
+                    vo
+            ));
+        }
     }
+
+    // 原表无损回写：通过 ExcelFeedbackUtil 保留原字体与边框，仅填充浅粉底色（ROSE）并精确落点批注
+    return ExcelWebUtil.toResponseEntityErrorFeedback(fileName, new ByteArrayInputStream(bytes), mergedErrors);
 }
 ```
+> 提示：若导入 DTO/VO 需要直接在模型内部持有物理行号，可实现 `ExcelRowAware`（推荐配套 `@ExcelIgnore`），`BatchValidationListener` 将为所有解析行自动回填 1-based `rowIndex`；若需构造整行级错误（不绑定特定属性列），请使用 `ExcelErrorRow.ofRow(rowIndex, message)`，未知字段传入 `ExcelErrorRow.of(...)` 将立即抛出 `IllegalArgumentException` 防止错标至 A 列。
 
 ---
 

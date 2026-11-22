@@ -5,6 +5,8 @@ import io.github.atengk.boot.excel.enums.HeaderValidationStrategy;
 import io.github.atengk.boot.excel.exception.ExcelValidationException;
 import io.github.atengk.boot.excel.model.ExcelErrorRow;
 import io.github.atengk.boot.excel.model.ExcelReadResult;
+import io.github.atengk.boot.excel.model.ExcelRowAware;
+import io.github.atengk.boot.excel.model.ExcelRowData;
 import io.github.atengk.boot.excel.util.ExcelColumnMetadataResolver;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
@@ -60,6 +62,7 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
     private final Consumer<List<ExcelErrorRow>> errorConsumer;
 
     private final List<T> validDataList = new ArrayList<>();
+    private final List<ExcelRowData<T>> validRowRecords = new ArrayList<>();
     private final List<ExcelErrorRow> errorList = new ArrayList<>();
     private int errorRowCount = 0;
     private volatile boolean circuitBroken = false;
@@ -203,10 +206,13 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
             return;
         }
 
-        // 1. 获取当前物理行号（从 1 开始，如表头为 1，首行数据为 2）
+        // 1. 获取当前物理行号（从 1 开始，如表头占 1 行则首行数据为 2；多级表头及跳过空行均由 Fesod 原生行号精确对齐）
         int rowIndex = (context != null && context.readRowHolder() != null)
                 ? context.readRowHolder().getRowIndex() + 1
                 : 1;
+        if (data instanceof ExcelRowAware rowAware) {
+            rowAware.setRowIndex(rowIndex);
+        }
 
         // 2. 执行 JSR-303 规则校验
         Set<ConstraintViolation<T>> violations = validator != null
@@ -214,11 +220,13 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
                 : Collections.emptySet();
 
         if (violations.isEmpty()) {
-            // 校验通过：收集或分批消费合法数据
+            // 校验通过：收集或分批消费合法数据并同步记录物理行号视图
             validDataList.add(data);
+            validRowRecords.add(new ExcelRowData<>(rowIndex, data));
             if (dataConsumer != null && validDataList.size() >= batchSize) {
                 dataConsumer.accept(new ArrayList<>(validDataList));
                 validDataList.clear();
+                validRowRecords.clear();
             }
             return;
         }
@@ -270,6 +278,7 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
         if (dataConsumer != null && !validDataList.isEmpty()) {
             dataConsumer.accept(new ArrayList<>(validDataList));
             validDataList.clear();
+            validRowRecords.clear();
         }
 
         // 3. 消费聚合的错误信息
@@ -283,6 +292,15 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
      */
     public List<T> getValidDataList() {
         return Collections.unmodifiableList(validDataList);
+    }
+
+    /**
+     * 获取携带 1-based 物理行号的合法数据只读记录视图列表
+     *
+     * @return {@link ExcelRowData} 只读列表
+     */
+    public List<ExcelRowData<T>> getValidRowRecords() {
+        return Collections.unmodifiableList(validRowRecords);
     }
 
     /**
@@ -341,6 +359,7 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
     public ExcelReadResult<T> toResult() {
         return ExcelReadResult.<T>builder()
                 .data(new ArrayList<>(validDataList))
+                .rowRecords(new ArrayList<>(validRowRecords))
                 .errors(new ArrayList<>(errorList))
                 .circuitBroken(circuitBroken)
                 .build();

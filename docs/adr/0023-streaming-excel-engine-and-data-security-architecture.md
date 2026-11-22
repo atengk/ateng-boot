@@ -105,7 +105,7 @@ flowchart TD
 - **通用脱敏注解原生兼容**：`SensitiveCellWriteHandler` 具备双轨注解自适应识别能力，优先识别 `@ExcelSensitive`，同时无缝回退兼容 `ateng-boot-core` 通用 `@FieldSensitive` 注解，配合并发安全的反射元数据缓存，使同一个业务 VO 在 Controller JSON 序列化与 Excel 报表导出中复用统一脱敏规范，免除多重注解冗余标注。
 
 ### 3. JSR-303 行级校验监听器与失败标红批注回写
-- **结构化行级错误模型**：交付 `ExcelErrorRow` 与 `ExcelReadResult<T>`，记录物理行号（严格对齐 Excel 从 1 开始的行索引，默认补偿表头偏移）、列名与校验不通过原因列表；
+- **结构化行级错误模型与 1-based 物理行号闭环 (#1167)**：交付 `ExcelErrorRow`、`ExcelRowData<T>`、`ExcelRowAware` 与 `ExcelReadResult<T>`。经 Apache Fesod 原生 `readRowHolder().getRowIndex()` 直接产出严格对齐工作簿的 0-based 物理行号（天然跨越空行与多级表头），`+ 1` 即为精确 1-based 物理行号；有效记录同时保留在 `ExcelReadResult#getRowRecords()`（无侵入 `ExcelRowData` 视图）并按需回填至 `ExcelRowAware` 模型，支撑“前置 JSR-303 校验 -> 后置数据库批量唯一性校验 -> 借助 `ExcelErrorRow.of` / `ofRow`（基于 `ExcelColumnMetadataResolver` 与 Core `PropertyFunc` Lambda，未知字段 Fail-Fast 阻断防 `ExcelFeedbackUtil` 错回 A 列）合并回写 `ExcelFeedbackUtil` 标红批注”的两阶段精确闭环；
 - **双模校验支持**：交付 `BatchValidationListener<T>`，结合 JSR-303 `Validator`，支持“快速失败（Fast-Fail，遇到首错即抛出 `ExcelValidationException`）”与“全量聚合（收集全部失败行至 `ExcelReadResult`）”双重模式；
 - **无感错题集回写**：交付 `ExcelFeedbackUtil` 与 `ExcelUtil.exportErrorFeedback`，以原始导入文件流或数据结构为底板，将校验失败单元格自动填充柔和浅红背景（`IndexedColors.ROSE`）并挂载悬浮批注（`Comment`），用户可直接下载修正后重新上传，体验大幅跃升。
 

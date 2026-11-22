@@ -152,23 +152,23 @@ public final class ExcelColumnMetadataResolver {
     }
 
     private static List<Field> collectEligibleFields(List<Class<?>> hierarchy, boolean ignoreUnannotated) {
-        List<Field> result = new ArrayList<>();
+        Map<String, Field> fieldByName = new LinkedHashMap<>();
         for (Class<?> clz : hierarchy) {
             for (Field field : clz.getDeclaredFields()) {
                 int modifiers = field.getModifiers();
                 if (Modifier.isStatic(modifiers) || Modifier.isTransient(modifiers)) {
                     continue;
                 }
-                if (field.isAnnotationPresent(ExcelIgnore.class)) {
+                if (field.isAnnotationPresent(ExcelIgnore.class)
+                        || (ignoreUnannotated && !field.isAnnotationPresent(ExcelProperty.class))) {
+                    // 子类显式忽略或在 ignoreUnannotated 模式下移除父类同名字段遮蔽
+                    fieldByName.remove(field.getName());
                     continue;
                 }
-                if (ignoreUnannotated && !field.isAnnotationPresent(ExcelProperty.class)) {
-                    continue;
-                }
-                result.add(field);
+                fieldByName.put(field.getName(), field);
             }
         }
-        return result;
+        return new ArrayList<>(fieldByName.values());
     }
 
     private static ColumnMetadata buildColumnMetadata(int columnIndex, Field field) {

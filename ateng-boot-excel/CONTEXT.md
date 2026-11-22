@@ -17,7 +17,7 @@ _Avoid_: MultiSheetHelper, WorkbookBuilder, ExcelSession
 _Avoid_: DesensitizeInterceptor, MaskCellHandler, ExcelMaskProcessor
 
 **BatchValidationListener**:
-行级 JSR-303 数据校验读取监听器，继承 Fesod 原生 `AnalysisEventListener`，在流式逐行解析时结合 Spring `Validator` 进行行级约束检验，精准计算 Excel 物理行号（自动补偿表头偏移），支持快速失败（`ExcelValidationException`）与全量错误聚合（`ExcelReadResult`）双重模式。
+行级 JSR-303 数据校验读取监听器，继承 Fesod 原生 `AnalysisEventListener`，基于 Fesod 原生 0-based `readRowHolder().getRowIndex() + 1` 直接对齐真实 1-based Excel 物理行号（天然兼容跳过空行与多级表头），在通过格式校验时同步保留有效行物理行号视图（`getValidRowRecords()`）并支持为实现 `ExcelRowAware` 的模型自动回填 `rowIndex`；支持快速失败（`ExcelValidationException`）与全量错误聚合（`ExcelReadResult`）双重模式。
 _Avoid_: ValidateListener, ExcelImportListener, ValidationProcessor
 
 **ExcelFeedbackUtil**:
@@ -105,11 +105,19 @@ _Avoid_: HeaderMatcher, TitleChecker, HeadSchemaValidator
 _Avoid_: HeaderMode, HeaderCheckType
 
 **ExcelReadResult**:
-行级 JSR-303 数据校验综合结果容器载荷，封装成功通过约束的强类型实体集合、行级错误明细列表（`List<ExcelErrorRow>`）以及是否触发最大错误阈值熔断状态。
+行级 JSR-303 数据校验综合结果容器载荷，封装成功通过约束的强类型实体集合（`data`）、携带真实 1-based 物理行号的无侵入有效记录视图（`List<ExcelRowData<T>> rowRecords`，`getRowRecords()`）、行级错误明细列表（`List<ExcelErrorRow>`）以及是否触发最大错误阈值熔断状态。
 _Avoid_: ValidateResult, ImportResultModel
 
+**ExcelRowData**:
+不可变有效导入行与 1-based 物理行号关联载体 Record（`int rowIndex`, `T data`），解耦模型类自身字段定义，供业务层在“前置 JSR-303 格式校验 -> 后置数据库唯一性批量校验 -> 合并回写 `ExcelFeedbackUtil` 标红”闭环中零错位提取每条合法数据的物理 Excel 行号。
+_Avoid_: RowRecordVO, ValidRowWrapper, IndexedRowData
+
+**ExcelRowAware**:
+可选导入模型物理行号回填契约接口（`setRowIndex(Integer rowIndex)`），供需要导入 DTO/VO 直接持有 1-based 物理行号的场景按需实现（对应属性须标注 `@ExcelIgnore` 防列映射错乱）。
+_Avoid_: RowIndexCapable, TrackableExcelModel
+
 **ExcelErrorRow**:
-行级与单元格级校验错误详情强类型载荷，记录失败记录对应的 1-based 物理行号、列索引、实体属性名、语义化错误信息及未通过校验的原始字段值。
+行级与单元格级校验错误详情强类型载荷，记录失败记录对应的 1-based 物理行号、0-based 列索引、最末级列标题、实体属性名、语义化错误信息及未通过校验的原始字段值；内置依托 `ExcelColumnMetadataResolver` 的便捷静态构建方法组 `of(...)`（支持字段名及基于 Core `PropertyFunc` 的类型安全 Lambda 重载，未知字段直接 Fail-Fast 抛出 `IllegalArgumentException` 防 `ExcelFeedbackUtil` 错回 A 列）及整行级业务冲突工厂 `ofRow(...)`。
 _Avoid_: ValidationError, CellErrorInfo
 
 **ExcelMultiSheetResult**:

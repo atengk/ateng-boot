@@ -588,6 +588,83 @@ class SampleExcelIntegrationTest {
         }
     }
 
+    @Test
+    @DisplayName("入职防呆端点 7C：两阶段校验（JSR-303 + 物理行号追踪 + 批内唯一性冲突）与原表精确标红反馈")
+    void testOnboarding_TwoPhaseValidationWithPhysicalRowIndexAndErrorFactory() throws Exception {
+        // 通过 ExcelUtil.export 构造 4 行：第2行(张三-13800138000) -> 第3行移除为空白行 -> 第4行(JSR-303 姓名空) -> 第5行(合规但与第2行手机号重复)
+        List<OnboardingImportVO> seedRows = List.of(
+                new OnboardingImportVO("张三", "13800138000", "zhangsan@example.com",
+                        SampleGenderEnum.MALE, "研发部", "1", new java.math.BigDecimal("18000.00"), java.time.LocalDate.of(2026, 11, 1)),
+                new OnboardingImportVO("待清空占位", "13600136000", "blank@example.com",
+                        SampleGenderEnum.MALE, "研发部", "1", new java.math.BigDecimal("10000.00"), java.time.LocalDate.of(2026, 11, 2)),
+                new OnboardingImportVO("", "13900139000", "invalid@example.com",
+                        SampleGenderEnum.FEMALE, "市场部", "2", new java.math.BigDecimal("15000.00"), java.time.LocalDate.of(2026, 11, 5)),
+                new OnboardingImportVO("王五", "13800138000", "wangwu@example.com",
+                        SampleGenderEnum.MALE, "财务部", "1", new java.math.BigDecimal("16000.00"), java.time.LocalDate.of(2026, 11, 10))
+        );
+        ByteArrayOutputStream seedOut = new ByteArrayOutputStream();
+        ExcelUtil.export(seedOut, seedRows, OnboardingImportVO.class);
+
+        byte[] mixedBytes;
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(seedOut.toByteArray()));
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Sheet sheet = wb.getSheetAt(0);
+            // 清空 0-based 第 2 行（物理第 3 行），令 Fesod 自动跳过该空行
+            Row blankRow = sheet.getRow(2);
+            if (blankRow != null) {
+                sheet.removeRow(blankRow);
+            }
+            wb.write(out);
+            mixedBytes = out.toByteArray();
+        }
+
+        MockMultipartFile mixedFile = new MockMultipartFile(
+                "file", "two-phase-mixed.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                mixedBytes
+        );
+
+        // 1. 验证 /import-result 返回 rowRecords 与物理行号（物理第 2 行 与 第 5 行，跳过第 3 空行与第 4 错行）
+        MvcResult importRes = mockMvc.perform(multipart("/sample/excel/onboarding/import-result").file(mixedFile))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode importJson = objectMapper.readTree(importRes.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(importJson.get("code").asInt()).isEqualTo(200);
+        JsonNode rowRecordsNode = importJson.get("data").get("rowRecords");
+        assertThat(rowRecordsNode.size()).isEqualTo(2);
+        assertThat(rowRecordsNode.get(0).get("rowIndex").asInt()).isEqualTo(2);
+        assertThat(rowRecordsNode.get(1).get("rowIndex").asInt()).isEqualTo(5);
+
+        // 2. 验证 /import-two-phase-feedback 精准标红物理第 4 行姓名列(row=3, col=0) 与 第 5 行手机号列(row=4, col=1)
+        MvcResult feedbackAsync = mockMvc.perform(multipart("/sample/excel/onboarding/import-two-phase-feedback")
+                        .file(mixedFile))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(feedbackAsync))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"));
+
+        byte[] feedbackBytes = feedbackAsync.getResponse().getContentAsByteArray();
+        saveTempExcel("onboarding-two-phase-feedback.xlsx", feedbackBytes);
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(feedbackBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            // 物理第 4 行（0-based row=3），姓名列 col=0 必须标红+批注
+            Cell row4Name = sheet.getRow(3).getCell(0);
+            assertThat(row4Name.getCellStyle().getFillForegroundColor())
+                    .isEqualTo(org.apache.poi.ss.usermodel.IndexedColors.ROSE.getIndex());
+            assertThat(row4Name.getCellComment()).isNotNull();
+            assertThat(row4Name.getCellComment().getString().getString()).contains("员工姓名不能为空");
+
+            // 物理第 5 行（0-based row=4），手机号列 col=1 必须标红+批注，未误标第 0 列
+            Cell row5Phone = sheet.getRow(4).getCell(1);
+            assertThat(row5Phone.getCellStyle().getFillForegroundColor())
+                    .isEqualTo(org.apache.poi.ss.usermodel.IndexedColors.ROSE.getIndex());
+            assertThat(row5Phone.getCellComment()).isNotNull();
+            assertThat(row5Phone.getCellComment().getString().getString()).contains("手机号与前序有效行重复");
+            assertThat(sheet.getRow(4).getCell(0).getCellComment()).isNull();
+        }
+    }
+
     // ==========================================
     // 领域控制器 3：WorkbookReportController 测试 (/sample/excel/report/*)
     // ==========================================
