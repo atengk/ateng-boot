@@ -59,6 +59,11 @@ public enum CommonResultCode implements IResultCode {
     UNSUPPORTED_MEDIA_TYPE(415, "不支持的媒体类型"),
 
     /**
+     * 数据冲突或并发版本不一致
+     */
+    CONFLICT(409, "数据冲突或并发版本不一致"),
+
+    /**
      * 访问过于频繁，请稍后再试（限流拦截）
      */
     TOO_MANY_REQUESTS(429, "访问过于频繁，请稍后再试"),

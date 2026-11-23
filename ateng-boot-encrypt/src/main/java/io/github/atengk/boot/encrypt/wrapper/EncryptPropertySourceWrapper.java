@@ -1,16 +1,14 @@
 package io.github.atengk.boot.encrypt.wrapper;
 
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
-import io.github.atengk.boot.encrypt.decryptor.AesCbcConfigDecryptor;
-import io.github.atengk.boot.encrypt.decryptor.AesGcmConfigDecryptor;
 import io.github.atengk.boot.encrypt.decryptor.ConfigDecryptor;
-import io.github.atengk.boot.encrypt.decryptor.RsaConfigDecryptor;
-import io.github.atengk.boot.encrypt.decryptor.Sm2ConfigDecryptor;
-import io.github.atengk.boot.encrypt.decryptor.Sm4ConfigDecryptor;
+import io.github.atengk.boot.encrypt.decryptor.ConfigDecryptorFactory;
 import io.github.atengk.boot.encrypt.detector.KeyDetector;
 import io.github.atengk.boot.encrypt.exception.ConfigDecryptionException;
 import io.github.atengk.boot.encrypt.key.MultiKeyRegistry;
 import io.github.atengk.boot.encrypt.parser.CiphertextParser;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.env.EnumerablePropertySource;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.env.PropertySource;
@@ -19,10 +17,13 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 /**
  * 加密属性源动态装饰器
@@ -34,12 +35,27 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public class EncryptPropertySourceWrapper extends MapPropertySource {
 
+    private static final Logger log = LoggerFactory.getLogger(EncryptPropertySourceWrapper.class);
+
+    private record RuntimeConfig(
+            CiphertextParser parser,
+            KeyDetector keyDetector,
+            List<ConfigDecryptor> decryptors,
+            EncryptAlgorithm defaultAlgorithm,
+            boolean failOnError
+    ) {
+    }
+
     private final PropertySource<?> delegate;
-    private final CiphertextParser parser;
-    private volatile KeyDetector keyDetector;
-    private final List<ConfigDecryptor> decryptors;
-    private final EncryptAlgorithm defaultAlgorithm;
-    private final boolean failOnError;
+    private final ReentrantLock listenerLock = new ReentrantLock();
+    private final ReentrantLock containerSyncLock = new ReentrantLock();
+    private volatile RuntimeConfig runtimeConfig;
+    private volatile BooleanSupplier containerSyncHook;
+    private final AtomicBoolean containerSynced = new AtomicBoolean(false);
+    private final ThreadLocal<Boolean> syncingInCurrentThread = new ThreadLocal<>();
+
+    private Consumer<String> registeredListener;
+    private MultiKeyRegistry registeredRegistry;
 
     private final AtomicReference<ConcurrentHashMap<String, Object>> decryptedCacheRef =
             new AtomicReference<>(new ConcurrentHashMap<>());
@@ -61,11 +77,13 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
                                         boolean failOnError) {
         super(delegate.getName(), extractSourceMap(delegate));
         this.delegate = delegate;
-        this.parser = parser != null ? parser : new CiphertextParser();
-        this.keyDetector = keyDetector != null ? keyDetector : new KeyDetector();
-        this.decryptors = initDecryptors(decryptors);
-        this.defaultAlgorithm = defaultAlgorithm != null ? defaultAlgorithm : EncryptAlgorithm.AES_GCM;
-        this.failOnError = failOnError;
+        CiphertextParser effectiveParser = parser != null ? parser : new CiphertextParser();
+        KeyDetector effectiveKeyDetector = keyDetector != null ? keyDetector : new KeyDetector();
+        List<ConfigDecryptor> effectiveDecryptors = ConfigDecryptorFactory.createDefaultDecryptors(decryptors);
+        EncryptAlgorithm effectiveAlgorithm = defaultAlgorithm != null ? defaultAlgorithm : EncryptAlgorithm.AES_GCM;
+        this.runtimeConfig = new RuntimeConfig(
+                effectiveParser, effectiveKeyDetector, effectiveDecryptors, effectiveAlgorithm, failOnError);
+        registerCacheClearingListener(effectiveKeyDetector);
     }
 
     public EncryptPropertySourceWrapper(PropertySource<?> delegate, KeyDetector keyDetector) {
@@ -89,37 +107,6 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
         this(delegate, new CiphertextParser(), new KeyDetector(keyRegistry), null, EncryptAlgorithm.AES_GCM, true);
     }
 
-    private static List<ConfigDecryptor> initDecryptors(List<ConfigDecryptor> customDecryptors) {
-        List<ConfigDecryptor> list = new ArrayList<>();
-        if (customDecryptors != null) {
-            list.addAll(customDecryptors);
-        }
-        // 通过 Java ServiceLoader 发现外部 SPI 扩展解密器（如外部云 KMS、硬件加密机扩展）
-        ServiceLoader<ConfigDecryptor> serviceLoader = ServiceLoader.load(ConfigDecryptor.class);
-        for (ConfigDecryptor spiDecryptor : serviceLoader) {
-            if (list.stream().noneMatch(d -> d.getClass().equals(spiDecryptor.getClass()))) {
-                list.add(spiDecryptor);
-            }
-        }
-        // 注册默认纯 JDK 原生解密器
-        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.AES_GCM))) {
-            list.add(new AesGcmConfigDecryptor());
-        }
-        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.AES_CBC))) {
-            list.add(new AesCbcConfigDecryptor());
-        }
-        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.SM4_CBC))) {
-            list.add(new Sm4ConfigDecryptor());
-        }
-        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.RSA))) {
-            list.add(new RsaConfigDecryptor());
-        }
-        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.SM2))) {
-            list.add(new Sm2ConfigDecryptor());
-        }
-        return list;
-    }
-
     @Override
     public Object getProperty(String name) {
         Object rawValue = delegate.getProperty(name);
@@ -127,8 +114,11 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
             return rawValue;
         }
 
+        RuntimeConfig config = this.runtimeConfig;
+        CiphertextParser currentParser = config.parser();
+
         // 若不包含密文标记，直接保真返回原值
-        if (!parser.hasEncrypted(strVal)) {
+        if (!currentParser.hasEncrypted(strVal)) {
             return rawValue;
         }
 
@@ -141,18 +131,24 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
             return cached;
         }
 
+        // 首次触发密文按需解密前，确保已完成容器级 Bean（KMS 解密器 / MultiKeyRegistry / RetryPolicy）反向回填
+        syncWithContainerHookIfNeeded();
+        RuntimeConfig syncedConfig = this.runtimeConfig;
+        CiphertextParser syncedParser = syncedConfig.parser();
+        ConcurrentHashMap<String, Object> targetCache = decryptedCacheRef.get();
+
         // 按需懒解密并存入缓存
         try {
-            String decrypted = parser.replaceTokens(strVal, token -> {
+            String decrypted = syncedParser.replaceTokens(strVal, token -> {
                 String keyId = token.getKeyId();
-                String password = keyDetector.getPassword(keyId);
+                String password = syncedConfig.keyDetector().getPassword(keyId);
                 if (password == null || password.trim().isEmpty()) {
-                    throw new ConfigDecryptionException(name, keyId, defaultAlgorithm.getCode(),
+                    throw new ConfigDecryptionException(name, keyId, syncedConfig.defaultAlgorithm().getCode(),
                             new IllegalStateException(String.format("缺失解密主密钥 [KeyId: '%s']",
                                     keyId != null ? keyId : "default")));
                 }
-                EncryptAlgorithm algorithm = token.getAlgorithm() != null ? token.getAlgorithm() : defaultAlgorithm;
-                ConfigDecryptor decryptor = findDecryptor(algorithm);
+                EncryptAlgorithm algorithm = token.getAlgorithm() != null ? token.getAlgorithm() : syncedConfig.defaultAlgorithm();
+                ConfigDecryptor decryptor = findDecryptor(syncedConfig.decryptors(), algorithm);
                 if (decryptor == null) {
                     throw new UnsupportedOperationException("未找到支持算法的解密器: " + algorithm);
                 }
@@ -162,24 +158,26 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
                     throw new ConfigDecryptionException(name, keyId, algorithm.getCode(), e);
                 }
             });
-            cache.put(name, decrypted);
+            targetCache.put(name, decrypted);
             return decrypted;
         } catch (ConfigDecryptionException e) {
-            if (failOnError) {
+            if (syncedConfig.failOnError()) {
                 throw e;
             }
+            log.warn("[ateng-boot-encrypt] 配置项 '{}' 解密失败，由于 fail-on-error=false 已降级返回原始值: {}", name, e.getMessage());
             return rawValue;
         } catch (Exception e) {
             ConfigDecryptionException ex = new ConfigDecryptionException(name,
                     e.getMessage() != null ? e.getMessage() : "未知解密异常", e);
-            if (failOnError) {
+            if (syncedConfig.failOnError()) {
                 throw ex;
             }
+            log.warn("[ateng-boot-encrypt] 配置项 '{}' 解密失败，由于 fail-on-error=false 已降级返回原始值: {}", name, ex.getMessage());
             return rawValue;
         }
     }
 
-    private ConfigDecryptor findDecryptor(EncryptAlgorithm algorithm) {
+    private ConfigDecryptor findDecryptor(List<ConfigDecryptor> decryptors, EncryptAlgorithm algorithm) {
         for (ConfigDecryptor decryptor : decryptors) {
             if (decryptor.supports(algorithm)) {
                 return decryptor;
@@ -214,7 +212,45 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
     }
 
     public KeyDetector getKeyDetector() {
-        return keyDetector;
+        return runtimeConfig.keyDetector();
+    }
+
+    /**
+     * 获取当前生效的密文语法解析器
+     */
+    public CiphertextParser getParser() {
+        return runtimeConfig.parser();
+    }
+
+    /**
+     * 获取当前生效的解密器列表
+     */
+    public List<ConfigDecryptor> getDecryptors() {
+        return runtimeConfig.decryptors();
+    }
+
+    /**
+     * 获取当前生效的默认加密算法
+     */
+    public EncryptAlgorithm getDefaultAlgorithm() {
+        return runtimeConfig.defaultAlgorithm();
+    }
+
+    /**
+     * 获取当前生效的失败阻断开关
+     */
+    public boolean isFailOnError() {
+        return runtimeConfig.failOnError();
+    }
+
+    /**
+     * 获取当前包装器绑定的多密钥注册表
+     *
+     * @return 绑定的 MultiKeyRegistry 实例（若尚未绑定探测器则返回 null）
+     */
+    public MultiKeyRegistry getKeyRegistry() {
+        KeyDetector detector = runtimeConfig.keyDetector();
+        return detector != null ? detector.getRegistry() : null;
     }
 
     /**
@@ -222,9 +258,139 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
      */
     public void updateKeyDetector(KeyDetector newKeyDetector) {
         if (newKeyDetector != null) {
-            this.keyDetector = newKeyDetector;
-            clearCache();
+            applyRuntimeConfig(null, newKeyDetector, null, null, null);
         }
+    }
+
+    /**
+     * 运行时同步更新包装器全量配置并原子清空解密缓存（Two-Phase Wrapper Sync）
+     *
+     * @param parser           最新密文语法解析器（为 null 时保留当前值）
+     * @param keyDetector      最新密钥探测器（为 null 时保留当前值）
+     * @param decryptors       最新解密器列表（为 null 时保留当前值）
+     * @param defaultAlgorithm 最新默认加密算法（为 null 时保留当前值）
+     * @param failOnError      解密失败是否快速阻断
+     */
+    public void updateRuntimeConfig(CiphertextParser parser,
+                                    KeyDetector keyDetector,
+                                    List<ConfigDecryptor> decryptors,
+                                    EncryptAlgorithm defaultAlgorithm,
+                                    boolean failOnError) {
+        applyRuntimeConfig(parser, keyDetector, decryptors, defaultAlgorithm, failOnError);
+    }
+
+    /**
+     * 挂载容器期运行时反向同步回调钩子，用于在首个懒解密读取前安全回填容器 Bean（如自定义 KMS 解密器）
+     *
+     * @param hook 幂等同步回调，返回 true 表示已完成本次同步，返回 false 表示重入跳过暂不置位
+     */
+    public void setContainerSyncHook(BooleanSupplier hook) {
+        this.containerSyncHook = hook;
+    }
+
+    /**
+     * 标记当前包装器已完成容器期运行时配置反向同步
+     */
+    public void markContainerSynced() {
+        this.containerSynced.set(true);
+    }
+
+    /**
+     * 判断当前包装器是否已完成容器期反向同步
+     *
+     * @return 若已完成容器同步则返回 true
+     */
+    public boolean isContainerSynced() {
+        return containerSynced.get();
+    }
+
+    private void syncWithContainerHookIfNeeded() {
+        if (containerSynced.get() || Boolean.TRUE.equals(syncingInCurrentThread.get())) {
+            return;
+        }
+        BooleanSupplier hook = this.containerSyncHook;
+        if (hook == null) {
+            return;
+        }
+        containerSyncLock.lock();
+        try {
+            if (containerSynced.get()) {
+                return;
+            }
+            syncingInCurrentThread.set(Boolean.TRUE);
+            try {
+                if (hook.getAsBoolean()) {
+                    containerSynced.set(true);
+                }
+            } finally {
+                syncingInCurrentThread.remove();
+            }
+        } finally {
+            if (containerSyncLock.isHeldByCurrentThread()) {
+                containerSyncLock.unlock();
+            }
+        }
+    }
+
+    private void applyRuntimeConfig(CiphertextParser parser,
+                                    KeyDetector keyDetector,
+                                    List<ConfigDecryptor> decryptors,
+                                    EncryptAlgorithm defaultAlgorithm,
+                                    Boolean failOnError) {
+        listenerLock.lock();
+        try {
+            RuntimeConfig current = this.runtimeConfig;
+            CiphertextParser nextParser = parser != null ? parser : current.parser();
+            KeyDetector nextKeyDetector = keyDetector != null ? keyDetector : current.keyDetector();
+            List<ConfigDecryptor> nextDecryptors = decryptors != null
+                    ? Collections.unmodifiableList(new ArrayList<>(decryptors))
+                    : current.decryptors();
+            EncryptAlgorithm nextAlgorithm = defaultAlgorithm != null ? defaultAlgorithm : current.defaultAlgorithm();
+            boolean nextFailOnError = failOnError != null ? failOnError : current.failOnError();
+
+            this.runtimeConfig = new RuntimeConfig(
+                    nextParser, nextKeyDetector, nextDecryptors, nextAlgorithm, nextFailOnError);
+            registerCacheClearingListenerLocked(nextKeyDetector);
+            clearCache();
+        } finally {
+            if (listenerLock.isHeldByCurrentThread()) {
+                listenerLock.unlock();
+            }
+        }
+    }
+
+    private void registerCacheClearingListener(KeyDetector detector) {
+        if (detector == null || detector.getRegistry() == null) {
+            return;
+        }
+        listenerLock.lock();
+        try {
+            registerCacheClearingListenerLocked(detector);
+        } finally {
+            if (listenerLock.isHeldByCurrentThread()) {
+                listenerLock.unlock();
+            }
+        }
+    }
+
+    private void registerCacheClearingListenerLocked(KeyDetector detector) {
+        if (detector == null || detector.getRegistry() == null) {
+            return;
+        }
+        MultiKeyRegistry targetRegistry = detector.getRegistry();
+        if (this.registeredRegistry == targetRegistry && this.registeredListener != null) {
+            return;
+        }
+        if (this.registeredRegistry != null && this.registeredListener != null) {
+            this.registeredRegistry.removeChangeListener(this.registeredListener);
+        }
+        this.registeredRegistry = targetRegistry;
+        this.registeredListener = keyId -> {
+            log.info("[ateng-boot-encrypt] 检测到密钥变更或轮换 [KeyId: {}]，立即原子清空属性源解密缓存: {}",
+                    keyId, delegate.getName());
+            clearCache();
+        };
+        this.registeredRegistry.addChangeListener(this.registeredListener);
     }
 
     /**
@@ -238,7 +404,7 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
             return true;
         }
         Object raw = delegate.getProperty(name);
-        if (raw instanceof String str && parser.hasEncrypted(str)) {
+        if (raw instanceof String str && runtimeConfig.parser().hasEncrypted(str)) {
             encryptedPropertyNames.add(name);
             return true;
         }

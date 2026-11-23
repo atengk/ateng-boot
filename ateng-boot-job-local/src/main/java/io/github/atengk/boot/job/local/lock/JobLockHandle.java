@@ -34,15 +34,25 @@ public class JobLockHandle {
     private final Instant leaseExpireAt;
 
     /**
+     * 锁成功获取的时间戳（用于非阻塞最小持有期计算，未获锁时为 null）
+     */
+    private final Instant acquiredAt;
+
+    /**
      * 是否成功抢占并持有该锁
      */
     private final boolean acquired;
 
     public JobLockHandle(String lockKey, String lockOwner, Instant leaseExpireAt, boolean acquired) {
+        this(lockKey, lockOwner, leaseExpireAt, acquired, acquired ? Instant.now() : null);
+    }
+
+    public JobLockHandle(String lockKey, String lockOwner, Instant leaseExpireAt, boolean acquired, Instant acquiredAt) {
         this.lockKey = lockKey;
         this.lockOwner = lockOwner;
         this.leaseExpireAt = leaseExpireAt;
         this.acquired = acquired;
+        this.acquiredAt = acquiredAt;
     }
 
     /**
@@ -54,7 +64,20 @@ public class JobLockHandle {
      * @return 成功句柄
      */
     public static JobLockHandle success(String lockKey, String lockOwner, Instant leaseExpireAt) {
-        return new JobLockHandle(lockKey, lockOwner, leaseExpireAt, true);
+        return new JobLockHandle(lockKey, lockOwner, leaseExpireAt, true, Instant.now());
+    }
+
+    /**
+     * 构建加锁成功的锁句柄（指定精确获锁时间戳）
+     *
+     * @param lockKey       锁标识
+     * @param lockOwner     持有者签名
+     * @param leaseExpireAt 租约到期时间
+     * @param acquiredAt    获锁时间戳
+     * @return 成功句柄
+     */
+    public static JobLockHandle success(String lockKey, String lockOwner, Instant leaseExpireAt, Instant acquiredAt) {
+        return new JobLockHandle(lockKey, lockOwner, leaseExpireAt, true, acquiredAt != null ? acquiredAt : Instant.now());
     }
 
     /**
@@ -64,7 +87,7 @@ public class JobLockHandle {
      * @return 失败句柄
      */
     public static JobLockHandle failed(String lockKey) {
-        return new JobLockHandle(lockKey, null, null, false);
+        return new JobLockHandle(lockKey, null, null, false, null);
     }
 
     /**

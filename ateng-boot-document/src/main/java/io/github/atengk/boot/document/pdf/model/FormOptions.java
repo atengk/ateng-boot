@@ -44,6 +44,11 @@ public class FormOptions {
     private String customFontPath;
 
     /**
+     * 打开加密 PDF 文档的密码（可选）
+     */
+    private String password;
+
+    /**
      * 快速构建默认不可逆矢量扁平化安全配置选项
      *
      * @return FormOptions 实例

@@ -61,7 +61,8 @@ class PayloadLoggingFilterTest {
     @DisplayName("验证默认构造器、优先级及配置属性契约")
     void shouldVerifyDefaultPropertiesAndOrder() {
         PayloadLoggingFilter filter = new PayloadLoggingFilter();
-        assertThat(filter.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 2);
+        assertThat(filter.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 40);
+        assertThat(filter.getOrder()).isEqualTo(PayloadLoggingFilter.ORDER);
         assertThat(filter.getMaxPayloadSize()).isEqualTo(DataSize.ofKilobytes(4));
         assertThat(filter.getExcludeUrls()).isEmpty();
         assertThat(filter.shouldNotFilterAsyncDispatch()).isTrue();

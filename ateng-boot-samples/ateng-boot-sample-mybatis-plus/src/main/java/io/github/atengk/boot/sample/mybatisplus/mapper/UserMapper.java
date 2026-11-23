@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Constants;
 import io.github.atengk.boot.mybatisplus.annotation.DataScope;
+import io.github.atengk.boot.mybatisplus.annotation.IgnoreSqlLog;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 import io.github.atengk.boot.sample.mybatisplus.entity.UserEntity;
 import io.github.atengk.boot.sample.mybatisplus.model.UserDeptDetailVO;
@@ -22,12 +23,12 @@ import java.util.List;
 public interface UserMapper extends AtengBaseMapper<UserEntity> {
 
     /**
-     * 声明 @DataScope 细粒度数据权限过滤查询
+     * 声明 @DataScope 细粒度数据权限过滤查询（同时绑定部门列 dept_id 与本人审计列 create_by）
      *
      * @param wrapper 条件构造器
      * @return 过滤后可见用户列表
      */
-    @DataScope(deptColumn = "dept_id")
+    @DataScope(deptColumn = "dept_id", userColumn = "create_by")
     @Select("SELECT * FROM sys_user ${ew.customSqlSegment}")
     List<UserEntity> selectAccessibleUsers(@Param(Constants.WRAPPER) Wrapper<UserEntity> wrapper);
 
@@ -41,6 +42,14 @@ public interface UserMapper extends AtengBaseMapper<UserEntity> {
     IPage<UserDeptDetailVO> selectUserDeptPage(IPage<UserDeptDetailVO> page, @Param(Constants.WRAPPER) Wrapper<UserDeptDetailVO> wrapper);
 
     /**
+     * 多表联查部门与用户列表方法（XML 实现，支持 AST 别名自愈与 listDynamic 方法引用直出）
+     *
+     * @param wrapper 包含动态条件与排序的 Wrapper
+     * @return 包含用户与部门联合投影的 VO 列表
+     */
+    List<UserDeptDetailVO> selectUserDeptList(@Param(Constants.WRAPPER) Wrapper<UserDeptDetailVO> wrapper);
+
+    /**
      * 演示包含密码/凭据敏感参数的查询方法（用于慢 SQL 拦截器密码脱敏实测）
      *
      * @param username 用户名
@@ -49,4 +58,13 @@ public interface UserMapper extends AtengBaseMapper<UserEntity> {
      */
     @Select("SELECT * FROM sys_user WHERE name = #{username} AND #{password} IS NOT NULL")
     List<UserEntity> selectByUsernameAndPassword(@Param("username") String username, @Param("password") String password);
+
+    /**
+     * 心跳探测查询方法（声明 @IgnoreSqlLog 豁免 SQL 审计拦截与控制台看板输出）
+     *
+     * @return 探测返回值 1
+     */
+    @IgnoreSqlLog
+    @Select("SELECT 1")
+    Integer pingHeartbeat();
 }

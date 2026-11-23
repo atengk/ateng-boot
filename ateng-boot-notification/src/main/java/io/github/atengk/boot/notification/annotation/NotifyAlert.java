@@ -50,4 +50,9 @@ public @interface NotifyAlert {
      * 是否在告警卡片中包含经过脱敏的方法调用入参快照，默认开启
      */
     boolean includeArgs() default true;
+
+    /**
+     * 告警链路详情跳转地址模板（可选，支持 ${traceId} 占位符插值，优先级高于全局 ateng.boot.notification.alert.detail-url）
+     */
+    String detailUrl() default "";
 }

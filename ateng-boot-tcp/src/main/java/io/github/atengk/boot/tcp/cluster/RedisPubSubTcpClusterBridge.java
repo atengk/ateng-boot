@@ -1,5 +1,6 @@
 package io.github.atengk.boot.tcp.cluster;
 
+import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.tcp.properties.TcpClusterProperties;
@@ -78,7 +79,11 @@ public class RedisPubSubTcpClusterBridge implements TcpClusterBridge, MessageLis
         Collection<TcpSession> sessions = sessionManager.getAllSessions();
         for (TcpSession session : sessions) {
             if (session.isActive()) {
-                session.send(payload);
+                try {
+                    session.send(payload);
+                } catch (Exception ex) {
+                    log.warn("[TCP-CLUSTER] 本地全量广播直发会话失败: sessionId={}", session.getSessionId(), ex);
+                }
             }
         }
 
@@ -90,6 +95,36 @@ public class RedisPubSubTcpClusterBridge implements TcpClusterBridge, MessageLis
             return true;
         } catch (Exception ex) {
             log.error("[TCP-CLUSTER] 向 Redis 广播全量消息异常", ex);
+            return false;
+        }
+    }
+
+    @Override
+    public boolean sendGroupToCluster(String group, Object payload) {
+        Assert.hasText(group, "group 不能为空");
+        Assert.notNull(payload, "payload 不能为空");
+
+        // 1. 本地直发本节点命中分组的会话
+        Collection<TcpSession> localSessions = sessionManager.getSessionsByGroup(group);
+        for (TcpSession session : localSessions) {
+            if (session.isActive()) {
+                try {
+                    session.send(payload);
+                } catch (Exception ex) {
+                    log.warn("[TCP-CLUSTER] 本地分组 [{}] 组播直发会话失败: sessionId={}", group, session.getSessionId(), ex);
+                }
+            }
+        }
+
+        // 2. 广播至 Redis 让集群其他 Pod 下发
+        try {
+            TcpClusterBroadcastMessage broadcastMessage = TcpClusterBroadcastMessage.ofGroup(group, nodeId, payload);
+            String messageJson = JsonUtil.toJsonString(broadcastMessage);
+            redisTemplate.convertAndSend(topic, messageJson);
+            log.debug("[TCP-CLUSTER] 向 Redis 广播通道 [{}] 派发分组 [{}] 组播指令", topic, group);
+            return true;
+        } catch (Exception ex) {
+            log.error("[TCP-CLUSTER] 向 Redis 广播通道投递分组 [{}] 组播消息异常", group, ex);
             return false;
         }
     }
@@ -112,27 +147,57 @@ public class RedisPubSubTcpClusterBridge implements TcpClusterBridge, MessageLis
                 return;
             }
 
-            String targetDeviceId = broadcastMessage.getDeviceId();
-            Object resolvedPayload = broadcastMessage.resolvePayload();
+            // 2. 在四维上下文沙箱中还原执行，并在 finally 自动清理恢复接收线程原始现场
+            MessageContextPropagator.runInContext(
+                    broadcastMessage.getContextHeaders(),
+                    () -> dispatchCrossNodeMessage(broadcastMessage)
+            );
+        } catch (Exception ex) {
+            log.error("[TCP-CLUSTER] 处理 Redis 跨节点广播消息异常", ex);
+        }
+    }
 
-            if (targetDeviceId != null) {
-                // 点播定向下发
-                TcpSession localSession = sessionManager.getSessionByDeviceId(targetDeviceId);
-                if (localSession != null && localSession.isActive()) {
-                    localSession.send(resolvedPayload);
-                    log.debug("[TCP-CLUSTER] 本节点收到跨节点广播并成功命中设备 [{}]，完成物理下发", targetDeviceId);
-                }
-            } else {
-                // 集群全量广播
-                Collection<TcpSession> sessions = sessionManager.getAllSessions();
-                for (TcpSession session : sessions) {
-                    if (session.isActive()) {
+    private void dispatchCrossNodeMessage(TcpClusterBroadcastMessage broadcastMessage) {
+        String targetGroup = broadcastMessage.getGroup();
+        String targetDeviceId = broadcastMessage.getDeviceId();
+        Object resolvedPayload = broadcastMessage.resolvePayload();
+
+        if (targetGroup != null) {
+            // 分组跨节点组播
+            Collection<TcpSession> groupSessions = sessionManager.getSessionsByGroup(targetGroup);
+            for (TcpSession session : groupSessions) {
+                if (session.isActive()) {
+                    try {
                         session.send(resolvedPayload);
+                    } catch (Exception ex) {
+                        log.warn("[TCP-CLUSTER] 跨节点分组 [{}] 组播投递会话失败: sessionId={}", targetGroup, session.getSessionId(), ex);
                     }
                 }
             }
-        } catch (Exception ex) {
-            log.error("[TCP-CLUSTER] 处理 Redis 跨节点广播消息异常", ex);
+            log.debug("[TCP-CLUSTER] 本节点收到跨节点分组 [{}] 组播并投递至 {} 个本地会话", targetGroup, groupSessions.size());
+        } else if (targetDeviceId != null) {
+            // 点播定向下发
+            TcpSession localSession = sessionManager.getSessionByDeviceId(targetDeviceId);
+            if (localSession != null && localSession.isActive()) {
+                try {
+                    localSession.send(resolvedPayload);
+                    log.debug("[TCP-CLUSTER] 本节点收到跨节点广播并成功命中设备 [{}]，完成物理下发", targetDeviceId);
+                } catch (Exception ex) {
+                    log.warn("[TCP-CLUSTER] 跨节点点播投递设备 [{}] 会话失败: sessionId={}", targetDeviceId, localSession.getSessionId(), ex);
+                }
+            }
+        } else {
+            // 集群全量广播
+            Collection<TcpSession> sessions = sessionManager.getAllSessions();
+            for (TcpSession session : sessions) {
+                if (session.isActive()) {
+                    try {
+                        session.send(resolvedPayload);
+                    } catch (Exception ex) {
+                        log.warn("[TCP-CLUSTER] 跨节点全量广播投递会话失败: sessionId={}", session.getSessionId(), ex);
+                    }
+                }
+            }
         }
     }
 

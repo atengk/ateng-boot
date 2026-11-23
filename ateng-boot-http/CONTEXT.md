@@ -5,7 +5,7 @@
 ## Language
 
 **HttpTemplate**:
-HTTP 模块命令式操作核心门面具体类，提供对称的动词 CRUD、流式上传下载、泛型反序列化及单次 RequestOptions 覆盖能力。
+HTTP 模块命令式操作核心门面具体类，提供对称的动词 CRUD、RFC 5789 PATCH、HEAD/OPTIONS 元数据拉取、application/x-www-form-urlencoded 标准表单提交、大文件与 SSE 文本行零缓冲流式传输、ResponseEntity 完整实体包装及单次 RequestOptions 动态覆盖能力。
 _Avoid_: RestTemplate, HttpUtil, WebClient, HttpClientHelper
 
 **ApacheHttpClient5Factory**:
@@ -17,11 +17,15 @@ _Avoid_: OkHttpFactory, PoolingClientFactory, HttpClientFactory
 _Avoid_: SimpleClientHttpRequestFactory, FallbackClientFactory
 
 **RequestOptions**:
-单次 HTTP 请求维度的动态参数配置载荷，支持覆盖单次超时、注入自定义 Header、结构化 Query 参数以及 URI 变量。
+单次 HTTP 请求维度的不可变动态参数配置载荷，支持覆盖单次建联超时（`connectTimeout`）与读取超时（`readTimeout`）、注入自定义 Header、结构化 Query 参数、URI 模板变量、显式上下文透传开关及归属命名客户端标识（`clientName`）。
 _Avoid_: HttpOptions, RequestConfig, CallOptions
 
+**HttpRequestContextHolder**:
+HTTP 单次请求与方法级动态上下文持有者，基于受管 `ThreadLocal` 维护单次请求或 `@HttpTimeout` 的 `readTimeout`、`connectTimeout` 及跨拦截器显式 `clientName` 路由标识，严格遵循 `try-finally` 现场还原不变量，杜绝线程池与虚拟线程复用污染。
+_Avoid_: TimeoutContext, HttpThreadLocal, RequestContext
+
 **HttpRemoteException**:
-HTTP 远程通信统一语义化业务异常（继承 Core 模块 BusinessException），封装远端 HTTP 状态码、请求方法、URI、安全截断的响应体及统一错误码。
+HTTP 远程通信统一语义化业务异常（继承 Core 模块 BusinessException），封装远端 HTTP 状态码、请求方法、URI、安全截断的响应体及统一错误码，提供 getResponseBodyAs 强类型结构化错误载荷解析能力。
 _Avoid_: RestClientException, RemoteException, HttpCallException
 
 **HttpErrorHandler**:
@@ -37,11 +41,11 @@ _Avoid_: HttpClientCustomizer, HttpCustomizer
 _Avoid_: ContextInterceptor, HeaderInterceptor, TraceFilter
 
 **HttpLoggingInterceptor**:
-出站 HTTP 结构化日志拦截器，提供四级日志开关、终端可复现 cURL 脚本打印、敏感 Header 动态掩码脱敏及大响应体容量安全截断。
+出站 HTTP 结构化日志拦截器，提供四级日志开关、终端可复现 cURL 脚本打印、敏感 Header 与 URL Query 参数动态掩码脱敏及大响应体容量安全截断。
 _Avoid_: LoggingInterceptor, HttpLogger, CurlInterceptor
 
 **HttpRetryInterceptor**:
-出站弹性重试拦截器，深度接入 Core 模块 RetryUtil 函数式引擎，针对幂等动词在遭遇网络 I/O 抖动与 502/503/504 异常时执行指数退避重试与随机抖动打散。
+出站弹性重试拦截器，深度接入 Core 模块 RetryUtil 函数式引擎，针对幂等动词在遭遇网络 I/O 抖动与 429/502/503/504 异常时执行指数退避重试与随机抖动打散，自适应解析 RFC 7231 / RFC 6585 Retry-After 响应头精准覆盖退避时延。
 _Avoid_: RetryInterceptor, BackoffInterceptor, SpringRetryTemplate
 
 **HttpResultCode**:
@@ -49,8 +53,12 @@ HTTP 远程通信专职语义化结果码枚举（实现 Core 模块 IResultCode
 _Avoid_: ResultCode, HttpResponseCode, ErrorCode
 
 **HttpClient**:
-声明式 HTTP 客户端核心标记注解，用于修饰 Spring 6 远程契约接口并显式绑定命名客户端标识、BaseUrl 及其占位符。
+声明式 HTTP 客户端核心标记注解，用于修饰 Spring 6 远程契约接口并显式绑定命名客户端标识、BaseUrl、占位符及 fallback 本地优雅降级实现类。
 _Avoid_: FeignClient, RetrofitClient, HttpApi, RemoteService
+
+**HttpTimeout**:
+声明式 HTTP 超时控制注解，支持标注于 @HttpClient 接口类或特定方法上，提供微粒度建联超时与读取超时覆盖控制，调用时现场还原防线程复用污染。
+_Avoid_: Timeout, ReadTimeout, RequestTimeout
 
 **EnableHttpInterfaces**:
 声明式 HTTP 客户端接口包扫描驱动注解，自动导入 HttpInterfaceRegistrar 扫描指定候选包路径并向 Spring 容器注册代理工厂 Bean。
@@ -65,5 +73,18 @@ _Avoid_: FeignClientsRegistrar, HttpClientScanner, HttpServiceRegistrar
 _Avoid_: HttpProxyFactoryBean, FeignClientFactoryBean, DynamicHttpProxy
 
 **RestClientRegistry**:
-多命名客户端 RestClient 实例集中纳管注册表，提供按 clientName 的配置融合（BaseUrl/超时/隔离性）与单例实例缓存。
+多命名客户端 RestClient 实例集中纳管注册表，提供按 clientName 的配置融合（BaseUrl/超时/默认请求头/隔离性）与单例实例缓存。
 _Avoid_: ClientManager, HttpClientContainer, RestClientPool
+
+**MockServerProviderController**:
+样例工程内置的 `@Profile("!local")` 离线 HTTP 回环仿真控制器，挂载于 `/mock/provider/*`，为 `HttpTemplate` 与声明式客户端提供真实的物理网络端点，保证请求穿越真实网络 Socket 与全链路拦截器，实现 100% 离线自洽自验。
+_Avoid_: MockServerProvider, WireMockServer, TestHttpServer, MockApiServer
+
+**ClientScopedHttpRequestFactory**:
+客户端级作用域请求工厂包装器，将全局连接池物理工厂与特定命名客户端的超时、代理、TLS 等个性化配置进行安全绑定，确保各客户端共享底层物理连接池的同时保持逻辑配置独立。
+_Avoid_: ScopedFactory, ClientFactoryWrapper, CustomRequestFactory
+
+**HttpSslUtil**:
+基于 JDK 17 标准安全包与 Apache HttpClient 5 构建的 TLS/mTLS 专用证书与安全上下文加载工具，提供 X.509 凭据解析、双向认证 KeyStore/TrustStore 初始化与安全校验能力。
+_Avoid_: SslUtil, CertUtil, TlsHelper
+

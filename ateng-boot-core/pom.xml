@@ -7,7 +7,7 @@
     <parent>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot</artifactId>
-        <version>1.0.0</version>
+        <version>1.2.0</version>
     </parent>
 
     <artifactId>ateng-boot-core</artifactId>
@@ -60,6 +60,13 @@
         <dependency>
             <groupId>org.springframework</groupId>
             <artifactId>spring-tx</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Spring Boot AOP (用于 @SlowAlert 慢调用告警切面，可选依赖) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
             <optional>true</optional>
         </dependency>
 

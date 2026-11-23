@@ -92,7 +92,7 @@ class AsyncExportTaskServiceTest {
 
         long deadline = System.currentTimeMillis() + 15000;
         ExportTask task = taskService.getTask(taskId);
-        while ((task == null || task.getStatus() == ExportTaskStatus.PENDING || task.getStatus() == ExportTaskStatus.PROCESSING) && System.currentTimeMillis() < deadline) {
+        while ((task == null || task.getStatus() == ExportTaskStatus.PENDING || task.getStatus() == ExportTaskStatus.PROCESSING || task.getFinishTime() == null) && System.currentTimeMillis() < deadline) {
             Thread.sleep(50);
             task = taskService.getTask(taskId);
         }
@@ -121,7 +121,7 @@ class AsyncExportTaskServiceTest {
 
         long deadline = System.currentTimeMillis() + 15000;
         ExportTask task = taskService.getTask(taskId);
-        while ((task == null || task.getStatus() == ExportTaskStatus.PENDING || task.getStatus() == ExportTaskStatus.PROCESSING) && System.currentTimeMillis() < deadline) {
+        while ((task == null || task.getStatus() == ExportTaskStatus.PENDING || task.getStatus() == ExportTaskStatus.PROCESSING || task.getFinishTime() == null) && System.currentTimeMillis() < deadline) {
             Thread.sleep(50);
             task = taskService.getTask(taskId);
         }
@@ -177,7 +177,7 @@ class AsyncExportTaskServiceTest {
 
         long deadline = System.currentTimeMillis() + 15000;
         ExportTask task = taskService.getTask(taskId);
-        while ((task == null || task.getStatus() == ExportTaskStatus.PENDING || task.getStatus() == ExportTaskStatus.PROCESSING) && System.currentTimeMillis() < deadline) {
+        while ((task == null || task.getStatus() == ExportTaskStatus.PENDING || task.getStatus() == ExportTaskStatus.PROCESSING || task.getFinishTime() == null) && System.currentTimeMillis() < deadline) {
             Thread.sleep(50);
             task = taskService.getTask(taskId);
         }

@@ -1,14 +1,16 @@
 package io.github.atengk.boot.sample.datasource.service;
 
 import com.baomidou.dynamic.datasource.annotation.DS;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource;
 import io.github.atengk.boot.sample.datasource.entity.OrderEntity;
 import io.github.atengk.boot.sample.datasource.mapper.OrderMapper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
 
@@ -26,11 +28,14 @@ import java.math.BigDecimal;
 public class DatasourceTransactionGuardScenarioService {
 
     private final OrderMapper orderMapper;
+    private final AtengDynamicRoutingDataSource routingDataSource;
     private final DatasourceTransactionGuardScenarioService self;
 
     public DatasourceTransactionGuardScenarioService(OrderMapper orderMapper,
+                                                     AtengDynamicRoutingDataSource routingDataSource,
                                                      @Lazy DatasourceTransactionGuardScenarioService self) {
         this.orderMapper = orderMapper;
+        this.routingDataSource = routingDataSource;
         this.self = self;
     }
 
@@ -159,6 +164,66 @@ public class DatasourceTransactionGuardScenarioService {
         orderMapper.insert(masterOrder);
 
         self.insertInTenantWithNested(tenantOrderNo);
+    }
+
+    /**
+     * 无 @DS 注解的租户透明本地事务内尝试跨库切源至 master（预期触发假切源阻断）
+     *
+     * @param tenantOrderNo 租户库订单号
+     * @param masterOrderNo 尝试切向主库的订单号
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void tenantTransactionWithIllegalSwitch(String tenantOrderNo, String masterOrderNo) {
+        String tenantId = TenantContextHolder.getTenantId();
+        log.info("[TxGuardScenario] 无 @DS 租户透明本地事务插入订单 [tenantId={}, orderNo={}]", tenantId, tenantOrderNo);
+        orderMapper.insert(buildOrderEntity(tenantOrderNo, tenantId, "多租户 SaaS 订单服务", "120.00", "TENANT_TX"));
+
+        log.info("[TxGuardScenario] 无 @DS 租户透明本地事务内尝试跨库切源至 master，预期被 DynamicDatasourceGuard 阻断");
+        self.insertInMasterDs(masterOrderNo);
+    }
+
+    /**
+     * 无 @DS 注解的租户透明本地事务内同租户物理库重入切源（支持任意租户，安全放行）
+     *
+     * @param primaryOrderNo   初始租户订单号
+     * @param reentrantOrderNo 同租户重入订单号
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void tenantTransactionWithSameTenantReentrant(String primaryOrderNo, String reentrantOrderNo) {
+        String tenantId = TenantContextHolder.getTenantId();
+        log.info("[TxGuardScenario] 无 @DS 租户透明本地事务同库重入演练 [tenantId={}, orderNo={}]", tenantId, primaryOrderNo);
+        orderMapper.insert(buildOrderEntity(primaryOrderNo, tenantId, "多租户 SaaS 订单服务", "180.00", "TENANT_OUTER"));
+
+        String tenantDsKey = StringUtils.hasText(tenantId)
+                ? routingDataSource.resolveTenantMasterKey(tenantId)
+                : "master";
+        self.insertInDynamicTenantDs(tenantDsKey, reentrantOrderNo);
+    }
+
+    /**
+     * 基于 SpEL 动态键在同租户物理数据源内执行重入写入
+     *
+     * @param tenantDsKey 目标租户数据源键名
+     * @param orderNo     订单号
+     */
+    @DS("#tenantDsKey")
+    public void insertInDynamicTenantDs(String tenantDsKey, String orderNo) {
+        orderMapper.insert(buildOrderEntity(orderNo, TenantContextHolder.getTenantId(),
+                "多租户 SaaS 增购服务", "50.00", "TENANT_REENTRANT"));
+    }
+
+    private OrderEntity buildOrderEntity(String orderNo,
+                                         String tenantId,
+                                         String productName,
+                                         String amount,
+                                         String status) {
+        OrderEntity entity = new OrderEntity();
+        entity.setOrderNo(orderNo);
+        entity.setTenantId(tenantId);
+        entity.setProductName(productName);
+        entity.setAmount(new BigDecimal(amount));
+        entity.setStatus(status);
+        return entity;
     }
 
     @DS("tenant_1001")

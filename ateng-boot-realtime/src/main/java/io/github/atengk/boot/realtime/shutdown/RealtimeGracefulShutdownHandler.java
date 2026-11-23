@@ -40,23 +40,33 @@ public class RealtimeGracefulShutdownHandler implements SmartLifecycle {
     private final RealtimeSessionManager sessionManager;
     private final ObjectProvider<RealtimeClusterBroadcaster> clusterBroadcasterProvider;
     private final ObjectProvider<RealtimeClusterMetricsProvider> metricsReporterProvider;
+    private final ObjectProvider<io.github.atengk.boot.realtime.group.RealtimeGroupManager> groupManagerProvider;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean draining = new AtomicBoolean(false);
 
     public RealtimeGracefulShutdownHandler(RealtimeProperties properties,
                                            RealtimeSessionManager sessionManager) {
-        this(properties, sessionManager, null, null);
+        this(properties, sessionManager, null, null, null);
     }
 
     public RealtimeGracefulShutdownHandler(RealtimeProperties properties,
                                            RealtimeSessionManager sessionManager,
                                            ObjectProvider<RealtimeClusterBroadcaster> clusterBroadcasterProvider,
                                            ObjectProvider<RealtimeClusterMetricsProvider> metricsReporterProvider) {
+        this(properties, sessionManager, clusterBroadcasterProvider, metricsReporterProvider, null);
+    }
+
+    public RealtimeGracefulShutdownHandler(RealtimeProperties properties,
+                                           RealtimeSessionManager sessionManager,
+                                           ObjectProvider<RealtimeClusterBroadcaster> clusterBroadcasterProvider,
+                                           ObjectProvider<RealtimeClusterMetricsProvider> metricsReporterProvider,
+                                           ObjectProvider<io.github.atengk.boot.realtime.group.RealtimeGroupManager> groupManagerProvider) {
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager must not be null");
         this.clusterBroadcasterProvider = clusterBroadcasterProvider;
         this.metricsReporterProvider = metricsReporterProvider;
+        this.groupManagerProvider = groupManagerProvider;
     }
 
     /**
@@ -136,6 +146,16 @@ public class RealtimeGracefulShutdownHandler implements SmartLifecycle {
                         disposable.destroy();
                     } catch (Throwable t) {
                         log.warn("[Realtime] 注销集群广播器异常: {}", t.getMessage());
+                    }
+                }
+            }
+            if (groupManagerProvider != null) {
+                io.github.atengk.boot.realtime.group.RealtimeGroupManager groupManager = groupManagerProvider.getIfAvailable();
+                if (groupManager != null) {
+                    try {
+                        groupManager.clear();
+                    } catch (Throwable t) {
+                        log.warn("[Realtime] 清理群组注册表异常: {}", t.getMessage());
                     }
                 }
             }

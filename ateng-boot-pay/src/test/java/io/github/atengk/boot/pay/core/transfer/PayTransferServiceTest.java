@@ -106,6 +106,11 @@ class PayTransferServiceTest {
         PayException ex4 = assertThrows(PayException.class,
                 () -> service.queryAlipayTransfer("default", "ALI_001", "ORDER_001"));
         assertEquals(PayResultCode.PAY_GATEWAY_ERROR, ex4.getResultCode());
+
+        PayException ex5 = assertThrows(PayException.class,
+                () -> service.cancelWechatTransfer("default", "BILL_001"));
+        assertEquals(PayResultCode.PAY_GATEWAY_ERROR, ex5.getResultCode());
+        assertTrue(ex5.getMessage().contains("微信支付模块未装配或未启用"));
     }
 
     @Test
@@ -125,8 +130,16 @@ class PayTransferServiceTest {
                 .outBizNo("BATCH_002")
                 .status(PayTransferState.PROCESSING)
                 .build();
+        PayTransferResponse wechatCancelResp = PayTransferResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outBizNo("BILL_002")
+                .status(PayTransferState.CANCELLED)
+                .build();
         when(wechatTemplate.transfer(any())).thenReturn(wechatResp);
         when(wechatTemplate.queryTransferDetail("mch", "BATCH_002", "DET_002")).thenReturn(wechatResp);
+        when(wechatTemplate.queryTransfer("BILL_002")).thenReturn(wechatResp);
+        when(wechatTemplate.cancelTransfer("mch", "BILL_002")).thenReturn(wechatCancelResp);
+        when(payTemplate.cancelTransfer(PayChannel.WECHAT_PAY, "mch", "BILL_002")).thenReturn(wechatCancelResp);
 
         WechatTransferRequest wechatReq = WechatTransferRequest.builder()
                 .outBatchNo("BATCH_002")
@@ -135,6 +148,9 @@ class PayTransferServiceTest {
                 .build();
         assertEquals(wechatResp, service.transferWechat(wechatReq));
         assertEquals(wechatResp, service.queryWechatTransfer("mch", "BATCH_002", "DET_002"));
+        assertEquals(wechatResp, service.queryWechatTransfer("BILL_002"));
+        assertEquals(wechatCancelResp, service.cancelWechatTransfer("mch", "BILL_002"));
+        assertEquals(wechatCancelResp, service.cancelTransfer(PayChannel.WECHAT_PAY, "mch", "BILL_002"));
 
         PayTransferResponse alipayResp = PayTransferResponse.builder()
                 .channel(PayChannel.ALIPAY)

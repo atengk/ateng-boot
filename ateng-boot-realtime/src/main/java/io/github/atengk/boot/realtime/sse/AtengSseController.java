@@ -43,26 +43,36 @@ public class AtengSseController {
     private final RealtimeSessionManager sessionManager;
     private final ObjectProvider<RealtimeAuthHandshakeProvider> authProvider;
     private final ObjectProvider<RealtimeGracefulShutdownHandler> shutdownHandlerProvider;
+    private final ObjectProvider<io.github.atengk.boot.realtime.spi.RealtimeOfflineMessageProvider> offlineMessageProvider;
 
     public AtengSseController(RealtimeProperties properties,
                               RealtimeSessionManager sessionManager) {
-        this(properties, sessionManager, null, null);
+        this(properties, sessionManager, null, null, null);
     }
 
     public AtengSseController(RealtimeProperties properties,
                               RealtimeSessionManager sessionManager,
                               ObjectProvider<RealtimeAuthHandshakeProvider> authProvider) {
-        this(properties, sessionManager, authProvider, null);
+        this(properties, sessionManager, authProvider, null, null);
     }
 
     public AtengSseController(RealtimeProperties properties,
                               RealtimeSessionManager sessionManager,
                               ObjectProvider<RealtimeAuthHandshakeProvider> authProvider,
                               ObjectProvider<RealtimeGracefulShutdownHandler> shutdownHandlerProvider) {
+        this(properties, sessionManager, authProvider, shutdownHandlerProvider, null);
+    }
+
+    public AtengSseController(RealtimeProperties properties,
+                              RealtimeSessionManager sessionManager,
+                              ObjectProvider<RealtimeAuthHandshakeProvider> authProvider,
+                              ObjectProvider<RealtimeGracefulShutdownHandler> shutdownHandlerProvider,
+                              ObjectProvider<io.github.atengk.boot.realtime.spi.RealtimeOfflineMessageProvider> offlineMessageProvider) {
         this.properties = properties;
         this.sessionManager = sessionManager;
         this.authProvider = authProvider;
         this.shutdownHandlerProvider = shutdownHandlerProvider;
+        this.offlineMessageProvider = offlineMessageProvider;
     }
 
     /**
@@ -183,7 +193,45 @@ public class AtengSseController {
         // 9. 下发连接建立保底确认注释帧，防止代理网关超时掐断
         SseStreamHelper.sendComment(emitter, "connected:" + sessionKey.format());
 
+        // 10. W3C SSE Last-Event-ID 断点只读重放（只读窥探，多端多 Tab 安全）
+        replayMissedEventsIfNecessary(emitter, actualUserId, request);
+
         return emitter;
+    }
+
+    private void replayMissedEventsIfNecessary(SseEmitter emitter, String userId, HttpServletRequest request) {
+        if (request == null || offlineMessageProvider == null || userId == null || userId.isBlank()) {
+            return;
+        }
+        String lastEventId = request.getHeader("Last-Event-ID");
+        if (lastEventId == null || lastEventId.isBlank()) {
+            lastEventId = request.getParameter("Last-Event-ID");
+        }
+        if (lastEventId == null || lastEventId.isBlank()) {
+            lastEventId = request.getParameter("lastEventId");
+        }
+        if (lastEventId == null || lastEventId.isBlank()) {
+            return;
+        }
+
+        io.github.atengk.boot.realtime.spi.RealtimeOfflineMessageProvider provider = offlineMessageProvider.getIfAvailable();
+        if (provider == null) {
+            return;
+        }
+
+        try {
+            List<io.github.atengk.boot.realtime.model.RealtimeMessage<?>> missed = provider.getOfflineMessagesSince(userId, lastEventId);
+            if (!missed.isEmpty()) {
+                log.info("[Realtime] 检测到 SSE 客户端携带 Last-Event-ID 重连，触发只读窥探重放: userId={}, lastEventId={}, count={}",
+                        userId, lastEventId, missed.size());
+                for (io.github.atengk.boot.realtime.model.RealtimeMessage<?> msg : missed) {
+                    SseStreamHelper.sendEvent(emitter, msg);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[Realtime] SSE 断点重放离线消息异常: userId={}, lastEventId={}, error={}",
+                    userId, lastEventId, e.getMessage());
+        }
     }
 
     private String extractToken(HttpServletRequest request) {

@@ -78,7 +78,7 @@ class AtengAsyncAutoConfigurationTest {
                 "ateng.boot.async.core-pool-size=4",
                 "ateng.boot.async.max-pool-size=8",
                 "ateng.boot.async.queue-capacity=200",
-                "ateng.boot.async.keep-alive-seconds=30",
+                "ateng.boot.async.keep-alive=30s",
                 "ateng.boot.async.thread-name-prefix=custom-async-"
         ).run(context -> {
             assertThat(context).hasSingleBean(ThreadPoolTaskExecutor.class);

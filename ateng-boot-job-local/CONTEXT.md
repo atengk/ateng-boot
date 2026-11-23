@@ -1,6 +1,6 @@
 # LocalJob 单机定时任务与轻量调度底座
 
-面向单机定时调度与轻量分布式集群防重的生产级调度基础设施，坚持纯原生无重依赖哲学，基于 Spring `ThreadPoolTaskScheduler` 与受管异步 Worker 线程池提供声明式 `@LocalJob` 注解与对称编程式门面 `LocalJobTemplate`、四阶重叠并发防卫策略（`OverlappingStrategy`）、硬超时熔断与指数退避重试、32 位无锁 MDC `traceId` 全链路追踪、两级配置加载与有界环形淘汰防 OOM（`JobLogStorageProvider`）、防死锁租约轻量集群互斥锁（`JobClusterLockProvider`）、`SmartLifecycle` 优雅停机排空、`/actuator/localjobs` 运维管控端点、Spring 领域事件总线及群机器人告警桥接设施。
+面向单机定时调度与轻量分布式集群防重的生产级调度基础设施，坚持纯原生无重依赖哲学，基于 Spring `ThreadPoolTaskScheduler` 与受管异步 Worker 线程池提供声明式 `@LocalJob` 注解与对称编程式门面 `LocalJobTemplate`、四阶重叠并发防卫策略（`OverlappingStrategy`）、硬超时熔断与两级降级补偿（`fallbackMethod` / `LocalJobTimeoutFallbackHandler`）、指数退避重试、三阶段切面责任链拦截器（`LocalJobInterceptor`）、SaaS 多租户全模态与信号量受管并发遍历（`JobTenantMode`）、32 位无锁 MDC `traceId` 全链路追踪、两级配置加载与全 `ReentrantLock` 有界环形淘汰防 OOM（`JobLogStorageProvider`）、防死锁租约与防时钟漂移最小持有轻量集群互斥锁（`JobClusterLockProvider`）、`SmartLifecycle` 优雅停机排空、`/actuator/localjobs` 运维管控端点、Spring 领域事件总线及群机器人防风暴告警桥接设施。
 
 ## Language
 
@@ -63,3 +63,95 @@ _Avoid_: 告警机, 报错监听, AlertSender, ErrorDispatcher
 **LocalJobEndpoint (Actuator 运维管控端点)**:
 暴露于 `/actuator/localjobs` 的 Spring Boot Actuator 运维端点，提供标准化 HTTP 接口进行全量巡检、单任务详情查询、手动即时触发、暂停与恢复。
 _Avoid_: 运维接口, 控制台API, OpsController, AdminAPI
+
+**JobTenantMode (多租户调度隔离模态)**:
+定义受管定时任务在 SaaS 多租户架构下的执行隔离策略：`IGNORE`（忽略租户全局运行）、`PARAM`（指定入参租户运行）、`ITERATE`（全租户轮询隔离运行）。
+_Avoid_: 租户类型, 隔离级别, TenantType, TenantLevel
+
+**TenantProvider (有效租户发现 SPI)**:
+当任务配置为 `ITERATE` 全租户轮询模式时，向调度引擎提供当前系统全部有效租户 ID 列表的扩展点接口。
+_Avoid_: 租户仓储, 租户服务, TenantService, TenantRepository
+
+**AntiStormJobAlertAggregator (三阶告警防风暴聚合器)**:
+高频任务持续失败时，实施“首次即刻通知、滑动静默窗口期内聚合错误计数、自愈闭环发送恢复通知”的三阶告警抑制与自愈管理设施。
+_Avoid_: 告警拦截器, 限流器, AlertFilter, AlertLimiter
+
+**RedisJobClusterLockProvider (Redis 轻量集群互斥锁提供者)**:
+基于 Spring 原生 `StringRedisTemplate` 与原子 Lua 脚本实现的低延迟轻量集群互斥锁，支持租约超时自动防死锁与属主防误删防卫。
+_Avoid_: Redisson锁, Redis加锁器, RedisLocker, LockService
+
+**LocalJobMetricsBinder (Micrometer 云原生指标采集器)**:
+将受管定时任务的执行次数、成功失败状态、耗时直方图（P95/P99）、并发丢弃与活跃执行等指标桥接导出至 Micrometer 与 Prometheus 的监控采集设施。
+_Avoid_: 监控打点器, 指标统计, MetricsCollector, JobTracker
+
+**LocalJobInterceptor (任务执行切面责任链拦截器 SPI)**:
+为受管定时任务提供前置准入判定（`preHandle`）、执行后置处理（`postHandle`）与终态逆序清理（`afterCompletion`）的三阶段切面扩展点，支持维护窗口静默阻断、节点灰度过滤与全局审计。
+_Avoid_: 任务过滤器, 调度钩子, JobFilter, ScheduleHook, TaskAspect
+
+**LocalJobTimeoutFallbackHandler (任务超时降级补偿处理器 SPI)**:
+当受管定时任务触发硬超时强中断且未声明方法级 `fallbackMethod`（或方法级降级委托兜底）时，由调度引擎触发的全局补偿降级扩展点，负责资源释放、状态回滚或返回降级结果产物。
+_Avoid_: 超时回调, 降级工具, TimeoutCallback, FallbackHelper, OvertimeHandler
+
+**LocalJobScheduleController (任务调度触发控制器)**:
+暴露于 `/sample/job-local/schedule` 的领域控制器，负责受管定时任务的手动即时触发、带参归档校验触发、SaaS 多租户并发轮询触发、超时同 Bean 与全局 SPI 降级补偿触发及集群互斥抢锁触发。
+_Avoid_: 调度接口, 触发器, TriggerController, FireAPI
+
+**LocalJobManageController (任务生命周期管控控制器)**:
+暴露于 `/sample/job-local/manage` 的领域控制器，负责受管定时任务的暂停、恢复、Cron/频率/延迟周期动态重置、运行时编程式注册注销及发版维护窗口拦截器动态开关。
+_Avoid_: 管理接口, 控制器API, AdminController, TaskManagerAPI
+
+**LocalJobAuditController (任务状态巡检与审计控制器)**:
+暴露于 `/sample/job-local/audit` 的领域控制器，负责全量受管任务清单巡检、单任务运行详情与集群锁持有状态探测查询、执行历史审计日志检索、Cron 未来时序预演与过期日志滚动清理。
+_Avoid_: 审计接口, 日志控制器, LogController, QueryAPI
+
+**JobDynamicRegisterRequest (动态任务注册请求契约)**:
+承载运行时编程式动态注入新定时任务的入参模型，内聚任务名、描述、Cron 表达式、固定频率或固定延迟等参数并提供 JSR-303 Fail-Fast 校验。
+_Avoid_: 注册参数, 新建任务DTO, RegisterParam, NewJobDTO
+
+**JobCronUpdateRequest (Cron 表达式动态更新请求契约)**:
+承载运行时动态修改指定受管任务 Cron 调度周期的入参模型，支持标准 6 位 Cron 校验与 Fail-Fast 防卫。
+_Avoid_: 修改Cron参数, 更新表达式DTO, CronParam, UpdateCronDTO
+
+**JobRateUpdateRequest (固定频率周期更新请求契约)**:
+承载运行时动态调整固定频率 (FixedRate) 任务调度周期的入参模型，支持 Spring 格式时间间隔文本校验。
+_Avoid_: 频率参数, 间隔DTO, RateParam, UpdateRateDTO
+
+**JobDelayUpdateRequest (固定延迟周期更新请求契约)**:
+承载运行时动态调整固定延迟 (FixedDelay) 任务调度周期的入参模型，支持 Spring 格式时间间隔文本校验。
+_Avoid_: 延迟参数, 延后DTO, DelayParam, UpdateDelayDTO
+
+**ArchivingJobParam (带参归档任务入参契约)**:
+承载业务归档任务强类型参数的传输对象，支持业务表名与保留天数校验，与底层领域实体绝对解耦。
+_Avoid_: 归档参数, 业务入参, ArchivingDTO, TableParam
+
+**CronPreviewRequest (Cron 表达式预演请求契约)**:
+承载 Cron 表达式合法性校验与未来时钟触发点计算的入参模型，包含待预演 Cron 文本与预演次数。
+_Avoid_: 预演参数, 校验入参, PreviewParam, CheckCronDTO
+
+**JobResultVO (任务执行结果展示模型)**:
+向 Web 边界交付的强类型任务单次执行结果视图对象，内聚成功状态、业务摘要文案与执行耗时，彻底杜绝内部实体泄漏。
+_Avoid_: 结果VO, 执行结果对象, ResultView, JobResponse
+
+**JobInfoVO (受管任务元数据与状态展示模型)**:
+向 Web 边界交付的受管定时任务全生命周期大盘概览视图对象，包含任务名、状态、触发类型、下次计划触发时间（`nextExecutionTime`）、集群锁最小持有期（`clusterLockMinHoldTime`）、降级补偿方法（`fallbackMethod`）、多租户并发度（`tenantConcurrency`）与最近结果摘要。
+_Avoid_: 任务VO, 详情模型, TaskView, JobSummaryVO
+
+**SampleMaintenanceInterceptor (发版维护窗口切面拦截器样例)**:
+Sample 工程中基于 `LocalJobInterceptor` 实现的发版维护守卫，演示通过运维端点动态开关拦截窗口、拒绝新调度并触发 `INTERCEPTOR_REJECTED` 审计清理。
+_Avoid_: 维护过滤器, 拦截样例, MaintenanceFilter, DemoInterceptor
+
+**PaymentReconcileFallbackScenarioJob (支付对账超时降级场景任务)**:
+Sample 工程中演示 `@LocalJob(timeout = "...", fallbackMethod = "...")` 硬超时熔断并自动切入 T+1 异步补账降级补偿的业务样例。
+_Avoid_: 降级示例, 超时测试任务, FallbackDemo, TimeoutTestJob
+
+**JobExecutionRecordVO (任务执行审计明细展示模型)**:
+向 Web 边界交付的单次调度审计日志视图对象，包含记录 ID、MDC traceId、触发源、耗时、重试次数及有界审计日志列表。
+_Avoid_: 审计VO, 日志视图, RecordView, AuditDetailVO
+
+**CronPreviewVO (Cron 预演时钟点展示模型)**:
+向 Web 边界交付的 Cron 校验结果与未来时钟触发序列视图对象，包含表达式有效性标识与未来 Instant 时间列表。
+_Avoid_: 预演VO, 计算结果模型, PreviewResult, CronTimesVO
+
+**DualModeScheduleEnvironment (双模联调环境体系)**:
+兼顾 CI 离线自洽与真实外部中间件直连的测试运行模态：默认使用 LOCAL 本地防重锁或内存环境免外部依赖，本地联调通过 application-local.yml 激活真实 Redis 轻量集群锁。
+_Avoid_: 双环境, 本地远程模式, TwoModes, DualProfile

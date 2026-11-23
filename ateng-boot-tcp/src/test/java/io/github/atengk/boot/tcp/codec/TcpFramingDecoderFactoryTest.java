@@ -165,5 +165,41 @@ class TcpFramingDecoderFactoryTest {
         TcpFramingProperties properties = new TcpFramingProperties();
         properties.setMode(FramingMode.NONE);
         assertThat(TcpFramingDecoderFactory.createFrameDecoder(properties)).isNull();
+        assertThat(TcpFramingDecoderFactory.createFrameEncoder(properties)).isNull();
+    }
+
+    @Test
+    @DisplayName("验证 LENGTH_FIELD 对称出站编码器与入站解码器闭环（标准模式与自定义头部放行）")
+    void testLengthFieldSymmetricEncoderAndDecoder() {
+        TcpFramingProperties standardProps = new TcpFramingProperties();
+        standardProps.setMode(FramingMode.LENGTH_FIELD);
+        ChannelHandler encoder = TcpFramingDecoderFactory.createFrameEncoder(standardProps);
+        ChannelHandler decoder = TcpFramingDecoderFactory.createFrameDecoder(standardProps);
+        assertThat(encoder).isNotNull();
+
+        EmbeddedChannel outboundChannel = new EmbeddedChannel(encoder);
+        EmbeddedChannel inboundChannel = new EmbeddedChannel(decoder);
+
+        byte[] payload = "{\"command\":\"LOGIN\"}".getBytes(StandardCharsets.UTF_8);
+        outboundChannel.writeOutbound(Unpooled.copiedBuffer(payload));
+        ByteBuf header = outboundChannel.readOutbound();
+        ByteBuf body = outboundChannel.readOutbound();
+        assertThat(header).isNotNull();
+        assertThat(body).isNotNull();
+        ByteBuf wire = Unpooled.wrappedBuffer(header, body);
+        assertThat(wire.readableBytes()).isEqualTo(4 + payload.length);
+
+        inboundChannel.writeInbound(wire);
+        ByteBuf decoded = inboundChannel.readInbound();
+        assertThat(decoded).isNotNull();
+        assertThat(decoded.toString(StandardCharsets.UTF_8)).isEqualTo("{\"command\":\"LOGIN\"}");
+        decoded.release();
+        outboundChannel.finishAndReleaseAll();
+        inboundChannel.finishAndReleaseAll();
+
+        TcpFramingProperties customOffsetProps = new TcpFramingProperties();
+        customOffsetProps.setMode(FramingMode.LENGTH_FIELD);
+        customOffsetProps.getLengthField().setOffset(2);
+        assertThat(TcpFramingDecoderFactory.createFrameEncoder(customOffsetProps)).isNull();
     }
 }

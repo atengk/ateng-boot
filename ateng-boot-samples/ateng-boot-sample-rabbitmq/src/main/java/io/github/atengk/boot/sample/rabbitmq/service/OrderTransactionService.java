@@ -7,7 +7,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.Assert;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -67,6 +69,44 @@ public class OrderTransactionService {
 
         // 3. 模拟业务异常触发回滚
         throw new IllegalStateException("模拟库存扣减失败或网络超时，触发本地事务回滚: orderId=" + message.orderId());
+    }
+
+    /**
+     * 批量事务下单提交流程：通过单一事务同步器在本地事务提交后并发发送整批订单
+     *
+     * @param messages 订单消息列表
+     */
+    @Transactional
+    public void createOrderBatchWithCommit(List<OrderCreateMessage> messages) {
+        Assert.notEmpty(messages, "批量事务订单消息列表不能为空");
+        dbRecordCount.addAndGet(messages.size());
+        log.info("[TX-SERVICE] 本地批量订单入库成功: count={}", messages.size());
+
+        rabbitReliableTemplate.sendBatchAfterCommit(
+                RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT,
+                RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_CREATE,
+                messages
+        );
+        log.info("[TX-SERVICE] 已注册 sendBatchAfterCommit 单一事务发信同步器: count={}", messages.size());
+    }
+
+    /**
+     * 批量事务下单回滚流程：本地事务异常回滚时，已注册的批量发信同步器自动作废（零发信）
+     *
+     * @param messages 订单消息列表
+     */
+    @Transactional
+    public void createOrderBatchWithRollback(List<OrderCreateMessage> messages) {
+        Assert.notEmpty(messages, "批量事务订单消息列表不能为空");
+        dbRecordCount.addAndGet(messages.size());
+        log.info("[TX-SERVICE] 本地批量订单尝试入库 (即将回滚): count={}", messages.size());
+
+        rabbitReliableTemplate.sendBatchAfterCommit(
+                RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT,
+                RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_CREATE,
+                messages
+        );
+        throw new IllegalStateException("模拟批量库存扣减异常触发本地事务回滚: count=" + messages.size());
     }
 
     public int getDbRecordCount() {

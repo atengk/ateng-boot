@@ -1,7 +1,11 @@
 package io.github.atengk.boot.search;
 
 import co.elastic.clients.elasticsearch._types.SortOrder;
+import co.elastic.clients.elasticsearch._types.aggregations.CalendarInterval;
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping;
+import co.elastic.clients.elasticsearch._types.query_dsl.ChildScoreMode;
+import co.elastic.clients.elasticsearch.core.search.FieldCollapse;
+import co.elastic.clients.elasticsearch.core.search.ScoreMode;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.search.driver.ElasticsearchClientDriver;
@@ -11,17 +15,26 @@ import io.github.atengk.boot.search.entity.RoutedOrderDoc;
 import io.github.atengk.boot.search.entity.SearchItemDoc;
 import io.github.atengk.boot.search.entity.UserDoc;
 import io.github.atengk.boot.search.enums.SearchEngineType;
+import io.github.atengk.boot.search.enums.SearchRefreshPolicy;
 import io.github.atengk.boot.search.enums.SearchResultCode;
 import io.github.atengk.boot.search.exception.SearchBulkException;
 import io.github.atengk.boot.search.exception.SearchException;
 import io.github.atengk.boot.search.exception.SearchPaginationExceededException;
 import io.github.atengk.boot.search.exception.SearchVersionConflictException;
 import io.github.atengk.boot.search.model.OccVersion;
+import io.github.atengk.boot.search.model.SearchBucket;
 import io.github.atengk.boot.search.model.SearchBulkFailure;
 import io.github.atengk.boot.search.model.SearchBulkResult;
 import io.github.atengk.boot.search.model.SearchHit;
+import io.github.atengk.boot.search.model.SearchIndexSettings;
+import io.github.atengk.boot.search.model.SearchIndexTemplate;
+import io.github.atengk.boot.search.model.SearchInnerHit;
+import io.github.atengk.boot.search.model.SearchNumericStats;
 import io.github.atengk.boot.search.model.SearchPage;
+import io.github.atengk.boot.search.model.SearchPercentilesResult;
 import io.github.atengk.boot.search.model.SearchScrollResult;
+import io.github.atengk.boot.search.model.SearchSuggestResult;
+import io.github.atengk.boot.search.model.SearchTaskStatus;
 import io.github.atengk.boot.search.properties.AtengSearchProperties;
 import io.github.atengk.boot.search.query.SearchQuery;
 import io.github.atengk.boot.search.query.SearchQueryBuilder;
@@ -39,6 +52,7 @@ import org.slf4j.MDC;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -79,8 +93,7 @@ class SearchTemplateMockServerTest {
     @AfterEach
     void tearDown() throws IOException {
         MDC.clear();
-        TenantContextHolder.setTenantId((String) null);
-        TenantContextHolder.setIgnoreTenant(false);
+        TenantContextHolder.clear();
         if (driver != null) {
             driver.close();
         }
@@ -1037,7 +1050,7 @@ class SearchTemplateMockServerTest {
     }
 
     @Test
-    @DisplayName("测试当实体标注 @SearchRouting 时未传 routing 调用 getById/getHitById 触发防御性前置阻断")
+    @DisplayName("测试当实体标注 @SearchRouting 时未传 routing 调用 getById/getHitById/getByIds/getHitsByIds 触发防御性前置阻断")
     void testRoutingRequiredGuardOnGetAndGetHit() {
         assertThatThrownBy(() -> searchTemplate.getById(RoutedOrderDoc.class, "order_1001"))
                 .isInstanceOf(SearchException.class)
@@ -1052,6 +1065,22 @@ class SearchTemplateMockServerTest {
                 .satisfies(ex -> {
                     SearchException se = (SearchException) ex;
                     assertThat(se.getResultCode()).isEqualTo(SearchResultCode.SEARCH_ROUTING_REQUIRED);
+                });
+
+        assertThatThrownBy(() -> searchTemplate.getByIds(RoutedOrderDoc.class, "order_1001"))
+                .isInstanceOf(SearchException.class)
+                .satisfies(ex -> {
+                    SearchException se = (SearchException) ex;
+                    assertThat(se.getResultCode()).isEqualTo(SearchResultCode.SEARCH_ROUTING_REQUIRED);
+                    assertThat(se.getMessage()).contains("Routing key is required");
+                });
+
+        assertThatThrownBy(() -> searchTemplate.getHitsByIds(RoutedOrderDoc.class, List.of("order_1001")))
+                .isInstanceOf(SearchException.class)
+                .satisfies(ex -> {
+                    SearchException se = (SearchException) ex;
+                    assertThat(se.getResultCode()).isEqualTo(SearchResultCode.SEARCH_ROUTING_REQUIRED);
+                    assertThat(se.getMessage()).contains("Routing key is required");
                 });
 
         assertThat(mockWebServer.getRequestCount()).isEqualTo(0);
@@ -1123,6 +1152,43 @@ class SearchTemplateMockServerTest {
         RecordedRequest deleteReq = mockWebServer.takeRequest();
         assertThat(deleteReq.getMethod()).isEqualTo("DELETE");
         assertThat(deleteReq.getPath()).isEqualTo("/routed_order_idx/_doc/order_1001?routing=tenant_east");
+    }
+
+    @Test
+    @DisplayName("测试提供 routing 参数的 getByIds 和 getHitsByIds 批量请求")
+    void testRoutedGetByIdsAndHitsByIdsSuccess() throws Exception {
+        String mockMgetBody = """
+                {
+                  "docs": [
+                    {
+                      "_index": "routed_order_idx",
+                      "_id": "order_1001",
+                      "_version": 1,
+                      "_seq_no": 5,
+                      "_primary_term": 1,
+                      "_routing": "tenant_east",
+                      "found": true,
+                      "_source": {
+                        "orderId": "order_1001",
+                        "tenantId": "tenant_east",
+                        "orderAmount": 199.9,
+                        "status": "PAID"
+                      }
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockMgetBody));
+
+        List<SearchHit<RoutedOrderDoc>> hits = searchTemplate.getHitsByIds(
+                RoutedOrderDoc.class, List.of("order_1001"), "tenant_east");
+        assertThat(hits).hasSize(1);
+        assertThat(hits.get(0).getId()).isEqualTo("order_1001");
+        assertThat(hits.get(0).getRouting()).isEqualTo("tenant_east");
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        assertThat(req.getMethod()).isEqualTo("POST");
+        assertThat(req.getPath()).contains("routing=tenant_east");
     }
 
     @Test
@@ -1821,5 +1887,2694 @@ class SearchTemplateMockServerTest {
         RecordedRequest req = mockWebServer.takeRequest();
         String body = req.getBody().readUtf8();
         assertThat(body).doesNotContain("\"search_after\"");
+    }
+
+    @Test
+    @DisplayName("测试 existsById 存在时返回 true 并发出 HEAD 请求")
+    void testExistsByIdSuccess() throws Exception {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("X-Elastic-Product", "Elasticsearch"));
+
+        boolean exists = searchTemplate.existsById(UserDoc.class, "1849764512345678901");
+        assertThat(exists).isTrue();
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("HEAD");
+        assertThat(recordedRequest.getPath()).isEqualTo("/user_idx/_doc/1849764512345678901");
+    }
+
+    @Test
+    @DisplayName("测试 existsById 不存在时返回 false")
+    void testExistsByIdNotFound() throws Exception {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(404)
+                .setHeader("X-Elastic-Product", "Elasticsearch"));
+
+        boolean exists = searchTemplate.existsById(UserDoc.class, "999999");
+        assertThat(exists).isFalse();
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("HEAD");
+        assertThat(recordedRequest.getPath()).isEqualTo("/user_idx/_doc/999999");
+    }
+
+    @Test
+    @DisplayName("测试 existsById 支持显式指定索引与路由键")
+    void testExistsByIdWithIndexAndRouting() throws Exception {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("X-Elastic-Product", "Elasticsearch"));
+
+        boolean exists = searchTemplate.existsById("custom_user_idx", "1001", "route_east");
+        assertThat(exists).isTrue();
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("HEAD");
+        assertThat(recordedRequest.getPath()).contains("/custom_user_idx/_doc/1001");
+        assertThat(recordedRequest.getPath()).contains("routing=route_east");
+    }
+
+    @Test
+    @DisplayName("测试实体标注 @SearchRouting 时未传 routing 调用 existsById 触发防御性前置阻断")
+    void testExistsByIdRoutingRequiredGuard() {
+        assertThatThrownBy(() -> searchTemplate.existsById(RoutedOrderDoc.class, "order_1001"))
+                .isInstanceOf(SearchException.class)
+                .satisfies(ex -> {
+                    SearchException se = (SearchException) ex;
+                    assertThat(se.getResultCode()).isEqualTo(SearchResultCode.SEARCH_ROUTING_REQUIRED);
+                    assertThat(se.getMessage()).contains("Routing key is required");
+                });
+
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("测试 existsById 参数校验前置防卫")
+    void testExistsByIdParameterValidation() {
+        assertThatThrownBy(() -> searchTemplate.existsById((Class<?>) null, "1001"))
+                .isInstanceOf(NullPointerException.class);
+
+        assertThatThrownBy(() -> searchTemplate.existsById(UserDoc.class, " "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Document id must not be blank");
+
+        assertThatThrownBy(() -> searchTemplate.existsById(" ", "1001"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Index must not be blank");
+    }
+
+    @Test
+    @DisplayName("测试 count 精准统计文档条数")
+    void testCountSuccess() throws Exception {
+        String mockResponseBody = """
+                {
+                  "count": 42,
+                  "_shards": {
+                    "total": 1,
+                    "successful": 1,
+                    "skipped": 0,
+                    "failed": 0
+                  }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        SearchQuery query = SearchQuery.builder().term("username", "ateng").build();
+        long count = searchTemplate.count(query, UserDoc.class);
+
+        assertThat(count).isEqualTo(42L);
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).isEqualTo("/user_idx/_count");
+        String requestBody = recordedRequest.getBody().readUtf8();
+        assertThat(requestBody).contains("\"term\":{\"username\":{\"value\":\"ateng\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 count 多租户自动隐式注入租户隔离过滤")
+    void testCountWithMultiTenancy() throws Exception {
+        TenantContextHolder.setTenantId("tenant_001");
+        String mockResponseBody = """
+                {
+                  "count": 5,
+                  "_shards": {
+                    "total": 1,
+                    "successful": 1,
+                    "skipped": 0,
+                    "failed": 0
+                  }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        long count = searchTemplate.count(UserDoc.class);
+
+        assertThat(count).isEqualTo(5L);
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).isEqualTo("/user_idx/_count");
+        String requestBody = recordedRequest.getBody().readUtf8();
+        assertThat(requestBody).contains("\"term\":{\"tenant_id\":{\"value\":\"tenant_001\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 count 当索引不存在时保底返回 0")
+    void testCountIndexNotFound() {
+        String mockResponseBody = """
+                {
+                  "error": {
+                    "root_cause": [
+                      {
+                        "type": "index_not_found_exception",
+                        "reason": "no such index [non_existing_idx]",
+                        "index": "non_existing_idx"
+                      }
+                    ],
+                    "type": "index_not_found_exception",
+                    "reason": "no such index [non_existing_idx]",
+                    "index": "non_existing_idx"
+                  },
+                  "status": 404
+                }
+                """;
+        mockWebServer.enqueue(esResponse(404, mockResponseBody));
+
+        long count = searchTemplate.count("non_existing_idx", null);
+        assertThat(count).isEqualTo(0L);
+    }
+
+    @Test
+    @DisplayName("测试 count 指定索引与 routing 路由参数")
+    void testCountWithExplicitIndexAndRouting() throws Exception {
+        String mockResponseBody = """
+                {
+                  "count": 18,
+                  "_shards": {
+                    "total": 1,
+                    "successful": 1,
+                    "skipped": 0,
+                    "failed": 0
+                  }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        SearchQuery query = SearchQuery.builder().routing("route_east").build();
+        long count = searchTemplate.count("custom_order_idx", query);
+
+        assertThat(count).isEqualTo(18L);
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).contains("/custom_order_idx/_count");
+        assertThat(recordedRequest.getPath()).contains("routing=route_east");
+    }
+
+    @Test
+    @DisplayName("测试 getByIds 全部命中文档")
+    void testGetByIdsAllHit() throws Exception {
+        String mockResponseBody = """
+                {
+                  "docs": [
+                    {
+                      "_index": "user_idx",
+                      "_id": "1001",
+                      "_version": 1,
+                      "_seq_no": 1,
+                      "_primary_term": 1,
+                      "found": true,
+                      "_source": {
+                        "id": "1001",
+                        "username": "user1001",
+                        "email": "user1001@example.com",
+                        "age": 20,
+                        "createTime": "2026-10-25 12:00:00"
+                      }
+                    },
+                    {
+                      "_index": "user_idx",
+                      "_id": "1002",
+                      "_version": 1,
+                      "_seq_no": 2,
+                      "_primary_term": 1,
+                      "found": true,
+                      "_source": {
+                        "id": "1002",
+                        "username": "user1002",
+                        "email": "user1002@example.com",
+                        "age": 22,
+                        "createTime": "2026-10-25 12:00:00"
+                      }
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        List<UserDoc> users = searchTemplate.getByIds(UserDoc.class, List.of("1001", "1002"));
+
+        assertThat(users).hasSize(2);
+        assertThat(users.get(0).getUsername()).isEqualTo("user1001");
+        assertThat(users.get(1).getUsername()).isEqualTo("user1002");
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).isEqualTo("/user_idx/_mget");
+        String requestBody = recordedRequest.getBody().readUtf8();
+        assertThat(requestBody).contains("\"ids\":[\"1001\",\"1002\"]");
+    }
+
+    @Test
+    @DisplayName("测试 getByIds 部分命中时自动过滤未找到的元素（严禁返回 null 元素）")
+    void testGetByIdsPartialHit() throws Exception {
+        String mockResponseBody = """
+                {
+                  "docs": [
+                    {
+                      "_index": "user_idx",
+                      "_id": "1001",
+                      "_version": 1,
+                      "_seq_no": 1,
+                      "_primary_term": 1,
+                      "found": true,
+                      "_source": {
+                        "id": "1001",
+                        "username": "user1001",
+                        "email": "user1001@example.com",
+                        "age": 20,
+                        "createTime": "2026-10-25 12:00:00"
+                      }
+                    },
+                    {
+                      "_index": "user_idx",
+                      "_id": "9999",
+                      "found": false
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        List<UserDoc> users = searchTemplate.getByIds(UserDoc.class, List.of("1001", "9999"));
+
+        assertThat(users).hasSize(1);
+        assertThat(users.get(0).getUsername()).isEqualTo("user1001");
+        assertThat(users).doesNotContainNull();
+    }
+
+    @Test
+    @DisplayName("测试 getByIds 全部未命中时保底返回空集合")
+    void testGetByIdsAllMiss() {
+        String mockResponseBody = """
+                {
+                  "docs": [
+                    {
+                      "_index": "user_idx",
+                      "_id": "9991",
+                      "found": false
+                    },
+                    {
+                      "_index": "user_idx",
+                      "_id": "9992",
+                      "found": false
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        List<UserDoc> users = searchTemplate.getByIds(UserDoc.class, List.of("9991", "9992"));
+
+        assertThat(users).isNotNull();
+        assertThat(users).isEmpty();
+    }
+
+    @Test
+    @DisplayName("测试 getByIds 传入 null 或空集合时零网络请求保底返回 emptyList")
+    void testGetByIdsEmptyOrNullIds() {
+        List<UserDoc> res1 = searchTemplate.getByIds(UserDoc.class, (List<String>) null);
+        assertThat(res1).isEmpty();
+
+        List<UserDoc> res2 = searchTemplate.getByIds(UserDoc.class, Collections.emptyList());
+        assertThat(res2).isEmpty();
+
+        List<UserDoc> res3 = searchTemplate.getByIds(UserDoc.class);
+        assertThat(res3).isEmpty();
+
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("测试 getHitsByIds 返回包含 seqNo/primaryTerm/version 的完整命中文档载荷")
+    void testGetHitsByIdsSuccess() throws Exception {
+        String mockResponseBody = """
+                {
+                  "docs": [
+                    {
+                      "_index": "user_idx",
+                      "_id": "1001",
+                      "_version": 3,
+                      "_seq_no": 8,
+                      "_primary_term": 2,
+                      "_routing": "route_east",
+                      "found": true,
+                      "_source": {
+                        "id": "1001",
+                        "username": "ateng",
+                        "email": "ateng@example.com",
+                        "age": 18,
+                        "createTime": "2026-10-25 12:00:00"
+                      }
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        List<SearchHit<UserDoc>> hits = searchTemplate.getHitsByIds(UserDoc.class, "1001");
+
+        assertThat(hits).hasSize(1);
+        SearchHit<UserDoc> hit = hits.get(0);
+        assertThat(hit.getId()).isEqualTo("1001");
+        assertThat(hit.getIndex()).isEqualTo("user_idx");
+        assertThat(hit.getVersion()).isEqualTo(3L);
+        assertThat(hit.getSeqNo()).isEqualTo(8L);
+        assertThat(hit.getPrimaryTerm()).isEqualTo(2L);
+        assertThat(hit.getRouting()).isEqualTo("route_east");
+        assertThat(hit.getContent()).isNotNull();
+        assertThat(hit.getContent().getUsername()).isEqualTo("ateng");
+    }
+
+    @Test
+    @DisplayName("测试 getByIds 指定索引时目标索引不存在保底返回空集合")
+    void testGetByIdsIndexNotFound() {
+        String mockResponseBody = """
+                {
+                  "error": {
+                    "type": "index_not_found_exception",
+                    "reason": "no such index [missing_idx]"
+                  },
+                  "status": 404
+                }
+                """;
+        mockWebServer.enqueue(esResponse(404, mockResponseBody));
+
+        List<UserDoc> users = searchTemplate.getByIds("missing_idx", UserDoc.class, List.of("1001"));
+        assertThat(users).isNotNull();
+        assertThat(users).isEmpty();
+    }
+
+    @Test
+    @DisplayName("测试 deleteByQuery 成功条件批量删除文档")
+    void testDeleteByQuerySuccess() throws Exception {
+        String mockResponseBody = """
+                {
+                  "took": 15,
+                  "timed_out": false,
+                  "total": 10,
+                  "deleted": 10,
+                  "batches": 1,
+                  "version_conflicts": 0,
+                  "noops": 0,
+                  "retries": { "bulk": 0, "search": 0 },
+                  "throttled_millis": 0,
+                  "requests_per_second": -1.0,
+                  "throttled_until_millis": 0,
+                  "failures": []
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        SearchQuery query = SearchQuery.builder().term("status", "CANCELLED").build();
+        long deleted = searchTemplate.deleteByQuery(query, UserDoc.class);
+
+        assertThat(deleted).isEqualTo(10L);
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).contains("/user_idx/_delete_by_query");
+        assertThat(recordedRequest.getPath()).contains("conflicts=proceed");
+        String requestBody = recordedRequest.getBody().readUtf8();
+        assertThat(requestBody).contains("\"term\":{\"status\":{\"value\":\"CANCELLED\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 deleteByQuery 多租户自动隐式注入租户隔离过滤")
+    void testDeleteByQueryWithTenantIsolation() throws Exception {
+        TenantContextHolder.setTenantId("tenant_001");
+        String mockResponseBody = """
+                {
+                  "took": 8,
+                  "timed_out": false,
+                  "total": 3,
+                  "deleted": 3,
+                  "batches": 1,
+                  "version_conflicts": 0,
+                  "noops": 0,
+                  "retries": { "bulk": 0, "search": 0 },
+                  "throttled_millis": 0,
+                  "requests_per_second": -1.0,
+                  "throttled_until_millis": 0,
+                  "failures": []
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        long deleted = searchTemplate.deleteByQuery(SearchQuery.builder().matchAll().build(), UserDoc.class);
+
+        assertThat(deleted).isEqualTo(3L);
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).contains("/user_idx/_delete_by_query");
+        String requestBody = recordedRequest.getBody().readUtf8();
+        assertThat(requestBody).contains("\"term\":{\"tenant_id\":{\"value\":\"tenant_001\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 deleteByQuery 实体标注 @IgnoreTenant 时豁免多租户过滤")
+    void testDeleteByQueryWithIgnoredTenant() throws Exception {
+        TenantContextHolder.setTenantId("tenant_001");
+        String mockResponseBody = """
+                {
+                  "took": 12,
+                  "timed_out": false,
+                  "total": 8,
+                  "deleted": 8,
+                  "batches": 1,
+                  "version_conflicts": 0,
+                  "noops": 0,
+                  "retries": { "bulk": 0, "search": 0 },
+                  "throttled_millis": 0,
+                  "requests_per_second": -1.0,
+                  "throttled_until_millis": 0,
+                  "failures": []
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        long deleted = searchTemplate.deleteByQuery(SearchQuery.builder().matchAll().build(), IgnoredTenantDoc.class);
+
+        assertThat(deleted).isEqualTo(8L);
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).contains("/global_dict_idx/_delete_by_query");
+        String requestBody = recordedRequest.getBody().readUtf8();
+        assertThat(requestBody).doesNotContain("\"tenant_id\"");
+    }
+
+    @Test
+    @DisplayName("测试 deleteByQuery 指定显式索引与 routing 路由参数")
+    void testDeleteByQueryWithExplicitIndexAndRouting() throws Exception {
+        String mockResponseBody = """
+                {
+                  "took": 6,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "total": 5,
+                  "deleted": 5,
+                  "batches": 1,
+                  "version_conflicts": 0,
+                  "noops": 0,
+                  "retries": { "bulk": 0, "search": 0 },
+                  "throttled_millis": 0,
+                  "requests_per_second": -1.0,
+                  "throttled_until_millis": 0,
+                  "failures": []
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        SearchQuery query = SearchQuery.builder().routing("route_east").term("type", "audit").build();
+        long deleted = searchTemplate.deleteByQuery("custom_audit_idx", query);
+
+        assertThat(deleted).isEqualTo(5L);
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).contains("/custom_audit_idx/_delete_by_query");
+        assertThat(recordedRequest.getPath()).contains("routing=route_east");
+        assertThat(recordedRequest.getPath()).contains("conflicts=proceed");
+    }
+
+    @Test
+    @DisplayName("测试 deleteByQuery 当目标索引不存在时保底返回 0")
+    void testDeleteByQueryIndexNotFound() {
+        String mockResponseBody = """
+                {
+                  "error": {
+                    "type": "index_not_found_exception",
+                    "reason": "no such index [non_existing_idx]"
+                  },
+                  "status": 404
+                }
+                """;
+        mockWebServer.enqueue(esResponse(404, mockResponseBody));
+
+        long deleted = searchTemplate.deleteByQuery("non_existing_idx", SearchQuery.builder().build());
+        assertThat(deleted).isEqualTo(0L);
+    }
+
+    @Test
+    @DisplayName("测试 deleteByQuery 底层服务端错误转译为 SearchException 且保留原因")
+    void testDeleteByQueryDriverErrorTranslation() {
+        mockWebServer.enqueue(new MockResponse().setResponseCode(500).setBody("Internal Server Error"));
+
+        assertThatThrownBy(() -> searchTemplate.deleteByQuery("user_idx", SearchQuery.builder().build()))
+                .isInstanceOf(SearchException.class)
+                .satisfies(ex -> {
+                    SearchException se = (SearchException) ex;
+                    assertThat(se.getResultCode()).isEqualTo(SearchResultCode.SEARCH_DOCUMENT_DELETE_ERROR);
+                    assertThat(se.getMessage()).contains("Failed to execute deleteByQuery");
+                });
+    }
+
+    @Test
+    @DisplayName("测试 deleteByQuery 参数校验防线：非空与非空白校验")
+    void testDeleteByQueryParameterValidation() {
+        // 1. null query 前置拦截
+        assertThatThrownBy(() -> searchTemplate.deleteByQuery(null, UserDoc.class))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("query must not be null");
+
+        assertThatThrownBy(() -> searchTemplate.deleteByQuery("user_idx", null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("query must not be null");
+
+        // 2. null clazz 前置拦截
+        assertThatThrownBy(() -> searchTemplate.deleteByQuery(SearchQuery.builder().build(), null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("clazz must not be null");
+
+        // 3. blank index 前置拦截
+        assertThatThrownBy(() -> searchTemplate.deleteByQuery("  ", SearchQuery.builder().build()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Index must not be blank");
+    }
+
+    @Test
+    @DisplayName("测试 count 与 deleteByQuery 支持多索引查询时不丢失后续索引")
+    void testMultiIndicesHandlingOnCountAndDel() throws Exception {
+        // 1. count 多索引测试
+        String mockCountBody = """
+                {
+                  "count": 42,
+                  "_shards": { "total": 2, "successful": 2, "skipped": 0, "failed": 0 }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockCountBody));
+
+        SearchQuery multiIndexQuery = SearchQuery.builder()
+                .indices(List.of("idx_log_202610", "idx_log_202611"))
+                .matchAll()
+                .build();
+
+        long count = searchTemplate.count(multiIndexQuery, UserDoc.class);
+        assertThat(count).isEqualTo(42L);
+
+        RecordedRequest countReq = mockWebServer.takeRequest();
+        assertThat(countReq.getPath()).contains("idx_log_202610,idx_log_202611/_count");
+
+        // 2. deleteByQuery 多索引测试
+        String mockDelBody = """
+                {
+                  "took": 10,
+                  "timed_out": false,
+                  "total": 5,
+                  "deleted": 5,
+                  "batches": 1,
+                  "version_conflicts": 0,
+                  "noops": 0,
+                  "retries": { "bulk": 0, "search": 0 },
+                  "throttled_millis": 0,
+                  "requests_per_second": -1.0,
+                  "throttled_until_millis": 0,
+                  "failures": []
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockDelBody));
+
+        long deleted = searchTemplate.deleteByQuery(multiIndexQuery, UserDoc.class);
+        assertThat(deleted).isEqualTo(5L);
+
+        RecordedRequest delReq = mockWebServer.takeRequest();
+        assertThat(delReq.getPath()).contains("idx_log_202610,idx_log_202611/_delete_by_query");
+    }
+
+    @Test
+    @DisplayName("测试 matchPhrase 短语精准保序检索 DSL 生成")
+    void testMatchPhraseDsl() throws Exception {
+        String mockResp = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        SearchQuery query = SearchQuery.builder().matchPhrase("intro", "quick brown fox").build();
+        searchTemplate.search(query, UserDoc.class);
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).contains("\"match_phrase\":{\"intro\":{\"query\":\"quick brown fox\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 matchPhrasePrefix 搜索联想自动补全 DSL 生成及 maxExpansions 参数")
+    void testMatchPhrasePrefixDsl() throws Exception {
+        String mockResp = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        SearchQuery query = SearchQuery.builder().matchPhrasePrefix("title", "spring b", 20).build();
+        searchTemplate.search(query, UserDoc.class);
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).contains("\"match_phrase_prefix\":{\"title\":{\"max_expansions\":20,\"query\":\"spring b\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 fuzzy 拼写容错检索 DSL 生成及 fuzziness 参数")
+    void testFuzzyDsl() throws Exception {
+        String mockResp = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        SearchQuery query = SearchQuery.builder().fuzzy("username", "atengg", "AUTO").build();
+        searchTemplate.search(query, UserDoc.class);
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).contains("\"fuzzy\":{\"username\":{\"fuzziness\":\"AUTO\",\"value\":\"atengg\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 nested 嵌套对象作用域独立匹配 DSL 生成及 scoreMode 参数")
+    void testNestedDsl() throws Exception {
+        String mockResp = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        SearchQuery query = SearchQuery.builder().nested("skus", ChildScoreMode.Avg, sub -> sub
+                .term("skus.color", "white")
+                .gte("skus.price", 99)).build();
+        searchTemplate.search(query, UserDoc.class);
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).contains("\"nested\":{\"path\":\"skus\"");
+        assertThat(body).contains("\"score_mode\":\"avg\"");
+        assertThat(body).contains("\"term\":{\"skus.color\":{\"value\":\"white\"}}");
+        assertThat(body).contains("\"range\":{\"skus.price\":{\"gte\":99}}");
+    }
+
+    @Test
+    @DisplayName("测试 collapse 字段折叠去重 DSL 生成及 SearchTemplate 请求下发")
+    void testCollapseDsl() throws Exception {
+        String mockResp = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        SearchQuery query = SearchQuery.builder()
+                .term("status", "ACTIVE")
+                .collapse("brand.keyword")
+                .build();
+        searchTemplate.search(query, UserDoc.class);
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).contains("\"collapse\":{\"field\":\"brand.keyword\"}");
+        assertThat(body).contains("\"term\":{\"status\":{\"value\":\"ACTIVE\"}}");
+
+        // 测试直接传入原生 FieldCollapse 对象
+        mockWebServer.enqueue(esResponse(200, mockResp));
+        SearchQuery rawCollapseQuery = SearchQuery.builder()
+                .collapse(FieldCollapse.of(fc -> fc.field("spuId")))
+                .build();
+        searchTemplate.search(rawCollapseQuery, UserDoc.class);
+
+        RecordedRequest req2 = mockWebServer.takeRequest();
+        String body2 = req2.getBody().readUtf8();
+        assertThat(body2).contains("\"collapse\":{\"field\":\"spuId\"}");
+    }
+
+    @Test
+    @DisplayName("测试 minAggregation 与 maxAggregation 极值度量算子 DSL 生成")
+    void testMinAndMaxAggregationDsl() throws Exception {
+        String mockResp = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        SearchQuery query = SearchQuery.builder()
+                .minAggregation("min_price", "price")
+                .maxAggregation("max_price", "price")
+                .build();
+        searchTemplate.search(query, UserDoc.class);
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).contains("\"min_price\":{\"min\":{\"field\":\"price\"}}");
+        assertThat(body).contains("\"max_price\":{\"max\":{\"field\":\"price\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 dateHistogramAggregation 时序直方图分桶聚合算子 DSL 生成")
+    void testDateHistogramAggregationDsl() throws Exception {
+        String mockResp = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        SearchQuery query = SearchQuery.builder()
+                .dateHistogramAggregation("daily_trend", "createTime", "1d")
+                .dateHistogramAggregation("monthly_trend", "createTime", "1M")
+                .dateHistogramAggregation("hourly_trend", "createTime", CalendarInterval.Hour)
+                .build();
+        searchTemplate.search(query, UserDoc.class);
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).contains("\"daily_trend\":{\"date_histogram\":{\"calendar_interval\":\"day\",\"field\":\"createTime\"}}");
+        assertThat(body).contains("\"monthly_trend\":{\"date_histogram\":{\"calendar_interval\":\"month\",\"field\":\"createTime\"}}");
+        assertThat(body).contains("\"hourly_trend\":{\"date_histogram\":{\"calendar_interval\":\"hour\",\"field\":\"createTime\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 refresh 物理段合并刷新（支持字符串索引与实体类 Class）")
+    void testRefreshIndexAndClass() throws Exception {
+        String mockResp = """
+                {
+                  "_shards": {
+                    "total": 2,
+                    "successful": 2,
+                    "failed": 0
+                  }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        boolean refreshed = searchTemplate.indices().refresh("order_idx");
+        assertThat(refreshed).isTrue();
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        assertThat(req.getMethod()).isEqualTo("POST");
+        assertThat(req.getPath()).isEqualTo("/order_idx/_refresh");
+
+        // 测试 Class 入参
+        mockWebServer.enqueue(esResponse(200, mockResp));
+        boolean refreshedDoc = searchTemplate.indices().refresh(UserDoc.class);
+        assertThat(refreshedDoc).isTrue();
+
+        RecordedRequest reqDoc = mockWebServer.takeRequest();
+        assertThat(reqDoc.getMethod()).isEqualTo("POST");
+        assertThat(reqDoc.getPath()).isEqualTo("/user_idx/_refresh");
+
+        // 测试分片刷新失败场景
+        String failedShardsResp = """
+                {
+                  "_shards": {
+                    "total": 2,
+                    "successful": 1,
+                    "failed": 1
+                  }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, failedShardsResp));
+        boolean failedRefresh = searchTemplate.indices().refresh("broken_idx");
+        assertThat(failedRefresh).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 deleteIndexTemplate 索引模板删除与 404 容错保底")
+    void testDeleteIndexTemplate() throws Exception {
+        String mockResp = """
+                {
+                  "acknowledged": true
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        boolean deleted = searchTemplate.indices().deleteIndexTemplate("log_template");
+        assertThat(deleted).isTrue();
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        assertThat(req.getMethod()).isEqualTo("DELETE");
+        assertThat(req.getPath()).isEqualTo("/_index_template/log_template");
+
+        // 测试不存在模板返回 false
+        String notFoundResp = """
+                {
+                  "error": {
+                    "root_cause": [{ "type": "resource_not_found_exception", "reason": "index template [not_found] missing" }],
+                    "type": "resource_not_found_exception",
+                    "reason": "index template [not_found] missing"
+                  },
+                  "status": 404
+                }
+                """;
+        mockWebServer.enqueue(esResponse(404, notFoundResp));
+        boolean notFoundDeleted = searchTemplate.indices().deleteIndexTemplate("not_found");
+        assertThat(notFoundDeleted).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 reindex 数据平滑重索引（全量与条件过滤）")
+    void testReindex() throws Exception {
+        String mockResp = """
+                {
+                  "took": 15,
+                  "timed_out": false,
+                  "total": 50,
+                  "updated": 0,
+                  "created": 50,
+                  "deleted": 0,
+                  "batches": 1,
+                  "version_conflicts": 0,
+                  "noops": 0,
+                  "retries": { "bulk": 0, "search": 0 },
+                  "throttled_millis": 0,
+                  "requests_per_second": -1.0,
+                  "throttled_until_millis": 0,
+                  "failures": []
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        // 1. 全量重索引
+        boolean reindexed = searchTemplate.indices().reindex("source_idx", "target_idx");
+        assertThat(reindexed).isTrue();
+
+        RecordedRequest req1 = mockWebServer.takeRequest();
+        assertThat(req1.getMethod()).isEqualTo("POST");
+        assertThat(req1.getPath()).contains("/_reindex");
+        assertThat(req1.getPath()).contains("wait_for_completion=true");
+        String body1 = req1.getBody().readUtf8();
+        assertThat(body1).contains("\"source\":{\"index\":[\"source_idx\"]}");
+        assertThat(body1).contains("\"dest\":{\"index\":\"target_idx\"}");
+        assertThat(body1).contains("\"conflicts\":\"proceed\"");
+
+        // 2. 带条件增量/过滤重索引
+        mockWebServer.enqueue(esResponse(200, mockResp));
+        SearchQuery filterQuery = SearchQuery.builder().term("status", "ACTIVE").build();
+        boolean reindexWithFilter = searchTemplate.indices().reindex("source_idx", "target_idx", filterQuery);
+        assertThat(reindexWithFilter).isTrue();
+
+        RecordedRequest req2 = mockWebServer.takeRequest();
+        assertThat(req2.getMethod()).isEqualTo("POST");
+        assertThat(req2.getPath()).contains("/_reindex");
+        assertThat(req2.getPath()).contains("wait_for_completion=true");
+        String body2 = req2.getBody().readUtf8();
+        assertThat(body2).contains("\"source\":{\"index\":[\"source_idx\"],\"query\":{\"bool\":{\"filter\":[{\"term\":{\"status\":{\"value\":\"ACTIVE\"}}}]}}}");
+        assertThat(body2).contains("\"dest\":{\"index\":\"target_idx\"}");
+    }
+
+    @Test
+    @DisplayName("测试 reindex 源索引与目标索引同名或空白时触发防御性校验")
+    void testReindexSelfIndexGuard() {
+        assertThatThrownBy(() -> searchTemplate.indices().reindex("same_idx", "same_idx"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sourceIndex and targetIndex must not be the same");
+
+        assertThatThrownBy(() -> searchTemplate.indices().reindex(" ", "target_idx"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sourceIndex must not be blank");
+    }
+
+    @Test
+    @DisplayName("测试 reindex 服务端响应 timed_out 为 true 时判定失败")
+    void testReindexTimedOutReturnsFalse() {
+        String mockResp = """
+                {
+                  "took": 30000,
+                  "timed_out": true,
+                  "total": 100,
+                  "updated": 0,
+                  "created": 50,
+                  "deleted": 0,
+                  "batches": 1,
+                  "version_conflicts": 0,
+                  "noops": 0,
+                  "retries": { "bulk": 0, "search": 0 },
+                  "throttled_millis": 0,
+                  "requests_per_second": -1.0,
+                  "throttled_until_millis": 0,
+                  "failures": []
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        boolean result = searchTemplate.indices().reindex("source_idx", "target_idx");
+        assertThat(result).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 matchPhrase 与 matchPhrasePrefix 空白字符串防卫")
+    void testMatchPhraseBlankQueryDefense() {
+        SearchQuery query = SearchQuery.builder()
+                .matchPhrase("title", "   ")
+                .matchPhrasePrefix("title", "")
+                .build();
+
+        // 空白文本不生成 matchPhrase 节点，缺省回退为 matchAll
+        assertThat(query.getQuery().isMatchAll()).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试 RestClientBuilderCustomizer 出站请求头定制、负数超时拦截与 classpath TrustStore 防卫")
+    void testRestClientCustomizerAndSslBounds() throws Exception {
+        AtengSearchProperties props = new AtengSearchProperties();
+        props.setUris(Collections.singletonList("http://" + mockWebServer.getHostName() + ":" + mockWebServer.getPort()));
+        props.setConnectionRequestTimeout(java.time.Duration.ofSeconds(2));
+
+        ElasticsearchClientDriver customDriver = new ElasticsearchClientDriver(
+                props,
+                null,
+                List.of((builder, p) -> builder.setDefaultHeaders(
+                        new org.apache.http.Header[]{new org.apache.http.message.BasicHeader("X-Custom-Header", "ateng-search")}
+                ))
+        );
+        try {
+            SearchTemplate customTemplate = new SearchTemplate(customDriver, props);
+            mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"1\",\"found\":false}"));
+            customTemplate.getById(UserDoc.class, "1");
+
+            RecordedRequest req = mockWebServer.takeRequest();
+            assertThat(req.getHeader("X-Custom-Header")).isEqualTo("ateng-search");
+        } finally {
+            customDriver.close();
+        }
+
+        // 负数超时 Fail-Fast
+        AtengSearchProperties negativeProps = new AtengSearchProperties();
+        negativeProps.setConnectionRequestTimeout(java.time.Duration.ofMillis(-1));
+        assertThatThrownBy(() -> new ElasticsearchClientDriver(negativeProps))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("connectionRequestTimeout");
+
+        // classpath: 不存在证书时转译为 SearchException 且保留原因链
+        AtengSearchProperties sslProps = new AtengSearchProperties();
+        sslProps.getSsl().setEnabled(true);
+        sslProps.getSsl().setTrustStorePath("classpath:non-existent-truststore.jks");
+        assertThatThrownBy(() -> new ElasticsearchClientDriver(sslProps))
+                .isInstanceOf(SearchException.class)
+                .hasMessageContaining("SSL")
+                .hasCauseInstanceOf(IOException.class);
+    }
+
+    @Test
+    @DisplayName("测试有效 classpath TrustStore 加载、超大 Duration 饱和截断与 connectionRequestTimeout 连接池等待超时")
+    void testValidClasspathTrustStoreAndConnectionPoolTimeout(@org.junit.jupiter.api.io.TempDir java.nio.file.Path tempDir) throws Exception {
+        // 1. 生成有效默认类型 TrustStore 并验证 classpath: 加载成功且释放流
+        java.nio.file.Path trustStoreFile = tempDir.resolve("test-search-truststore.keystore");
+        java.security.KeyStore keyStore = java.security.KeyStore.getInstance(java.security.KeyStore.getDefaultType());
+        keyStore.load(null, "changeit".toCharArray());
+        try (java.io.OutputStream os = java.nio.file.Files.newOutputStream(trustStoreFile)) {
+            keyStore.store(os, "changeit".toCharArray());
+        }
+
+        ClassLoader originalCl = Thread.currentThread().getContextClassLoader();
+        try (java.net.URLClassLoader urlClassLoader = new java.net.URLClassLoader(
+                new java.net.URL[]{tempDir.toUri().toURL()}, originalCl)) {
+            Thread.currentThread().setContextClassLoader(urlClassLoader);
+
+            AtengSearchProperties validSslProps = new AtengSearchProperties();
+            validSslProps.setUris(Collections.singletonList("https://" + mockWebServer.getHostName() + ":" + mockWebServer.getPort()));
+            validSslProps.getSsl().setEnabled(true);
+            validSslProps.getSsl().setTrustStorePath("classpath:" + trustStoreFile.getFileName());
+            validSslProps.getSsl().setTrustStorePassword("changeit");
+
+            try (ElasticsearchClientDriver sslDriver = new ElasticsearchClientDriver(validSslProps)) {
+                assertThat(sslDriver.getElasticsearchClient()).isNotNull();
+            }
+        } finally {
+            Thread.currentThread().setContextClassLoader(originalCl);
+        }
+
+        // 2. 超大 Duration（超过 Integer.MAX_VALUE 毫秒）饱和截断不溢出
+        AtengSearchProperties hugeTimeoutProps = new AtengSearchProperties();
+        hugeTimeoutProps.setUris(Collections.singletonList("http://" + mockWebServer.getHostName() + ":" + mockWebServer.getPort()));
+        hugeTimeoutProps.setConnectTimeout(java.time.Duration.ofDays(30));
+        hugeTimeoutProps.setSocketTimeout(java.time.Duration.ofDays(30));
+        hugeTimeoutProps.setConnectionRequestTimeout(java.time.Duration.ofDays(30));
+        try (ElasticsearchClientDriver hugeDriver = new ElasticsearchClientDriver(hugeTimeoutProps)) {
+            assertThat(hugeDriver.getElasticsearchClient()).isNotNull();
+        }
+
+        // 3. 单连接池饱和时验证 connectionRequestTimeout 生效快速超时
+        AtengSearchProperties poolProps = new AtengSearchProperties();
+        poolProps.setUris(Collections.singletonList("http://" + mockWebServer.getHostName() + ":" + mockWebServer.getPort()));
+        poolProps.setMaxConnections(1);
+        poolProps.setMaxConnectionsPerRoute(1);
+        poolProps.setConnectionRequestTimeout(java.time.Duration.ofMillis(80));
+        poolProps.setSocketTimeout(java.time.Duration.ofSeconds(5));
+
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"slow\",\"found\":false}")
+                .setBodyDelay(500, java.util.concurrent.TimeUnit.MILLISECONDS));
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"fast\",\"found\":false}"));
+
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try (ElasticsearchClientDriver poolDriver = new ElasticsearchClientDriver(poolProps)) {
+            SearchTemplate poolTemplate = new SearchTemplate(poolDriver, poolProps);
+            java.util.concurrent.Future<UserDoc> firstFuture = executor.submit(() -> poolTemplate.getById(UserDoc.class, "slow"));
+            Thread.sleep(25);
+            assertThatThrownBy(() -> poolTemplate.getById(UserDoc.class, "fast"))
+                    .isInstanceOf(SearchException.class)
+                    .extracting(ex -> ((SearchException) ex).getResultCode())
+                    .isEqualTo(SearchResultCode.SEARCH_TIMEOUT_ERROR);
+            assertThat(firstFuture.get()).isNull();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("测试 SearchInterceptor SPI 拦截链前后置执行、属性共享与异常回调")
+    void testSearchInterceptorLifecycle() {
+        List<String> events = new java.util.ArrayList<>();
+        io.github.atengk.boot.search.spi.SearchInterceptor first = new io.github.atengk.boot.search.spi.SearchInterceptor() {
+            @Override
+            public void beforeExecute(io.github.atengk.boot.search.spi.SearchInvocationContext context) {
+                context.setAttribute("traceTag", "first");
+                events.add("before-1:" + context.getOperation() + ":" + context.getIndex());
+            }
+
+            @Override
+            public void afterExecute(io.github.atengk.boot.search.spi.SearchInvocationContext context, Object result) {
+                events.add("after-1:" + context.getAttribute("traceTag"));
+            }
+
+            @Override
+            public void onError(io.github.atengk.boot.search.spi.SearchInvocationContext context, Throwable cause) {
+                events.add("error-1:" + cause.getClass().getSimpleName());
+            }
+        };
+        io.github.atengk.boot.search.spi.SearchInterceptor second = new io.github.atengk.boot.search.spi.SearchInterceptor() {
+            @Override
+            public void beforeExecute(io.github.atengk.boot.search.spi.SearchInvocationContext context) {
+                events.add("before-2:" + context.getAttribute("traceTag"));
+            }
+
+            @Override
+            public void afterExecute(io.github.atengk.boot.search.spi.SearchInvocationContext context, Object result) {
+                events.add("after-2");
+            }
+        };
+
+        SearchTemplate intercepted = new SearchTemplate(driver, new AtengSearchProperties(), null, List.of(first, second));
+        mockWebServer.enqueue(esResponse(200,
+                "{\"took\":1,\"timed_out\":false,\"_shards\":{\"total\":1,\"successful\":1,\"skipped\":0,\"failed\":0},\"hits\":{\"total\":{\"value\":0,\"relation\":\"eq\"},\"hits\":[]}}"));
+
+        intercepted.search(SearchQueryBuilder.create().matchAll().build(), UserDoc.class);
+        assertThat(events).containsExactly("before-1:search:user_idx", "before-2:first", "after-2", "after-1:first");
+
+        events.clear();
+        mockWebServer.enqueue(esResponse(500, "{\"error\":{\"type\":\"search_phase_execution_exception\",\"reason\":\"boom\"},\"status\":500}"));
+        assertThatThrownBy(() -> intercepted.search(SearchQueryBuilder.create().matchAll().build(), UserDoc.class))
+                .isInstanceOf(SearchException.class);
+        assertThat(events).anyMatch(e -> e.startsWith("error-1:"));
+    }
+
+    @Test
+    @DisplayName("测试慢查询向量数组脱敏日志输出与 HTTP 429/401 异常精细分类转译")
+    void testSlowQueryVectorMaskingAndClassifierMapping() {
+        ch.qos.logback.classic.Logger templateLogger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(SearchTemplate.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> listAppender =
+                new ch.qos.logback.core.read.ListAppender<>();
+        listAppender.start();
+        templateLogger.addAppender(listAppender);
+
+        try {
+            AtengSearchProperties props = new AtengSearchProperties();
+            props.getObservability().setSlowQueryThreshold(java.time.Duration.ofNanos(1));
+            props.getObservability().setLogSlowQueryDsl(true);
+            props.getObservability().setMaskVectorInLogs(true);
+
+            io.micrometer.core.instrument.simple.SimpleMeterRegistry meterRegistry =
+                    new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+            io.github.atengk.boot.search.metrics.SearchMetrics metrics =
+                    new io.github.atengk.boot.search.metrics.SearchMetrics(meterRegistry);
+
+            SearchTemplate observedTemplate = new SearchTemplate(driver, props, metrics);
+
+            mockWebServer.enqueue(esResponse(200,
+                    "{\"took\":1,\"timed_out\":false,\"_shards\":{\"total\":1,\"successful\":1,\"skipped\":0,\"failed\":0},\"hits\":{\"total\":{\"value\":0,\"relation\":\"eq\"},\"hits\":[]}}"));
+
+            SearchQuery knnQuery = SearchQueryBuilder.create()
+                    .knn("embedding", List.of(0.123456f, -0.654321f, 0.999999f), 5, 20)
+                    .build();
+            observedTemplate.search(knnQuery, UserDoc.class);
+
+            assertThat(listAppender.list)
+                    .extracting(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+                    .anySatisfy(msg -> {
+                        assertThat(msg).contains("Slow search operation detected");
+                        assertThat(msg).contains("<vector masked: 3 dims>");
+                        assertThat(msg).doesNotContain("0.123456");
+                    });
+
+            assertThat(meterRegistry.find("ateng.search.operation.time")
+                    .tag("operation", "search")
+                    .tag("outcome", "SUCCESS")
+                    .timer())
+                    .isNotNull()
+                    .satisfies(timer -> assertThat(timer.count()).isEqualTo(1L));
+
+            // 429 限流 -> SEARCH_RATE_LIMITED
+            mockWebServer.enqueue(esResponse(429, "{\"error\":{\"type\":\"es_rejected_execution_exception\",\"reason\":\"rejected execution\"},\"status\":429}"));
+            assertThatThrownBy(() -> observedTemplate.search(SearchQueryBuilder.create().matchAll().build(), UserDoc.class))
+                    .isInstanceOf(SearchException.class)
+                    .extracting(ex -> ((SearchException) ex).getResultCode())
+                    .isEqualTo(SearchResultCode.SEARCH_RATE_LIMITED);
+
+            // 401 鉴权失败 -> SEARCH_AUTH_ERROR
+            mockWebServer.enqueue(esResponse(401, "{\"error\":{\"type\":\"security_exception\",\"reason\":\"unauthorized\"},\"status\":401}"));
+            assertThatThrownBy(() -> observedTemplate.search(SearchQueryBuilder.create().matchAll().build(), UserDoc.class))
+                    .isInstanceOf(SearchException.class)
+                    .extracting(ex -> ((SearchException) ex).getResultCode())
+                    .isEqualTo(SearchResultCode.SEARCH_AUTH_ERROR);
+        } finally {
+            templateLogger.detachAppender(listAppender);
+            listAppender.stop();
+        }
+    }
+
+    @io.github.atengk.boot.search.annotation.SearchIndex("record_order_idx")
+    record RecordOrder(
+            @io.github.atengk.boot.search.annotation.SearchId String id,
+            String title,
+            String tenant_id
+    ) {
+    }
+
+    @Test
+    @DisplayName("测试写入与局部更新阶段多租户自动注入（POJO/Record/Map）及跨租户篡改快速失败")
+    void testTenantWriteInjectionAndTamperingFailFast() throws Exception {
+        TenantContextHolder.setTenantId("tenant_a");
+
+        // 1. 无 tenant_id 字段的 POJO 写入自动注入 tenant_id（STRICT 下显式 ID 先查归属）
+        mockWebServer.enqueue(esResponse(404, "{\"_index\":\"user_idx\",\"_id\":\"101\",\"found\":false}"));
+        mockWebServer.enqueue(esResponse(201, "{\"_index\":\"user_idx\",\"_id\":\"101\",\"_version\":1,\"result\":\"created\",\"_seq_no\":1,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        searchTemplate.save(UserDoc.builder().id(101L).username("alice").build());
+        mockWebServer.takeRequest(); // pre-check GET
+        RecordedRequest pojoReq = mockWebServer.takeRequest();
+        assertThat(pojoReq.getBody().readUtf8()).contains("\"tenant_id\":\"tenant_a\"");
+
+        // 2. 不可变 Record (tenant_id=null) 写入自动注入 tenant_id
+        mockWebServer.enqueue(esResponse(404, "{\"_index\":\"record_order_idx\",\"_id\":\"R-1\",\"found\":false}"));
+        mockWebServer.enqueue(esResponse(201, "{\"_index\":\"record_order_idx\",\"_id\":\"R-1\",\"_version\":1,\"result\":\"created\",\"_seq_no\":1,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        searchTemplate.save(new RecordOrder("R-1", "order-1", null));
+        mockWebServer.takeRequest(); // pre-check GET
+        RecordedRequest recordReq = mockWebServer.takeRequest();
+        assertThat(recordReq.getBody().readUtf8()).contains("\"tenant_id\":\"tenant_a\"");
+
+        // 3. Map 局部更新自动注入 tenant_id（STRICT 模式下先核验归属再发送 _update）
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"101\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_a\"}}"));
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"101\",\"_version\":2,\"result\":\"updated\",\"_seq_no\":2,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        searchTemplate.update("user_idx", "101", Map.of("username", "alice-2"));
+        mockWebServer.takeRequest(); // pre-check GET
+        RecordedRequest mapUpdateReq = mockWebServer.takeRequest();
+        assertThat(mapUpdateReq.getBody().readUtf8()).contains("\"tenant_id\":\"tenant_a\"");
+
+        // 4. 批量索引与批量更新自动注入 tenant_id（STRICT 下显式 ID 先发 _mget 预检）
+        mockWebServer.enqueue(esResponse(200, "{\"docs\":[{\"_index\":\"record_order_idx\",\"_id\":\"R-2\",\"found\":false}]}"));
+        mockWebServer.enqueue(esResponse(200, "{\"took\":1,\"errors\":false,\"items\":[{\"index\":{\"_index\":\"record_order_idx\",\"_id\":\"R-2\",\"status\":201,\"result\":\"created\"}}]}"));
+        searchTemplate.indexBatch(List.of(new RecordOrder("R-2", "order-2", null)));
+        mockWebServer.takeRequest(); // pre-check _mget
+        RecordedRequest bulkIdxReq = mockWebServer.takeRequest();
+        assertThat(bulkIdxReq.getBody().readUtf8()).contains("\"tenant_id\":\"tenant_a\"");
+
+        // 5. 跨租户篡改（携带 tenant_b）在单写入、局部更新、批量写入及 BulkProcessor 入口全部立即 Fail-Fast（零 HTTP 请求发出）
+        int requestCountBeforeTamper = mockWebServer.getRequestCount();
+        assertThatThrownBy(() -> searchTemplate.save(new RecordOrder("R-3", "tamper", "tenant_b")))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        assertThatThrownBy(() -> searchTemplate.update("user_idx", "101", Map.of("tenant_id", "tenant_b", "username", "hacker")))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        assertThatThrownBy(() -> searchTemplate.indexBatch(List.of(new RecordOrder("R-4", "ok", "tenant_a"), new RecordOrder("R-5", "tamper", "tenant_b"))))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        assertThatThrownBy(() -> searchTemplate.updateBatch(List.of(new RecordOrder("R-6", "tamper", "tenant_b"))))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        try (io.github.atengk.boot.search.bulk.SearchBulkProcessor processor = searchTemplate.newBulkProcessorBuilder().build()) {
+            assertThatThrownBy(() -> processor.add(new RecordOrder("R-7", "tamper", "tenant_b")))
+                    .isInstanceOf(SearchException.class)
+                    .extracting(e -> ((SearchException) e).getResultCode())
+                    .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        }
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(requestCountBeforeTamper);
+
+        // 6. @IgnoreTenant 实体（含 Map 局部更新重载）与 runWithoutTenant 豁免写入，不注入也不拦截
+        mockWebServer.enqueue(esResponse(201, "{\"_index\":\"global_dict_idx\",\"_id\":\"D-1\",\"_version\":1,\"result\":\"created\",\"_seq_no\":1,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        searchTemplate.save(IgnoredTenantDoc.builder().code("D-1").name("dict").build());
+        RecordedRequest ignoredEntityReq = mockWebServer.takeRequest();
+        assertThat(ignoredEntityReq.getBody().readUtf8()).doesNotContain("\"tenant_id\"");
+
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"global_dict_idx\",\"_id\":\"D-1\",\"_version\":2,\"result\":\"updated\",\"_seq_no\":2,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        assertThat(searchTemplate.update(IgnoredTenantDoc.class, "D-1", Map.of("name", "dict-v2"))).isTrue();
+        RecordedRequest ignoredUpdateReq = mockWebServer.takeRequest();
+        assertThat(ignoredUpdateReq.getPath()).contains("/global_dict_idx/_update/D-1");
+        assertThat(ignoredUpdateReq.getBody().readUtf8()).doesNotContain("\"tenant_id\"");
+
+        mockWebServer.enqueue(esResponse(201, "{\"_index\":\"record_order_idx\",\"_id\":\"R-8\",\"_version\":1,\"result\":\"created\",\"_seq_no\":1,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        TenantContextHolder.runWithoutTenant(() -> searchTemplate.save(new RecordOrder("R-8", "admin-write", "tenant_b")));
+        RecordedRequest bypassReq = mockWebServer.takeRequest();
+        assertThat(bypassReq.getBody().readUtf8()).contains("\"tenant_id\":\"tenant_b\"");
+
+        // 7. STRICT 模式显式 ID save / updateBatch / SearchBulkProcessor.delete 对已存在他租户文档拦截且不发送 PUT/_bulk
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"202\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_b\"}}"));
+        int beforeCrossSave = mockWebServer.getRequestCount();
+        assertThatThrownBy(() -> searchTemplate.save(UserDoc.builder().id(202L).username("overwrite-attempt").build()))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(beforeCrossSave + 1);
+        assertThat(mockWebServer.takeRequest().getMethod()).isEqualTo("GET");
+
+        mockWebServer.enqueue(esResponse(200, "{\"docs\":[{\"_index\":\"record_order_idx\",\"_id\":\"R-9\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_b\"}}]}"));
+        int beforeCrossUpdateBatch = mockWebServer.getRequestCount();
+        assertThatThrownBy(() -> searchTemplate.updateBatch(List.of(new RecordOrder("R-9", "hijack", "tenant_a"))))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(beforeCrossUpdateBatch + 1);
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_mget");
+
+        mockWebServer.enqueue(esResponse(200, "{\"docs\":[{\"_index\":\"user_idx\",\"_id\":\"303\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_b\"}}]}"));
+        java.util.concurrent.atomic.AtomicReference<Throwable> bulkFailure = new java.util.concurrent.atomic.AtomicReference<>();
+        int beforeCrossBulkDelete = mockWebServer.getRequestCount();
+        try (io.github.atengk.boot.search.bulk.SearchBulkProcessor processor = searchTemplate.newBulkProcessorBuilder()
+                .listener(new io.github.atengk.boot.search.bulk.BulkListener() {
+                    @Override
+                    public void afterBulk(long executionId, int actionCount, Throwable failure) {
+                        bulkFailure.set(failure);
+                    }
+                })
+                .build()) {
+            processor.delete("303", UserDoc.class);
+            processor.flush();
+        }
+        assertThat(bulkFailure.get()).isInstanceOf(SearchException.class);
+        assertThat(((SearchException) bulkFailure.get()).getResultCode()).isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(beforeCrossBulkDelete + 1);
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_mget");
+    }
+
+    @Test
+    @DisplayName("测试 STRICT 模式点查、批量主键检索与 existsById 降级 _count 防跨租户 IDOR 探测及 FILTER_ONLY 放行")
+    void testStrictPointGetAndExistsAntiIdor() throws Exception {
+        TenantContextHolder.setTenantId("tenant_a");
+
+        // 1. STRICT: getById / getHitById 跨租户(tenant_b)与缺失租户列返回 null，同租户(tenant_a)正常返回
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"101\",\"_version\":1,\"_seq_no\":3,\"_primary_term\":1,\"found\":true,\"_source\":{\"id\":101,\"username\":\"bob\",\"tenant_id\":\"tenant_b\"}}"));
+        assertThat(searchTemplate.getById(UserDoc.class, "101")).isNull();
+        mockWebServer.takeRequest();
+
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"103\",\"_version\":1,\"_seq_no\":4,\"_primary_term\":1,\"found\":true,\"_source\":{\"id\":103,\"username\":\"orphan\"}}"));
+        assertThat(searchTemplate.getHitById(UserDoc.class, "103")).isNull();
+        mockWebServer.takeRequest();
+
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"102\",\"_version\":1,\"_seq_no\":5,\"_primary_term\":1,\"found\":true,\"_source\":{\"id\":102,\"username\":\"alice\",\"tenant_id\":\"tenant_a\"}}"));
+        SearchHit<UserDoc> ownedHit = searchTemplate.getHitById(UserDoc.class, "102");
+        assertThat(ownedHit).isNotNull();
+        assertThat(ownedHit.getContent().getUsername()).isEqualTo("alice");
+        assertThat(ownedHit.getSeqNo()).isEqualTo(5L);
+        mockWebServer.takeRequest();
+
+        // 2. STRICT: getHitsByIds 自动剔除他租户与无归属文档，仅保留同租户
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "docs": [
+                    {"_index":"user_idx","_id":"101","_version":1,"_seq_no":1,"_primary_term":1,"found":true,"_source":{"id":101,"username":"bob","tenant_id":"tenant_b"}},
+                    {"_index":"user_idx","_id":"102","_version":1,"_seq_no":2,"_primary_term":1,"found":true,"_source":{"id":102,"username":"alice","tenant_id":"tenant_a"}},
+                    {"_index":"user_idx","_id":"103","_version":1,"_seq_no":3,"_primary_term":1,"found":true,"_source":{"id":103,"username":"orphan"}}
+                  ]
+                }
+                """));
+        List<SearchHit<UserDoc>> mgetHits = searchTemplate.getHitsByIds(UserDoc.class, List.of("101", "102", "103"));
+        assertThat(mgetHits).hasSize(1);
+        assertThat(mgetHits.get(0).getId()).isEqualTo("102");
+        mockWebServer.takeRequest();
+
+        // 3. STRICT: existsById 降级为带 ids + tenant_id 过滤的 _count 探测并保留 routing
+        mockWebServer.enqueue(esResponse(200, "{\"count\":0,\"_shards\":{\"total\":1,\"successful\":1,\"skipped\":0,\"failed\":0}}"));
+        assertThat(searchTemplate.existsById(UserDoc.class, "101")).isFalse();
+        RecordedRequest countDeniedReq = mockWebServer.takeRequest();
+        assertThat(countDeniedReq.getMethod()).isEqualTo("POST");
+        assertThat(countDeniedReq.getPath()).isEqualTo("/user_idx/_count");
+        String countBody = countDeniedReq.getBody().readUtf8();
+        assertThat(countBody).contains("\"ids\":{\"values\":[\"101\"]}");
+        assertThat(countBody).contains("\"term\":{\"tenant_id\":{\"value\":\"tenant_a\"}}");
+
+        mockWebServer.enqueue(esResponse(200, "{\"count\":1,\"_shards\":{\"total\":1,\"successful\":1,\"skipped\":0,\"failed\":0}}"));
+        assertThat(searchTemplate.existsById(RoutedOrderDoc.class, "O1", "route-1")).isTrue();
+        RecordedRequest routedCountReq = mockWebServer.takeRequest();
+        assertThat(routedCountReq.getPath()).contains("/_count").contains("routing=route-1");
+
+        // 4. @IgnoreTenant / runWithoutTenant 保持轻量 HEAD 与原样放行
+        mockWebServer.enqueue(new MockResponse().setResponseCode(200).setHeader("X-Elastic-Product", "Elasticsearch"));
+        assertThat(searchTemplate.existsById(IgnoredTenantDoc.class, "D-1")).isTrue();
+        assertThat(mockWebServer.takeRequest().getMethod()).isEqualTo("HEAD");
+
+        mockWebServer.enqueue(new MockResponse().setResponseCode(200).setHeader("X-Elastic-Product", "Elasticsearch"));
+        assertThat(TenantContextHolder.runWithoutTenant(() -> searchTemplate.existsById(UserDoc.class, "101"))).isTrue();
+        assertThat(mockWebServer.takeRequest().getMethod()).isEqualTo("HEAD");
+
+        // 5. FILTER_ONLY 模式：点查不做跨租户过滤，existsById 保留 HEAD
+        AtengSearchProperties filterOnlyProps = new AtengSearchProperties();
+        filterOnlyProps.getMultiTenancy().setIsolationMode(io.github.atengk.boot.search.enums.TenantIsolationMode.FILTER_ONLY);
+        SearchTemplate filterOnlyTemplate = new SearchTemplate(driver, filterOnlyProps);
+
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"101\",\"_version\":1,\"_seq_no\":3,\"_primary_term\":1,\"found\":true,\"_source\":{\"id\":101,\"username\":\"bob\",\"tenant_id\":\"tenant_b\"}}"));
+        assertThat(filterOnlyTemplate.getById(UserDoc.class, "101")).isNotNull();
+        mockWebServer.takeRequest();
+
+        mockWebServer.enqueue(new MockResponse().setResponseCode(200).setHeader("X-Elastic-Product", "Elasticsearch"));
+        assertThat(filterOnlyTemplate.existsById(UserDoc.class, "101")).isTrue();
+        assertThat(mockWebServer.takeRequest().getMethod()).isEqualTo("HEAD");
+    }
+
+    @Test
+    @DisplayName("测试 STRICT 模式点删改 _source 裁剪核验防越权、OCC/Routing 保留及 reindex 租户边界保护")
+    void testStrictPointWriteDeleteAntiIdorAndReindexBoundary() throws Exception {
+        TenantContextHolder.setTenantId("tenant_a");
+
+        // 1. STRICT update 归属他租户 -> 前置 GET _source_includes 命中 tenant_b，拦截抛 SEARCH_TENANT_ACCESS_DENIED，不发 _update
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"routed_order_idx\",\"_id\":\"O-1\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_b\"}}"));
+        RoutedOrderDoc updateDoc = RoutedOrderDoc.builder().orderId("O-1").tenantId("route-1").description("PAID").build();
+        assertThatThrownBy(() -> searchTemplate.update(updateDoc, false, io.github.atengk.boot.search.model.OccVersion.of(7L, 2L)))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        RecordedRequest preGetUpdate = mockWebServer.takeRequest();
+        assertThat(preGetUpdate.getMethod()).isEqualTo("GET");
+        assertThat(preGetUpdate.getPath()).contains("_source_includes=tenant_id").contains("routing=route-1");
+
+        // 2. STRICT update (docAsUpsert=false) 文档不存在 -> 返回 false，不发 _update
+        mockWebServer.enqueue(esResponse(404, "{\"_index\":\"routed_order_idx\",\"_id\":\"O-404\",\"found\":false}"));
+        RoutedOrderDoc missingDoc = RoutedOrderDoc.builder().orderId("O-404").tenantId("route-1").description("PAID").build();
+        assertThat(searchTemplate.update(missingDoc, false, (io.github.atengk.boot.search.model.OccVersion) null)).isFalse();
+        mockWebServer.takeRequest();
+
+        // 3. STRICT update 同租户校验通过 -> 放行原始 _update 并完整保留 OccVersion 与 routing 及租户列注入
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"routed_order_idx\",\"_id\":\"O-1\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_a\"}}"));
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"routed_order_idx\",\"_id\":\"O-1\",\"_version\":8,\"result\":\"updated\",\"_seq_no\":8,\"_primary_term\":2,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        assertThat(searchTemplate.update(updateDoc, false, io.github.atengk.boot.search.model.OccVersion.of(7L, 2L))).isTrue();
+        mockWebServer.takeRequest(); // pre-check GET
+        RecordedRequest actualUpdateReq = mockWebServer.takeRequest();
+        assertThat(actualUpdateReq.getPath()).contains("/_update/O-1").contains("if_seq_no=7").contains("if_primary_term=2").contains("routing=route-1");
+        assertThat(actualUpdateReq.getBody().readUtf8()).contains("\"tenant_id\":\"tenant_a\"");
+
+        // 4. STRICT deleteById 归属他租户 -> 前置 GET 拦截抛 SEARCH_TENANT_ACCESS_DENIED
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"routed_order_idx\",\"_id\":\"O-2\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_b\"}}"));
+        assertThatThrownBy(() -> searchTemplate.deleteById(RoutedOrderDoc.class, "O-2", "route-2"))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        RecordedRequest preGetDel = mockWebServer.takeRequest();
+        assertThat(preGetDel.getPath()).contains("_source_includes=tenant_id").contains("routing=route-2");
+
+        // 5. STRICT deleteById 不存在返回 false；同租户校验通过放行 DELETE 并保留 routing
+        mockWebServer.enqueue(esResponse(404, "{\"_index\":\"routed_order_idx\",\"_id\":\"O-404\",\"found\":false}"));
+        assertThat(searchTemplate.deleteById(RoutedOrderDoc.class, "O-404", "route-1")).isFalse();
+        mockWebServer.takeRequest();
+
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"routed_order_idx\",\"_id\":\"O-1\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_a\"}}"));
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"routed_order_idx\",\"_id\":\"O-1\",\"_version\":2,\"result\":\"deleted\",\"_seq_no\":2,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        assertThat(searchTemplate.deleteById(RoutedOrderDoc.class, "O-1", "route-1")).isTrue();
+        mockWebServer.takeRequest(); // pre-check GET
+        RecordedRequest actualDelReq = mockWebServer.takeRequest();
+        assertThat(actualDelReq.getMethod()).isEqualTo("DELETE");
+        assertThat(actualDelReq.getPath()).contains("routing=route-1");
+
+        // 6. STRICT deleteBatch: 前置 mget _source 裁剪检测到他租户文档立即拦截抛异常，同租户与未命中则放行 bulk
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "docs": [
+                    {"_index":"user_idx","_id":"1","found":true,"_source":{"tenant_id":"tenant_a"}},
+                    {"_index":"user_idx","_id":"2","found":true,"_source":{"tenant_id":"tenant_b"}}
+                  ]
+                }
+                """));
+        assertThatThrownBy(() -> searchTemplate.deleteBatch(UserDoc.class, List.of("1", "2")))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+        RecordedRequest mgetPreDel = mockWebServer.takeRequest();
+        assertThat(mgetPreDel.getPath()).contains("/_mget").contains("_source_includes=tenant_id");
+
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "docs": [
+                    {"_index":"user_idx","_id":"1","found":true,"_source":{"tenant_id":"tenant_a"}},
+                    {"_index":"user_idx","_id":"999","found":false}
+                  ]
+                }
+                """));
+        mockWebServer.enqueue(esResponse(200, "{\"took\":1,\"errors\":false,\"items\":[{\"delete\":{\"_index\":\"user_idx\",\"_id\":\"1\",\"status\":200,\"result\":\"deleted\"}},{\"delete\":{\"_index\":\"user_idx\",\"_id\":\"999\",\"status\":404,\"result\":\"not_found\"}}]}"));
+        SearchBulkResult bulkDelRes = searchTemplate.deleteBatch(UserDoc.class, List.of("1", "999"));
+        assertThat(bulkDelRes.getSuccessCount()).isEqualTo(2);
+        mockWebServer.takeRequest(); // mget
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_bulk");
+
+        // 7. FILTER_ONLY 模式下点删改直通，不发前置核验 GET
+        AtengSearchProperties filterOnlyProps = new AtengSearchProperties();
+        filterOnlyProps.getMultiTenancy().setIsolationMode(io.github.atengk.boot.search.enums.TenantIsolationMode.FILTER_ONLY);
+        SearchTemplate filterOnlyTemplate = new SearchTemplate(driver, filterOnlyProps);
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"2\",\"_version\":2,\"result\":\"deleted\",\"_seq_no\":2,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        assertThat(filterOnlyTemplate.deleteById(UserDoc.class, "2")).isTrue();
+        assertThat(mockWebServer.takeRequest().getMethod()).isEqualTo("DELETE");
+
+        // 8. reindex 自动注入租户边界过滤；携带跨租户过滤条件时在 STRICT 下阻断
+        mockWebServer.enqueue(esResponse(200, "{\"took\":5,\"timed_out\":false,\"total\":3,\"created\":3,\"updated\":0,\"deleted\":0,\"batches\":1,\"version_conflicts\":0,\"noops\":0,\"failures\":[]}"));
+        assertThat(searchTemplate.indices().reindex("order_v1", "order_v2")).isTrue();
+        RecordedRequest reindexReq = mockWebServer.takeRequest();
+        assertThat(reindexReq.getBody().readUtf8()).contains("\"term\":{\"tenant_id\":{\"value\":\"tenant_a\"}}");
+
+        SearchQuery crossTenantReindexQuery = SearchQueryBuilder.create().term("tenant_id", "tenant_b").build();
+        assertThatThrownBy(() -> searchTemplate.indices().reindex("order_v1", "order_v2", crossTenantReindexQuery))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+
+        // 9. deleteByQuery 携带跨租户过滤条件在 STRICT 下同样立即拦截，且 @IgnoreTenant 实体放行
+        assertThatThrownBy(() -> searchTemplate.deleteByQuery(crossTenantReindexQuery, UserDoc.class))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+    }
+
+    @Test
+    @DisplayName("测试 size(0) 聚合零命中下发、from/size pageNum 自动推算与 searchAfter 上限熔断")
+    void testSizeZeroFromPageNumAndMaxSearchAfterSizeGuard() throws Exception {
+        // 1. size(0) 必须真实生成 "size":0 且不抛异常；负数 size 快速失败
+        assertThatThrownBy(() -> SearchQueryBuilder.create().size(-1))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        SearchQuery aggOnlyQuery = SearchQueryBuilder.create()
+                .matchAll()
+                .size(0)
+                .avgAggregation("avg_age", "age")
+                .build();
+        assertThat(aggOnlyQuery.getSize()).isEqualTo(0);
+        assertThat(aggOnlyQuery.getPageNum()).isEqualTo(1);
+
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 1,
+                  "timed_out": false,
+                  "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                  "hits": {"total": {"value": 10, "relation": "eq"}, "hits": []},
+                  "aggregations": {"avg#avg_age": {"value": 25.0}}
+                }
+                """));
+        SearchPage<UserDoc> aggPage = searchTemplate.search(aggOnlyQuery, UserDoc.class);
+        assertThat(aggPage.getHits()).isEmpty();
+        assertThat(aggPage.getPageSize()).isEqualTo(0);
+        assertThat(aggPage.getTotalPages()).isEqualTo(0L);
+        RecordedRequest aggReq = mockWebServer.takeRequest();
+        assertThat(aggReq.getBody().readUtf8()).contains("\"size\":0");
+
+        // 2. 仅通过 from / size 设置偏移时同步推算 pageNum（不论调用顺序）
+        SearchQuery offsetFirst = SearchQueryBuilder.create().from(20).size(10).build();
+        assertThat(offsetFirst.getPageNum()).isEqualTo(3);
+        SearchQuery sizeFirst = SearchQueryBuilder.create().size(10).from(30).build();
+        assertThat(sizeFirst.getPageNum()).isEqualTo(4);
+
+        // 3. searchAfter 单页 size 超过 maxSearchAfterSize 立即触发 SearchPaginationExceededException
+        AtengSearchProperties strictPageProps = new AtengSearchProperties();
+        strictPageProps.getPagination().setMaxSearchAfterSize(50);
+        SearchTemplate limitedTemplate = new SearchTemplate(driver, strictPageProps);
+        SearchQuery scrollQuery = SearchQueryBuilder.create().matchAll().orderByAsc("id").build();
+
+        assertThatThrownBy(() -> limitedTemplate.searchAfter(scrollQuery, 51, UserDoc.class))
+                .isInstanceOf(SearchPaginationExceededException.class);
+    }
+
+    @Test
+    @DisplayName("测试 PointInTime(PIT) 生命周期、异常确定性关闭、OpenSearch 方言与上限熔断")
+    void testPointInTimeLifecycleAndOpenSearchDialect() throws Exception {
+        // 1. Elasticsearch executeWithPointInTime 正常路径：open -> searchAfterWithPit -> close
+        mockWebServer.enqueue(esResponse(200, "{\"id\":\"pit-es-123\"}"));
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                  "pit_id": "pit-es-123",
+                  "hits": {
+                    "total": {"value": 1, "relation": "eq"},
+                    "hits": [
+                      {
+                        "_index": "user_idx",
+                        "_id": "1",
+                        "_source": {"id": 1, "username": "alice"},
+                        "sort": ["1", 0]
+                      }
+                    ]
+                  }
+                }
+                """));
+        mockWebServer.enqueue(esResponse(200, "{\"succeeded\":true,\"num_freed\":1}"));
+
+        SearchQuery pitQuery = SearchQueryBuilder.create().matchAll().orderByAsc("id").build();
+        List<UserDoc> users = searchTemplate.executeWithPointInTime(UserDoc.class, java.time.Duration.ofMinutes(2), pit -> {
+            assertThat(pit.pitId()).isEqualTo("pit-es-123");
+            SearchScrollResult<UserDoc> page = searchTemplate.searchAfterWithPit(pit, pitQuery, 10, UserDoc.class);
+            assertThat(page.getDataList()).hasSize(1);
+            assertThat(page.getNextSortValues()).containsExactly("1", "0");
+            return page.getDataList();
+        });
+        assertThat(users).hasSize(1);
+
+        RecordedRequest openReq = mockWebServer.takeRequest();
+        assertThat(openReq.getMethod()).isEqualTo("POST");
+        assertThat(openReq.getPath()).isEqualTo("/user_idx/_pit?keep_alive=2m");
+
+        RecordedRequest pitSearchReq = mockWebServer.takeRequest();
+        assertThat(pitSearchReq.getMethod()).isEqualTo("POST");
+        assertThat(pitSearchReq.getPath()).startsWith("/_search").doesNotContain("user_idx");
+        String pitSearchBody = pitSearchReq.getBody().readUtf8();
+        assertThat(pitSearchBody).contains("\"pit\":{\"id\":\"pit-es-123\",\"keep_alive\":\"2m\"}");
+        assertThat(pitSearchBody).contains("\"size\":10");
+
+        RecordedRequest closeReq = mockWebServer.takeRequest();
+        assertThat(closeReq.getMethod()).isEqualTo("DELETE");
+        assertThat(closeReq.getPath()).isEqualTo("/_pit");
+        assertThat(closeReq.getBody().readUtf8()).contains("\"id\":\"pit-es-123\"");
+
+        // 2. 异常抛出路径仍然确定性关闭 PIT
+        mockWebServer.enqueue(esResponse(200, "{\"id\":\"pit-es-err\"}"));
+        mockWebServer.enqueue(esResponse(200, "{\"succeeded\":true,\"num_freed\":1}"));
+        assertThatThrownBy(() -> searchTemplate.executeWithPointInTime(UserDoc.class, java.time.Duration.ofSeconds(30), pit -> {
+            throw new IllegalStateException("business boom");
+        })).isInstanceOf(IllegalStateException.class).hasMessage("business boom");
+
+        assertThat(mockWebServer.takeRequest().getPath()).isEqualTo("/user_idx/_pit?keep_alive=30s");
+        RecordedRequest errCloseReq = mockWebServer.takeRequest();
+        assertThat(errCloseReq.getMethod()).isEqualTo("DELETE");
+        assertThat(errCloseReq.getPath()).isEqualTo("/_pit");
+        assertThat(errCloseReq.getBody().readUtf8()).contains("\"id\":\"pit-es-err\"");
+
+        // 3. searchAfterWithPit 超过 maxSearchAfterSize 立即熔断；SearchPointInTime 校验空白 index
+        assertThatThrownBy(() -> new io.github.atengk.boot.search.model.SearchPointInTime("pit-1", " ", java.time.Duration.ofMinutes(1)))
+                .isInstanceOf(IllegalArgumentException.class);
+        AtengSearchProperties strictProps = new AtengSearchProperties();
+        strictProps.getPagination().setMaxSearchAfterSize(5);
+        SearchTemplate strictTemplate = new SearchTemplate(driver, strictProps);
+        io.github.atengk.boot.search.model.SearchPointInTime dummyPit =
+                new io.github.atengk.boot.search.model.SearchPointInTime("pit-1", "user_idx", java.time.Duration.ofMinutes(1));
+        assertThatThrownBy(() -> strictTemplate.searchAfterWithPit(dummyPit, pitQuery, 6, UserDoc.class))
+                .isInstanceOf(SearchPaginationExceededException.class);
+
+        // 4. OpenSearch 方言：_search/point_in_time 端点适配
+        AtengSearchProperties osProps = new AtengSearchProperties();
+        osProps.setEngine(SearchEngineType.OPENSEARCH);
+        osProps.setUris(Collections.singletonList("http://" + mockWebServer.getHostName() + ":" + mockWebServer.getPort()));
+        try (ElasticsearchClientDriver osDriver = new ElasticsearchClientDriver(osProps)) {
+            SearchTemplate osTemplate = new SearchTemplate(osDriver, osProps);
+            mockWebServer.enqueue(new MockResponse().setResponseCode(200)
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("{\"pit_id\":\"pit-os-456\",\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+            mockWebServer.enqueue(new MockResponse().setResponseCode(200)
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("{\"pits\":[{\"pit_id\":\"pit-os-456\",\"successful\":true,\"num_freed\":1}]}"));
+
+            io.github.atengk.boot.search.model.SearchPointInTime osPit = osTemplate.openPointInTime(UserDoc.class, java.time.Duration.ofMinutes(1));
+            assertThat(osPit.pitId()).isEqualTo("pit-os-456");
+            assertThat(osTemplate.closePointInTime(osPit)).isTrue();
+
+            RecordedRequest osOpenReq = mockWebServer.takeRequest();
+            assertThat(osOpenReq.getMethod()).isEqualTo("POST");
+            assertThat(osOpenReq.getPath()).isEqualTo("/user_idx/_search/point_in_time?keep_alive=1m");
+
+            RecordedRequest osCloseReq = mockWebServer.takeRequest();
+            assertThat(osCloseReq.getMethod()).isEqualTo("DELETE");
+            assertThat(osCloseReq.getPath()).isEqualTo("/_search/point_in_time");
+            assertThat(osCloseReq.getBody().readUtf8()).contains("\"pit_id\":[\"pit-os-456\"]");
+        }
+    }
+
+    @Test
+    @DisplayName("测试 _source 裁剪、when 条件语法糖、kNN 预过滤方言及 msearch 批量异构检索")
+    void testSourceFilteringWhenKnnPreFilterAndMsearch() throws Exception {
+        // 1. includes / excludes / when / knn pre-filter in ES
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                  "hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}
+                }
+                """));
+        SearchQuery trimmedKnnQuery = SearchQueryBuilder.create()
+                .when(true, q -> q.term("status", "ACTIVE"))
+                .when(false, q -> q.term("status", "DELETED"))
+                .includes("id", "username")
+                .excludes("embedding")
+                .knn("embedding", List.of(0.1f, 0.2f), 5, 20, f -> f.term("category", "tech"))
+                .build();
+        searchTemplate.search(trimmedKnnQuery, UserDoc.class);
+        String esReqBody = mockWebServer.takeRequest().getBody().readUtf8();
+        assertThat(esReqBody).contains("\"_source\":{\"excludes\":[\"embedding\"],\"includes\":[\"id\",\"username\"]}");
+        assertThat(esReqBody).contains("ACTIVE").doesNotContain("DELETED");
+        assertThat(esReqBody).contains("\"knn\":").contains("\"category\"");
+
+        // fetchSource(false)
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 1,
+                  "timed_out": false,
+                  "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                  "hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}
+                }
+                """));
+        SearchQuery noSourceQuery = SearchQueryBuilder.create().matchAll().fetchSource(false).build();
+        searchTemplate.search(noSourceQuery, UserDoc.class);
+        assertThat(mockWebServer.takeRequest().getBody().readUtf8()).contains("\"_source\":false");
+
+        // 2. OpenSearch kNN pre-filter dialect
+        AtengSearchProperties osProps = new AtengSearchProperties();
+        osProps.setEngine(SearchEngineType.OPENSEARCH);
+        osProps.setUris(Collections.singletonList("http://" + mockWebServer.getHostName() + ":" + mockWebServer.getPort()));
+        try (ElasticsearchClientDriver osDriver = new ElasticsearchClientDriver(osProps)) {
+            SearchTemplate osTemplate = new SearchTemplate(osDriver, osProps);
+            mockWebServer.enqueue(new MockResponse().setResponseCode(200)
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("{\"took\":1,\"timed_out\":false,\"_shards\":{\"total\":1,\"successful\":1,\"skipped\":0,\"failed\":0},\"hits\":{\"total\":{\"value\":0,\"relation\":\"eq\"},\"hits\":[]}}"));
+            osTemplate.search(trimmedKnnQuery, UserDoc.class);
+            String osReqBody = mockWebServer.takeRequest().getBody().readUtf8();
+            assertThat(osReqBody).contains("\"knn\"").contains("\"filter\"").contains("\"category\"");
+        }
+
+        // 3. msearch 批量异构检索：空入参返回空集合；租户自动注入；窗口超限熔断；Interceptor + Metrics
+        assertThat(searchTemplate.msearch(Collections.emptyList(), UserDoc.class)).isEmpty();
+
+        SearchQuery overflowQuery = SearchQueryBuilder.create().from(9995).size(10).build();
+        assertThatThrownBy(() -> searchTemplate.msearch(List.of(overflowQuery), UserDoc.class))
+                .isInstanceOf(SearchPaginationExceededException.class);
+
+        TenantContextHolder.setTenantId("tenant_m");
+        io.micrometer.core.instrument.simple.SimpleMeterRegistry meterRegistry =
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        io.github.atengk.boot.search.metrics.SearchMetrics metrics =
+                new io.github.atengk.boot.search.metrics.SearchMetrics(meterRegistry);
+        java.util.List<String> interceptedOps = new java.util.ArrayList<>();
+        io.github.atengk.boot.search.spi.SearchInterceptor recorder = new io.github.atengk.boot.search.spi.SearchInterceptor() {
+            @Override
+            public void beforeExecute(io.github.atengk.boot.search.spi.SearchInvocationContext context) {
+                interceptedOps.add(context.getOperation());
+            }
+        };
+        SearchTemplate msearchTemplate = new SearchTemplate(driver, new AtengSearchProperties(), metrics, List.of(recorder));
+
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 5,
+                  "responses": [
+                    {
+                      "took": 2,
+                      "timed_out": false,
+                      "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                      "hits": {
+                        "total": {"value": 1, "relation": "eq"},
+                        "hits": [{"_index": "user_idx", "_id": "1", "_score": 1.2, "_source": {"id": 1, "username": "alice"}}]
+                      }
+                    },
+                    {
+                      "took": 3,
+                      "timed_out": false,
+                      "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                      "hits": {"total": {"value": 5, "relation": "eq"}, "hits": []},
+                      "aggregations": {"avg#avg_age": {"value": 30.0}}
+                    }
+                  ]
+                }
+                """));
+
+        SearchQuery q1 = SearchQueryBuilder.create().match("username", "alice").includes("id", "username").build();
+        SearchQuery q2 = SearchQueryBuilder.create().matchAll().size(0).avgAggregation("avg_age", "age").build();
+        List<SearchPage<UserDoc>> pages = msearchTemplate.msearch(List.of(q1, q2), UserDoc.class);
+
+        assertThat(pages).hasSize(2);
+        assertThat(pages.get(0).getDataList()).hasSize(1);
+        assertThat(pages.get(0).getDataList().get(0).getUsername()).isEqualTo("alice");
+        assertThat(pages.get(1).getHits()).isEmpty();
+        assertThat(pages.get(1).getAggregations()).containsKey("avg_age");
+
+        RecordedRequest msearchReq = mockWebServer.takeRequest();
+        assertThat(msearchReq.getPath()).contains("/_msearch");
+        String msearchBody = msearchReq.getBody().readUtf8();
+        assertThat(msearchBody).contains("\"tenant_id\":{\"value\":\"tenant_m\"}");
+        assertThat(msearchBody).contains("\"size\":0");
+        assertThat(interceptedOps).containsExactly("msearch");
+        assertThat(meterRegistry.find("ateng.search.operation.time").tag("operation", "msearch").timer()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("测试 HybridSearch 混合检索：CLIENT_RRF 零依赖融合、CLIENT_WEIGHTED 加权与 NATIVE_RRF 方言边界")
+    void testHybridSearchRrfWeightedAndNativeBoundary() throws Exception {
+        TenantContextHolder.setTenantId("tenant_h");
+        SearchQuery textQuery = SearchQueryBuilder.create()
+                .match("username", "alice")
+                .build();
+        List<Float> vec = List.of(0.1f, 0.2f, 0.3f);
+
+        // 1. CLIENT_RRF（默认零许可证模式）：单次 _msearch 召回 BM25=[1,2], kNN=[3,1] -> RRF(k=60) 顺序应为 [1, 3, 2]
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 4,
+                  "responses": [
+                    {
+                      "took": 2,
+                      "timed_out": false,
+                      "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                      "hits": {
+                        "total": {"value": 2, "relation": "eq"},
+                        "hits": [
+                          {"_index": "user_idx", "_id": "1", "_score": 5.0, "_source": {"id": 1, "username": "doc1"}, "highlight": {"username": ["<em>doc1</em>"]}},
+                          {"_index": "user_idx", "_id": "2", "_score": 3.0, "_source": {"id": 2, "username": "doc2"}}
+                        ]
+                      }
+                    },
+                    {
+                      "took": 2,
+                      "timed_out": false,
+                      "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                      "hits": {
+                        "total": {"value": 2, "relation": "eq"},
+                        "hits": [
+                          {"_index": "user_idx", "_id": "3", "_score": 0.9, "_source": {"id": 3, "username": "doc3"}},
+                          {"_index": "user_idx", "_id": "1", "_score": 0.8, "_source": {"id": 1, "username": "doc1"}}
+                        ]
+                      }
+                    }
+                  ]
+                }
+                """));
+
+        io.github.atengk.boot.search.model.HybridSearchOptions rrfOptions =
+                io.github.atengk.boot.search.model.HybridSearchOptions.builder()
+                        .mode(io.github.atengk.boot.search.enums.SearchHybridMode.CLIENT_RRF)
+                        .rrfRankConstant(60)
+                        .topK(5)
+                        .build();
+        SearchPage<UserDoc> rrfPage = searchTemplate.hybridSearch(textQuery, "embedding", vec, 5, 20, rrfOptions, UserDoc.class);
+        assertThat(rrfPage.getHits()).extracting(SearchHit::getId).containsExactly("1", "3", "2");
+        assertThat(rrfPage.getTotal()).isEqualTo(3L);
+        assertThat(rrfPage.getHits().get(0).getScore()).isCloseTo(1.0 / 61.0 + 1.0 / 62.0, org.assertj.core.data.Offset.offset(1e-9));
+        assertThat(rrfPage.getHits().get(0).getHighlightFields()).containsKey("username");
+
+        // topK / windowSize 超出 maxResultWindow 触发熔断
+        io.github.atengk.boot.search.model.HybridSearchOptions overflowHybrid =
+                io.github.atengk.boot.search.model.HybridSearchOptions.builder().topK(10001).build();
+        assertThatThrownBy(() -> searchTemplate.hybridSearch(textQuery, "embedding", vec, 5, 20, overflowHybrid, UserDoc.class))
+                .isInstanceOf(SearchPaginationExceededException.class);
+
+        RecordedRequest rrfReq = mockWebServer.takeRequest();
+        assertThat(rrfReq.getPath()).contains("/_msearch");
+        String rrfBody = rrfReq.getBody().readUtf8();
+        assertThat(rrfBody).contains("\"tenant_id\":{\"value\":\"tenant_h\"}");
+        assertThat(rrfBody).contains("\"knn\":").contains("\"filter\"");
+
+        // 2. CLIENT_WEIGHTED：BM25=[1(10.0), 2(5.0)], kNN=[2(0.8), 3(0.4)], textWeight=0.3, vectorWeight=0.7 -> [2(0.85), 3(0.35), 1(0.30)]
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 4,
+                  "responses": [
+                    {
+                      "took": 2,
+                      "timed_out": false,
+                      "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                      "hits": {
+                        "total": {"value": 2, "relation": "eq"},
+                        "hits": [
+                          {"_index": "user_idx", "_id": "1", "_score": 10.0, "_source": {"id": 1, "username": "doc1"}},
+                          {"_index": "user_idx", "_id": "2", "_score": 5.0, "_source": {"id": 2, "username": "doc2"}}
+                        ]
+                      }
+                    },
+                    {
+                      "took": 2,
+                      "timed_out": false,
+                      "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                      "hits": {
+                        "total": {"value": 2, "relation": "eq"},
+                        "hits": [
+                          {"_index": "user_idx", "_id": "2", "_score": 0.8, "_source": {"id": 2, "username": "doc2"}},
+                          {"_index": "user_idx", "_id": "3", "_score": 0.4, "_source": {"id": 3, "username": "doc3"}}
+                        ]
+                      }
+                    }
+                  ]
+                }
+                """));
+        io.github.atengk.boot.search.model.HybridSearchOptions weightedOptions =
+                io.github.atengk.boot.search.model.HybridSearchOptions.builder()
+                        .mode(io.github.atengk.boot.search.enums.SearchHybridMode.CLIENT_WEIGHTED)
+                        .textWeight(0.3)
+                        .vectorWeight(0.7)
+                        .topK(3)
+                        .build();
+        SearchPage<UserDoc> weightedPage = searchTemplate.hybridSearch(textQuery, "embedding", vec, 5, 20, weightedOptions, UserDoc.class);
+        assertThat(weightedPage.getHits()).extracting(SearchHit::getId).containsExactly("2", "3", "1");
+        assertThat(weightedPage.getHits().get(0).getScore()).isCloseTo(0.85, org.assertj.core.data.Offset.offset(1e-9));
+        mockWebServer.takeRequest();
+
+        // 3. NATIVE_RRF：Elasticsearch 发送 rank.rrf；OpenSearch 明确拒绝并快速失败
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                  "hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}
+                }
+                """));
+        io.github.atengk.boot.search.model.HybridSearchOptions nativeOptions =
+                io.github.atengk.boot.search.model.HybridSearchOptions.builder()
+                        .mode(io.github.atengk.boot.search.enums.SearchHybridMode.NATIVE_RRF)
+                        .rrfRankConstant(60)
+                        .windowSize(50)
+                        .topK(10)
+                        .build();
+        searchTemplate.hybridSearch(textQuery, "embedding", vec, 5, 20, nativeOptions, UserDoc.class);
+        String nativeBody = mockWebServer.takeRequest().getBody().readUtf8();
+        assertThat(nativeBody).contains("\"rank\":{\"rrf\":{\"rank_constant\":60,\"window_size\":50}}");
+
+        AtengSearchProperties osProps = new AtengSearchProperties();
+        osProps.setEngine(SearchEngineType.OPENSEARCH);
+        osProps.setUris(Collections.singletonList("http://" + mockWebServer.getHostName() + ":" + mockWebServer.getPort()));
+        try (ElasticsearchClientDriver osDriver = new ElasticsearchClientDriver(osProps)) {
+            SearchTemplate osTemplate = new SearchTemplate(osDriver, osProps);
+            assertThatThrownBy(() -> osTemplate.hybridSearch(textQuery, "embedding", vec, 5, 20, nativeOptions, UserDoc.class))
+                    .isInstanceOf(SearchException.class)
+                    .extracting(ex -> ((SearchException) ex).getResultCode())
+                    .isEqualTo(SearchResultCode.SEARCH_BAD_REQUEST);
+        }
+    }
+
+    @io.github.atengk.boot.search.annotation.SearchIndex("article_idx")
+    @lombok.Data
+    @lombok.NoArgsConstructor
+    @lombok.AllArgsConstructor
+    static class PlainArticleDoc {
+        @io.github.atengk.boot.search.annotation.SearchId
+        private String id;
+        private String title;
+        private String summary;
+        private String tenant_id;
+    }
+
+    @lombok.Data
+    @lombok.NoArgsConstructor
+    @lombok.AllArgsConstructor
+    static class ArticleHighlightVo {
+        private String id;
+        private String title;
+        private String summary;
+        @io.github.atengk.boot.search.annotation.HighlightField(target = "title")
+        private String highlightedTitle;
+        @io.github.atengk.boot.search.annotation.HighlightField(target = "summary")
+        private String highlightedSummary;
+    }
+
+    @Test
+    @DisplayName("测试 VO 视图级 @HighlightField 无污染投影与 SearchHit/SearchPage.map 转换")
+    void testVoHighlightProjectionWithoutEntityPollution() throws Exception {
+        TenantContextHolder.setTenantId("tenant_v");
+        String searchRespJson = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
+                  "hits": {
+                    "total": {"value": 1, "relation": "eq"},
+                    "hits": [
+                      {
+                        "_index": "article_idx",
+                        "_id": "A-1",
+                        "_score": 2.5,
+                        "_source": {
+                          "id": "A-1",
+                          "title": "Spring Boot Search",
+                          "summary": "Industrial search starter",
+                          "tenant_id": "tenant_v"
+                        },
+                        "highlight": {
+                          "title": ["<em>Spring</em> Boot Search"],
+                          "summary": ["Industrial <em>search</em> starter"]
+                        },
+                        "sort": ["A-1"]
+                      }
+                    ]
+                  }
+                }
+                """;
+
+        // 1. SearchTemplate.search(query, Entity.class, Vo.class) 自动解析索引与租户过滤并安全投影 VO 高亮
+        mockWebServer.enqueue(esResponse(200, searchRespJson));
+        SearchQuery query = SearchQueryBuilder.create()
+                .match("title", "Spring")
+                .highlight("title", "summary")
+                .build();
+        SearchPage<ArticleHighlightVo> voPage = searchTemplate.search(query, PlainArticleDoc.class, ArticleHighlightVo.class);
+        assertThat(voPage.getHits()).hasSize(1);
+        ArticleHighlightVo vo = voPage.getHits().get(0).getContent();
+        assertThat(vo.getTitle()).isEqualTo("Spring Boot Search");
+        assertThat(vo.getHighlightedTitle()).isEqualTo("<em>Spring</em> Boot Search");
+        assertThat(vo.getHighlightedSummary()).isEqualTo("Industrial <em>search</em> starter");
+        assertThat(voPage.getHits().get(0).getScore()).isEqualTo(2.5);
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        assertThat(req.getPath()).contains("/article_idx/_search");
+        assertThat(req.getBody().readUtf8()).contains("\"tenant_id\":{\"value\":\"tenant_v\"}");
+
+        // 2. SearchItemDoc (即使实体本身带有 @HighlightField) 在投影模式下也不被原地篡改
+        mockWebServer.enqueue(esResponse(200, searchRespJson));
+        SearchPage<ArticleHighlightVo> itemVoPage = searchTemplate.search(query, SearchItemDoc.class, ArticleHighlightVo.class);
+        assertThat(itemVoPage.getDataList()).hasSize(1);
+        assertThat(itemVoPage.getDataList().get(0).getHighlightedTitle()).isEqualTo("<em>Spring</em> Boot Search");
+        mockWebServer.takeRequest();
+
+        // 3. SearchPage.map / SearchHit.map 转换同时回填 VO @HighlightField 且不污染原实体
+        PlainArticleDoc origin = new PlainArticleDoc("A-1", "Spring Boot Search", "Industrial search starter", "tenant_v");
+        SearchHit<PlainArticleDoc> rawHit = SearchHit.<PlainArticleDoc>builder()
+                .id("A-1")
+                .index("article_idx")
+                .content(origin)
+                .score(3.0)
+                .highlightFields(Map.of("title", List.of("<em>Spring</em> Boot Search")))
+                .build();
+        SearchPage<PlainArticleDoc> rawPage = SearchPage.<PlainArticleDoc>builder()
+                .hits(List.of(rawHit))
+                .total(1L)
+                .pageNum(1)
+                .pageSize(10)
+                .build();
+
+        SearchPage<ArticleHighlightVo> mappedPage = rawPage.map(doc -> {
+            ArticleHighlightVo target = new ArticleHighlightVo();
+            target.setId(doc.getId());
+            target.setTitle(doc.getTitle());
+            target.setSummary(doc.getSummary());
+            return target;
+        });
+        assertThat(origin.getTitle()).isEqualTo("Spring Boot Search");
+        assertThat(mappedPage.getHits()).hasSize(1);
+        assertThat(mappedPage.getHits().get(0).getContent().getTitle()).isEqualTo("Spring Boot Search");
+        assertThat(mappedPage.getHits().get(0).getContent().getHighlightedTitle()).isEqualTo("<em>Spring</em> Boot Search");
+        assertThat(mappedPage.getHits().get(0).getScore()).isEqualTo(3.0);
+    }
+
+    @Test
+    @DisplayName("测试 SearchRefreshPolicy、createIfAbsent 防覆盖写与参数化安全 updateByQuery（含租户隔离与脚本注入防线）")
+    void testRefreshPolicyCreateIfAbsentAndParameterizedUpdateByQuery() throws Exception {
+        TenantContextHolder.setTenantId("tenant_u");
+
+        // 1. SearchRefreshPolicy 枚举编码与 index/update/deleteById/batch 策略参数传递
+        assertThat(io.github.atengk.boot.search.enums.SearchRefreshPolicy.WAIT_UNTIL.getCode()).isEqualTo("wait_for");
+        assertThat(io.github.atengk.boot.search.enums.SearchRefreshPolicy.IMMEDIATE.getCode()).isEqualTo("true");
+        assertThat(io.github.atengk.boot.search.enums.SearchRefreshPolicy.NONE.getCode()).isEqualTo("false");
+
+        mockWebServer.enqueue(esResponse(404, "{\"_index\":\"user_idx\",\"_id\":\"10\",\"found\":false}"));
+        mockWebServer.enqueue(esResponse(201, "{\"_index\":\"user_idx\",\"_id\":\"10\",\"_version\":1,\"result\":\"created\",\"_seq_no\":1,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        UserDoc user = UserDoc.builder().id(10L).username("bob").age(20).build();
+        searchTemplate.save(user, io.github.atengk.boot.search.enums.SearchRefreshPolicy.WAIT_UNTIL);
+        mockWebServer.takeRequest(); // pre-check GET
+        RecordedRequest saveWaitReq = mockWebServer.takeRequest();
+        assertThat(saveWaitReq.getPath()).contains("refresh=wait_for");
+
+        // 2. createIfAbsent 发送 op_type=create；重复创建返回 409 转为 SearchVersionConflictException
+        mockWebServer.enqueue(esResponse(404, "{\"_index\":\"user_idx\",\"_id\":\"11\",\"found\":false}"));
+        mockWebServer.enqueue(esResponse(201, "{\"_index\":\"user_idx\",\"_id\":\"11\",\"_version\":1,\"result\":\"created\",\"_seq_no\":1,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"));
+        UserDoc newUser = UserDoc.builder().id(11L).username("carol").age(22).build();
+        assertThat(searchTemplate.createIfAbsent(newUser, io.github.atengk.boot.search.enums.SearchRefreshPolicy.IMMEDIATE)).isEqualTo("11");
+        mockWebServer.takeRequest(); // pre-check GET
+        RecordedRequest createReq = mockWebServer.takeRequest();
+        assertThat(createReq.getPath()).contains("op_type=create").contains("refresh=true");
+
+        mockWebServer.enqueue(esResponse(200, "{\"_index\":\"user_idx\",\"_id\":\"11\",\"found\":true,\"_source\":{\"tenant_id\":\"tenant_u\"}}"));
+        mockWebServer.enqueue(esResponse(409, "{\"error\":{\"type\":\"version_conflict_engine_exception\",\"reason\":\"document already exists\"},\"status\":409}"));
+        assertThatThrownBy(() -> searchTemplate.createIfAbsent(newUser))
+                .isInstanceOf(SearchVersionConflictException.class);
+        mockWebServer.takeRequest();
+        mockWebServer.takeRequest();
+
+        // 3. 参数化 updateByQuery：防 Painless 注入与租户隔离注入
+        assertThatThrownBy(() -> searchTemplate.updateByQuery(
+                SearchQueryBuilder.create().matchAll().build(),
+                Map.of("age; ctx._source.clear()", 99),
+                UserDoc.class))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThatThrownBy(() -> searchTemplate.updateByQuery(
+                SearchQueryBuilder.create().matchAll().build(),
+                Map.of("tenant_id", "tenant_evil"),
+                UserDoc.class))
+                .isInstanceOf(SearchException.class)
+                .extracting(e -> ((SearchException) e).getResultCode())
+                .isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED);
+
+        mockWebServer.enqueue(esResponse(200, """
+                {
+                  "took": 5,
+                  "timed_out": false,
+                  "total": 3,
+                  "updated": 3,
+                  "deleted": 0,
+                  "batches": 1,
+                  "version_conflicts": 0,
+                  "noops": 0,
+                  "retries": {"bulk": 0, "search": 0},
+                  "throttled_millis": 0,
+                  "requests_per_second": -1.0,
+                  "throttled_until_millis": 0,
+                  "failures": []
+                }
+                """));
+        long updated = searchTemplate.updateByQuery(
+                SearchQueryBuilder.create().term("username", "bob").build(),
+                Map.of("age", 30),
+                UserDoc.class,
+                io.github.atengk.boot.search.enums.SearchRefreshPolicy.IMMEDIATE);
+        assertThat(updated).isEqualTo(3L);
+        RecordedRequest ubqReq = mockWebServer.takeRequest();
+        assertThat(ubqReq.getPath()).contains("/user_idx/_update_by_query").contains("refresh=true");
+        String ubqBody = ubqReq.getBody().readUtf8();
+        assertThat(ubqBody).contains("\"conflicts\":\"proceed\"");
+        assertThat(ubqBody).contains("\"lang\":\"painless\"");
+        assertThat(ubqBody).contains("\"params\":{\"p0\":30}");
+        assertThat(ubqBody).contains("\"tenant_id\":{\"value\":\"tenant_u\"}");
+    }
+
+    @Test
+    @DisplayName("测试 Suggester、Rescore、InnerHits、高阶聚合与强类型结果模型")
+    void testSuggesterRescoreInnerHitsAndTypedAggregations() throws Exception {
+        String searchResponseJson = """
+                {
+                  "took": 6,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": {
+                    "total": { "value": 1, "relation": "eq" },
+                    "hits": [
+                      {
+                        "_index": "user_idx",
+                        "_id": "u-100",
+                        "_score": 5.5,
+                        "_source": { "id": 100, "username": "Alice", "age": 28 },
+                        "inner_hits": {
+                          "matched_skus": {
+                            "hits": {
+                              "total": { "value": 1, "relation": "eq" },
+                              "hits": [
+                                {
+                                  "_index": "user_idx",
+                                  "_id": "u-100",
+                                  "_score": 3.2,
+                                  "_source": { "skuId": "sku-9", "color": "Titanium", "price": 5999 }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "suggest": {
+                    "completion#title_completion": [
+                      {
+                        "text": "mac",
+                        "offset": 0,
+                        "length": 3,
+                        "options": [
+                          { "text": "MacBook Pro 16", "_index": "user_idx", "_id": "u-100", "_score": 2.0 }
+                        ]
+                      }
+                    ],
+                    "term#title_term": [
+                      {
+                        "text": "macbok",
+                        "offset": 0,
+                        "length": 6,
+                        "options": [
+                          { "text": "macbook", "score": 0.83, "freq": 42 }
+                        ]
+                      }
+                    ],
+                    "phrase#title_phrase": [
+                      {
+                        "text": "macbok pro",
+                        "offset": 0,
+                        "length": 10,
+                        "options": [
+                          { "text": "macbook pro", "score": 0.91, "highlighted": "<em>macbook</em> pro" }
+                        ]
+                      }
+                    ]
+                  },
+                  "aggregations": {
+                    "cardinality#unique_users": { "value": 42 },
+                    "stats#age_stats": { "count": 10, "min": 18.0, "max": 60.0, "avg": 32.5, "sum": 325.0 },
+                    "tdigest_percentiles#latency_pct": { "values": { "50.0": 12.5, "95.0": 88.0, "99.0": 150.2 } },
+                    "filter#error_filter": {
+                      "doc_count": 3,
+                      "cardinality#unique_ip": { "value": 2 }
+                    },
+                    "date_histogram#daily_trend": {
+                      "buckets": [
+                        {
+                          "key_as_string": "2026-11-20T00:00:00.000Z",
+                          "key": 1795132800000,
+                          "doc_count": 5,
+                          "avg#avg_age": { "value": 29.0 }
+                        }
+                      ]
+                    },
+                    "sterms#by_dept": {
+                      "buckets": [
+                        {
+                          "key": "engineering",
+                          "doc_count": 8,
+                          "stats#dept_stats": { "count": 8, "min": 22.0, "max": 45.0, "avg": 31.0, "sum": 248.0 },
+                          "tdigest_percentiles#dept_pct": { "values": { "50.0": 30.0, "95.0": 44.0 } },
+                          "sterms#by_role": {
+                            "buckets": [
+                              { "key": "senior", "doc_count": 3, "min#min_age": { "value": 28.0 } }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+                """;
+        mockWebServer.enqueue(new MockResponse()
+                .setBody(searchResponseJson)
+                .addHeader("Content-Type", "application/json")
+                .addHeader("X-Elastic-Product", "Elasticsearch"));
+
+        SearchQuery query = SearchQuery.builder()
+                .match("username", "Alice")
+                .nested("skus", ChildScoreMode.Max, n -> n.term("skus.color", "Titanium"), "matched_skus", 3)
+                .collapse("dept.keyword", "top_dept_docs", 2)
+                .rescore(100, r -> r.matchPhrase("username", "Alice Pro"), 0.5, 2.0, ScoreMode.Total)
+                .completionSuggest("title_completion", "suggest_field", "mac", 5, true)
+                .termSuggest("title_term", "username", "macbok", 3)
+                .phraseSuggest("title_phrase", "username", "macbok pro", 2)
+                .cardinalityAggregation("unique_users", "userId.keyword")
+                .statsAggregation("age_stats", "age")
+                .percentilesAggregation("latency_pct", "latencyMs", 50.0, 95.0, 99.0)
+                .filterAggregation("error_filter", f -> f.term("status", 500),
+                        sub -> sub.cardinalityAggregation("unique_ip", "clientIp.keyword"))
+                .dateHistogramAggregation("daily_trend", "createTime", CalendarInterval.Day,
+                        sub -> sub.avgAggregation("avg_age", "age"))
+                .termsAggregation("by_dept", "dept.keyword", 10,
+                        sub -> sub.statsAggregation("dept_stats", "age")
+                                .percentilesAggregation("dept_pct", "age", 50.0, 95.0)
+                                .termsAggregation("by_role", "role.keyword", 5,
+                                        leaf -> leaf.minAggregation("min_age", "age")))
+                .build();
+
+        SearchPage<UserDoc> page = searchTemplate.search(query, UserDoc.class);
+
+        // 验证请求体中包含 suggest / rescore / collapse.inner_hits / aggregations / nested.inner_hits
+        RecordedRequest req = mockWebServer.takeRequest();
+        String reqBody = req.getBody().readUtf8();
+        assertThat(reqBody).contains("\"suggest\"").contains("\"title_completion\"").contains("\"title_term\"").contains("\"title_phrase\"");
+        assertThat(reqBody).contains("\"rescore\"").contains("\"window_size\":100").contains("\"rescore_query_weight\":2.0");
+        assertThat(reqBody).contains("\"inner_hits\"").contains("\"matched_skus\"").contains("\"top_dept_docs\"");
+        assertThat(reqBody).contains("\"cardinality\"").contains("\"stats\"").contains("\"percentiles\"");
+
+        // 验证强类型结果模型
+        assertThat(page.getMetricValue("unique_users")).isEqualTo(42.0);
+        assertThat(page.getMetricValue("missing_metric")).isNull();
+
+        SearchNumericStats ageStats = page.getStats("age_stats");
+        assertThat(ageStats).isNotNull();
+        assertThat(ageStats.getCount()).isEqualTo(10L);
+        assertThat(ageStats.getAvg()).isEqualTo(32.5);
+
+        SearchPercentilesResult pct = page.getPercentiles("latency_pct");
+        assertThat(pct).isNotNull();
+        assertThat(pct.getPercentile(95)).isEqualTo(88.0);
+        assertThat(pct.getPercentile(99.0)).isEqualTo(150.2);
+
+        SearchBucket errorFilter = page.getFilterBucket("error_filter");
+        assertThat(errorFilter).isNotNull();
+        assertThat(errorFilter.getDocCount()).isEqualTo(3L);
+        assertThat(errorFilter.getMetricValue("unique_ip")).isEqualTo(2.0);
+
+        List<SearchBucket> trend = page.getDateHistogramBuckets("daily_trend");
+        assertThat(trend).hasSize(1);
+        assertThat(trend.get(0).getKeyAsString()).isEqualTo("2026-11-20T00:00:00.000Z");
+        assertThat(trend.get(0).getMetricValue("avg_age")).isEqualTo(29.0);
+
+        List<SearchBucket> depts = page.getTermsBuckets("by_dept");
+        assertThat(depts).hasSize(1);
+        SearchBucket eng = depts.get(0);
+        assertThat(eng.getKey()).isEqualTo("engineering");
+        assertThat(eng.getStats("dept_stats").getMax()).isEqualTo(45.0);
+        assertThat(eng.getPercentiles("dept_pct").getPercentile(50)).isEqualTo(30.0);
+        assertThat(eng.getTermsBuckets("by_role")).hasSize(1);
+        assertThat(eng.getTermsBuckets("by_role").get(0).getMetricValue("min_age")).isEqualTo(28.0);
+
+        List<SearchSuggestResult> completion = page.getSuggestions("title_completion");
+        assertThat(completion).hasSize(1);
+        assertThat(completion.get(0).getText()).isEqualTo("MacBook Pro 16");
+        assertThat(completion.get(0).getId()).isEqualTo("u-100");
+        assertThat(page.getSuggestions("title_term")).extracting(SearchSuggestResult::getFreq).containsExactly(42L);
+        assertThat(page.getSuggestions("title_phrase")).extracting(SearchSuggestResult::getHighlighted).containsExactly("<em>macbook</em> pro");
+        assertThat(page.getSuggestions("missing_suggest")).isEmpty();
+
+        SearchHit<UserDoc> hit = page.getHits().get(0);
+        List<SearchInnerHit> innerHits = hit.getInnerHits("matched_skus");
+        assertThat(innerHits).hasSize(1);
+        assertThat(innerHits.get(0).getScore()).isEqualTo(3.2);
+        assertThat(innerHits.get(0).getSource()).containsEntry("skuId", "sku-9");
+        assertThat(hit.getInnerHits("missing_inner")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("测试 ComponentTemplate、Settings、Alias 与异步 Task 治理")
+    void testComponentTemplateSettingsAliasesAndAsyncTasks() throws Exception {
+        // 1. putComponentTemplate / existsComponentTemplate / deleteComponentTemplate
+        mockWebServer.enqueue(new MockResponse().setBody("{\"acknowledged\":true}")
+                .addHeader("Content-Type", "application/json")
+                .addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setResponseCode(200)
+                .addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("{\"acknowledged\":true}")
+                .addHeader("Content-Type", "application/json")
+                .addHeader("X-Elastic-Product", "Elasticsearch"));
+
+        boolean compPut = searchTemplate.indices().putComponentTemplate("base_settings_comp", """
+                {
+                  "template": {
+                    "settings": { "number_of_shards": 1, "number_of_replicas": 0 }
+                  }
+                }
+                """);
+        assertThat(compPut).isTrue();
+        assertThat(searchTemplate.indices().existsComponentTemplate("base_settings_comp")).isTrue();
+        assertThat(searchTemplate.indices().deleteComponentTemplate("base_settings_comp")).isTrue();
+
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_component_template/base_settings_comp");
+        assertThat(mockWebServer.takeRequest().getMethod()).isEqualTo("HEAD");
+        assertThat(mockWebServer.takeRequest().getMethod()).isEqualTo("DELETE");
+
+        // 2. getIndexTemplate
+        mockWebServer.enqueue(new MockResponse().setBody("""
+                {
+                  "index_templates": [
+                    {
+                      "name": "logs_tpl",
+                      "index_template": {
+                        "index_patterns": ["logs-*"],
+                        "composed_of": ["base_settings_comp"],
+                        "priority": 100
+                      }
+                    }
+                  ]
+                }
+                """).addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        SearchIndexTemplate tplItem = searchTemplate.indices().getIndexTemplate("logs_tpl");
+        assertThat(tplItem).isNotNull();
+        assertThat(tplItem.getName()).isEqualTo("logs_tpl");
+        assertThat(tplItem.getIndexPatterns()).containsExactly("logs-*");
+        assertThat(tplItem.getComposedOf()).containsExactly("base_settings_comp");
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_index_template/logs_tpl");
+
+        // 3. getSettings / putSettings
+        mockWebServer.enqueue(new MockResponse().setBody("""
+                {
+                  "user_idx": {
+                    "settings": {
+                      "index": {
+                        "number_of_replicas": "1",
+                        "refresh_interval": "1s"
+                      }
+                    }
+                  }
+                }
+                """).addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("{\"acknowledged\":true}")
+                .addHeader("Content-Type", "application/json")
+                .addHeader("X-Elastic-Product", "Elasticsearch"));
+
+        SearchIndexSettings settings = searchTemplate.indices().getSettings("user_idx");
+        assertThat(settings).isNotNull();
+        assertThat(settings.getNumberOfReplicas()).isEqualTo("1");
+        assertThat(settings.getRefreshInterval()).isEqualTo("1s");
+        assertThat(searchTemplate.indices().putSettings("user_idx", "{\"index\":{\"refresh_interval\":\"5s\"}}")).isTrue();
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/user_idx/_settings");
+        RecordedRequest putSettingsReq = mockWebServer.takeRequest();
+        assertThat(putSettingsReq.getMethod()).isEqualTo("PUT");
+        assertThat(putSettingsReq.getPath()).contains("/user_idx/_settings");
+
+        // 4. addAlias / getAliases / removeAlias
+        mockWebServer.enqueue(new MockResponse().setBody("{\"acknowledged\":true}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("""
+                {
+                  "user_v2": {
+                    "aliases": {
+                      "user_alias": { "is_write_index": true }
+                    }
+                  }
+                }
+                """).addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("{\"acknowledged\":true}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+
+        assertThat(searchTemplate.indices().addAlias("user_v2", "user_alias", true)).isTrue();
+        assertThat(searchTemplate.indices().getAliases("user_v2")).containsExactly("user_alias");
+        assertThat(searchTemplate.indices().removeAlias("user_v2", "user_alias")).isTrue();
+        assertThat(mockWebServer.takeRequest().getBody().readUtf8()).contains("\"is_write_index\":true");
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/user_v2/_alias");
+        assertThat(mockWebServer.takeRequest().getBody().readUtf8()).contains("\"remove\"");
+
+        // 5. reindexAsync / waitForTask (1 running -> 1 completed) / cancelTask
+        mockWebServer.enqueue(new MockResponse().setBody("{\"task\":\"node-1:1001\"}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("""
+                {
+                  "completed": false,
+                  "task": {
+                    "node": "node-1",
+                    "id": 1001,
+                    "type": "transport",
+                    "action": "indices:data/write/reindex",
+                    "description": "reindex from [user_v1] to [user_v2]",
+                    "start_time_in_millis": 1700000000000,
+                    "running_time_in_nanos": 5000000,
+                    "cancellable": true,
+                    "cancelled": false,
+                    "headers": {},
+                    "status": {
+                      "total": 100,
+                      "created": 40,
+                      "updated": 10,
+                      "deleted": 0,
+                      "version_conflicts": 0
+                    }
+                  }
+                }
+                """).addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("""
+                {
+                  "completed": true,
+                  "task": {
+                    "node": "node-1",
+                    "id": 1001,
+                    "type": "transport",
+                    "action": "indices:data/write/reindex",
+                    "description": "reindex from [user_v1] to [user_v2]",
+                    "start_time_in_millis": 1700000000000,
+                    "running_time_in_nanos": 9000000,
+                    "cancellable": true,
+                    "cancelled": false,
+                    "headers": {},
+                    "status": {
+                      "total": 100,
+                      "created": 80,
+                      "updated": 20,
+                      "deleted": 0,
+                      "version_conflicts": 1
+                    }
+                  }
+                }
+                """).addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("{\"nodes\":{}}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+
+        String taskId = searchTemplate.indices().reindexAsync("user_v1", "user_v2");
+        assertThat(taskId).isEqualTo("node-1:1001");
+        SearchTaskStatus finalStatus = searchTemplate.indices().waitForTask(taskId, Duration.ofSeconds(5), Duration.ofMillis(20));
+        assertThat(finalStatus.isCompleted()).isTrue();
+        assertThat(finalStatus.getTotal()).isEqualTo(100L);
+        assertThat(finalStatus.getCreated()).isEqualTo(80L);
+        assertThat(finalStatus.getUpdated()).isEqualTo(20L);
+        assertThat(finalStatus.getVersionConflicts()).isEqualTo(1L);
+        assertThat(searchTemplate.indices().cancelTask(taskId)).isTrue();
+
+        assertThat(mockWebServer.takeRequest().getPath()).contains("wait_for_completion=false");
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_tasks/node-1:1001");
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_tasks/node-1:1001");
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_tasks/node-1:1001/_cancel");
+
+        // 6. SearchTemplate.updateByQueryAsync & deleteByQueryAsync
+        TenantContextHolder.setTenantId("tenant_async");
+        mockWebServer.enqueue(new MockResponse().setBody("{\"task\":\"node-1:2002\"}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("{\"task\":\"node-1:2003\"}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+
+        String ubqTaskId = searchTemplate.updateByQueryAsync(
+                SearchQueryBuilder.create().term("username", "Alice").build(),
+                Map.of("age", 31),
+                UserDoc.class);
+        String dbqTaskId = searchTemplate.deleteByQueryAsync(
+                SearchQueryBuilder.create().term("username", "Alice").build(),
+                UserDoc.class);
+
+        assertThat(ubqTaskId).isEqualTo("node-1:2002");
+        assertThat(dbqTaskId).isEqualTo("node-1:2003");
+        RecordedRequest ubqAsyncReq = mockWebServer.takeRequest();
+        assertThat(ubqAsyncReq.getPath()).contains("/_update_by_query").contains("wait_for_completion=false");
+        assertThat(ubqAsyncReq.getBody().readUtf8()).contains("\"tenant_id\":{\"value\":\"tenant_async\"}");
+        assertThat(mockWebServer.takeRequest().getPath()).contains("/_delete_by_query").contains("wait_for_completion=false");
+    }
+
+    @Test
+    @DisplayName("对抗性与边界契约：waitForTask 超时/404/取消/亚毫秒轮询、显式 Painless 脚本防御、RefreshPolicy 全载体与聚合边界")
+    void testAdversarialAndBoundaryContractsFor1132() throws Exception {
+        // 1. waitForTask 超时熔断 -> SEARCH_TIMEOUT_ERROR（独立 Dispatcher 彻底免疫机器抖动）
+        String runningTaskJson = """
+                {
+                  "completed": false,
+                  "task": {
+                    "node": "n1",
+                    "id": 99,
+                    "type": "transport",
+                    "action": "indices:data/write/reindex",
+                    "description": "still running",
+                    "start_time_in_millis": 1700000000000,
+                    "running_time_in_nanos": 1000000,
+                    "cancellable": true,
+                    "cancelled": false,
+                    "headers": {}
+                  }
+                }
+                """;
+        try (MockWebServer timeoutServer = new MockWebServer()) {
+            timeoutServer.setDispatcher(new okhttp3.mockwebserver.Dispatcher() {
+                @Override
+                public MockResponse dispatch(RecordedRequest request) {
+                    return new MockResponse().setBody(runningTaskJson)
+                            .addHeader("Content-Type", "application/json")
+                            .addHeader("X-Elastic-Product", "Elasticsearch");
+                }
+            });
+            timeoutServer.start();
+            AtengSearchProperties timeoutProps = new AtengSearchProperties();
+            timeoutProps.setUris(List.of("http://" + timeoutServer.getHostName() + ":" + timeoutServer.getPort()));
+            timeoutProps.setEngine(SearchEngineType.ELASTICSEARCH);
+            try (ElasticsearchClientDriver timeoutDriver = new ElasticsearchClientDriver(timeoutProps)) {
+                SearchTemplate isolatedTemplate = new SearchTemplate(timeoutDriver, timeoutProps);
+                assertThatThrownBy(() -> isolatedTemplate.indices().waitForTask("n1:99", Duration.ofMillis(30), Duration.ofMillis(10)))
+                        .isInstanceOf(SearchException.class)
+                        .satisfies(ex -> assertThat(((SearchException) ex).getCode()).isEqualTo(SearchResultCode.SEARCH_TIMEOUT_ERROR.getCode()));
+            }
+        }
+
+        // 2. waitForTask 404 任务不存在 + getTaskStatus 返回 null + 非法 Duration + 亚毫秒 pollInterval 不死循环
+        mockWebServer.enqueue(new MockResponse().setResponseCode(404).setBody("{\"error\":{\"type\":\"resource_not_found_exception\",\"reason\":\"task not found\"},\"status\":404}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        assertThat(searchTemplate.indices().getTaskStatus("n1:404")).isNull();
+        mockWebServer.takeRequest();
+
+        mockWebServer.enqueue(new MockResponse().setResponseCode(404).setBody("{\"error\":{\"type\":\"resource_not_found_exception\",\"reason\":\"task not found\"},\"status\":404}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        assertThatThrownBy(() -> searchTemplate.indices().waitForTask("n1:404", Duration.ofSeconds(1), Duration.ofMillis(10)))
+                .isInstanceOf(SearchException.class);
+        mockWebServer.takeRequest();
+
+        assertThatThrownBy(() -> searchTemplate.indices().waitForTask("n1:1", Duration.ZERO, Duration.ofMillis(10)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> searchTemplate.indices().waitForTask("n1:1", Duration.ofSeconds(1), Duration.ofMillis(-1)))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        mockWebServer.enqueue(new MockResponse().setBody(runningTaskJson)
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        mockWebServer.enqueue(new MockResponse().setBody("""
+                {
+                  "completed": false,
+                  "task": {
+                    "node": "n1",
+                    "id": 99,
+                    "type": "transport",
+                    "action": "indices:data/write/reindex",
+                    "description": "cancelled task",
+                    "start_time_in_millis": 1700000000000,
+                    "running_time_in_nanos": 2000000,
+                    "cancellable": true,
+                    "cancelled": true,
+                    "headers": {}
+                  }
+                }
+                """).addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        SearchTaskStatus cancelledStatus = searchTemplate.indices()
+                .waitForTask("n1:99", Duration.ofSeconds(2), Duration.ofNanos(500));
+        assertThat(cancelledStatus.isCancelled()).isTrue();
+        mockWebServer.takeRequest();
+        mockWebServer.takeRequest();
+
+        // 3. 参数化路径白名单严格收敛 & deleteByQueryAsync 空参数 Fast-Fail & 显式 Painless 脚本防跨租户改写
+        TenantContextHolder.setTenantId("tenant_sec");
+        assertThatThrownBy(() -> searchTemplate.updateByQuery(
+                SearchQueryBuilder.create().term("username", "Alice").build(),
+                Map.of("a..b", "bad"),
+                UserDoc.class)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> searchTemplate.updateByQuery(
+                SearchQueryBuilder.create().term("username", "Alice").build(),
+                Map.of("a.", "bad"),
+                UserDoc.class)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> searchTemplate.deleteByQueryAsync((SearchQuery) null, UserDoc.class))
+                .isInstanceOf(NullPointerException.class);
+
+        assertThatThrownBy(() -> searchTemplate.updateByQuery(
+                "user_idx",
+                SearchQueryBuilder.create().term("username", "Alice").build(),
+                "ctx._source['tenant_id'] = 'other'",
+                null,
+                UserDoc.class,
+                SearchRefreshPolicy.NONE))
+                .isInstanceOf(SearchException.class)
+                .satisfies(ex -> assertThat(((SearchException) ex).getCode()).isEqualTo(SearchResultCode.SEARCH_TENANT_ACCESS_DENIED.getCode()));
+
+        // 合法显式 Painless 脚本重载（含 params 绑定、NONE refresh=false 与自动租户隔离注入）
+        mockWebServer.enqueue(new MockResponse().setBody("{\"updated\":3,\"version_conflicts\":0,\"failures\":[]}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        long scriptUpdated = searchTemplate.updateByQuery(
+                "user_idx",
+                SearchQueryBuilder.create().term("username", "Alice").build(),
+                "ctx._source.age += params.delta",
+                Map.of("delta", 1),
+                UserDoc.class,
+                SearchRefreshPolicy.NONE);
+        assertThat(scriptUpdated).isEqualTo(3L);
+        RecordedRequest scriptReq = mockWebServer.takeRequest();
+        assertThat(scriptReq.getPath()).contains("refresh=false");
+        String scriptBody = scriptReq.getBody().readUtf8();
+        assertThat(scriptBody).contains("ctx._source.age += params.delta").contains("\"delta\":1").contains("\"tenant_id\":{\"value\":\"tenant_sec\"}");
+
+        // 4. SearchRefreshPolicy 全载体路径（update / deleteById / updateBatch / deleteBatch + NONE）
+        TenantContextHolder.clear();
+        mockWebServer.enqueue(new MockResponse().setBody("{\"_index\":\"user_idx\",\"_id\":\"10\",\"_version\":2,\"result\":\"updated\",\"_seq_no\":2,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        assertThat(searchTemplate.update(UserDoc.class, "10", null, Map.of("age", 35), SearchRefreshPolicy.NONE)).isTrue();
+        assertThat(mockWebServer.takeRequest().getPath()).contains("refresh=false");
+
+        mockWebServer.enqueue(new MockResponse().setBody("{\"_index\":\"user_idx\",\"_id\":\"10\",\"_version\":3,\"result\":\"deleted\",\"_seq_no\":3,\"_primary_term\":1,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}")
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        assertThat(searchTemplate.deleteById(UserDoc.class, "10", null, SearchRefreshPolicy.WAIT_UNTIL)).isTrue();
+        assertThat(mockWebServer.takeRequest().getPath()).contains("refresh=wait_for");
+
+        String bulkOk = "{\"took\":2,\"errors\":false,\"items\":[{\"update\":{\"_index\":\"user_idx\",\"_id\":\"1\",\"status\":200}}]}";
+        mockWebServer.enqueue(new MockResponse().setBody(bulkOk)
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        searchTemplate.updateBatch("user_idx", List.of(UserDoc.builder().id(1L).age(36).build()), false, SearchRefreshPolicy.IMMEDIATE);
+        assertThat(mockWebServer.takeRequest().getPath()).contains("refresh=true");
+
+        String bulkDelOk = "{\"took\":2,\"errors\":false,\"items\":[{\"delete\":{\"_index\":\"user_idx\",\"_id\":\"1\",\"status\":200}}]}";
+        mockWebServer.enqueue(new MockResponse().setBody(bulkDelOk)
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        searchTemplate.deleteBatch(UserDoc.class, List.of("1"), null, SearchRefreshPolicy.NONE);
+        assertThat(mockWebServer.takeRequest().getPath()).contains("refresh=false");
+
+        // 5. QueryBuilder 负数/零值边界校验
+        assertThatThrownBy(() -> SearchQuery.builder().rescore(0, r -> r.matchAll()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> SearchQuery.builder().nested("skus", ChildScoreMode.Max, n -> n.matchAll(), null, -1))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> SearchQuery.builder().termsAggregation("a", "b", 0))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // 6. SearchAggregationConverter 边界（NaN 过滤、hdrPercentiles、lterms、dterms）与 JDK 序列化契约
+        String edgeAggJson = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] },
+                  "aggregations": {
+                    "avg#nan_avg": { "value": "NaN" },
+                    "hdr_percentiles#lat_hdr": {
+                      "values": { "50.0": "NaN", "95.0": "42.5" }
+                    },
+                    "lterms#by_code": {
+                      "buckets": [
+                        { "key": 200, "doc_count": 7 }
+                      ]
+                    },
+                    "dterms#by_rate": {
+                      "buckets": [
+                        { "key": 1.5, "doc_count": 3 }
+                      ]
+                    }
+                  }
+                }
+                """;
+        mockWebServer.enqueue(new MockResponse().setBody(edgeAggJson)
+                .addHeader("Content-Type", "application/json").addHeader("X-Elastic-Product", "Elasticsearch"));
+        SearchPage<UserDoc> edgePage = searchTemplate.search(SearchQuery.builder().size(0).build(), UserDoc.class);
+        mockWebServer.takeRequest();
+
+        assertThat(edgePage.getMetricValue("nan_avg")).isNull();
+        assertThat(edgePage.getPercentiles("lat_hdr").getPercentile(50)).isNull();
+        assertThat(edgePage.getPercentiles("lat_hdr").getPercentile(95)).isEqualTo(42.5);
+        assertThat(edgePage.getTermsBuckets("by_code")).extracting(SearchBucket::getKey).containsExactly("200");
+        assertThat(edgePage.getTermsBuckets("by_rate")).extracting(SearchBucket::getKey).containsExactly("1.5");
+        assertThat(cancelledStatus).isInstanceOf(java.io.Serializable.class);
+        assertThat(SearchIndexSettings.builder().refreshInterval("1s").build()).isInstanceOf(java.io.Serializable.class);
+        assertThat(SearchIndexTemplate.builder().name("tpl").build()).isInstanceOf(java.io.Serializable.class);
+        try (var bos = new java.io.ByteArrayOutputStream(); var oos = new java.io.ObjectOutputStream(bos)) {
+            oos.writeObject(cancelledStatus);
+            oos.writeObject(edgePage.getPercentiles("lat_hdr"));
+            oos.writeObject(edgePage.getTermsBuckets("by_code").get(0));
+            oos.writeObject(SearchSuggestResult.builder().text("test").score(1.0).build());
+            oos.writeObject(SearchInnerHit.builder().id("1").source(Map.of("k", "v")).build());
+            assertThat(bos.toByteArray()).isNotEmpty();
+        }
     }
 }

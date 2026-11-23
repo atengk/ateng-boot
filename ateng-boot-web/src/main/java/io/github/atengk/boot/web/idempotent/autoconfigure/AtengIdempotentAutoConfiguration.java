@@ -1,5 +1,6 @@
 package io.github.atengk.boot.web.idempotent.autoconfigure;
 
+import java.util.concurrent.Executor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.web.idempotent.aspect.IdempotentAspect;
 import io.github.atengk.boot.web.idempotent.properties.IdempotentProperties;
@@ -11,6 +12,7 @@ import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Aspect;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -87,10 +89,12 @@ public class AtengIdempotentAutoConfiguration {
     static class InMemoryIdempotentConfiguration {
 
         @Bean
-        public IdempotentKeyStore inMemoryIdempotentKeyStore(IdempotentProperties properties) {
+        public IdempotentKeyStore inMemoryIdempotentKeyStore(IdempotentProperties properties,
+                                                            @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
             return new InMemoryIdempotentKeyStore(
                     properties.getInMemory().getMaxCapacity(),
-                    properties.getInMemory().getCleanInterval()
+                    properties.getInMemory().getCleanInterval(),
+                    taskExecutorProvider.getIfAvailable()
             );
         }
     }

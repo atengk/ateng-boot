@@ -47,6 +47,10 @@ public class CardButton implements Serializable {
         return new CardButton(text, url);
     }
 
+    public static CardButton of(String text, String url, CardButtonType type) {
+        return new CardButton(text, url, type != null ? type : CardButtonType.DEFAULT);
+    }
+
     public static CardButton primary(String text, String url) {
         return new CardButton(text, url, CardButtonType.PRIMARY);
     }

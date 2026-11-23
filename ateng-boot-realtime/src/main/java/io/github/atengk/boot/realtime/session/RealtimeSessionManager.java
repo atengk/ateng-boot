@@ -62,7 +62,7 @@ public class RealtimeSessionManager {
                                   ObjectProvider<RealtimeSessionListener> sessionListeners) {
         this.properties = properties;
         if (sessionListeners != null) {
-            sessionListeners.orderedStream().forEach(this.listeners::add);
+            sessionListeners.orderedStream().forEach(this::addListener);
         }
     }
 
@@ -72,7 +72,7 @@ public class RealtimeSessionManager {
      * @param listener 监听器
      */
     public void addListener(RealtimeSessionListener listener) {
-        if (listener != null) {
+        if (listener != null && !this.listeners.contains(listener)) {
             this.listeners.add(listener);
         }
     }
@@ -125,21 +125,30 @@ public class RealtimeSessionManager {
             }
         }
 
-        // 2. 存入主索引（若有同 Key 存量旧连接，执行顶替关闭）
+        // 2. 装配会话级限流器（若尚未初始化且配置开启）
+        if (session.getChannelType() == ChannelType.WEBSOCKET && session.getRateLimiter() == null) {
+            if (properties != null && properties.getWebsocket() != null
+                    && properties.getWebsocket().getRateLimit() != null
+                    && properties.getWebsocket().getRateLimit().isEnabled()) {
+                session.setRateLimiter(new io.github.atengk.boot.realtime.ratelimit.SessionRateLimiter(properties.getWebsocket().getRateLimit()));
+            }
+        }
+
+        // 3. 存入主索引（若有同 Key 存量旧连接，执行顶替关闭）
         RealtimeSession oldSession = sessions.put(sessionKey, session);
         if (oldSession != null && oldSession != session) {
             log.debug("[Realtime] 顶替相同 SessionKey 的旧会话: {}", sessionKey);
             oldSession.close(RealtimeCloseStatus.NORMAL);
         }
 
-        // 3. 维护二级索引
+        // 4. 维护二级索引
         userSessions.computeIfAbsent(userId, k -> ConcurrentHashMap.newKeySet()).add(sessionKey);
         channelSessions.computeIfAbsent(session.getChannelType(), k -> ConcurrentHashMap.newKeySet()).add(sessionKey);
         if (session.getTenantId() != null) {
             tenantSessions.computeIfAbsent(session.getTenantId(), k -> ConcurrentHashMap.newKeySet()).add(sessionKey);
         }
 
-        // 4. 触发注册监听回调
+        // 5. 触发注册监听回调
         notifySessionRegistered(session);
         log.debug("[Realtime] 会话注册成功: sessionKey={}, channelType={}", sessionKey, session.getChannelType());
         return true;
@@ -331,6 +340,20 @@ public class RealtimeSessionManager {
             return 0;
         }
         Set<SessionKey> keys = channelSessions.get(channelType);
+        return keys != null ? keys.size() : 0;
+    }
+
+    /**
+     * 获取指定多租户维度的在线连接数
+     *
+     * @param tenantId 租户标识
+     * @return 租户在线连接数
+     */
+    public int getOnlineCountByTenant(Long tenantId) {
+        if (tenantId == null) {
+            return 0;
+        }
+        Set<SessionKey> keys = tenantSessions.get(tenantId);
         return keys != null ? keys.size() : 0;
     }
 

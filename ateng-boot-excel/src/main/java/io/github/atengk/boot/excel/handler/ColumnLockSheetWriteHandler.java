@@ -1,8 +1,7 @@
 package io.github.atengk.boot.excel.handler;
 
 import io.github.atengk.boot.excel.annotation.ExcelColumnLock;
-import org.apache.fesod.sheet.annotation.ExcelIgnore;
-import org.apache.fesod.sheet.annotation.ExcelProperty;
+import io.github.atengk.boot.excel.util.ExcelColumnMetadataResolver;
 import org.apache.fesod.sheet.write.handler.CellWriteHandler;
 import org.apache.fesod.sheet.write.handler.SheetWriteHandler;
 import org.apache.fesod.sheet.write.handler.context.CellWriteHandlerContext;
@@ -13,7 +12,6 @@ import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 
 import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -187,35 +185,14 @@ public class ColumnLockSheetWriteHandler implements SheetWriteHandler, CellWrite
         String password = (classLock != null) ? classLock.password() : "";
         boolean classDefaultLocked = (classLock != null && classLock.locked());
 
-        List<Field> allFields = new ArrayList<>();
-        Class<?> current = clazz;
-        List<Class<?>> hierarchy = new ArrayList<>();
-        while (current != null && current != Object.class) {
-            hierarchy.add(0, current);
-            current = current.getSuperclass();
-        }
-        for (Class<?> clz : hierarchy) {
-            for (Field field : clz.getDeclaredFields()) {
-                if (!Modifier.isStatic(field.getModifiers()) && !Modifier.isTransient(field.getModifiers())) {
-                    allFields.add(field);
-                }
-            }
-        }
-
-        boolean hasFieldAnnotations = allFields.stream().anyMatch(f -> f.isAnnotationPresent(ExcelColumnLock.class));
+        List<ExcelColumnMetadataResolver.ColumnMetadata> columns = ExcelColumnMetadataResolver.resolve(clazz).columns();
+        boolean hasFieldAnnotations = columns.stream().anyMatch(col -> col.field().isAnnotationPresent(ExcelColumnLock.class));
         Set<Integer> lockedColumns = new HashSet<>();
         Set<Integer> unlockedColumns = new HashSet<>();
-        int nextIndex = 0;
 
-        for (Field field : allFields) {
-            if (field.isAnnotationPresent(ExcelIgnore.class)) {
-                continue;
-            }
-
-            ExcelProperty excelProperty = field.getAnnotation(ExcelProperty.class);
-            int columnIndex = (excelProperty != null && excelProperty.index() >= 0) ? excelProperty.index() : nextIndex;
-            nextIndex = Math.max(nextIndex, columnIndex + 1);
-
+        for (ExcelColumnMetadataResolver.ColumnMetadata col : columns) {
+            int columnIndex = col.columnIndex();
+            Field field = col.field();
             ExcelColumnLock fieldLock = field.getAnnotation(ExcelColumnLock.class);
             if (fieldLock != null) {
                 if (password.isEmpty() && !fieldLock.password().isEmpty()) {

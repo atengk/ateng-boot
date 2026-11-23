@@ -47,6 +47,12 @@ public class RabbitmqProperties {
     private Topology topology = new Topology();
 
     /**
+     * 死信队列受控治理与防雪崩配置
+     */
+    @NestedConfigurationProperty
+    private DeadLetter deadLetter = new DeadLetter();
+
+    /**
      * 结构化宏日志观测配置
      */
     @NestedConfigurationProperty
@@ -68,6 +74,11 @@ public class RabbitmqProperties {
          * 是否启用大报文透明 GZIP 压缩特性
          */
         private boolean compressionEnabled = true;
+
+        /**
+         * 批量投递单批次消息上限保护阈值，防止一次性发射过量消息导致 OOM (默认 1000)
+         */
+        private int maxBatchSize = 1000;
     }
 
     @Data
@@ -111,6 +122,30 @@ public class RabbitmqProperties {
         @NestedConfigurationProperty
         private Retry retry = new Retry();
 
+        /**
+         * 消费端批量消费削峰配置
+         */
+        @NestedConfigurationProperty
+        private Batch batch = new Batch();
+
+        @Data
+        public static class Batch {
+            /**
+             * 是否开启消费端批量监听器削峰
+             */
+            private boolean enabled = false;
+
+            /**
+             * 单批次最大聚合消费消息数
+             */
+            private int size = 50;
+
+            /**
+             * 批量聚合最大等待超时时间
+             */
+            private Duration maxWaitTime = Duration.ofMillis(500);
+        }
+
         @Data
         public static class Retry {
             /**
@@ -147,6 +182,19 @@ public class RabbitmqProperties {
          * 在生产受限只读账号环境下，请显式置为 false 防止启动时 403 权限异常崩溃
          */
         private boolean autoDeclare = true;
+    }
+
+    @Data
+    public static class DeadLetter {
+        /**
+         * 单批次死信受控重放默认数量限制 (默认 100 条)
+         */
+        private int defaultReplayLimit = 100;
+
+        /**
+         * 单条消息允许的最大死信重放次数，超过该阈值阻断重放防范二次死信雪崩 (默认 1 次)
+         */
+        private int maxReplayCount = 1;
     }
 
     @Data

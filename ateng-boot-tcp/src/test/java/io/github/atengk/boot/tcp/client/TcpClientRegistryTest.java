@@ -65,4 +65,118 @@ class TcpClientRegistryTest {
         assertThat(registry.getDefaultClient()).isSameAs(defaultClient);
         assertThat(registry.getDefaultTemplate()).isSameAs(defaultTemplate);
     }
+
+    @Test
+    @DisplayName("验证 contains、unregister 自动停止与同名覆盖自动释放旧客户端实例")
+    void testContainsUnregisterAndOverrideStopsOldClient() {
+        TcpClientRegistry registry = new TcpClientRegistry();
+        GenericApplicationContext ctx = new GenericApplicationContext();
+        ctx.refresh();
+
+        TcpClientProperties props1 = new TcpClientProperties();
+        props1.setHost("127.0.0.1");
+        props1.setPort(19991);
+        props1.getReconnect().setEnabled(true);
+        TcpRequestCorrelationManager cm1 = new TcpRequestCorrelationManager();
+        TcpClient client1 = new TcpClient("partnerA", props1, Collections.emptyList(), Collections.emptyList(), ctx, cm1, null) {
+            private volatile boolean mockRunning = true;
+
+            @Override
+            public void stop() {
+                mockRunning = false;
+            }
+
+            @Override
+            public boolean isRunning() {
+                return mockRunning;
+            }
+        };
+        TcpClientTemplate template1 = new TcpClientTemplate(client1, props1, cm1);
+
+        registry.register("partnerA", client1, template1);
+        assertThat(registry.contains("partnerA")).isTrue();
+        assertThat(registry.contains("missing")).isFalse();
+        assertThat(registry.contains(null)).isFalse();
+
+        TcpClient client2 = new TcpClient("partnerA", props1, Collections.emptyList(), Collections.emptyList(), ctx, cm1, null) {
+            private volatile boolean mockRunning = true;
+
+            @Override
+            public void stop() {
+                mockRunning = false;
+            }
+
+            @Override
+            public boolean isRunning() {
+                return mockRunning;
+            }
+        };
+        TcpClientTemplate template2 = new TcpClientTemplate(client2, props1, cm1);
+
+        // 同名不同实例注册应自动停止旧实例
+        registry.register("partnerA", client2, template2);
+        assertThat(client1.isRunning()).isFalse();
+        assertThat(registry.getRequiredClient("partnerA")).isSameAs(client2);
+        assertThat(registry.getRequiredTemplate("partnerA")).isSameAs(template2);
+
+        // unregister 同时清理 client 与 template 并停止实例
+        TcpClient removed = registry.unregister("partnerA");
+        assertThat(removed).isSameAs(client2);
+        assertThat(client2.isRunning()).isFalse();
+        assertThat(registry.contains("partnerA")).isFalse();
+        assertThat(registry.getClient("partnerA")).isNull();
+        assertThat(registry.getTemplate("partnerA")).isNull();
+        assertThat(registry.unregister("partnerA")).isNull();
+        assertThat(registry.unregister(null)).isNull();
+
+        cm1.close();
+        ctx.close();
+    }
+
+    @Test
+    @DisplayName("验证同名覆盖注册严格先停旧客户端再纳管新客户端与模板")
+    void testOverrideStopsOldClientBeforeExposingNewClient() {
+        TcpClientRegistry registry = new TcpClientRegistry();
+        GenericApplicationContext ctx = new GenericApplicationContext();
+        ctx.refresh();
+        TcpClientProperties props = new TcpClientProperties();
+        props.setHost("127.0.0.1");
+        props.setPort(19992);
+        TcpRequestCorrelationManager cm = new TcpRequestCorrelationManager();
+
+        java.util.concurrent.atomic.AtomicReference<TcpClient> clientSeenDuringStop = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<TcpClientTemplate> templateSeenDuringStop = new java.util.concurrent.atomic.AtomicReference<>();
+
+        TcpClient oldClient = new TcpClient("partnerB", props, Collections.emptyList(), Collections.emptyList(), ctx, cm, null) {
+            private volatile boolean mockRunning = true;
+
+            @Override
+            public void stop() {
+                clientSeenDuringStop.set(registry.getClient("partnerB"));
+                templateSeenDuringStop.set(registry.getTemplate("partnerB"));
+                mockRunning = false;
+            }
+
+            @Override
+            public boolean isRunning() {
+                return mockRunning;
+            }
+        };
+        TcpClientTemplate oldTemplate = new TcpClientTemplate(oldClient, props, cm);
+
+        TcpClient newClient = new TcpClient("partnerB", props, Collections.emptyList(), Collections.emptyList(), ctx, cm, null);
+        TcpClientTemplate newTemplate = new TcpClientTemplate(newClient, props, cm);
+
+        registry.register("partnerB", oldClient, oldTemplate);
+        registry.register("partnerB", newClient, newTemplate);
+
+        assertThat(clientSeenDuringStop.get()).isSameAs(oldClient);
+        assertThat(templateSeenDuringStop.get()).isSameAs(oldTemplate);
+        assertThat(oldClient.isRunning()).isFalse();
+        assertThat(registry.getRequiredClient("partnerB")).isSameAs(newClient);
+        assertThat(registry.getRequiredTemplate("partnerB")).isSameAs(newTemplate);
+
+        cm.close();
+        ctx.close();
+    }
 }

@@ -40,6 +40,18 @@ public interface AsyncExportTaskService {
     boolean cancel(String taskId);
 
     /**
+     * 实时更新异步导出任务的执行进度百分比
+     * <p>
+     * 运行期进度自动钳制于 {@code 0 ~ 99} 区间，任务最终完成并产出文件时置为 {@code 100}。
+     * </p>
+     *
+     * @param taskId   任务唯一 ID
+     * @param progress 进度百分比（内部自动钳制在 0 ~ 99）
+     */
+    default void updateProgress(String taskId, int progress) {
+    }
+
+    /**
      * 清理已过期的导出任务记录与本地临时文件
      *
      * @param retention 临时文件最长存活保留时间

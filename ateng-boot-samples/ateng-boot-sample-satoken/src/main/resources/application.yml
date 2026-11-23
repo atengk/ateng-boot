@@ -1,4 +1,6 @@
 spring:
+  config:
+    import: "optional:classpath:application-local.yml"
   application:
     name: ateng-boot-sample-satoken
   datasource:
@@ -28,7 +30,46 @@ ateng:
         enabled: true
         default-operator: SYSTEM
     satoken:
+      same-token:
+        enabled: true
+        token-value: "SATOKEN_INTERNAL_SAME_TOKEN_SECRET_987654"
       login-defense:
         enabled: true
         max-retry-count: 5
         lock-time: 15m
+        ip-max-retry-count: 5
+        ip-lock-time: 15m
+        ip-white-list:
+          - 127.0.0.1
+          - 0:0:0:0:0:0:0:1
+
+---
+# 默认与 CI 离线自洽配置（未激活 local Profile 时生效）：
+# 排除 Redis 自动装配并强制关闭 Redis 基础设施，保证 100% 离线自洽运行（Zero-Mock）
+spring:
+  config:
+    activate:
+      on-profile: "!local"
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisReactiveAutoConfiguration
+      - io.github.atengk.boot.redis.autoconfigure.AtengRedisAutoConfiguration
+
+ateng:
+  boot:
+    redis:
+      enabled: false
+
+---
+# Local 真实服务联调配置（激活 local Profile 时生效）：
+# 启用 Redis 基础设施与分布式持久化
+spring:
+  config:
+    activate:
+      on-profile: "local"
+
+ateng:
+  boot:
+    redis:
+      enabled: true

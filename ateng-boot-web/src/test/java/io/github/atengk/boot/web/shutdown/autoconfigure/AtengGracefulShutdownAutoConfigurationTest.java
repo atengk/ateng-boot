@@ -89,4 +89,29 @@ class AtengGracefulShutdownAutoConfigurationTest {
                     assertThat(context).hasSingleBean(PreStopController.class);
                 });
     }
+
+    @Test
+    @DisplayName("在途请求感知自动联动：处理器正确挂载 TraceFilterRegistration 实时反馈在途请求数")
+    void shouldWireTraceFilterIntoGracefulShutdownHandler() throws Exception {
+        contextRunner.run(context -> {
+            AtengGracefulShutdownHandler handler = context.getBean(AtengGracefulShutdownHandler.class);
+            @SuppressWarnings("unchecked")
+            org.springframework.boot.web.servlet.FilterRegistrationBean<io.github.atengk.boot.web.trace.TraceFilter> reg =
+                    context.getBean("traceFilterRegistration", org.springframework.boot.web.servlet.FilterRegistrationBean.class);
+            io.github.atengk.boot.web.trace.TraceFilter filter = reg.getFilter();
+
+            assertThat(filter).isNotNull();
+            assertThat(handler.getInFlightRequestCount()).isZero();
+
+            java.util.concurrent.atomic.AtomicLong observedInFlight = new java.util.concurrent.atomic.AtomicLong(-1L);
+            filter.doFilter(
+                    new org.springframework.mock.web.MockHttpServletRequest(),
+                    new org.springframework.mock.web.MockHttpServletResponse(),
+                    (req, res) -> observedInFlight.set(handler.getInFlightRequestCount())
+            );
+
+            assertThat(observedInFlight.get()).isEqualTo(1L);
+            assertThat(handler.getInFlightRequestCount()).isZero();
+        });
+    }
 }

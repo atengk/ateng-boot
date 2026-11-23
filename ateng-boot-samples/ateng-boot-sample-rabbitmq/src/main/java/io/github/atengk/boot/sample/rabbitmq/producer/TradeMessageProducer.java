@@ -93,6 +93,41 @@ public class TradeMessageProducer {
     }
 
     /**
+     * 原生消息级 TTL 同步投递：设置 AMQP expiration 属性（不依赖延迟插件）
+     *
+     * @param message    超时取消消息
+     * @param expiration 消息级过期时长
+     */
+    public void sendOrderWithExpiration(OrderTimeoutMessage message, Duration expiration) {
+        log.info("[PRODUCER] 同步投递原生 TTL 过期订单消息: orderId={}, expiration={}", message.orderId(), expiration);
+        rabbitReliableTemplate.sendWithExpiration(
+                RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT,
+                RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_EXPIRATION,
+                message,
+                message.orderId(),
+                expiration
+        );
+    }
+
+    /**
+     * 原生消息级 TTL 异步投递：设置 AMQP expiration 属性并返回 Confirm Future
+     *
+     * @param message    超时取消消息
+     * @param expiration 消息级过期时长
+     * @return Confirm 异步 Future
+     */
+    public CompletableFuture<CorrelationData.Confirm> sendOrderWithExpirationAsync(OrderTimeoutMessage message, Duration expiration) {
+        log.info("[PRODUCER] 异步投递原生 TTL 过期订单消息: orderId={}, expiration={}", message.orderId(), expiration);
+        return rabbitReliableTemplate.sendAsyncWithExpiration(
+                RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT,
+                RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_EXPIRATION,
+                message,
+                message.orderId(),
+                expiration
+        );
+    }
+
+    /**
      * 业务队列投递：用于测试毒丸与死信流转
      */
     public void sendBizMessage(String bizKey, Object payload) {
@@ -113,6 +148,82 @@ public class TradeMessageProducer {
                 RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_IDEMPOTENT,
                 payload,
                 bizKey
+        );
+    }
+
+    /**
+     * 批量可靠投递：订单列表并发异步发送并聚合等待所有 Broker ACK
+     *
+     * @param orders 批量订单消息列表
+     */
+    public void sendBatchOrders(java.util.List<OrderCreateMessage> orders) {
+        log.info("[PRODUCER] 开始批量投递订单创建消息: count={}", orders.size());
+        rabbitReliableTemplate.sendBatchReliable(
+                RabbitScenarioTopologyConfig.EXCHANGE_BATCH_DIRECT,
+                RabbitScenarioTopologyConfig.ROUTING_KEY_BATCH_ORDER,
+                orders
+        );
+        log.info("[PRODUCER] 批量订单消息全部收到 Broker Confirm ACK: count={}", orders.size());
+    }
+
+    /**
+     * 批量异步可靠投递：订单列表并发异步发送并返回 CompletableFuture
+     *
+     * @param orders 批量订单消息列表
+     * @return 聚合异步确认 Future
+     */
+    public CompletableFuture<Void> sendBatchOrdersAsync(java.util.List<OrderCreateMessage> orders) {
+        log.info("[PRODUCER] 开始批量异步投递订单创建消息: count={}", orders.size());
+        return rabbitReliableTemplate.sendBatchReliableAsync(
+                RabbitScenarioTopologyConfig.EXCHANGE_BATCH_DIRECT,
+                RabbitScenarioTopologyConfig.ROUTING_KEY_BATCH_ORDER,
+                orders
+        );
+    }
+
+    /**
+     * 优先级可靠投递：投递高/低优先级订单消息
+     *
+     * @param order    订单创建消息
+     * @param priority 消息优先级 (0-255，对应队列 x-max-priority)
+     */
+    public void sendPriorityOrder(OrderCreateMessage order, int priority) {
+        log.info("[PRODUCER] 投递优先级订单消息: orderId={}, priority={}", order.orderId(), priority);
+        rabbitReliableTemplate.sendReliableWithPriority(
+                RabbitScenarioTopologyConfig.EXCHANGE_PRIORITY_DIRECT,
+                RabbitScenarioTopologyConfig.ROUTING_KEY_PRIORITY_ORDER,
+                order,
+                priority,
+                order.orderId()
+        );
+    }
+
+    /**
+     * Fanout 广播投递：向所有动态绑定的匿名临时队列分发
+     *
+     * @param message 广播消息载荷
+     */
+    public void sendBroadcast(Object message) {
+        log.info("[PRODUCER] 发起 Fanout 临时广播: message={}", message);
+        rabbitReliableTemplate.sendReliable(
+                RabbitScenarioTopologyConfig.EXCHANGE_BROADCAST_FANOUT,
+                "",
+                message
+        );
+    }
+
+    /**
+     * 投递支持逐条四维上下文隔离的批量测试订单消息
+     *
+     * @param message 订单创建消息
+     */
+    public void sendBatchTenantOrder(OrderCreateMessage message) {
+        log.info("[PRODUCER] 发送批量租户隔离订单消息: orderId={}", message.orderId());
+        rabbitReliableTemplate.sendReliable(
+                RabbitScenarioTopologyConfig.EXCHANGE_BATCH_DIRECT,
+                RabbitScenarioTopologyConfig.ROUTING_KEY_BATCH_TENANT,
+                message,
+                message.orderId()
         );
     }
 }

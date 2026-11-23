@@ -1,33 +1,48 @@
 package io.github.atengk.boot.mail.template;
 
 import io.github.atengk.boot.core.autoconfigure.AsyncExecutorFactory;
+import io.github.atengk.boot.core.code.IResultCode;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.properties.AsyncPoolProperties;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
+import io.github.atengk.boot.core.util.DigestUtil;
+import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
+import io.github.atengk.boot.mail.event.MailQuotaExceededEvent;
 import io.github.atengk.boot.mail.event.MailSendEvent;
 import io.github.atengk.boot.mail.event.MailSendFailedEvent;
 import io.github.atengk.boot.mail.event.MailSendingEvent;
 import io.github.atengk.boot.mail.event.MailSentEvent;
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
+import io.github.atengk.boot.mail.guard.MailDailyQuotaBreaker;
+import io.github.atengk.boot.mail.guard.MailIdempotentGuard;
+import io.github.atengk.boot.mail.guard.MailRateLimiter;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
+import io.github.atengk.boot.mail.interceptor.MailSandboxInterceptor;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
+import io.github.atengk.boot.mail.metrics.MailMetricsRecorder;
+import io.github.atengk.boot.mail.metrics.MailSendOutcome;
+import io.github.atengk.boot.mail.model.BatchMailSendResult;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailAttachment;
 import io.github.atengk.boot.mail.model.MailInlineResource;
 import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailSendResult;
+import io.github.atengk.boot.mail.model.MailSendResultItem;
 import io.github.atengk.boot.mail.model.TrackableMimeMessage;
+import io.github.atengk.boot.mail.properties.MailIdempotentProperties;
 import io.github.atengk.boot.mail.properties.MailProperties;
 import io.github.atengk.boot.mail.properties.MailRetryProperties;
+import io.github.atengk.boot.mail.provider.MailAccessTokenProvider;
 import io.github.atengk.boot.mail.provider.MailAccountProvider;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mail.resolver.MailAccountResolver;
 import io.github.atengk.boot.mail.resolver.TenantMailAccountResolver;
 import io.github.atengk.boot.mail.template.renderer.MailTemplateRenderer;
 import io.github.atengk.boot.mail.template.renderer.SimpleMailTemplateRenderer;
+import jakarta.mail.internet.AddressException;
 import jakarta.mail.internet.InternetAddress;
 import lombok.Getter;
 import org.slf4j.Logger;
@@ -35,6 +50,7 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.i18n.LocaleContextHolder;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.core.io.InputStreamSource;
 import org.springframework.mail.MailAuthenticationException;
@@ -45,23 +61,32 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.util.ClassUtils;
 
 import java.io.FilterInputStream;
+import java.time.LocalDateTime;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Queue;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -79,12 +104,14 @@ import java.util.stream.Collectors;
 public class MailTemplate implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(MailTemplate.class);
+    private static final String INTERCEPTOR_BLOCKED_PREFIX = "邮件发送被拦截器阻断";
 
     private static final boolean SPRING_TX_PRESENT = ClassUtils.isPresent(
             "org.springframework.transaction.support.TransactionSynchronizationManager",
             MailTemplate.class.getClassLoader()
     );
 
+    @Getter
     private final MailAccountRegistry accountRegistry;
     private final MailProperties properties;
 
@@ -96,6 +123,9 @@ public class MailTemplate implements DisposableBean {
 
     @Getter
     private final MailAccountProvider accountProvider;
+
+    @Getter
+    private final MailAccessTokenProvider accessTokenProvider;
 
     @Getter
     private final Executor executor;
@@ -110,6 +140,18 @@ public class MailTemplate implements DisposableBean {
 
     @Getter
     private final List<MailSendInterceptor> interceptors;
+
+    @Getter
+    private final MailRateLimiter rateLimiter;
+
+    @Getter
+    private final MailDailyQuotaBreaker dailyQuotaBreaker;
+
+    @Getter
+    private final MailIdempotentGuard idempotentGuard;
+
+    @Getter
+    private final MailMetricsRecorder metricsRecorder;
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties) {
         this(accountRegistry, properties, new SimpleMailTemplateRenderer(), new TenantMailAccountResolver(), null, null, null, null, null);
@@ -140,17 +182,34 @@ public class MailTemplate implements DisposableBean {
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, MailAccountProvider accountProvider, Executor executor, ApplicationEventPublisher eventPublisher, List<MailSendFailureHandler> failureHandlers, List<MailSendInterceptor> interceptors) {
+        this(accountRegistry, properties, templateRenderer, accountResolver, accountProvider, null, executor, eventPublisher, failureHandlers, interceptors);
+    }
+
+    public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, MailAccountProvider accountProvider, MailAccessTokenProvider accessTokenProvider, Executor executor, ApplicationEventPublisher eventPublisher, List<MailSendFailureHandler> failureHandlers, List<MailSendInterceptor> interceptors) {
+        this(accountRegistry, properties, templateRenderer, accountResolver, accountProvider, accessTokenProvider, executor, eventPublisher, failureHandlers, interceptors, null, null, null);
+    }
+
+    public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, MailAccountProvider accountProvider, MailAccessTokenProvider accessTokenProvider, Executor executor, ApplicationEventPublisher eventPublisher, List<MailSendFailureHandler> failureHandlers, List<MailSendInterceptor> interceptors, MailRateLimiter rateLimiter, MailDailyQuotaBreaker dailyQuotaBreaker, MailIdempotentGuard idempotentGuard) {
+        this(accountRegistry, properties, templateRenderer, accountResolver, accountProvider, accessTokenProvider, executor, eventPublisher, failureHandlers, interceptors, rateLimiter, dailyQuotaBreaker, idempotentGuard, null);
+    }
+
+    public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, MailAccountProvider accountProvider, MailAccessTokenProvider accessTokenProvider, Executor executor, ApplicationEventPublisher eventPublisher, List<MailSendFailureHandler> failureHandlers, List<MailSendInterceptor> interceptors, MailRateLimiter rateLimiter, MailDailyQuotaBreaker dailyQuotaBreaker, MailIdempotentGuard idempotentGuard, MailMetricsRecorder metricsRecorder) {
         this.accountRegistry = Objects.requireNonNull(accountRegistry, "accountRegistry must not be null");
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.templateRenderer = templateRenderer != null ? templateRenderer : new SimpleMailTemplateRenderer();
         this.accountResolver = accountResolver != null ? accountResolver : new TenantMailAccountResolver();
         this.accountProvider = accountProvider;
+        this.accessTokenProvider = accessTokenProvider != null ? accessTokenProvider : accountRegistry.getAccessTokenProvider();
+        boolean asyncEnabled = properties.getAsync() == null || properties.getAsync().isEnabled();
         if (executor != null) {
             this.executor = executor;
             this.defaultExecutorCreated = false;
-        } else {
-            this.executor = createDefaultExecutor(properties != null ? properties.getAsync() : null);
+        } else if (asyncEnabled) {
+            this.executor = createDefaultExecutor(properties.getAsync());
             this.defaultExecutorCreated = true;
+        } else {
+            this.executor = null;
+            this.defaultExecutorCreated = false;
         }
         this.eventPublisher = eventPublisher;
         this.failureHandlers = failureHandlers != null ? Collections.unmodifiableList(new ArrayList<>(failureHandlers)) : Collections.emptyList();
@@ -161,6 +220,10 @@ public class MailTemplate implements DisposableBean {
         } else {
             this.interceptors = Collections.emptyList();
         }
+        this.rateLimiter = rateLimiter;
+        this.dailyQuotaBreaker = dailyQuotaBreaker;
+        this.idempotentGuard = idempotentGuard;
+        this.metricsRecorder = metricsRecorder != null ? metricsRecorder : MailMetricsRecorder.noop();
     }
 
     // ==================== 全能领域对象与函数式 DSL 发信 ====================
@@ -172,16 +235,53 @@ public class MailTemplate implements DisposableBean {
      * @return 发送结果回执
      */
     public MailSendResult send(MailMessage message) {
+        return sendInternal(message, null);
+    }
+
+    MailSendResult sendForBatch(MailAccount explicitBoundAccount, MailMessage message,
+                                AtomicReference<BatchDeliveryMetric> batchMetricRef) {
+        if (explicitBoundAccount != null) {
+            return sendWithAccountInternal(explicitBoundAccount, message, batchMetricRef);
+        }
+        return sendInternal(message, batchMetricRef);
+    }
+
+    private MailSendResult sendInternal(MailMessage message, AtomicReference<BatchDeliveryMetric> batchMetricRef) {
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
+        long startNanos = System.nanoTime();
+        try {
+            MailAccount account;
+            try {
+                requireNonEmptyRecipients(message);
+                validateMessageAddresses(null, message);
+                account = resolveAccount(message);
+            } catch (Throwable t) {
+                String accountLabel = resolvePreFailureMetricAccount(message);
+                if (batchMetricRef != null) {
+                    batchMetricRef.set(new BatchDeliveryMetric(accountLabel, MailSendOutcome.FAILURE));
+                } else {
+                    metricsRecorder.recordSend(accountLabel, MailSendOutcome.FAILURE,
+                            Duration.ofNanos(System.nanoTime() - startNanos));
+                }
+                throw t;
+            }
+            return sendWithAccountInternal(account, message, batchMetricRef);
+        } finally {
+            message.close();
+        }
+    }
 
-        if (message.getTo() == null || message.getTo().isEmpty()) {
+    private void requireNonEmptyRecipients(MailMessage message) {
+        List<String> to = message.getTo();
+        if (to == null || to.isEmpty()) {
             throw new MailSendException(MailResultCode.MAIL_RECIPIENT_EMPTY, "收件人列表不能为空");
         }
-
-        MailAccount account = resolveAccount(message);
-        return sendWithAccount(account, message);
+        boolean hasNonBlank = to.stream().anyMatch(addr -> addr != null && !addr.isBlank());
+        if (!hasNonBlank) {
+            throw new MailSendException(MailResultCode.MAIL_RECIPIENT_EMPTY, "收件人列表不能为空");
+        }
     }
 
     private MailAccount resolveAccount(MailMessage message) {
@@ -248,54 +348,45 @@ public class MailTemplate implements DisposableBean {
      * @return 发送结果回执
      */
     public MailSendResult sendWithAccount(MailAccount account, MailMessage message) {
-        if (account == null) {
-            throw new IllegalArgumentException("MailAccount must not be null");
-        }
+        return sendWithAccountInternal(account, message, null);
+    }
+
+    private MailSendResult sendWithAccountInternal(MailAccount account, MailMessage message,
+                                                   AtomicReference<BatchDeliveryMetric> batchMetricRef) {
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
-        if (message.getTo() == null || message.getTo().isEmpty()) {
-            throw new MailSendException(MailResultCode.MAIL_RECIPIENT_EMPTY, "收件人列表不能为空");
+        if (account == null) {
+            message.close();
+            throw new IllegalArgumentException("MailAccount must not be null");
         }
 
-        String maskedTo = (message.getTo() != null)
-                ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
-                : "";
+        String maskedTo = maskRecipients(message);
+        long startNanos = System.nanoTime();
+        String metricAccount = account.getName();
 
         try {
-            // 容量防爆安全校验
-            enforceSizeLimits(message);
-
-            // 发信拦截器链前置执行
-            applyInterceptors(message);
-
-            String traceId = resolveTraceId();
-            String domain = resolveDomain(account);
-            String messageId = "<" + traceId + "-" + System.nanoTime() + "@" + domain + ">";
-
-            publishEvent(new MailSendingEvent(this, message));
-
-            MailSendResult result;
-            MailRetryProperties retryProps = properties.getRetry();
-            if (retryProps != null && retryProps.isEnabled()) {
-                RetryUtil.RetryConfig retryConfig = RetryUtil.RetryConfig.builder()
-                        .maxAttempts(retryProps.getMaxAttempts())
-                        .delay(retryProps.getDelay())
-                        .multiplier(retryProps.getMultiplier())
-                        .maxDelay(retryProps.getMaxDelay())
-                        .jitter(retryProps.isJitter())
-                        .retryPredicate(this::isRetryableException)
-                        .onRetry((attempt, error) -> log.warn("Sending email to [{}] failed on attempt {}, preparing retry. Reason: {}",
-                                maskedTo, attempt, error.getMessage()))
-                        .build();
-                result = RetryUtil.execute(() -> doSendPhysical(account, message, maskedTo, traceId, messageId), retryConfig);
-            } else {
-                result = doSendPhysical(account, message, maskedTo, traceId, messageId);
+            PreparedDelivery prepared = prepareForDelivery(account, message);
+            metricAccount = prepared.account().getName();
+            if (prepared.logOnly()) {
+                MailSendResult sandboxResult = deliverSandboxLogOnly(prepared);
+                recordOrCaptureSendMetric(batchMetricRef, metricAccount, MailSendOutcome.SANDBOX, startNanos);
+                return sandboxResult;
             }
 
-            publishEvent(new MailSentEvent(this, message, result));
+            MailAccount targetAccount = prepared.account();
+            metricAccount = targetAccount.getName();
+            MailSendResult result = executeWithOutboundGuards(targetAccount, message, () -> {
+                publishEvent(new MailSendingEvent(this, message));
+                MailSendResult sendResult = executeWithCascadeFailover(
+                        targetAccount, message, prepared.maskedTo(), prepared.traceId(), prepared.messageId());
+                publishEvent(new MailSentEvent(this, message, sendResult));
+                return sendResult;
+            });
+            recordOrCaptureSendMetric(batchMetricRef, metricAccount, MailSendOutcome.SUCCESS, startNanos);
             return result;
         } catch (Throwable t) {
+            recordOrCaptureSendMetric(batchMetricRef, metricAccount, classifyFailureOutcome(t), startNanos);
             triggerFailureSafetyNet(message, maskedTo, t);
             if (t instanceof MailSendException mse) {
                 throw mse;
@@ -307,93 +398,240 @@ public class MailTemplate implements DisposableBean {
         }
     }
 
-    private MailSendResult doSendPhysical(MailAccount account, MailMessage message, String maskedTo, String traceId, String messageId) {
+    private void recordOrCaptureSendMetric(AtomicReference<BatchDeliveryMetric> batchMetricRef,
+                                           String accountName,
+                                           MailSendOutcome outcome,
+                                           long startNanos) {
+        if (batchMetricRef != null) {
+            batchMetricRef.set(new BatchDeliveryMetric(accountName, outcome));
+        } else {
+            metricsRecorder.recordSend(accountName, outcome, Duration.ofNanos(System.nanoTime() - startNanos));
+        }
+    }
+
+    PreparedDelivery prepareForDelivery(MailAccount explicitBoundAccount, MailMessage message) {
+        requireNonEmptyRecipients(message);
+        validateMessageAddresses(explicitBoundAccount, message);
+        sanitizeMessageHeaders(message);
+
+        MailAccount initialAccount = explicitBoundAccount != null ? explicitBoundAccount : resolveAccount(message);
+        if (explicitBoundAccount == null) {
+            validateAccountAddresses(initialAccount);
+        }
+
+        // 容量防爆安全校验
+        enforceSizeLimits(message);
+
+        // 发信拦截器链前置执行
+        applyInterceptors(message);
+
+        // 拦截器可能改写收件账号或收件人列表/标头，发送前重新解析最终路由账号并二次兜底校验与清洗
+        MailAccount finalAccount = explicitBoundAccount != null ? explicitBoundAccount : resolveAccount(message);
+        if (explicitBoundAccount == null && finalAccount != initialAccount) {
+            validateAccountAddresses(finalAccount);
+        }
+
+        // 合规审计归档密送在最终路由确定后追加（沙箱仅日志模式或已重定向隔离时不额外外泄归档密送）
+        boolean logOnly = isSandboxLogOnly(message);
+        boolean sandboxRedirected = message.getHeaders() != null
+                && message.getHeaders().containsKey(MailSandboxInterceptor.HEADER_SANDBOX_REDIRECTED_FROM);
+        if (!logOnly && !sandboxRedirected) {
+            applyArchiveBcc(finalAccount, message);
+        }
+
+        requireNonEmptyRecipients(message);
+        validateRecipientAddresses(message);
+        sanitizeMessageHeaders(message);
+
+        String currentMaskedTo = maskRecipients(message);
+        String traceId = resolveTraceId();
+        String domain = resolveDomain(finalAccount);
+        String messageId = logOnly
+                ? "<sandbox-log-" + traceId + "@" + domain + ">"
+                : "<" + traceId + "-" + System.nanoTime() + "@" + domain + ">";
+
+        return new PreparedDelivery(finalAccount, message, currentMaskedTo, traceId, domain, messageId, logOnly);
+    }
+
+    MailSendResult deliverSandboxLogOnly(PreparedDelivery prepared) {
+        MailMessage message = prepared.message();
+        String messageId = prepared.messageId();
+        log.info("[MAIL-SANDBOX-LOG-ONLY] Simulated email delivery successfully without network connection. Message-ID: [{}], To: [{}], Subject: [{}]",
+                messageId, prepared.maskedTo(), message.getSubject());
+
+        publishEvent(new MailSendingEvent(this, message));
+
+        MailSendResult result = MailSendResult.success(messageId,
+                message.getTo() != null ? new ArrayList<>(message.getTo()) : Collections.emptyList(),
+                Duration.ofMillis(1));
+
+        publishEvent(new MailSentEvent(this, message, result));
+        return result;
+    }
+
+    record PreparedDelivery(
+            MailAccount account,
+            MailMessage message,
+            String maskedTo,
+            String traceId,
+            String domain,
+            String messageId,
+            boolean logOnly
+    ) {
+    }
+
+    MailSendResult executeWithCascadeFailover(MailAccount primaryAccount, MailMessage message,
+                                              String currentMaskedTo, String traceId, String initialMessageId) {
+        boolean repeatableMessage = isRepeatableMessage(message);
+        try {
+            return sendPhysicalWithRetry(primaryAccount, message, currentMaskedTo, traceId,
+                    initialMessageId, null, repeatableMessage);
+        } catch (Throwable primaryFailure) {
+            if (!shouldTriggerFailover(primaryAccount, primaryFailure, repeatableMessage)) {
+                throw wrapAsRuntime(primaryFailure);
+            }
+            return executeCascadeFailoverFromPrimaryFailure(
+                    primaryAccount, message, currentMaskedTo, traceId, primaryFailure, repeatableMessage);
+        }
+    }
+
+    MailSendResult executeCascadeFailoverOnlyBackups(MailAccount primaryAccount, MailMessage message,
+                                                     String currentMaskedTo, String traceId,
+                                                     Throwable primaryFailure) {
+        return executeCascadeFailoverFromPrimaryFailure(
+                primaryAccount, message, currentMaskedTo, traceId, primaryFailure, isRepeatableMessage(message));
+    }
+
+    private MailSendResult executeCascadeFailoverFromPrimaryFailure(MailAccount primaryAccount, MailMessage message,
+                                                                    String currentMaskedTo, String traceId,
+                                                                    Throwable primaryFailure, boolean repeatableMessage) {
+        Set<String> visitedAccounts = new LinkedHashSet<>();
+        visitedAccounts.add(MailFailoverSupport.normalizeAccountName(primaryAccount.getName()));
+
+        Queue<String> candidateQueue = new ArrayDeque<>();
+        MailFailoverSupport.enqueueBackupAccounts(candidateQueue, primaryAccount);
+
+        boolean overrideFromOnSwitch = properties.getFailover() == null
+                || properties.getFailover().isOverrideFromOnSwitch();
+        List<String> failedChain = new ArrayList<>();
+        failedChain.add(MailFailoverSupport.normalizeAccountName(primaryAccount.getName()) + ": " + primaryFailure.getMessage());
+
+        while (!candidateQueue.isEmpty()) {
+            String candidateName = candidateQueue.poll();
+            if (candidateName == null || candidateName.isBlank()) {
+                continue;
+            }
+            String trimmedName = candidateName.trim();
+            if (!visitedAccounts.add(trimmedName)) {
+                log.warn("[MailFailover] 检测到重复或闭环备用账号 [{}]，已防环跳过", trimmedName);
+                continue;
+            }
+
+            MailAccount backupAccount = findAccount(trimmedName);
+            if (backupAccount == null) {
+                log.warn("[MailFailover] 备用账号 [{}] 不存在或未注册，已跳过", trimmedName);
+                continue;
+            }
+
+            MailFailoverSupport.FailoverAddressOverride addressOverride =
+                    MailFailoverSupport.resolveAddressOverride(overrideFromOnSwitch, primaryAccount, backupAccount, message);
+            String backupDomain = resolveDomain(backupAccount);
+            String backupMessageId = "<" + traceId + "-" + System.nanoTime() + "@" + backupDomain + ">";
+
+            log.warn("[MailFailover] 主/前序账号投递失败，自动顺延切换至备用账号 [{}], effectiveFrom=[{}]",
+                    trimmedName, addressOverride.from());
+
+            try {
+                MailSendResult failoverResult = sendPhysicalWithRetry(backupAccount, message, currentMaskedTo, traceId,
+                        backupMessageId, addressOverride, repeatableMessage);
+                metricsRecorder.recordFailover(primaryAccount.getName(), true);
+                return failoverResult;
+            } catch (Throwable backupFailure) {
+                metricsRecorder.recordFailover(primaryAccount.getName(), false);
+                primaryFailure.addSuppressed(backupFailure);
+                failedChain.add(trimmedName + ": " + backupFailure.getMessage());
+                log.warn("[MailFailover] 备用账号 [{}] 投递同样失败: {}", trimmedName, backupFailure.getMessage());
+                MailFailoverSupport.enqueueBackupAccounts(candidateQueue, backupAccount);
+            }
+        }
+
+        IResultCode code = (primaryFailure instanceof MailSendException mse)
+                ? mse.getResultCode()
+                : MailResultCode.MAIL_SEND_ERROR;
+        throw new MailSendException(code,
+                "主备发信账号全链投递失败 [" + String.join(" -> ", failedChain) + "]",
+                primaryFailure);
+    }
+
+    private MailSendResult sendPhysicalWithRetry(MailAccount account, MailMessage message,
+                                                 String currentMaskedTo, String traceId, String messageId,
+                                                 MailFailoverSupport.FailoverAddressOverride addressOverride,
+                                                 boolean repeatableMessage) {
+        MailRetryProperties retryProps = properties.getRetry();
+        if (retryProps != null && retryProps.isEnabled() && !repeatableMessage) {
+            log.warn("Message [{}] contains non-repeatable InputStream resource(s), disabling retry to prevent corrupted empty attachments",
+                    message.getSubject());
+        }
+        if (retryProps != null && retryProps.isEnabled() && repeatableMessage) {
+            RetryUtil.RetryConfig retryConfig = RetryUtil.RetryConfig.builder()
+                    .maxAttempts(retryProps.getMaxAttempts())
+                    .delay(retryProps.getDelay())
+                    .multiplier(retryProps.getMultiplier())
+                    .maxDelay(retryProps.getMaxDelay())
+                    .jitter(retryProps.isJitter())
+                    .retryPredicate(this::isRetryableException)
+                    .onRetry((attempt, error) -> {
+                        metricsRecorder.recordRetry(account.getName());
+                        log.warn("Sending email via account [{}] to [{}] failed on attempt {}, preparing retry. Reason: {}",
+                                account.getName(), currentMaskedTo, attempt, error.getMessage());
+                    })
+                    .build();
+            return RetryUtil.execute(
+                    () -> doSendPhysical(account, message, currentMaskedTo, traceId, messageId, addressOverride),
+                    retryConfig);
+        }
+        return doSendPhysical(account, message, currentMaskedTo, traceId, messageId, addressOverride);
+    }
+
+    boolean shouldTriggerFailover(MailAccount primaryAccount, Throwable failure, boolean repeatableMessage) {
+        if (properties.getFailover() != null && !properties.getFailover().isEnabled()) {
+            return false;
+        }
+        if (primaryAccount.getBackupAccounts() == null || primaryAccount.getBackupAccounts().isEmpty()) {
+            return false;
+        }
+        if (!repeatableMessage) {
+            log.warn("[MailFailover] 消息包含不可重读的一次性 InputStream 资源，跳过主备切换以防止发出损坏空附件");
+            return false;
+        }
+        return isRetryableException(failure);
+    }
+
+    private static RuntimeException wrapAsRuntime(Throwable failure) {
+        if (failure instanceof RuntimeException re) {
+            return re;
+        }
+        if (failure instanceof Error err) {
+            throw err;
+        }
+        return new MailSendException(MailResultCode.MAIL_SEND_ERROR, "邮件发送失败: " + failure.getMessage(), failure);
+    }
+
+    private MailSendResult doSendPhysical(MailAccount account, MailMessage message, String maskedTo, String traceId,
+                                        String messageId, MailFailoverSupport.FailoverAddressOverride addressOverride) {
         log.info("Sending {} email via account [{}] to [{}], subject: [{}], messageId: [{}], attachments: {}, inlines: {}",
                 message.isHtml() ? "HTML" : "plaintext", account.getName(), maskedTo, message.getSubject(), messageId,
                 message.getAttachments() != null ? message.getAttachments().size() : 0,
                 message.getInlines() != null ? message.getInlines().size() : 0);
 
         try {
-            int multipartMode = MimeMessageHelper.MULTIPART_MODE_NO;
-            if (message.hasAttachments() && message.hasInlines()) {
-                multipartMode = MimeMessageHelper.MULTIPART_MODE_MIXED_RELATED;
-            } else if (message.hasAttachments()) {
-                multipartMode = MimeMessageHelper.MULTIPART_MODE_MIXED;
-            } else if (message.hasInlines()) {
-                multipartMode = MimeMessageHelper.MULTIPART_MODE_RELATED;
-            }
-            TrackableMimeMessage mimeMessage = new TrackableMimeMessage(account.getSender().getSession(), messageId);
-            MimeMessageHelper helper = new MimeMessageHelper(mimeMessage, multipartMode, StandardCharsets.UTF_8.name());
-
-            // 1. 发件人与中文昵称设置
-            String fromAddress = (message.getFrom() != null && !message.getFrom().isBlank())
-                    ? message.getFrom()
-                    : ((account.getDefaultFrom() != null && !account.getDefaultFrom().isBlank())
-                    ? account.getDefaultFrom()
-                    : account.getUsername());
-            String fromName = (message.getFromName() != null && !message.getFromName().isBlank())
-                    ? message.getFromName()
-                    : account.getDefaultFromName();
-
-            if (fromName != null && !fromName.isBlank()) {
-                helper.setFrom(new InternetAddress(fromAddress, fromName, StandardCharsets.UTF_8.name()));
-            } else if (fromAddress != null && !fromAddress.isBlank()) {
-                helper.setFrom(fromAddress);
-            }
-
-            // 2. 收件人、抄送人、密送人与回复地址设置
-            helper.setTo(message.getTo().toArray(new String[0]));
-            if (message.getCc() != null && !message.getCc().isEmpty()) {
-                helper.setCc(message.getCc().toArray(new String[0]));
-            }
-            if (message.getBcc() != null && !message.getBcc().isEmpty()) {
-                helper.setBcc(message.getBcc().toArray(new String[0]));
-            }
-            if (message.getReplyTo() != null && !message.getReplyTo().isBlank()) {
-                helper.setReplyTo(message.getReplyTo());
-            }
-
-            // 3. 主题设置
-            helper.setSubject(message.getSubject() != null ? message.getSubject() : "");
-
-            // 4. 自定义邮件标头
-            if (message.getHeaders() != null) {
-                for (Map.Entry<String, String> header : message.getHeaders().entrySet()) {
-                    if (header.getKey() != null && header.getValue() != null) {
-                        helper.getMimeMessage().setHeader(header.getKey(), header.getValue());
-                    }
-                }
-            }
-
-            // 5. 正文内容装配
-            helper.setText(message.getText() != null ? message.getText() : "", message.isHtml());
-
-            // 6. 内联嵌入资源（必须在 helper.setText 之后执行）
-            if (message.hasInlines()) {
-                for (MailInlineResource inline : message.getInlines()) {
-                    helper.addInline(inline.getContentId(), inline.getSource(), inline.getContentType());
-                }
-            }
-
-            // 7. 附件流式挂载
             AtomicReference<MailSendException> sizeLimitException = new AtomicReference<>();
-            if (message.hasAttachments()) {
-                long maxAttachmentBytes = (properties.getMaxAttachmentSize() != null)
-                        ? properties.getMaxAttachmentSize().toBytes()
-                        : Long.MAX_VALUE;
-                for (MailAttachment attachment : message.getAttachments()) {
-                    InputStreamSource source = attachment.getSource();
-                    // 若附件容量预先未知，挂载流式计数防爆数据源，严防无界裸流耗尽物理内存
-                    if (attachment.getSize() == null && maxAttachmentBytes < Long.MAX_VALUE && source != null) {
-                        source = wrapBoundedSource(attachment.getFilename(), source, maxAttachmentBytes, sizeLimitException);
-                    }
-                    helper.addAttachment(attachment.getFilename(), source, attachment.getContentType());
-                }
-            }
+            TrackableMimeMessage mimeMessage = buildPreparedMimeMessage(account, message, messageId, addressOverride, sizeLimitException);
 
-            // 8. 物理发送
+            // 8. 物理发送（若为 XOAUTH2 则自动注入令牌并在认证失败时刷新重试一次）
             long start = System.nanoTime();
-            account.getSender().send(mimeMessage);
+            accountRegistry.executeWithOAuth2Refresh(account, account.getSender(), this.accessTokenProvider,
+                    () -> account.getSender().send(mimeMessage));
 
             // 防御性熔断：若流式读取组装过程中检测到容量超限（包括被底层 MIME 编码探测吞咽的异常），立即阻断并抛出
             if (sizeLimitException.get() != null) {
@@ -406,26 +644,188 @@ public class MailTemplate implements DisposableBean {
                     maskedTo, duration.toMillis(), messageId);
 
             return MailSendResult.success(messageId, new ArrayList<>(message.getTo()), duration);
-        } catch (MailAuthenticationException e) {
-            throw new MailSendException(MailResultCode.MAIL_AUTHENTICATION_ERROR, "邮件服务器身份认证失败: " + e.getMessage(), e);
-        } catch (org.springframework.mail.MailSendException e) {
-            MailSendException nestedMse = findNestedMailSendException(e);
-            if (nestedMse != null) {
-                throw nestedMse;
-            }
-            if (isTimeoutException(e)) {
-                throw new MailSendException(MailResultCode.MAIL_CONNECT_TIMEOUT, "邮件服务器连接或读写超时: " + e.getMessage(), e);
-            }
-            throw new MailSendException(MailResultCode.MAIL_SEND_ERROR, "邮件发送失败: " + e.getMessage(), e);
         } catch (MailSendException e) {
             throw e;
         } catch (Exception e) {
-            MailSendException nestedMse = findNestedMailSendException(e);
-            if (nestedMse != null) {
-                throw nestedMse;
-            }
-            throw new MailSendException(MailResultCode.MAIL_SEND_ERROR, "邮件发送异常: " + e.getMessage(), e);
+            throw mapPhysicalException(e);
         }
+    }
+
+    TrackableMimeMessage buildPreparedMimeMessage(MailAccount account,
+                                                  MailMessage message,
+                                                  String messageId,
+                                                  MailFailoverSupport.FailoverAddressOverride addressOverride,
+                                                  AtomicReference<MailSendException> sizeLimitException) throws Exception {
+        int multipartMode = MimeMessageHelper.MULTIPART_MODE_NO;
+        if (message.hasAttachments() && message.hasInlines()) {
+            multipartMode = MimeMessageHelper.MULTIPART_MODE_MIXED_RELATED;
+        } else if (message.hasAttachments()) {
+            multipartMode = MimeMessageHelper.MULTIPART_MODE_MIXED;
+        } else if (message.hasInlines()) {
+            multipartMode = MimeMessageHelper.MULTIPART_MODE_RELATED;
+        }
+        TrackableMimeMessage mimeMessage = new TrackableMimeMessage(account.getSender().getSession(), messageId);
+        MimeMessageHelper helper = new MimeMessageHelper(mimeMessage, multipartMode, StandardCharsets.UTF_8.name());
+
+        // 1. 发件人与中文昵称设置
+        String fromAddress = (addressOverride != null && addressOverride.from() != null && !addressOverride.from().isBlank())
+                ? addressOverride.from()
+                : MailFailoverSupport.resolveRawFromAddress(account, message);
+        String explicitFromName = (addressOverride != null)
+                ? addressOverride.fromName()
+                : ((message.getFromName() != null && !message.getFromName().isBlank())
+                ? message.getFromName()
+                : account.getDefaultFromName());
+
+        if (fromAddress != null && !fromAddress.isBlank()) {
+            InternetAddress parsedFrom = parseSingleInternetAddress(fromAddress);
+            if (parsedFrom != null) {
+                String effectivePersonal = (addressOverride != null)
+                        ? explicitFromName
+                        : ((message.getFromName() != null && !message.getFromName().isBlank())
+                        ? message.getFromName()
+                        : ((parsedFrom.getPersonal() != null && !parsedFrom.getPersonal().isBlank())
+                        ? parsedFrom.getPersonal()
+                        : account.getDefaultFromName()));
+                if (effectivePersonal != null && !effectivePersonal.isBlank()) {
+                    helper.setFrom(new InternetAddress(parsedFrom.getAddress(), MailMessage.sanitizeHeaderText(effectivePersonal), StandardCharsets.UTF_8.name()));
+                } else {
+                    helper.setFrom(parsedFrom.getAddress());
+                }
+            } else if (explicitFromName != null && !explicitFromName.isBlank()) {
+                helper.setFrom(new InternetAddress(fromAddress, MailMessage.sanitizeHeaderText(explicitFromName), StandardCharsets.UTF_8.name()));
+            } else {
+                helper.setFrom(fromAddress);
+            }
+        }
+
+        // 2. 收件人、抄送人、密送人与回复地址设置
+        helper.setTo(message.getTo().toArray(new String[0]));
+        if (message.getCc() != null && !message.getCc().isEmpty()) {
+            helper.setCc(message.getCc().toArray(new String[0]));
+        }
+        if (message.getBcc() != null && !message.getBcc().isEmpty()) {
+            helper.setBcc(message.getBcc().toArray(new String[0]));
+        }
+        String effectiveReplyTo = (addressOverride != null && addressOverride.replyTo() != null && !addressOverride.replyTo().isBlank())
+                ? addressOverride.replyTo()
+                : message.getReplyTo();
+        if (effectiveReplyTo != null && !effectiveReplyTo.isBlank()) {
+            helper.setReplyTo(effectiveReplyTo);
+        }
+
+        // 3. 主题设置
+        helper.setSubject(message.getSubject() != null ? MailMessage.sanitizeHeaderText(message.getSubject()) : "");
+
+        // 4. 自定义邮件标头
+        if (message.getHeaders() != null) {
+            for (Map.Entry<String, String> header : message.getHeaders().entrySet()) {
+                if (header.getKey() != null && header.getValue() != null) {
+                    String cleanKey = MailMessage.sanitizeHeaderText(header.getKey()).trim();
+                    if (!cleanKey.isBlank()) {
+                        helper.getMimeMessage().setHeader(cleanKey, MailMessage.sanitizeHeaderText(header.getValue()));
+                    }
+                }
+            }
+        }
+
+        // 4.1 强类型邮件优先级标头注入
+        if (message.getPriority() != null) {
+            helper.getMimeMessage().setHeader("X-Priority", message.getPriority().getXPriority());
+            helper.getMimeMessage().setHeader("Importance", message.getPriority().getImportance());
+            helper.getMimeMessage().setHeader("X-MSMail-Priority", message.getPriority().getImportance());
+        }
+
+        // 4.2 阅读回执标头注入 (RFC 3798)
+        String targetReceiptTo = (message.getReadReceiptTo() != null && !message.getReadReceiptTo().isBlank())
+                ? message.getReadReceiptTo().trim()
+                : (message.isRequestReadReceipt() ? fromAddress : null);
+        if (targetReceiptTo != null && !targetReceiptTo.isBlank()) {
+            helper.getMimeMessage().setHeader("Disposition-Notification-To", targetReceiptTo);
+        }
+
+        // 4.3 单封独立 Envelope Return-Path 与 RFC 2369 / 8058 退订合规标头注入
+        if (message.getReturnPath() != null && !message.getReturnPath().isBlank()) {
+            InternetAddress parsedReturnPath = parseSingleInternetAddress(message.getReturnPath());
+            String envelopeFrom = parsedReturnPath != null
+                    ? parsedReturnPath.getAddress()
+                    : MailMessage.sanitizeHeaderText(message.getReturnPath()).trim();
+            mimeMessage.setEnvelopeFrom(envelopeFrom);
+        }
+        if (message.getListUnsubscribe() != null && !message.getListUnsubscribe().isBlank()) {
+            helper.getMimeMessage().setHeader("List-Unsubscribe",
+                    MailMessage.sanitizeHeaderText(message.getListUnsubscribe()).trim());
+        }
+        if (message.getListUnsubscribePost() != null && !message.getListUnsubscribePost().isBlank()) {
+            helper.getMimeMessage().setHeader("List-Unsubscribe-Post",
+                    MailMessage.sanitizeHeaderText(message.getListUnsubscribePost()).trim());
+        }
+
+        // 5. 正文内容装配
+        helper.setText(message.getText() != null ? message.getText() : "", message.isHtml());
+
+        // 6. 内联嵌入资源（必须在 helper.setText 之后执行）
+        long maxAttachmentBytes = (properties.getMaxAttachmentSize() != null)
+                ? properties.getMaxAttachmentSize().toBytes()
+                : Long.MAX_VALUE;
+        long maxTotalBytes = (properties.getMaxTotalSize() != null)
+                ? properties.getMaxTotalSize().toBytes()
+                : Long.MAX_VALUE;
+        long knownTotalBytes = computeKnownTotalBytes(message);
+        CumulativeSizeTracker sizeTracker = new CumulativeSizeTracker(knownTotalBytes, maxTotalBytes, sizeLimitException);
+
+        if (message.hasInlines()) {
+            for (MailInlineResource inline : message.getInlines()) {
+                if (inline == null || inline.isSystemJunk()) {
+                    continue;
+                }
+                InputStreamSource source = inline.getSource();
+                if (inline.getSize() == null && (maxAttachmentBytes < Long.MAX_VALUE || maxTotalBytes < Long.MAX_VALUE) && source != null) {
+                    source = wrapBoundedSource(inline.getContentId(), source, maxAttachmentBytes, sizeTracker, sizeLimitException);
+                }
+                helper.addInline(inline.getContentId(), source, inline.getContentType());
+            }
+        }
+
+        // 7. 附件流式挂载
+        if (message.hasAttachments()) {
+            for (MailAttachment attachment : message.getAttachments()) {
+                if (attachment == null || attachment.isSystemJunk() || FileUtil.isSystemJunkFile(attachment.getFilename())) {
+                    continue;
+                }
+                String safeFilename = MailAttachment.cleanFilename(attachment.getFilename());
+                InputStreamSource source = attachment.getSource();
+                if (attachment.getSize() == null && (maxAttachmentBytes < Long.MAX_VALUE || maxTotalBytes < Long.MAX_VALUE) && source != null) {
+                    source = wrapBoundedSource(safeFilename, source, maxAttachmentBytes, sizeTracker, sizeLimitException);
+                }
+                helper.addAttachment(safeFilename, source, attachment.getContentType());
+            }
+        }
+
+        return mimeMessage;
+    }
+
+    MailSendException mapPhysicalException(Exception e) {
+        if (e instanceof MailSendException mse) {
+            return mse;
+        }
+        if (e instanceof MailAuthenticationException) {
+            return new MailSendException(MailResultCode.MAIL_AUTHENTICATION_ERROR, "邮件服务器身份认证失败: " + e.getMessage(), e);
+        }
+        MailSendException nestedMse = findNestedMailSendException(e);
+        if (nestedMse != null) {
+            return nestedMse;
+        }
+        if (MailAccountRegistry.isAuthenticationFailure(e)) {
+            return new MailSendException(MailResultCode.MAIL_AUTHENTICATION_ERROR, "邮件服务器身份认证失败: " + e.getMessage(), e);
+        }
+        if (isTimeoutException(e)) {
+            return new MailSendException(MailResultCode.MAIL_CONNECT_TIMEOUT, "邮件服务器连接或读写超时: " + e.getMessage(), e);
+        }
+        if (containsExceptionType(e, AddressException.class)) {
+            return new MailSendException(MailResultCode.MAIL_INVALID_ADDRESS, "邮件地址格式非法: " + e.getMessage(), e);
+        }
+        return new MailSendException(MailResultCode.MAIL_SEND_ERROR, "邮件发送失败: " + e.getMessage(), e);
     }
 
     /**
@@ -435,12 +835,217 @@ public class MailTemplate implements DisposableBean {
      * @return 发送结果回执
      */
     public MailSendResult send(Consumer<MailMessage> messageConfigurer) {
-        if (messageConfigurer == null) {
-            throw new IllegalArgumentException("messageConfigurer must not be null");
+        return withConfiguredMessage(messageConfigurer, this::send);
+    }
+
+    // ==================== 批量个性化发信与邮件合并门面 ====================
+
+    /**
+     * 批量个性化发送邮件（依托 BatchSliceUtil 分片压实排队、默认按最终路由账号复用片内 Transport 并受 batch.timeout 熔断）
+     *
+     * @param messages 邮件消息列表
+     * @return 批量发信聚合回执
+     */
+    public BatchMailSendResult sendBatch(List<MailMessage> messages) {
+        return MailBatchSupport.executeBatch(this, null, messages);
+    }
+
+    /**
+     * 指定绑定账号批量个性化发送邮件（强制使用指定账号路由，不随消息体 account 属性漂移）
+     *
+     * @param account  强制绑定的发信账号
+     * @param messages 邮件消息列表
+     * @return 批量发信聚合回执
+     */
+    public BatchMailSendResult sendBatchWithAccount(MailAccount account, List<MailMessage> messages) {
+        if (account == null) {
+            closeAllMessagesQuietly(messages);
+            throw new IllegalArgumentException("MailAccount must not be null");
         }
-        MailMessage message = new MailMessage();
-        messageConfigurer.accept(message);
-        return send(message);
+        return MailBatchSupport.executeBatch(this, account, messages);
+    }
+
+    /**
+     * 异步批量个性化发送邮件
+     *
+     * @param messages 邮件消息列表
+     * @return 包含批量发信聚合回执的 CompletableFuture
+     */
+    public CompletableFuture<BatchMailSendResult> sendBatchAsync(List<MailMessage> messages) {
+        try {
+            Executor asyncExecutor = requireAsyncExecutor();
+            return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendBatch(messages)), asyncExecutor);
+        } catch (Throwable t) {
+            closeAllMessagesQuietly(messages);
+            throw t;
+        }
+    }
+
+    /**
+     * 指定绑定账号异步批量个性化发送邮件
+     *
+     * @param account  强制绑定的发信账号
+     * @param messages 邮件消息列表
+     * @return 包含批量发信聚合回执的 CompletableFuture
+     */
+    public CompletableFuture<BatchMailSendResult> sendBatchAsyncWithAccount(MailAccount account, List<MailMessage> messages) {
+        if (account == null) {
+            closeAllMessagesQuietly(messages);
+            throw new IllegalArgumentException("MailAccount must not be null");
+        }
+        try {
+            Executor asyncExecutor = requireAsyncExecutor();
+            return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendBatchWithAccount(account, messages)), asyncExecutor);
+        } catch (Throwable t) {
+            closeAllMessagesQuietly(messages);
+            throw t;
+        }
+    }
+
+    /**
+     * 事务提交后批量个性化发送邮件（当且仅当当前物理事务 Commit 成功后触发，回滚自动取消并关闭全部资源句柄）
+     * 若当前处于非事务上下文，平滑降级为立即执行 {@link #sendBatch(List)}。
+     *
+     * @param messages 邮件消息列表
+     */
+    public void sendBatchAfterCommit(List<MailMessage> messages) {
+        dispatchBatchAfterCommit(null, messages, false);
+    }
+
+    /**
+     * 指定绑定账号在事务提交后批量个性化发送邮件
+     *
+     * @param account  强制绑定的发信账号
+     * @param messages 邮件消息列表
+     */
+    public void sendBatchAfterCommitWithAccount(MailAccount account, List<MailMessage> messages) {
+        if (account == null) {
+            closeAllMessagesQuietly(messages);
+            throw new IllegalArgumentException("MailAccount must not be null");
+        }
+        dispatchBatchAfterCommit(account, messages, false);
+    }
+
+    /**
+     * 事务提交后异步批量个性化发送邮件（回滚时自动取消并关闭全部资源句柄）
+     *
+     * @param messages 邮件消息列表
+     */
+    public void sendBatchAsyncAfterCommit(List<MailMessage> messages) {
+        dispatchBatchAfterCommit(null, messages, true);
+    }
+
+    /**
+     * 指定绑定账号在事务提交后异步批量个性化发送邮件
+     *
+     * @param account  强制绑定的发信账号
+     * @param messages 邮件消息列表
+     */
+    public void sendBatchAsyncAfterCommitWithAccount(MailAccount account, List<MailMessage> messages) {
+        if (account == null) {
+            closeAllMessagesQuietly(messages);
+            throw new IllegalArgumentException("MailAccount must not be null");
+        }
+        dispatchBatchAfterCommit(account, messages, true);
+    }
+
+    private void dispatchBatchAfterCommit(MailAccount boundAccount, List<MailMessage> messages, boolean isAsync) {
+        if (messages == null || messages.isEmpty()) {
+            return;
+        }
+        List<MailMessage> snapshot = new ArrayList<>(messages);
+        if (isTxSynchronizationActive()) {
+            try {
+                Runnable batchTask = () -> {
+                    if (boundAccount != null) {
+                        sendBatchWithAccount(boundAccount, snapshot);
+                    } else {
+                        sendBatch(snapshot);
+                    }
+                };
+                registerBatchAfterCommitSynchronization(snapshot, batchTask, isAsync);
+            } catch (Throwable t) {
+                closeAllMessagesQuietly(snapshot);
+                throw t;
+            }
+        } else if (isAsync) {
+            if (boundAccount != null) {
+                sendBatchAsyncWithAccount(boundAccount, snapshot);
+            } else {
+                sendBatchAsync(snapshot);
+            }
+        } else if (boundAccount != null) {
+            sendBatchWithAccount(boundAccount, snapshot);
+        } else {
+            sendBatch(snapshot);
+        }
+    }
+
+    int resolveBatchConcurrency() {
+        if (properties != null && properties.getBatch() != null) {
+            int c = properties.getBatch().getConcurrency();
+            return Math.max(1, Math.min(32, c));
+        }
+        return 4;
+    }
+
+    int resolveBatchSliceSize() {
+        if (properties != null && properties.getBatch() != null) {
+            int s = properties.getBatch().getSliceSize();
+            return Math.max(1, Math.min(1000, s));
+        }
+        return 50;
+    }
+
+    boolean isBatchReuseTransport() {
+        return properties == null || properties.getBatch() == null || properties.getBatch().isReuseTransport();
+    }
+
+    Duration resolveBatchTimeout() {
+        if (properties != null && properties.getBatch() != null
+                && properties.getBatch().getTimeout() != null
+                && !properties.getBatch().getTimeout().isNegative()
+                && !properties.getBatch().getTimeout().isZero()) {
+            return properties.getBatch().getTimeout();
+        }
+        return Duration.ofMinutes(5);
+    }
+
+    record BatchDeliveryMetric(String accountName, MailSendOutcome outcome) {
+    }
+
+    String resolvePreFailureMetricAccount(MailMessage message) {
+        if (message == null || message.getAccount() == null || message.getAccount().isBlank()) {
+            return "unresolved";
+        }
+        String candidate = message.getAccount().trim();
+        if (accountRegistry.contains(candidate) || accountRegistry.getDynamic(candidate) != null) {
+            return candidate;
+        }
+        return "unresolved";
+    }
+
+    MailSendOutcome classifyFailureOutcome(Throwable throwable) {
+        if (throwable instanceof MailSendException mse) {
+            IResultCode code = mse.getResultCode();
+            if (code == MailResultCode.MAIL_RATE_LIMITED) {
+                return MailSendOutcome.RATE_LIMITED;
+            }
+            if (code == MailResultCode.MAIL_QUOTA_EXCEEDED) {
+                return MailSendOutcome.QUOTA_EXCEEDED;
+            }
+            if (code == MailResultCode.MAIL_IDEMPOTENT_REJECTED) {
+                return MailSendOutcome.IDEMPOTENT_REJECTED;
+            }
+            if (isInterceptorBlocked(mse)) {
+                return MailSendOutcome.INTERCEPTED;
+            }
+        }
+        return MailSendOutcome.FAILURE;
+    }
+
+    private static boolean isInterceptorBlocked(MailSendException mse) {
+        return mse.getMessage() != null && mse.getMessage().contains(INTERCEPTOR_BLOCKED_PREFIX);
     }
 
     /**
@@ -591,6 +1196,44 @@ public class MailTemplate implements DisposableBean {
     // ==================== 模板动态渲染邮件发送快捷门面 ====================
 
     /**
+     * 渲染模板为富文本 HTML 字符串（自动探测 LocaleContextHolder 国际化语言）
+     *
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @return 渲染后的 HTML 字符串
+     */
+    public String renderTemplate(String templateName, Map<String, Object> model) {
+        return renderTemplate(templateName, model, resolveLocale(null));
+    }
+
+    /**
+     * 根据指定国际化语言渲染模板为富文本 HTML 字符串
+     *
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @param locale       目标语言区域（若为 null 则自动探测 LocaleContextHolder）
+     * @return 渲染后的 HTML 字符串
+     */
+    public String renderTemplate(String templateName, Map<String, Object> model, Locale locale) {
+        return templateRenderer.render(templateName, model, resolveLocale(locale));
+    }
+
+    private Locale resolveLocale(Locale explicitLocale) {
+        if (explicitLocale != null) {
+            return explicitLocale;
+        }
+        try {
+            Locale contextLocale = LocaleContextHolder.getLocale();
+            if (contextLocale != null) {
+                return contextLocale;
+            }
+        } catch (Throwable ignored) {
+            // 忽略上下文异常
+        }
+        return Locale.getDefault();
+    }
+
+    /**
      * 发送模板渲染邮件（默认账号）
      *
      * @param to           单个目标收件人
@@ -600,7 +1243,21 @@ public class MailTemplate implements DisposableBean {
      * @return 发送结果回执
      */
     public MailSendResult sendTemplate(String to, String subject, String templateName, Map<String, Object> model) {
-        return sendTemplate(null, to != null ? List.of(to) : List.of(), subject, templateName, model);
+        return sendTemplate(null, to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    /**
+     * 发送模板渲染邮件（默认账号，指定国际化区域）
+     *
+     * @param to           单个目标收件人
+     * @param subject      邮件主题
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @param locale       目标国际化区域
+     * @return 发送结果回执
+     */
+    public MailSendResult sendTemplate(String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        return sendTemplate(null, to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     /**
@@ -614,7 +1271,22 @@ public class MailTemplate implements DisposableBean {
      * @return 发送结果回执
      */
     public MailSendResult sendTemplate(String accountName, String to, String subject, String templateName, Map<String, Object> model) {
-        return sendTemplate(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model);
+        return sendTemplate(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    /**
+     * 发送模板渲染邮件（指定账号与国际化区域）
+     *
+     * @param accountName  账号逻辑名称
+     * @param to           单个目标收件人
+     * @param subject      邮件主题
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @param locale       目标国际化区域
+     * @return 发送结果回执
+     */
+    public MailSendResult sendTemplate(String accountName, String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        return sendTemplate(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     /**
@@ -627,7 +1299,21 @@ public class MailTemplate implements DisposableBean {
      * @return 发送结果回执
      */
     public MailSendResult sendTemplate(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        return sendTemplate(null, to, subject, templateName, model);
+        return sendTemplate(null, to, subject, templateName, model, null);
+    }
+
+    /**
+     * 发送模板渲染邮件给多个收件人（默认账号，指定国际化区域）
+     *
+     * @param to           目标收件人集合
+     * @param subject      邮件主题
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @param locale       目标国际化区域
+     * @return 发送结果回执
+     */
+    public MailSendResult sendTemplate(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        return sendTemplate(null, to, subject, templateName, model, locale);
     }
 
     /**
@@ -641,7 +1327,22 @@ public class MailTemplate implements DisposableBean {
      * @return 发送结果回执
      */
     public MailSendResult sendTemplate(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        String renderedHtml = templateRenderer.render(templateName, model);
+        return sendTemplate(accountName, to, subject, templateName, model, null);
+    }
+
+    /**
+     * 发送模板渲染邮件给多个收件人（指定账号与国际化区域）
+     *
+     * @param accountName  账号逻辑名称
+     * @param to           目标收件人集合
+     * @param subject      邮件主题
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @param locale       目标国际化区域
+     * @return 发送结果回执
+     */
+    public MailSendResult sendTemplate(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        String renderedHtml = renderTemplate(templateName, model, locale);
         return sendHtml(accountName, to, subject, renderedHtml);
     }
 
@@ -657,7 +1358,13 @@ public class MailTemplate implements DisposableBean {
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
-        return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> send(message)), executor);
+        try {
+            Executor asyncExecutor = requireAsyncExecutor();
+            return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> send(message)), asyncExecutor);
+        } catch (Throwable t) {
+            message.close();
+            throw t;
+        }
     }
 
     /**
@@ -667,12 +1374,7 @@ public class MailTemplate implements DisposableBean {
      * @return 包含发送结果回执的异步 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendAsync(Consumer<MailMessage> messageConfigurer) {
-        if (messageConfigurer == null) {
-            throw new IllegalArgumentException("messageConfigurer must not be null");
-        }
-        MailMessage message = new MailMessage();
-        messageConfigurer.accept(message);
-        return sendAsync(message);
+        return withConfiguredMessage(messageConfigurer, this::sendAsync);
     }
 
     /**
@@ -683,13 +1385,19 @@ public class MailTemplate implements DisposableBean {
      * @return 包含发送结果回执的异步 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendAsyncWithAccount(MailAccount account, MailMessage message) {
-        if (account == null) {
-            throw new IllegalArgumentException("MailAccount must not be null");
-        }
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
-        return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendWithAccount(account, message)), executor);
+        try {
+            if (account == null) {
+                throw new IllegalArgumentException("MailAccount must not be null");
+            }
+            Executor asyncExecutor = requireAsyncExecutor();
+            return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendWithAccount(account, message)), asyncExecutor);
+        } catch (Throwable t) {
+            message.close();
+            throw t;
+        }
     }
 
     // ==================== 纯文本异步发信快捷门面 ====================
@@ -818,7 +1526,11 @@ public class MailTemplate implements DisposableBean {
      * @return 包含发送结果回执的异步 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendTemplateAsync(String to, String subject, String templateName, Map<String, Object> model) {
-        return sendTemplateAsync(null, to != null ? List.of(to) : List.of(), subject, templateName, model);
+        return sendTemplateAsync(null, to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public CompletableFuture<MailSendResult> sendTemplateAsync(String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        return sendTemplateAsync(null, to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     /**
@@ -832,7 +1544,11 @@ public class MailTemplate implements DisposableBean {
      * @return 包含发送结果回执的异步 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendTemplateAsync(String accountName, String to, String subject, String templateName, Map<String, Object> model) {
-        return sendTemplateAsync(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model);
+        return sendTemplateAsync(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public CompletableFuture<MailSendResult> sendTemplateAsync(String accountName, String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        return sendTemplateAsync(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     /**
@@ -845,7 +1561,11 @@ public class MailTemplate implements DisposableBean {
      * @return 包含发送结果回执的异步 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendTemplateAsync(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        return sendTemplateAsync(null, to, subject, templateName, model);
+        return sendTemplateAsync(null, to, subject, templateName, model, null);
+    }
+
+    public CompletableFuture<MailSendResult> sendTemplateAsync(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        return sendTemplateAsync(null, to, subject, templateName, model, locale);
     }
 
     /**
@@ -859,7 +1579,11 @@ public class MailTemplate implements DisposableBean {
      * @return 包含发送结果回执的异步 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendTemplateAsync(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        String renderedHtml = templateRenderer.render(templateName, model);
+        return sendTemplateAsync(accountName, to, subject, templateName, model, null);
+    }
+
+    public CompletableFuture<MailSendResult> sendTemplateAsync(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        String renderedHtml = renderTemplate(templateName, model, locale);
         return sendHtmlAsync(accountName, to, subject, renderedHtml);
     }
 
@@ -876,7 +1600,12 @@ public class MailTemplate implements DisposableBean {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
         if (isTxSynchronizationActive()) {
-            registerAfterCommitSynchronization(message, () -> send(message), false);
+            try {
+                registerAfterCommitSynchronization(message, () -> deliverAfterCommit(null, message), false);
+            } catch (Throwable t) {
+                message.close();
+                throw t;
+            }
         } else {
             send(message);
         }
@@ -889,14 +1618,20 @@ public class MailTemplate implements DisposableBean {
      * @param message 邮件消息模型
      */
     public void sendAfterCommitWithAccount(MailAccount account, MailMessage message) {
-        if (account == null) {
-            throw new IllegalArgumentException("MailAccount must not be null");
-        }
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
+        if (account == null) {
+            message.close();
+            throw new IllegalArgumentException("MailAccount must not be null");
+        }
         if (isTxSynchronizationActive()) {
-            registerAfterCommitSynchronization(message, () -> sendWithAccount(account, message), false);
+            try {
+                registerAfterCommitSynchronization(message, () -> deliverAfterCommit(account, message), false);
+            } catch (Throwable t) {
+                message.close();
+                throw t;
+            }
         } else {
             sendWithAccount(account, message);
         }
@@ -908,12 +1643,10 @@ public class MailTemplate implements DisposableBean {
      * @param messageConfigurer 邮件消息配置器
      */
     public void sendAfterCommit(Consumer<MailMessage> messageConfigurer) {
-        if (messageConfigurer == null) {
-            throw new IllegalArgumentException("messageConfigurer must not be null");
-        }
-        MailMessage message = new MailMessage();
-        messageConfigurer.accept(message);
-        sendAfterCommit(message);
+        withConfiguredMessage(messageConfigurer, msg -> {
+            sendAfterCommit(msg);
+            return null;
+        });
     }
 
     /**
@@ -927,7 +1660,12 @@ public class MailTemplate implements DisposableBean {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
         if (isTxSynchronizationActive()) {
-            registerAfterCommitSynchronization(message, () -> send(message), true);
+            try {
+                registerAfterCommitSynchronization(message, () -> deliverAfterCommit(null, message), true);
+            } catch (Throwable t) {
+                message.close();
+                throw t;
+            }
         } else {
             sendAsync(message);
         }
@@ -940,14 +1678,20 @@ public class MailTemplate implements DisposableBean {
      * @param message 邮件消息模型
      */
     public void sendAsyncAfterCommitWithAccount(MailAccount account, MailMessage message) {
-        if (account == null) {
-            throw new IllegalArgumentException("MailAccount must not be null");
-        }
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
+        if (account == null) {
+            message.close();
+            throw new IllegalArgumentException("MailAccount must not be null");
+        }
         if (isTxSynchronizationActive()) {
-            registerAfterCommitSynchronization(message, () -> sendWithAccount(account, message), true);
+            try {
+                registerAfterCommitSynchronization(message, () -> deliverAfterCommit(account, message), true);
+            } catch (Throwable t) {
+                message.close();
+                throw t;
+            }
         } else {
             sendAsyncWithAccount(account, message);
         }
@@ -959,12 +1703,10 @@ public class MailTemplate implements DisposableBean {
      * @param messageConfigurer 邮件消息配置器
      */
     public void sendAsyncAfterCommit(Consumer<MailMessage> messageConfigurer) {
-        if (messageConfigurer == null) {
-            throw new IllegalArgumentException("messageConfigurer must not be null");
-        }
-        MailMessage message = new MailMessage();
-        messageConfigurer.accept(message);
-        sendAsyncAfterCommit(message);
+        withConfiguredMessage(messageConfigurer, msg -> {
+            sendAsyncAfterCommit(msg);
+            return null;
+        });
     }
 
     // ==================== 事务感知发信快捷门面 ====================
@@ -1012,19 +1754,35 @@ public class MailTemplate implements DisposableBean {
     }
 
     public void sendTemplateAfterCommit(String to, String subject, String templateName, Map<String, Object> model) {
-        sendTemplateAfterCommit(null, to != null ? List.of(to) : List.of(), subject, templateName, model);
+        sendTemplateAfterCommit(null, to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public void sendTemplateAfterCommit(String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        sendTemplateAfterCommit(null, to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     public void sendTemplateAfterCommit(String accountName, String to, String subject, String templateName, Map<String, Object> model) {
-        sendTemplateAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model);
+        sendTemplateAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public void sendTemplateAfterCommit(String accountName, String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        sendTemplateAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     public void sendTemplateAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        sendTemplateAfterCommit(null, to, subject, templateName, model);
+        sendTemplateAfterCommit(null, to, subject, templateName, model, null);
+    }
+
+    public void sendTemplateAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        sendTemplateAfterCommit(null, to, subject, templateName, model, locale);
     }
 
     public void sendTemplateAfterCommit(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        String renderedHtml = templateRenderer.render(templateName, model);
+        sendTemplateAfterCommit(accountName, to, subject, templateName, model, null);
+    }
+
+    public void sendTemplateAfterCommit(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        String renderedHtml = renderTemplate(templateName, model, locale);
         sendHtmlAfterCommit(accountName, to, subject, renderedHtml);
     }
 
@@ -1071,20 +1829,122 @@ public class MailTemplate implements DisposableBean {
     }
 
     public void sendTemplateAsyncAfterCommit(String to, String subject, String templateName, Map<String, Object> model) {
-        sendTemplateAsyncAfterCommit(null, to != null ? List.of(to) : List.of(), subject, templateName, model);
+        sendTemplateAsyncAfterCommit(null, to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public void sendTemplateAsyncAfterCommit(String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        sendTemplateAsyncAfterCommit(null, to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     public void sendTemplateAsyncAfterCommit(String accountName, String to, String subject, String templateName, Map<String, Object> model) {
-        sendTemplateAsyncAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model);
+        sendTemplateAsyncAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public void sendTemplateAsyncAfterCommit(String accountName, String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        sendTemplateAsyncAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     public void sendTemplateAsyncAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        sendTemplateAsyncAfterCommit(null, to, subject, templateName, model);
+        sendTemplateAsyncAfterCommit(null, to, subject, templateName, model, null);
+    }
+
+    public void sendTemplateAsyncAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        sendTemplateAsyncAfterCommit(null, to, subject, templateName, model, locale);
     }
 
     public void sendTemplateAsyncAfterCommit(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        String renderedHtml = templateRenderer.render(templateName, model);
+        sendTemplateAsyncAfterCommit(accountName, to, subject, templateName, model, null);
+    }
+
+    public void sendTemplateAsyncAfterCommit(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        String renderedHtml = renderTemplate(templateName, model, locale);
         sendHtmlAsyncAfterCommit(accountName, to, subject, renderedHtml);
+    }
+
+    // ==================== 物理 SMTP 连通性健康探针 ====================
+
+    /**
+     * 探测当前默认发信账号的物理 SMTP 连通性（快速布尔型探测）
+     *
+     * @return 连通成功返回 true，失败返回 false
+     */
+    public boolean testConnection() {
+        return testConnection((String) null);
+    }
+
+    /**
+     * 探测指定发信账号的物理 SMTP 连通性（快速布尔型探测）
+     *
+     * @param accountName 账号逻辑名称（传 null 时自动解析默认或租户账号）
+     * @return 连通成功返回 true，失败返回 false
+     */
+    public boolean testConnection(String accountName) {
+        try {
+            testConnectionOrThrow(accountName);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 探测指定发件账号实体的物理 SMTP 连通性（快速布尔型探测）
+     *
+     * @param account 待检测发件账号
+     * @return 连通成功返回 true，失败返回 false
+     */
+    public boolean testConnection(MailAccount account) {
+        try {
+            testConnectionOrThrow(account);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 探测当前默认发信账号的物理 SMTP 连通性（异常型探测，失败抛出语义化业务异常并保留因果链）
+     *
+     * @throws MailSendException 连通失败或认证异常时抛出
+     */
+    public void testConnectionOrThrow() {
+        testConnectionOrThrow((String) null);
+    }
+
+    /**
+     * 探测指定发信账号的物理 SMTP 连通性（异常型探测，失败抛出语义化业务异常并保留因果链）
+     *
+     * @param accountName 账号逻辑名称（传 null 时自动解析默认或租户账号）
+     * @throws MailSendException 连通失败或认证异常时抛出
+     */
+    public void testConnectionOrThrow(String accountName) {
+        MailAccount account;
+        if (accountName != null && !accountName.isBlank()) {
+            account = findAccount(accountName);
+            if (account == null) {
+                throw new MailSendException(MailResultCode.MAIL_ACCOUNT_NOT_FOUND,
+                        "未找到指定的发信账号: [" + accountName + "]");
+            }
+        } else {
+            account = resolveAccount(new MailMessage());
+        }
+        if (account == null) {
+            throw new MailSendException(MailResultCode.MAIL_ACCOUNT_NOT_FOUND, "未找到可用的默认发信账号，请检查配置");
+        }
+        testConnectionOrThrow(account);
+    }
+
+    /**
+     * 探测指定发件账号实体的物理 SMTP 连通性（异常型探测，失败抛出语义化业务异常并保留因果链）
+     *
+     * @param account 待检测发信账号
+     * @throws MailSendException 连通失败或认证异常时抛出
+     */
+    public void testConnectionOrThrow(MailAccount account) {
+        if (account == null) {
+            throw new IllegalArgumentException("MailAccount must not be null");
+        }
+        accountRegistry.testConnectionOrThrow(account);
     }
 
     // ==================== 内部防御性校验与辅助逻辑 ====================
@@ -1094,6 +1954,50 @@ public class MailTemplate implements DisposableBean {
      *
      * @param message 待发送邮件消息
      */
+    /**
+     * 合规审计归档密送安全追加（支持大小写无关去重合并）
+     *
+     * @param account 目标发信账号
+     * @param message 待发信消息模型
+     */
+    private void applyArchiveBcc(MailAccount account, MailMessage message) {
+        String archiveBcc = (account != null && account.getArchiveBcc() != null && !account.getArchiveBcc().isBlank())
+                ? account.getArchiveBcc()
+                : (properties != null ? properties.getArchiveBcc() : null);
+
+        if (archiveBcc == null || archiveBcc.isBlank()) {
+            return;
+        }
+
+        String[] addresses = archiveBcc.split("[,;]");
+        if (addresses.length == 0) {
+            return;
+        }
+
+        List<String> mutableBcc = message.getBcc() != null ? new ArrayList<>(message.getBcc()) : new ArrayList<>();
+        Set<String> existing = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        existing.addAll(mutableBcc);
+
+        boolean modified = false;
+        for (String address : addresses) {
+            if (address == null) {
+                continue;
+            }
+            String trimmed = address.trim();
+            if (!trimmed.isBlank() && !existing.contains(trimmed)) {
+                mutableBcc.add(trimmed);
+                existing.add(trimmed);
+                modified = true;
+                log.debug("Appended compliance archive-bcc: [{}] to mail: [{}]",
+                        DesensitizeUtil.email(trimmed), message.getSubject());
+            }
+        }
+
+        if (modified || message.getBcc() == null) {
+            message.setBcc(mutableBcc);
+        }
+    }
+
     private void enforceSizeLimits(MailMessage message) {
         long maxAttachmentBytes = (properties.getMaxAttachmentSize() != null)
                 ? properties.getMaxAttachmentSize().toBytes()
@@ -1102,37 +2006,34 @@ public class MailTemplate implements DisposableBean {
                 ? properties.getMaxTotalSize().toBytes()
                 : Long.MAX_VALUE;
 
-        // 1. 单附件大小检查
+        // 1. 单附件与内联资源大小检查
         if (message.hasAttachments()) {
             for (MailAttachment attachment : message.getAttachments()) {
-                if (attachment != null && attachment.getSize() != null && attachment.getSize() > maxAttachmentBytes) {
+                if (attachment == null || attachment.isSystemJunk() || FileUtil.isSystemJunkFile(attachment.getFilename())) {
+                    continue;
+                }
+                if (attachment.getSize() != null && attachment.getSize() > maxAttachmentBytes) {
                     throw new MailSendException(MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED,
                             "邮件附件 [" + attachment.getFilename() + "] 大小 (" + attachment.getSize()
                                     + " 字节) 超出单个附件上限 (" + properties.getMaxAttachmentSize() + ")");
                 }
             }
         }
-
-        // 2. 邮件已知总容量检查
-        long estimatedTotal = (message.getText() != null)
-                ? message.getText().getBytes(StandardCharsets.UTF_8).length
-                : 0L;
-
-        if (message.hasAttachments()) {
-            for (MailAttachment attachment : message.getAttachments()) {
-                if (attachment != null && attachment.getSize() != null) {
-                    estimatedTotal += attachment.getSize();
-                }
-            }
-        }
-
         if (message.hasInlines()) {
             for (MailInlineResource inline : message.getInlines()) {
-                if (inline != null && inline.getSize() != null) {
-                    estimatedTotal += inline.getSize();
+                if (inline == null || inline.isSystemJunk()) {
+                    continue;
+                }
+                if (inline.getSize() != null && inline.getSize() > maxAttachmentBytes) {
+                    throw new MailSendException(MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED,
+                            "邮件内联资源 [" + inline.getContentId() + "] 大小 (" + inline.getSize()
+                                    + " 字节) 超出单个附件上限 (" + properties.getMaxAttachmentSize() + ")");
                 }
             }
         }
+
+        // 2. 邮件已知总容量检查
+        long estimatedTotal = computeKnownTotalBytes(message);
 
         if (estimatedTotal > maxTotalBytes) {
             throw new MailSendException(MailResultCode.MAIL_TOTAL_SIZE_EXCEEDED,
@@ -1140,16 +2041,67 @@ public class MailTemplate implements DisposableBean {
         }
     }
 
+    private long computeKnownTotalBytes(MailMessage message) {
+        long estimatedTotal = (message.getText() != null)
+                ? message.getText().getBytes(StandardCharsets.UTF_8).length
+                : 0L;
+
+        if (message.hasAttachments()) {
+            for (MailAttachment attachment : message.getAttachments()) {
+                if (attachment != null && !attachment.isSystemJunk()
+                        && !FileUtil.isSystemJunkFile(attachment.getFilename())
+                        && attachment.getSize() != null) {
+                    estimatedTotal += attachment.getSize();
+                }
+            }
+        }
+
+        if (message.hasInlines()) {
+            for (MailInlineResource inline : message.getInlines()) {
+                if (inline != null && !inline.isSystemJunk() && inline.getSize() != null) {
+                    estimatedTotal += inline.getSize();
+                }
+            }
+        }
+        return estimatedTotal;
+    }
+
     private String resolveTraceId() {
         String traceId = MDC.get("traceId");
         if (traceId != null && !traceId.isBlank()) {
-            return traceId;
+            return MailMessage.sanitizeHeaderText(traceId);
         }
         return IdUtil.fastSimpleUUID();
     }
 
     private String resolveDomain(MailAccount account) {
-        return account != null ? account.getDomain() : "ateng-boot.local";
+        String domain = account != null ? account.getDomain() : "ateng-boot.local";
+        return MailMessage.sanitizeHeaderText(domain);
+    }
+
+    private void sanitizeMessageHeaders(MailMessage message) {
+        if (message.getSubject() != null) {
+            message.setSubject(message.getSubject());
+        }
+        if (message.getFromName() != null) {
+            message.setFromName(message.getFromName());
+        }
+        if (message.getHeaders() != null && !message.getHeaders().isEmpty()) {
+            message.setHeaders(message.getHeaders());
+        }
+        if (message.getListUnsubscribe() != null) {
+            message.setListUnsubscribe(message.getListUnsubscribe());
+        }
+        if (message.getListUnsubscribePost() != null) {
+            message.setListUnsubscribePost(message.getListUnsubscribePost());
+        }
+        if (message.hasInlines()) {
+            for (MailInlineResource inline : message.getInlines()) {
+                if (inline != null && inline.getContentId() != null) {
+                    inline.setContentId(MailInlineResource.cleanContentId(inline.getContentId()));
+                }
+            }
+        }
     }
 
     private boolean isTimeoutException(Throwable throwable) {
@@ -1167,7 +2119,7 @@ public class MailTemplate implements DisposableBean {
         return false;
     }
 
-    private void publishEvent(MailSendEvent event) {
+    void publishEvent(MailSendEvent event) {
         if (eventPublisher != null) {
             try {
                 eventPublisher.publishEvent(event);
@@ -1177,7 +2129,7 @@ public class MailTemplate implements DisposableBean {
         }
     }
 
-    private void triggerFailureSafetyNet(MailMessage message, String maskedTo, Throwable cause) {
+    void triggerFailureSafetyNet(MailMessage message, String maskedTo, Throwable cause) {
         log.error("[MailSafetyNet] Physical mail delivery to [{}] failed critically for subject [{}]: {}",
                 maskedTo, message.getSubject(), cause.getMessage(), cause);
 
@@ -1195,20 +2147,350 @@ public class MailTemplate implements DisposableBean {
         }
     }
 
-    private boolean isRetryableException(Throwable throwable) {
-        if (throwable instanceof MailAuthenticationException) {
+    boolean isRepeatableMessage(MailMessage message) {
+        if (message.hasAttachments()) {
+            for (MailAttachment attachment : message.getAttachments()) {
+                if (attachment != null && !attachment.isSystemJunk() && !attachment.isRepeatable()) {
+                    return false;
+                }
+            }
+        }
+        if (message.hasInlines()) {
+            for (MailInlineResource inline : message.getInlines()) {
+                if (inline != null && !inline.isSystemJunk() && !inline.isRepeatable()) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private void closeAllMessagesQuietly(List<MailMessage> messages) {
+        if (messages == null) {
+            return;
+        }
+        for (MailMessage msg : messages) {
+            if (msg != null) {
+                msg.close();
+            }
+        }
+    }
+
+    private <T> T withConfiguredMessage(Consumer<MailMessage> messageConfigurer, Function<MailMessage, T> action) {
+        return executeWithConfiguredMessage(messageConfigurer, action);
+    }
+
+    static <T> T executeWithConfiguredMessage(Consumer<MailMessage> messageConfigurer, Function<MailMessage, T> action) {
+        if (messageConfigurer == null) {
+            throw new IllegalArgumentException("messageConfigurer must not be null");
+        }
+        MailMessage message = new MailMessage();
+        try {
+            messageConfigurer.accept(message);
+            return action.apply(message);
+        } catch (Throwable t) {
+            message.close();
+            throw t;
+        }
+    }
+
+    boolean isRetryableException(Throwable throwable) {
+        if (throwable instanceof Error
+                || throwable instanceof MailAuthenticationException
+                || throwable instanceof IllegalArgumentException
+                || MailAccountRegistry.isAuthenticationFailure(throwable)
+                || containsExceptionType(throwable, InterruptedException.class)) {
             return false;
         }
         if (throwable instanceof MailSendException mse) {
             if (mse.getResultCode() == MailResultCode.MAIL_AUTHENTICATION_ERROR
                     || mse.getResultCode() == MailResultCode.MAIL_ACCOUNT_NOT_FOUND
                     || mse.getResultCode() == MailResultCode.MAIL_RECIPIENT_EMPTY
+                    || mse.getResultCode() == MailResultCode.MAIL_INVALID_ADDRESS
                     || mse.getResultCode() == MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED
-                    || mse.getResultCode() == MailResultCode.MAIL_TOTAL_SIZE_EXCEEDED) {
+                    || mse.getResultCode() == MailResultCode.MAIL_TOTAL_SIZE_EXCEEDED
+                    || mse.getResultCode() == MailResultCode.MAIL_TEMPLATE_RENDER_ERROR
+                    || mse.getResultCode() == MailResultCode.MAIL_RATE_LIMITED
+                    || mse.getResultCode() == MailResultCode.MAIL_QUOTA_EXCEEDED
+                    || mse.getResultCode() == MailResultCode.MAIL_IDEMPOTENT_REJECTED
+                    || isInterceptorBlocked(mse)) {
                 return false;
             }
         }
+        if (containsExceptionType(throwable, AddressException.class)) {
+            return false;
+        }
         return true;
+    }
+
+    MailSendResult executeWithOutboundGuards(MailAccount account, MailMessage message,
+                                                     java.util.function.Supplier<MailSendResult> deliverySupplier) {
+        if (this.rateLimiter == null && this.dailyQuotaBreaker == null && this.idempotentGuard == null) {
+            return deliverySupplier.get();
+        }
+        Set<String> deduplicatedRecipients = collectDeduplicatedRecipients(message);
+        String idempotentKey = this.idempotentGuard != null
+                ? resolveIdempotentKey(account, message, deduplicatedRecipients)
+                : null;
+        boolean idempotentAcquired = false;
+
+        if (this.idempotentGuard != null && idempotentKey != null) {
+            if (!this.idempotentGuard.tryAcquire(account, message, idempotentKey)) {
+                throw new MailSendException(MailResultCode.MAIL_IDEMPOTENT_REJECTED,
+                        "重复的邮件发送请求已被幂等拦截，idempotentKey=[" + idempotentKey + "]");
+            }
+            idempotentAcquired = true;
+        }
+
+        try {
+            if (this.rateLimiter != null && !this.rateLimiter.tryAcquire(account, message, deduplicatedRecipients)) {
+                throw new MailSendException(MailResultCode.MAIL_RATE_LIMITED,
+                        "邮件发送触发出站频率限制，account=[" + account.getName()
+                                + "], recipients=" + deduplicatedRecipients.size());
+            }
+
+            if (this.dailyQuotaBreaker != null) {
+                MailDailyQuotaBreaker.QuotaCheckResult quotaResult =
+                        this.dailyQuotaBreaker.tryConsume(account, message, deduplicatedRecipients.size());
+                if (quotaResult != null && !quotaResult.allowed()) {
+                    publishEvent(new MailQuotaExceededEvent(
+                            this,
+                            message,
+                            account.getName(),
+                            quotaResult.quotaDate(),
+                            quotaResult.dailyLimit(),
+                            quotaResult.currentCount(),
+                            quotaResult.requestedCount()
+                    ));
+                    throw new MailSendException(MailResultCode.MAIL_QUOTA_EXCEEDED,
+                            "邮件单日发送配额已用尽，dailyLimit=" + quotaResult.dailyLimit()
+                                    + ", currentCount=" + quotaResult.currentCount()
+                                    + ", requested=" + quotaResult.requestedCount());
+                }
+            }
+
+            return deliverySupplier.get();
+        } catch (Throwable sendEx) {
+            if (idempotentAcquired) {
+                try {
+                    this.idempotentGuard.releaseLock(account, message, idempotentKey);
+                } catch (Throwable releaseEx) {
+                    log.warn("[MailIdempotentGuard] 释放幂等锁失败，idempotentKey=[{}]: {}",
+                            idempotentKey, releaseEx.getMessage(), releaseEx);
+                }
+            }
+            throw sendEx;
+        }
+    }
+
+    private Set<String> collectDeduplicatedRecipients(MailMessage message) {
+        Set<String> deduplicated = new LinkedHashSet<>();
+        addNormalizedRecipients(deduplicated, message.getTo());
+        addNormalizedRecipients(deduplicated, message.getCc());
+        addNormalizedRecipients(deduplicated, message.getBcc());
+        return deduplicated;
+    }
+
+    private void addNormalizedRecipients(Set<String> target, Collection<String> source) {
+        if (source == null || source.isEmpty()) {
+            return;
+        }
+        for (String raw : source) {
+            if (raw == null || raw.isBlank()) {
+                continue;
+            }
+            InternetAddress parsed = parseSingleInternetAddress(raw);
+            String clean = (parsed != null && parsed.getAddress() != null && !parsed.getAddress().isBlank())
+                    ? parsed.getAddress().trim().toLowerCase(Locale.ROOT)
+                    : raw.trim().toLowerCase(Locale.ROOT);
+            if (!clean.isBlank()) {
+                target.add(clean);
+            }
+        }
+    }
+
+    private String resolveIdempotentKey(MailAccount account, MailMessage message, Set<String> deduplicatedRecipients) {
+        if (message.getBizId() != null && !message.getBizId().isBlank()) {
+            return "biz:" + MailMessage.sanitizeHeaderText(message.getBizId()).trim();
+        }
+        MailIdempotentProperties idempotentProps = properties != null ? properties.getIdempotent() : null;
+        boolean requireBizId = idempotentProps == null || idempotentProps.isRequireBizId();
+        if (requireBizId) {
+            return null;
+        }
+        List<String> sortedRecipients = new ArrayList<>(deduplicatedRecipients);
+        Collections.sort(sortedRecipients);
+        StringBuilder payload = new StringBuilder();
+        payload.append(account != null && account.getName() != null ? account.getName() : "default")
+                .append('|').append(message.getFrom() != null ? message.getFrom() : "")
+                .append('|').append(String.join(",", sortedRecipients))
+                .append('|').append(message.getSubject() != null ? message.getSubject() : "")
+                .append('|').append(message.isHtml())
+                .append('|').append(message.getText() != null ? message.getText() : "");
+        if (message.hasAttachments()) {
+            for (MailAttachment attachment : message.getAttachments()) {
+                if (attachment != null && !attachment.isSystemJunk()) {
+                    payload.append("|att:")
+                            .append(attachment.getFilename() != null ? attachment.getFilename() : "")
+                            .append(':')
+                            .append(attachment.getSize() != null ? attachment.getSize() : -1L)
+                            .append(':')
+                            .append(attachment.getContentType() != null ? attachment.getContentType() : "");
+                }
+            }
+        }
+        if (message.hasInlines()) {
+            for (MailInlineResource inline : message.getInlines()) {
+                if (inline != null && !inline.isSystemJunk()) {
+                    payload.append("|cid:")
+                            .append(inline.getContentId() != null ? inline.getContentId() : "")
+                            .append(':')
+                            .append(inline.getSize() != null ? inline.getSize() : -1L)
+                            .append(':')
+                            .append(inline.getContentType() != null ? inline.getContentType() : "");
+                }
+            }
+        }
+        return "digest:" + DigestUtil.sha256Hex(payload.toString());
+    }
+
+    private void validateAccountAddresses(MailAccount account) {
+        if (account == null) {
+            return;
+        }
+        if (account.getDefaultFrom() != null && !account.getDefaultFrom().isBlank()) {
+            validateSingleEmailAddress(account.getDefaultFrom(), "defaultFrom");
+        }
+        String archiveBcc = (account.getArchiveBcc() != null && !account.getArchiveBcc().isBlank())
+                ? account.getArchiveBcc()
+                : (properties != null ? properties.getArchiveBcc() : null);
+        if (archiveBcc != null && !archiveBcc.isBlank()) {
+            for (String addr : archiveBcc.split("[,;]")) {
+                if (addr != null && !addr.isBlank()) {
+                    validateSingleEmailAddress(addr, "archiveBcc");
+                }
+            }
+        }
+    }
+
+    private void validateMessageAddresses(MailAccount account, MailMessage message) {
+        validateRecipientAddresses(message);
+        if (message.getFrom() != null && !message.getFrom().isBlank()) {
+            validateSingleEmailAddress(message.getFrom(), "from");
+        }
+        if (message.getReplyTo() != null && !message.getReplyTo().isBlank()) {
+            validateSingleEmailAddress(message.getReplyTo(), "replyTo");
+        }
+        if (message.getReadReceiptTo() != null && !message.getReadReceiptTo().isBlank()) {
+            validateSingleEmailAddress(message.getReadReceiptTo(), "readReceiptTo");
+        }
+        if (message.getReturnPath() != null && !message.getReturnPath().isBlank()) {
+            validateSingleEmailAddress(message.getReturnPath(), "returnPath");
+        }
+        if (message.getListUnsubscribe() != null && !message.getListUnsubscribe().isBlank()) {
+            validateListUnsubscribe(message.getListUnsubscribe());
+        }
+        validateAccountAddresses(account);
+    }
+
+    private void validateRecipientAddresses(MailMessage message) {
+        if (message.getTo() != null) {
+            for (String addr : message.getTo()) {
+                validateSingleEmailAddress(addr, "to");
+            }
+        }
+        if (message.getCc() != null) {
+            for (String addr : message.getCc()) {
+                validateSingleEmailAddress(addr, "cc");
+            }
+        }
+        if (message.getBcc() != null) {
+            for (String addr : message.getBcc()) {
+                validateSingleEmailAddress(addr, "bcc");
+            }
+        }
+    }
+
+    private static void validateListUnsubscribe(String listUnsubscribe) {
+        String[] entries = listUnsubscribe.split(",");
+        for (String entry : entries) {
+            if (entry == null || entry.isBlank()) {
+                continue;
+            }
+            String token = entry.trim();
+            if (token.startsWith("<")) {
+                token = token.substring(1).trim();
+            }
+            if (token.endsWith(">")) {
+                token = token.substring(0, token.length() - 1).trim();
+            }
+            if (token.toLowerCase(java.util.Locale.ROOT).startsWith("mailto:")) {
+                String mailPart = token.substring("mailto:".length());
+                int queryIdx = mailPart.indexOf('?');
+                if (queryIdx >= 0) {
+                    mailPart = mailPart.substring(0, queryIdx);
+                }
+                validateSingleEmailAddress(mailPart, "listUnsubscribe(mailto)");
+            }
+        }
+    }
+
+    private static void validateSingleEmailAddress(String rawAddress, String fieldName) {
+        if (rawAddress == null || rawAddress.isBlank()) {
+            throw new MailSendException(MailResultCode.MAIL_INVALID_ADDRESS,
+                    fieldName + " 邮件地址不能为空或空白");
+        }
+        if (rawAddress.indexOf('\r') >= 0 || rawAddress.indexOf('\n') >= 0 || rawAddress.indexOf('\0') >= 0) {
+            throw new MailSendException(MailResultCode.MAIL_INVALID_ADDRESS,
+                    fieldName + " 邮件地址包含非法换行或空字符");
+        }
+        String trimmed = rawAddress.trim();
+        try {
+            InternetAddress[] parsed = InternetAddress.parse(trimmed, true);
+            if (parsed == null || parsed.length != 1) {
+                throw new MailSendException(MailResultCode.MAIL_INVALID_ADDRESS,
+                        fieldName + " 邮件地址格式非法: [" + rawAddress + "]");
+            }
+            parsed[0].validate();
+            String addr = parsed[0].getAddress();
+            if (addr == null || addr.isBlank()) {
+                throw new MailSendException(MailResultCode.MAIL_INVALID_ADDRESS,
+                        fieldName + " 邮件地址格式非法: [" + rawAddress + "]");
+            }
+            int atIdx = addr.indexOf('@');
+            if (atIdx <= 0 || atIdx >= addr.length() - 1 || addr.indexOf('@', atIdx + 1) >= 0) {
+                throw new MailSendException(MailResultCode.MAIL_INVALID_ADDRESS,
+                        fieldName + " 邮件地址格式非法: [" + rawAddress + "]");
+            }
+            String domain = addr.substring(atIdx + 1);
+            if (domain.startsWith(".") || domain.endsWith(".") || domain.contains("..")) {
+                throw new MailSendException(MailResultCode.MAIL_INVALID_ADDRESS,
+                        fieldName + " 邮件域名格式非法: [" + rawAddress + "]");
+            }
+        } catch (AddressException e) {
+            throw new MailSendException(MailResultCode.MAIL_INVALID_ADDRESS,
+                    fieldName + " 邮件地址格式非法: [" + rawAddress + "]", e);
+        }
+    }
+
+    private static InternetAddress parseSingleInternetAddress(String rawAddress) {
+        try {
+            InternetAddress[] parsed = InternetAddress.parse(rawAddress.trim(), true);
+            return (parsed != null && parsed.length == 1) ? parsed[0] : null;
+        } catch (AddressException ignored) {
+            return null;
+        }
+    }
+
+    private static boolean containsExceptionType(Throwable throwable, Class<? extends Throwable> type) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (type.isInstance(current)) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private void applyInterceptors(MailMessage message) {
@@ -1220,7 +2502,7 @@ public class MailTemplate implements DisposableBean {
                         log.warn("Mail sending blocked by interceptor [{}], subject: [{}]",
                                 interceptor.getClass().getSimpleName(), message.getSubject());
                         throw new MailSendException(MailResultCode.MAIL_SEND_ERROR,
-                                "邮件发送被拦截器阻断: " + interceptor.getClass().getSimpleName());
+                                INTERCEPTOR_BLOCKED_PREFIX + ": " + interceptor.getClass().getSimpleName());
                     }
                 } catch (MailSendException mse) {
                     throw mse;
@@ -1232,15 +2514,41 @@ public class MailTemplate implements DisposableBean {
         }
     }
 
+    private boolean isSandboxLogOnly(MailMessage message) {
+        if (properties.getSandbox() != null && properties.getSandbox().isEnabled() && properties.getSandbox().isLogOnly()) {
+            return true;
+        }
+        return message.getHeaders() != null && "true".equalsIgnoreCase(message.getHeaders().get(MailSandboxInterceptor.HEADER_SANDBOX_LOG_ONLY));
+    }
+
+    private Executor requireAsyncExecutor() {
+        if (this.executor == null) {
+            throw new MailSendException(MailResultCode.MAIL_SEND_ERROR,
+                    "邮件异步执行器未启用或未装配 (ateng.boot.mail.async.enabled=false)");
+        }
+        return this.executor;
+    }
+
     private void registerAfterCommitSynchronization(MailMessage message, Runnable deliveryTask, boolean isAsync) {
+        Executor asyncExecutor = isAsync ? requireAsyncExecutor() : null;
         AsyncContext.ContextSnapshot parentSnapshot = AsyncContext.ContextSnapshot.capture();
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
                 if (isAsync) {
-                    executor.execute(() -> executeDeliveryWithContext(parentSnapshot, deliveryTask));
+                    try {
+                        asyncExecutor.execute(() -> executeDeliveryWithContext(message, parentSnapshot, deliveryTask));
+                    } catch (Throwable submitEx) {
+                        // triggerFailureSafetyNet 内部已打印 [MailSafetyNet] 错误日志并触发告警事件与回调
+                        try {
+                            metricsRecorder.recordSend(resolvePreFailureMetricAccount(message), MailSendOutcome.FAILURE, Duration.ZERO);
+                            triggerFailureSafetyNet(message, maskRecipients(message), submitEx);
+                        } finally {
+                            message.close();
+                        }
+                    }
                 } else {
-                    executeDeliveryWithContext(parentSnapshot, deliveryTask);
+                    executeDeliveryWithContext(message, parentSnapshot, deliveryTask);
                 }
             }
 
@@ -1248,9 +2556,7 @@ public class MailTemplate implements DisposableBean {
             public void afterCompletion(int status) {
                 if (status != TransactionSynchronization.STATUS_COMMITTED) {
                     try {
-                        String masked = (message.getTo() != null)
-                                ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
-                                : "";
+                        String masked = maskRecipients(message);
                         log.warn("Transaction uncommitted or rolled back (status: {}), canceled {}mail delivery to [{}], subject: [{}]",
                                 status, isAsync ? "async " : "", masked, message.getSubject());
                     } finally {
@@ -1262,15 +2568,82 @@ public class MailTemplate implements DisposableBean {
         });
     }
 
-    private void executeDeliveryWithContext(AsyncContext.ContextSnapshot parentSnapshot, Runnable deliveryTask) {
+    private void registerBatchAfterCommitSynchronization(List<MailMessage> messages, Runnable batchTask, boolean isAsync) {
+        Executor asyncExecutor = isAsync ? requireAsyncExecutor() : null;
+        AsyncContext.ContextSnapshot parentSnapshot = AsyncContext.ContextSnapshot.capture();
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                if (isAsync) {
+                    try {
+                        asyncExecutor.execute(() -> executeDeliveryWithContext(null, parentSnapshot, batchTask));
+                    } catch (Throwable submitEx) {
+                        log.error("[MailAfterCommit] Async batch submission rejected after commit: {}", submitEx.getMessage(), submitEx);
+                        closeAllMessagesQuietly(messages);
+                    }
+                } else {
+                    executeDeliveryWithContext(null, parentSnapshot, batchTask);
+                }
+            }
+
+            @Override
+            public void afterCompletion(int status) {
+                if (status != TransactionSynchronization.STATUS_COMMITTED) {
+                    try {
+                        log.warn("Transaction uncommitted or rolled back (status: {}), canceled {}batch mail delivery (size={})",
+                                status, isAsync ? "async " : "", messages != null ? messages.size() : 0);
+                    } finally {
+                        closeAllMessagesQuietly(messages);
+                    }
+                }
+            }
+        });
+    }
+
+    private void deliverAfterCommit(MailAccount explicitAccount, MailMessage message) {
+        long startNanos = System.nanoTime();
+        MailAccount targetAccount;
+        try {
+            requireNonEmptyRecipients(message);
+            targetAccount = explicitAccount != null ? explicitAccount : resolveAccount(message);
+        } catch (Throwable preEx) {
+            try {
+                String accountLabel = explicitAccount != null ? explicitAccount.getName() : resolvePreFailureMetricAccount(message);
+                metricsRecorder.recordSend(accountLabel, MailSendOutcome.FAILURE,
+                        Duration.ofNanos(System.nanoTime() - startNanos));
+                triggerFailureSafetyNet(message, maskRecipients(message), preEx);
+            } finally {
+                message.close();
+            }
+            return;
+        }
+        try {
+            sendWithAccount(targetAccount, message);
+        } catch (Throwable deliveryEx) {
+            // 事务提交后投递失败已由 sendWithAccount 触发失败兜底网并关闭资源，此处消费异常防止外层重复打印堆栈
+        }
+    }
+
+    String maskRecipients(MailMessage message) {
+        if (message == null || message.getTo() == null) {
+            return "";
+        }
+        return message.getTo().stream()
+                .filter(Objects::nonNull)
+                .map(DesensitizeUtil::email)
+                .collect(Collectors.joining(","));
+    }
+
+    private void executeDeliveryWithContext(MailMessage message, AsyncContext.ContextSnapshot parentSnapshot, Runnable deliveryTask) {
         AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
         try {
             parentSnapshot.apply();
             deliveryTask.run();
         } catch (Throwable t) {
-            log.warn("Delivery after commit failed: {}", t.getMessage());
+            log.error("[MailAfterCommit] Delivery after commit failed for subject [{}]: {}",
+                    message != null ? message.getSubject() : null, t.getMessage(), t);
         } finally {
-            previous.apply();
+            previous.restore();
         }
     }
 
@@ -1294,10 +2667,12 @@ public class MailTemplate implements DisposableBean {
     }
 
     private InputStreamSource wrapBoundedSource(String filename, InputStreamSource originalSource, long maxBytes,
+                                                CumulativeSizeTracker sizeTracker,
                                                 AtomicReference<MailSendException> sizeLimitExceptionRef) {
+        AtomicLong itemMaxBytesRead = new AtomicLong(0);
         return () -> {
             InputStream in = originalSource.getInputStream();
-            return new BoundedInputStream(in, maxBytes, filename, sizeLimitExceptionRef);
+            return new BoundedInputStream(in, maxBytes, filename, itemMaxBytesRead, sizeTracker, sizeLimitExceptionRef);
         };
     }
 
@@ -1324,19 +2699,63 @@ public class MailTemplate implements DisposableBean {
     }
 
     /**
-     * 流式附件读取容量上限守护流，严密防范未知容量裸流耗尽物理内存
+     * 邮件流式未知大小累加总容量跟踪器
+     */
+    private final class CumulativeSizeTracker {
+        private final long maxTotalBytes;
+        private final AtomicLong totalBytes;
+        private final AtomicReference<MailSendException> sizeLimitExceptionRef;
+
+        private CumulativeSizeTracker(long initialKnownBytes, long maxTotalBytes,
+                                      AtomicReference<MailSendException> sizeLimitExceptionRef) {
+            this.maxTotalBytes = maxTotalBytes;
+            this.totalBytes = new AtomicLong(initialKnownBytes);
+            this.sizeLimitExceptionRef = sizeLimitExceptionRef;
+        }
+
+        private void recordItemProgress(AtomicLong itemMaxRead, long currentItemBytesRead, String itemName) throws IOException {
+            long prevMax = itemMaxRead.get();
+            if (currentItemBytesRead <= prevMax) {
+                return;
+            }
+            while (!itemMaxRead.compareAndSet(prevMax, currentItemBytesRead)) {
+                prevMax = itemMaxRead.get();
+                if (currentItemBytesRead <= prevMax) {
+                    return;
+                }
+            }
+            long delta = currentItemBytesRead - prevMax;
+            long accumulated = totalBytes.addAndGet(delta);
+            if (accumulated > maxTotalBytes) {
+                MailSendException ex = new MailSendException(MailResultCode.MAIL_TOTAL_SIZE_EXCEEDED,
+                        "邮件流式读取累加总体积 (" + accumulated + " 字节) 超出总体积上限 (" + properties.getMaxTotalSize() + ")，触发资源: [" + itemName + "]");
+                if (sizeLimitExceptionRef != null) {
+                    sizeLimitExceptionRef.compareAndSet(null, ex);
+                }
+                throw ex;
+            }
+        }
+    }
+
+    /**
+     * 流式附件与内联资源读取容量上限守护流，严密防范未知容量裸流耗尽物理内存
      */
     private static class BoundedInputStream extends FilterInputStream {
         private final long maxBytes;
         private final String filename;
+        private final AtomicLong itemMaxBytesRead;
+        private final CumulativeSizeTracker sizeTracker;
         private final AtomicReference<MailSendException> sizeLimitExceptionRef;
         private long bytesRead = 0;
 
         public BoundedInputStream(InputStream in, long maxBytes, String filename,
+                                  AtomicLong itemMaxBytesRead, CumulativeSizeTracker sizeTracker,
                                   AtomicReference<MailSendException> sizeLimitExceptionRef) {
             super(in);
             this.maxBytes = maxBytes;
             this.filename = filename;
+            this.itemMaxBytesRead = itemMaxBytesRead;
+            this.sizeTracker = sizeTracker;
             this.sizeLimitExceptionRef = sizeLimitExceptionRef;
         }
 
@@ -1407,6 +2826,9 @@ public class MailTemplate implements DisposableBean {
                     sizeLimitExceptionRef.compareAndSet(null, ex);
                 }
                 throw ex;
+            }
+            if (sizeTracker != null) {
+                sizeTracker.recordItemProgress(itemMaxBytesRead, bytesRead, filename);
             }
         }
     }

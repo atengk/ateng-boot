@@ -93,4 +93,39 @@ class MailMessageTest {
         assertTrue(msg.isHtml());
         assertEquals("<b>富文本通知</b>", msg.getText());
     }
+
+    @Test
+    @DisplayName("测试 subject、fromName 与自定义标头构造时清洗 CR/LF/NUL 防头部注入")
+    void testCrlfSanitizationOnConstruction() {
+        MailMessage msg = new MailMessage()
+                .subject("通知\r\nBcc: evil@attacker.com")
+                .fromName("系统\r\nX-Evil: 1\0")
+                .header("X-Custom\r\n", "val\r\nX-Injected: true");
+
+        assertFalse(msg.getSubject().contains("\r"));
+        assertFalse(msg.getSubject().contains("\n"));
+        assertFalse(msg.getFromName().contains("\r"));
+        assertFalse(msg.getFromName().contains("\n"));
+        assertFalse(msg.getFromName().contains("\0"));
+        assertTrue(msg.getHeaders().containsKey("X-Custom"));
+        String val = msg.getHeaders().get("X-Custom");
+        assertFalse(val.contains("\r"));
+        assertFalse(val.contains("\n"));
+    }
+
+    @Test
+    @DisplayName("测试 returnPath、listUnsubscribe 与 listUnsubscribePost 链式构造及换行清洗")
+    void testReturnPathAndUnsubscribeHeaders() {
+        MailMessage msg = new MailMessage()
+                .returnPath("bounces+123@atengk.com")
+                .listUnsubscribe("<https://example.com/unsub>\r\nX-Evil: 1")
+                .listUnsubscribePost("List-Unsubscribe=One-Click\r\nX-Evil: 2\0");
+
+        assertEquals("bounces+123@atengk.com", msg.getReturnPath());
+        assertFalse(msg.getListUnsubscribe().contains("\r"));
+        assertFalse(msg.getListUnsubscribe().contains("\n"));
+        assertFalse(msg.getListUnsubscribePost().contains("\r"));
+        assertFalse(msg.getListUnsubscribePost().contains("\n"));
+        assertFalse(msg.getListUnsubscribePost().contains("\0"));
+    }
 }

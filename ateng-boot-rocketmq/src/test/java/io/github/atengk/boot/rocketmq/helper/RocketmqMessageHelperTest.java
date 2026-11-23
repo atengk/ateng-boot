@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.List;
@@ -112,6 +113,20 @@ class RocketmqMessageHelperTest {
         // 3. 无任何标识返回空字符串
         when(mockView.getKeys()).thenReturn(Collections.emptyList());
         assertThat(RocketmqMessageHelper.extractBizKey(mockView)).isEqualTo("");
+    }
+
+    @Test
+    @DisplayName("readRawBody 安全只读拷贝测试：null、空缓冲区与游标零副作用")
+    void testReadRawBody() {
+        assertThat(RocketmqMessageHelper.readRawBody(null)).isEmpty();
+        assertThat(RocketmqMessageHelper.readRawBody(ByteBuffer.allocate(0))).isEmpty();
+
+        ByteBuffer buffer = ByteBuffer.wrap(new byte[]{10, 20, 30, 40});
+        buffer.position(1);
+        assertThat(RocketmqMessageHelper.readRawBody(buffer)).containsExactly(20, 30, 40);
+        // 验证原缓冲区游标未被消费
+        assertThat(buffer.position()).isEqualTo(1);
+        assertThat(buffer.remaining()).isEqualTo(3);
     }
 
     @Data

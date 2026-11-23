@@ -32,4 +32,31 @@ class SearchMetricsTest {
         });
         assertThat(metrics.getBulkTimer().count()).isEqualTo(1L);
     }
+
+    @Test
+    @DisplayName("验证低基数操作标签度量 ateng.search.operation.time 在成功与异常分支准确采集")
+    void testLowCardinalityOperationMetrics() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        SearchMetrics metrics = new SearchMetrics(registry);
+
+        String res = metrics.recordOperation("search", false, () -> "ok");
+        assertThat(res).isEqualTo("ok");
+        assertThat(metrics.getQueryTimer().count()).isEqualTo(1L);
+        assertThat(registry.get("ateng.search.operation.time")
+                .tag("operation", "search")
+                .tag("outcome", "SUCCESS")
+                .timer().count()).isEqualTo(1L);
+
+        try {
+            metrics.recordOperation("bulk", true, () -> {
+                throw new IllegalStateException("fail");
+            });
+        } catch (IllegalStateException ignored) {
+        }
+        assertThat(metrics.getBulkTimer().count()).isEqualTo(1L);
+        assertThat(registry.get("ateng.search.operation.time")
+                .tag("operation", "bulk")
+                .tag("outcome", "ERROR")
+                .timer().count()).isEqualTo(1L);
+    }
 }

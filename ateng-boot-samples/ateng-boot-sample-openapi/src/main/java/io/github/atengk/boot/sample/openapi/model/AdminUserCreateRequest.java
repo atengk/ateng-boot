@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.openapi.model;
 
+import io.github.atengk.boot.core.annotation.InEnum;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
@@ -27,6 +28,10 @@ public class AdminUserCreateRequest {
     @Schema(description = "工作电子邮箱", example = "zhangsan@example.com")
     private String email;
 
+    @InEnum(value = UserStatusEnum.class, message = "账号状态编码不合法")
+    @Schema(description = "账号状态编码")
+    private Integer statusCode = 1;
+
     public String getUsername() {
         return username;
     }
@@ -49,5 +54,13 @@ public class AdminUserCreateRequest {
 
     public void setEmail(String email) {
         this.email = email;
+    }
+
+    public Integer getStatusCode() {
+        return statusCode;
+    }
+
+    public void setStatusCode(Integer statusCode) {
+        this.statusCode = statusCode;
     }
 }

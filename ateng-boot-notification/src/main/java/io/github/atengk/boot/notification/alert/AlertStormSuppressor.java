@@ -1,5 +1,7 @@
 package io.github.atengk.boot.notification.alert;
 
+import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.DigestUtil;
 import io.github.atengk.boot.notification.model.CardColor;
 import io.github.atengk.boot.notification.model.CardMessage;
@@ -8,17 +10,16 @@ import io.github.atengk.boot.notification.template.NotificationTemplate;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.scheduling.TaskScheduler;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 import java.lang.reflect.Method;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -32,31 +33,32 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class AlertStormSuppressor implements DisposableBean {
 
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final String DETAIL_ACTION_TEXT = "查看链路详情";
 
     private final NotificationTemplate notificationTemplate;
     private final NotificationAlertProperties alertProperties;
-    private final ScheduledExecutorService scheduler;
+    private final TaskScheduler taskScheduler;
     private final boolean selfManagedScheduler;
 
     private final ConcurrentMap<String, SuppressRecord> activeWindows = new ConcurrentHashMap<>();
 
     public AlertStormSuppressor(NotificationTemplate notificationTemplate, NotificationAlertProperties alertProperties) {
-        this(notificationTemplate, alertProperties, createDefaultScheduler(), true);
+        this(notificationTemplate, alertProperties, createDefaultManagedScheduler(), true);
     }
 
     public AlertStormSuppressor(NotificationTemplate notificationTemplate,
                                 NotificationAlertProperties alertProperties,
-                                ScheduledExecutorService scheduler) {
-        this(notificationTemplate, alertProperties, scheduler, false);
+                                TaskScheduler taskScheduler) {
+        this(notificationTemplate, alertProperties, requireTaskScheduler(taskScheduler), false);
     }
 
     private AlertStormSuppressor(NotificationTemplate notificationTemplate,
-                                NotificationAlertProperties alertProperties,
-                                ScheduledExecutorService scheduler,
-                                boolean selfManagedScheduler) {
+                                 NotificationAlertProperties alertProperties,
+                                 TaskScheduler taskScheduler,
+                                 boolean selfManagedScheduler) {
         this.notificationTemplate = notificationTemplate;
         this.alertProperties = alertProperties != null ? alertProperties : new NotificationAlertProperties();
-        this.scheduler = scheduler;
+        this.taskScheduler = taskScheduler;
         this.selfManagedScheduler = selfManagedScheduler;
     }
 
@@ -79,7 +81,8 @@ public class AlertStormSuppressor implements DisposableBean {
             window = Duration.ofSeconds(60);
         }
 
-        SuppressRecord newRecord = new SuppressRecord(alert, window);
+        AsyncContext.ContextSnapshot callerSnapshot = AsyncContext.capture();
+        SuppressRecord newRecord = new SuppressRecord(alert, window, callerSnapshot);
         SuppressRecord existing = activeWindows.putIfAbsent(fingerprint, newRecord);
 
         if (existing == null) {
@@ -95,13 +98,18 @@ public class AlertStormSuppressor implements DisposableBean {
                         fingerprint, alert.getChannel(), ex.getMessage(), ex);
             }
 
-            // 调度周期末汇总通报任务
-            ScheduledFuture<?> future = scheduler.schedule(
-                    () -> onWindowExpired(fingerprint),
-                    window.toMillis(),
-                    TimeUnit.MILLISECONDS
-            );
-            newRecord.setScheduledFuture(future);
+            // 依托 Spring 受管 TaskScheduler 调度周期末汇总通报任务；若调度提交被拒绝则立即回滚窗口避免永久静默
+            try {
+                ScheduledFuture<?> future = taskScheduler.schedule(
+                        () -> onWindowExpired(fingerprint),
+                        Instant.now().plus(window)
+                );
+                newRecord.setScheduledFuture(future);
+            } catch (Throwable ex) {
+                activeWindows.remove(fingerprint, newRecord);
+                log.error("防告警风暴汇总调度提交失败，已回滚清理抑制窗口 [fingerprint={}]: {}",
+                        fingerprint, ex.getMessage(), ex);
+            }
             return true;
         } else {
             // 阶段二：窗口期静默抗洪，累加原子计数器
@@ -226,27 +234,62 @@ public class AlertStormSuppressor implements DisposableBean {
     @Override
     public void destroy() {
         reset();
-        if (selfManagedScheduler && !scheduler.isShutdown()) {
-            scheduler.shutdownNow();
+        if (selfManagedScheduler && taskScheduler instanceof DisposableBean disposable) {
+            try {
+                disposable.destroy();
+            } catch (Exception ex) {
+                log.warn("关闭防告警风暴调度器异常: {}", ex.getMessage(), ex);
+            }
         }
+    }
+
+    /**
+     * 解析并插值告警链路详情跳转地址（注解显式配置优先，缺省回退全局配置，自动替换 ${traceId}）
+     *
+     * @param explicitDetailUrl 显式配置或告警上下文中的跳转地址模板
+     * @param defaultDetailUrl  全局默认跳转地址模板
+     * @param traceId           链路追踪 ID
+     * @return 解析后的完整 URL，无有效配置时返回 null
+     */
+    public static String resolveDetailUrl(String explicitDetailUrl, String defaultDetailUrl, String traceId) {
+        String template = (explicitDetailUrl != null && !explicitDetailUrl.isBlank())
+                ? explicitDetailUrl.trim()
+                : (defaultDetailUrl != null && !defaultDetailUrl.isBlank() ? defaultDetailUrl.trim() : null);
+        if (template == null) {
+            return null;
+        }
+        String effectiveTraceId = (traceId != null && !traceId.isBlank()) ? traceId.trim() : "";
+        String resolved = template.replace("${traceId}", effectiveTraceId).trim();
+        return resolved.isEmpty() ? null : resolved;
     }
 
     private void onWindowExpired(String fingerprint) {
         SuppressRecord record = activeWindows.remove(fingerprint);
-        if (record != null) {
-            int count = record.getSuppressedCount();
-            if (count > 0) {
-                // 阶段三：周期末汇总通报
-                if (log.isDebugEnabled()) {
-                    log.debug("Dispatching storm aggregation summary [fingerprint={}, count={}]", fingerprint, count);
-                }
-                try {
-                    sendSummaryAlert(record, count);
-                } catch (Throwable ex) {
-                    log.error("告警风暴周期末汇总通报推送失败 [fingerprint={}]: {}",
-                            fingerprint, ex.getMessage(), ex);
-                }
+        if (record == null) {
+            return;
+        }
+        int count = record.getSuppressedCount();
+        if (count <= 0) {
+            return;
+        }
+        AsyncContext.ContextSnapshot snapshot = record.getContextSnapshot();
+        AsyncContext.ContextSnapshot previous = AsyncContext.capturePrevious();
+        try {
+            if (snapshot != null) {
+                snapshot.apply();
             }
+            // 阶段三：周期末汇总通报（在首发完整四维上下文快照下执行，确保 traceId、租户与事件审计一致）
+            if (log.isDebugEnabled()) {
+                log.debug("Dispatching storm aggregation summary [fingerprint={}, count={}]", fingerprint, count);
+            }
+            try {
+                sendSummaryAlert(record, count);
+            } catch (Throwable ex) {
+                log.error("告警风暴周期末汇总通报推送失败 [fingerprint={}]: {}",
+                        fingerprint, ex.getMessage(), ex);
+            }
+        } finally {
+            previous.restore();
         }
     }
 
@@ -256,6 +299,7 @@ public class AlertStormSuppressor implements DisposableBean {
 
         CardMessage card = CardMessage.of("[紧急告警] " + alert.getTitle(), content)
                 .headerColor(CardColor.RED);
+        attachDetailAction(card, alert);
 
         notificationTemplate.send(channel, card);
     }
@@ -267,14 +311,22 @@ public class AlertStormSuppressor implements DisposableBean {
 
         CardMessage card = CardMessage.of("【告警汇总】" + alert.getTitle(), content)
                 .headerColor(CardColor.ORANGE);
+        attachDetailAction(card, alert);
 
-        // 异步非阻塞推送汇总卡片，彻底避免网络延迟阻塞单线程调度器
+        // 异步非阻塞推送汇总卡片，彻底避免网络延迟阻塞调度器工作线程
         notificationTemplate.sendAsync(channel, card).whenComplete((res, ex) -> {
             if (ex != null) {
                 log.error("告警风暴周期末汇总通报异步推送异常 [fingerprint={}]: {}",
                         record.getAlert().getFingerprint(), ex.getMessage(), ex);
             }
         });
+    }
+
+    private void attachDetailAction(CardMessage card, AlertContext alert) {
+        String detailUrl = resolveDetailUrl(alert.getDetailUrl(), alertProperties.getDetailUrl(), alert.getTraceId());
+        if (detailUrl != null) {
+            card.singleAction(DETAIL_ACTION_TEXT, detailUrl);
+        }
     }
 
     private String resolveAlertChannel(String explicitChannel) {
@@ -337,13 +389,21 @@ public class AlertStormSuppressor implements DisposableBean {
         );
     }
 
-    private static ScheduledExecutorService createDefaultScheduler() {
-        ThreadFactory threadFactory = r -> {
-            Thread t = new Thread(r, "alert-storm-suppressor");
-            t.setDaemon(true);
-            return t;
-        };
-        return Executors.newSingleThreadScheduledExecutor(threadFactory);
+    private static TaskScheduler createDefaultManagedScheduler() {
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(2);
+        scheduler.setThreadNamePrefix("ateng-notif-alert-");
+        scheduler.setDaemon(true);
+        scheduler.setWaitForTasksToCompleteOnShutdown(true);
+        scheduler.setAwaitTerminationSeconds(10);
+        scheduler.setRemoveOnCancelPolicy(true);
+        scheduler.initialize();
+        return scheduler;
+    }
+
+    private static TaskScheduler requireTaskScheduler(TaskScheduler taskScheduler) {
+        BusinessAssert.notNull(taskScheduler, "防告警风暴调度器 TaskScheduler 不能为空");
+        return taskScheduler;
     }
 
     /**
@@ -353,12 +413,18 @@ public class AlertStormSuppressor implements DisposableBean {
     public static class SuppressRecord {
         private final AlertContext alert;
         private final Duration windowDuration;
+        private final AsyncContext.ContextSnapshot contextSnapshot;
         private final AtomicInteger suppressedCount = new AtomicInteger(0);
         private volatile ScheduledFuture<?> scheduledFuture;
 
         SuppressRecord(AlertContext alert, Duration windowDuration) {
+            this(alert, windowDuration, AsyncContext.capture());
+        }
+
+        SuppressRecord(AlertContext alert, Duration windowDuration, AsyncContext.ContextSnapshot contextSnapshot) {
             this.alert = alert;
             this.windowDuration = windowDuration;
+            this.contextSnapshot = contextSnapshot;
         }
 
         public int incrementSuppressed() {

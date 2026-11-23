@@ -31,7 +31,7 @@ class WebIpAccessSampleControllerTest {
     @Test
     @DisplayName("1. 白名单放行：规则内 IP (127.0.0.1 或 192.168.1.0/24) 成功访问")
     void shouldAllowWhitelistedIp() throws Exception {
-        mockMvc.perform(get("/api/sample/ip-access/whitelist")
+        mockMvc.perform(get("/sample/web/security/ip/whitelist")
                         .with(request -> {
                             request.setRemoteAddr("192.168.1.88");
                             return request;
@@ -40,7 +40,7 @@ class WebIpAccessSampleControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("白名单放行成功"));
 
-        mockMvc.perform(get("/api/sample/ip-access/whitelist")
+        mockMvc.perform(get("/sample/web/security/ip/whitelist")
                         .with(request -> {
                             request.setRemoteAddr("127.0.0.1");
                             return request;
@@ -52,7 +52,7 @@ class WebIpAccessSampleControllerTest {
     @Test
     @DisplayName("2. 白名单拒绝：未授权 IP 优雅拦截 (HTTP 200 + Result 403 + X-Denied-Reason 标头)")
     void shouldBlockNonWhitelistedIp() throws Exception {
-        mockMvc.perform(get("/api/sample/ip-access/whitelist")
+        mockMvc.perform(get("/sample/web/security/ip/whitelist")
                         .with(request -> {
                             request.setRemoteAddr("10.0.0.1");
                             return request;
@@ -66,7 +66,7 @@ class WebIpAccessSampleControllerTest {
     @Test
     @DisplayName("3. 黑名单拦截：命中黑名单规则 (10.0.0.0/8 或 203.0.113.100) 时优雅拒绝")
     void shouldBlockBlacklistedIp() throws Exception {
-        mockMvc.perform(get("/api/sample/ip-access/blacklist")
+        mockMvc.perform(get("/sample/web/security/ip/blacklist")
                         .with(request -> {
                             request.setRemoteAddr("10.254.1.2");
                             return request;
@@ -75,7 +75,7 @@ class WebIpAccessSampleControllerTest {
                 .andExpect(header().string(IpAccessControlFilter.DENIED_HEADER, IpAccessControlFilter.DENIED_REASON))
                 .andExpect(jsonPath("$.code").value(403));
 
-        mockMvc.perform(get("/api/sample/ip-access/blacklist")
+        mockMvc.perform(get("/sample/web/security/ip/blacklist")
                         .with(request -> {
                             request.setRemoteAddr("203.0.113.100");
                             return request;
@@ -85,7 +85,7 @@ class WebIpAccessSampleControllerTest {
                 .andExpect(jsonPath("$.code").value(403));
 
         // 正常 IP 放行
-        mockMvc.perform(get("/api/sample/ip-access/blacklist")
+        mockMvc.perform(get("/sample/web/security/ip/blacklist")
                         .with(request -> {
                             request.setRemoteAddr("192.168.1.1");
                             return request;
@@ -99,7 +99,7 @@ class WebIpAccessSampleControllerTest {
     @DisplayName("4. CIDR 子网与 IPv6 支持：172.16.0.0/12 与 2001:db8::/32 放行，其他拒绝")
     void shouldSupportCidrAndIpv6() throws Exception {
         // IPv4 CIDR
-        mockMvc.perform(get("/api/sample/ip-access/cidr-ipv6")
+        mockMvc.perform(get("/sample/web/security/ip/cidr-ipv6")
                         .with(request -> {
                             request.setRemoteAddr("172.16.50.1");
                             return request;
@@ -108,7 +108,7 @@ class WebIpAccessSampleControllerTest {
                 .andExpect(jsonPath("$.code").value(200));
 
         // IPv6 CIDR
-        mockMvc.perform(get("/api/sample/ip-access/cidr-ipv6")
+        mockMvc.perform(get("/sample/web/security/ip/cidr-ipv6")
                         .with(request -> {
                             request.setRemoteAddr("2001:db8:85a3::1");
                             return request;
@@ -117,7 +117,7 @@ class WebIpAccessSampleControllerTest {
                 .andExpect(jsonPath("$.code").value(200));
 
         // 越界 IP 拦截
-        mockMvc.perform(get("/api/sample/ip-access/cidr-ipv6")
+        mockMvc.perform(get("/sample/web/security/ip/cidr-ipv6")
                         .with(request -> {
                             request.setRemoteAddr("192.168.1.1");
                             return request;
@@ -129,7 +129,7 @@ class WebIpAccessSampleControllerTest {
     @Test
     @DisplayName("5. 自定义拒绝文案：拦截时输出注解声明的个性化提示信息")
     void shouldReturnCustomDeniedMessage() throws Exception {
-        mockMvc.perform(get("/api/sample/ip-access/custom-message")
+        mockMvc.perform(get("/sample/web/security/ip/custom-message")
                         .with(request -> {
                             request.setRemoteAddr("10.0.0.1");
                             return request;
@@ -143,7 +143,7 @@ class WebIpAccessSampleControllerTest {
     @Test
     @DisplayName("6. 物理 403 切断模式：开启 httpStatus403 时直接响应 HTTP 403 状态码")
     void shouldReturnHttp403Status() throws Exception {
-        mockMvc.perform(get("/api/sample/ip-access/http-403")
+        mockMvc.perform(get("/sample/web/security/ip/http-403")
                         .with(request -> {
                             request.setRemoteAddr("10.0.0.1");
                             return request;

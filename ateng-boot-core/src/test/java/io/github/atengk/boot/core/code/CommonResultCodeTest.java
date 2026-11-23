@@ -39,6 +39,10 @@ class CommonResultCodeTest {
                     assertEquals("请求资源不存在", CommonResultCode.NOT_FOUND.getMsg());
                 },
                 () -> {
+                    assertEquals(409, CommonResultCode.CONFLICT.getCode());
+                    assertEquals("数据冲突或并发版本不一致", CommonResultCode.CONFLICT.getMsg());
+                },
+                () -> {
                     assertEquals(500, CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
                     assertEquals("系统繁忙，请稍后再试", CommonResultCode.INTERNAL_SERVER_ERROR.getMsg());
                 },

@@ -10,7 +10,9 @@ import io.netty.channel.ChannelHandler;
 import io.netty.handler.codec.DelimiterBasedFrameDecoder;
 import io.netty.handler.codec.FixedLengthFrameDecoder;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
+import io.netty.handler.codec.LengthFieldPrepender;
 
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 
 /**
@@ -53,6 +55,32 @@ public final class TcpFramingDecoderFactory {
             default:
                 return null;
         }
+    }
+
+    /**
+     * 根据配置构建对称的出站分帧编码器
+     * <p>
+     * 当 {@code mode == FramingMode.LENGTH_FIELD} 且 {@code offset == 0}、{@code initialBytesToStrip == length}
+     * 时创建对称的 {@link LengthFieldPrepender}，与入站 {@link LengthFieldBasedFrameDecoder} 形成完整读写闭环；
+     * 若采用自定义前置头部偏移协议（{@code offset != 0} 或 {@code initialBytesToStrip != length}），则返回 {@code null}
+     * 交由业务协议载荷自行封装头部。
+     * </p>
+     *
+     * @param properties 分帧配置属性
+     * @return Netty 出站 ChannelHandler（无需额外封装时返回 {@code null}）
+     */
+    public static ChannelHandler createFrameEncoder(TcpFramingProperties properties) {
+        if (properties == null || properties.getMode() != FramingMode.LENGTH_FIELD) {
+            return null;
+        }
+        TcpLengthFieldProperties lf = properties.getLengthField();
+        if (lf == null) {
+            lf = new TcpLengthFieldProperties();
+        }
+        if (lf.getOffset() != 0 || lf.getInitialBytesToStrip() != lf.getLength()) {
+            return null;
+        }
+        return new LengthFieldPrepender(ByteOrder.BIG_ENDIAN, lf.getLength(), -lf.getAdjustment(), false);
     }
 
     public static byte[] resolveDelimiterBytes(TcpFramingProperties properties) {

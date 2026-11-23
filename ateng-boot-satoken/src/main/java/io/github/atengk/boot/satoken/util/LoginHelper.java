@@ -1,25 +1,46 @@
 package io.github.atengk.boot.satoken.util;
 
+import cn.dev33.satoken.SaManager;
+import cn.dev33.satoken.context.SaHolder;
+import cn.dev33.satoken.context.model.SaRequest;
 import cn.dev33.satoken.session.SaSession;
-import cn.dev33.satoken.stp.parameter.SaLoginParameter;
+import cn.dev33.satoken.session.SaTerminalInfo;
+import cn.dev33.satoken.stp.StpLogic;
 import cn.dev33.satoken.stp.StpUtil;
+import cn.dev33.satoken.stp.parameter.SaLoginParameter;
 import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.model.PageResult;
+import io.github.atengk.boot.core.util.CidrMatcher;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.satoken.constant.SaTokenConstant;
 import io.github.atengk.boot.satoken.model.LoginUser;
+import io.github.atengk.boot.satoken.model.OnlineUser;
+import io.github.atengk.boot.satoken.model.OnlineUserQuery;
+import io.github.atengk.boot.satoken.model.ParsedLoginId;
+import io.github.atengk.boot.web.util.IpUtil;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.util.ClassUtils;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 /**
  * 强类型登录会话操作静态门面
- * 封装 Sa-Token 底层会话操作，基于 JsonUtil 提供纯净 JSON 字符串封包存储，彻底杜绝 @class 污染与反序列化白名单异常
+ * 封装 Sa-Token 底层会话操作，支持多账号体系动态路由治理与 StpLogic 动态懒加载；
+ * 基于 JsonUtil 提供纯净 JSON 字符串封包存储，彻底杜绝 @class 污染与反序列化白名单异常
  *
  * @author Ateng
  * @since 2026-10-17
@@ -36,8 +57,254 @@ public final class LoginHelper {
 
     private static final ThreadLocal<RunAsContext> RUN_AS_CONTEXT = new ThreadLocal<>();
 
+    /**
+     * StpLogic 动态懒加载互斥锁（使用 ReentrantLock 防 JDK 21+ 虚拟线程 Pinning）
+     */
+    private static final ReentrantLock STP_LOGIC_LOCK = new ReentrantLock();
+
+    /**
+     * 全局主账号登录类型标识（多账号体系共存时优先探测），默认 "login"
+     */
+    private static volatile String primaryLoginType = StpUtil.TYPE;
+
+    /**
+     * 默认超级管理员角色编码集合（向后兼容默认包含 admin 与 super_admin）
+     */
+    private static final Set<String> DEFAULT_SUPER_ADMIN_ROLES = Set.of("admin", "super_admin");
+
+    /**
+     * 默认超级管理员通配符权限集合
+     */
+    private static final Set<String> DEFAULT_SUPER_ADMIN_PERMISSIONS = Set.of("*", "*:*:*");
+
+    /**
+     * 当前生效的超级管理员角色编码集合
+     */
+    private static volatile Set<String> superAdminRoles = DEFAULT_SUPER_ADMIN_ROLES;
+
+    /**
+     * 当前生效的超级管理员通配符权限集合（为空集时表示禁用通配符超管判定）
+     */
+    private static volatile Set<String> superAdminPermissions = DEFAULT_SUPER_ADMIN_PERMISSIONS;
+
+    /**
+     * 可选 Web IP 工具存在性标记，防止无 ateng-boot-web 运行时触发 NoClassDefFoundError
+     */
+    private static final boolean WEB_IP_UTIL_PRESENT =
+            ClassUtils.isPresent("io.github.atengk.boot.web.util.IpUtil", LoginHelper.class.getClassLoader());
+
+    /**
+     * 可选 Servlet HttpServletRequest 存在性标记，防止非 Servlet 运行时触发 NoClassDefFoundError
+     */
+    private static final boolean SERVLET_REQUEST_PRESENT =
+            ClassUtils.isPresent("jakarta.servlet.http.HttpServletRequest", LoginHelper.class.getClassLoader());
+
     private LoginHelper() {
     }
+
+    /**
+     * 获取全局配置的主账号体系类型标识，默认 "login"
+     *
+     * @return 主账号类型标识
+     */
+    public static String getPrimaryLoginType() {
+        return primaryLoginType;
+    }
+
+    /**
+     * 设置全局主账号体系类型标识
+     *
+     * @param type 主账号体系标识
+     */
+    public static void setPrimaryLoginType(String type) {
+        if (type != null && !type.isBlank()) {
+            primaryLoginType = type.trim();
+        }
+    }
+
+    /**
+     * 获取当前生效的超级管理员角色编码集合
+     *
+     * @return 不可变角色编码集合
+     */
+    public static Set<String> getSuperAdminRoles() {
+        return superAdminRoles;
+    }
+
+    /**
+     * 设置超级管理员角色编码集合（传入 null 或空集合时视为空集，即不通过角色判定超管）
+     *
+     * @param roles 角色编码集合
+     */
+    public static void setSuperAdminRoles(Collection<String> roles) {
+        superAdminRoles = normalizeSuperAdminSet(roles);
+    }
+
+    /**
+     * 获取当前生效的超级管理员通配符权限集合
+     *
+     * @return 不可变权限码集合
+     */
+    public static Set<String> getSuperAdminPermissions() {
+        return superAdminPermissions;
+    }
+
+    /**
+     * 设置超级管理员通配符权限集合（传入 null 或空集合时视为空集，即禁用通配符超管判定）
+     *
+     * @param permissions 通配符权限集合
+     */
+    public static void setSuperAdminPermissions(Collection<String> permissions) {
+        superAdminPermissions = normalizeSuperAdminSet(permissions);
+    }
+
+    /**
+     * 重置超级管理员角色与通配符权限配置为框架默认值
+     */
+    public static void resetSuperAdminConfig() {
+        superAdminRoles = DEFAULT_SUPER_ADMIN_ROLES;
+        superAdminPermissions = DEFAULT_SUPER_ADMIN_PERMISSIONS;
+    }
+
+    private static Set<String> normalizeSuperAdminSet(Collection<String> source) {
+        if (source == null || source.isEmpty()) {
+            return Collections.emptySet();
+        }
+        Set<String> normalized = new LinkedHashSet<>();
+        for (String item : source) {
+            if (item != null && !item.isBlank()) {
+                normalized.add(item.trim());
+            }
+        }
+        return normalized.isEmpty() ? Collections.emptySet() : Collections.unmodifiableSet(normalized);
+    }
+
+    /**
+     * 探测当前请求上下文中处于活跃登录态的账号类型 (loginType)
+     * 探测优先级：
+     * 1. 配置的主账号类型 (primaryLoginType)
+     * 2. 默认标准账号类型 (StpUtil.TYPE = "login")
+     * 3. 底层 SaManager 注册的其余账号体系
+     *
+     * @return 活跃账号类型标识，未登录时返回 null
+     */
+    public static String getActiveLoginType() {
+        return getActiveLoginType(null);
+    }
+
+    /**
+     * 探测当前请求上下文中处于活跃登录态的账号类型 (loginType)
+     *
+     * @param preferredType 优先探测的账号类型，若为空则默认使用 primaryLoginType
+     * @return 活跃账号类型标识，未登录时返回 null
+     */
+    public static String getActiveLoginType(String preferredType) {
+        String primary = (preferredType != null && !preferredType.isBlank()) ? preferredType : getPrimaryLoginType();
+        if (primary != null && !primary.isBlank() && isLogin(primary)) {
+            return primary;
+        }
+        if (primary != null && !StpUtil.TYPE.equals(primary) && isLogin(StpUtil.TYPE)) {
+            return StpUtil.TYPE;
+        }
+        if (SaManager.stpLogicMap != null) {
+            for (StpLogic logic : SaManager.stpLogicMap.values()) {
+                if (logic != null && isLogin(logic.getLoginType())) {
+                    return logic.getLoginType();
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 获取指定账号体系对应的 StpLogic 实例（动态路由核心机制）
+     * 采用“预注册优先 + 动态懒加载保底”机制：
+     * 1. 若为 null、空白或默认类型 "login"，直接返回 StpUtil.stpLogic；
+     * 2. 优先通过 SaManager.getStpLogic(loginType, false) 官方 API 静默探测是否已有预注册实例；
+     * 3. 若未注册，通过线程安全双重检查锁定 (DCL) 动态实例化 new StpLogic(loginType) 并注册至 SaManager；
+     *    动态懒加载默认拼接独立 TokenName 键前缀防不同账号体系 Cookie/存储踩踏
+     *
+     * @param loginType 账号体系类型标识（如 "admin", "member", "app"）
+     * @return 对应的 StpLogic 门面实例
+     */
+    public static StpLogic getStpLogic(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return StpUtil.stpLogic;
+        }
+        StpLogic logic = findStpLogicSafely(loginType);
+        if (logic == null) {
+            STP_LOGIC_LOCK.lock();
+            try {
+                logic = findStpLogicSafely(loginType);
+                if (logic == null) {
+                    logic = new StpLogic(loginType) {
+                        @Override
+                        public String splicingKeyTokenName() {
+                            return super.splicingKeyTokenName() + "-" + loginType;
+                        }
+
+                        @Override
+                        public String splicingKeyJustCreatedSave() {
+                            return super.splicingKeyJustCreatedSave() + loginType;
+                        }
+                    };
+                    SaManager.putStpLogic(logic);
+                    log.info("动态懒加载注册 Sa-Token 独立账号体系 StpLogic [loginType={}]", loginType);
+                }
+            } finally {
+                if (STP_LOGIC_LOCK.isHeldByCurrentThread()) {
+                    STP_LOGIC_LOCK.unlock();
+                }
+            }
+        }
+        return logic;
+    }
+
+    /**
+     * 显式注册自定义账号体系对应的 StpLogic 实例并与 SaManager 同步
+     *
+     * @param loginType 账号体系类型标识（如 "vip", "admin"）
+     * @param stpLogic  已定制配置的 StpLogic 实例
+     * @return 已注册的 StpLogic 实例
+     */
+    public static StpLogic registerStpLogic(String loginType, StpLogic stpLogic) {
+        if (loginType == null || loginType.isBlank()) {
+            throw new IllegalArgumentException("注册 StpLogic 失败：账号体系标识 (loginType) 不能为空");
+        }
+        if (stpLogic == null) {
+            throw new IllegalArgumentException("注册 StpLogic 失败：stpLogic 实例不能为空");
+        }
+        String normalizedType = loginType.trim();
+        String logicType = stpLogic.getLoginType();
+        if (logicType == null || !normalizedType.equals(logicType)) {
+            throw new IllegalArgumentException(
+                    "注册 StpLogic 失败：loginType 与 stpLogic.getLoginType() 不一致: expected="
+                            + normalizedType + ", actual=" + logicType);
+        }
+        STP_LOGIC_LOCK.lock();
+        try {
+            SaManager.putStpLogic(stpLogic);
+            if (StpUtil.TYPE.equals(normalizedType)) {
+                StpUtil.setStpLogic(stpLogic);
+            }
+            log.info("显式注册 Sa-Token 账号体系 StpLogic [loginType={}]", normalizedType);
+            return stpLogic;
+        } finally {
+            if (STP_LOGIC_LOCK.isHeldByCurrentThread()) {
+                STP_LOGIC_LOCK.unlock();
+            }
+        }
+    }
+
+    private static StpLogic findStpLogicSafely(String loginType) {
+        try {
+            return SaManager.getStpLogic(loginType, false);
+        } catch (Throwable ignored) {
+            return SaManager.stpLogicMap != null ? SaManager.stpLogicMap.get(loginType) : null;
+        }
+    }
+
+    // ==================== 登录操作 (Login) ====================
 
     /**
      * 执行用户登录（标准默认模式）
@@ -46,6 +313,16 @@ public final class LoginHelper {
      */
     public static void login(LoginUser loginUser) {
         login(loginUser, new SaLoginParameter());
+    }
+
+    /**
+     * 执行指定账号体系的用户登录（标准模式）
+     *
+     * @param loginType 账号体系标识
+     * @param loginUser 登录主体数据载荷
+     */
+    public static void login(String loginType, LoginUser loginUser) {
+        login(loginType, loginUser, new SaLoginParameter());
     }
 
     /**
@@ -59,6 +336,17 @@ public final class LoginHelper {
     }
 
     /**
+     * 执行指定账号体系的用户登录（指定设备端类型）
+     *
+     * @param loginType  账号体系标识
+     * @param loginUser  登录主体数据载荷
+     * @param deviceType 设备端类型（如 PC, APP, MINI_PROGRAM）
+     */
+    public static void login(String loginType, LoginUser loginUser, String deviceType) {
+        login(loginType, loginUser, new SaLoginParameter().setDeviceType(deviceType));
+    }
+
+    /**
      * 执行用户登录（完整登录参数）
      *
      * @param loginUser      登录主体数据载荷
@@ -68,12 +356,12 @@ public final class LoginHelper {
         if (loginUser == null || loginUser.getUserId() == null || loginUser.getUserId().isBlank()) {
             throw new IllegalArgumentException("登录失败：登录主体或用户唯一标识 (userId) 不能为空");
         }
-        SaLoginParameter actualParam = loginParameter != null ? loginParameter : new SaLoginParameter();
+        SaLoginParameter actualParam = withClientLoginIpIfAbsent(loginParameter, loginUser);
 
         // 1. 智能合成租户安全复合登录主键（防不同租户同数字主键碰撞踩踏）
         String compositeLoginId = buildCompositeLoginId(loginUser.getTenantId(), loginUser.getUserId());
 
-        // 2. 调用底层核心完成登录与令牌签发
+        // 2. 调用底层核心 StpUtil 完成登录与令牌签发
         StpUtil.login(compositeLoginId, actualParam);
 
         // 3. 封包为纯净 JSON 字符串存储至当前 Token-Session，杜绝 @class 污染
@@ -81,10 +369,157 @@ public final class LoginHelper {
     }
 
     /**
+     * 执行指定账号体系的用户登录（完整登录参数）
+     *
+     * @param loginType      账号体系标识
+     * @param loginUser      登录主体数据载荷
+     * @param loginParameter Sa-Token 登录扩展参数
+     */
+    public static void login(String loginType, LoginUser loginUser, SaLoginParameter loginParameter) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            login(loginUser, loginParameter);
+            return;
+        }
+        if (loginUser == null || loginUser.getUserId() == null || loginUser.getUserId().isBlank()) {
+            throw new IllegalArgumentException("登录失败：登录主体或用户唯一标识 (userId) 不能为空");
+        }
+        SaLoginParameter actualParam = withClientLoginIpIfAbsent(loginParameter, loginUser);
+
+        // 1. 智能合成租户安全复合登录主键（防不同租户同数字主键碰撞踩踏）
+        String compositeLoginId = buildCompositeLoginId(loginUser.getTenantId(), loginUser.getUserId());
+
+        // 2. 调用底层核心 StpLogic 完成登录与令牌签发
+        getStpLogic(loginType).login(compositeLoginId, actualParam);
+
+        // 3. 封包为纯净 JSON 字符串存储至当前 Token-Session，杜绝 @class 污染
+        setLoginUser(loginType, loginUser);
+    }
+
+    private static SaLoginParameter withClientLoginIpIfAbsent(SaLoginParameter loginParameter, LoginUser loginUser) {
+        if (loginParameter != null) {
+            Object existingTerminalIp = loginParameter.getTerminalExtra("loginIp");
+            if (existingTerminalIp != null && !String.valueOf(existingTerminalIp).isBlank()) {
+                return loginParameter;
+            }
+        }
+        String resolvedIp = resolveLoginIpCandidate(loginParameter, loginUser);
+        if (resolvedIp == null || resolvedIp.isBlank()) {
+            return loginParameter != null ? loginParameter : new SaLoginParameter();
+        }
+        SaLoginParameter targetParam = loginParameter != null
+                ? cloneLoginParameter(loginParameter)
+                : new SaLoginParameter();
+        targetParam.setTerminalExtra("loginIp", resolvedIp);
+        return targetParam;
+    }
+
+    private static String resolveLoginIpCandidate(SaLoginParameter loginParameter, LoginUser loginUser) {
+        if (loginParameter != null) {
+            Object existingParamIp = loginParameter.getExtra("loginIp");
+            if (existingParamIp != null && !String.valueOf(existingParamIp).isBlank()) {
+                return String.valueOf(existingParamIp).trim();
+            }
+        }
+        if (loginUser != null && loginUser.getExtraData() != null && loginUser.getExtraData().get("loginIp") != null) {
+            String userExtraIp = String.valueOf(loginUser.getExtraData().get("loginIp")).trim();
+            if (!userExtraIp.isBlank()) {
+                return userExtraIp;
+            }
+        }
+        return resolveClientIpSafely();
+    }
+
+    private static SaLoginParameter cloneLoginParameter(SaLoginParameter source) {
+        SaLoginParameter copy = new SaLoginParameter();
+        copy.setDeviceType(source.getDeviceType());
+        copy.setDeviceId(source.getDeviceId());
+        copy.setReplacedRange(source.getReplacedRange());
+        copy.setOverflowLogoutMode(source.getOverflowLogoutMode());
+        copy.setIsLastingCookie(source.getIsLastingCookie());
+        copy.setTimeout(source.getTimeout());
+        if (source.getActiveTimeout() != null) {
+            copy.setActiveTimeout(source.getActiveTimeout());
+        }
+        copy.setIsConcurrent(source.getIsConcurrent());
+        copy.setIsShare(source.getIsShare());
+        copy.setMaxLoginCount(source.getMaxLoginCount());
+        copy.setMaxTryTimes(source.getMaxTryTimes());
+        if (source.getExtraData() != null) {
+            copy.setExtraData(new LinkedHashMap<>(source.getExtraData()));
+        }
+        copy.setToken(source.getToken());
+        copy.setIsWriteHeader(source.getIsWriteHeader());
+        if (source.getTerminalExtraData() != null) {
+            copy.setTerminalExtraData(new LinkedHashMap<>(source.getTerminalExtraData()));
+        }
+        copy.setRightNowCreateTokenSession(source.getRightNowCreateTokenSession());
+        copy.setCookie(source.getCookie());
+        copy.setReplacedLoginExitMode(source.getReplacedLoginExitMode());
+        return copy;
+    }
+
+    private static String resolveClientIpSafely() {
+        if (WEB_IP_UTIL_PRESENT) {
+            try {
+                String ip = WebClientIpResolver.getClientIp();
+                if (ip != null && !ip.isBlank()) {
+                    return ip;
+                }
+            } catch (Exception ex) {
+                // 非 Web 容器或无 RequestContextHolder 时回退 SaRequest 提取
+                log.debug("通过 IpUtil 提取客户端 IP 失败，回退 SaRequest 提取: {}", ex.getMessage());
+            }
+        }
+        if (SERVLET_REQUEST_PRESENT) {
+            try {
+                if (SaManager.getSaTokenContext() != null && SaManager.getSaTokenContext().isValid()) {
+                    return ServletRequestIpResolver.getRemoteAddr(SaHolder.getRequest());
+                }
+            } catch (Exception ex) {
+                log.debug("通过 SaRequest 提取客户端 IP 失败: {}", ex.getMessage());
+            }
+        }
+        return null;
+    }
+
+    private static final class WebClientIpResolver {
+        private static String getClientIp() {
+            return IpUtil.getClientIp();
+        }
+    }
+
+    private static final class ServletRequestIpResolver {
+        private static String getRemoteAddr(SaRequest request) {
+            if (request != null && request.getSource() instanceof jakarta.servlet.http.HttpServletRequest servletReq) {
+                String remoteAddr = servletReq.getRemoteAddr();
+                if (remoteAddr != null && !remoteAddr.isBlank()) {
+                    return remoteAddr.trim();
+                }
+            }
+            return null;
+        }
+    }
+
+    // ==================== 注销与下线操作 (Logout & Kickout) ====================
+
+    /**
      * 当前会话注销下线
      */
     public static void logout() {
         StpUtil.logout();
+    }
+
+    /**
+     * 指定账号体系的当前会话注销下线
+     *
+     * @param loginType 账号体系标识
+     */
+    public static void logout(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            logout();
+            return;
+        }
+        getStpLogic(loginType).logout();
     }
 
     /**
@@ -97,15 +532,79 @@ public final class LoginHelper {
     }
 
     /**
+     * 指定账号体系下的指定 Token 注销下线
+     *
+     * @param loginType  账号体系标识
+     * @param tokenValue Token 凭据
+     */
+    public static void logoutByTokenValue(String loginType, String tokenValue) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            logoutByTokenValue(tokenValue);
+            return;
+        }
+        getStpLogic(loginType).logoutByTokenValue(tokenValue);
+    }
+
+    /**
      * 当前账号在指定设备端注销下线
      *
      * @param deviceType 设备端类型（如 PC, APP）
      */
     public static void logoutByDevice(String deviceType) {
-        Object loginId = StpUtil.getLoginIdDefaultNull();
+        logoutByDevice(StpUtil.TYPE, deviceType);
+    }
+
+    /**
+     * 指定账号体系下的当前账号在指定设备端注销下线
+     *
+     * @param loginType  账号体系标识
+     * @param deviceType 设备端类型（如 PC, APP）
+     */
+    public static void logoutByDevice(String loginType, String deviceType) {
+        Object loginId = getStpLogic(loginType).getLoginIdDefaultNull();
         if (loginId != null) {
-            StpUtil.logout(loginId, deviceType);
+            getStpLogic(loginType).logout(loginId, deviceType);
         }
+    }
+
+    /**
+     * 指定账号注销下线
+     *
+     * @param loginId 登录账号唯一标识
+     */
+    public static void logoutByLoginId(Object loginId) {
+        StpUtil.logout(loginId);
+    }
+
+    /**
+     * 指定账号体系下的指定账号注销下线
+     *
+     * @param loginType 账号体系标识
+     * @param loginId   登录账号唯一标识
+     */
+    public static void logoutByLoginType(String loginType, Object loginId) {
+        getStpLogic(loginType).logout(loginId);
+    }
+
+    /**
+     * 指定账号在指定设备端注销下线
+     *
+     * @param loginId    登录账号唯一标识
+     * @param deviceType 设备端类型（如 PC, APP）
+     */
+    public static void logoutByLoginId(Object loginId, String deviceType) {
+        StpUtil.logout(loginId, deviceType);
+    }
+
+    /**
+     * 指定账号体系下的指定账号在指定设备端注销下线
+     *
+     * @param loginType  账号体系标识
+     * @param loginId    登录账号唯一标识
+     * @param deviceType 设备端类型（如 PC, APP）
+     */
+    public static void logoutByLoginType(String loginType, Object loginId, String deviceType) {
+        getStpLogic(loginType).logout(loginId, deviceType);
     }
 
     /**
@@ -115,6 +614,16 @@ public final class LoginHelper {
      */
     public static void kickout(Object loginId) {
         StpUtil.kickout(loginId);
+    }
+
+    /**
+     * 将指定账号体系下的登录账号踢下线（全局所有设备端）
+     *
+     * @param loginType 账号体系标识
+     * @param loginId   登录账号唯一标识
+     */
+    public static void kickoutByLoginType(String loginType, Object loginId) {
+        getStpLogic(loginType).kickout(loginId);
     }
 
     /**
@@ -128,12 +637,319 @@ public final class LoginHelper {
     }
 
     /**
+     * 将指定账号体系下的登录账号在指定设备端踢下线
+     *
+     * @param loginType  账号体系标识
+     * @param loginId    登录账号唯一标识
+     * @param deviceType 设备端类型（如 PC, APP）
+     */
+    public static void kickoutByLoginType(String loginType, Object loginId, String deviceType) {
+        getStpLogic(loginType).kickout(loginId, deviceType);
+    }
+
+    /**
+     * 将指定 Token 凭据对应的会话踢下线
+     *
+     * @param tokenValue Token 凭据
+     */
+    public static void kickoutByToken(String tokenValue) {
+        if (tokenValue == null || tokenValue.isBlank()) {
+            return;
+        }
+        StpUtil.kickoutByTokenValue(tokenValue);
+    }
+
+    /**
+     * 将指定账号体系下指定 Token 凭据对应的会话踢下线
+     *
+     * @param loginType  账号体系标识
+     * @param tokenValue Token 凭据
+     */
+    public static void kickoutByToken(String loginType, String tokenValue) {
+        if (tokenValue == null || tokenValue.isBlank()) {
+            return;
+        }
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            kickoutByToken(tokenValue);
+            return;
+        }
+        getStpLogic(loginType).kickoutByTokenValue(tokenValue);
+    }
+
+    /**
+     * 获取当前主账号体系下指定 Token 对应的在线会话聚合模型
+     *
+     * @param tokenValue Token 凭据
+     * @return 在线用户模型，Token 无效或已失效时返回 null
+     */
+    public static OnlineUser getOnlineUserByToken(String tokenValue) {
+        return getOnlineUserByToken(StpUtil.TYPE, tokenValue);
+    }
+
+    /**
+     * 获取指定账号体系下指定 Token 对应的在线会话聚合模型
+     *
+     * @param loginType  账号体系标识（为空时回退默认 {@code "login"} 体系）
+     * @param tokenValue Token 凭据
+     * @return 在线用户模型，Token 无效或已失效时返回 null
+     */
+    public static OnlineUser getOnlineUserByToken(String loginType, String tokenValue) {
+        if (tokenValue == null || tokenValue.isBlank()) {
+            return null;
+        }
+        StpLogic logic = getStpLogic(loginType);
+        Object loginId = logic.getLoginIdByToken(tokenValue);
+        if (!isValidOnlineLoginId(loginId)) {
+            return null;
+        }
+        return buildOnlineUser(logic, loginId, tokenValue);
+    }
+
+    /**
+     * 提取当前主账号体系下指定 Token 所属的归属租户标识
+     *
+     * @param tokenValue Token 凭据
+     * @return 归属租户标识，Token 无效、已过期或未绑定租户时返回 null
+     */
+    public static String getTokenTenantId(String tokenValue) {
+        return getTokenTenantId(StpUtil.TYPE, tokenValue);
+    }
+
+    /**
+     * 提取指定账号体系下指定 Token 所属的归属租户标识
+     *
+     * @param loginType  账号体系标识
+     * @param tokenValue Token 凭据
+     * @return 归属租户标识，Token 无效、已过期或未绑定租户时返回 null
+     */
+    public static String getTokenTenantId(String loginType, String tokenValue) {
+        OnlineUser onlineUser = getOnlineUserByToken(loginType, tokenValue);
+        if (onlineUser == null || onlineUser.getTenantId() == null || onlineUser.getTenantId().isBlank()) {
+            return null;
+        }
+        return onlineUser.getTenantId().trim();
+    }
+
+    /**
+     * 判定当前主账号体系下指定 Token 是否归属于期望租户
+     *
+     * @param tokenValue       Token 凭据
+     * @param expectedTenantId 期望归属租户标识
+     * @return true 表示 Token 有效且归属该租户
+     */
+    public static boolean isTokenBelongsToTenant(String tokenValue, String expectedTenantId) {
+        return isTokenBelongsToTenant(StpUtil.TYPE, tokenValue, expectedTenantId);
+    }
+
+    /**
+     * 判定指定账号体系下指定 Token 是否归属于期望租户
+     *
+     * @param loginType        账号体系标识
+     * @param tokenValue       Token 凭据
+     * @param expectedTenantId 期望归属租户标识
+     * @return true 表示 Token 有效且归属该租户
+     */
+    public static boolean isTokenBelongsToTenant(String loginType, String tokenValue, String expectedTenantId) {
+        if (expectedTenantId == null || expectedTenantId.isBlank()) {
+            return false;
+        }
+        String actualTenantId = getTokenTenantId(loginType, tokenValue);
+        return expectedTenantId.trim().equals(actualTenantId);
+    }
+
+    /**
+     * 带归属租户防越权校验地将指定 Token 踢下线（默认账号体系）
+     *
+     * @param tokenValue       Token 凭据
+     * @param expectedTenantId 期望归属租户标识
+     * @return true 表示存在有效会话且校验通过并完成踢下线；false 表示 Token 已不存在或过期（幂等返回）
+     * @throws BusinessException 当活跃 Token 无租户归属或与 {@code expectedTenantId} 不匹配时抛出 403 越权异常
+     */
+    public static boolean kickoutByTokenForTenant(String tokenValue, String expectedTenantId) {
+        return kickoutByTokenForTenant(StpUtil.TYPE, tokenValue, expectedTenantId);
+    }
+
+    /**
+     * 带归属租户防越权校验地将指定账号体系下的 Token 踢下线
+     *
+     * @param loginType        账号体系标识
+     * @param tokenValue       Token 凭据
+     * @param expectedTenantId 期望归属租户标识
+     * @return true 表示存在有效会话且校验通过并完成踢下线；false 表示 Token 已不存在或过期（幂等返回）
+     * @throws BusinessException 当活跃 Token 无租户归属或与 {@code expectedTenantId} 不匹配时抛出 403 越权异常
+     */
+    public static boolean kickoutByTokenForTenant(String loginType, String tokenValue, String expectedTenantId) {
+        return terminateTokenForTenant(loginType, tokenValue, expectedTenantId, true);
+    }
+
+    /**
+     * 带归属租户防越权校验地将指定 Token 注销下线（默认账号体系）
+     *
+     * @param tokenValue       Token 凭据
+     * @param expectedTenantId 期望归属租户标识
+     * @return true 表示存在有效会话且校验通过并完成注销；false 表示 Token 已不存在或过期（幂等返回）
+     * @throws BusinessException 当活跃 Token 无租户归属或与 {@code expectedTenantId} 不匹配时抛出 403 越权异常
+     */
+    public static boolean logoutByTokenValueForTenant(String tokenValue, String expectedTenantId) {
+        return logoutByTokenValueForTenant(StpUtil.TYPE, tokenValue, expectedTenantId);
+    }
+
+    /**
+     * 带归属租户防越权校验地将指定账号体系下的 Token 注销下线
+     *
+     * @param loginType        账号体系标识
+     * @param tokenValue       Token 凭据
+     * @param expectedTenantId 期望归属租户标识
+     * @return true 表示存在有效会话且校验通过并完成注销；false 表示 Token 已不存在或过期（幂等返回）
+     * @throws BusinessException 当活跃 Token 无租户归属或与 {@code expectedTenantId} 不匹配时抛出 403 越权异常
+     */
+    public static boolean logoutByTokenValueForTenant(String loginType, String tokenValue, String expectedTenantId) {
+        return terminateTokenForTenant(loginType, tokenValue, expectedTenantId, false);
+    }
+
+    private static boolean terminateTokenForTenant(String loginType, String tokenValue,
+                                                   String expectedTenantId, boolean kickout) {
+        if (tokenValue == null || tokenValue.isBlank()) {
+            return false;
+        }
+        StpLogic logic = getStpLogic(loginType);
+        Object loginId = logic.getLoginIdByToken(tokenValue);
+        if (!isValidOnlineLoginId(loginId)) {
+            return false;
+        }
+        OnlineUser onlineUser = buildOnlineUser(logic, loginId, tokenValue);
+        String actualTenantId = (onlineUser != null && onlineUser.getTenantId() != null && !onlineUser.getTenantId().isBlank())
+                ? onlineUser.getTenantId().trim()
+                : null;
+        if (expectedTenantId == null || expectedTenantId.isBlank()
+                || actualTenantId == null
+                || !expectedTenantId.trim().equals(actualTenantId)) {
+            throw new BusinessException(CommonResultCode.FORBIDDEN, "越权操作：目标会话不属于当前租户或未绑定租户归属");
+        }
+        if (kickout) {
+            kickoutByToken(loginType, tokenValue);
+        } else {
+            logoutByTokenValue(loginType, tokenValue);
+        }
+        return true;
+    }
+
+    /**
+     * 将指定登录账号在指定设备端上的会话踢下线
+     *
+     * @param loginId    登录账号唯一标识
+     * @param deviceType 终端设备类型（如 PC, APP）
+     */
+    public static void kickoutDevice(Object loginId, String deviceType) {
+        if (loginId == null) {
+            return;
+        }
+        StpUtil.kickout(loginId, deviceType);
+    }
+
+    /**
+     * 将指定账号体系下的登录账号在指定设备端上的会话踢下线
+     *
+     * @param loginType  账号体系标识
+     * @param loginId    登录账号唯一标识
+     * @param deviceType 终端设备类型（如 PC, APP）
+     */
+    public static void kickoutDevice(String loginType, Object loginId, String deviceType) {
+        if (loginId == null) {
+            return;
+        }
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            kickoutDevice(loginId, deviceType);
+            return;
+        }
+        getStpLogic(loginType).kickout(loginId, deviceType);
+    }
+
+    /**
+     * 将指定登录账号在指定设备端上的会话踢下线（语义对齐 kickoutByToken）
+     *
+     * @param loginId    登录账号唯一标识
+     * @param deviceType 终端设备类型（如 PC, APP）
+     * @see #kickoutDevice(Object, String)
+     */
+    public static void kickoutByDevice(Object loginId, String deviceType) {
+        kickoutDevice(loginId, deviceType);
+    }
+
+    /**
+     * 将指定账号体系下的登录账号在指定设备端上的会话踢下线
+     *
+     * @param loginType  账号体系标识
+     * @param loginId    登录账号唯一标识
+     * @param deviceType 终端设备类型（如 PC, APP）
+     * @see #kickoutDevice(String, Object, String)
+     */
+    public static void kickoutByDevice(String loginType, Object loginId, String deviceType) {
+        kickoutDevice(loginType, loginId, deviceType);
+    }
+
+    /**
+     * 将指定登录账号顶替下线（全局所有设备端）
+     *
+     * @param loginId 登录账号唯一标识
+     */
+    public static void replaced(Object loginId) {
+        StpUtil.replaced(loginId);
+    }
+
+    /**
+     * 将指定账号体系下的登录账号顶替下线（全局所有设备端）
+     *
+     * @param loginType 账号体系标识
+     * @param loginId   登录账号唯一标识
+     */
+    public static void replacedByLoginType(String loginType, Object loginId) {
+        getStpLogic(loginType).replaced(loginId);
+    }
+
+    /**
+     * 将指定登录账号在指定设备端顶替下线
+     *
+     * @param loginId    登录账号唯一标识
+     * @param deviceType 设备端类型（如 PC, APP）
+     */
+    public static void replaced(Object loginId, String deviceType) {
+        StpUtil.replaced(loginId, deviceType);
+    }
+
+    /**
+     * 将指定账号体系下的登录账号在指定设备端顶替下线
+     *
+     * @param loginType  账号体系标识
+     * @param loginId    登录账号唯一标识
+     * @param deviceType 设备端类型（如 PC, APP）
+     */
+    public static void replacedByLoginType(String loginType, Object loginId, String deviceType) {
+        getStpLogic(loginType).replaced(loginId, deviceType);
+    }
+
+    // ==================== 状态校验与凭据提取 (Status & Tokens) ====================
+
+    /**
      * 获取当前会话的登录设备端类型
      *
      * @return 设备端类型，未登录或未设置返回 null
      */
     public static String getLoginDeviceType() {
         return StpUtil.getLoginDeviceType();
+    }
+
+    /**
+     * 获取指定账号体系下当前会话的登录设备端类型
+     *
+     * @param loginType 账号体系标识
+     * @return 设备端类型，未登录或未设置返回 null
+     */
+    public static String getLoginDeviceType(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return getLoginDeviceType();
+        }
+        return getStpLogic(loginType).getLoginDeviceType();
     }
 
     /**
@@ -144,6 +960,23 @@ public final class LoginHelper {
     public static boolean isLogin() {
         try {
             return StpUtil.isLogin();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * 判断指定账号体系下的当前会话是否已经登录
+     *
+     * @param loginType 账号体系标识
+     * @return true 表示已登录
+     */
+    public static boolean isLogin(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return isLogin();
+        }
+        try {
+            return getStpLogic(loginType).isLogin();
         } catch (Exception ignored) {
             // 在非 Web 线程或 SaToken 上下文尚未初始化的后台线程中防御性返回 false
             return false;
@@ -158,6 +991,19 @@ public final class LoginHelper {
     }
 
     /**
+     * 校验指定账号体系下的当前会话是否登录，未登录则抛出 NotLoginException
+     *
+     * @param loginType 账号体系标识
+     */
+    public static void checkLogin(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            checkLogin();
+            return;
+        }
+        getStpLogic(loginType).checkLogin();
+    }
+
+    /**
      * 获取当前会话分配的 Token 字符串值
      *
      * @return Token 字符串值
@@ -165,6 +1011,21 @@ public final class LoginHelper {
     public static String getTokenValue() {
         return StpUtil.getTokenValue();
     }
+
+    /**
+     * 获取指定账号体系当前会话分配的 Token 字符串值
+     *
+     * @param loginType 账号体系标识
+     * @return Token 字符串值
+     */
+    public static String getTokenValue(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return getTokenValue();
+        }
+        return getStpLogic(loginType).getTokenValue();
+    }
+
+    // ==================== 载荷存储与读取 (Payload & LoginUser) ====================
 
     /**
      * 将 LoginUser 实体纯净封包写入当前 Session
@@ -192,12 +1053,56 @@ public final class LoginHelper {
     }
 
     /**
+     * 将 LoginUser 实体纯净封包写入指定账号体系的当前 Session
+     *
+     * @param loginType 账号体系标识
+     * @param loginUser 登录主体
+     */
+    public static void setLoginUser(String loginType, LoginUser loginUser) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            setLoginUser(loginUser);
+            return;
+        }
+        StpLogic logic = getStpLogic(loginType);
+        if (loginUser == null) {
+            SaSession session = logic.getSession(false);
+            if (session != null) {
+                session.delete(SaTokenConstant.LOGIN_USER_KEY);
+            }
+            return;
+        }
+        try {
+            String jsonStr = JsonUtil.toJsonString(loginUser);
+            SaSession session = logic.getSession();
+            if (session != null) {
+                session.set(SaTokenConstant.LOGIN_USER_KEY, jsonStr);
+            }
+        } catch (Exception e) {
+            log.error("LoginUser 序列化失败 [loginType={}]: ", loginType, e);
+            throw new IllegalStateException("用户上下文序列化异常", e);
+        }
+    }
+
+    /**
      * 获取当前会话绑定的强类型 LoginUser
      *
      * @return LoginUser 实例，未登录或未存储时返回 null
      */
     public static LoginUser getLoginUser() {
         return getLoginUser(LoginUser.class);
+    }
+
+    /**
+     * 获取指定账号体系当前会话绑定的强类型 LoginUser
+     *
+     * @param loginType 账号体系标识
+     * @return LoginUser 实例，未登录或未存储时返回 null
+     */
+    public static LoginUser getLoginUser(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return getLoginUser();
+        }
+        return getLoginUser(loginType, LoginUser.class);
     }
 
     /**
@@ -211,8 +1116,178 @@ public final class LoginHelper {
         if (!isLogin()) {
             return null;
         }
-        SaSession session = StpUtil.getSession(false);
-        if (session == null) {
+        return extractLoginUserFromSession(StpUtil.getSession(false), clazz, StpUtil.TYPE);
+    }
+
+    /**
+     * 获取指定账号体系当前会话绑定的强类型实体（支持自定义扩展子类泛型读取）
+     *
+     * @param loginType 账号体系标识
+     * @param clazz     目标类型 Class
+     * @param <T>       泛型参数
+     * @return 目标实体实例，未登录或未存储时返回 null
+     */
+    public static <T> T getLoginUser(String loginType, Class<T> clazz) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return getLoginUser(clazz);
+        }
+        if (!isLogin(loginType)) {
+            return null;
+        }
+        return extractLoginUserFromSession(getStpLogic(loginType).getSession(false), clazz, loginType);
+    }
+
+    /**
+     * 根据目标 loginId 从其活跃 Account-Session 中无侵入提取强类型 LoginUser（不新建空 Session）
+     *
+     * @param loginId   完整 loginId（支持普通 userId 或多租户复合 {@code tenantId_userId}）
+     * @param loginType 账号体系标识（为空时回退默认 {@code "login"} 体系）
+     * @return 会话绑定的 LoginUser，未找到或反序列化失败时返回 null
+     */
+    public static LoginUser getSessionLoginUser(String loginId, String loginType) {
+        if (loginId == null || loginId.isBlank()) {
+            return null;
+        }
+        try {
+            SaSession session = (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType))
+                    ? StpUtil.getSessionByLoginId(loginId, false)
+                    : getStpLogic(loginType).getSessionByLoginId(loginId, false);
+            return extractLoginUserFromSession(session, LoginUser.class, loginType);
+        } catch (RuntimeException ex) {
+            log.debug("读取会话 LoginUser 失败（安全降级）: loginId={}, loginType={}, error={}",
+                    loginId, loginType, ex.toString());
+            return null;
+        }
+    }
+
+    /**
+     * 根据目标用户标识、账号体系与可选租户归属解析目标 {@link LoginUser}
+     * <p>
+     * 解析顺序：
+     * 1. 若当前请求线程已登录且身份与目标 userId/tenantId 兼容，直接复用当前会话快照；
+     * 2. 否则按原始标识、纯净 {@code userId} 及 {@code {tenantId}_{userId}} 复合登录标识依次从 Account-Session 回退检索，
+     *    杜绝跨用户权限误读与复合 loginId 找不到会话问题。
+     * </p>
+     *
+     * @param loginIdOrUserId 原始 loginId 或剥离后的纯净 userId
+     * @param loginType       账号体系标识（为空时回退默认 {@code "login"} 体系）
+     * @param tenantId        目标主体归属租户标识（可选，为空时回退尝试 {@link TenantContextHolder#getTenantId()}）
+     * @return 匹配的 LoginUser，未命中返回 null
+     */
+    public static LoginUser resolveTargetLoginUser(String loginIdOrUserId, String loginType, String tenantId) {
+        if (loginIdOrUserId == null || loginIdOrUserId.isBlank()) {
+            return null;
+        }
+        String rawInput = loginIdOrUserId.trim();
+        String normalizedTenant = (tenantId != null && !tenantId.isBlank()) ? tenantId.trim() : null;
+
+        // 1. 当显式指定归属租户时，优先检索 {tenantId}_{userId} 复合会话，避免同名无租户/他租户裸会话误匹配
+        if (normalizedTenant != null) {
+            String candidateComposite = buildCompositeLoginId(normalizedTenant, rawInput);
+            LoginUser explicitCompositeUser = getSessionLoginUser(candidateComposite, loginType);
+            if (explicitCompositeUser != null) {
+                return explicitCompositeUser;
+            }
+            if (rawInput.startsWith(normalizedTenant + SaTokenConstant.TENANT_DELIMITER)) {
+                LoginUser directCompositeUser = getSessionLoginUser(rawInput, loginType);
+                if (directCompositeUser != null) {
+                    return directCompositeUser;
+                }
+            }
+        } else {
+            // 未显式指定租户时，优先按原始标识尝试命中（兼容直接传入完整 {tenantId}_{userId}）
+            LoginUser directSessionUser = getSessionLoginUser(rawInput, loginType);
+            if (directSessionUser != null) {
+                return directSessionUser;
+            }
+            String contextTenant = TenantContextHolder.getTenantId();
+            if (contextTenant != null && !contextTenant.isBlank()) {
+                LoginUser contextCompositeUser = getSessionLoginUser(
+                        buildCompositeLoginId(contextTenant, rawInput), loginType);
+                if (contextCompositeUser != null) {
+                    return contextCompositeUser;
+                }
+            }
+        }
+
+        // 2. 解析复合 loginId，验证当前线程活跃会话或按拆解结果受控回退检索
+        ParsedLoginId parsed = parseCompositeLoginId(rawInput, loginType);
+        String effectiveUserId = (normalizedTenant != null) ? rawInput : parsed.userId();
+        String effectiveTenantId = normalizedTenant != null ? normalizedTenant : parsed.tenantId();
+
+        LoginUser threadUser = resolveActiveThreadLoginUser(loginType);
+        if (isCompatibleLoginUser(threadUser, parsed, effectiveUserId, effectiveTenantId)) {
+            return threadUser;
+        }
+
+        // 3. 若显式传入租户，回退检索裸 userId 会话前必须校验其租户归属一致性
+        if (normalizedTenant != null) {
+            LoginUser byRawForTenant = getSessionLoginUser(rawInput, loginType);
+            if (isCompatibleLoginUser(byRawForTenant, parsed, rawInput, normalizedTenant)) {
+                return byRawForTenant;
+            }
+            return null;
+        }
+
+        String contextTenant = TenantContextHolder.getTenantId();
+        if (parsed.userId() != null && !parsed.userId().equals(rawInput)) {
+            if (contextTenant != null && !contextTenant.isBlank()) {
+                LoginUser byContextParsed = getSessionLoginUser(
+                        buildCompositeLoginId(contextTenant, parsed.userId()), loginType);
+                if (byContextParsed != null) {
+                    return byContextParsed;
+                }
+            }
+            LoginUser byPlain = getSessionLoginUser(parsed.userId(), loginType);
+            if (isCompatibleLoginUser(byPlain, parsed, parsed.userId(), effectiveTenantId)) {
+                return byPlain;
+            }
+        }
+        if (effectiveTenantId != null && parsed.userId() != null) {
+            return getSessionLoginUser(buildCompositeLoginId(effectiveTenantId, parsed.userId()), loginType);
+        }
+        return null;
+    }
+
+    private static LoginUser resolveActiveThreadLoginUser(String loginType) {
+        if (loginType != null && !loginType.isBlank()) {
+            LoginUser typedUser = getLoginUser(loginType);
+            if (typedUser != null) {
+                return typedUser;
+            }
+        }
+        String activeLoginType = getActiveLoginType();
+        if (activeLoginType != null && !activeLoginType.isBlank()) {
+            LoginUser activeUser = getLoginUser(activeLoginType);
+            if (activeUser != null) {
+                return activeUser;
+            }
+        }
+        return getLoginUser();
+    }
+
+    private static boolean isCompatibleLoginUser(LoginUser candidate, ParsedLoginId parsed,
+                                                 String effectiveUserId, String effectiveTenantId) {
+        if (candidate == null) {
+            return false;
+        }
+        if (effectiveUserId != null && candidate.getUserId() != null && !candidate.getUserId().isBlank()) {
+            String candidateUser = candidate.getUserId().trim();
+            if (!candidateUser.equals(effectiveUserId) && !candidateUser.equals(parsed.rawLoginId())) {
+                return false;
+            }
+        }
+        if (effectiveTenantId != null) {
+            if (candidate.getTenantId() == null || candidate.getTenantId().isBlank()) {
+                return false;
+            }
+            return effectiveTenantId.equals(candidate.getTenantId().trim());
+        }
+        return true;
+    }
+
+    private static <T> T extractLoginUserFromSession(SaSession session, Class<T> clazz, String loginType) {
+        if (session == null || clazz == null) {
             return null;
         }
         Object rawVal = session.get(SaTokenConstant.LOGIN_USER_KEY);
@@ -222,16 +1297,19 @@ public final class LoginHelper {
         if (clazz.isInstance(rawVal)) {
             return clazz.cast(rawVal);
         }
-        if (rawVal instanceof String jsonStr) {
+        if (rawVal instanceof String jsonStr && !jsonStr.isBlank()) {
             try {
                 return JsonUtil.parseObject(jsonStr, clazz);
             } catch (Exception e) {
-                log.warn("LoginUser 反序列化失败: json={}, targetClass={}", jsonStr, clazz.getName(), e);
+                log.warn("LoginUser 反序列化失败 [loginType={}]: json={}, targetClass={}",
+                        loginType, jsonStr, clazz.getName(), e);
                 return null;
             }
         }
         return null;
     }
+
+    // ==================== 操作人身份识别与模拟 (User & RunAs) ====================
 
     /**
      * 获取当前操作人用户唯一标识（支持 RunAs 身份模拟，透明剥离多租户前缀）
@@ -270,6 +1348,42 @@ public final class LoginHelper {
     }
 
     /**
+     * 获取指定账号体系下的当前操作人用户唯一标识（支持 RunAs 身份模拟，透明剥离多租户前缀）
+     *
+     * @param loginType 账号体系标识
+     * @return 当前生效的用户唯一标识，未登录时返回 null
+     */
+    public static String getUserId(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return getUserId();
+        }
+        // 1. 检查瞬态 RunAs 代码块
+        RunAsContext runAsCtx = RUN_AS_CONTEXT.get();
+        if (runAsCtx != null && runAsCtx.getTargetUserId() != null && !runAsCtx.getTargetUserId().isBlank()) {
+            return runAsCtx.getTargetUserId();
+        }
+
+        if (!isLogin(loginType)) {
+            return null;
+        }
+
+        // 2. 检查跨请求 Session 模拟
+        SaSession session = getStpLogic(loginType).getSession(false);
+        if (session != null) {
+            Object switchTarget = session.get(SaTokenConstant.SWITCH_TARGET_USER_ID_KEY);
+            if (switchTarget != null) {
+                String targetId = String.valueOf(switchTarget).trim();
+                if (!targetId.isEmpty()) {
+                    return targetId;
+                }
+            }
+        }
+
+        // 3. 返回底层真实登录用户
+        return getRealUserId(loginType);
+    }
+
+    /**
      * 获取底层真实登录用户唯一标识（忽略 RunAs 模拟状态，透明剥离多租户前缀）
      *
      * @return 真实登录用户唯一标识，未登录时返回 null
@@ -283,6 +1397,34 @@ public final class LoginHelper {
             return loginUser.getUserId();
         }
         Object loginIdObj = StpUtil.getLoginIdDefaultNull();
+        if (loginIdObj != null) {
+            String loginId = String.valueOf(loginIdObj);
+            if (loginId.contains(SaTokenConstant.TENANT_DELIMITER)) {
+                return loginId.substring(loginId.indexOf(SaTokenConstant.TENANT_DELIMITER) + 1);
+            }
+            return loginId;
+        }
+        return null;
+    }
+
+    /**
+     * 获取指定账号体系下底层真实登录用户唯一标识（忽略 RunAs 模拟状态，透明剥离多租户前缀）
+     *
+     * @param loginType 账号体系标识
+     * @return 真实登录用户唯一标识，未登录时返回 null
+     */
+    public static String getRealUserId(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return getRealUserId();
+        }
+        if (!isLogin(loginType)) {
+            return null;
+        }
+        LoginUser loginUser = getLoginUser(loginType);
+        if (loginUser != null && loginUser.getUserId() != null) {
+            return loginUser.getUserId();
+        }
+        Object loginIdObj = getStpLogic(loginType).getLoginIdDefaultNull();
         if (loginIdObj != null) {
             String loginId = String.valueOf(loginIdObj);
             if (loginId.contains(SaTokenConstant.TENANT_DELIMITER)) {
@@ -312,6 +1454,68 @@ public final class LoginHelper {
     }
 
     /**
+     * 获取指定账号体系下底层真实登录用户 Long 唯一标识（忽略 RunAs 模拟状态）
+     *
+     * @param loginType 账号体系标识
+     * @return 真实登录用户 Long 唯一标识，未登录或非数字格式时返回 null
+     */
+    public static Long getRealUserIdAsLong(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return getRealUserIdAsLong();
+        }
+        String userId = getRealUserId(loginType);
+        if (userId == null || userId.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(userId.trim());
+        } catch (NumberFormatException e) {
+            log.warn("真实用户唯一标识无法转换为 Long 数值 [loginType={}]: userId={}", loginType, userId);
+            return null;
+        }
+    }
+
+    /**
+     * 获取当前生效操作人唯一标识并转换为 Long 类型
+     *
+     * @return 当前生效用户 Long 唯一标识，未登录或非数字格式时返回 null
+     */
+    public static Long getUserIdAsLong() {
+        String userId = getUserId();
+        if (userId == null || userId.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(userId.trim());
+        } catch (NumberFormatException e) {
+            log.warn("用户唯一标识无法转换为 Long 数值: userId={}", userId);
+            return null;
+        }
+    }
+
+    /**
+     * 获取指定账号体系下当前生效操作人唯一标识并转换为 Long 类型
+     *
+     * @param loginType 账号体系标识
+     * @return 当前生效用户 Long 唯一标识，未登录或非数字格式时返回 null
+     */
+    public static Long getUserIdAsLong(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return getUserIdAsLong();
+        }
+        String userId = getUserId(loginType);
+        if (userId == null || userId.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(userId.trim());
+        } catch (NumberFormatException e) {
+            log.warn("用户唯一标识无法转换为 Long 数值 [loginType={}]: userId={}", loginType, userId);
+            return null;
+        }
+    }
+
+    /**
      * 判断当前会话或当前执行线程是否处于身份模拟态 (RunAs)
      *
      * @return true 表示处于身份模拟态
@@ -325,6 +1529,31 @@ public final class LoginHelper {
             return false;
         }
         SaSession session = StpUtil.getSession(false);
+        if (session == null) {
+            return false;
+        }
+        Object target = session.get(SaTokenConstant.SWITCH_TARGET_USER_ID_KEY);
+        return target != null && !String.valueOf(target).isBlank();
+    }
+
+    /**
+     * 判断指定账号体系下的当前会话或当前执行线程是否处于身份模拟态 (RunAs)
+     *
+     * @param loginType 账号体系标识
+     * @return true 表示处于身份模拟态
+     */
+    public static boolean isRunAs(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return isRunAs();
+        }
+        RunAsContext runAsCtx = RUN_AS_CONTEXT.get();
+        if (runAsCtx != null) {
+            return true;
+        }
+        if (!isLogin(loginType)) {
+            return false;
+        }
+        SaSession session = getStpLogic(loginType).getSession(false);
         if (session == null) {
             return false;
         }
@@ -360,21 +1589,33 @@ public final class LoginHelper {
     }
 
     /**
-     * 获取当前生效操作人唯一标识并转换为 Long 类型
+     * 获取指定账号体系下身份模拟的原始操作人唯一标识 (Original User ID)
      *
-     * @return 当前生效用户 Long 唯一标识，未登录或非数字格式时返回 null
+     * @param loginType 账号体系标识
+     * @return 原始操作人标识，未模拟或未登录返回 null
      */
-    public static Long getUserIdAsLong() {
-        String userId = getUserId();
-        if (userId == null || userId.isBlank()) {
+    public static String getOriginalUserId(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return getOriginalUserId();
+        }
+        RunAsContext runAsCtx = RUN_AS_CONTEXT.get();
+        if (runAsCtx != null) {
+            return runAsCtx.getOriginalUserId();
+        }
+        if (!isLogin(loginType)) {
             return null;
         }
-        try {
-            return Long.parseLong(userId.trim());
-        } catch (NumberFormatException e) {
-            log.warn("用户唯一标识无法转换为 Long 数值: userId={}", userId);
-            return null;
+        SaSession session = getStpLogic(loginType).getSession(false);
+        if (session != null) {
+            Object orig = session.get(SaTokenConstant.ORIGINAL_USER_ID_KEY);
+            if (orig != null) {
+                String origStr = String.valueOf(orig).trim();
+                if (!origStr.isEmpty()) {
+                    return origStr;
+                }
+            }
         }
+        return null;
     }
 
     /**
@@ -383,7 +1624,17 @@ public final class LoginHelper {
      * @return 用户账号，未登录返回 null
      */
     public static String getUserAccount() {
-        LoginUser user = getLoginUser();
+        return getUserAccount(StpUtil.TYPE);
+    }
+
+    /**
+     * 获取指定账号体系下的当前操作人账号
+     *
+     * @param loginType 账号体系标识
+     * @return 用户账号，未登录返回 null
+     */
+    public static String getUserAccount(String loginType) {
+        LoginUser user = getLoginUser(loginType);
         return user != null ? user.getUserAccount() : null;
     }
 
@@ -393,7 +1644,17 @@ public final class LoginHelper {
      * @return 用户姓名，未登录返回 null
      */
     public static String getUserName() {
-        LoginUser user = getLoginUser();
+        return getUserName(StpUtil.TYPE);
+    }
+
+    /**
+     * 获取指定账号体系下的当前操作人姓名/昵称
+     *
+     * @param loginType 账号体系标识
+     * @return 用户姓名，未登录返回 null
+     */
+    public static String getUserName(String loginType) {
+        LoginUser user = getLoginUser(loginType);
         return user != null ? user.getUserName() : null;
     }
 
@@ -407,7 +1668,37 @@ public final class LoginHelper {
         if (user != null && user.getTenantId() != null) {
             return user.getTenantId();
         }
+        if (!isLogin()) {
+            return null;
+        }
         Object loginIdObj = StpUtil.getLoginIdDefaultNull();
+        if (loginIdObj != null) {
+            String loginId = String.valueOf(loginIdObj);
+            if (loginId.contains(SaTokenConstant.TENANT_DELIMITER)) {
+                return loginId.substring(0, loginId.indexOf(SaTokenConstant.TENANT_DELIMITER));
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 获取指定账号体系下当前登录用户归属的租户唯一标识
+     *
+     * @param loginType 账号体系标识
+     * @return 租户标识，未设置或未登录返回 null
+     */
+    public static String getTenantId(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return getTenantId();
+        }
+        LoginUser user = getLoginUser(loginType);
+        if (user != null && user.getTenantId() != null) {
+            return user.getTenantId();
+        }
+        if (!isLogin(loginType)) {
+            return null;
+        }
+        Object loginIdObj = getStpLogic(loginType).getLoginIdDefaultNull();
         if (loginIdObj != null) {
             String loginId = String.valueOf(loginIdObj);
             if (loginId.contains(SaTokenConstant.TENANT_DELIMITER)) {
@@ -423,9 +1714,21 @@ public final class LoginHelper {
      * @return 部门标识，未设置或未登录返回 null
      */
     public static String getDeptId() {
-        LoginUser user = getLoginUser();
+        return getDeptId(StpUtil.TYPE);
+    }
+
+    /**
+     * 获取指定账号体系下当前登录用户所属部门标识
+     *
+     * @param loginType 账号体系标识
+     * @return 部门标识，未设置或未登录返回 null
+     */
+    public static String getDeptId(String loginType) {
+        LoginUser user = getLoginUser(loginType);
         return user != null ? user.getDeptId() : null;
     }
+
+    // ==================== 角色与权限查询 (Roles & Permissions) ====================
 
     /**
      * 获取当前登录用户拥有的角色标识集合（空安全防御）
@@ -433,8 +1736,34 @@ public final class LoginHelper {
      * @return 角色集合，未登录或无角色时返回空集合
      */
     public static Set<String> getRoles() {
-        LoginUser user = getLoginUser();
-        return user != null ? user.getRoles() : Collections.emptySet();
+        if (!isLogin()) {
+            return Collections.emptySet();
+        }
+        LoginUser loginUser = getLoginUser();
+        if (loginUser != null && loginUser.getRoles() != null) {
+            return loginUser.getRoles();
+        }
+        return StpUtil.getRoleList() != null ? Set.copyOf(StpUtil.getRoleList()) : Collections.emptySet();
+    }
+
+    /**
+     * 获取指定账号体系下当前登录用户拥有的角色标识集合（空安全防御）
+     *
+     * @param loginType 账号体系标识
+     * @return 角色集合，未登录或无角色时返回空集合
+     */
+    public static Set<String> getRoles(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return getRoles();
+        }
+        if (!isLogin(loginType)) {
+            return Collections.emptySet();
+        }
+        LoginUser user = getLoginUser(loginType);
+        if (user != null && user.getRoles() != null) {
+            return user.getRoles();
+        }
+        return getStpLogic(loginType).getRoleList() != null ? Set.copyOf(getStpLogic(loginType).getRoleList()) : Collections.emptySet();
     }
 
     /**
@@ -443,8 +1772,34 @@ public final class LoginHelper {
      * @return 权限码集合，未登录或无权限时返回空集合
      */
     public static Set<String> getPermissions() {
-        LoginUser user = getLoginUser();
-        return user != null ? user.getPermissions() : Collections.emptySet();
+        if (!isLogin()) {
+            return Collections.emptySet();
+        }
+        LoginUser loginUser = getLoginUser();
+        if (loginUser != null && loginUser.getPermissions() != null) {
+            return loginUser.getPermissions();
+        }
+        return StpUtil.getPermissionList() != null ? Set.copyOf(StpUtil.getPermissionList()) : Collections.emptySet();
+    }
+
+    /**
+     * 获取指定账号体系下当前登录用户拥有的权限码集合（空安全防御）
+     *
+     * @param loginType 账号体系标识
+     * @return 权限码集合，未登录或无权限时返回空集合
+     */
+    public static Set<String> getPermissions(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return getPermissions();
+        }
+        if (!isLogin(loginType)) {
+            return Collections.emptySet();
+        }
+        LoginUser user = getLoginUser(loginType);
+        if (user != null && user.getPermissions() != null) {
+            return user.getPermissions();
+        }
+        return getStpLogic(loginType).getPermissionList() != null ? Set.copyOf(getStpLogic(loginType).getPermissionList()) : Collections.emptySet();
     }
 
     /**
@@ -454,7 +1809,27 @@ public final class LoginHelper {
      * @return true 表示具备
      */
     public static boolean hasRole(String role) {
-        return getRoles().contains(role);
+        if (role == null || role.isBlank()) {
+            return false;
+        }
+        return getRoles().contains(role.trim());
+    }
+
+    /**
+     * 判断指定账号体系下当前登录用户是否具备指定角色
+     *
+     * @param loginType 账号体系标识
+     * @param role      待校验角色码
+     * @return true 表示具备
+     */
+    public static boolean hasRole(String loginType, String role) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return hasRole(role);
+        }
+        if (role == null || role.isBlank()) {
+            return false;
+        }
+        return getRoles(loginType).contains(role.trim());
     }
 
     /**
@@ -464,23 +1839,73 @@ public final class LoginHelper {
      * @return true 表示具备
      */
     public static boolean hasPermission(String permission) {
-        return getPermissions().contains(permission);
+        if (permission == null || permission.isBlank()) {
+            return false;
+        }
+        return getPermissions().contains(permission.trim());
+    }
+
+    /**
+     * 判断指定账号体系下当前登录用户是否具备指定权限码
+     *
+     * @param loginType  账号体系标识
+     * @param permission 待校验权限码
+     * @return true 表示具备
+     */
+    public static boolean hasPermission(String loginType, String permission) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return hasPermission(permission);
+        }
+        if (permission == null || permission.isBlank()) {
+            return false;
+        }
+        return getPermissions(loginType).contains(permission.trim());
     }
 
     /**
      * 判断当前登录用户是否具备超级管理员特权
-     * 判定标准：角色集合包含 "admin" 或 "super_admin"，或权限集合包含 "*" 或 "*:*:*"
+     * 判定标准：命中已配置的 {@link #getSuperAdminRoles()} 角色，或命中已配置的 {@link #getSuperAdminPermissions()} 通配符权限
      *
      * @return true 表示具备超级管理员特权
      */
     public static boolean isSuperAdmin() {
-        Set<String> roles = getRoles();
-        if (roles.contains("admin") || roles.contains("super_admin")) {
-            return true;
-        }
-        Set<String> permissions = getPermissions();
-        return permissions.contains("*") || permissions.contains("*:*:*");
+        return matchesSuperAdmin(getRoles(), getPermissions());
     }
+
+    /**
+     * 判断指定账号体系下当前登录用户是否具备超级管理员特权
+     *
+     * @param loginType 账号体系标识
+     * @return true 表示具备超级管理员特权
+     */
+    public static boolean isSuperAdmin(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return isSuperAdmin();
+        }
+        return matchesSuperAdmin(getRoles(loginType), getPermissions(loginType));
+    }
+
+    private static boolean matchesSuperAdmin(Set<String> roles, Set<String> permissions) {
+        Set<String> configuredRoles = superAdminRoles;
+        if (!configuredRoles.isEmpty() && roles != null && !roles.isEmpty()) {
+            for (String role : configuredRoles) {
+                if (roles.contains(role)) {
+                    return true;
+                }
+            }
+        }
+        Set<String> configuredPermissions = superAdminPermissions;
+        if (!configuredPermissions.isEmpty() && permissions != null && !permissions.isEmpty()) {
+            for (String perm : configuredPermissions) {
+                if (permissions.contains(perm)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // ==================== 二级安全认证 (Safe Mode) ====================
 
     /**
      * 开启当前会话的二级安全认证模式（强类型 Duration 规范）
@@ -491,16 +1916,7 @@ public final class LoginHelper {
         if (duration == null) {
             throw new IllegalArgumentException("开启二级安全认证失败：维持时长不能为空");
         }
-        openSafe((int) duration.toSeconds());
-    }
-
-    /**
-     * 开启当前会话的二级安全认证模式（秒级向后兼容）
-     *
-     * @param timeoutSeconds 安全模式维持秒数
-     */
-    public static void openSafe(int timeoutSeconds) {
-        StpUtil.openSafe(timeoutSeconds);
+        StpUtil.openSafe((int) duration.toSeconds());
     }
 
     /**
@@ -513,17 +1929,34 @@ public final class LoginHelper {
         if (duration == null) {
             throw new IllegalArgumentException("开启二级安全认证失败：维持时长不能为空");
         }
-        openSafe(service, (int) duration.toSeconds());
+        StpUtil.openSafe(service, (int) duration.toSeconds());
     }
 
     /**
-     * 开启当前会话指定业务的二级安全认证模式（秒级向后兼容）
+     * 开启指定账号体系当前会话的二级安全认证模式（强类型 Duration 规范）
      *
-     * @param service        指定业务标识
-     * @param timeoutSeconds 安全模式维持秒数
+     * @param loginType 账号体系标识
+     * @param duration  安全模式维持时长
      */
-    public static void openSafe(String service, int timeoutSeconds) {
-        StpUtil.openSafe(service, timeoutSeconds);
+    public static void openSafeByLoginType(String loginType, Duration duration) {
+        if (duration == null) {
+            throw new IllegalArgumentException("开启二级安全认证失败：维持时长不能为空");
+        }
+        getStpLogic(loginType).openSafe((int) duration.toSeconds());
+    }
+
+    /**
+     * 开启指定账号体系当前会话指定业务的二级安全认证模式（强类型 Duration 规范）
+     *
+     * @param loginType 账号体系标识
+     * @param service   指定业务标识
+     * @param duration  安全模式维持时长
+     */
+    public static void openSafeByLoginType(String loginType, String service, Duration duration) {
+        if (duration == null) {
+            throw new IllegalArgumentException("开启二级安全认证失败：维持时长不能为空");
+        }
+        getStpLogic(loginType).openSafe(service, (int) duration.toSeconds());
     }
 
     /**
@@ -546,6 +1979,27 @@ public final class LoginHelper {
     }
 
     /**
+     * 判断指定账号体系当前会话是否处于二级安全认证有效状态
+     *
+     * @param loginType 账号体系标识
+     * @return true 表示处于安全状态
+     */
+    public static boolean isSafeByLoginType(String loginType) {
+        return getStpLogic(loginType).isSafe();
+    }
+
+    /**
+     * 判断指定账号体系当前会话指定业务是否处于二级安全认证有效状态
+     *
+     * @param loginType 账号体系标识
+     * @param service   指定业务标识
+     * @return true 表示处于安全状态
+     */
+    public static boolean isSafeByLoginType(String loginType, String service) {
+        return getStpLogic(loginType).isSafe(service);
+    }
+
+    /**
      * 校验当前会话是否处于二级安全认证有效状态，未通过则抛出 NotSafeException
      */
     public static void checkSafe() {
@@ -559,6 +2013,25 @@ public final class LoginHelper {
      */
     public static void checkSafe(String service) {
         StpUtil.checkSafe(service);
+    }
+
+    /**
+     * 校验指定账号体系当前会话是否处于二级安全认证有效状态，未通过则抛出 NotSafeException
+     *
+     * @param loginType 账号体系标识
+     */
+    public static void checkSafeByLoginType(String loginType) {
+        getStpLogic(loginType).checkSafe();
+    }
+
+    /**
+     * 校验指定账号体系当前会话指定业务是否处于二级安全认证有效状态，未通过则抛出 NotSafeException
+     *
+     * @param loginType 账号体系标识
+     * @param service   指定业务标识
+     */
+    public static void checkSafeByLoginType(String loginType, String service) {
+        getStpLogic(loginType).checkSafe(service);
     }
 
     /**
@@ -578,23 +2051,25 @@ public final class LoginHelper {
     }
 
     /**
-     * 将指定登录账号顶替下线（全局所有设备端）
+     * 关闭指定账号体系当前会话二级认证安全状态
      *
-     * @param loginId 登录账号唯一标识
+     * @param loginType 账号体系标识
      */
-    public static void replaced(Object loginId) {
-        StpUtil.replaced(loginId);
+    public static void closeSafeByLoginType(String loginType) {
+        getStpLogic(loginType).closeSafe();
     }
 
     /**
-     * 将指定登录账号在指定设备端顶替下线
+     * 关闭指定账号体系当前会话指定业务的二级认证安全状态
      *
-     * @param loginId    登录账号唯一标识
-     * @param deviceType 设备端类型（如 PC, APP）
+     * @param loginType 账号体系标识
+     * @param service   指定业务标识
      */
-    public static void replaced(Object loginId, String deviceType) {
-        StpUtil.replaced(loginId, deviceType);
+    public static void closeSafeByLoginType(String loginType, String service) {
+        getStpLogic(loginType).closeSafe(service);
     }
+
+    // ==================== 账号封禁治理 (Account Disabling) ====================
 
     /**
      * 封禁指定账号（强类型 Duration 规范）
@@ -606,17 +2081,7 @@ public final class LoginHelper {
         if (duration == null) {
             throw new IllegalArgumentException("封禁账号失败：封禁时长不能为空");
         }
-        disable(loginId, duration.toSeconds());
-    }
-
-    /**
-     * 封禁指定账号（秒级向后兼容）
-     *
-     * @param loginId            登录账号唯一标识
-     * @param disableTimeSeconds 封禁时长（秒）
-     */
-    public static void disable(Object loginId, long disableTimeSeconds) {
-        StpUtil.disable(loginId, disableTimeSeconds);
+        StpUtil.disable(loginId, duration.toSeconds());
     }
 
     /**
@@ -630,18 +2095,36 @@ public final class LoginHelper {
         if (duration == null) {
             throw new IllegalArgumentException("封禁服务失败：封禁时长不能为空");
         }
-        disable(loginId, service, duration.toSeconds());
+        StpUtil.disable(loginId, service, duration.toSeconds());
     }
 
     /**
-     * 封禁指定账号指定服务（秒级向后兼容）
+     * 封禁指定账号体系下的指定账号（强类型 Duration 规范）
      *
-     * @param loginId            登录账号唯一标识
-     * @param service            指定服务标识
-     * @param disableTimeSeconds 封禁时长（秒）
+     * @param loginType 账号体系标识
+     * @param loginId   登录账号唯一标识
+     * @param duration  封禁时长
      */
-    public static void disable(Object loginId, String service, long disableTimeSeconds) {
-        StpUtil.disable(loginId, service, disableTimeSeconds);
+    public static void disableByLoginType(String loginType, Object loginId, Duration duration) {
+        if (duration == null) {
+            throw new IllegalArgumentException("封禁账号失败：封禁时长不能为空");
+        }
+        getStpLogic(loginType).disable(loginId, duration.toSeconds());
+    }
+
+    /**
+     * 封禁指定账号体系下的指定账号指定服务（强类型 Duration 规范）
+     *
+     * @param loginType 账号体系标识
+     * @param loginId   登录账号唯一标识
+     * @param service   指定服务标识
+     * @param duration  封禁时长
+     */
+    public static void disableByLoginType(String loginType, Object loginId, String service, Duration duration) {
+        if (duration == null) {
+            throw new IllegalArgumentException("封禁服务失败：封禁时长不能为空");
+        }
+        getStpLogic(loginType).disable(loginId, service, duration.toSeconds());
     }
 
     /**
@@ -651,6 +2134,16 @@ public final class LoginHelper {
      */
     public static void untieDisable(Object loginId) {
         StpUtil.untieDisable(loginId);
+    }
+
+    /**
+     * 解封指定账号体系下的指定账号
+     *
+     * @param loginType 账号体系标识
+     * @param loginId   登录账号唯一标识
+     */
+    public static void untieDisableByLoginType(String loginType, Object loginId) {
+        getStpLogic(loginType).untieDisable(loginId);
     }
 
     /**
@@ -664,6 +2157,17 @@ public final class LoginHelper {
     }
 
     /**
+     * 解封指定账号体系下的指定账号指定服务
+     *
+     * @param loginType 账号体系标识
+     * @param loginId   登录账号唯一标识
+     * @param service   指定服务标识
+     */
+    public static void untieDisableByLoginType(String loginType, Object loginId, String service) {
+        getStpLogic(loginType).untieDisable(loginId, service);
+    }
+
+    /**
      * 判断指定账号是否已被封禁
      *
      * @param loginId 登录账号唯一标识
@@ -671,6 +2175,17 @@ public final class LoginHelper {
      */
     public static boolean isDisable(Object loginId) {
         return StpUtil.isDisable(loginId);
+    }
+
+    /**
+     * 判断指定账号体系下的指定账号是否已被封禁
+     *
+     * @param loginType 账号体系标识
+     * @param loginId   登录账号唯一标识
+     * @return true 表示已被封禁
+     */
+    public static boolean isDisableByLoginType(String loginType, Object loginId) {
+        return getStpLogic(loginType).isDisable(loginId);
     }
 
     /**
@@ -685,12 +2200,34 @@ public final class LoginHelper {
     }
 
     /**
+     * 判断指定账号体系下的指定账号指定服务是否已被封禁
+     *
+     * @param loginType 账号体系标识
+     * @param loginId   登录账号唯一标识
+     * @param service   指定服务标识
+     * @return true 表示已被封禁
+     */
+    public static boolean isDisableByLoginType(String loginType, Object loginId, String service) {
+        return getStpLogic(loginType).isDisable(loginId, service);
+    }
+
+    /**
      * 校验指定账号是否处于封禁状态，若被封禁则抛出 DisableServiceException
      *
      * @param loginId 登录账号唯一标识
      */
     public static void checkDisable(Object loginId) {
         StpUtil.checkDisable(loginId);
+    }
+
+    /**
+     * 校验指定账号体系下的指定账号是否处于封禁状态，若被封禁则抛出 DisableServiceException
+     *
+     * @param loginType 账号体系标识
+     * @param loginId   登录账号唯一标识
+     */
+    public static void checkDisableByLoginType(String loginType, Object loginId) {
+        getStpLogic(loginType).checkDisable(loginId);
     }
 
     /**
@@ -704,6 +2241,17 @@ public final class LoginHelper {
     }
 
     /**
+     * 校验指定账号体系下的指定账号指定服务是否处于封禁状态，若被封禁则抛出 DisableServiceException
+     *
+     * @param loginType 账号体系标识
+     * @param loginId   登录账号唯一标识
+     * @param service   指定服务标识
+     */
+    public static void checkDisableByLoginType(String loginType, Object loginId, String service) {
+        getStpLogic(loginType).checkDisable(loginId, service);
+    }
+
+    /**
      * 获取指定账号封禁剩余时间（秒），-1 表示永久封禁，-2 表示未被封禁
      *
      * @param loginId 登录账号唯一标识
@@ -711,6 +2259,17 @@ public final class LoginHelper {
      */
     public static long getDisableTime(Object loginId) {
         return StpUtil.getDisableTime(loginId);
+    }
+
+    /**
+     * 获取指定账号体系下的指定账号封禁剩余时间（秒），-1 表示永久封禁，-2 表示未被封禁
+     *
+     * @param loginType 账号体系标识
+     * @param loginId   登录账号唯一标识
+     * @return 剩余封禁秒数
+     */
+    public static long getDisableTimeByLoginType(String loginType, Object loginId) {
+        return getStpLogic(loginType).getDisableTime(loginId);
     }
 
     /**
@@ -725,6 +2284,20 @@ public final class LoginHelper {
     }
 
     /**
+     * 获取指定账号体系下的指定账号指定服务封禁剩余时间（秒），-1 表示永久封禁，-2 表示未被封禁
+     *
+     * @param loginType 账号体系标识
+     * @param loginId   登录账号唯一标识
+     * @param service   指定服务标识
+     * @return 剩余封禁秒数
+     */
+    public static long getDisableTimeByLoginType(String loginType, Object loginId, String service) {
+        return getStpLogic(loginType).getDisableTime(loginId, service);
+    }
+
+    // ==================== 凭据与会话生命周期查询 (Token & Session Lifecycle) ====================
+
+    /**
      * 获取指定账号当前分配的 Token 字符串值
      *
      * @param loginId 登录账号唯一标识
@@ -732,6 +2305,20 @@ public final class LoginHelper {
      */
     public static String getTokenValueByLoginId(Object loginId) {
         return StpUtil.getTokenValueByLoginId(loginId);
+    }
+
+    /**
+     * 获取指定账号体系下指定账号当前分配的 Token 字符串值
+     *
+     * @param loginType 账号体系标识
+     * @param loginId   登录账号唯一标识
+     * @return Token 字符串值，不存在返回 null
+     */
+    public static String getTokenValueByLoginType(String loginType, Object loginId) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return getTokenValueByLoginId(loginId);
+        }
+        return getStpLogic(loginType).getTokenValueByLoginId(loginId);
     }
 
     /**
@@ -746,12 +2333,40 @@ public final class LoginHelper {
     }
 
     /**
+     * 获取指定账号体系下指定账号在指定设备端当前分配的 Token 字符串值
+     *
+     * @param loginType  账号体系标识
+     * @param loginId    登录账号唯一标识
+     * @param deviceType 设备端类型（如 PC, APP）
+     * @return Token 字符串值，不存在返回 null
+     */
+    public static String getTokenValueByLoginType(String loginType, Object loginId, String deviceType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return getTokenValueByLoginId(loginId, deviceType);
+        }
+        return getStpLogic(loginType).getTokenValueByLoginId(loginId, deviceType);
+    }
+
+    /**
      * 获取当前 Token 的剩余有效时间（秒），-1 表示永久有效，-2 表示未登录或已失效
      *
      * @return 剩余有效秒数
      */
     public static long getTokenTimeout() {
         return StpUtil.getTokenTimeout();
+    }
+
+    /**
+     * 获取指定账号体系下当前 Token 的剩余有效时间（秒），-1 表示永久有效，-2 表示未登录或已失效
+     *
+     * @param loginType 账号体系标识
+     * @return 剩余有效秒数
+     */
+    public static long getTokenTimeout(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return getTokenTimeout();
+        }
+        return getStpLogic(loginType).getTokenTimeout();
     }
 
     /**
@@ -764,6 +2379,126 @@ public final class LoginHelper {
     }
 
     /**
+     * 获取指定账号体系下当前 Session 的剩余有效时间（秒），-1 表示永久有效，-2 表示未登录或已失效
+     *
+     * @param loginType 账号体系标识
+     * @return 剩余有效秒数
+     */
+    public static long getSessionTimeout(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            return getSessionTimeout();
+        }
+        return getStpLogic(loginType).getSessionTimeout();
+    }
+
+    /**
+     * 主动续期当前登录会话的 Token 剩余有效时间（默认账号体系）
+     *
+     * @param timeout 新的剩余有效期（必须为正且不少于 1 秒）
+     */
+    public static void renewTimeout(Duration timeout) {
+        renewTimeout(StpUtil.TYPE, timeout);
+    }
+
+    /**
+     * 主动续期指定账号体系当前登录会话的 Token 剩余有效时间
+     *
+     * @param loginType 账号体系标识
+     * @param timeout   新的剩余有效期（必须为正且不少于 1 秒）
+     */
+    public static void renewTimeout(String loginType, Duration timeout) {
+        long seconds = TempTokenHelper.validatePositiveDurationSeconds(timeout, "续期");
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            StpUtil.renewTimeout(seconds);
+            return;
+        }
+        getStpLogic(loginType).renewTimeout(seconds);
+    }
+
+    /**
+     * 主动续期指定 Token 凭据的剩余有效时间（默认账号体系）
+     *
+     * @param tokenValue 目标 Token 凭据
+     * @param timeout    新的剩余有效期（必须为正且不少于 1 秒）
+     */
+    public static void renewTimeoutByToken(String tokenValue, Duration timeout) {
+        renewTimeoutByToken(StpUtil.TYPE, tokenValue, timeout);
+    }
+
+    /**
+     * 主动续期指定账号体系下指定 Token 凭据的剩余有效时间
+     *
+     * @param loginType  账号体系标识
+     * @param tokenValue 目标 Token 凭据
+     * @param timeout    新的剩余有效期（必须为正且不少于 1 秒）
+     */
+    public static void renewTimeoutByToken(String loginType, String tokenValue, Duration timeout) {
+        if (tokenValue == null || tokenValue.isBlank()) {
+            throw new IllegalArgumentException("按 Token 续期失败：tokenValue 不能为空");
+        }
+        long seconds = TempTokenHelper.validatePositiveDurationSeconds(timeout, "续期");
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            StpUtil.renewTimeout(tokenValue.trim(), seconds);
+            return;
+        }
+        getStpLogic(loginType).renewTimeout(tokenValue.trim(), seconds);
+    }
+
+    // ==================== 临时业务令牌便捷委托 (TempToken Delegation) ====================
+
+    /**
+     * 签发临时业务令牌（委托 {@link TempTokenHelper#createTempToken(Object, Duration)}）
+     *
+     * @param value   业务载荷（支持字符串与任意 POJO，零 @class 存储）
+     * @param timeout 令牌有效期（必须为正数且不少于 1 秒）
+     * @return 生成的临时令牌凭据
+     */
+    public static String createTempToken(Object value, Duration timeout) {
+        return TempTokenHelper.createTempToken(value, timeout);
+    }
+
+    /**
+     * 解析临时业务令牌为原始字符串载荷（委托 {@link TempTokenHelper#parseTempToken(String)}）
+     *
+     * @param token 临时令牌凭据
+     * @return 原始字符串载荷；过期或不存在返回 null
+     */
+    public static String parseTempToken(String token) {
+        return TempTokenHelper.parseTempToken(token);
+    }
+
+    /**
+     * 解析临时业务令牌并反序列化为目标强类型对象（委托 {@link TempTokenHelper#parseTempToken(String, Class)}）
+     *
+     * @param token 临时令牌凭据
+     * @param clazz 目标类型 Class
+     * @param <T>   目标返回类型泛型
+     * @return 强类型对象；过期或不存在返回 null
+     */
+    public static <T> T parseTempToken(String token, Class<T> clazz) {
+        return TempTokenHelper.parseTempToken(token, clazz);
+    }
+
+    /**
+     * 获取临时业务令牌剩余有效秒数（委托 {@link TempTokenHelper#getTempTokenTimeout(String)}）
+     *
+     * @param token 临时令牌凭据
+     * @return 剩余有效秒数
+     */
+    public static long getTempTokenTimeout(String token) {
+        return TempTokenHelper.getTempTokenTimeout(token);
+    }
+
+    /**
+     * 主动销毁临时业务令牌（委托 {@link TempTokenHelper#deleteTempToken(String)}）
+     *
+     * @param token 临时令牌凭据
+     */
+    public static void deleteTempToken(String token) {
+        TempTokenHelper.deleteTempToken(token);
+    }
+
+    /**
      * 构建多租户复合 LoginId
      */
     public static String buildCompositeLoginId(String tenantId, String userId) {
@@ -772,6 +2507,70 @@ public final class LoginHelper {
         }
         return userId.trim();
     }
+
+    /**
+     * 安全拆解多租户复合 LoginId（默认账号体系）
+     *
+     * @param loginId 待解析的 Sa-Token 原生 loginId
+     * @return 不可变 {@link ParsedLoginId} 拆解结果
+     */
+    public static ParsedLoginId parseCompositeLoginId(Object loginId) {
+        return parseCompositeLoginId(loginId, null);
+    }
+
+    /**
+     * 安全拆解多租户复合 LoginId（支持会话优先精准消歧）
+     * <p>
+     * 解析优先级：
+     * 1. 优先从活跃 Account-Session 读取 {@link LoginUser}：若存在明确归属租户且 {@code rawLoginId} 以
+     *    {@code {tenantId}_} 开头，则按真实租户前缀长度精确剥离（兼容 tenantId 与 userId 均含下划线场景）；
+     *    若会话明确无租户且 {@code userId} 与 {@code rawLoginId} 一致，则整串视为纯用户 ID 不作切分；
+     * 2. 当无活跃会话或会话无可用上下文时，回退按首个 {@code _} 分隔符拆解。
+     * </p>
+     *
+     * @param loginId   待解析的 Sa-Token 原生 loginId
+     * @param loginType 账号体系类型标识（为空时回退默认 {@code "login"} 体系）
+     * @return 不可变 {@link ParsedLoginId} 拆解结果
+     */
+    public static ParsedLoginId parseCompositeLoginId(Object loginId, String loginType) {
+        if (loginId == null) {
+            return new ParsedLoginId(null, null, null);
+        }
+        String rawLoginId = String.valueOf(loginId).trim();
+        if (rawLoginId.isEmpty()) {
+            return new ParsedLoginId(null, null, null);
+        }
+        LoginUser sessionUser = getSessionLoginUser(rawLoginId, loginType);
+        return parseCompositeLoginIdWithSession(rawLoginId, sessionUser);
+    }
+
+    private static ParsedLoginId parseCompositeLoginIdWithSession(String rawLoginId, LoginUser sessionUser) {
+        if (sessionUser != null) {
+            String sessionTenantId = sessionUser.getTenantId();
+            if (sessionTenantId != null && !sessionTenantId.isBlank()) {
+                String normalizedTenantId = sessionTenantId.trim();
+                String prefix = normalizedTenantId + SaTokenConstant.TENANT_DELIMITER;
+                if (rawLoginId.startsWith(prefix) && rawLoginId.length() > prefix.length()) {
+                    return new ParsedLoginId(normalizedTenantId, rawLoginId.substring(prefix.length()), rawLoginId);
+                }
+                if (sessionUser.getUserId() != null && rawLoginId.equals(sessionUser.getUserId().trim())) {
+                    return new ParsedLoginId(normalizedTenantId, rawLoginId, rawLoginId);
+                }
+            } else if (sessionUser.getUserId() != null && rawLoginId.equals(sessionUser.getUserId().trim())) {
+                return new ParsedLoginId(null, rawLoginId, rawLoginId);
+            }
+        }
+        int delimiterIdx = rawLoginId.indexOf(SaTokenConstant.TENANT_DELIMITER);
+        if (delimiterIdx > 0 && delimiterIdx < rawLoginId.length() - 1) {
+            String tenantId = rawLoginId.substring(0, delimiterIdx);
+            if (!tenantId.isBlank()) {
+                return new ParsedLoginId(tenantId.trim(), rawLoginId.substring(delimiterIdx + 1), rawLoginId);
+            }
+        }
+        return new ParsedLoginId(null, rawLoginId, rawLoginId);
+    }
+
+    // ==================== 身份所有权与多租户校验 (Self & Tenant Assertions) ====================
 
     /**
      * 断言目标用户标识为当前登录用户（非本人且非管理员时立即抛出 BusinessException 403 异常）
@@ -820,16 +2619,77 @@ public final class LoginHelper {
     }
 
     /**
+     * 断言指定账号体系下目标用户标识为当前登录用户（非本人且非管理员时立即抛出 BusinessException 403 异常）
+     *
+     * @param loginType    账号体系标识
+     * @param targetUserId 目标用户标识
+     */
+    public static void checkSelfByLoginType(String loginType, String targetUserId) {
+        checkSelfByLoginType(loginType, targetUserId, "无权访问该资源");
+    }
+
+    /**
+     * 断言指定账号体系下目标用户标识为当前登录用户（带自定义提示消息）
+     *
+     * @param loginType    账号体系标识
+     * @param targetUserId 目标用户标识
+     * @param message      越权提示消息
+     */
+    public static void checkSelfByLoginType(String loginType, String targetUserId, String message) {
+        if (targetUserId == null || targetUserId.isBlank()) {
+            throw new BusinessException(CommonResultCode.FORBIDDEN, message != null ? message : "无权访问该资源");
+        }
+        if (isSuperAdmin(loginType)) {
+            return;
+        }
+        if (!isSelf(loginType, targetUserId)) {
+            throw new BusinessException(CommonResultCode.FORBIDDEN, message != null ? message : "无权访问该资源");
+        }
+    }
+
+    /**
+     * 断言指定账号体系下目标用户 Long 标识为当前登录用户（非本人且非管理员时立即抛出 BusinessException 403 异常）
+     *
+     * @param loginType    账号体系标识
+     * @param targetUserId 目标用户 Long 标识
+     */
+    public static void checkSelfByLoginType(String loginType, Long targetUserId) {
+        checkSelfByLoginType(loginType, targetUserId != null ? String.valueOf(targetUserId) : null);
+    }
+
+    /**
+     * 断言指定账号体系下目标用户 Long 标识为当前登录用户（带自定义提示消息）
+     *
+     * @param loginType    账号体系标识
+     * @param targetUserId 目标用户 Long 标识
+     * @param message      越权提示消息
+     */
+    public static void checkSelfByLoginType(String loginType, Long targetUserId, String message) {
+        checkSelfByLoginType(loginType, targetUserId != null ? String.valueOf(targetUserId) : null, message);
+    }
+
+    /**
      * 判断目标用户标识是否为当前登录用户本人（纯身份断言，不掺杂特权豁免）
      *
      * @param targetUserId 目标用户标识
      * @return true 表示为本人
      */
     public static boolean isSelf(String targetUserId) {
+        return isSelf(StpUtil.TYPE, targetUserId);
+    }
+
+    /**
+     * 判断目标用户标识是否为指定账号体系下的当前登录用户本人（纯身份断言，不掺杂特权豁免）
+     *
+     * @param loginType    账号体系标识
+     * @param targetUserId 目标用户标识
+     * @return true 表示为本人
+     */
+    public static boolean isSelf(String loginType, String targetUserId) {
         if (targetUserId == null || targetUserId.isBlank()) {
             return false;
         }
-        String currentUserId = getUserId();
+        String currentUserId = getUserId(loginType);
         return currentUserId != null && currentUserId.trim().equals(targetUserId.trim());
     }
 
@@ -840,11 +2700,39 @@ public final class LoginHelper {
      * @return true 表示为本人
      */
     public static boolean isSelf(Long targetUserId) {
+        return isSelf(StpUtil.TYPE, targetUserId);
+    }
+
+    /**
+     * 判断目标用户 Long 标识是否为指定账号体系下的当前登录用户本人（纯身份断言，不掺杂特权豁免）
+     *
+     * @param loginType    账号体系标识
+     * @param targetUserId 目标用户 Long 标识
+     * @return true 表示为本人
+     */
+    public static boolean isSelf(String loginType, Long targetUserId) {
         if (targetUserId == null) {
             return false;
         }
-        Long currentUserId = getUserIdAsLong();
+        Long currentUserId = getUserIdAsLong(loginType);
         return currentUserId != null && currentUserId.equals(targetUserId);
+    }
+
+    /**
+     * 判断目标用户标识对象是否为指定账号体系下的当前登录用户本人（纯身份断言，不掺杂特权豁免）
+     *
+     * @param loginType    账号体系标识
+     * @param targetUserId 目标用户标识对象（支持 String、Long、Integer 等类型）
+     * @return true 表示为本人
+     */
+    public static boolean isSelf(String loginType, Object targetUserId) {
+        if (targetUserId == null) {
+            return false;
+        }
+        if (targetUserId instanceof Long idLong) {
+            return isSelf(loginType, idLong);
+        }
+        return isSelf(loginType, String.valueOf(targetUserId));
     }
 
     /**
@@ -854,7 +2742,18 @@ public final class LoginHelper {
      * @return true 表示为本人或具备超级管理员特权
      */
     public static boolean isSelfOrAdmin(String targetUserId) {
-        return isSuperAdmin() || isSelf(targetUserId);
+        return isSelfOrAdmin(StpUtil.TYPE, targetUserId);
+    }
+
+    /**
+     * 判断目标用户标识是否为指定账号体系下的当前登录用户本人，或具备超级管理员特权
+     *
+     * @param loginType    账号体系标识
+     * @param targetUserId 目标用户标识
+     * @return true 表示为本人或具备超级管理员特权
+     */
+    public static boolean isSelfOrAdmin(String loginType, String targetUserId) {
+        return isSuperAdmin(loginType) || isSelf(loginType, targetUserId);
     }
 
     /**
@@ -864,7 +2763,18 @@ public final class LoginHelper {
      * @return true 表示为本人或具备超级管理员特权
      */
     public static boolean isSelfOrAdmin(Long targetUserId) {
-        return isSuperAdmin() || isSelf(targetUserId);
+        return isSelfOrAdmin(StpUtil.TYPE, targetUserId);
+    }
+
+    /**
+     * 判断目标用户 Long 标识是否为指定账号体系下的当前登录用户本人，或具备超级管理员特权
+     *
+     * @param loginType    账号体系标识
+     * @param targetUserId 目标用户 Long 标识
+     * @return true 表示为本人或具备超级管理员特权
+     */
+    public static boolean isSelfOrAdmin(String loginType, Long targetUserId) {
+        return isSuperAdmin(loginType) || isSelf(loginType, targetUserId);
     }
 
     /**
@@ -874,10 +2784,21 @@ public final class LoginHelper {
      * @return true 表示归属于目标租户
      */
     public static boolean isBelongsToTenant(String targetTenantId) {
+        return isBelongsToTenant(StpUtil.TYPE, targetTenantId);
+    }
+
+    /**
+     * 判断目标租户标识是否为指定账号体系下当前登录用户的归属租户
+     *
+     * @param loginType      账号体系标识
+     * @param targetTenantId 目标租户标识
+     * @return true 表示归属于目标租户
+     */
+    public static boolean isBelongsToTenant(String loginType, String targetTenantId) {
         if (targetTenantId == null || targetTenantId.isBlank()) {
             return false;
         }
-        String currentTenantId = getTenantId();
+        String currentTenantId = getTenantId(loginType);
         return currentTenantId != null && currentTenantId.trim().equals(targetTenantId.trim());
     }
 
@@ -888,7 +2809,18 @@ public final class LoginHelper {
      * @return true 表示归属于目标租户
      */
     public static boolean isBelongsToTenant(Long targetTenantId) {
-        return targetTenantId != null && isBelongsToTenant(String.valueOf(targetTenantId));
+        return isBelongsToTenant(StpUtil.TYPE, targetTenantId);
+    }
+
+    /**
+     * 判断目标租户 Long 标识是否为指定账号体系下当前登录用户的归属租户
+     *
+     * @param loginType      账号体系标识
+     * @param targetTenantId 目标租户 Long 标识
+     * @return true 表示归属于目标租户
+     */
+    public static boolean isBelongsToTenant(String loginType, Long targetTenantId) {
+        return targetTenantId != null && isBelongsToTenant(loginType, String.valueOf(targetTenantId));
     }
 
     /**
@@ -932,6 +2864,52 @@ public final class LoginHelper {
     }
 
     /**
+     * 校验目标租户标识是否为指定账号体系下当前登录用户的归属租户
+     *
+     * @param loginType      账号体系标识
+     * @param targetTenantId 目标租户标识
+     */
+    public static void checkBelongsToTenantByLoginType(String loginType, String targetTenantId) {
+        checkBelongsToTenantByLoginType(loginType, targetTenantId, "非法跨租户数据访问");
+    }
+
+    /**
+     * 校验目标租户标识是否为指定账号体系下当前登录用户的归属租户（带自定义提示消息）
+     *
+     * @param loginType      账号体系标识
+     * @param targetTenantId 目标租户标识
+     * @param message        越权提示消息
+     */
+    public static void checkBelongsToTenantByLoginType(String loginType, String targetTenantId, String message) {
+        if (!isBelongsToTenant(loginType, targetTenantId)) {
+            throw new BusinessException(CommonResultCode.FORBIDDEN, message != null ? message : "非法跨租户数据访问");
+        }
+    }
+
+    /**
+     * 校验目标租户 Long 标识是否为指定账号体系下当前登录用户的归属租户
+     *
+     * @param loginType      账号体系标识
+     * @param targetTenantId 目标租户 Long 标识
+     */
+    public static void checkBelongsToTenantByLoginType(String loginType, Long targetTenantId) {
+        checkBelongsToTenantByLoginType(loginType, targetTenantId != null ? String.valueOf(targetTenantId) : null);
+    }
+
+    /**
+     * 校验目标租户 Long 标识是否为指定账号体系下当前登录用户的归属租户（带自定义提示消息）
+     *
+     * @param loginType      账号体系标识
+     * @param targetTenantId 目标租户 Long 标识
+     * @param message        越权提示消息
+     */
+    public static void checkBelongsToTenantByLoginType(String loginType, Long targetTenantId, String message) {
+        checkBelongsToTenantByLoginType(loginType, targetTenantId != null ? String.valueOf(targetTenantId) : null, message);
+    }
+
+    // ==================== 身份切换与瞬态模拟 (SwitchTo & RunAs) ====================
+
+    /**
      * 切换当前会话为指定目标用户的身份（跨请求持久于 Session）
      * 适用于运维支撑、客服代客操作、技术排障等场景
      * 若已处于模拟态，则继续切换目标用户，但保留最初的 originalUserId，防止审计链路漂移
@@ -960,15 +2938,56 @@ public final class LoginHelper {
     }
 
     /**
+     * 切换指定账号体系下的当前会话为指定目标用户的身份（跨请求持久于 Session）
+     *
+     * @param loginType    账号体系标识
+     * @param targetUserId 目标用户唯一标识
+     */
+    public static void switchTo(String loginType, String targetUserId) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            switchTo(targetUserId);
+            return;
+        }
+        if (targetUserId == null || targetUserId.isBlank()) {
+            throw new IllegalArgumentException("切换身份失败：目标用户唯一标识不能为空");
+        }
+        checkLogin(loginType);
+        SaSession session = getStpLogic(loginType).getSession();
+        if (session == null) {
+            throw new IllegalStateException("切换身份失败：无法获取当前会话 Session");
+        }
+        // 如果当前尚未处于会话模拟态，则记录底层真实登录用户为 originalUserId
+        if (session.get(SaTokenConstant.ORIGINAL_USER_ID_KEY) == null) {
+            String realUserId = getRealUserId(loginType);
+            if (realUserId != null && !realUserId.isBlank()) {
+                session.set(SaTokenConstant.ORIGINAL_USER_ID_KEY, realUserId.trim());
+            }
+        }
+        session.set(SaTokenConstant.SWITCH_TARGET_USER_ID_KEY, targetUserId.trim());
+        log.info("会话身份模拟切换 [loginType={}]: originalUserId={}, targetUserId={}",
+                loginType, session.get(SaTokenConstant.ORIGINAL_USER_ID_KEY), targetUserId.trim());
+    }
+
+    /**
      * 切换当前会话为指定目标 Long 用户标识的身份
      *
      * @param targetUserId 目标用户 Long 标识
      */
     public static void switchTo(Long targetUserId) {
+        switchTo(StpUtil.TYPE, targetUserId);
+    }
+
+    /**
+     * 切换指定账号体系下的当前会话为指定目标 Long 用户标识的身份
+     *
+     * @param loginType    账号体系标识
+     * @param targetUserId 目标用户 Long 标识
+     */
+    public static void switchTo(String loginType, Long targetUserId) {
         if (targetUserId == null) {
             throw new IllegalArgumentException("切换身份失败：目标用户唯一标识不能为空");
         }
-        switchTo(String.valueOf(targetUserId));
+        switchTo(loginType, String.valueOf(targetUserId));
     }
 
     /**
@@ -984,6 +3003,28 @@ public final class LoginHelper {
             session.delete(SaTokenConstant.ORIGINAL_USER_ID_KEY);
             session.delete(SaTokenConstant.SWITCH_TARGET_USER_ID_KEY);
             log.info("会话身份模拟结束，已恢复原始身份: originalUserId={}", originalUserId);
+        }
+    }
+
+    /**
+     * 结束指定账号体系下当前会话的身份模拟，还原为真实登录用户身份
+     *
+     * @param loginType 账号体系标识
+     */
+    public static void endSwitch(String loginType) {
+        if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
+            endSwitch();
+            return;
+        }
+        if (!isLogin(loginType)) {
+            return;
+        }
+        SaSession session = getStpLogic(loginType).getSession(false);
+        if (session != null) {
+            Object originalUserId = session.get(SaTokenConstant.ORIGINAL_USER_ID_KEY);
+            session.delete(SaTokenConstant.ORIGINAL_USER_ID_KEY);
+            session.delete(SaTokenConstant.SWITCH_TARGET_USER_ID_KEY);
+            log.info("会话身份模拟结束，已恢复原始身份 [loginType={}]: originalUserId={}", loginType, originalUserId);
         }
     }
 
@@ -1062,5 +3103,478 @@ public final class LoginHelper {
         }
         runAs(String.valueOf(targetUserId), runnable);
     }
-}
 
+    // ==================== 在线会话监控与治理 (Online Sessions) ====================
+
+    /**
+     * 获取当前主账号体系的在线会话总数（基于安全增量游标检索，彻底杜绝 KEYS *）
+     *
+     * @return 当前在线会话总数
+     */
+    public static long getOnlineUserCount() {
+        return getOnlineUserCount(StpUtil.TYPE);
+    }
+
+    /**
+     * 获取指定账号体系的在线会话总数（基于安全增量游标检索，彻底杜绝 KEYS *）
+     *
+     * @param loginType 账号体系标识
+     * @return 当前在线会话总数
+     */
+    public static long getOnlineUserCount(String loginType) {
+        StpLogic logic = getStpLogic(loginType);
+        List<String> rawTokens = logic.searchTokenValue("", 0, -1, false);
+        if (rawTokens == null || rawTokens.isEmpty()) {
+            return 0L;
+        }
+        return filterValidTokens(logic, rawTokens).size();
+    }
+
+    /**
+     * 分页查询当前主账号体系的在线用户列表（支持按账号/用户名/用户标识/Token 关键字过滤）
+     *
+     * @param keyword 检索关键字（为空时检索全部）
+     * @param page    当前页码（从 1 开始，兼容传入 0 自动按第 1 页处理）
+     * @param size    每页显示条数
+     * @return 分页在线用户列表
+     */
+    public static List<OnlineUser> searchOnlineUsers(String keyword, int page, int size) {
+        return searchOnlineUsers(StpUtil.TYPE, keyword, page, size);
+    }
+
+    /**
+     * 分页查询当前主账号体系的在线用户列表
+     *
+     * @param page 当前页码
+     * @param size 每页显示条数
+     * @return 分页在线用户列表
+     */
+    public static List<OnlineUser> searchOnlineUsers(int page, int size) {
+        return searchOnlineUsers(StpUtil.TYPE, null, page, size);
+    }
+
+    /**
+     * 分页查询指定账号体系的在线用户列表
+     *
+     * @param loginType 账号体系标识
+     * @param page      当前页码
+     * @param size      每页显示条数
+     * @return 分页在线用户列表
+     */
+    public static List<OnlineUser> searchOnlineUsersByLoginType(String loginType, int page, int size) {
+        return searchOnlineUsers(loginType, null, page, size);
+    }
+
+    /**
+     * 在线会话条件检索默认最大安全扫描上限（默认 2000，防御海量 Token 场景下的慢查询与拒绝服务风险）
+     */
+    public static final int DEFAULT_ONLINE_SESSION_MAX_SCAN_LIMIT = 2000;
+
+    /**
+     * 当前全局生效的在线会话条件检索单次安全扫描上限
+     */
+    private static volatile int onlineSessionMaxScanLimit = DEFAULT_ONLINE_SESSION_MAX_SCAN_LIMIT;
+
+    /**
+     * 获取当前全局生效的在线会话条件检索最大安全扫描上限
+     *
+     * @return 单次最大安全扫描条数
+     */
+    public static int getOnlineSessionMaxScanLimit() {
+        return onlineSessionMaxScanLimit;
+    }
+
+    /**
+     * 设置全局在线会话条件检索最大安全扫描上限（非正数时自动回退默认值 {@value #DEFAULT_ONLINE_SESSION_MAX_SCAN_LIMIT}）
+     *
+     * @param maxScanLimit 单次最大安全扫描条数
+     */
+    public static void setOnlineSessionMaxScanLimit(int maxScanLimit) {
+        onlineSessionMaxScanLimit = maxScanLimit > 0 ? maxScanLimit : DEFAULT_ONLINE_SESSION_MAX_SCAN_LIMIT;
+    }
+
+    /**
+     * 重置在线会话监控扫描上限配置为框架默认值
+     */
+    public static void resetOnlineSessionConfig() {
+        onlineSessionMaxScanLimit = DEFAULT_ONLINE_SESSION_MAX_SCAN_LIMIT;
+    }
+
+    /**
+     * 分页查询指定账号体系的在线用户列表（支持按账号/用户名/用户标识/Token 关键字过滤）
+     *
+     * @param loginType 账号体系标识
+     * @param keyword   检索关键字（支持匹配账号、用户名、用户唯一标识与 Token；为空时检索全部）
+     * @param page      当前页码（从 1 开始，兼容传入 0 自动按第 1 页处理）
+     * @param size      每页显示条数
+     * @return 分页在线用户列表（空安全保底，无匹配时返回空集合）
+     */
+    public static List<OnlineUser> searchOnlineUsers(String loginType, String keyword, int page, int size) {
+        OnlineUserQuery query = (keyword != null && !keyword.isBlank())
+                ? OnlineUserQuery.builder().keyword(keyword).build()
+                : null;
+        PageResult<OnlineUser> pageResult = searchOnlineUserPage(loginType, query, page, size);
+        return pageResult != null && pageResult.getRecords() != null
+                ? pageResult.getRecords()
+                : Collections.emptyList();
+    }
+
+    /**
+     * 分页查询当前主账号体系的在线用户 PageResult
+     *
+     * @param keyword 检索关键字
+     * @param page    当前页码
+     * @param size    每页显示条数
+     * @return 强类型 PageResult 对象
+     */
+    public static PageResult<OnlineUser> searchOnlineUserPage(String keyword, int page, int size) {
+        return searchOnlineUserPage(StpUtil.TYPE, keyword, page, size);
+    }
+
+    /**
+     * 分页查询当前主账号体系的在线用户 PageResult
+     *
+     * @param page 当前页码
+     * @param size 每页显示条数
+     * @return 强类型 PageResult 对象
+     */
+    public static PageResult<OnlineUser> searchOnlineUserPage(int page, int size) {
+        return searchOnlineUserPage(StpUtil.TYPE, (String) null, page, size);
+    }
+
+    /**
+     * 分页查询指定账号体系的在线用户 PageResult
+     *
+     * @param loginType 账号体系标识
+     * @param page      当前页码
+     * @param size      每页显示条数
+     * @return 强类型 PageResult 对象
+     */
+    public static PageResult<OnlineUser> searchOnlineUserPageByLoginType(String loginType, int page, int size) {
+        return searchOnlineUserPage(loginType, (String) null, page, size);
+    }
+
+    /**
+     * 分页查询指定账号体系的在线用户 PageResult
+     *
+     * @param loginType 账号体系标识
+     * @param keyword   检索关键字
+     * @param page      当前页码
+     * @param size      每页显示条数
+     * @return 强类型 PageResult 对象
+     */
+    public static PageResult<OnlineUser> searchOnlineUserPage(String loginType, String keyword, int page, int size) {
+        OnlineUserQuery query = (keyword != null && !keyword.isBlank())
+                ? OnlineUserQuery.builder().keyword(keyword).build()
+                : null;
+        return searchOnlineUserPage(loginType, query, page, size);
+    }
+
+    /**
+     * 分页查询满足多维过滤条件的在线用户 PageResult（默认采用 {@code query.getLoginType()} 或主账号体系）
+     *
+     * @param page  当前页码
+     * @param size  每页显示条数
+     * @param query 多维组合查询条件（支持 tenantId 精确筛选、keyword 模糊检索、userId/账号/姓名/设备与精确 IP/CIDR 网段匹配）
+     * @return 强类型 PageResult 对象
+     */
+    public static PageResult<OnlineUser> searchOnlineUserPage(int page, int size, OnlineUserQuery query) {
+        return searchOnlineUserPage(null, query, page, size);
+    }
+
+    /**
+     * 分页查询指定账号体系下满足多维过滤条件的在线用户 PageResult
+     *
+     * @param loginType 账号体系标识（为空时回退使用 {@code query.getLoginType()} 或默认 {@code "login"}）
+     * @param query     多维组合查询条件（允许为 null）
+     * @param page      当前页码
+     * @param size      每页显示条数
+     * @return 强类型 PageResult 对象
+     */
+    public static PageResult<OnlineUser> searchOnlineUserPage(String loginType, OnlineUserQuery query, int page, int size) {
+        if (page <= 0 || size <= 0) {
+            return PageResult.empty(Math.max(page, 1), Math.max(size, 10));
+        }
+        int actualSize = Math.min(size, 100);
+        int start = (page - 1) * actualSize;
+
+        String effectiveLoginType = (loginType != null && !loginType.isBlank())
+                ? loginType.trim()
+                : (query != null && query.getLoginType() != null && !query.getLoginType().isBlank()
+                ? query.getLoginType().trim()
+                : StpUtil.TYPE);
+        StpLogic logic = getStpLogic(effectiveLoginType);
+
+        if (query == null || query.hasNoFilterCriteria()) {
+            // 常规无过滤分页：先获取有效总数，仅对当前页做重型 Session 组装
+            List<String> rawTokens = logic.searchTokenValue("", 0, -1, true);
+            List<String> validTokens = filterValidTokens(logic, rawTokens);
+            int total = validTokens.size();
+            List<OnlineUser> records;
+            if (start >= total) {
+                records = Collections.emptyList();
+            } else {
+                int end = Math.min(start + actualSize, total);
+                records = new ArrayList<>(end - start);
+                for (int i = start; i < end; i++) {
+                    String tokenValue = validTokens.get(i);
+                    Object loginId = logic.getLoginIdByToken(tokenValue);
+                    OnlineUser user = buildOnlineUser(logic, loginId, tokenValue);
+                    if (user != null) {
+                        records.add(user);
+                    }
+                }
+            }
+            return PageResult.of(records, total, page, actualSize);
+        }
+
+        // 条件过滤检索：受全局/单次 maxScanLimit 安全采样上限约束
+        List<OnlineUser> matchedList = collectOnlineUsers(logic, query);
+        int total = matchedList.size();
+        List<OnlineUser> records;
+        if (start >= total) {
+            records = Collections.emptyList();
+        } else {
+            int end = Math.min(start + actualSize, total);
+            records = new ArrayList<>(matchedList.subList(start, end));
+        }
+        return PageResult.of(records, total, page, actualSize);
+    }
+
+    /**
+     * 分页查询当前主账号体系的在线用户 PageResult（语义对齐 searchOnlineUserPage）
+     *
+     * @param page    当前页码
+     * @param size    每页显示条数
+     * @param keyword 检索关键字
+     * @return 强类型 PageResult 对象
+     * @see #searchOnlineUserPage(String, int, int)
+     */
+    public static PageResult<OnlineUser> getOnlineUsers(long page, long size, String keyword) {
+        return searchOnlineUserPage(keyword, (int) page, (int) size);
+    }
+
+    /**
+     * 分页查询指定账号体系的在线用户 PageResult
+     *
+     * @param loginType 账号体系标识
+     * @param page      当前页码
+     * @param size      每页显示条数
+     * @param keyword   检索关键字
+     * @return 强类型 PageResult 对象
+     * @see #searchOnlineUserPage(String, String, int, int)
+     */
+    public static PageResult<OnlineUser> getOnlineUsers(String loginType, long page, long size, String keyword) {
+        return searchOnlineUserPage(loginType, keyword, (int) page, (int) size);
+    }
+
+    private static List<String> filterValidTokens(StpLogic logic, List<String> rawTokens) {
+        if (rawTokens == null || rawTokens.isEmpty()) {
+            return Collections.emptyList();
+        }
+        String tokenPrefix = logic.splicingKeyTokenValue("");
+        List<String> validTokens = new ArrayList<>(rawTokens.size());
+        for (String rawKey : rawTokens) {
+            String tokenValue = extractPureTokenValue(rawKey, tokenPrefix);
+            Object loginId = logic.getLoginIdByToken(tokenValue);
+            if (isValidOnlineLoginId(loginId)) {
+                validTokens.add(tokenValue);
+            }
+        }
+        return validTokens;
+    }
+
+    private static List<OnlineUser> collectOnlineUsers(StpLogic logic, OnlineUserQuery query) {
+        List<String> rawTokens = logic.searchTokenValue("", 0, -1, true);
+        if (rawTokens == null || rawTokens.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        int scanLimit = (query.getMaxScanLimit() != null && query.getMaxScanLimit() > 0)
+                ? Math.min(query.getMaxScanLimit(), onlineSessionMaxScanLimit)
+                : onlineSessionMaxScanLimit;
+
+        String tokenPrefix = logic.splicingKeyTokenValue("");
+        List<OnlineUser> matchedList = new ArrayList<>();
+        int scannedCount = 0;
+
+        for (String rawKey : rawTokens) {
+            if (++scannedCount > scanLimit) {
+                log.warn("【在线用户监控】条件检索已达到最大安全扫描采样上限 {}，终止后续扫描: tenantId={}, keyword={}",
+                        scanLimit, query.getTenantId(), query.getKeyword());
+                break;
+            }
+
+            String tokenValue = extractPureTokenValue(rawKey, tokenPrefix);
+            Object loginId = logic.getLoginIdByToken(tokenValue);
+            if (!isValidOnlineLoginId(loginId)) {
+                continue;
+            }
+
+            OnlineUser onlineUser = buildOnlineUser(logic, loginId, tokenValue);
+            if (onlineUser != null && matchesOnlineUserQuery(onlineUser, query)) {
+                matchedList.add(onlineUser);
+            }
+        }
+        return matchedList;
+    }
+
+    private static boolean matchesOnlineUserQuery(OnlineUser user, OnlineUserQuery query) {
+        if (query.getTenantId() != null && !query.getTenantId().isBlank()) {
+            String actualTenant = user.getTenantId() != null ? user.getTenantId().trim() : null;
+            if (!Objects.equals(query.getTenantId().trim(), actualTenant)) {
+                return false;
+            }
+        }
+        if (query.getUserId() != null && !query.getUserId().isBlank()) {
+            String actualUserId = user.getUserId() != null ? user.getUserId().trim() : null;
+            if (!Objects.equals(query.getUserId().trim(), actualUserId)) {
+                return false;
+            }
+        }
+        if (query.getLoginDevice() != null && !query.getLoginDevice().isBlank()) {
+            if (user.getLoginDevice() == null
+                    || !query.getLoginDevice().trim().equalsIgnoreCase(user.getLoginDevice().trim())) {
+                return false;
+            }
+        }
+        if (query.getUserAccount() != null && !query.getUserAccount().isBlank()) {
+            String targetAcct = query.getUserAccount().trim().toLowerCase();
+            if (user.getUserAccount() == null || !user.getUserAccount().toLowerCase().contains(targetAcct)) {
+                return false;
+            }
+        }
+        if (query.getUserName() != null && !query.getUserName().isBlank()) {
+            String targetName = query.getUserName().trim().toLowerCase();
+            if (user.getUserName() == null || !user.getUserName().toLowerCase().contains(targetName)) {
+                return false;
+            }
+        }
+        if (query.getLoginIp() != null && !query.getLoginIp().isBlank()) {
+            if (!CidrMatcher.matches(user.getLoginIp(), query.getLoginIp().trim())) {
+                return false;
+            }
+        }
+        if (query.getKeyword() != null && !query.getKeyword().isBlank()) {
+            String kw = query.getKeyword().trim().toLowerCase();
+            boolean keywordMatched = (user.getUserId() != null && user.getUserId().toLowerCase().contains(kw))
+                    || (user.getUserAccount() != null && user.getUserAccount().toLowerCase().contains(kw))
+                    || (user.getUserName() != null && user.getUserName().toLowerCase().contains(kw))
+                    || (user.getTokenValue() != null && user.getTokenValue().toLowerCase().contains(kw));
+            if (!keywordMatched) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static OnlineUser buildOnlineUser(StpLogic logic, Object loginId, String tokenValue) {
+        if (loginId == null || tokenValue == null || tokenValue.isBlank()) {
+            return null;
+        }
+        long timeout = logic.getTokenTimeout(tokenValue);
+        if (timeout <= 0 && timeout != -1L) {
+            return null;
+        }
+
+        String userId = null;
+        String userAccount = null;
+        String userName = null;
+        String tenantId = null;
+        String loginType = (logic != null && logic.getLoginType() != null && !logic.getLoginType().isBlank())
+                ? logic.getLoginType()
+                : StpUtil.TYPE;
+        String loginDevice = "default";
+        String loginIp = "";
+        Long loginTime = null;
+
+        SaSession userSession = logic.getSessionByLoginId(loginId, false);
+        LoginUser loginUser = null;
+        if (userSession != null) {
+            loginUser = extractLoginUserFromSession(userSession, LoginUser.class, loginType);
+
+            SaTerminalInfo term = userSession.getTerminal(tokenValue);
+            if (term != null) {
+                if (term.getDeviceType() != null && !term.getDeviceType().isBlank()) {
+                    loginDevice = term.getDeviceType();
+                }
+                if (term.getCreateTime() > 0) {
+                    loginTime = term.getCreateTime();
+                }
+                if (term.getExtra("loginIp") != null) {
+                    loginIp = String.valueOf(term.getExtra("loginIp"));
+                }
+            }
+
+            if (loginTime == null && userSession.getCreateTime() > 0) {
+                loginTime = userSession.getCreateTime();
+            }
+        }
+
+        if (loginUser == null) {
+            SaSession tokenSession = logic.getTokenSessionByToken(tokenValue, false);
+            if (tokenSession != null) {
+                loginUser = extractLoginUserFromSession(tokenSession, LoginUser.class, loginType);
+                if (tokenSession.get("loginIp") != null) {
+                    loginIp = String.valueOf(tokenSession.get("loginIp"));
+                }
+                if (tokenSession.get("loginDevice") != null) {
+                    loginDevice = String.valueOf(tokenSession.get("loginDevice"));
+                }
+            }
+        }
+
+        ParsedLoginId parsed = parseCompositeLoginIdWithSession(loginId.toString().trim(), loginUser);
+        if (loginUser != null) {
+            userId = (loginUser.getUserId() != null && !loginUser.getUserId().isBlank())
+                    ? loginUser.getUserId() : parsed.userId();
+            userAccount = loginUser.getUserAccount();
+            userName = loginUser.getUserName();
+            tenantId = (loginUser.getTenantId() != null && !loginUser.getTenantId().isBlank())
+                    ? loginUser.getTenantId() : parsed.tenantId();
+            if ((loginIp == null || loginIp.isBlank()) && loginUser.getExtraData() != null && loginUser.getExtraData().get("loginIp") != null) {
+                loginIp = String.valueOf(loginUser.getExtraData().get("loginIp"));
+            }
+        } else {
+            userId = parsed.userId();
+            tenantId = parsed.tenantId();
+            userAccount = userId;
+            userName = userId;
+        }
+
+        if (loginTime == null) {
+            loginTime = System.currentTimeMillis();
+        }
+
+        return OnlineUser.builder()
+                .userId(userId)
+                .userAccount(userAccount)
+                .userName(userName)
+                .tenantId(tenantId)
+                .loginType(loginType)
+                .tokenValue(tokenValue)
+                .loginDevice(loginDevice)
+                .loginIp(loginIp)
+                .loginTime(loginTime)
+                .tokenTimeout(timeout)
+                .build();
+    }
+
+    private static String extractPureTokenValue(String rawKey, String tokenPrefix) {
+        if (rawKey == null) {
+            return "";
+        }
+        if (tokenPrefix != null && !tokenPrefix.isEmpty() && rawKey.startsWith(tokenPrefix)) {
+            return rawKey.substring(tokenPrefix.length());
+        }
+        return rawKey;
+    }
+
+    private static boolean isValidOnlineLoginId(Object loginId) {
+        if (loginId == null) {
+            return false;
+        }
+        String str = loginId.toString();
+        return !"-1".equals(str) && !"-2".equals(str) && !"-3".equals(str) && !"-4".equals(str) && !"-5".equals(str);
+    }
+}

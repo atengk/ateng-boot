@@ -40,10 +40,26 @@ class PayPropertiesTest {
             assertThat(properties.getWechat().isEnabled()).isTrue();
             assertThat(properties.getWechat().getDefaultMerchant()).isEqualTo("default");
             assertThat(properties.getWechat().isServiceProviderMode()).isFalse();
+            assertThat(properties.getWechat().getHttp().getConnectTimeout()).isEqualTo(Duration.ofSeconds(5));
+            assertThat(properties.getWechat().getHttp().getReadTimeout()).isEqualTo(Duration.ofSeconds(15));
+            assertThat(properties.getWechat().getHttp().getWriteTimeout()).isEqualTo(Duration.ofSeconds(15));
+            assertThat(properties.getWechat().getReverseRetry().isEnabled()).isTrue();
+            assertThat(properties.getWechat().getReverseRetry().getMaxAttempts()).isEqualTo(3);
+            assertThat(properties.getWechat().getReverseRetry().getDelay()).isEqualTo(Duration.ofSeconds(1));
+            assertThat(properties.getWechat().getReverseRetry().getMultiplier()).isEqualTo(2.0);
+            assertThat(properties.getWechat().getReverseRetry().getMaxDelay()).isEqualTo(Duration.ofSeconds(5));
+            assertThat(properties.getWechat().getReverseFallback().isEnabled()).isFalse();
+            assertThat(properties.getWechat().getReverseFallback().getPaidPolicy())
+                    .isEqualTo(WechatPayProperties.ReverseFallbackProperties.PaidPolicy.REJECT);
 
             assertThat(properties.getAlipay().isEnabled()).isTrue();
             assertThat(properties.getAlipay().getDefaultApp()).isEqualTo("default");
             assertThat(properties.getAlipay().isServiceProviderMode()).isFalse();
+            assertThat(properties.getWechat().getHttp().getConnectTimeout()).isEqualTo(Duration.ofSeconds(5));
+            assertThat(properties.getWechat().getDefaultTransferSceneId()).isEqualTo("1000");
+            assertThat(properties.getAlipay().getHttp().getConnectTimeout()).isEqualTo(Duration.ofSeconds(5));
+            assertThat(properties.getAlipay().getHttp().getReadTimeout()).isEqualTo(Duration.ofSeconds(15));
+            assertThat(properties.getAlipay().getHttp().getWriteTimeout()).isEqualTo(Duration.ofSeconds(15));
         });
     }
 
@@ -60,13 +76,28 @@ class PayPropertiesTest {
                 "ateng.boot.pay.transfer.enabled=true",
                 "ateng.boot.pay.profit-sharing.enabled=true",
                 "ateng.boot.pay.wechat.default-merchant=store1",
+                "ateng.boot.pay.wechat.default-transfer-scene-id=1005",
                 "ateng.boot.pay.wechat.merchants.store1.app-id=wx1234567890",
                 "ateng.boot.pay.wechat.merchants.store1.mch-id=1900000109",
                 "ateng.boot.pay.wechat.merchants.store1.api-v3-key=test_api_v3_key_32_bytes_long!!",
+                "ateng.boot.pay.wechat.merchants.store1.wechat-pay-public-key-path=classpath:certs/test_public_key.pem",
                 "ateng.boot.pay.wechat.merchants.store1.sub-mch-id=sub999",
+                "ateng.boot.pay.wechat.http.connect-timeout=2s",
+                "ateng.boot.pay.wechat.http.read-timeout=8s",
+                "ateng.boot.pay.wechat.http.write-timeout=10s",
+                "ateng.boot.pay.wechat.reverse-retry.enabled=false",
+                "ateng.boot.pay.wechat.reverse-retry.max-attempts=4",
+                "ateng.boot.pay.wechat.reverse-retry.delay=2s",
+                "ateng.boot.pay.wechat.reverse-retry.multiplier=1.5",
+                "ateng.boot.pay.wechat.reverse-retry.max-delay=8s",
+                "ateng.boot.pay.wechat.reverse-fallback.enabled=true",
+                "ateng.boot.pay.wechat.reverse-fallback.paid-policy=AUTO_REFUND",
                 "ateng.boot.pay.alipay.default-app=app1",
                 "ateng.boot.pay.alipay.apps.app1.app-id=2021000000000000",
-                "ateng.boot.pay.alipay.apps.app1.app-auth-token=token_abc_123"
+                "ateng.boot.pay.alipay.apps.app1.app-auth-token=token_abc_123",
+                "ateng.boot.pay.alipay.http.connect-timeout=3s",
+                "ateng.boot.pay.alipay.http.read-timeout=9s",
+                "ateng.boot.pay.alipay.http.write-timeout=12s"
         ).run(context -> {
             assertThat(context).hasSingleBean(PayProperties.class);
             PayProperties properties = context.getBean(PayProperties.class);
@@ -78,18 +109,35 @@ class PayPropertiesTest {
             assertThat(properties.getBarcode().isAutoCancelOnTimeout()).isFalse();
             assertThat(properties.getTransfer().isEnabled()).isTrue();
             assertThat(properties.getProfitSharing().isEnabled()).isTrue();
+            assertThat(properties.getWechat().getDefaultTransferSceneId()).isEqualTo("1005");
 
             WechatMerchantProperties store1 = properties.getWechat().getMerchants().get("store1");
             assertThat(store1).isNotNull();
             assertThat(store1.getAppId()).isEqualTo("wx1234567890");
             assertThat(store1.getMchId()).isEqualTo("1900000109");
             assertThat(store1.getApiV3Key()).isEqualTo("test_api_v3_key_32_bytes_long!!");
+            assertThat(store1.getWechatPayPublicKeyPath()).isEqualTo("classpath:certs/test_public_key.pem");
             assertThat(store1.getSubMchId()).isEqualTo("sub999");
 
             AlipayAppProperties app1 = properties.getAlipay().getApps().get("app1");
             assertThat(app1).isNotNull();
             assertThat(app1.getAppId()).isEqualTo("2021000000000000");
             assertThat(app1.getAppAuthToken()).isEqualTo("token_abc_123");
+
+            assertThat(properties.getWechat().getHttp().getConnectTimeout()).isEqualTo(Duration.ofSeconds(2));
+            assertThat(properties.getWechat().getHttp().getReadTimeout()).isEqualTo(Duration.ofSeconds(8));
+            assertThat(properties.getWechat().getHttp().getWriteTimeout()).isEqualTo(Duration.ofSeconds(10));
+            assertThat(properties.getWechat().getReverseRetry().isEnabled()).isFalse();
+            assertThat(properties.getWechat().getReverseRetry().getMaxAttempts()).isEqualTo(4);
+            assertThat(properties.getWechat().getReverseRetry().getDelay()).isEqualTo(Duration.ofSeconds(2));
+            assertThat(properties.getWechat().getReverseRetry().getMultiplier()).isEqualTo(1.5);
+            assertThat(properties.getWechat().getReverseRetry().getMaxDelay()).isEqualTo(Duration.ofSeconds(8));
+            assertThat(properties.getWechat().getReverseFallback().isEnabled()).isTrue();
+            assertThat(properties.getWechat().getReverseFallback().getPaidPolicy())
+                    .isEqualTo(WechatPayProperties.ReverseFallbackProperties.PaidPolicy.AUTO_REFUND);
+            assertThat(properties.getAlipay().getHttp().getConnectTimeout()).isEqualTo(Duration.ofSeconds(3));
+            assertThat(properties.getAlipay().getHttp().getReadTimeout()).isEqualTo(Duration.ofSeconds(9));
+            assertThat(properties.getAlipay().getHttp().getWriteTimeout()).isEqualTo(Duration.ofSeconds(12));
         });
     }
 

@@ -1,10 +1,15 @@
 package io.github.atengk.boot.notification;
 
 import io.github.atengk.boot.notification.adapter.FeishuPayloadBuilder;
+import io.github.atengk.boot.notification.exception.NotificationException;
+import io.github.atengk.boot.notification.exception.NotificationResultCode;
 import io.github.atengk.boot.notification.model.CardButton;
+import io.github.atengk.boot.notification.model.CardButtonOrientation;
 import io.github.atengk.boot.notification.model.CardButtonType;
 import io.github.atengk.boot.notification.model.CardColor;
 import io.github.atengk.boot.notification.model.CardMessage;
+import io.github.atengk.boot.notification.model.ImageMessage;
+import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.RawMessage;
 import io.github.atengk.boot.notification.model.TextMessage;
@@ -27,11 +32,12 @@ class FeishuPayloadBuilderTest {
     private final FeishuPayloadBuilder builder = new FeishuPayloadBuilder();
 
     @Test
-    @DisplayName("验证 TextMessage 转译为飞书 text 格式并在尾部注入 at 标签")
+    @DisplayName("验证 TextMessage 转译为飞书 text 格式并在尾部注入 at 标签及手机号文本提醒")
     @SuppressWarnings("unchecked")
     void testBuildTextPayload() {
         TextMessage text = TextMessage.of("数据库连接池耗尽")
                 .atAll()
+                .atMobiles("13800138000")
                 .atUserIds("ou_1234567890");
 
         Map<String, Object> payload = builder.buildPayload(text);
@@ -42,6 +48,7 @@ class FeishuPayloadBuilderTest {
         assertTrue(textVal.contains("数据库连接池耗尽"));
         assertTrue(textVal.contains("<at user_id=\"all\">所有人</at>"));
         assertTrue(textVal.contains("<at user_id=\"ou_1234567890\">ou_1234567890</at>"));
+        assertTrue(textVal.contains("@13800138000"));
     }
 
     @Test
@@ -137,6 +144,18 @@ class FeishuPayloadBuilderTest {
     }
 
     @Test
+    @DisplayName("验证 CardMessage 使用 WATHET 浅天蓝合规映射为飞书官方 wathet 模板")
+    @SuppressWarnings("unchecked")
+    void testBuildCardPayloadWithWathet() {
+        CardMessage wathetCard = CardMessage.of("新版本发布", "v1.2.0 已上线")
+                .headerColor(CardColor.WATHET);
+        Map<String, Object> wathetPayload = builder.buildPayload(wathetCard);
+        Map<String, Object> wathetCardObj = (Map<String, Object>) wathetPayload.get("card");
+        Map<String, Object> wathetHeader = (Map<String, Object>) wathetCardObj.get("header");
+        assertEquals("wathet", wathetHeader.get("template"));
+    }
+
+    @Test
     @DisplayName("验证 RawMessage 原生透传飞书特化报文")
     void testBuildRawPayload() {
         RawMessage raw = RawMessage.of(Map.of("msg_type", "image", "content", Map.of("image_key", "img_xxx")));
@@ -144,5 +163,101 @@ class FeishuPayloadBuilderTest {
 
         assertEquals("image", payload.get("msg_type"));
         assertNotNull(payload.get("content"));
+    }
+
+    @Test
+    @DisplayName("验证 LinkMessage 转译为飞书标准 interactive 交互卡片报文")
+    @SuppressWarnings("unchecked")
+    void testBuildLinkPayload() {
+        LinkMessage link = LinkMessage.of("版本发布通知", "v1.2.0 已顺利发布", "https://feishu.cn/doc/123", "https://img.example.com/banner.png")
+                .atAll();
+
+        Map<String, Object> payload = builder.buildPayload(link);
+
+        assertEquals("interactive", payload.get("msg_type"));
+        Map<String, Object> card = (Map<String, Object>) payload.get("card");
+        assertNotNull(card);
+
+        Map<String, Object> header = (Map<String, Object>) card.get("header");
+        assertEquals("blue", header.get("template"));
+        Map<String, String> titleNode = (Map<String, String>) header.get("title");
+        assertEquals("版本发布通知", titleNode.get("content"));
+
+        List<Map<String, Object>> elements = (List<Map<String, Object>>) card.get("elements");
+        assertEquals(2, elements.size());
+
+        // div lark_md element
+        Map<String, Object> div = elements.get(0);
+        assertEquals("div", div.get("tag"));
+        Map<String, String> textObj = (Map<String, String>) div.get("text");
+        String content = textObj.get("content");
+        assertTrue(content.contains("![版本发布通知](https://img.example.com/banner.png)"));
+        assertTrue(content.contains("v1.2.0 已顺利发布"));
+        assertTrue(content.contains("<at id=\"all\"></at>"));
+
+        // action button element
+        Map<String, Object> action = elements.get(1);
+        assertEquals("action", action.get("tag"));
+        List<Map<String, Object>> actions = (List<Map<String, Object>>) action.get("actions");
+        assertEquals(1, actions.size());
+        Map<String, Object> btn = actions.get(0);
+        assertEquals("button", btn.get("tag"));
+        assertEquals("primary", btn.get("type"));
+        assertEquals("https://feishu.cn/doc/123", btn.get("url"));
+    }
+
+    @Test
+    @DisplayName("验证飞书交互卡片默认开启 wide_screen_mode=true、横排多按钮设置 layout=bisected 且幂等防重 <at> 标签")
+    @SuppressWarnings("unchecked")
+    void testWideScreenModeBisectedLayoutAndIdempotentAtTags() {
+        CardMessage card = CardMessage.of("横向审批卡片", "已联系 <at id=\"ou_999\"></at> 与 <at id=\"all\"></at> 请及时处理")
+                .btnOrientation(CardButtonOrientation.HORIZONTAL)
+                .button("同意", "https://oa.example.com/yes", CardButtonType.PRIMARY)
+                .button("拒绝", "https://oa.example.com/no", CardButtonType.DANGER)
+                .atAll()
+                .atUserIds("ou_999", "ou_888");
+
+        Map<String, Object> payload = builder.buildPayload(card);
+        Map<String, Object> cardObj = (Map<String, Object>) payload.get("card");
+
+        Map<String, Object> config = (Map<String, Object>) cardObj.get("config");
+        assertNotNull(config);
+        assertEquals(true, config.get("wide_screen_mode"));
+
+        List<Map<String, Object>> elements = (List<Map<String, Object>>) cardObj.get("elements");
+        Map<String, Object> div = elements.get(0);
+        Map<String, String> textObj = (Map<String, String>) div.get("text");
+        String mdContent = textObj.get("content");
+
+        // 已存在的 <at id="all"> 与 <at id="ou_999"> 仅出现 1 次，新增的 <at id="ou_888"> 正常追加
+        assertEquals(1, mdContent.split("<at id=\"all\"></at>", -1).length - 1);
+        assertEquals(1, mdContent.split("<at id=\"ou_999\"></at>", -1).length - 1);
+        assertTrue(mdContent.contains("<at id=\"ou_888\"></at>"));
+
+        Map<String, Object> actionEl = elements.get(1);
+        assertEquals("bisected", actionEl.get("layout"));
+    }
+
+    @Test
+    @DisplayName("验证 ImageMessage 在飞书支持原生 imageKey 与公网 imageUrl 自适应图文卡片")
+    @SuppressWarnings("unchecked")
+    void testBuildImagePayload() {
+        ImageMessage keyImg = ImageMessage.ofFeishuKey("img_v2_test_key");
+        Map<String, Object> keyPayload = builder.buildPayload(keyImg);
+        assertEquals("image", keyPayload.get("msg_type"));
+        Map<String, Object> content = (Map<String, Object>) keyPayload.get("content");
+        assertEquals("img_v2_test_key", content.get("image_key"));
+
+        ImageMessage urlImg = ImageMessage.ofUrl("https://img.example.com/feishu.png");
+        Map<String, Object> urlPayload = builder.buildPayload(urlImg);
+        assertEquals("interactive", urlPayload.get("msg_type"));
+        Map<String, Object> card = (Map<String, Object>) urlPayload.get("card");
+        List<Map<String, Object>> elements = (List<Map<String, Object>>) card.get("elements");
+        Map<String, String> divText = (Map<String, String>) elements.get(0).get("text");
+        assertTrue(divText.get("content").contains("https://img.example.com/feishu.png"));
+
+        ImageMessage base64Only = ImageMessage.ofBase64("aGVsbG8=", "5d41402abc4b2a76b9719d911017c592");
+        NotificationException ex = assertThrows(NotificationException.class, () -> builder.buildPayload(base64Only));
+        assertEquals(NotificationResultCode.NOTIFICATION_UNSUPPORTED_PLATFORM, ex.getResultCode());
     }
 }

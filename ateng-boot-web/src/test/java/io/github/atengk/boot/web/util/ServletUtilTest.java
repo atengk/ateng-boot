@@ -53,6 +53,12 @@ class ServletUtilTest {
         assertThat(ServletUtil.getHeader(request, "X-Custom-Header")).isEqualTo("CustomValue123");
         assertThat(ServletUtil.getHeader(request, "Non-Existent")).isNull();
         assertThat(ServletUtil.getHeader(null, "X-Custom-Header")).isNull();
+
+        assertThat(ServletUtil.HEADER_USER_AGENT).isEqualTo("User-Agent");
+        request.addHeader(ServletUtil.HEADER_USER_AGENT, "Mozilla/5.0 TestAgent/1.0");
+        assertThat(ServletUtil.getUserAgent()).isEqualTo("Mozilla/5.0 TestAgent/1.0");
+        assertThat(ServletUtil.getUserAgent(request)).isEqualTo("Mozilla/5.0 TestAgent/1.0");
+        assertThat(ServletUtil.getUserAgent(null)).isNull();
     }
 
     @Test

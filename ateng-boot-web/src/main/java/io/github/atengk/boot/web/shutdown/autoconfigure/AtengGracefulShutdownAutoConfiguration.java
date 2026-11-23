@@ -5,6 +5,9 @@ import io.github.atengk.boot.web.properties.WebProperties;
 import io.github.atengk.boot.web.shutdown.AtengGracefulShutdownHandler;
 import io.github.atengk.boot.web.shutdown.PreStopController;
 import io.github.atengk.boot.web.shutdown.PreStopEndpoint;
+import io.github.atengk.boot.web.trace.TraceFilter;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
@@ -15,6 +18,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.autoconfigure.condition.SpringBootCondition;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ConditionContext;
 import org.springframework.context.annotation.Conditional;
@@ -41,15 +45,22 @@ import org.springframework.util.ClassUtils;
 public class AtengGracefulShutdownAutoConfiguration {
 
     /**
-     * 注册优雅停机与流量排空核心处理器（含 SmartLifecycle 兜底）
+     * 注册优雅停机与流量排空核心处理器（含 SmartLifecycle 兜底及在途请求感知）
      *
-     * @param webProperties 配置属性
+     * @param webProperties                 配置属性
+     * @param traceFilterRegistrationProvider TraceFilter 注册包装器提供者
+     * @param traceFilterProvider           TraceFilter 直接 Bean 提供者（兜底）
      * @return AtengGracefulShutdownHandler 实例
      */
     @Bean
     @ConditionalOnMissingBean(AtengGracefulShutdownHandler.class)
-    public AtengGracefulShutdownHandler gracefulShutdownHandler(WebProperties webProperties) {
-        return new AtengGracefulShutdownHandler(webProperties);
+    public AtengGracefulShutdownHandler gracefulShutdownHandler(
+            WebProperties webProperties,
+            @Qualifier("traceFilterRegistration") ObjectProvider<FilterRegistrationBean<TraceFilter>> traceFilterRegistrationProvider,
+            ObjectProvider<TraceFilter> traceFilterProvider) {
+        FilterRegistrationBean<TraceFilter> registration = traceFilterRegistrationProvider.getIfAvailable();
+        TraceFilter traceFilter = registration != null ? registration.getFilter() : traceFilterProvider.getIfAvailable();
+        return new AtengGracefulShutdownHandler(webProperties, traceFilter);
     }
 
     /**

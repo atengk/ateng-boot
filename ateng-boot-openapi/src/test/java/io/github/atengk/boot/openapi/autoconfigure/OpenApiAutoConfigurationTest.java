@@ -1,21 +1,36 @@
 package io.github.atengk.boot.openapi.autoconfigure;
 
+import io.github.atengk.boot.openapi.converter.OpenApiModelConverter;
 import io.github.atengk.boot.openapi.customizer.GlobalHeaderCustomizer;
+import io.github.atengk.boot.openapi.customizer.OperationGovernanceCustomizer;
 import io.github.atengk.boot.openapi.customizer.ResultCodeDictionaryCustomizer;
 import io.github.atengk.boot.openapi.customizer.SaTokenSecurityCustomizer;
+import io.github.atengk.boot.openapi.customizer.SecuritySchemesCustomizer;
 import io.github.atengk.boot.openapi.customizer.StandardApiResponseCustomizer;
+import io.github.atengk.boot.openapi.export.OpenApiExportController;
+import io.github.atengk.boot.openapi.export.OpenApiExportHelper;
+import io.github.atengk.boot.openapi.guard.OpenApiGuardFilter;
 import io.github.atengk.boot.openapi.properties.OpenApiProperties;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
+import jakarta.servlet.FilterChain;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 /**
  * OpenAPI 自动装配脚手架与缺省行为测试
@@ -37,9 +52,14 @@ class OpenApiAutoConfigurationTest {
             assertThat(context).hasBean("openApiWebMvcConfigurer");
             assertThat(context).hasSingleBean(OpenApiProperties.class);
             assertThat(context).hasSingleBean(GlobalHeaderCustomizer.class);
+            assertThat(context).hasSingleBean(OperationGovernanceCustomizer.class);
             assertThat(context).hasSingleBean(SaTokenSecurityCustomizer.class);
             assertThat(context).hasSingleBean(ResultCodeDictionaryCustomizer.class);
             assertThat(context).hasSingleBean(StandardApiResponseCustomizer.class);
+            assertThat(context).hasSingleBean(SecuritySchemesCustomizer.class);
+            assertThat(context).hasSingleBean(OpenApiModelConverter.class);
+            assertThat(context).hasSingleBean(OpenApiExportHelper.class);
+            assertThat(context).doesNotHaveBean(OpenApiExportController.class);
 
             OpenAPI openAPI = context.getBean(OpenAPI.class);
             Info info = openAPI.getInfo();
@@ -60,9 +80,25 @@ class OpenApiAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(OpenAPI.class);
                     assertThat(context).doesNotHaveBean("openApiWebMvcConfigurer");
                     assertThat(context).doesNotHaveBean(GlobalHeaderCustomizer.class);
+                    assertThat(context).doesNotHaveBean(OperationGovernanceCustomizer.class);
                     assertThat(context).doesNotHaveBean(SaTokenSecurityCustomizer.class);
                     assertThat(context).doesNotHaveBean(ResultCodeDictionaryCustomizer.class);
                     assertThat(context).doesNotHaveBean(StandardApiResponseCustomizer.class);
+                    assertThat(context).doesNotHaveBean(SecuritySchemesCustomizer.class);
+                    assertThat(context).doesNotHaveBean(OpenApiModelConverter.class);
+                    assertThat(context).doesNotHaveBean(OpenApiExportHelper.class);
+                    assertThat(context).doesNotHaveBean(OpenApiExportController.class);
+                });
+    }
+
+    @Test
+    @DisplayName("测试开启 export.enabled=true 时装配 OpenApiExportController")
+    void testExportEnabledConfiguration() {
+        contextRunner
+                .withPropertyValues("ateng.boot.openapi.export.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(OpenApiExportHelper.class);
+                    assertThat(context).hasSingleBean(OpenApiExportController.class);
                 });
     }
 
@@ -149,11 +185,103 @@ class OpenApiAutoConfigurationTest {
         }
     }
 
+    @Test
+    @DisplayName("测试用户自定义 OperationGovernanceCustomizer 支持平滑覆盖与开关绑定")
+    void testCustomGovernanceCustomizerOverrideAndPropertyBinding() {
+        contextRunner
+                .withPropertyValues("ateng.boot.openapi.operation-governance-notes=false")
+                .withUserConfiguration(CustomGovernanceCustomizerConfig.class)
+                .run(context -> {
+                    assertThat(context.getBean(OpenApiProperties.class).isOperationGovernanceNotes()).isFalse();
+                    assertThat(context).hasSingleBean(OperationGovernanceCustomizer.class);
+                    assertThat(context.getBean(OperationGovernanceCustomizer.class))
+                            .isInstanceOf(SubGovernanceCustomizer.class);
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomGovernanceCustomizerConfig {
+        @Bean
+        public OperationGovernanceCustomizer operationGovernanceCustomizer(OpenApiProperties properties) {
+            return new SubGovernanceCustomizer(properties);
+        }
+    }
+
+    static class SubGovernanceCustomizer extends OperationGovernanceCustomizer {
+        public SubGovernanceCustomizer(OpenApiProperties properties) {
+            super(properties);
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class CustomOpenApiConfig {
         @Bean
         public OpenAPI customOpenAPI() {
             return new OpenAPI().info(new Info().title("User Overridden API"));
+        }
+    }
+
+    @Test
+    @DisplayName("测试缺省 Sa-Token 依赖时平滑装配与 enabled=false/SATOKEN 物理切断不触发类加载失败")
+    void testWithoutSaTokenClasspathIsolation() {
+        FilteredClassLoader withoutSaToken = new FilteredClassLoader(
+                candidate -> candidate.startsWith("cn.dev33.satoken."));
+
+        // 1. 默认模式缺 Sa-Token：不装配 SaTokenSecurityCustomizer，GuardFilter 正常放行且零反射异常
+        contextRunner
+                .withClassLoader(withoutSaToken)
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(SaTokenSecurityCustomizer.class);
+                    assertThat(context).hasBean("openApiGuardFilterRegistration");
+
+                    @SuppressWarnings("unchecked")
+                    FilterRegistrationBean<OpenApiGuardFilter> reg =
+                            (FilterRegistrationBean<OpenApiGuardFilter>) context.getBean("openApiGuardFilterRegistration");
+                    OpenApiGuardFilter filter = reg.getFilter();
+                    filter.afterPropertiesSet();
+
+                    MockHttpServletRequest req = new MockHttpServletRequest("GET", "/docs");
+                    MockHttpServletResponse resp = new MockHttpServletResponse();
+                    FilterChain chain = mock(FilterChain.class);
+                    filter.doFilter(req, resp, chain);
+                    verify(chain, times(1)).doFilter(req, resp);
+                    // 确认类体反射内省不触发 NoClassDefFoundError
+                    assertThat(OpenApiGuardFilter.class.getDeclaredMethods()).isNotEmpty();
+                });
+
+        // 2. enabled=false + mode=SATOKEN 且缺 Sa-Token：平滑待命并执行 404 物理切断
+        contextRunner
+                .withClassLoader(withoutSaToken)
+                .withPropertyValues(
+                        "ateng.boot.openapi.enabled=false",
+                        "ateng.boot.openapi.guard.mode=SATOKEN"
+                )
+                .run(context -> {
+                    @SuppressWarnings("unchecked")
+                    FilterRegistrationBean<OpenApiGuardFilter> reg =
+                            (FilterRegistrationBean<OpenApiGuardFilter>) context.getBean("openApiGuardFilterRegistration");
+                    OpenApiGuardFilter filter = reg.getFilter();
+                    filter.afterPropertiesSet();
+
+                    MockHttpServletRequest req = new MockHttpServletRequest("GET", "/docs");
+                    MockHttpServletResponse resp = new MockHttpServletResponse();
+                    filter.doFilter(req, resp, mock(FilterChain.class));
+                    assertThat(resp.getStatus()).isEqualTo(404);
+                });
+
+        // 3. enabled=true + mode=SATOKEN 且缺 Sa-Token：使用隔离类加载器加载 OpenApiGuardFilter 并验证 Fail-Fast
+        ClassLoader originalCl = Thread.currentThread().getContextClassLoader();
+        try {
+            Thread.currentThread().setContextClassLoader(withoutSaToken);
+            OpenApiProperties props = new OpenApiProperties();
+            props.setEnabled(true);
+            props.getGuard().setMode(io.github.atengk.boot.openapi.properties.GuardMode.SATOKEN);
+            OpenApiGuardFilter filter = new OpenApiGuardFilter(props);
+            assertThatThrownBy(filter::afterPropertiesSet)
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("Sa-Token");
+        } finally {
+            Thread.currentThread().setContextClassLoader(originalCl);
         }
     }
 }

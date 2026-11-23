@@ -107,4 +107,20 @@ class AtengTenantLineInnerInterceptorTest {
         MappedStatement msNormalCount = createStatement(MethodLevelIgnoreMapper.class.getName() + ".queryWithoutIgnore_mpCount");
         assertThat(interceptor.shouldIgnore(msNormalCount)).isFalse();
     }
+
+    @Test
+    @DisplayName("6. 动态方言自适应与组合衍生后缀：$dynamicAdaptive 与 _mpCount 均能正确剥离并识别 @IgnoreTenant")
+    void shouldIgnoreWhenMethodHasDynamicAdaptiveAndMpCountSuffix() {
+        MappedStatement msAdaptive = createStatement(MethodLevelIgnoreMapper.class.getName() + ".queryWithIgnore$dynamicAdaptive");
+        assertThat(interceptor.shouldIgnore(msAdaptive)).isTrue();
+
+        MappedStatement msCombo = createStatement(MethodLevelIgnoreMapper.class.getName() + ".queryWithIgnore$dynamicAdaptive_mpCount");
+        assertThat(interceptor.shouldIgnore(msCombo)).isTrue();
+
+        MappedStatement msComboReverse = createStatement(MethodLevelIgnoreMapper.class.getName() + ".queryWithIgnore_mpCount$dynamicAdaptive");
+        assertThat(interceptor.shouldIgnore(msComboReverse)).isTrue();
+
+        MappedStatement msNormalAdaptive = createStatement(MethodLevelIgnoreMapper.class.getName() + ".queryWithoutIgnore$dynamicAdaptive");
+        assertThat(interceptor.shouldIgnore(msNormalAdaptive)).isFalse();
+    }
 }

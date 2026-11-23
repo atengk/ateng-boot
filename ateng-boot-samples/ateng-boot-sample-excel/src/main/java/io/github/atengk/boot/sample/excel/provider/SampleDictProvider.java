@@ -27,6 +27,12 @@ public class SampleDictProvider implements DictProvider {
         statusMap.put("0", "正常");
         statusMap.put("1", "停用");
         dictMap.put("user_status", statusMap);
+
+        Map<String, String> empStatusMap = new LinkedHashMap<>();
+        empStatusMap.put("1", "正式");
+        empStatusMap.put("2", "试用");
+        empStatusMap.put("3", "实习");
+        dictMap.put("employee_status", empStatusMap);
     }
 
     /**

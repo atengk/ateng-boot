@@ -1,6 +1,7 @@
 package io.github.atengk.boot.job.local.model;
 
 import io.github.atengk.boot.job.local.enums.JobStatus;
+import io.github.atengk.boot.job.local.enums.JobTenantMode;
 import io.github.atengk.boot.job.local.enums.OverlappingStrategy;
 import io.github.atengk.boot.job.local.enums.TriggerType;
 import lombok.Builder;
@@ -79,6 +80,11 @@ public class JobInfo {
     private boolean clusterLock;
 
     /**
+     * 集群互斥锁最小持有时长
+     */
+    private Duration clusterLockMinHoldTime;
+
+    /**
      * 任务业务描述
      */
     private String description;
@@ -112,4 +118,24 @@ public class JobInfo {
      * 上次执行返回成果摘要
      */
     private String lastResultMsg;
+
+    /**
+     * 当前是否正在 Worker 线程池中处于活跃执行状态
+     */
+    private boolean executing;
+
+    /**
+     * 超时熔断降级补偿方法名
+     */
+    private String fallbackMethod;
+
+    /**
+     * SaaS 多租户并发遍历度
+     */
+    private int tenantConcurrency;
+
+    /**
+     * SaaS 多租户调度模态
+     */
+    private JobTenantMode tenantMode;
 }

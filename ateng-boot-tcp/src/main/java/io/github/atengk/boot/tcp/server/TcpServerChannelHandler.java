@@ -3,6 +3,7 @@ package io.github.atengk.boot.tcp.server;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.enums.CloseReason;
+import io.github.atengk.boot.tcp.event.TcpChannelWritabilityChangedEvent;
 import io.github.atengk.boot.tcp.event.TcpSessionIdleEvent;
 import io.github.atengk.boot.tcp.metric.TcpMetricsCollector;
 import io.github.atengk.boot.tcp.model.TcpPacket;
@@ -31,6 +32,7 @@ public class TcpServerChannelHandler extends ChannelDuplexHandler {
 
     private static final Logger log = LoggerFactory.getLogger(TcpServerChannelHandler.class);
 
+    private final String serverName;
     private final TcpServerProperties properties;
     private final TcpSessionManager sessionManager;
     private final TcpRequestCorrelationManager correlationManager;
@@ -41,14 +43,14 @@ public class TcpServerChannelHandler extends ChannelDuplexHandler {
     public TcpServerChannelHandler(TcpServerProperties properties,
                                    TcpSessionManager sessionManager,
                                    ApplicationEventPublisher eventPublisher) {
-        this(properties, sessionManager, null, null, eventPublisher, null);
+        this("default", properties, sessionManager, null, null, eventPublisher, null);
     }
 
     public TcpServerChannelHandler(TcpServerProperties properties,
                                    TcpSessionManager sessionManager,
                                    TcpRequestCorrelationManager correlationManager,
                                    ApplicationEventPublisher eventPublisher) {
-        this(properties, sessionManager, correlationManager, null, eventPublisher, null);
+        this("default", properties, sessionManager, correlationManager, null, eventPublisher, null);
     }
 
     public TcpServerChannelHandler(TcpServerProperties properties,
@@ -56,7 +58,7 @@ public class TcpServerChannelHandler extends ChannelDuplexHandler {
                                    TcpRequestCorrelationManager correlationManager,
                                    TcpDispatcher dispatcher,
                                    ApplicationEventPublisher eventPublisher) {
-        this(properties, sessionManager, correlationManager, dispatcher, eventPublisher, null);
+        this("default", properties, sessionManager, correlationManager, dispatcher, eventPublisher, null);
     }
 
     public TcpServerChannelHandler(TcpServerProperties properties,
@@ -65,6 +67,17 @@ public class TcpServerChannelHandler extends ChannelDuplexHandler {
                                    TcpDispatcher dispatcher,
                                    ApplicationEventPublisher eventPublisher,
                                    TcpMetricsCollector metricsCollector) {
+        this("default", properties, sessionManager, correlationManager, dispatcher, eventPublisher, metricsCollector);
+    }
+
+    public TcpServerChannelHandler(String serverName,
+                                   TcpServerProperties properties,
+                                   TcpSessionManager sessionManager,
+                                   TcpRequestCorrelationManager correlationManager,
+                                   TcpDispatcher dispatcher,
+                                   ApplicationEventPublisher eventPublisher,
+                                   TcpMetricsCollector metricsCollector) {
+        this.serverName = (serverName != null && !serverName.isBlank()) ? serverName.trim() : "default";
         this.properties = properties;
         this.sessionManager = sessionManager;
         this.correlationManager = correlationManager;
@@ -84,7 +97,11 @@ public class TcpServerChannelHandler extends ChannelDuplexHandler {
         }
 
         String sessionId = IdUtil.fastSimpleUUID();
-        TcpSession session = new TcpSession(sessionId, ctx.channel());
+        TcpSession session = new TcpSession(sessionId, serverName, ctx.channel());
+        if (properties != null) {
+            session.setBackpressurePolicy(properties.getBackpressurePolicy());
+            session.setBackpressureTimeout(properties.getBackpressureTimeout());
+        }
         ctx.channel().attr(TcpSession.SESSION_KEY).set(session);
 
         sessionManager.register(session);
@@ -130,6 +147,18 @@ public class TcpServerChannelHandler extends ChannelDuplexHandler {
             metricsCollector.recordMessageSent(resolveByteLength(msg));
         }
         super.write(ctx, msg, promise);
+    }
+
+    @Override
+    public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
+        TcpSession session = ctx.channel().attr(TcpSession.SESSION_KEY).get();
+        if (session != null && eventPublisher != null) {
+            boolean writable = ctx.channel().isWritable();
+            log.debug("TCP 服务端通道可写状态变迁: sessionId={}, writable={}, pendingWriteBytes={}",
+                    session.getSessionId(), writable, session.getPendingWriteBytes());
+            eventPublisher.publishEvent(new TcpChannelWritabilityChangedEvent(this, session, writable));
+        }
+        super.channelWritabilityChanged(ctx);
     }
 
     @Override

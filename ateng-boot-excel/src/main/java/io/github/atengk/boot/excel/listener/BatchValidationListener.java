@@ -5,20 +5,21 @@ import io.github.atengk.boot.excel.enums.HeaderValidationStrategy;
 import io.github.atengk.boot.excel.exception.ExcelValidationException;
 import io.github.atengk.boot.excel.model.ExcelErrorRow;
 import io.github.atengk.boot.excel.model.ExcelReadResult;
+import io.github.atengk.boot.excel.model.ExcelRowAware;
+import io.github.atengk.boot.excel.model.ExcelRowData;
+import io.github.atengk.boot.excel.util.ExcelColumnMetadataResolver;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
-import org.apache.fesod.sheet.annotation.ExcelProperty;
 import org.apache.fesod.sheet.context.AnalysisContext;
 import org.apache.fesod.sheet.event.AnalysisEventListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.util.Assert;
 
-import java.lang.reflect.Field;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 /**
@@ -38,12 +39,12 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
     private static final Logger log = LoggerFactory.getLogger(BatchValidationListener.class);
 
     private static final int DEFAULT_BATCH_SIZE = 1000;
-    private static final int DEFAULT_MAX_ERROR_ROWS = 500;
+    public static final int DEFAULT_MAX_ERROR_ROWS = 500;
 
     /**
-     * 类属性元数据缓存 (Class -> Map<fieldName, PropertyMeta>)
+     * 默认校验器懒加载互斥锁（虚拟线程友好，防 Carrier Pinning）
      */
-    private static final Map<Class<?>, Map<String, PropertyMeta>> CLASS_META_CACHE = new ConcurrentHashMap<>();
+    private static final ReentrantLock VALIDATOR_INIT_LOCK = new ReentrantLock();
 
     /**
      * 默认校验器单例（惰性初始化）
@@ -61,6 +62,7 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
     private final Consumer<List<ExcelErrorRow>> errorConsumer;
 
     private final List<T> validDataList = new ArrayList<>();
+    private final List<ExcelRowData<T>> validRowRecords = new ArrayList<>();
     private final List<ExcelErrorRow> errorList = new ArrayList<>();
     private int errorRowCount = 0;
     private volatile boolean circuitBroken = false;
@@ -204,10 +206,13 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
             return;
         }
 
-        // 1. 获取当前物理行号（从 1 开始，如表头为 1，首行数据为 2）
+        // 1. 获取当前物理行号（从 1 开始，如表头占 1 行则首行数据为 2；多级表头及跳过空行均由 Fesod 原生行号精确对齐）
         int rowIndex = (context != null && context.readRowHolder() != null)
                 ? context.readRowHolder().getRowIndex() + 1
                 : 1;
+        if (data instanceof ExcelRowAware rowAware) {
+            rowAware.setRowIndex(rowIndex);
+        }
 
         // 2. 执行 JSR-303 规则校验
         Set<ConstraintViolation<T>> violations = validator != null
@@ -215,27 +220,29 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
                 : Collections.emptySet();
 
         if (violations.isEmpty()) {
-            // 校验通过：收集或分批消费合法数据
+            // 校验通过：收集或分批消费合法数据并同步记录物理行号视图
             validDataList.add(data);
+            validRowRecords.add(new ExcelRowData<>(rowIndex, data));
             if (dataConsumer != null && validDataList.size() >= batchSize) {
                 dataConsumer.accept(new ArrayList<>(validDataList));
                 validDataList.clear();
+                validRowRecords.clear();
             }
             return;
         }
 
         // 3. 校验失败：解析结构化错误行信息
-        Map<String, PropertyMeta> metaMap = getPropertyMetaMap(targetClass);
+        ExcelColumnMetadataResolver.EntityColumnMetadata entityMeta = ExcelColumnMetadataResolver.resolve(targetClass);
         List<ExcelErrorRow> currentErrors = new ArrayList<>();
 
         for (ConstraintViolation<T> violation : violations) {
             String propertyName = violation.getPropertyPath().toString();
-            PropertyMeta meta = metaMap.get(propertyName);
+            ExcelColumnMetadataResolver.ColumnMetadata meta = entityMeta.getColumnByFieldName(propertyName);
 
             ExcelErrorRow errorRow = ExcelErrorRow.builder()
                     .rowIndex(rowIndex)
                     .columnIndex(meta != null ? meta.columnIndex() : null)
-                    .columnName(meta != null ? meta.columnName() : propertyName)
+                    .columnName(meta != null ? meta.leafHeaderName() : propertyName)
                     .fieldName(propertyName)
                     .invalidValue(violation.getInvalidValue())
                     .message(violation.getMessage())
@@ -271,6 +278,7 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
         if (dataConsumer != null && !validDataList.isEmpty()) {
             dataConsumer.accept(new ArrayList<>(validDataList));
             validDataList.clear();
+            validRowRecords.clear();
         }
 
         // 3. 消费聚合的错误信息
@@ -284,6 +292,15 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
      */
     public List<T> getValidDataList() {
         return Collections.unmodifiableList(validDataList);
+    }
+
+    /**
+     * 获取携带 1-based 物理行号的合法数据只读记录视图列表
+     *
+     * @return {@link ExcelRowData} 只读列表
+     */
+    public List<ExcelRowData<T>> getValidRowRecords() {
+        return Collections.unmodifiableList(validRowRecords);
     }
 
     /**
@@ -342,6 +359,7 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
     public ExcelReadResult<T> toResult() {
         return ExcelReadResult.<T>builder()
                 .data(new ArrayList<>(validDataList))
+                .rowRecords(new ArrayList<>(validRowRecords))
                 .errors(new ArrayList<>(errorList))
                 .circuitBroken(circuitBroken)
                 .build();
@@ -349,82 +367,49 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
 
     private static Validator getOrCreateDefaultValidator() {
         if (defaultValidator == null) {
-            synchronized (BatchValidationListener.class) {
+            VALIDATOR_INIT_LOCK.lock();
+            try {
                 if (defaultValidator == null) {
-                    // 1. 优先尝试从 Spring 容器获取受管 Validator Bean（支持 Spring 依赖注入与自定义校验规则）
-                    try {
-                        Validator springValidator = SpringUtil.getBean(Validator.class);
-                        if (springValidator != null) {
-                            defaultValidator = springValidator;
-                            return defaultValidator;
-                        }
-                    } catch (Throwable ignored) {
-                        // Spring 上下文未就绪或未注册 Validator，降级到默认 JSR-303 工厂
-                    }
-
-                    // 2. 降级使用标准 JSR-303 ValidatorFactory
-                    try {
-                        ValidatorFactory factory = Validation.buildDefaultValidatorFactory();
-                        defaultValidator = factory.getValidator();
-                    } catch (Exception ex) {
-                        try {
-                            // 降级使用零 EL 依赖的 ParameterMessageInterpolator
-                            Class<?> interpolatorClass = Class.forName("org.hibernate.validator.messageinterpolation.ParameterMessageInterpolator");
-                            Object interpolator = interpolatorClass.getDeclaredConstructor().newInstance();
-                            ValidatorFactory factory = Validation.byDefaultProvider()
-                                    .configure()
-                                    .messageInterpolator((jakarta.validation.MessageInterpolator) interpolator)
-                                    .buildValidatorFactory();
-                            defaultValidator = factory.getValidator();
-                        } catch (Throwable innerEx) {
-                            log.warn("未能初始化默认 Validator，JSR-303 行级校验将降级跳过: {}", ex.getMessage());
-                        }
-                    }
+                    defaultValidator = initDefaultValidator();
+                }
+            } finally {
+                if (VALIDATOR_INIT_LOCK.isHeldByCurrentThread()) {
+                    VALIDATOR_INIT_LOCK.unlock();
                 }
             }
         }
         return defaultValidator;
     }
 
-    private static Map<String, PropertyMeta> getPropertyMetaMap(Class<?> clazz) {
-        if (clazz == null) {
-            return Collections.emptyMap();
+    private static Validator initDefaultValidator() {
+        // 1. 优先尝试从 Spring 容器获取受管 Validator Bean（支持 Spring 依赖注入与自定义校验规则）
+        try {
+            Validator springValidator = SpringUtil.getBean(Validator.class);
+            if (springValidator != null) {
+                return springValidator;
+            }
+        } catch (Throwable ignored) {
+            // Spring 上下文未就绪或未注册 Validator，降级到默认 JSR-303 工厂
         }
-        return CLASS_META_CACHE.computeIfAbsent(clazz, c -> {
-            Map<String, PropertyMeta> map = new HashMap<>();
-            List<Field> allFields = new ArrayList<>();
-            Class<?> current = c;
-            List<Class<?>> hierarchy = new ArrayList<>();
-            while (current != null && current != Object.class) {
-                hierarchy.add(0, current); // 顶层父类优先在前
-                current = current.getSuperclass();
-            }
-            for (Class<?> clz : hierarchy) {
-                for (Field field : clz.getDeclaredFields()) {
-                    if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
-                        allFields.add(field);
-                    }
-                }
-            }
 
-            int defaultIndex = 0;
-            for (Field field : allFields) {
-                ExcelProperty excelProperty = field.getAnnotation(ExcelProperty.class);
-                if (excelProperty != null) {
-                    int colIndex = excelProperty.index() >= 0 ? excelProperty.index() : defaultIndex;
-                    String[] headValues = excelProperty.value();
-                    String colName = (headValues != null && headValues.length > 0)
-                            ? headValues[headValues.length - 1]
-                            : field.getName();
-                    map.put(field.getName(), new PropertyMeta(colIndex, colName));
-                } else {
-                    map.put(field.getName(), new PropertyMeta(defaultIndex, field.getName()));
-                }
-                defaultIndex++;
+        // 2. 降级使用标准 JSR-303 ValidatorFactory
+        try {
+            ValidatorFactory factory = Validation.buildDefaultValidatorFactory();
+            return factory.getValidator();
+        } catch (Exception ex) {
+            try {
+                // 降级使用零 EL 依赖的 ParameterMessageInterpolator
+                Class<?> interpolatorClass = Class.forName("org.hibernate.validator.messageinterpolation.ParameterMessageInterpolator");
+                Object interpolator = interpolatorClass.getDeclaredConstructor().newInstance();
+                ValidatorFactory factory = Validation.byDefaultProvider()
+                        .configure()
+                        .messageInterpolator((jakarta.validation.MessageInterpolator) interpolator)
+                        .buildValidatorFactory();
+                return factory.getValidator();
+            } catch (Throwable innerEx) {
+                log.warn("未能初始化默认 Validator，JSR-303 行级校验将降级跳过: {}", ex.getMessage());
+                return null;
             }
-            return Collections.unmodifiableMap(map);
-        });
+        }
     }
-
-    private record PropertyMeta(int columnIndex, String columnName) {}
 }

@@ -1,5 +1,22 @@
 package io.github.atengk.boot.core.util;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Locale;
+import java.util.stream.Stream;
+
 /**
  * 文件名与文件属性安全通用工具
  * 提供针对路径遍历攻击（Path Traversal）的纯净文件名清洗、扩展名提取与人类可读文件容量格式化
@@ -8,6 +25,8 @@ package io.github.atengk.boot.core.util;
  * @since 2026-10-17
  */
 public final class FileUtil {
+
+    private static final Logger log = LoggerFactory.getLogger(FileUtil.class);
 
     private static final String[] SIZE_UNITS = {"B", "KB", "MB", "GB", "TB", "PB"};
 
@@ -224,5 +243,200 @@ public final class FileUtil {
         java.io.File tempFile = java.io.File.createTempFile(safePrefix, safeSuffix, directory);
         tempFile.deleteOnExit();
         return tempFile;
+    }
+
+    /**
+     * 获取当前应用专属的受管临时根目录
+     * 路径规范：${java.io.tmpdir}/ateng-boot/${appName}/
+     * 若目录不存在则自动创建，并对应用名称执行路径遍历安全清洗
+     *
+     * @param appName 应用名称（为空时回退至 "application"）
+     * @return 应用隔离的受管临时工作目录 Path
+     */
+    public static java.nio.file.Path getAppTempDirectory(String appName) {
+        String safeAppName = (appName != null && !appName.isBlank()) ? cleanFilename(appName) : "application";
+        if (safeAppName.isBlank()) {
+            safeAppName = "application";
+        }
+        String systemTmpDir = System.getProperty("java.io.tmpdir");
+        java.nio.file.Path appTempDir = java.nio.file.Paths.get(systemTmpDir, "ateng-boot", safeAppName);
+        try {
+            java.nio.file.Files.createDirectories(appTempDir);
+        } catch (java.io.IOException ex) {
+            log.error("创建应用受管临时目录失败: {}", appTempDir, ex);
+            throw new IllegalStateException("创建应用受管临时目录失败: " + appTempDir, ex);
+        }
+        return appTempDir;
+    }
+
+    /**
+     * 获取默认应用专属的受管临时根目录（应用名默认回退至 "application"）
+     *
+     * @return 应用隔离的受管临时工作目录 Path
+     */
+    public static java.nio.file.Path getAppTempDirectory() {
+        return getAppTempDirectory("application");
+    }
+
+    /**
+     * 安全扫描并清理指定目录下的所有临时文件与子目录（防御异常中断，尽力清理）
+     *
+     * @param directory 目标待清理目录
+     * @return 成功清理的文件与子目录总数
+     */
+    public static int cleanDirectorySafely(java.nio.file.Path directory) {
+        if (directory == null || !java.nio.file.Files.exists(directory)) {
+            return 0;
+        }
+        // 防御性前置卫语句：严禁清理根系统临时目录或文件系统根目录
+        java.nio.file.Path normalizedTarget = directory.toAbsolutePath().normalize();
+        String systemTmp = System.getProperty("java.io.tmpdir");
+        if (systemTmp != null && !systemTmp.isBlank()) {
+            java.nio.file.Path normalizedSystemTmp = java.nio.file.Paths.get(systemTmp).toAbsolutePath().normalize();
+            if (normalizedTarget.equals(normalizedSystemTmp) || normalizedTarget.getParent() == null) {
+                log.warn("拒绝清理系统根临时目录或文件系统根路径: {}", normalizedTarget);
+                return 0;
+            }
+        }
+        int cleanedCount = 0;
+        try (java.util.stream.Stream<java.nio.file.Path> stream = java.nio.file.Files.walk(directory)) {
+            java.util.List<java.nio.file.Path> paths = stream
+                    .filter(path -> !path.equals(directory))
+                    .sorted(java.util.Comparator.reverseOrder())
+                    .toList();
+            for (java.nio.file.Path path : paths) {
+                try {
+                    java.nio.file.Files.deleteIfExists(path);
+                    cleanedCount++;
+                } catch (Throwable ex) {
+                    log.debug("跳过清理被占用或无权限文件: {}", path, ex);
+                }
+            }
+        } catch (Throwable ex) {
+            log.warn("遍历清理目录失败: {}", directory, ex);
+        }
+        return cleanedCount;
+    }
+
+    /**
+     * 判断给定文件名是否为操作系统宿主生成的隐性垃圾/元数据文件
+     * 大小写不敏感识别：
+     * - macOS 元数据文件：.DS_Store
+     * - macOS AppleDouble 资源分叉隐藏文件：._ 开头的文件名（如 ._photo.jpg）
+     * - macOS 归档解压垃圾目录：__MACOSX
+     * - Windows 桌面配置与缩略图数据库：desktop.ini, thumbs.db
+     *
+     * @param filename 待检测的文件名（可为裸文件名或相对路径）
+     * @return 若命中隐性垃圾文件特征返回 true，入参为空时安全返回 false
+     */
+    public static boolean isSystemJunkFile(String filename) {
+        if (filename == null || filename.isBlank()) {
+            return false;
+        }
+        // 统一标准化斜杠并清洗首尾空白
+        String name = filename.replace('\\', '/').trim();
+
+        // 优先检查各路径段是否包含 __MACOSX 元数据目录
+        String[] segments = name.split("/+");
+        for (String segment : segments) {
+            if ("__MACOSX".equalsIgnoreCase(segment)) {
+                return true;
+            }
+        }
+
+        int slashIndex = name.lastIndexOf('/');
+        String leafName = (slashIndex >= 0) ? name.substring(slashIndex + 1) : name;
+        if (leafName.isBlank()) {
+            return false;
+        }
+
+        // 大小写不敏感全名比对
+        if (".DS_Store".equalsIgnoreCase(leafName)
+                || "desktop.ini".equalsIgnoreCase(leafName)
+                || "thumbs.db".equalsIgnoreCase(leafName)) {
+            return true;
+        }
+
+        // macOS AppleDouble 资源分叉文件（._*）
+        return leafName.startsWith("._");
+    }
+
+    /**
+     * 判断给定 Path 路径是否为操作系统宿主生成的隐性垃圾/元数据文件
+     *
+     * @param path 待检测的文件 Path 实例
+     * @return 若命中隐性垃圾文件特征返回 true，path 为 null 时安全返回 false
+     */
+    public static boolean isSystemJunkFile(Path path) {
+        if (path == null) {
+            return false;
+        }
+        Path fileName = path.getFileName();
+        if (fileName != null && isSystemJunkFile(fileName.toString())) {
+            return true;
+        }
+        for (Path segment : path) {
+            if ("__MACOSX".equalsIgnoreCase(segment.toString())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 批量过滤路径列表中的无效项与系统宿主隐性垃圾文件
+     * 剔除 null 元素及命中 isSystemJunkFile 的路径，返回不可变列表
+     *
+     * @param paths 路径集合
+     * @return 过滤后的纯净 Path 不可变列表（空入参保底返回 Collections.emptyList()）
+     */
+    public static List<Path> filterValidPaths(Collection<Path> paths) {
+        if (paths == null || paths.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<Path> validPaths = new ArrayList<>(paths.size());
+        for (Path p : paths) {
+            if (p != null && !isSystemJunkFile(p)) {
+                validPaths.add(p);
+            }
+        }
+        return Collections.unmodifiableList(validPaths);
+    }
+
+    /**
+     * 安全解析基准目录下的子路径，杜绝路径穿越（Path Traversal）逃逸
+     * 自动归一化基准目录与子路径，确保解析结果严格位于 baseDir 及其子目录下
+     *
+     * @param baseDir 基准根目录 Path
+     * @param subPath 相对子路径字符串
+     * @return 归一化后的绝对安全路径
+     * @throws IllegalArgumentException 当 baseDir 为 null，subPath 为空/空白，或解析结果逃逸出 baseDir 时抛出
+     */
+    public static Path resolveSafePath(Path baseDir, String subPath) {
+        if (baseDir == null) {
+            throw new IllegalArgumentException("baseDir 不能为 null");
+        }
+        if (subPath == null || subPath.isBlank()) {
+            throw new IllegalArgumentException("subPath 不能为空或空白");
+        }
+        if (subPath.contains("\0")) {
+            throw new IllegalArgumentException("subPath 包含非法空字符");
+        }
+
+        Path normalizedBase = baseDir.toAbsolutePath().normalize();
+        // 跨宿主中立：统一清洗 Windows 反斜杠，杜绝在 POSIX 宿主下因 '\' 被视为普通文件名而绕过目录逃逸拦截
+        String relativeSubPath = subPath.replace('\\', '/').trim();
+        while (relativeSubPath.startsWith("/")) {
+            relativeSubPath = relativeSubPath.substring(1).trim();
+        }
+        if (relativeSubPath.isEmpty()) {
+            return normalizedBase;
+        }
+
+        Path resolved = normalizedBase.resolve(relativeSubPath).normalize();
+        if (!resolved.startsWith(normalizedBase)) {
+            throw new IllegalArgumentException("检测到路径穿越逃逸风险，解析路径超出基准目录: " + subPath);
+        }
+        return resolved;
     }
 }

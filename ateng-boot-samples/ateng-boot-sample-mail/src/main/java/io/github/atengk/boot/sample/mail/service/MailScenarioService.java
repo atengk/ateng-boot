@@ -1,12 +1,24 @@
 package io.github.atengk.boot.sample.mail.service;
 
+import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.mail.event.MailAccountEvictEvent;
+import io.github.atengk.boot.mail.model.BatchMailSendResult;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailAttachment;
+import io.github.atengk.boot.mail.model.MailInlineResource;
 import io.github.atengk.boot.mail.model.MailMessage;
+import io.github.atengk.boot.mail.model.MailPriority;
 import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.template.MailTemplate;
-import io.github.atengk.boot.sample.mail.dto.SendMailRequest;
+import io.github.atengk.boot.mail.template.renderer.SimpleMailTemplateRenderer;
+import io.github.atengk.boot.sample.mail.dto.AttachmentMailRequest;
+import io.github.atengk.boot.sample.mail.dto.DynamicAccountMailRequest;
+import io.github.atengk.boot.sample.mail.dto.DynamicBatchMailRequest;
+import io.github.atengk.boot.sample.mail.dto.EscapedTemplateMailRequest;
+import io.github.atengk.boot.sample.mail.dto.SalarySlipBatchRequest;
+import io.github.atengk.boot.sample.mail.dto.SalarySlipItemRequest;
+import io.github.atengk.boot.sample.mail.dto.SimpleTextMailRequest;
+import io.github.atengk.boot.sample.mail.dto.SystemAlertMailRequest;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,7 +26,13 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
@@ -33,6 +51,7 @@ import java.util.concurrent.CompletableFuture;
 public class MailScenarioService {
 
     private static final Logger log = LoggerFactory.getLogger(MailScenarioService.class);
+    private static final SimpleMailTemplateRenderer ESCAPED_RENDERER = new SimpleMailTemplateRenderer(true);
 
     private final MailTemplate mailTemplate;
     private final ApplicationEventPublisher eventPublisher;
@@ -46,7 +65,7 @@ public class MailScenarioService {
      * @return 发信结果
      */
     public MailSendResult sendSimpleText(String to, String subject, String text) {
-        log.info("Sending simple text email to [{}]", to);
+        log.info("Sending simple text email to [{}]", DesensitizeUtil.email(to));
         return mailTemplate.sendText(to, subject, text);
     }
 
@@ -59,7 +78,7 @@ public class MailScenarioService {
      * @return 发信结果
      */
     public MailSendResult sendMultiAccountOps(String to, String subject, String text) {
-        log.info("Sending ops channel email to [{}]", to);
+        log.info("Sending ops channel email to [{}]", DesensitizeUtil.email(to));
         return mailTemplate.sendText("ops", to, subject, text);
     }
 
@@ -73,11 +92,34 @@ public class MailScenarioService {
      * @return 发信结果
      */
     public MailSendResult sendHtmlTemplate(String to, String subject, String username, String verifyCode) {
-        log.info("Sending html template email to [{}]", to);
+        log.info("Sending html template email to [{}]", DesensitizeUtil.email(to));
         Map<String, Object> model = new HashMap<>();
         model.put("username", username);
         model.put("code", verifyCode);
         return mailTemplate.sendTemplate(to, subject, "mail/verify-code", model);
+    }
+
+    /**
+     * 发送挂载流式电子账单附件的邮件（收敛二进制数据构造，防 Controller 职责泄漏）
+     *
+     * @param request 附件发信请求
+     * @return 发信结果
+     */
+    public MailSendResult sendAttachmentStatement(AttachmentMailRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("AttachmentMailRequest must not be null");
+        }
+        String fileName = request.getFileName() != null && !request.getFileName().isBlank()
+                ? request.getFileName() : "月度电子账单.pdf";
+        byte[] demoContent = generateSimulatedPdfStatement(request.getContent());
+        return sendWithAttachment(request.getTo(), request.getSubject(), request.getContent(), fileName, demoContent);
+    }
+
+    private byte[] generateSimulatedPdfStatement(String content) {
+        String safeContent = content != null ? content : "";
+        return ("%PDF-1.4\n1 0 obj\n<< /Title (Monthly Statement) /Content ("
+                + safeContent + ") >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF")
+                .getBytes(StandardCharsets.UTF_8);
     }
 
     /**
@@ -91,7 +133,7 @@ public class MailScenarioService {
      * @return 发信结果
      */
     public MailSendResult sendWithAttachment(String to, String subject, String text, String fileName, byte[] content) {
-        log.info("Sending email with attachment [{}] to [{}]", fileName, to);
+        log.info("Sending email with attachment [{}] to [{}]", fileName, DesensitizeUtil.email(to));
         MailMessage message = new MailMessage()
                 .to(to)
                 .subject(subject)
@@ -109,7 +151,7 @@ public class MailScenarioService {
      * @return 异步回执 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendAsync(String to, String subject, String text) {
-        log.info("Sending async email to [{}]", to);
+        log.info("Sending async email to [{}]", DesensitizeUtil.email(to));
         return mailTemplate.sendTextAsync(to, subject, text);
     }
 
@@ -122,7 +164,7 @@ public class MailScenarioService {
      */
     @Transactional(rollbackFor = Exception.class)
     public void sendTransactional(String to, String subject, String text, boolean shouldRollback) {
-        log.info("Triggering sendTransactional to [{}], will rollback: {}", to, shouldRollback);
+        log.info("Triggering sendTransactional to [{}], will rollback: {}", DesensitizeUtil.email(to), shouldRollback);
         MailMessage message = new MailMessage()
                 .to(to)
                 .subject(subject)
@@ -144,22 +186,8 @@ public class MailScenarioService {
      * @return 发信结果
      */
     public MailSendResult sendWithDynamicAccount(MailAccount account, String to, String subject, String text) {
-        log.info("Sending email via dynamic account [{}] to [{}]", account.getName(), to);
+        log.info("Sending email via dynamic account [{}] to [{}]", account.getName(), DesensitizeUtil.email(to));
         return mailTemplate.forDynamicAccount(account).sendText(to, subject, text);
-    }
-
-    /**
-     * 指定发信请求模型发送邮件（结构化入参收敛，杜绝长参数数据泥团）
-     *
-     * @param request 发信请求参数
-     * @return 发信结果
-     */
-    public MailSendResult sendByAccount(SendMailRequest request) {
-        if (request == null) {
-            throw new IllegalArgumentException("SendMailRequest must not be null");
-        }
-        return sendByAccount(request.getAccount(), request.getTo(), request.getSubject(),
-                request.getContent(), request.getFrom(), request.getFromName());
     }
 
     /**
@@ -174,7 +202,8 @@ public class MailScenarioService {
      * @return 发信结果
      */
     public MailSendResult sendByAccount(String accountName, String to, String subject, String text, String from, String fromName) {
-        log.info("Sending email via accountName [{}] to [{}], customFrom: [{}], customFromName: [{}]", accountName, to, from, fromName);
+        log.info("Sending email via accountName [{}] to [{}], customFrom: [{}], customFromName: [{}]",
+                accountName, DesensitizeUtil.email(to), DesensitizeUtil.email(from), fromName);
         MailMessage message = new MailMessage()
                 .account(accountName)
                 .to(to)
@@ -212,5 +241,265 @@ public class MailScenarioService {
     public void publishEvictEvent(String accountName) {
         log.info("Publishing MailAccountEvictEvent for accountName: [{}]", accountName);
         eventPublisher.publishEvent(new MailAccountEvictEvent(this, accountName));
+    }
+
+    /**
+     * 批量个性化发送对账单/工资条通知（演示 sendBatch 高并发分片并发与 Fail-Safe 容错聚合）
+     *
+     * @param messages 邮件消息列表
+     * @return 批量聚合发信回执
+     */
+    public BatchMailSendResult sendBatchPersonalized(List<MailMessage> messages) {
+        log.info("Sending batch personalized emails: total={}", messages != null ? messages.size() : 0);
+        return mailTemplate.sendBatch(messages);
+    }
+
+    /**
+     * 发送多语言国际化验证码模板邮件
+     *
+     * @param to       目标邮箱
+     * @param username 用户名
+     * @param code     验证码
+     * @param locale   目标多语言区域（如 Locale.US, Locale.SIMPLIFIED_CHINESE）
+     * @return 发信结果
+     */
+    public MailSendResult sendLocalizedVerifyCode(String to, String username, String code, Locale locale) {
+        log.info("Sending localized template email to [{}], locale: {}", DesensitizeUtil.email(to), locale);
+        Map<String, Object> model = Map.of("username", username, "code", code);
+        return mailTemplate.sendTemplate(to, "Verification Notice", "mail/i18n-verify-code", model, locale);
+    }
+
+    /**
+     * 管理端 SMTP 物理连通性一键测试探针
+     *
+     * @param accountName 账号逻辑名称
+     * @return 快速布尔测试结果
+     */
+    public boolean testConnection(String accountName) {
+        log.info("Testing SMTP physical connection for account: [{}]", accountName);
+        return mailTemplate.testConnection(accountName);
+    }
+
+    /**
+     * 管理端 SMTP 物理连通性异常型强测试探针
+     *
+     * @param accountName 账号逻辑名称
+     */
+    public void testConnectionOrThrow(String accountName) {
+        log.info("Testing SMTP physical connection or throw for account: [{}]", accountName);
+        mailTemplate.testConnectionOrThrow(accountName);
+    }
+
+    /**
+     * 发送高优先级紧急线上告警邮件（支持强类型 MailPriority、阅读回执与合规归档密送）
+     *
+     * @param to                 接收人
+     * @param subject            主题
+     * @param content            正文
+     * @param priority           强类型优先级
+     * @param requestReadReceipt 是否请求阅读回执
+     * @param archiveBcc         合规归档密送（若指定）
+     * @return 发信结果
+     */
+    public MailSendResult sendUrgentAlert(String to, String subject, String content,
+                                         MailPriority priority, boolean requestReadReceipt, String archiveBcc) {
+        log.info("Sending urgent alert email to [{}], priority: {}, requestReadReceipt: {}",
+                DesensitizeUtil.email(to), priority, requestReadReceipt);
+        MailMessage message = new MailMessage()
+                .to(to)
+                .subject(subject)
+                .text(content)
+                .priority(priority)
+                .requestReadReceipt(requestReadReceipt);
+        if (archiveBcc != null && !archiveBcc.isBlank()) {
+            message.bcc(archiveBcc);
+        }
+        return mailTemplate.send(message);
+    }
+
+    /**
+     * 发送富文本 HTML 邮件
+     *
+     * @param to      收件人
+     * @param subject 主题
+     * @param html    HTML 内容
+     * @return 发信结果
+     */
+    public MailSendResult sendHtmlContent(String to, String subject, String html) {
+        log.info("Sending html content email to [{}]", DesensitizeUtil.email(to));
+        return mailTemplate.sendHtml(to, subject, html);
+    }
+
+    /**
+     * 发送包含正交内联资源 (Inline CID) 的图文混排邮件
+     *
+     * @param to      收件人
+     * @param subject 主题
+     * @param title   展示标题
+     * @return 发信结果
+     */
+    public MailSendResult sendWithInline(String to, String subject, String title) {
+        log.info("Sending inline media email to [{}]", DesensitizeUtil.email(to));
+        String safeTitle = title != null && !title.isBlank() ? title : "企业通知";
+        String html = "<html><body><h2>" + safeTitle + "</h2><p>品牌标识混排：</p><img src='cid:companyLogo'/></body></html>";
+        // 构造标准 1x1 透明 PNG 字节流
+        byte[] logoBytes = new byte[]{
+                (byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+                0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+                0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, (byte) 0xC4, (byte) 0x89
+        };
+        MailMessage message = new MailMessage()
+                .to(to)
+                .subject(subject)
+                .html(html)
+                .inline(MailInlineResource.of("companyLogo", logoBytes, "image/png"));
+        return mailTemplate.send(message);
+    }
+
+    /**
+     * 批量个性化发送员工工资条通知
+     *
+     * @param request 批量工资条请求
+     * @return 批量聚合发信回执
+     */
+    public BatchMailSendResult sendSalaryBatch(SalarySlipBatchRequest request) {
+        List<MailMessage> messages = new ArrayList<>();
+        if (request != null && request.getItems() != null) {
+            for (SalarySlipItemRequest item : request.getItems()) {
+                messages.add(new MailMessage()
+                        .to(item.getEmail())
+                        .subject(item.getSalaryPeriod() + " 工资明细 - " + item.getEmployeeName())
+                        .text("尊敬的 " + item.getEmployeeName() + "，您在 " + item.getSalaryPeriod()
+                                + " 的实发工资为：" + item.getNetSalary() + " 元。请查收并妥善保管。"));
+            }
+        }
+        return sendBatchPersonalized(messages);
+    }
+
+    /**
+     * 指定外部介质动态发信账号发信
+     *
+     * @param request 动态发信请求
+     * @return 发信结果
+     */
+    public MailSendResult sendByDynamicAccount(DynamicAccountMailRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("DynamicAccountMailRequest must not be null");
+        }
+        return sendByAccount(request.getAccount(), request.getTo(), request.getSubject(),
+                request.getContent(), request.getFrom(), request.getFromName());
+    }
+
+    /**
+     * 发送紧急线上高优先级告警邮件
+     *
+     * @param request 告警请求
+     * @return 发信结果
+     */
+    public MailSendResult sendUrgentAlert(SystemAlertMailRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("SystemAlertMailRequest must not be null");
+        }
+        String subject = "[" + request.getAlertLevel() + "] " + request.getServiceName() + " 服务异常告警";
+        String content = "服务: " + request.getServiceName() + "\n级别: " + request.getAlertLevel()
+                + "\n异常描述: " + request.getErrorMessage() + "\n请立即处置！";
+        return sendUrgentAlert(request.getTo(), subject, content,
+                MailPriority.HIGH, request.isRequestReadReceipt(), request.getArchiveBcc());
+    }
+
+    /**
+     * 演示 SimpleMailTemplateRenderer 开启 HTML 转义（${var} 防 XSS）与 $!{rawVar} 显式富文本透传
+     *
+     * @param request 转义模板发信请求
+     * @return 发信结果
+     */
+    public MailSendResult sendEscapedTemplate(EscapedTemplateMailRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("EscapedTemplateMailRequest must not be null");
+        }
+        log.info("Sending html-escaped template email to [{}]", DesensitizeUtil.email(request.getTo()));
+        String badge = request.getTrustedBadgeHtml() != null ? request.getTrustedBadgeHtml() : "<span>Verified</span>";
+        String template = "<html><body><h3>你好，${username}</h3><div>状态：$!{trustedBadgeHtml}</div></body></html>";
+        String renderedHtml = ESCAPED_RENDERER.render(template, Map.of(
+                "username", request.getUsername(),
+                "trustedBadgeHtml", badge
+        ));
+        return mailTemplate.sendHtml(request.getTo(), request.getSubject(), renderedHtml);
+    }
+
+    /**
+     * 演示将一次性 InputStream 经 ofBuffered 有界缓冲转换为可重读附件与内联资源并发送
+     *
+     * @param request 附件发信请求
+     * @return 发信结果
+     */
+    public MailSendResult sendBufferedAttachmentStatement(AttachmentMailRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("AttachmentMailRequest must not be null");
+        }
+        String fileName = request.getFileName() != null && !request.getFileName().isBlank()
+                ? request.getFileName() : "buffered-statement.pdf";
+        log.info("Sending buffered-stream attachment [{}] to [{}]", fileName, DesensitizeUtil.email(request.getTo()));
+
+        byte[] pdfBytes = generateSimulatedPdfStatement(request.getContent());
+        byte[] logoBytes = new byte[]{
+                (byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+                0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+                0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, (byte) 0xC4, (byte) 0x89
+        };
+        InputStream pdfStream = new ByteArrayInputStream(pdfBytes);
+        InputStream logoStream = new ByteArrayInputStream(logoBytes);
+
+        MailMessage message = new MailMessage()
+                .to(request.getTo())
+                .subject(request.getSubject())
+                .html("<html><body><p>" + request.getContent() + "</p><img src='cid:companyLogo'/></body></html>")
+                .attachment(MailAttachment.ofBuffered(fileName, pdfStream))
+                .inline(MailInlineResource.ofBuffered("companyLogo", logoStream, "image/png"));
+        return mailTemplate.send(message);
+    }
+
+    /**
+     * 演示通过 DynamicMailSession.sendBatch 强制绑定动态账号批量发送邮件
+     *
+     * @param request 动态批量发信请求
+     * @return 批量聚合发信回执
+     */
+    public BatchMailSendResult sendBatchByDynamicSession(DynamicBatchMailRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("DynamicBatchMailRequest must not be null");
+        }
+        MailAccount base = mailTemplate.getAccountRegistry().getDefault();
+        String dynamicFrom = (request.getFrom() != null && !request.getFrom().isBlank())
+                ? request.getFrom() : base.getDefaultFrom();
+        String dynamicFromName = (request.getFromName() != null && !request.getFromName().isBlank())
+                ? request.getFromName() : base.getDefaultFromName();
+        MailAccount dynamicAccount = MailAccount.builder()
+                .name(request.getAccount())
+                .host(base.getHost())
+                .port(base.getPort())
+                .username(base.getUsername())
+                .password(base.getPassword())
+                .authMode(base.getAuthMode())
+                .protocol(base.getProtocol())
+                .ssl(base.isSsl())
+                .starttls(base.isStarttls())
+                .defaultFrom(dynamicFrom)
+                .defaultFromName(dynamicFromName)
+                .properties(base.getProperties() != null ? new HashMap<>(base.getProperties()) : new HashMap<>())
+                .build();
+
+        List<MailMessage> messages = new ArrayList<>(request.getItems().size());
+        for (SimpleTextMailRequest item : request.getItems()) {
+            messages.add(new MailMessage()
+                    .to(item.getTo())
+                    .subject(item.getSubject())
+                    .text(item.getContent()));
+        }
+        log.info("Sending batch emails via DynamicMailSession [{}], total={}",
+                request.getAccount(), messages.size());
+        return mailTemplate.forDynamicAccount(dynamicAccount).sendBatch(messages);
     }
 }

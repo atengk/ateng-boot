@@ -5,7 +5,9 @@ import io.github.atengk.boot.core.audit.OperateLogEvent;
 import io.github.atengk.boot.core.audit.OperateLogModel;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.model.UserAgentInfo;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.core.util.UserAgentUtil;
 import io.github.atengk.boot.web.annotation.OperateLog;
 import io.github.atengk.boot.web.audit.DefaultOperateLogStorageProvider;
 import io.github.atengk.boot.web.audit.OperateLogStorageProvider;
@@ -13,8 +15,6 @@ import io.github.atengk.boot.web.properties.WebProperties;
 import io.github.atengk.boot.web.trace.TraceUtil;
 import io.github.atengk.boot.web.util.IpUtil;
 import io.github.atengk.boot.web.util.ServletUtil;
-import jakarta.servlet.ServletRequest;
-import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
@@ -25,26 +25,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotationUtils;
 import org.springframework.util.StringUtils;
-import org.springframework.validation.BindingResult;
-import org.springframework.web.multipart.MultipartFile;
 
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.Reader;
-import java.io.Writer;
 import java.lang.reflect.Method;
 import java.time.LocalDateTime;
-import java.time.temporal.TemporalAccessor;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.Executor;
 
 /**
@@ -55,10 +43,14 @@ import java.util.concurrent.Executor;
  * @since 2026-10-18
  */
 @Aspect
-public class OperateLogAspect {
+public class OperateLogAspect implements Ordered {
+
+    /**
+     * 切面优先级：置于验签之后，Web 访问日志之前
+     */
+    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 500;
 
     private static final Logger log = LoggerFactory.getLogger(OperateLogAspect.class);
-    private static final String EXCLUDED_MASK = "[EXCLUDED]";
 
     private final OperateLogStorageProvider storageProvider;
     private final ObjectProvider<Executor> taskExecutorProvider;
@@ -84,6 +76,11 @@ public class OperateLogAspect {
 
     public OperateLogAspect() {
         this(new DefaultOperateLogStorageProvider(), null, JsonUtil.getObjectMapper(), null, new WebProperties());
+    }
+
+    @Override
+    public int getOrder() {
+        return ORDER;
     }
 
     /**
@@ -120,7 +117,7 @@ public class OperateLogAspect {
         }
 
         // 校验开关配置：若全局关闭则直接透传放行
-        if (!webProperties.getOperateLog().isEnabled()) {
+        if (webProperties.getOperateLog() != null && !webProperties.getOperateLog().isEnabled()) {
             return joinPoint.proceed();
         }
 
@@ -134,6 +131,33 @@ public class OperateLogAspect {
         String requestMethod = request != null ? request.getMethod() : "";
         String requestUrl = request != null ? request.getRequestURI() : "";
         String clientIp = IpUtil.getClientIp(request);
+
+        // 异步派发前于请求线程同步采集 User-Agent 并执行防注入净化与限长截断
+        WebProperties.OperateLogProperties operateLogProps = webProperties.getOperateLog();
+        boolean collectUa = operateLogProps == null || operateLogProps.isCollectUserAgent();
+        boolean parseUa = operateLogProps == null || operateLogProps.isParseUserAgent();
+        int uaMaxLength = operateLogProps != null && operateLogProps.getUserAgentMaxLength() > 0
+                ? operateLogProps.getUserAgentMaxLength()
+                : WebProperties.OperateLogProperties.DEFAULT_USER_AGENT_MAX_LENGTH;
+        String userAgent = null;
+        String browser = null;
+        String os = null;
+        if (collectUa && request != null) {
+            String rawUa = ServletUtil.getUserAgent(request);
+            if (parseUa) {
+                UserAgentInfo uaInfo = UserAgentUtil.parse(rawUa, uaMaxLength);
+                if (StringUtils.hasText(uaInfo.rawUserAgent())) {
+                    userAgent = uaInfo.rawUserAgent();
+                    browser = uaInfo.browser();
+                    os = uaInfo.os();
+                }
+            } else {
+                String sanitizedUa = UserAgentUtil.sanitize(rawUa, uaMaxLength);
+                if (StringUtils.hasText(sanitizedUa)) {
+                    userAgent = sanitizedUa;
+                }
+            }
+        }
 
         String module = StringUtils.hasText(operateLog.module()) ? operateLog.module()
                 : (StringUtils.hasText(operateLog.title()) ? operateLog.title() : operateLog.value());
@@ -183,6 +207,9 @@ public class OperateLogAspect {
             logModel.setRequestMethod(requestMethod);
             logModel.setRequestUrl(requestUrl);
             logModel.setClientIp(clientIp);
+            logModel.setUserAgent(userAgent);
+            logModel.setBrowser(browser);
+            logModel.setOs(os);
             logModel.setRequestParams(paramsJson);
             logModel.setCostTime(costTime);
             logModel.setOperateTime(LocalDateTime.now());
@@ -244,143 +271,17 @@ public class OperateLogAspect {
     }
 
     private Map<String, Object> extractParams(ProceedingJoinPoint joinPoint, String[] excludeParams) {
-        MethodSignature signature = (MethodSignature) joinPoint.getSignature();
-        String[] paramNames = signature.getParameterNames();
-        Object[] args = joinPoint.getArgs();
-        if (args == null || args.length == 0) {
-            return Collections.emptyMap();
-        }
-
-        Set<String> excludedSet = new HashSet<>();
-        if (excludeParams != null) {
-            for (String p : excludeParams) {
-                if (StringUtils.hasText(p)) {
-                    excludedSet.add(p.trim().toLowerCase());
-                }
-            }
-        }
-
-        Map<String, Object> paramMap = new LinkedHashMap<>();
-        for (int i = 0; i < args.length; i++) {
-            String name = (paramNames != null && i < paramNames.length) ? paramNames[i] : "arg" + i;
-            if (excludedSet.contains(name.toLowerCase())) {
-                paramMap.put(name, EXCLUDED_MASK);
-                continue;
-            }
-            Object arg = args[i];
-            paramMap.put(name, sanitizeArg(arg, excludedSet));
-        }
-        return paramMap;
-    }
-
-    private Object sanitizeArg(Object arg, Set<String> excludedSet) {
-        if (arg == null) {
-            return null;
-        }
-        String placeholder = getSkipPlaceholder(arg);
-        if (placeholder != null) {
-            return placeholder;
-        }
-        if (excludedSet.isEmpty()) {
-            return arg;
-        }
-        if (arg instanceof Map<?, ?> map) {
-            return filterMap(map, excludedSet);
-        }
-        if (isPrimitiveOrBasic(arg)) {
-            return arg;
-        }
-        if (arg instanceof Collection<?> col) {
-            List<Object> list = new ArrayList<>();
-            for (Object item : col) {
-                list.add(sanitizeArg(item, excludedSet));
-            }
-            return list;
-        }
-        try {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> map = objectMapper.convertValue(arg, Map.class);
-            return filterMap(map, excludedSet);
-        } catch (Exception e) {
-            return arg;
-        }
+        List<String> defaults = webProperties.getOperateLog() != null
+                ? webProperties.getOperateLog().getDefaultExcludeParams()
+                : null;
+        return AuditParamSanitizer.extractParams(joinPoint, defaults, excludeParams, objectMapper);
     }
 
     private String sanitizeResult(Object result) {
-        if (result == null) {
-            return "null";
-        }
-        String placeholder = getSkipPlaceholder(result);
-        if (placeholder != null) {
-            return placeholder;
-        }
-        return toJson(result);
-    }
-
-    private Map<Object, Object> filterMap(Map<?, ?> map, Set<String> excludedSet) {
-        Map<Object, Object> filtered = new LinkedHashMap<>();
-        for (Map.Entry<?, ?> entry : map.entrySet()) {
-            Object key = entry.getKey();
-            if (key != null && excludedSet.contains(key.toString().toLowerCase())) {
-                filtered.put(key, EXCLUDED_MASK);
-            } else {
-                String valPlaceholder = getSkipPlaceholder(entry.getValue());
-                if (valPlaceholder != null) {
-                    filtered.put(key, valPlaceholder);
-                } else {
-                    filtered.put(key, sanitizeArg(entry.getValue(), excludedSet));
-                }
-            }
-        }
-        return filtered;
-    }
-
-    private String getSkipPlaceholder(Object arg) {
-        if (arg == null) {
-            return null;
-        }
-        if (arg instanceof MultipartFile file) {
-            return "[MultipartFile: name=" + file.getOriginalFilename() + ", size=" + file.getSize() + "]";
-        }
-        if (arg instanceof MultipartFile[] files) {
-            return "[MultipartFile[], length=" + files.length + "]";
-        }
-        if (arg instanceof ServletRequest) {
-            return "[HttpServletRequest]";
-        }
-        if (arg instanceof ServletResponse) {
-            return "[HttpServletResponse]";
-        }
-        if (arg instanceof InputStream || arg instanceof OutputStream) {
-            return "[Stream]";
-        }
-        if (arg instanceof Reader || arg instanceof Writer) {
-            return "[Reader/Writer]";
-        }
-        if (arg instanceof BindingResult) {
-            return "[BindingResult]";
-        }
-        return null;
-    }
-
-    private boolean isPrimitiveOrBasic(Object arg) {
-        return arg instanceof String
-                || arg instanceof Number
-                || arg instanceof Boolean
-                || arg instanceof Character
-                || arg instanceof TemporalAccessor
-                || arg.getClass().isPrimitive()
-                || arg.getClass().isEnum();
+        return AuditParamSanitizer.sanitizeResult(result, objectMapper);
     }
 
     private String toJson(Object obj) {
-        if (obj == null) {
-            return "null";
-        }
-        try {
-            return objectMapper.writeValueAsString(obj);
-        } catch (Exception e) {
-            return String.valueOf(obj);
-        }
+        return AuditParamSanitizer.toJson(obj, objectMapper);
     }
 }

@@ -4,7 +4,7 @@
 
 随着 `ateng-boot` 基础框架的演进，框架已成功落地 `core`、`web`、`mybatis-plus`、`redis`、`excel`、`satoken` 等六大核心 Starter，未来还将持续孵化 `storage`（对象存储）、`mq`（消息队列）、`job`（分布式调度）、`mail/sms`、`ai` 等多维企业级中间件。
 
-然而，对当前基础底座 [ateng-boot-core](../ateng-boot-core) 的深度审查揭示出多项深层次的**架构倒置、能力真空与上下文割裂**：
+然而，对当前基础底座 [ateng-boot-core](../../ateng-boot-core/README.md) 的深度审查揭示出多项深层次的**架构倒置、能力真空与上下文割裂**：
 
 1. **核心序列化工具缺位与碎片化**：
    - 全工程无开箱即用的统一 `JsonUtil` 静态门面；
@@ -127,10 +127,10 @@ flowchart TD
 - **纯原生零依赖无锁 Base62 双向短码**：提供 `IdUtil.toBase62(long)` 与 `IdUtil.fromBase62(str)`，将 18~19 位十进制雪花 ID 紧凑无损压缩为 10~11 位 URL 安全短串，内置负数安全与 64 位长整型上下限算术溢出防卫。
 
 ### 12. 受管线程池全景治理、运行时动态调优与监控门面 (`AsyncUtil` & `ThreadPoolStatus`)
-- **运行时度量快照**：通过 `AsyncUtil.getStatus(executor)` 实时提取不可变 `ThreadPoolStatus` 快照，包含核心/最大线程数、当前存活数、活跃执行数、队列积压数、剩余容量与是否饱和状态；
-- **动态平滑热调优**：提供 `AsyncUtil.updatePoolSize(executor, corePoolSize, maxPoolSize)`，在运行时无需重启平滑调整线程池容量，严格遵循 `core <= max` 阶梯步调防御异常；
+- **运行时度量快照**：通过 `AsyncUtil.getStatus(poolName)` / `AsyncUtil.getStatus(executor)` 实时提取不可变 `ThreadPoolStatus` 快照，包含核心/最大线程数、当前存活数、活跃执行数、队列积压数、剩余容量与是否饱和状态；
+- **动态平滑热调优**：提供 `AsyncUtil.resize(poolName, corePoolSize, maxPoolSize)`（及默认主池重载 `AsyncUtil.resize(corePoolSize, maxPoolSize)`），在运行时无需重启平滑调整受管线程池容量，严格遵循 `core <= max` 阶梯步调防御异常；
 - **告警拒绝策略拓展**：在现有标准策略基础上扩充 `WARN_CALLER_RUNS` 与 `WARN_ABORT`，在触发饱和拒绝时自动输出 WARN 级结构化报警日志与堆栈上下文；
-- **四维上下文感知的编程式异步协调**：`AsyncUtil.runAsync`、`supplyAsync`、`allMatches`（提前短路）与 `allOf`（结果汇聚），100% 自动装配上下文装饰器。
+- **四维上下文感知的编程式异步协调**：`AsyncUtil.run`、`supply`、`supplyAll`、`allMatches`（提前短路）与 `allOf`（结果汇聚），100% 自动装配上下文装饰器。
 
 ### 13. 进程内高性能单机内存滑动窗口流控标准件 (`SlidingWindowCounter`)
 - **环形时间切片算法**：基于 `System.currentTimeMillis()` 动态推进与 `LongAdder` 累加器，实现零外部中间件的单机平滑流量削峰与防刷；
@@ -190,6 +190,35 @@ flowchart TD
 - **强类型配置外置化与 IDE 友好元数据**：推出 `@ConfigurationProperties(prefix = "ateng.boot.core")` 统管 `SnowflakeProperties` 与 `CacheProperties`，凡涉及时间超时与容忍阈值一律推行强类型 `java.time.Duration`；
 - **Spring 容器自动装配与自适应优雅降级**：`AtengCoreAutoConfiguration` 自动装配 `@Bean @ConditionalOnMissingBean Snowflake`，未显式配置时平滑降级至网卡 MAC / IP 自适应推导；
 - **时钟回拨严格熔断与规范转译**：当系统 NTP 时钟发生大幅回拨超过 `clock-backoff-tolerance`（默认 5ms）时，严格快速失败并转译抛出框架受管业务异常 `BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR)`，杜绝无序死循环或发号碰撞。
+
+### 25. 受管异步协同增强与超时短路门面 (`AsyncUtil.supplyAll / allOf / allMatches`)
+- **强类型有序批量超时汇聚 (`supplyAll`)**：针对微服务多源扇出或批量指标并行计算，提供带强类型 `Duration` 超时的集合并行调度与顺序保真汇聚，超时主动转译为受管业务异常，彻底杜绝无界挂起；
+- **早期短路快速失败 (`allMatches`)**：在并行规则匹配或前置风控评估中，首个不符合谓词的结果立即触发 `complete(false)` 短路中断，不再等待其余任务计算，极大节省高并发 CPU 与 I/O 资源；
+- **防悬挂批汇聚 (`allOf(futures, timeout)`)**：带硬超时的 `CompletableFuture` 数组汇聚，防御线程池队列悬挂。
+
+### 26. 跨中间件消息传播五维上下文对称激活与自动还原 (`MessageContextPropagator.activate`)
+- **对称现场恢复保障**：消息消费端在接收消息后，调用 `MessageContextPropagator.activate(headers)` 激活消息携带的 traceId、tenantId 与 userId；
+- **`ContextScope` 资源防卫**：返回实现 `AutoCloseable` 的 `ContextScope`，配合 Java 原生 `try-with-resources` 在退出消费作用域时，无条件将工作线程还原为消费前原始快照，彻底消灭线程池复用时的跨租户越权与 traceId 污染。
+
+### 27. 安全文件操作与宿主环境隐性垃圾过滤 (`FileUtil.resolveSafePath / isSystemJunkFile / filterValidPaths`)
+- **宿主隐性垃圾文件过滤**：纯原生识别 Windows（`desktop.ini`、`Thumbs.db`）、macOS（`.DS_Store`、`__MACOSX`）及临时文件，并在批量目录扫描与上传流转中提供 `filterValidPaths` 统一清洗；
+- **目录逃逸刚性防卫 (`resolveSafePath`)**：解析子路径并规范化，严格断言解析路径必须以基准目录开头，若发生逃逸立即快速失败抛出 `IllegalArgumentException`，彻底防御跨目录遍历攻击。
+
+### 28. 传输分页安全清洗与防溢出偏移量计算 (`PageQuery.normalize / safeCurrent / safeSize / offset`)
+- **编程式数据纠偏与只读防呆**：提供 `safeCurrent()` 与 `safeSize()` 只读保底清洗，`normalize()` 原位清洗，防御非 Web 场景恶意非法参数（如 0、负数或超千大数值）；
+- **防溢出偏移量计算 (`offset`)**：采用 `Math.multiplyExact((safeCurrent() - 1), safeSize())` 计算物理偏移量，溢出时安全截断为 `Long.MAX_VALUE`，彻底防止大数溢出为负数穿透持久层引发崩溃。
+
+### 29. 双维上下文栈式对称、惰性防驻留与环境防卫正交解耦增量演进
+- **双维上下文镜像对称与惰性防驻留**：`UserContextHolder` 与 `TenantContextHolder` 统一收敛为基于 `new ThreadLocal<>()` 按需惰性挂载 `LinkedList` 嵌套栈（支持 `null` 压栈遮蔽，并在出栈后于栈空时主动执行 `ThreadLocal.remove()` 防驻留，配合 `TenantContextHolder` 的惰性 `IGNORE_DEPTH` 计数器）；`UserContextHolder` 补齐与 `TenantContextHolder` 对称的 `UserSnapshot`（`capture()` / `capturePrevious()` / `restore(UserSnapshot)`）及 `Long` 类型重载（`set(Long)`、`setUserId(Long)`、`getUserIdAsLong()`、`runWithUser(Long, ...)`）；`TenantContextHolder` 补充 `getExplicit()`（严格区分线程显式绑定值与 `CurrentTenantProvider` 动态兜底值），防止并发审计误判定；
+- **环境后处理正交解耦与日志自清理闭环**：`SystemEnvironmentPostProcessor` 将网络通信探测配置（`ateng.boot.core.net.*` -> `NetUtil`）从 `system.enabled` 中正交剥离，确保关闭 JVM 防卫总开关时仍可正确注入首选网段与过滤虚拟网卡；同时分离 `system.timezone-guard-enabled`（仅跳过时区与 `file.encoding` 校准，不影响 Headless 与 Socket 10s 超时防卫）；`LoggingEnvironmentPostProcessor` 修复 `ateng.boot.core.logging.file.clean-history-on-start` 向 Logback 属性 `LOG_FILE_CLEAN_HISTORY_ON_START` 的显式桥接；
+- **Spring Boot 3.3 `EnvironmentPostProcessor` 注册事实核实**：实测确认 Spring Boot 3.3.13 通过 `SpringFactoriesEnvironmentPostProcessorsFactory` 独占读取 `META-INF/spring.factories` 加载 `EnvironmentPostProcessor`，而 `@AutoConfiguration` 仍唯一收口于 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`（零 `EnableAutoConfiguration` 混用）；
+- **国密套件与工具门面对称收口**：`ResultCodeUtil` 补充 `assertInSegment(int, ResultCodeSegment)` 基础数值校验重载；`ConvertUtil` 补齐 `toSet(...)` 并在集合解包路径全面兼容 `Iterable` 与 `Iterator`；`CryptoUtil`（`SM4/CBC`）与 `DigestUtil`（`SM3`）在体验工程中完成端到端实测闭环。
+
+### 30. 容器雪花桥接、二进制 JSON 扩展、原生国密 HmacSM3 与慢调用领域事件演进
+- **容器发号器对称桥接 (`IdUtil.setSnowflake` / `resetSnowflake`)**：`AtengCoreAutoConfiguration` 自动装配 `@Bean Snowflake` 时同步绑定至 `IdUtil` 全局静态门面（并在上下文销毁时通过 `DisposableBean` 对称复位），收口独立 `Base62` 幽灵命名至 `IdUtil.toBase62/fromBase62`。
+- **`JsonUtil` 对称复位与二进制泛型/集合解析**：新增 `JsonUtil.reset()` 一键将 `defaultMapper`、`longToStringMapper` 与 `cloneMapper` 恢复默认配置；补齐 `parseList(byte[], Class)`、`parseMap(byte[])` 与 `parseMap(byte[], Class, Class)`，并与 `parseObject(byte[], TypeReference)` 统一空安全与因果异常契约。
+- **纯 JDK 国密 `HmacSM3` 与对称密文 AAD 认证**：`HmacUtil` 基于 RFC 2104 与 `DigestUtil.sm3` 纯原生实现 `HMAC_SM3` 全系列对称方法（自动处理超 64 字节密钥压缩），无缝兼容 `verifyHex` / `verifyBase64` 恒定时间验签；`CryptoUtil` 新增 `generateSm4Key()` 与字符串级带附加认证数据（AAD）的 `encryptGcm` / `decryptGcm` 重载。
+- **慢调用领域事件与慢 Bean 启动诊断闭环**：新增不可变领域事件 `SlowAlertEvent`（承载 `className`、`methodName`、`elapsedMs`、`thresholdMs`、`argsSummary`、`traceId` 与 `occurredAt`），由 `SlowAlertAspect` 在触发阈值告警时通过 `ApplicationEventPublisher` 同步发布；`SlowBeanDiagnosticPostProcessor` 对外暴露 `getRecordedSlowBeans()` / `getSlowBeans()` 供运行期健康审计。
 
 ---
 

@@ -1,6 +1,7 @@
 package io.github.atengk.boot.encrypt.env;
 
 import io.github.atengk.boot.encrypt.decryptor.AesGcmConfigDecryptor;
+import io.github.atengk.boot.encrypt.decryptor.Sm4ConfigDecryptor;
 import io.github.atengk.boot.encrypt.detector.KeyDetector;
 import io.github.atengk.boot.encrypt.wrapper.EncryptPropertySourceWrapper;
 import org.junit.jupiter.api.AfterEach;
@@ -124,6 +125,79 @@ class EncryptConfigDataLocationResolverTest {
         Binder binder = mockContext.getBinder();
         String boundPassword = binder.bind("spring.cloud.nacos.password", String.class).get();
         assertThat(boundPassword).isEqualTo("nacos-real-field-pass");
+    }
+
+    @Test
+    @DisplayName("测试全局开关 ateng.boot.encrypt.enabled=false 时 Pre-Resolver Hook 短路退出不包装属性源")
+    void testDisabledShortCircuitsPreResolver() {
+        String cipherPassword = decryptor.encrypt("nacos-disabled-secret", PASSWORD);
+        Map<String, Object> localMap = new HashMap<>();
+        localMap.put("ateng.boot.encrypt.enabled", "false");
+        localMap.put("spring.cloud.nacos.password", "ENC(" + cipherPassword + ")");
+        MapPropertySource localPropertySource = new MapPropertySource("applicationConfig: [classpath:/application.yml]", localMap);
+
+        MockContributor mockContributor = new MockContributor(localPropertySource);
+        MockSpringBoot3ResolverContext mockContext = new MockSpringBoot3ResolverContext(
+                new MockContributors(List.of(mockContributor)));
+
+        boolean resolvable = resolver.isResolvable(mockContext, ConfigDataLocation.of("nacos:application.yaml"));
+        assertThat(resolvable).isFalse();
+        assertThat(mockContributor.getPropertySource()).isNotInstanceOf(EncryptPropertySourceWrapper.class);
+        assertThat(mockContext.getBinder().bind("spring.cloud.nacos.password", String.class).get())
+                .isEqualTo("ENC(" + cipherPassword + ")");
+    }
+
+    @Test
+    @DisplayName("测试阶段一同步绑定 algorithm=SM4-CBC、keys 映射与 fail-on-error=false")
+    void testEarlyBindWithCustomAlgorithmKeysAndFailOnErrorFalse() {
+        String nacosSecret = "nacos-sm4-early-pass";
+        String nacosKey = "NacosEarlyKey2026!";
+        String sm4Cipher = Sm4ConfigDecryptor.encryptCbc(nacosSecret, nacosKey);
+
+        Map<String, Object> localMap = new HashMap<>();
+        localMap.put("ateng.boot.encrypt.algorithm", "SM4-CBC");
+        localMap.put("ateng.boot.encrypt.fail-on-error", "false");
+        localMap.put("ateng.boot.encrypt.keys.nacos-cluster", nacosKey);
+        localMap.put("spring.cloud.nacos.password", "ENC[nacos-cluster](" + sm4Cipher + ")");
+        localMap.put("broken.secret", "ENC(CorruptedEarlyCipher)");
+        MapPropertySource localPropertySource = new MapPropertySource("applicationConfig: [classpath:/application.yml]", localMap);
+
+        MockContributor mockContributor = new MockContributor(localPropertySource);
+        MockSpringBoot3ResolverContext mockContext = new MockSpringBoot3ResolverContext(
+                new MockContributors(List.of(mockContributor)));
+
+        resolver.isResolvable(mockContext, ConfigDataLocation.of("nacos:application.yaml"));
+
+        assertThat(mockContributor.getPropertySource()).isInstanceOf(EncryptPropertySourceWrapper.class);
+        Binder binder = mockContext.getBinder();
+        assertThat(binder.bind("spring.cloud.nacos.password", String.class).get()).isEqualTo(nacosSecret);
+        assertThat(binder.bind("broken.secret", String.class).get()).isEqualTo("ENC(CorruptedEarlyCipher)");
+    }
+
+    @Test
+    @DisplayName("测试阶段一通过 JVM 系统属性设置自定义前后缀时准确穿透解密")
+    void testEarlyBindRespectsSystemPropertyCustomPrefixSuffix() {
+        System.setProperty(EncryptEnvironmentSupport.PROPERTY_PREFIX, "CRYPT[");
+        System.setProperty(EncryptEnvironmentSupport.PROPERTY_SUFFIX, "]");
+        try {
+            String cipherPassword = decryptor.encrypt("nacos-sysprop-prefix-pass", PASSWORD);
+            Map<String, Object> localMap = new HashMap<>();
+            localMap.put("spring.cloud.nacos.password", "CRYPT[" + cipherPassword + "]");
+            MapPropertySource localPropertySource = new MapPropertySource("applicationConfig: [classpath:/application.yml]", localMap);
+
+            MockContributor mockContributor = new MockContributor(localPropertySource);
+            MockSpringBoot3ResolverContext mockContext = new MockSpringBoot3ResolverContext(
+                    new MockContributors(List.of(mockContributor)));
+
+            resolver.isResolvable(mockContext, ConfigDataLocation.of("nacos:application.yaml"));
+
+            assertThat(mockContributor.getPropertySource()).isInstanceOf(EncryptPropertySourceWrapper.class);
+            assertThat(mockContext.getBinder().bind("spring.cloud.nacos.password", String.class).get())
+                    .isEqualTo("nacos-sysprop-prefix-pass");
+        } finally {
+            System.clearProperty(EncryptEnvironmentSupport.PROPERTY_PREFIX);
+            System.clearProperty(EncryptEnvironmentSupport.PROPERTY_SUFFIX);
+        }
     }
 
     // ========== 模拟 Spring Boot 内部 Contributor 树状结构 ==========

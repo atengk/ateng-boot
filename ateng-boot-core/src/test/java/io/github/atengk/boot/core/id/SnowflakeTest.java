@@ -2,9 +2,12 @@ package io.github.atengk.boot.core.id;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.util.NetUtil;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -22,6 +25,11 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @DisplayName("原生 Twitter Snowflake 雪花发号器测试")
 class SnowflakeTest {
+
+    @AfterEach
+    void tearDown() {
+        NetUtil.resetConfiguration();
+    }
 
     @Test
     @DisplayName("单线程顺序发号：趋势递增且绝对唯一")
@@ -254,5 +262,17 @@ class SnowflakeTest {
         // 静态方法反解带默认 epoch
         SnowflakeIdInfo staticDefaultInfo = Snowflake.parse(defaultId, Snowflake.DEFAULT_EPOCH);
         assertEquals(defaultInfo, staticDefaultInfo);
+    }
+
+    @Test
+    @DisplayName("联动 NetUtil 过滤虚拟/忽略网卡并基于受信内网 IPv4 推导节点 ID")
+    void shouldDeriveNodeIdsViaNetUtilAndSkipIgnoredInterfaces() {
+        // 排除全部网卡以跳过 MAC 分支，验证降级使用 NetUtil 首选 IP (10.88.99.7 -> datacenterId=99%32=3, workerId=7)
+        NetUtil.configure("10.88.99.7", null, List.of("*"));
+        assertEquals(0, NetUtil.getLocalMacBytes().length);
+
+        Snowflake snowflake = new Snowflake();
+        assertEquals(7L, snowflake.getWorkerId());
+        assertEquals(3L, snowflake.getDatacenterId());
     }
 }

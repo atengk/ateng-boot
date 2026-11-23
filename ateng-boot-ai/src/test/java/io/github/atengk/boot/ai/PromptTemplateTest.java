@@ -1,0 +1,176 @@
+package io.github.atengk.boot.ai;
+
+import io.github.atengk.boot.ai.exception.AiException;
+import io.github.atengk.boot.ai.exception.AiResultCode;
+import io.github.atengk.boot.ai.prompt.PromptTemplate;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * 提示词模板参数插值单元测试
+ *
+ * @author Ateng
+ * @since 2026-11-03
+ */
+class PromptTemplateTest {
+
+    @Test
+    @DisplayName("基础单参数与多参数插值替换")
+    void testBasicInterpolation() {
+        PromptTemplate template = PromptTemplate.of("你好 {{name}}，你的身份是 {{ role }}，编号为 {{user.id}}。");
+
+        assertThat(template.getVariableNames()).containsExactlyInAnyOrder("name", "role", "user.id");
+
+        Map<String, Object> vars = Map.of(
+                "name", "张三",
+                "role", "管理员",
+                "user.id", 10086
+        );
+
+        String result = template.render(vars);
+        assertThat(result).isEqualTo("你好 张三，你的身份是 管理员，编号为 10086。");
+    }
+
+    @Test
+    @DisplayName("变长参数键值对渲染语法糖")
+    void testVarargsRender() {
+        PromptTemplate template = PromptTemplate.of("请将下述内容翻译为 {{targetLang}}：{{content}}");
+
+        String result = template.render("targetLang", "英语", "content", "企业级全能中间件");
+        assertThat(result).isEqualTo("请将下述内容翻译为 英语：企业级全能中间件");
+    }
+
+    @Test
+    @DisplayName("部分未提供变量保持原样保留")
+    void testUnresolvedVariablesRetained() {
+        PromptTemplate template = PromptTemplate.of("系统参数：{{configured}}，未配置参数：{{missing}}");
+
+        String result = template.render(Map.of("configured", "OK"));
+        assertThat(result).isEqualTo("系统参数：OK，未配置参数：{{missing}}");
+    }
+
+    @Test
+    @DisplayName("显式传入 null 值替换为空白字符")
+    void testNullVariableRender() {
+        PromptTemplate template = PromptTemplate.of("前缀-{{nullVar}}-后缀");
+
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("nullVar", null);
+
+        String result = template.render(vars);
+        assertThat(result).isEqualTo("前缀--后缀");
+    }
+
+    @Test
+    @DisplayName("传入 null 或空 Map 保持原模板不变")
+    void testEmptyVariables() {
+        PromptTemplate template = PromptTemplate.of("原始模板内容 {{var}}");
+
+        assertThat(template.render((Map<String, ?>) null)).isEqualTo("原始模板内容 {{var}}");
+        assertThat(template.render(Collections.emptyMap())).isEqualTo("原始模板内容 {{var}}");
+        assertThat(template.render(new Object[0])).isEqualTo("原始模板内容 {{var}}");
+    }
+
+    @Test
+    @DisplayName("对抗性测试：变长参数传入奇数个参数抛出 AI_INVALID_PAYLOAD")
+    void testOddVarargsThrows() {
+        PromptTemplate template = PromptTemplate.of("测试 {{key}}");
+
+        assertThatThrownBy(() -> template.render("key"))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_INVALID_PAYLOAD));
+    }
+
+    @Test
+    @DisplayName("对抗性测试：模板为空或空白抛出 AI_CONFIG_ERROR")
+    void testEmptyTemplateThrows() {
+        assertThatThrownBy(() -> PromptTemplate.of(null))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+
+        assertThatThrownBy(() -> PromptTemplate.of("   "))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+    }
+
+    @Test
+    @DisplayName("从 Classpath 成功加载外部 Markdown 提示词文件")
+    void testFromClasspathSuccess() {
+        PromptTemplate template1 = PromptTemplate.fromClasspath("prompts/test-prompt.md");
+        assertThat(template1.getVariableNames()).containsExactlyInAnyOrder("userName", "content");
+
+        String rendered = template1.render(Map.of("userName", "张三", "content", "查询未完成订单"));
+        assertThat(rendered).contains("用户: 张三").contains("请求内容: 查询未完成订单");
+
+        PromptTemplate template2 = PromptTemplate.fromClasspath("classpath:prompts/test-prompt.md");
+        assertThat(template2.render(Map.of("userName", "李四", "content", "申请退款"))).contains("用户: 李四");
+
+        PromptTemplate template3 = PromptTemplate.fromClasspath("/prompts/test-prompt.md");
+        assertThat(template3.render(Map.of("userName", "王五", "content", "修改密码"))).contains("用户: 王五");
+    }
+
+    @Test
+    @DisplayName("从 Classpath 加载不存在或空白路径抛出 AI_CONFIG_ERROR")
+    void testFromClasspathFailure() {
+        assertThatThrownBy(() -> PromptTemplate.fromClasspath(null))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+
+        assertThatThrownBy(() -> PromptTemplate.fromClasspath("   "))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+
+        assertThatThrownBy(() -> PromptTemplate.fromClasspath("prompts/not-exist.md"))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+    }
+
+    @Test
+    @DisplayName("从 Resource 加载：null 或不存在资源抛出 AI_CONFIG_ERROR")
+    void testFromResourceFailure() {
+        assertThatThrownBy(() -> PromptTemplate.fromResource(null))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+
+        org.springframework.core.io.ClassPathResource missing = new org.springframework.core.io.ClassPathResource("non-exist-file.md");
+        assertThatThrownBy(() -> PromptTemplate.fromResource(missing))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+    }
+
+    @Test
+    @DisplayName("严格校验模式 renderStrict：必填变量齐备时成功渲染，缺失或为 null 时抛出 AI_INVALID_PAYLOAD")
+    void testRenderStrictSuccessAndFailFast() {
+        PromptTemplate template = PromptTemplate.of("工单 {{ticketId}} 分配给 {{owner}}");
+
+        // 1. 变量全部齐备 -> 正常渲染
+        assertThat(template.renderStrict(Map.of("ticketId", "T-100", "owner", "Ateng")))
+                .isEqualTo("工单 T-100 分配给 Ateng");
+        assertThat(template.renderStrict("ticketId", "T-101", "owner", "Bot"))
+                .isEqualTo("工单 T-101 分配给 Bot");
+
+        // 2. 缺失变量 -> 抛出 AI_INVALID_PAYLOAD
+        assertThatThrownBy(() -> template.renderStrict(Map.of("ticketId", "T-100")))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_INVALID_PAYLOAD));
+
+        // 3. 变量显式传 null -> 抛出 AI_INVALID_PAYLOAD
+        Map<String, Object> withNull = new HashMap<>();
+        withNull.put("ticketId", "T-100");
+        withNull.put("owner", null);
+        assertThatThrownBy(() -> template.renderStrict(withNull))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_INVALID_PAYLOAD));
+
+        // 4. 空映射调用无占位符模板 -> 正常通过
+        assertThat(PromptTemplate.of("纯静态系统指令").renderStrict(Collections.emptyMap()))
+                .isEqualTo("纯静态系统指令");
+    }
+}

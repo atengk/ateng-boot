@@ -2,6 +2,7 @@ package io.github.atengk.boot.pay.core.executor;
 
 import io.github.atengk.boot.pay.config.properties.BarcodePayProperties;
 import io.github.atengk.boot.pay.core.PayTemplate;
+import io.github.atengk.boot.pay.core.context.PayContextHolder;
 import io.github.atengk.boot.pay.enums.PayChannel;
 import io.github.atengk.boot.pay.enums.PayResultCode;
 import io.github.atengk.boot.pay.enums.PayTradeState;
@@ -105,6 +106,7 @@ public class BarcodePayExecutor {
      */
     public PayResponse execute(UnifiedPayRequest request, Duration maxWaitTime, Duration pollInterval, boolean autoCancelOnTimeout) {
         validateRequest(request);
+        PayChannel channel = resolveChannel(request);
 
         // 确保 tradeType 固定为 BARCODE
         request.setTradeType(PayTradeType.BARCODE);
@@ -117,7 +119,6 @@ public class BarcodePayExecutor {
                 : defaultProperties.getPollInterval();
 
         String outTradeNo = request.getOutTradeNo();
-        PayChannel channel = request.getChannel();
 
         log.info("BarcodePayExecutor starting: channel={}, outTradeNo={}, amount={}, maxWaitTime={}, pollInterval={}",
                 channel, outTradeNo, request.getAmount(), effectiveMaxWait, effectiveInterval);
@@ -132,9 +133,14 @@ public class BarcodePayExecutor {
             initialResponse = null;
         }
 
-        // 2. 初始扣款直接成功（如小额免密支付）
+        // 2. 初始扣款直接成功或返回明确非支付中终态时立即短路返回（零额外查单与睡眠）
         if (initialResponse != null && initialResponse.isSuccess() && initialResponse.getTradeState() == PayTradeState.SUCCESS) {
             log.info("Barcode payment succeeded immediately without polling: outTradeNo={}", outTradeNo);
+            return initialResponse;
+        }
+        if (initialResponse != null && isDefinitiveFailureState(initialResponse.getTradeState())) {
+            log.warn("Barcode payment returned definitive non-pending state on initial call, short-circuiting: outTradeNo={}, tradeState={}",
+                    outTradeNo, initialResponse.getTradeState());
             return initialResponse;
         }
 
@@ -157,6 +163,7 @@ public class BarcodePayExecutor {
                         .merchantKey(request.getMerchantKey())
                         .outTradeNo(outTradeNo)
                         .subMchId(request.getSubMchId())
+                        .appAuthToken(request.getAppAuthToken())
                         .build();
 
                 latestResponse = payTemplate.queryOrder(queryReq);
@@ -168,9 +175,7 @@ public class BarcodePayExecutor {
                 }
 
                 // 若遇到明确的不可逆失败终态（如订单已关闭或已被撤销），跳出循环不再无谓轮询
-                if (latestResponse != null && (latestResponse.getTradeState() == PayTradeState.CLOSED
-                        || latestResponse.getTradeState() == PayTradeState.REVOKED
-                        || latestResponse.getTradeState() == PayTradeState.PAYERROR)) {
+                if (latestResponse != null && isDefinitiveFailureState(latestResponse.getTradeState())) {
                     log.warn("Barcode payment received definitive failure status during polling: outTradeNo={}, tradeState={}",
                             outTradeNo, latestResponse.getTradeState());
                     break;
@@ -201,20 +206,41 @@ public class BarcodePayExecutor {
                         .merchantKey(request.getMerchantKey())
                         .outTradeNo(outTradeNo)
                         .subMchId(request.getSubMchId())
+                        .appAuthToken(request.getAppAuthToken())
                         .build();
 
                 PayResponse cancelResp = payTemplate.cancelOrder(cancelReq);
                 log.info("Auto-reversal cancelOrder executed successfully: outTradeNo={}, cancelResult={}",
                         outTradeNo, cancelResp != null ? cancelResp.getTradeState() : "NULL");
 
+                PayTradeState resolvedState = cancelResp != null && cancelResp.getTradeState() != null
+                        ? cancelResp.getTradeState()
+                        : PayTradeState.REVOKED;
+                String baseTimeoutDesc = "条码支付等待用户输密超时，系统已自动发起撤销冲正";
+                String resolvedDesc;
+                if (cancelResp != null && cancelResp.getTradeStateDesc() != null && !cancelResp.getTradeStateDesc().isBlank()) {
+                    String cancelDesc = cancelResp.getTradeStateDesc().trim();
+                    resolvedDesc = cancelDesc.contains(baseTimeoutDesc)
+                            ? cancelDesc
+                            : baseTimeoutDesc + "（" + cancelDesc + "）";
+                } else {
+                    resolvedDesc = baseTimeoutDesc;
+                }
+                boolean paymentSuccess = resolvedState == PayTradeState.SUCCESS;
+
                 return PayResponse.builder()
                         .channel(channel)
                         .tradeType(PayTradeType.BARCODE)
-                        .outTradeNo(outTradeNo)
-                        .amount(request.getAmount())
-                        .tradeState(PayTradeState.REVOKED)
-                        .tradeStateDesc("条码支付等待用户输密超时，系统已自动发起撤销冲正")
-                        .success(false)
+                        .outTradeNo(cancelResp != null && cancelResp.getOutTradeNo() != null ? cancelResp.getOutTradeNo() : outTradeNo)
+                        .transactionId(cancelResp != null ? cancelResp.getTransactionId() : null)
+                        .tradeNo(cancelResp != null ? cancelResp.getTradeNo() : null)
+                        .amount(cancelResp != null && cancelResp.getAmount() != null ? cancelResp.getAmount() : request.getAmount())
+                        .tradeState(resolvedState)
+                        .rawTradeState(cancelResp != null && cancelResp.getRawTradeState() != null
+                                ? cancelResp.getRawTradeState()
+                                : resolvedState.getCode())
+                        .tradeStateDesc(resolvedDesc)
+                        .success(paymentSuccess)
                         .rawResponse(cancelResp != null ? cancelResp.getRawResponse() : null)
                         .build();
             } catch (Exception cancelEx) {
@@ -233,6 +259,25 @@ public class BarcodePayExecutor {
                 .tradeStateDesc("条码支付超时未完成")
                 .success(false)
                 .build();
+    }
+
+    private PayChannel resolveChannel(UnifiedPayRequest request) {
+        if (request.getChannel() != null) {
+            return request.getChannel();
+        }
+        PayChannel contextChannel = PayContextHolder.getChannel();
+        if (contextChannel != null) {
+            return contextChannel;
+        }
+        throw new PayException(PayResultCode.PAY_PARAM_INVALID,
+                "未指定支付渠道 [channel]，请在请求入参或 PayContextHolder 上下文中指定");
+    }
+
+    private boolean isDefinitiveFailureState(PayTradeState tradeState) {
+        return tradeState == PayTradeState.CLOSED
+                || tradeState == PayTradeState.REVOKED
+                || tradeState == PayTradeState.PAYERROR
+                || tradeState == PayTradeState.REFUND;
     }
 
     private void validateRequest(UnifiedPayRequest request) {

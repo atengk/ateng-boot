@@ -67,4 +67,8 @@ public class TradeRocketmqProducer {
     public SendReceipt sendOrderWithSqlProperties(OrderMessage order, Map<String, String> properties) {
         return rocketmqTemplate.send(TOPIC_SQL, null, order.getOrderId(), order, properties);
     }
+
+    public RocketmqTemplate getRocketmqTemplate() {
+        return this.rocketmqTemplate;
+    }
 }

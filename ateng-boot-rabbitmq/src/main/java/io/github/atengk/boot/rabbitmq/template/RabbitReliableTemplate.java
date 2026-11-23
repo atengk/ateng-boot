@@ -9,6 +9,7 @@ import io.github.atengk.boot.rabbitmq.properties.RabbitmqProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.amqp.core.Message;
+import org.springframework.amqp.core.MessagePostProcessor;
 import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -21,7 +22,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.util.Assert;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -40,6 +43,7 @@ import java.util.concurrent.TimeoutException;
 public class RabbitReliableTemplate {
 
     private static final String MQ_TYPE_RABBITMQ = "rabbitmq";
+    public static final int HARD_MAX_BATCH_SIZE = 1000;
 
     private final RabbitTemplate rabbitTemplate;
     private final RabbitmqProperties properties;
@@ -148,16 +152,132 @@ public class RabbitReliableTemplate {
      * @throws MessageDeliveryException 发送被拒、超时或底层异常时抛出
      */
     public void sendReliable(String exchange, String routingKey, Object payload, String bizKey, Duration timeout) {
+        sendReliable(exchange, routingKey, payload, bizKey, timeout, (MessagePostProcessor[]) null);
+    }
+
+    /**
+     * 同步可靠发送消息至指定交换机，挂载自定义 MessagePostProcessor 处理器
+     *
+     * @param exchange    目标交换机
+     * @param routingKey  目标路由键
+     * @param payload     消息载荷对象
+     * @param customizers 消息属性后置定制器 (如优先级、扩展消息头)
+     * @throws MessageDeliveryException 发送被拒、超时或底层异常时抛出
+     */
+    public void sendReliable(String exchange, String routingKey, Object payload, MessagePostProcessor... customizers) {
+        sendReliable(exchange, routingKey, payload, null, properties.getReliable().getDefaultTimeout(), customizers);
+    }
+
+    /**
+     * 同步可靠发送消息至指定交换机，携带业务唯一标识 bizKey 并挂载自定义 MessagePostProcessor 处理器
+     *
+     * @param exchange    目标交换机
+     * @param routingKey  目标路由键
+     * @param payload     消息载荷对象
+     * @param bizKey      业务唯一标识
+     * @param customizers 消息属性后置定制器 (如优先级、扩展消息头)
+     * @throws MessageDeliveryException 发送被拒、超时或底层异常时抛出
+     */
+    public void sendReliable(String exchange, String routingKey, Object payload, String bizKey, MessagePostProcessor... customizers) {
+        sendReliable(exchange, routingKey, payload, bizKey, properties.getReliable().getDefaultTimeout(), customizers);
+    }
+
+    /**
+     * 同步可靠发送消息至指定交换机，携带显式确认超时时间并挂载自定义 MessagePostProcessor 处理器
+     *
+     * @param exchange    目标交换机
+     * @param routingKey  目标路由键
+     * @param payload     消息载荷对象
+     * @param timeout     等待 Broker ACK 的超时时间
+     * @param customizers 消息属性后置定制器 (如优先级、扩展消息头)
+     * @throws MessageDeliveryException 发送被拒、超时或底层异常时抛出
+     */
+    public void sendReliable(String exchange, String routingKey, Object payload, Duration timeout, MessagePostProcessor... customizers) {
+        sendReliable(exchange, routingKey, payload, null, timeout, customizers);
+    }
+
+    /**
+     * 同步可靠发送消息至指定交换机，携带业务唯一标识 bizKey、显式确认超时时间并挂载自定义 MessagePostProcessor 处理器
+     *
+     * @param exchange    目标交换机
+     * @param routingKey  目标路由键
+     * @param payload     消息载荷对象
+     * @param bizKey      业务唯一标识
+     * @param timeout     等待 Broker ACK 的超时时间
+     * @param customizers 消息属性后置定制器 (如优先级、扩展消息头)
+     * @throws MessageDeliveryException 发送被拒、超时或底层异常时抛出
+     */
+    public void sendReliable(String exchange, String routingKey, Object payload, String bizKey, Duration timeout, MessagePostProcessor... customizers) {
         Assert.hasText(exchange, "exchange 交换机名称不能为空");
         String effectiveRoutingKey = routingKey != null ? routingKey : "";
         Assert.notNull(payload, "payload 消息载荷不能为空");
 
         MessageProperties messageProperties = new MessageProperties();
-        Message message = prepareMessage(exchange, payload, messageProperties, bizKey);
+        Message message = prepareMessage(exchange, payload, messageProperties, bizKey, customizers);
         String effectiveBizKey = MessageContextPropagator.extractString(message.getMessageProperties().getHeaders(), MessageHeaderConstants.BIZ_KEY);
         Duration effectiveTimeout = timeout != null ? timeout : properties.getReliable().getDefaultTimeout();
 
         doSendReliable(exchange, effectiveRoutingKey, message, payload, effectiveBizKey, effectiveTimeout);
+    }
+
+    /**
+     * 同步可靠发送优先级消息至指定交换机，使用默认确认超时时间与自适应 bizKey
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param priority   消息优先级 (0-255，对应队列 x-max-priority)
+     * @throws MessageDeliveryException 发送被拒、超时或底层异常时抛出
+     */
+    public void sendReliableWithPriority(String exchange, String routingKey, Object payload, int priority) {
+        sendReliableWithPriority(exchange, routingKey, payload, priority, null, properties.getReliable().getDefaultTimeout());
+    }
+
+    /**
+     * 同步可靠发送优先级消息至指定交换机，携带业务唯一标识 bizKey，使用默认确认超时时间
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param priority   消息优先级 (0-255，对应队列 x-max-priority)
+     * @param bizKey     业务唯一标识
+     * @throws MessageDeliveryException 发送被拒、超时或底层异常时抛出
+     */
+    public void sendReliableWithPriority(String exchange, String routingKey, Object payload, int priority, String bizKey) {
+        sendReliableWithPriority(exchange, routingKey, payload, priority, bizKey, properties.getReliable().getDefaultTimeout());
+    }
+
+    /**
+     * 同步可靠发送优先级消息至指定交换机，显式指定确认超时时间
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param priority   消息优先级 (0-255，对应队列 x-max-priority)
+     * @param timeout    等待 Broker ACK 的超时时间
+     * @throws MessageDeliveryException 发送被拒、超时或底层异常时抛出
+     */
+    public void sendReliableWithPriority(String exchange, String routingKey, Object payload, int priority, Duration timeout) {
+        sendReliableWithPriority(exchange, routingKey, payload, priority, null, timeout);
+    }
+
+    /**
+     * 同步可靠发送优先级消息至指定交换机，携带业务唯一标识 bizKey 与显式确认超时时间
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param priority   消息优先级 (0-255，对应队列 x-max-priority)
+     * @param bizKey     业务唯一标识
+     * @param timeout    等待 Broker ACK 的超时时间
+     * @throws MessageDeliveryException 发送被拒、超时或底层异常时抛出
+     */
+    public void sendReliableWithPriority(String exchange, String routingKey, Object payload, int priority, String bizKey, Duration timeout) {
+        Assert.isTrue(priority >= 0 && priority <= 255, "priority 消息优先级必须在 0 到 255 之间");
+        sendReliable(exchange, routingKey, payload, bizKey, timeout, msg -> {
+            msg.getMessageProperties().setPriority(priority);
+            return msg;
+        });
     }
 
     // =========================================================================
@@ -173,7 +293,7 @@ public class RabbitReliableTemplate {
      * @return CompletableFuture 确认结果
      */
     public CompletableFuture<CorrelationData.Confirm> sendReliableAsync(String exchange, String routingKey, Object payload) {
-        return sendReliableAsync(exchange, routingKey, payload, null);
+        return sendReliableAsync(exchange, routingKey, payload, (String) null);
     }
 
     /**
@@ -186,19 +306,291 @@ public class RabbitReliableTemplate {
      * @return CompletableFuture 确认结果
      */
     public CompletableFuture<CorrelationData.Confirm> sendReliableAsync(String exchange, String routingKey, Object payload, String bizKey) {
+        return sendReliableAsync(exchange, routingKey, payload, bizKey, (MessagePostProcessor[]) null);
+    }
+
+    /**
+     * 异步可靠发送消息，挂载自定义 MessagePostProcessor 处理器，返回 Publisher Confirm 异步确认 Future
+     *
+     * @param exchange    目标交换机
+     * @param routingKey  目标路由键
+     * @param payload     消息载荷对象
+     * @param customizers 消息属性后置定制器
+     * @return CompletableFuture 确认结果
+     */
+    public CompletableFuture<CorrelationData.Confirm> sendReliableAsync(String exchange, String routingKey, Object payload, MessagePostProcessor... customizers) {
+        return sendReliableAsync(exchange, routingKey, payload, null, customizers);
+    }
+
+    /**
+     * 异步可靠发送消息，携带业务唯一标识 bizKey 并挂载自定义 MessagePostProcessor 处理器，返回 Publisher Confirm 异步确认 Future
+     *
+     * @param exchange    目标交换机
+     * @param routingKey  目标路由键
+     * @param payload     消息载荷对象
+     * @param bizKey      业务唯一标识
+     * @param customizers 消息属性后置定制器
+     * @return CompletableFuture 确认结果
+     */
+    public CompletableFuture<CorrelationData.Confirm> sendReliableAsync(String exchange, String routingKey, Object payload, String bizKey, MessagePostProcessor... customizers) {
         Assert.hasText(exchange, "exchange 交换机名称不能为空");
         String effectiveRoutingKey = routingKey != null ? routingKey : "";
         Assert.notNull(payload, "payload 消息载荷不能为空");
 
         MessageProperties messageProperties = new MessageProperties();
-        Message message = prepareMessage(exchange, payload, messageProperties, bizKey);
+        Message message = prepareMessage(exchange, payload, messageProperties, bizKey, customizers);
         String effectiveBizKey = MessageContextPropagator.extractString(message.getMessageProperties().getHeaders(), MessageHeaderConstants.BIZ_KEY);
 
         return doSendInternal(exchange, effectiveRoutingKey, message, effectiveBizKey);
     }
 
+    /**
+     * 异步可靠发送优先级消息，返回 Publisher Confirm 异步确认 Future
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param priority   消息优先级 (0-255，对应队列 x-max-priority)
+     * @return CompletableFuture 确认结果
+     */
+    public CompletableFuture<CorrelationData.Confirm> sendReliableAsyncWithPriority(String exchange, String routingKey, Object payload, int priority) {
+        return sendReliableAsyncWithPriority(exchange, routingKey, payload, priority, null);
+    }
+
+    /**
+     * 异步可靠发送优先级消息，携带业务唯一标识 bizKey，返回 Publisher Confirm 异步确认 Future
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param priority   消息优先级 (0-255，对应队列 x-max-priority)
+     * @param bizKey     业务唯一标识
+     * @return CompletableFuture 确认结果
+     */
+    public CompletableFuture<CorrelationData.Confirm> sendReliableAsyncWithPriority(String exchange, String routingKey, Object payload, int priority, String bizKey) {
+        Assert.isTrue(priority >= 0 && priority <= 255, "priority 消息优先级必须在 0 到 255 之间");
+        return sendReliableAsync(exchange, routingKey, payload, bizKey, msg -> {
+            msg.getMessageProperties().setPriority(priority);
+            return msg;
+        });
+    }
+
     // =========================================================================
-    // 3. 延迟消息发送 (sendDelayed)
+    // 3. 批量可靠发送 (sendBatchReliable & sendBatchReliableAsync)
+    // =========================================================================
+
+    /**
+     * 批量同步可靠发送消息列表至指定交换机，使用默认确认超时时间
+     * 每条消息拥有独立四维上下文快照与独立 CorrelationData，并发异步发送并聚合等待所有 Broker Confirm ACK
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payloads   消息载荷列表 (不允许为 null 或空，单批上限 1000 条，且列表内元素不允许为 null)
+     * @throws MessageDeliveryException 任何消息被拒、超时或底层异常时抛出，携带失败条目的索引与业务键
+     */
+    public void sendBatchReliable(String exchange, String routingKey, List<?> payloads) {
+        sendBatchReliable(exchange, routingKey, payloads, properties.getReliable().getDefaultTimeout());
+    }
+
+    /**
+     * 批量同步可靠发送消息列表至指定交换机，显式指定确认超时时间
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payloads   消息载荷列表 (不允许为 null 或空，单批上限 1000 条，且列表内元素不允许为 null)
+     * @param timeout    等待全部消息 Broker ACK 的总超时时间
+     * @throws MessageDeliveryException 任何消息被拒、超时或底层异常时抛出，携带失败条目的索引与业务键
+     */
+    public void sendBatchReliable(String exchange, String routingKey, List<?> payloads, Duration timeout) {
+        Assert.hasText(exchange, "exchange 交换机名称不能为空");
+        String effectiveRoutingKey = routingKey != null ? routingKey : "";
+        Duration effectiveTimeout = timeout != null ? timeout : properties.getReliable().getDefaultTimeout();
+        int batchSize = payloads != null ? payloads.size() : 0;
+        checkBatchNotInterrupted(exchange, effectiveRoutingKey, batchSize);
+        awaitBatchFuture(exchange, effectiveRoutingKey, batchSize,
+                sendBatchReliableAsync(exchange, routingKey, payloads, effectiveTimeout));
+    }
+
+    /**
+     * 批量异步可靠发送消息列表至指定交换机，使用默认确认超时时间，返回 CompletableFuture 聚合确认结果
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payloads   消息载荷列表 (不允许为 null 或空，单批上限 1000 条，且列表内元素不允许为 null)
+     * @return CompletableFuture 聚合确认 Future
+     */
+    public CompletableFuture<Void> sendBatchReliableAsync(String exchange, String routingKey, List<?> payloads) {
+        return sendBatchReliableAsync(exchange, routingKey, payloads, properties.getReliable().getDefaultTimeout());
+    }
+
+    /**
+     * 批量异步可靠发送消息列表至指定交换机，显式指定确认超时时间，返回 CompletableFuture 聚合确认结果
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payloads   消息载荷列表 (不允许为 null 或空，单批上限 1000 条，且列表内元素不允许为 null)
+     * @param timeout    等待全部消息 Broker ACK 的总超时时间
+     * @return CompletableFuture 聚合确认 Future
+     */
+    public CompletableFuture<Void> sendBatchReliableAsync(String exchange, String routingKey, List<?> payloads, Duration timeout) {
+        String effectiveRoutingKey = routingKey != null ? routingKey : "";
+        Duration effectiveTimeout = timeout != null ? timeout : properties.getReliable().getDefaultTimeout();
+        List<PreparedBatchItem> preparedItems = validateAndPrepareBatchItems(exchange, payloads);
+        return dispatchPreparedBatch(exchange, effectiveRoutingKey, preparedItems, effectiveTimeout);
+    }
+
+    private List<PreparedBatchItem> validateAndPrepareBatchItems(String exchange, List<?> payloads) {
+        Assert.hasText(exchange, "exchange 交换机名称不能为空");
+        Assert.notNull(payloads, "payloads 消息载荷列表不能为空");
+        Assert.notEmpty(payloads, "payloads 消息载荷列表不能为空列表");
+        int maxBatchSize = properties.getProducer() != null && properties.getProducer().getMaxBatchSize() > 0
+                ? properties.getProducer().getMaxBatchSize()
+                : HARD_MAX_BATCH_SIZE;
+        Assert.isTrue(payloads.size() <= maxBatchSize,
+                String.format("payloads 批量投递数量不能超过 %d 条 (当前: %d)", maxBatchSize, payloads.size()));
+
+        int size = payloads.size();
+        // 前置分层防卫与 Fail-Fast：在注册同步器或发起网络调用前完成逐条非空校验、上下文注入与体积校验
+        List<PreparedBatchItem> preparedItems = new ArrayList<>(size);
+        for (int i = 0; i < size; i++) {
+            Object payload = payloads.get(i);
+            Assert.notNull(payload, "payloads[" + i + "] 消息载荷不能为 null");
+            MessageProperties messageProperties = new MessageProperties();
+            Message message = prepareMessage(exchange, payload, messageProperties, null);
+            String bizKey = MessageContextPropagator.extractString(
+                    message.getMessageProperties().getHeaders(), MessageHeaderConstants.BIZ_KEY);
+            preparedItems.add(new PreparedBatchItem(i, message, bizKey));
+        }
+        return preparedItems;
+    }
+
+    private CompletableFuture<Void> dispatchPreparedBatch(
+            String exchange,
+            String effectiveRoutingKey,
+            List<PreparedBatchItem> preparedItems,
+            Duration effectiveTimeout) {
+        int size = preparedItems.size();
+        List<BatchFutureItem> futureItems = new ArrayList<>(size);
+        List<CompletableFuture<?>> allFutures = new ArrayList<>(size);
+
+        for (PreparedBatchItem item : preparedItems) {
+            CompletableFuture<CorrelationData.Confirm> future =
+                    doSendInternal(exchange, effectiveRoutingKey, item.message(), item.bizKey());
+            futureItems.add(new BatchFutureItem(item.index(), item.bizKey(), future));
+            allFutures.add(future);
+        }
+
+        // 3. 异步聚合等待所有消息的确认结果并处理超时与 NACK
+        CompletableFuture<Void> resultFuture = new CompletableFuture<>();
+        CompletableFuture.allOf(allFutures.toArray(new CompletableFuture[0]))
+                .orTimeout(effectiveTimeout.toMillis(), TimeUnit.MILLISECONDS)
+                .whenComplete((ignored, ex) -> {
+                    if (ex != null) {
+                        Throwable rootErr = ex.getCause() != null ? ex.getCause() : ex;
+                        if (rootErr instanceof TimeoutException) {
+                            List<String> failedDetails = new ArrayList<>();
+                            for (BatchFutureItem item : futureItems) {
+                                if (!item.future().isDone()) {
+                                    failedDetails.add(String.format("index=%d(bizKey=%s, status=TIMEOUT)", item.index(), item.bizKey()));
+                                } else if (item.future().isCompletedExceptionally()) {
+                                    Throwable itemErr = null;
+                                    try {
+                                        item.future().getNow(null);
+                                    } catch (Throwable t) {
+                                        itemErr = t.getCause() != null ? t.getCause() : t;
+                                    }
+                                    String errMsg = itemErr != null ? itemErr.getMessage() : "unknown";
+                                    failedDetails.add(String.format("index=%d(bizKey=%s, status=FAILED, error=%s)", item.index(), item.bizKey(), errMsg));
+                                } else {
+                                    CorrelationData.Confirm confirm = item.future().getNow(null);
+                                    if (confirm != null && !confirm.isAck()) {
+                                        failedDetails.add(String.format("index=%d(bizKey=%s, status=NACK, reason=%s)", item.index(), item.bizKey(), confirm.getReason()));
+                                    }
+                                }
+                            }
+                            resultFuture.completeExceptionally(new MessageDeliveryException(
+                                    MQ_TYPE_RABBITMQ,
+                                    exchange,
+                                    "batch[" + size + "]",
+                                    String.format("RabbitMQ 批量消息发送等待 Broker ACK 超时 (%dms), 失败明细: %s",
+                                            effectiveTimeout.toMillis(), failedDetails),
+                                    rootErr));
+                            return;
+                        }
+                    }
+
+                    // 4. 精确检查每条消息的 Confirm 结果与异常
+                    List<String> failedItems = new ArrayList<>();
+                    Throwable firstCause = null;
+
+                    for (BatchFutureItem item : futureItems) {
+                        try {
+                            CorrelationData.Confirm confirm = item.future().getNow(null);
+                            if (confirm == null || !confirm.isAck()) {
+                                String reason = confirm != null ? confirm.getReason() : "Broker returned null confirm";
+                                failedItems.add(String.format("index=%d(bizKey=%s, reason=%s)", item.index(), item.bizKey(), reason));
+                            }
+                        } catch (Throwable itemEx) {
+                            Throwable cause = itemEx.getCause() != null ? itemEx.getCause() : itemEx;
+                            if (firstCause == null) {
+                                firstCause = cause;
+                            }
+                            String detail = cause.getCause() != null
+                                    ? cause.getMessage() + " (" + cause.getCause().getMessage() + ")"
+                                    : cause.getMessage();
+                            failedItems.add(String.format("index=%d(bizKey=%s, error=%s)", item.index(), item.bizKey(), detail));
+                        }
+                    }
+
+                    if (!failedItems.isEmpty()) {
+                        resultFuture.completeExceptionally(new MessageDeliveryException(
+                                MQ_TYPE_RABBITMQ,
+                                exchange,
+                                "batch[" + size + "]",
+                                String.format("RabbitMQ 批量消息部分发送被 Broker 拒绝或异常: exchange=%s, routingKey=%s, 失败条数=%d/%d, 失败明细: %s",
+                                        exchange, effectiveRoutingKey, failedItems.size(), size, failedItems),
+                                firstCause != null ? firstCause : ex));
+                    } else {
+                        resultFuture.complete(null);
+                    }
+                });
+
+        return resultFuture;
+    }
+
+    private void awaitBatchFuture(
+            String exchange,
+            String effectiveRoutingKey,
+            int batchSize,
+            CompletableFuture<Void> batchFuture) {
+        checkBatchNotInterrupted(exchange, effectiveRoutingKey, batchSize);
+        try {
+            batchFuture.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new MessageDeliveryException(
+                    MQ_TYPE_RABBITMQ,
+                    exchange,
+                    "batch[" + batchSize + "]",
+                    String.format("RabbitMQ 批量消息发送等待 Broker ACK 被中断: exchange=%s, routingKey=%s",
+                            exchange, effectiveRoutingKey),
+                    e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            if (cause instanceof MessageDeliveryException mde) {
+                throw mde;
+            }
+            throw new MessageDeliveryException(
+                    MQ_TYPE_RABBITMQ,
+                    exchange,
+                    "batch[" + batchSize + "]",
+                    cause.getMessage(),
+                    cause);
+        }
+    }
+
+    // =========================================================================
+    // 4. 延迟消息发送 (sendDelayed)
     // =========================================================================
 
     /**
@@ -290,6 +682,99 @@ public class RabbitReliableTemplate {
         return doSendInternal(exchange, effectiveRoutingKey, message, effectiveBizKey);
     }
 
+    /**
+     * 同步可靠发送带原生 AMQP 消息级 TTL（MessageProperties.expiration）的延迟过期消息（使用默认确认超时）
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param expiration 消息级过期时长（必须为正数且至少 1 毫秒）
+     */
+    public void sendWithExpiration(String exchange, String routingKey, Object payload, Duration expiration) {
+        sendWithExpiration(exchange, routingKey, payload, null, expiration, properties.getReliable().getDefaultTimeout());
+    }
+
+    /**
+     * 同步可靠发送带原生 AMQP 消息级 TTL（MessageProperties.expiration）的延迟过期消息，携带业务唯一标识
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param bizKey     业务唯一标识
+     * @param expiration 消息级过期时长（必须为正数且至少 1 毫秒）
+     */
+    public void sendWithExpiration(String exchange, String routingKey, Object payload, String bizKey, Duration expiration) {
+        sendWithExpiration(exchange, routingKey, payload, bizKey, expiration, properties.getReliable().getDefaultTimeout());
+    }
+
+    /**
+     * 同步可靠发送带原生 AMQP 消息级 TTL（MessageProperties.expiration）的延迟过期消息，显式指定确认超时时间
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param expiration 消息级过期时长（必须为正数且至少 1 毫秒）
+     * @param timeout    等待 Broker ACK 的超时时间
+     */
+    public void sendWithExpiration(String exchange, String routingKey, Object payload, Duration expiration, Duration timeout) {
+        sendWithExpiration(exchange, routingKey, payload, null, expiration, timeout);
+    }
+
+    /**
+     * 同步可靠发送带原生 AMQP 消息级 TTL（MessageProperties.expiration）的延迟过期消息，携带业务标识、过期时长与显式确认超时
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param bizKey     业务唯一标识
+     * @param expiration 消息级过期时长（必须为正数且至少 1 毫秒）
+     * @param timeout    等待 Broker ACK 的超时时间
+     */
+    public void sendWithExpiration(String exchange, String routingKey, Object payload, String bizKey, Duration expiration, Duration timeout) {
+        sendReliable(exchange, routingKey, payload, bizKey, timeout, expirationCustomizer(expiration));
+    }
+
+    /**
+     * 异步可靠发送带原生 AMQP 消息级 TTL（MessageProperties.expiration）的延迟过期消息
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param expiration 消息级过期时长（必须为正数且至少 1 毫秒）
+     * @return CompletableFuture 确认结果
+     */
+    public CompletableFuture<CorrelationData.Confirm> sendAsyncWithExpiration(
+            String exchange, String routingKey, Object payload, Duration expiration) {
+        return sendAsyncWithExpiration(exchange, routingKey, payload, null, expiration);
+    }
+
+    /**
+     * 异步可靠发送带原生 AMQP 消息级 TTL（MessageProperties.expiration）的延迟过期消息，携带业务唯一标识
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param bizKey     业务唯一标识
+     * @param expiration 消息级过期时长（必须为正数且至少 1 毫秒）
+     * @return CompletableFuture 确认结果
+     */
+    public CompletableFuture<CorrelationData.Confirm> sendAsyncWithExpiration(
+            String exchange, String routingKey, Object payload, String bizKey, Duration expiration) {
+        return sendReliableAsync(exchange, routingKey, payload, bizKey, expirationCustomizer(expiration));
+    }
+
+    private static MessagePostProcessor expirationCustomizer(Duration expiration) {
+        Assert.notNull(expiration, "expiration 消息过期时间不能为空");
+        Assert.isTrue(!expiration.isNegative() && !expiration.isZero(), "expiration 消息过期时间必须为正数");
+        long expirationMillis = expiration.toMillis();
+        Assert.isTrue(expirationMillis > 0, "expiration 消息过期时间至少为 1 毫秒");
+        String expirationValue = String.valueOf(expirationMillis);
+        return msg -> {
+            msg.getMessageProperties().setExpiration(expirationValue);
+            return msg;
+        };
+    }
+
     // =========================================================================
     // 4. 本地事务提交后发信 (sendAfterCommit)
     // =========================================================================
@@ -327,13 +812,65 @@ public class RabbitReliableTemplate {
      * @param timeout    等待 Broker ACK 的超时时间
      */
     public void sendAfterCommit(String exchange, String routingKey, Object payload, String bizKey, Duration timeout) {
+        sendAfterCommit(exchange, routingKey, payload, bizKey, timeout, (MessagePostProcessor[]) null);
+    }
+
+    /**
+     * 感知本地数据库事务发信，挂载自定义 MessagePostProcessor 处理器
+     *
+     * @param exchange    目标交换机
+     * @param routingKey  目标路由键
+     * @param payload     消息载荷对象
+     * @param customizers 消息属性后置定制器
+     */
+    public void sendAfterCommit(String exchange, String routingKey, Object payload, MessagePostProcessor... customizers) {
+        sendAfterCommit(exchange, routingKey, payload, null, properties.getReliable().getDefaultTimeout(), customizers);
+    }
+
+    /**
+     * 感知本地数据库事务发信，携带业务唯一标识 bizKey 并挂载自定义 MessagePostProcessor 处理器
+     *
+     * @param exchange    目标交换机
+     * @param routingKey  目标路由键
+     * @param payload     消息载荷对象
+     * @param bizKey      业务唯一标识
+     * @param customizers 消息属性后置定制器
+     */
+    public void sendAfterCommit(String exchange, String routingKey, Object payload, String bizKey, MessagePostProcessor... customizers) {
+        sendAfterCommit(exchange, routingKey, payload, bizKey, properties.getReliable().getDefaultTimeout(), customizers);
+    }
+
+    /**
+     * 感知本地数据库事务发信，携带显式确认超时时间并挂载自定义 MessagePostProcessor 处理器
+     *
+     * @param exchange    目标交换机
+     * @param routingKey  目标路由键
+     * @param payload     消息载荷对象
+     * @param timeout     等待 Broker ACK 的超时时间
+     * @param customizers 消息属性后置定制器
+     */
+    public void sendAfterCommit(String exchange, String routingKey, Object payload, Duration timeout, MessagePostProcessor... customizers) {
+        sendAfterCommit(exchange, routingKey, payload, null, timeout, customizers);
+    }
+
+    /**
+     * 感知本地数据库事务发信，携带业务唯一标识 bizKey、显式确认超时时间并挂载自定义 MessagePostProcessor 处理器
+     *
+     * @param exchange    目标交换机
+     * @param routingKey  目标路由键
+     * @param payload     消息载荷对象
+     * @param bizKey      业务唯一标识
+     * @param timeout     等待 Broker ACK 的超时时间
+     * @param customizers 消息属性后置定制器
+     */
+    public void sendAfterCommit(String exchange, String routingKey, Object payload, String bizKey, Duration timeout, MessagePostProcessor... customizers) {
         Assert.hasText(exchange, "exchange 交换机名称不能为空");
         String effectiveRoutingKey = routingKey != null ? routingKey : "";
         Assert.notNull(payload, "payload 消息载荷不能为空");
 
         // 1. 立即构建准备消息并执行 Fail-Fast 大小校验与四维上下文快照捕获
         MessageProperties messageProperties = new MessageProperties();
-        Message message = prepareMessage(exchange, payload, messageProperties, bizKey);
+        Message message = prepareMessage(exchange, payload, messageProperties, bizKey, customizers);
         String effectiveBizKey = MessageContextPropagator.extractString(message.getMessageProperties().getHeaders(), MessageHeaderConstants.BIZ_KEY);
         Duration effectiveTimeout = timeout != null ? timeout : properties.getReliable().getDefaultTimeout();
 
@@ -357,14 +894,142 @@ public class RabbitReliableTemplate {
         }
     }
 
+    /**
+     * 感知本地数据库事务发送优先级消息，使用默认确认超时时间与自适应 bizKey
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param priority   消息优先级 (0-255，对应队列 x-max-priority)
+     */
+    public void sendAfterCommitWithPriority(String exchange, String routingKey, Object payload, int priority) {
+        sendAfterCommitWithPriority(exchange, routingKey, payload, priority, null, properties.getReliable().getDefaultTimeout());
+    }
+
+    /**
+     * 感知本地数据库事务发送优先级消息，携带业务唯一标识 bizKey，使用默认确认超时时间
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param priority   消息优先级 (0-255，对应队列 x-max-priority)
+     * @param bizKey     业务唯一标识
+     */
+    public void sendAfterCommitWithPriority(String exchange, String routingKey, Object payload, int priority, String bizKey) {
+        sendAfterCommitWithPriority(exchange, routingKey, payload, priority, bizKey, properties.getReliable().getDefaultTimeout());
+    }
+
+    /**
+     * 感知本地数据库事务发送优先级消息，显式指定确认超时时间
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param priority   消息优先级 (0-255，对应队列 x-max-priority)
+     * @param timeout    等待 Broker ACK 的超时时间
+     */
+    public void sendAfterCommitWithPriority(String exchange, String routingKey, Object payload, int priority, Duration timeout) {
+        sendAfterCommitWithPriority(exchange, routingKey, payload, priority, null, timeout);
+    }
+
+    /**
+     * 感知本地数据库事务发送优先级消息，携带业务唯一标识 bizKey 与显式确认超时时间
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payload    消息载荷对象
+     * @param priority   消息优先级 (0-255，对应队列 x-max-priority)
+     * @param bizKey     业务唯一标识
+     * @param timeout    等待 Broker ACK 的超时时间
+     */
+    public void sendAfterCommitWithPriority(String exchange, String routingKey, Object payload, int priority, String bizKey, Duration timeout) {
+        Assert.isTrue(priority >= 0 && priority <= 255, "priority 消息优先级必须在 0 到 255 之间");
+        sendAfterCommit(exchange, routingKey, payload, bizKey, timeout, msg -> {
+            msg.getMessageProperties().setPriority(priority);
+            return msg;
+        });
+    }
+
+    /**
+     * 感知本地数据库事务批量发信（使用默认确认超时时间）：在活跃事务内仅注册单一 afterCommit 钩子发送整批消息
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payloads   消息载荷列表（不允许为空且元素不能为 null）
+     */
+    public void sendBatchAfterCommit(String exchange, String routingKey, List<?> payloads) {
+        sendBatchAfterCommit(exchange, routingKey, payloads, properties.getReliable().getDefaultTimeout());
+    }
+
+    /**
+     * 感知本地数据库事务批量发信（显式指定确认超时时间）：注册前完成整批 Fail-Fast 校验与四维上下文注入；
+     * 活跃事务内仅注册单一 TransactionSynchronization，事务提交后并发发送并聚合确认，失败触发 RabbitTransactionFailureCallback
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payloads   消息载荷列表（不允许为空且元素不能为 null）
+     * @param timeout    等待全部消息 Broker ACK 的超时时间
+     */
+    public void sendBatchAfterCommit(String exchange, String routingKey, List<?> payloads, Duration timeout) {
+        String effectiveRoutingKey = routingKey != null ? routingKey : "";
+        Duration effectiveTimeout = timeout != null ? timeout : properties.getReliable().getDefaultTimeout();
+        List<PreparedBatchItem> preparedItems = validateAndPrepareBatchItems(exchange, payloads);
+        List<Object> payloadSnapshot = List.copyOf(payloads);
+        String batchBizKey = "batch[" + preparedItems.size() + "]";
+
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+                && TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    try {
+                        awaitBatchFuture(
+                                exchange,
+                                effectiveRoutingKey,
+                                preparedItems.size(),
+                                dispatchPreparedBatch(exchange, effectiveRoutingKey, preparedItems, effectiveTimeout)
+                        );
+                    } catch (Throwable ex) {
+                        log.error("[MQ-TRANSACTION-POST-COMMIT-FAILED] 本地事务提交后批量发信失败: exchange={}, routingKey={}, bizKey={}, error={}",
+                                exchange, effectiveRoutingKey, batchBizKey, ex.getMessage(), ex);
+                        invokeTransactionFailureCallback(exchange, effectiveRoutingKey, payloadSnapshot, batchBizKey, ex);
+                    }
+                }
+            });
+        } else {
+            checkBatchNotInterrupted(exchange, effectiveRoutingKey, preparedItems.size());
+            awaitBatchFuture(
+                    exchange,
+                    effectiveRoutingKey,
+                    preparedItems.size(),
+                    dispatchPreparedBatch(exchange, effectiveRoutingKey, preparedItems, effectiveTimeout)
+            );
+        }
+    }
+
+    /**
+     * 在非事务或事务前校验阶段检查当前线程中断状态，避免已中断线程仍向 Broker 发射网络帧
+     */
+    private void checkBatchNotInterrupted(String exchange, String effectiveRoutingKey, int batchSize) {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new MessageDeliveryException(
+                    MQ_TYPE_RABBITMQ,
+                    exchange,
+                    "batch[" + batchSize + "]",
+                    String.format("RabbitMQ 批量消息发送等待 Broker ACK 被中断: exchange=%s, routingKey=%s",
+                            exchange, effectiveRoutingKey),
+                    new InterruptedException("Current thread was interrupted before waiting for batch confirms"));
+        }
+    }
+
     // =========================================================================
     // 5. 内部消息预处理、网络发送与宏日志
     // =========================================================================
 
     /**
-     * 构建消息对象：注入四维上下文、序列化载荷、报文体积 Fail-Fast 校验与透明 GZIP 压缩
+     * 构建消息对象：注入四维上下文、序列化载荷、自定义后置处理、报文体积 Fail-Fast 校验与透明 GZIP 压缩
      */
-    private Message prepareMessage(String exchange, Object payload, MessageProperties messageProperties, String bizKey) {
+    private Message prepareMessage(String exchange, Object payload, MessageProperties messageProperties, String bizKey, MessagePostProcessor... customizers) {
         // 1. 尝试按优先级解析有效业务键：显式传参 -> Payload/Message 原生 Header -> 兜底由 inject 赋 traceId
         String resolvedBizKey = resolveBizKey(payload, messageProperties, bizKey);
 
@@ -395,10 +1060,22 @@ public class RabbitReliableTemplate {
             message = converter.toMessage(payload, messageProperties);
         }
 
+        // 4. 应用外部 MessagePostProcessor 自定义处理器 (如优先级、扩展消息头定制)
+        if (customizers != null) {
+            for (MessagePostProcessor customizer : customizers) {
+                if (customizer != null) {
+                    Message postProcessed = customizer.postProcessMessage(message);
+                    if (postProcessed != null) {
+                        message = postProcessed;
+                    }
+                }
+            }
+        }
+
         // 提取已归一化的业务键
         String effectiveBizKey = MessageContextPropagator.extractString(message.getMessageProperties().getHeaders(), MessageHeaderConstants.BIZ_KEY);
 
-        // 4. 校验出站报文原始体积 (Fail-Fast 防爆)
+        // 5. 校验出站报文原始体积 (Fail-Fast 防爆)
         byte[] body = message.getBody();
         long rawSize = body != null ? body.length : 0L;
         long maxPayloadSize = properties.getProducer().getMaxPayloadSize().toBytes();
@@ -411,7 +1088,7 @@ public class RabbitReliableTemplate {
                             rawSize, maxPayloadSize, payload.getClass().getSimpleName()));
         }
 
-        // 5. 透明 GZIP 压缩
+        // 6. 透明 GZIP 压缩
         if (properties.getProducer().isCompressionEnabled()) {
             long compressionThreshold = properties.getProducer().getCompressionThreshold().toBytes();
             if (rawSize > compressionThreshold) {
@@ -609,5 +1286,11 @@ public class RabbitReliableTemplate {
                 MDC.remove(MessageContextPropagator.MDC_TRACE_ID_KEY);
             }
         }
+    }
+
+    private record PreparedBatchItem(int index, Message message, String bizKey) {
+    }
+
+    private record BatchFutureItem(int index, String bizKey, CompletableFuture<CorrelationData.Confirm> future) {
     }
 }

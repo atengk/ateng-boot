@@ -1,8 +1,10 @@
 package io.github.atengk.boot.ssh.tunnel;
 
+import io.github.atengk.boot.ssh.enums.TunnelMode;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import org.apache.sshd.client.session.ClientSession;
 import org.apache.sshd.client.session.forward.ExplicitPortForwardingTracker;
+import org.apache.sshd.common.util.net.SshdSocketAddress;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -51,8 +53,10 @@ class SshTunnelHandleTest {
     void testLifecycleAndCloseIdempotence() throws IOException {
         ExplicitPortForwardingTracker tracker = mock(ExplicitPortForwardingTracker.class);
         ClientSession session = mock(ClientSession.class);
+        SshdSocketAddress bound = new SshdSocketAddress("127.0.0.1", 19000);
         when(tracker.isOpen()).thenReturn(true);
         when(tracker.getSession()).thenReturn(session);
+        when(tracker.getBoundAddress()).thenReturn(bound);
         when(session.isOpen()).thenReturn(true);
 
         SshServerInfo server = SshServerInfo.of("bastion.internal", 22, "ops", "pass");
@@ -72,6 +76,7 @@ class SshTunnelHandleTest {
         assertThat(handle.getLocalPort()).isEqualTo(54321);
         assertThat(handle.getRemoteHost()).isEqualTo("mysql.prod");
         assertThat(handle.getRemotePort()).isEqualTo(3306);
+        assertThat(handle.getTunnelMode()).isEqualTo(TunnelMode.LOCAL);
         assertThat(handle.getServerInfo()).isSameAs(server);
         assertThat(handle.getCreationTime()).isPositive();
         assertThat(handle.isAlive()).isTrue();
@@ -88,5 +93,46 @@ class SshTunnelHandleTest {
         // 重复关闭（幂等测试，不应重复触发 tracker.close）
         handle.close();
         verify(tracker, times(1)).close();
+        verify(session, never()).stopRemotePortForwarding(any());
+    }
+
+    @Test
+    @DisplayName("测试 TunnelMode.REMOTE 远程端口转发句柄构造与校验")
+    void testRemoteTunnelHandleAndModeValidation() throws IOException {
+        ExplicitPortForwardingTracker tracker = mock(ExplicitPortForwardingTracker.class);
+        ClientSession session = mock(ClientSession.class);
+        SshdSocketAddress bound = new SshdSocketAddress("127.0.0.1", 19000);
+        when(tracker.isOpen()).thenReturn(true);
+        when(tracker.getSession()).thenReturn(session);
+        when(tracker.getBoundAddress()).thenReturn(bound);
+        when(session.isOpen()).thenReturn(true);
+
+        SshServerInfo server = SshServerInfo.of("jump.internal", 22, "ops", "pass");
+        assertThatThrownBy(() -> new SshTunnelHandle(null, server, tracker, "127.0.0.1", 8080, "127.0.0.1", 19000, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("tunnelMode must not be null");
+
+        SshTunnelHandle handle = new SshTunnelHandle(
+                TunnelMode.REMOTE,
+                server,
+                tracker,
+                "127.0.0.1",
+                8080,
+                "127.0.0.1",
+                19000,
+                null
+        );
+
+        assertThat(handle.getTunnelMode()).isEqualTo(TunnelMode.REMOTE);
+        assertThat(handle.getLocalHost()).isEqualTo("127.0.0.1");
+        assertThat(handle.getLocalPort()).isEqualTo(8080);
+        assertThat(handle.getRemoteHost()).isEqualTo("127.0.0.1");
+        assertThat(handle.getRemotePort()).isEqualTo(19000);
+        assertThat(handle.isAlive()).isTrue();
+        assertThat(handle.toString()).contains("REMOTE").contains("127.0.0.1:8080").contains("127.0.0.1:19000");
+
+        handle.close();
+        verify(tracker, times(1)).close();
+        verify(session, times(1)).stopRemotePortForwarding(bound);
     }
 }

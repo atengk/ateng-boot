@@ -22,6 +22,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -64,12 +65,13 @@ class ClusterAndOfflineScenarioTest {
         if (realtimeTemplate != null) {
             realtimeTemplate.clearOfflineMessages("user-offline-sample");
             realtimeTemplate.clearOfflineMessages("user-satoken-ban");
+            realtimeTemplate.clearOfflineMessages("user-zset-test");
         }
     }
 
     private String doLogin(String userId) throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create("http://127.0.0.1:" + port + "/api/realtime/login?userId=" + userId))
+                .uri(URI.create("http://127.0.0.1:" + port + "/sample/realtime/auth/login?userId=" + userId))
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build();
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -83,26 +85,42 @@ class ClusterAndOfflineScenarioTest {
         String testUserId = "user-offline-sample";
 
         // 1. 发送持久化离线消息
+        String payload = objectMapper.writeValueAsString(Map.of(
+                "userId", testUserId,
+                "event", "notice:offline",
+                "content", "TaskCompleted"
+        ));
         HttpRequest sendReq = HttpRequest.newBuilder()
-                .uri(URI.create("http://127.0.0.1:" + port + "/api/realtime/send-offline-persistent?userId=" + testUserId + "&message=TaskCompleted"))
-                .POST(HttpRequest.BodyPublishers.noBody())
+                .uri(URI.create("http://127.0.0.1:" + port + "/sample/realtime/offline/send-persistent"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(payload))
                 .build();
         HttpResponse<String> sendResp = httpClient.send(sendReq, HttpResponse.BodyHandlers.ofString());
         assertThat(sendResp.statusCode()).isEqualTo(200);
 
         // 2. 检查离线消息总数
         HttpRequest countReq = HttpRequest.newBuilder()
-                .uri(URI.create("http://127.0.0.1:" + port + "/api/realtime/offline-count?userId=" + testUserId))
+                .uri(URI.create("http://127.0.0.1:" + port + "/sample/realtime/offline/count?userId=" + testUserId))
                 .GET()
                 .build();
         HttpResponse<String> countResp = httpClient.send(countReq, HttpResponse.BodyHandlers.ofString());
         JsonNode countNode = objectMapper.readTree(countResp.body());
         assertThat(countNode.get("data").asInt()).isEqualTo(1);
 
-        // 3. 一次性拉取清空离线消息
-        HttpRequest pullReq = HttpRequest.newBuilder()
-                .uri(URI.create("http://127.0.0.1:" + port + "/api/realtime/offline-messages?userId=" + testUserId))
+        // 3. 只读窥探离线消息 (GET 保持幂等)
+        HttpRequest peekReq = HttpRequest.newBuilder()
+                .uri(URI.create("http://127.0.0.1:" + port + "/sample/realtime/offline/messages?userId=" + testUserId))
                 .GET()
+                .build();
+        HttpResponse<String> peekResp = httpClient.send(peekReq, HttpResponse.BodyHandlers.ofString());
+        JsonNode peekNode = objectMapper.readTree(peekResp.body());
+        assertThat(peekNode.get("data").isArray()).isTrue();
+        assertThat(peekNode.get("data").size()).isEqualTo(1);
+
+        // 4. 一次性拉取清空离线消息 (POST 语义)
+        HttpRequest pullReq = HttpRequest.newBuilder()
+                .uri(URI.create("http://127.0.0.1:" + port + "/sample/realtime/offline/pull?userId=" + testUserId))
+                .POST(HttpRequest.BodyPublishers.noBody())
                 .build();
         HttpResponse<String> pullResp = httpClient.send(pullReq, HttpResponse.BodyHandlers.ofString());
         JsonNode pullNode = objectMapper.readTree(pullResp.body());
@@ -111,7 +129,7 @@ class ClusterAndOfflineScenarioTest {
         assertThat(dataArray.size()).isEqualTo(1);
         assertThat(dataArray.get(0).get("data").asText()).isEqualTo("TaskCompleted");
 
-        // 4. 再次查询计数已归零
+        // 5. 再次查询计数已归零
         HttpResponse<String> countAgainResp = httpClient.send(countReq, HttpResponse.BodyHandlers.ofString());
         JsonNode countAgainNode = objectMapper.readTree(countAgainResp.body());
         assertThat(countAgainNode.get("data").asInt()).isZero();
@@ -121,7 +139,7 @@ class ClusterAndOfflineScenarioTest {
     @DisplayName("端到端验证: 集群度量统计 API 正常聚合与单机保底响应")
     void testClusterMetricsApi() throws Exception {
         HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create("http://127.0.0.1:" + port + "/api/realtime/cluster-metrics"))
+                .uri(URI.create("http://127.0.0.1:" + port + "/sample/realtime/session/cluster-metrics"))
                 .GET()
                 .build();
         HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
@@ -161,7 +179,7 @@ class ClusterAndOfflineScenarioTest {
 
         // 触发 Sa-Token 强退
         HttpRequest kickoutReq = HttpRequest.newBuilder()
-                .uri(URI.create("http://127.0.0.1:" + port + "/api/realtime/sa-kickout?userId=" + testUserId))
+                .uri(URI.create("http://127.0.0.1:" + port + "/sample/realtime/auth/kickout?userId=" + testUserId))
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build();
         HttpResponse<String> kickoutResp = httpClient.send(kickoutReq, HttpResponse.BodyHandlers.ofString());
@@ -171,6 +189,49 @@ class ClusterAndOfflineScenarioTest {
         CloseStatus closeStatus = handler.awaitClose(5, TimeUnit.SECONDS);
         assertThat(closeStatus).isNotNull();
         assertThat(closeStatus.getCode()).isEqualTo(RealtimeCloseStatus.USER_KICKED_OUT.getCode());
+    }
+
+    @Test
+    @DisplayName("端到端验证: 离线存储 ZSet 结构非破坏性窥探与清空生命周期")
+    void testZSetStoragePeekAndFifoEviction() {
+        String testUserId = "user-zset-test";
+        realtimeTemplate.clearOfflineMessages(testUserId);
+
+        // 1. 发送 3 条持久化离线消息
+        realtimeTemplate.sendToUser(testUserId, io.github.atengk.boot.realtime.model.RealtimeMessage.ofPersistent("evt:1", "Payload 1"));
+        realtimeTemplate.sendToUser(testUserId, io.github.atengk.boot.realtime.model.RealtimeMessage.ofPersistent("evt:2", "Payload 2"));
+        realtimeTemplate.sendToUser(testUserId, io.github.atengk.boot.realtime.model.RealtimeMessage.ofPersistent("evt:3", "Payload 3"));
+
+        assertThat(realtimeTemplate.getOfflineMessageCount(testUserId)).isEqualTo(3);
+
+        // 2. 只读窥探：消息按时间序返回，底层存储不减少
+        java.util.List<io.github.atengk.boot.realtime.model.RealtimeMessage<?>> peeked = realtimeTemplate.getOfflineMessages(testUserId);
+        assertThat(peeked).hasSize(3);
+        assertThat(peeked.get(0).getEvent()).isEqualTo("evt:1");
+        assertThat(peeked.get(1).getEvent()).isEqualTo("evt:2");
+        assertThat(peeked.get(2).getEvent()).isEqualTo("evt:3");
+        assertThat(realtimeTemplate.getOfflineMessageCount(testUserId)).isEqualTo(3);
+
+        // 3. 一次性消费拉取并清空
+        java.util.List<io.github.atengk.boot.realtime.model.RealtimeMessage<?>> pulled = realtimeTemplate.pullAndClearOfflineMessages(testUserId);
+        assertThat(pulled).hasSize(3);
+        assertThat(realtimeTemplate.getOfflineMessageCount(testUserId)).isZero();
+
+        // 4. FIFO 淘汰验证：默认最大保留 100 条离线消息
+        String fifoUserId = "user-zset-fifo";
+        realtimeTemplate.clearOfflineMessages(fifoUserId);
+        try {
+            for (int i = 0; i < 105; i++) {
+                realtimeTemplate.sendToUser(fifoUserId, io.github.atengk.boot.realtime.model.RealtimeMessage.ofPersistent("evt:" + i, "Payload-" + i));
+            }
+            assertThat(realtimeTemplate.getOfflineMessageCount(fifoUserId)).isEqualTo(100);
+            java.util.List<io.github.atengk.boot.realtime.model.RealtimeMessage<?>> retained = realtimeTemplate.getOfflineMessages(fifoUserId);
+            assertThat(retained).hasSize(100);
+            assertThat(retained.get(0).getData()).isEqualTo("Payload-5");
+            assertThat(retained.get(99).getData()).isEqualTo("Payload-104");
+        } finally {
+            realtimeTemplate.clearOfflineMessages(fifoUserId);
+        }
     }
 
     private static class KickoutHandler extends TextWebSocketHandler {

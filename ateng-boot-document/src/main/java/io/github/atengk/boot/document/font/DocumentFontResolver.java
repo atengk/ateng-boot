@@ -26,6 +26,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Stream;
 
 /**
@@ -61,6 +62,7 @@ public class DocumentFontResolver {
     private final DocumentPdfProperties pdfProperties;
     private final List<String> customSearchDirectories;
     private final AtomicReference<ResolvedFont> cachedFont = new AtomicReference<>();
+    private final ReentrantLock resolveLock = new ReentrantLock();
 
     /**
      * 使用指定 PDF 配置属性构造解析器
@@ -102,7 +104,8 @@ public class DocumentFontResolver {
         if (font != null) {
             return font;
         }
-        synchronized (this) {
+        resolveLock.lock();
+        try {
             font = cachedFont.get();
             if (font != null) {
                 return font;
@@ -110,6 +113,8 @@ public class DocumentFontResolver {
             font = doResolveFont();
             cachedFont.set(font);
             return font;
+        } finally {
+            resolveLock.unlock();
         }
     }
 

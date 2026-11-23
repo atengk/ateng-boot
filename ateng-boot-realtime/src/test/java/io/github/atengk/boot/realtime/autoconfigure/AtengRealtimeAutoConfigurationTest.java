@@ -6,6 +6,9 @@ import io.github.atengk.boot.realtime.cluster.RedissonClusterMetricsReporter;
 import io.github.atengk.boot.realtime.cluster.RedissonRealtimeClusterBroadcaster;
 import io.github.atengk.boot.realtime.cluster.StandaloneClusterMetricsProvider;
 import io.github.atengk.boot.realtime.cluster.StandaloneRealtimeClusterBroadcaster;
+import io.github.atengk.boot.realtime.model.SessionKey;
+import io.github.atengk.boot.realtime.session.RealtimeSession;
+import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
 import io.github.atengk.boot.realtime.shutdown.RealtimeGracefulShutdownHandler;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -20,7 +23,9 @@ import org.springframework.context.annotation.Configuration;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -43,6 +48,10 @@ class AtengRealtimeAutoConfigurationTest {
             RealtimeClusterBroadcaster broadcaster = context.getBean(RealtimeClusterBroadcaster.class);
             assertThat(broadcaster).isInstanceOf(StandaloneRealtimeClusterBroadcaster.class);
             assertThat(broadcaster.isClusterEnabled()).isFalse();
+
+            assertThat(context).hasSingleBean(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class);
+            assertThat(context.getBean(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class))
+                    .isExactlyInstanceOf(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class);
         });
     }
 
@@ -59,6 +68,18 @@ class AtengRealtimeAutoConfigurationTest {
                     assertThat(context).hasSingleBean(RealtimeClusterMetricsProvider.class);
                     RealtimeClusterMetricsProvider metricsProvider = context.getBean(RealtimeClusterMetricsProvider.class);
                     assertThat(metricsProvider).isInstanceOf(RedissonClusterMetricsReporter.class);
+
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class);
+                    assertThat(context.getBean(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class))
+                            .isInstanceOf(io.github.atengk.boot.realtime.group.RedissonRealtimeGroupManager.class);
+
+                    // 验证 SmartInitializingSingleton 确保接口声明返回类型的广播器依然作为监听器装配进 SessionManager
+                    RealtimeSessionManager sessionManager = context.getBean(RealtimeSessionManager.class);
+                    RedissonClient redisson = context.getBean(RedissonClient.class);
+                    org.springframework.web.socket.WebSocketSession ws = mock(org.springframework.web.socket.WebSocketSession.class);
+                    when(ws.isOpen()).thenReturn(true);
+                    sessionManager.registerSession(RealtimeSession.ofWebSocket(SessionKey.of("auto-user-1", "web", "c1"), ws));
+                    verify(redisson).getMap(eq("ateng:realtime:cluster:nodes:users:auto-user-1"), eq(org.redisson.client.codec.StringCodec.INSTANCE));
                 });
     }
 
@@ -76,6 +97,10 @@ class AtengRealtimeAutoConfigurationTest {
                     assertThat(context).hasSingleBean(RealtimeClusterMetricsProvider.class);
                     RealtimeClusterMetricsProvider metricsProvider = context.getBean(RealtimeClusterMetricsProvider.class);
                     assertThat(metricsProvider).isInstanceOf(StandaloneClusterMetricsProvider.class);
+
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class);
+                    assertThat(context.getBean(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class))
+                            .isExactlyInstanceOf(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class);
                 });
     }
 
@@ -110,6 +135,27 @@ class AtengRealtimeAutoConfigurationTest {
                 });
     }
 
+    @Test
+    @DisplayName("用户自定义覆盖 realtimeClusterSessionListenerConfigurer 满足 @ConditionalOnMissingBean")
+    void testCustomClusterSessionListenerConfigurerOverride() {
+        runner.withUserConfiguration(MockRedissonConfiguration.class, CustomListenerConfigurerConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasBean("realtimeClusterSessionListenerConfigurer");
+                    assertThat(context.getBean("realtimeClusterSessionListenerConfigurer"))
+                            .isSameAs(CustomListenerConfigurerConfiguration.SENTINEL);
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomListenerConfigurerConfiguration {
+        static final org.springframework.beans.factory.SmartInitializingSingleton SENTINEL = () -> {};
+
+        @Bean("realtimeClusterSessionListenerConfigurer")
+        public org.springframework.beans.factory.SmartInitializingSingleton realtimeClusterSessionListenerConfigurer() {
+            return SENTINEL;
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class CustomShutdownConfiguration {
         @Bean
@@ -128,6 +174,10 @@ class AtengRealtimeAutoConfigurationTest {
             when(client.getTopic(anyString())).thenReturn(topic);
             RMap<String, String> map = mock(RMap.class);
             when(client.<String, String>getMap(anyString(), any(org.redisson.client.codec.Codec.class))).thenReturn(map);
+            org.redisson.api.RSet<String> set = mock(org.redisson.api.RSet.class);
+            when(client.<String>getSet(anyString(), any(org.redisson.client.codec.Codec.class))).thenReturn(set);
+            org.redisson.api.RScoredSortedSet<String> scoredSet = mock(org.redisson.api.RScoredSortedSet.class);
+            when(client.<String>getScoredSortedSet(anyString(), any(org.redisson.client.codec.Codec.class))).thenReturn(scoredSet);
             return client;
         }
     }

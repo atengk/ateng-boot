@@ -1,5 +1,6 @@
 package io.github.atengk.boot.web.ratelimit.autoconfigure;
 
+import java.util.concurrent.Executor;
 import io.github.atengk.boot.web.ratelimit.aspect.RateLimiterAspect;
 import io.github.atengk.boot.web.ratelimit.properties.RateLimiterProperties;
 import io.github.atengk.boot.web.ratelimit.store.InMemoryRateLimiterStore;
@@ -9,6 +10,8 @@ import io.github.atengk.boot.web.ratelimit.store.RedissonRateLimiterStore;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Aspect;
 import org.redisson.api.RedissonClient;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -84,10 +87,12 @@ public class AtengRateLimiterAutoConfiguration {
     static class InMemoryRateLimiterConfiguration {
 
         @Bean
-        public RateLimiterStore inMemoryRateLimiterStore(RateLimiterProperties properties) {
+        public RateLimiterStore inMemoryRateLimiterStore(RateLimiterProperties properties,
+                                                        @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
             return new InMemoryRateLimiterStore(
                     properties.getInMemory().getMaxCapacity(),
-                    properties.getInMemory().getCleanInterval()
+                    properties.getInMemory().getCleanInterval(),
+                    taskExecutorProvider.getIfAvailable()
             );
         }
     }
@@ -96,11 +101,12 @@ public class AtengRateLimiterAutoConfiguration {
      * 装配接口限流 AOP 切面 Bean
      *
      * @param rateLimiterStore 限流存储引擎实例
+     * @param properties        限流配置属性
      * @return 限流切面实例
      */
     @Bean
     @ConditionalOnMissingBean
-    public RateLimiterAspect rateLimiterAspect(RateLimiterStore rateLimiterStore) {
-        return new RateLimiterAspect(rateLimiterStore);
+    public RateLimiterAspect rateLimiterAspect(RateLimiterStore rateLimiterStore, RateLimiterProperties properties) {
+        return new RateLimiterAspect(rateLimiterStore, properties);
     }
 }

@@ -66,4 +66,17 @@ public class StreamDeadLetterMessage implements Serializable {
      * 异常摘要与堆栈信息
      */
     private String exceptionMessage;
+
+    /**
+     * 已受控重放次数（默认 0，用于防雪崩拦截）
+     */
+    @Builder.Default
+    private int replayCount = 0;
+
+    /**
+     * 递增重放计数器
+     */
+    public void incrementReplay() {
+        this.replayCount++;
+    }
 }

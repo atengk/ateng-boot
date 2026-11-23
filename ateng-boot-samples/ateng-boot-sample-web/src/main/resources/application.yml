@@ -4,6 +4,8 @@ server:
 spring:
   application:
     name: ateng-boot-sample-web
+  config:
+    import: "optional:classpath:application-local.yml"
   threads:
     virtual:
       enabled: true
@@ -13,6 +15,10 @@ ateng:
     web:
       enabled: true
       long-to-string: true
+      trusted-proxies:
+        - "127.0.0.1"
+        - "::1"
+        - "192.168.1.0/24"
       trace:
         enabled: true
         header-name: "X-Trace-Id"
@@ -30,13 +36,34 @@ ateng:
         secret-key: "TestSecretKey123"
         app-id: "test-app"
         expire: 60s
+      payload-log:
+        enabled: true
+        max-payload-size: 4KB
+        exclude-urls:
+          - "/actuator/**"
+          - "/sample/web/observability/payload-excluded"
       slow-request:
         enabled: true
         threshold: 3s
         exclude-urls:
           - "/actuator/**"
-          - "/api/sample/runtime/slow-excluded"
+          - "/sample/web/observability/slow-excluded"
       operate-log:
         enabled: true
       body-cache:
         max-body-size: 2MB
+      enum:
+        enabled: true
+        path-prefix: "/api/system/enums"
+        naming-strategy: "lower-camel-case"
+        scan-packages:
+          - "io.github.atengk.boot.sample.web.enums"
+      captcha:
+        enabled: true
+        key-prefix: "captcha:"
+        renderer: SVG
+        type: CHAR
+        char-type: ALPHANUMERIC_SAFE
+        length: 4
+        expire: 2m
+        ignore-case: true

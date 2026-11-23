@@ -264,7 +264,9 @@ class RabbitTopologyBuilderTest {
         assertThatThrownBy(() -> RabbitTopologyBuilder.delayed(""))
                 .isInstanceOf(IllegalArgumentException.class);
 
-        assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue(null))
+        assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue((String) null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue((Queue) null))
                 .isInstanceOf(IllegalArgumentException.class);
 
         assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue("q").ttl(Duration.ofMinutes(-1)))
@@ -272,5 +274,145 @@ class RabbitTopologyBuilderTest {
 
         assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue("q").maxLength(-10))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("现代 Quorum 拓扑高级属性声明 (maxPriority, overflow, deliveryLimit, deadLetterStrategy)")
+    void testQuorumQueueWithModernTopologyArguments() {
+        Declarables declarables = RabbitTopologyBuilder.topic("order.modern.topic")
+                .queue("order.payment.quorum")
+                .quorum()
+                .maxPriority(10)
+                .overflow(OverflowStrategy.REJECT_PUBLISH_DLX)
+                .deliveryLimit(5)
+                .deadLetterStrategy("at-least-once")
+                .deadLetter("order.dlx", "order.payment.dlq", "order.payment.dead")
+                .routingKey("order.payment.*")
+                .build();
+
+        List<Declarable> list = declarables.getDeclarables().stream().toList();
+        Queue queue = list.stream()
+                .filter(d -> d instanceof Queue q && q.getName().equals("order.payment.quorum"))
+                .map(d -> (Queue) d)
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(queue.getArguments())
+                .containsEntry("x-queue-type", "quorum")
+                .containsEntry("x-max-priority", 10)
+                .containsEntry("x-overflow", "reject-publish-dlx")
+                .containsEntry("x-delivery-limit", 5)
+                .containsEntry("x-dead-letter-strategy", "at-least-once")
+                .containsEntry("x-dead-letter-exchange", "order.dlx")
+                .containsEntry("x-dead-letter-routing-key", "order.payment.dead");
+    }
+
+    @Test
+    @DisplayName("Exchange 备用交换机 (alternate-exchange) 路由拓扑声明")
+    void testAlternateExchangeTopology() {
+        Declarables declarables = RabbitTopologyBuilder.direct("main.direct")
+                .alternateExchange("unrouted.fanout")
+                .queue("main.worker.queue")
+                .routingKey("main.work")
+                .build();
+
+        List<Declarable> list = declarables.getDeclarables().stream().toList();
+        DirectExchange exchange = list.stream()
+                .filter(d -> d instanceof DirectExchange de && de.getName().equals("main.direct"))
+                .map(d -> (DirectExchange) d)
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(exchange.getArguments()).containsEntry("alternate-exchange", "unrouted.fanout");
+    }
+
+    @Test
+    @DisplayName("Fanout 交换机匿名排他自动删除队列与临时独占队列拓扑声明")
+    void testAnonymousQueueAndExclusiveAutoDeleteQueue() {
+        Declarables declarables = RabbitTopologyBuilder.fanout("broadcast.fanout")
+                .anonymousQueue()
+                .andExclusiveAutoDeleteQueue("worker.node1.queue")
+                .build();
+
+        List<Declarable> list = declarables.getDeclarables().stream().toList();
+        // 1 FanoutExchange + 2 Queues + 2 Bindings = 5
+        assertThat(list).hasSize(5);
+
+        List<Queue> queues = list.stream()
+                .filter(d -> d instanceof Queue)
+                .map(d -> (Queue) d)
+                .toList();
+        assertThat(queues).hasSize(2);
+
+        Queue anonQueue = queues.get(0);
+        assertThat(anonQueue.getName()).isNotBlank();
+        assertThat(anonQueue.isDurable()).isFalse();
+        assertThat(anonQueue.isExclusive()).isTrue();
+        assertThat(anonQueue.isAutoDelete()).isTrue();
+
+        Queue explicitQueue = queues.get(1);
+        assertThat(explicitQueue.getName()).isEqualTo("worker.node1.queue");
+        assertThat(explicitQueue.isDurable()).isFalse();
+        assertThat(explicitQueue.isExclusive()).isTrue();
+        assertThat(explicitQueue.isAutoDelete()).isTrue();
+
+        // 验证两个队列均正确绑定至广播交换机
+        List<Binding> bindings = list.stream()
+                .filter(d -> d instanceof Binding)
+                .map(d -> (Binding) d)
+                .toList();
+        assertThat(bindings).hasSize(2);
+        assertThat(bindings).extracting(Binding::getDestination)
+                .containsExactlyInAnyOrder(anonQueue.getName(), "worker.node1.queue");
+    }
+
+    @Test
+    @DisplayName("现代 Quorum 与备用交换机高级参数非法校验防御")
+    void testModernTopologyValidationGuards() {
+        // maxPriority 边界校验
+        assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue("q").maxPriority(0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue("q").maxPriority(256))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // overflow 非空校验
+        assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue("q").overflow(null))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // deliveryLimit 必须大于 0
+        assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue("q").deliveryLimit(0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue("q").deliveryLimit(-5))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // deadLetterStrategy 非空校验
+        assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue("q").deadLetterStrategy(" "))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue("q").deadLetterStrategy((DeadLetterStrategy) null))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // 验证枚举绑定参数正常生效
+        Declarables enumDecl = RabbitTopologyBuilder.direct("test")
+                .queue("q")
+                .deadLetterStrategy(DeadLetterStrategy.AT_LEAST_ONCE)
+                .build();
+        Queue q = (Queue) enumDecl.getDeclarables().stream().filter(d -> d instanceof Queue).findFirst().orElseThrow();
+        assertThat(q.getArguments()).containsEntry("x-dead-letter-strategy", "at-least-once");
+
+        // alternateExchange 非空与同名校验
+        assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").alternateExchange(""))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test.exchange").alternateExchange("test.exchange"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("支持仅声明交换机而不挂载静态队列 (build)")
+    void testExchangeOnlyBuild() {
+        Declarables fanoutDecl = RabbitTopologyBuilder.fanout("sample.fanout.standalone").build();
+        assertThat(fanoutDecl.getDeclarables()).hasSize(1);
+        assertThat(fanoutDecl.getDeclarables().iterator().next()).isInstanceOf(FanoutExchange.class);
+        FanoutExchange fanoutExchange = (FanoutExchange) fanoutDecl.getDeclarables().iterator().next();
+        assertThat(fanoutExchange.getName()).isEqualTo("sample.fanout.standalone");
     }
 }

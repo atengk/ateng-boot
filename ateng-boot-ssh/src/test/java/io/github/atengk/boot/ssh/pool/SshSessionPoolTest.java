@@ -2,6 +2,7 @@ package io.github.atengk.boot.ssh.pool;
 
 import io.github.atengk.boot.ssh.enums.HostKeyPolicy;
 import io.github.atengk.boot.ssh.exception.SshOperationException;
+import io.github.atengk.boot.ssh.model.SshPoolStats;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.properties.SshPoolProperties;
 import io.github.atengk.boot.ssh.verifier.InMemoryServerKeyVerifier;
@@ -352,6 +353,36 @@ class SshSessionPoolTest {
             ClientSession ignoreSession = pool.acquire(ignoreServer);
             assertThat(ignoreSession).isNotNull();
             assertThat(ignoreSession.isOpen()).isTrue();
+            pool.evict(ignoreServer);
+
+            // 3. LENIENT 模式首次建连应写入共享 InMemoryServerKeyVerifier；随后 STRICT 放行，removeKnownKey 后再次 STRICT 阻断
+            SshServerInfo lenientServer = SshServerInfo.builder()
+                    .host("127.0.0.1")
+                    .port(serverPort)
+                    .username("pooluser")
+                    .password("poolpass")
+                    .hostKeyPolicy(HostKeyPolicy.LENIENT)
+                    .build();
+            ClientSession lenientSession = pool.acquire(lenientServer);
+            assertThat(lenientSession.isOpen()).isTrue();
+            assertThat(verifier.getKnownKeys()).containsKey("127.0.0.1:" + serverPort);
+
+            // 使用独立凭据槽位（不同 poolKey）迫使重新握手校验 STRICT
+            SshServerInfo strictKnownServer = SshServerInfo.builder()
+                    .host("127.0.0.1")
+                    .port(serverPort)
+                    .username("pooluser")
+                    .password("poolpass")
+                    .passphrase("strict-slot")
+                    .hostKeyPolicy(HostKeyPolicy.STRICT)
+                    .build();
+            ClientSession strictSession = pool.acquire(strictKnownServer);
+            assertThat(strictSession.isOpen()).isTrue();
+
+            assertThat(verifier.removeKnownKey("127.0.0.1", serverPort)).isNotNull();
+            pool.evict(strictKnownServer);
+            assertThatThrownBy(() -> pool.acquire(strictKnownServer))
+                    .isInstanceOf(SshOperationException.class);
         } finally {
             customClient.stop();
         }
@@ -381,5 +412,121 @@ class SshSessionPoolTest {
 
         // 验证两者计算出的 toPoolKey 100% 相同
         assertThat(server1.toPoolKey()).isEqualTo(server2.toPoolKey());
+    }
+
+    @Test
+    @DisplayName("测试会话池运行态统计快照 (SshPoolStats) 精度与命中率计算")
+    void testPoolStatsAccuracy() {
+        SshPoolProperties poolProperties = new SshPoolProperties();
+        poolProperties.setMaxSessions(2);
+
+        try (SshSessionPool pool = new SshSessionPool(sshClient, poolProperties)) {
+            SshPoolStats initial = pool.getStats();
+            assertThat(initial.getMaxSessions()).isEqualTo(2);
+            assertThat(initial.getPoolSize()).isZero();
+            assertThat(initial.getActiveSessions()).isZero();
+            assertThat(initial.getTotalCreated()).isZero();
+            assertThat(initial.getTotalHits()).isZero();
+            assertThat(initial.getTotalEvicted()).isZero();
+            assertThat(initial.getTotalFailed()).isZero();
+            assertThat(initial.getHitRate()).isEqualTo(0.0d);
+
+            SshServerInfo server1 = SshServerInfo.of("127.0.0.1", serverPort, "pooluser", "poolpass");
+            SshServerInfo server2 = SshServerInfo.builder()
+                    .host("127.0.0.1")
+                    .port(serverPort)
+                    .username("pooluser")
+                    .password("poolpass")
+                    .passphrase("slot2")
+                    .build();
+            SshServerInfo server3 = SshServerInfo.builder()
+                    .host("127.0.0.1")
+                    .port(serverPort)
+                    .username("pooluser")
+                    .password("poolpass")
+                    .passphrase("slot3")
+                    .build();
+            SshServerInfo badCredServer = SshServerInfo.of("127.0.0.1", serverPort, "pooluser", "wrongpass");
+
+            // 1. 首次创建 server1 + 命中 2 次
+            pool.acquire(server1);
+            pool.acquire(server1);
+            pool.acquire(server1);
+
+            SshPoolStats afterHits = pool.getStats();
+            assertThat(afterHits.getPoolSize()).isEqualTo(1);
+            assertThat(afterHits.getActiveSessions()).isEqualTo(1);
+            assertThat(afterHits.getTotalCreated()).isEqualTo(1);
+            assertThat(afterHits.getTotalHits()).isEqualTo(2);
+            assertThat(afterHits.getHitRate()).isCloseTo(2.0d / 3.0d, org.assertj.core.data.Offset.offset(1e-6));
+
+            // 2. 创建 server2 与 server3 触发 LRU 淘汰 1 个
+            pool.acquire(server2);
+            pool.acquire(server3);
+            SshPoolStats afterLru = pool.getStats();
+            assertThat(afterLru.getPoolSize()).isEqualTo(2);
+            assertThat(afterLru.getTotalCreated()).isEqualTo(3);
+            assertThat(afterLru.getTotalEvicted()).isEqualTo(1);
+
+            // 3. 主动驱逐 server3
+            pool.evict(server3);
+            SshPoolStats afterEvict = pool.getStats();
+            assertThat(afterEvict.getPoolSize()).isEqualTo(1);
+            assertThat(afterEvict.getTotalEvicted()).isEqualTo(2);
+
+            // 4. 认证失败应计入 totalFailed
+            assertThatThrownBy(() -> pool.acquire(badCredServer))
+                    .isInstanceOf(SshOperationException.class);
+            SshPoolStats afterFail = pool.getStats();
+            assertThat(afterFail.getTotalFailed()).isEqualTo(1);
+            assertThat(afterFail.getTotalCreated()).isEqualTo(3);
+        }
+    }
+
+    @Test
+    @DisplayName("测试多线程并发获取与驱逐会话下 SshPoolStats 计数一致性")
+    void testConcurrentAcquireAndEvictStatsConsistency() throws Exception {
+        SshPoolProperties poolProperties = new SshPoolProperties();
+        poolProperties.setMaxSessions(16);
+        int threadCount = 12;
+        int rounds = 5;
+
+        try (SshSessionPool pool = new SshSessionPool(sshClient, poolProperties)) {
+            SshServerInfo serverInfo = SshServerInfo.of("127.0.0.1", serverPort, "pooluser", "poolpass");
+            ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+            try {
+                for (int r = 0; r < rounds; r++) {
+                    CountDownLatch readyLatch = new CountDownLatch(threadCount);
+                    CountDownLatch startLatch = new CountDownLatch(1);
+                    List<Future<ClientSession>> futures = new ArrayList<>();
+                    for (int i = 0; i < threadCount; i++) {
+                        final int idx = i;
+                        futures.add(executor.submit(() -> {
+                            readyLatch.countDown();
+                            startLatch.await();
+                            ClientSession s = pool.acquire(serverInfo);
+                            if (idx == 0) {
+                                pool.evict(serverInfo);
+                            }
+                            return s;
+                        }));
+                    }
+                    readyLatch.await();
+                    startLatch.countDown();
+                    for (Future<ClientSession> f : futures) {
+                        assertThat(f.get()).isNotNull();
+                    }
+                }
+            } finally {
+                executor.shutdown();
+            }
+
+            SshPoolStats stats = pool.getStats();
+            assertThat(stats.getActiveSessions()).isLessThanOrEqualTo(stats.getPoolSize());
+            assertThat(stats.getTotalCreated()).isGreaterThanOrEqualTo(1L);
+            assertThat(stats.getTotalEvicted()).isGreaterThanOrEqualTo((long) rounds);
+            assertThat(stats.getTotalCreated() + stats.getTotalHits()).isEqualTo((long) threadCount * rounds);
+            assertThat(stats.getTotalFailed()).isZero();
+        }
     }
 }

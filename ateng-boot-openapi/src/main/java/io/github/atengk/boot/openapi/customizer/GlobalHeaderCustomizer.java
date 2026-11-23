@@ -1,15 +1,25 @@
 package io.github.atengk.boot.openapi.customizer;
 
 import io.github.atengk.boot.core.constant.MessageHeaderConstants;
+import io.github.atengk.boot.openapi.annotation.IgnoreGlobalHeaders;
 import io.github.atengk.boot.openapi.properties.OpenApiProperties;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.media.StringSchema;
 import io.swagger.v3.oas.models.parameters.Parameter;
 import org.springdoc.core.customizers.OperationCustomizer;
+import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.util.CollectionUtils;
+import org.springframework.util.StringUtils;
 import org.springframework.web.method.HandlerMethod;
 
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 全局请求头自动化注入定制器
@@ -18,7 +28,9 @@ import java.util.Objects;
  * <ul>
  *     <li>{@code X-Trace-Id}：全链路追踪 ID（默认开启，可配置关闭）</li>
  *     <li>{@code X-Tenant-Id}：多租户标识 ID（默认开启，可配置关闭）</li>
+ *     <li>{@code custom}：配置文件中声明的自定义全局请求头列表</li>
  * </ul>
+ * 同时支持 {@link IgnoreGlobalHeaders} 声明式豁免（全量豁免或根据请求头名称精细化豁免）。
  * 避免业务开发人员在每个 Controller 重复声明模板化注解。
  * </p>
  *
@@ -51,27 +63,108 @@ public class GlobalHeaderCustomizer implements OperationCustomizer {
             return operation;
         }
 
-        // 1. 全链路追踪 Trace-Id 请求头注入
-        if (headers.isTraceId()) {
-            addHeaderIfNotPresent(operation, MessageHeaderConstants.TRACE_ID, "全链路追踪 Trace ID");
+        // 1. 扫描类与方法上的 @IgnoreGlobalHeaders 豁免配置（支持并集继承）
+        IgnoreGlobalHeaders methodAnnotation = (handlerMethod != null)
+                ? AnnotatedElementUtils.findMergedAnnotation(handlerMethod.getMethod(), IgnoreGlobalHeaders.class)
+                : null;
+        IgnoreGlobalHeaders classAnnotation = (handlerMethod != null)
+                ? AnnotatedElementUtils.findMergedAnnotation(handlerMethod.getBeanType(), IgnoreGlobalHeaders.class)
+                : null;
+
+        // 若类或方法任一处显式声明了无参全量豁免（value 为空数组），则全量豁免所有全局头
+        if ((methodAnnotation != null && methodAnnotation.value().length == 0)
+                || (classAnnotation != null && classAnnotation.value().length == 0)) {
+            return operation;
         }
 
-        // 2. 多租户 Tenant-Id 请求头注入
-        if (headers.isTenantId()) {
-            addHeaderIfNotPresent(operation, MessageHeaderConstants.TENANT_ID, "多租户标识 Tenant ID");
+        // 合并类与方法指定的局部忽略清单（求并集）
+        Set<String> ignoredHeaders = new HashSet<>();
+        if (methodAnnotation != null) {
+            ignoredHeaders.addAll(resolveIgnoredHeaders(methodAnnotation));
+        }
+        if (classAnnotation != null) {
+            ignoredHeaders.addAll(resolveIgnoredHeaders(classAnnotation));
+        }
+
+        // 2. 全链路追踪 Trace-Id 请求头注入
+        if (headers.isTraceId() && !isHeaderIgnored(MessageHeaderConstants.TRACE_ID, ignoredHeaders)) {
+            addHeaderIfNotPresent(operation, MessageHeaderConstants.TRACE_ID, "全链路追踪 Trace ID", false, null);
+        }
+
+        // 3. 多租户 Tenant-Id 请求头注入
+        if (headers.isTenantId() && !isHeaderIgnored(MessageHeaderConstants.TENANT_ID, ignoredHeaders)) {
+            addHeaderIfNotPresent(operation, MessageHeaderConstants.TENANT_ID, "多租户标识 Tenant ID", false, null);
+        }
+
+        // 4. 自定义全局请求头注入
+        List<OpenApiProperties.HeaderParam> customHeaders = headers.getCustom();
+        if (!CollectionUtils.isEmpty(customHeaders)) {
+            for (OpenApiProperties.HeaderParam param : customHeaders) {
+                if (param != null && StringUtils.hasText(param.getName()) && !isHeaderIgnored(param.getName(), ignoredHeaders)) {
+                    addHeaderIfNotPresent(operation, param.getName(), param.getDescription(),
+                            param.isRequired(), param.getDefaultValue(), param.getExample());
+                }
+            }
         }
 
         return operation;
     }
 
     /**
+     * 提取忽略的请求头小写名称集合
+     *
+     * @param annotation 豁免注解
+     * @return 请求头名称小写集合
+     */
+    private Set<String> resolveIgnoredHeaders(IgnoreGlobalHeaders annotation) {
+        if (annotation == null || annotation.value().length == 0) {
+            return Collections.emptySet();
+        }
+        return Arrays.stream(annotation.value())
+                .filter(StringUtils::hasText)
+                .map(s -> s.toLowerCase(Locale.ROOT))
+                .collect(Collectors.toSet());
+    }
+
+    /**
+     * 判断指定请求头是否被显式豁免
+     *
+     * @param headerName     请求头名称
+     * @param ignoredHeaders 豁免集合
+     * @return true 表示豁免，不注入
+     */
+    private boolean isHeaderIgnored(String headerName, Set<String> ignoredHeaders) {
+        if (CollectionUtils.isEmpty(ignoredHeaders) || !StringUtils.hasText(headerName)) {
+            return false;
+        }
+        return ignoredHeaders.contains(headerName.toLowerCase(Locale.ROOT));
+    }
+
+    /**
      * 防重防冲突：当 Operation 不存在同名 Header 参数时才执行追加
      *
-     * @param operation   当前接口 Operation
-     * @param headerName  请求头名称
-     * @param description 描述说明
+     * @param operation    当前接口 Operation
+     * @param headerName   请求头名称
+     * @param description  描述说明
+     * @param required     是否必填
+     * @param defaultValue 默认值
      */
-    private void addHeaderIfNotPresent(Operation operation, String headerName, String description) {
+    private void addHeaderIfNotPresent(Operation operation, String headerName, String description, boolean required, String defaultValue) {
+        addHeaderIfNotPresent(operation, headerName, description, required, defaultValue, null);
+    }
+
+    /**
+     * 防重防冲突：当 Operation 不存在同名 Header 参数时才执行追加（支持默认值与示例值分离）
+     *
+     * @param operation    当前接口 Operation
+     * @param headerName   请求头名称
+     * @param description  描述说明
+     * @param required     是否必填
+     * @param defaultValue 默认值
+     * @param example      示例值（优先于 defaultValue 渲染为示例）
+     */
+    public static void addHeaderIfNotPresent(Operation operation, String headerName, String description,
+                                             boolean required, String defaultValue, String example) {
         List<Parameter> parameters = operation.getParameters();
         if (parameters != null) {
             boolean exists = parameters.stream().anyMatch(param ->
@@ -83,12 +176,24 @@ public class GlobalHeaderCustomizer implements OperationCustomizer {
             }
         }
 
+        StringSchema schema = new StringSchema();
+        if (StringUtils.hasText(defaultValue)) {
+            schema.setDefault(defaultValue);
+        }
+        String effectiveExample = StringUtils.hasText(example) ? example : defaultValue;
+        if (StringUtils.hasText(effectiveExample)) {
+            schema.setExample(effectiveExample);
+        }
+
         Parameter headerParam = new Parameter()
                 .in(PARAMETER_IN_HEADER)
                 .name(headerName)
                 .description(description)
-                .required(false)
-                .schema(new StringSchema());
+                .required(required)
+                .schema(schema);
+        if (StringUtils.hasText(effectiveExample)) {
+            headerParam.setExample(effectiveExample);
+        }
 
         operation.addParametersItem(headerParam);
     }

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<flow>
+    <!-- 正常执行规则链 -->
+    <chain name="normalTraceChain">
+        THEN(obsNodeA, obsNodeB);
+    </chain>
+
+    <!-- 带有 Tag 标签的规则链 -->
+    <chain name="taggedTraceChain">
+        THEN(obsNodeA.tag("VIP"), obsNodeB.tag("EXPRESS"));
+    </chain>
+
+    <!-- 异常失败规则链 -->
+    <chain name="failTraceChain">
+        THEN(obsNodeA, obsFailNode);
+    </chain>
+
+    <!-- Saga 逆序回滚规则链 -->
+    <chain name="rollbackTraceChain">
+        THEN(obsRollbackNodeA, obsFailNode);
+    </chain>
+</flow>

@@ -103,13 +103,13 @@ class LocalJobSchedulingTest {
     @Test
     @DisplayName("支持手动立即触发执行一次 (trigger)")
     void testManualTriggerJob() {
-        String jobName = "sampleFixedRateJob";
-        int beforeCount = sampleTasks.fixedRateCount.get();
+        String jobName = "sampleManualTriggerJob";
+        int beforeCount = sampleTasks.manualTriggerCount.get();
 
         JobResult result = registry.trigger(jobName, null);
         assertThat(result).isNotNull();
         assertThat(result.isSuccess()).isTrue();
-        assertThat(sampleTasks.fixedRateCount.get()).isGreaterThan(beforeCount);
+        assertThat(sampleTasks.manualTriggerCount.get()).isGreaterThan(beforeCount);
     }
 
     @Test
@@ -150,6 +150,13 @@ class LocalJobSchedulingTest {
 
         final AtomicInteger cronCount = new AtomicInteger(0);
         final CountDownLatch cronLatch = new CountDownLatch(1);
+
+        final AtomicInteger manualTriggerCount = new AtomicInteger(0);
+
+        @LocalJob(name = "sampleManualTriggerJob", fixedDelay = "1h", initialDelay = "1h", description = "测试手动立即触发任务")
+        public void executeManualTrigger() {
+            manualTriggerCount.incrementAndGet();
+        }
 
         @LocalJob(name = "sampleFixedRateJob", fixedRate = "100ms", initialDelay = "10ms", description = "测试固定频率任务")
         public void executeFixedRate() {

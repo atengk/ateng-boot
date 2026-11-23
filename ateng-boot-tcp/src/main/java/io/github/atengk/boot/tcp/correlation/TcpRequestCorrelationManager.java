@@ -11,6 +11,7 @@ import io.netty.util.Timeout;
 import io.netty.util.concurrent.DefaultThreadFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.DisposableBean;
 
 import java.time.Duration;
 import java.util.Map;
@@ -19,6 +20,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * TCP 全双工请求-响应 RPC 相关性管理器
@@ -30,7 +32,7 @@ import java.util.concurrent.TimeUnit;
  * @author Ateng
  * @since 2026-10-26
  */
-public class TcpRequestCorrelationManager implements AutoCloseable {
+public class TcpRequestCorrelationManager implements DisposableBean, AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(TcpRequestCorrelationManager.class);
 
@@ -61,18 +63,19 @@ public class TcpRequestCorrelationManager implements AutoCloseable {
     };
 
     private final ConcurrentMap<String, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
-    private final HashedWheelTimer timer;
+    private final ReentrantLock timerLock = new ReentrantLock();
+    private volatile HashedWheelTimer timer;
+    private volatile boolean closed = false;
     private volatile int maxPendingRequests = 10000;
     private volatile TcpCorrelationIdExtractor correlationIdExtractor = DEFAULT_EXTRACTOR;
     private volatile TcpMetricsCollector metricsCollector;
 
     public TcpRequestCorrelationManager() {
-        this(new HashedWheelTimer(new DefaultThreadFactory("Netty-Correlation-Timer", true)), 10000);
+        this(createDefaultTimer(), 10000, null);
     }
 
     public TcpRequestCorrelationManager(TcpMetricsCollector metricsCollector) {
-        this();
-        this.metricsCollector = metricsCollector;
+        this(createDefaultTimer(), 10000, metricsCollector);
     }
 
     public TcpRequestCorrelationManager(HashedWheelTimer timer, int maxPendingRequests) {
@@ -83,6 +86,10 @@ public class TcpRequestCorrelationManager implements AutoCloseable {
         this.timer = Objects.requireNonNull(timer, "timer 不能为空");
         this.maxPendingRequests = maxPendingRequests > 0 ? maxPendingRequests : 10000;
         this.metricsCollector = metricsCollector;
+    }
+
+    private static HashedWheelTimer createDefaultTimer() {
+        return new HashedWheelTimer(new DefaultThreadFactory("Netty-Correlation-Timer", true));
     }
 
     /**
@@ -100,30 +107,43 @@ public class TcpRequestCorrelationManager implements AutoCloseable {
         if (timeout.isNegative() || timeout.isZero()) {
             throw new IllegalArgumentException("timeout 必须大于 0");
         }
-        if (pendingRequests.size() >= maxPendingRequests) {
-            throw new TcpException("待处理 TCP RPC 请求数量达到上限 [" + maxPendingRequests + "], 触发过载熔断保护");
-        }
 
         CompletableFuture<TcpPacket> future = new CompletableFuture<>();
+        Timeout timeoutTask;
+        PendingRequest pending;
 
-        Timeout timeoutTask = timer.newTimeout(t -> {
-            PendingRequest removed = pendingRequests.remove(requestId);
-            if (removed != null && !removed.future.isDone()) {
-                log.warn("TCP 请求等待对端应答超时，自动清理挂起句柄: requestId={}, timeout={}", requestId, timeout);
-                removed.future.completeExceptionally(
-                        new TcpTimeoutException("TCP 请求等待对端应答超时: requestId=" + requestId + ", timeout=" + timeout)
-                );
+        // 将时间轮惰性重建、newTimeout 投递与 pendingRequests 写入置于同一把 timerLock 内，消除与 close() 的并发竞态
+        timerLock.lock();
+        try {
+            if (pendingRequests.size() >= maxPendingRequests) {
+                throw new TcpException("待处理 TCP RPC 请求数量达到上限 [" + maxPendingRequests + "], 触发过载熔断保护");
             }
-        }, timeout.toMillis(), TimeUnit.MILLISECONDS);
-
-        PendingRequest pending = new PendingRequest(requestId, future, timeoutTask);
-        pendingRequests.put(requestId, pending);
+            if (closed || this.timer == null) {
+                this.timer = createDefaultTimer();
+                this.closed = false;
+            }
+            timeoutTask = this.timer.newTimeout(t -> {
+                PendingRequest removed = pendingRequests.remove(requestId);
+                if (removed != null && !removed.future.isDone()) {
+                    log.warn("TCP 请求等待对端应答超时，自动清理挂起句柄: requestId={}, timeout={}", requestId, timeout);
+                    removed.future.completeExceptionally(
+                            new TcpTimeoutException("TCP 请求等待对端应答超时: requestId=" + requestId + ", timeout=" + timeout)
+                    );
+                }
+            }, timeout.toMillis(), TimeUnit.MILLISECONDS);
+            pending = new PendingRequest(requestId, future, timeoutTask);
+            pendingRequests.put(requestId, pending);
+        } finally {
+            if (timerLock.isHeldByCurrentThread()) {
+                timerLock.unlock();
+            }
+        }
 
         // 调用方主动 cancel 时自动清理映射表与定时任务
         future.whenComplete((res, ex) -> {
             if (future.isCancelled()) {
                 timeoutTask.cancel();
-                pendingRequests.remove(requestId);
+                pendingRequests.remove(requestId, pending);
             }
         });
 
@@ -261,15 +281,29 @@ public class TcpRequestCorrelationManager implements AutoCloseable {
     }
 
     @Override
+    public void destroy() {
+        close();
+    }
+
+    @Override
     public void close() {
-        for (PendingRequest pending : pendingRequests.values()) {
-            pending.timeoutTask.cancel();
-            pending.future.completeExceptionally(new TcpException("TCP 通信底座已关闭，终止等待对端应答: requestId=" + pending.requestId));
-        }
-        pendingRequests.clear();
+        timerLock.lock();
         try {
-            timer.stop();
-        } catch (Exception ignored) {
+            failAll(new TcpException("TCP 通信底座已关闭，终止等待对端应答"));
+            this.closed = true;
+            HashedWheelTimer current = this.timer;
+            if (current != null) {
+                try {
+                    current.stop();
+                } catch (Exception ex) {
+                    log.warn("停止 TCP 请求相关性时间轮异常", ex);
+                }
+                this.timer = null;
+            }
+        } finally {
+            if (timerLock.isHeldByCurrentThread()) {
+                timerLock.unlock();
+            }
         }
     }
 

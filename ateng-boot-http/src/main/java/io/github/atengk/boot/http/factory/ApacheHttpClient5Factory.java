@@ -7,6 +7,7 @@ import io.github.atengk.boot.http.properties.HttpPoolProperties;
 import io.github.atengk.boot.http.properties.HttpProperties;
 import io.github.atengk.boot.http.properties.HttpProxyProperties;
 import io.github.atengk.boot.http.properties.HttpSslProperties;
+import io.github.atengk.boot.http.util.HttpSslUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.hc.client5.http.auth.AuthScope;
 import org.apache.hc.client5.http.auth.UsernamePasswordCredentials;
@@ -18,14 +19,20 @@ import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.client5.http.impl.routing.DefaultProxyRoutePlanner;
+import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.client5.http.ssl.NoopHostnameVerifier;
 import org.apache.hc.client5.http.ssl.SSLConnectionSocketFactory;
 import org.apache.hc.client5.http.ssl.SSLConnectionSocketFactoryBuilder;
 import org.apache.hc.client5.http.ssl.TrustAllStrategy;
+import org.apache.hc.core5.http.HttpException;
 import org.apache.hc.core5.http.HttpHost;
+import org.apache.hc.core5.http.protocol.HttpContext;
 import org.apache.hc.core5.ssl.SSLContextBuilder;
 import org.apache.hc.core5.util.TimeValue;
 import org.apache.hc.core5.util.Timeout;
+import org.springframework.core.io.DefaultResourceLoader;
+import org.springframework.core.io.Resource;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.client.ClientHttpRequest;
 import org.springframework.http.client.ClientHttpRequestFactory;
@@ -35,8 +42,10 @@ import org.springframework.util.StringUtils;
 
 import javax.net.ssl.SSLContext;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.security.GeneralSecurityException;
+import java.security.KeyStore;
 import java.time.Duration;
 import java.util.List;
 
@@ -77,20 +86,28 @@ public final class ApacheHttpClient5Factory {
                 .build();
         connectionManagerBuilder.setDefaultConnectionConfig(connectionConfig);
 
-        // 3. SSL 证书校验与内网自签名跳过
-        if (ssl.isInsecure()) {
+        // 3. SSL 证书校验、内网自签名跳过与金融级 mTLS 客户端双向认证
+        boolean hasKeyStore = ssl.hasKeyStore();
+        if (ssl.isInsecure() || hasKeyStore) {
             try {
-                SSLContext sslContext = SSLContextBuilder.create()
-                        .loadTrustMaterial(TrustAllStrategy.INSTANCE)
-                        .build();
-                SSLConnectionSocketFactory sslSocketFactory = SSLConnectionSocketFactoryBuilder.create()
-                        .setSslContext(sslContext)
-                        .setHostnameVerifier(NoopHostnameVerifier.INSTANCE)
-                        .build();
-                connectionManagerBuilder.setSSLSocketFactory(sslSocketFactory);
-                log.info("HTTP 客户端已启用 Insecure SSL 模式，信任所有自签名证书并跳过主机名校验");
-            } catch (GeneralSecurityException e) {
-                throw new IllegalStateException("构建 Insecure SSLContext 失败", e);
+                SSLContextBuilder sslContextBuilder = SSLContextBuilder.create();
+                if (ssl.isInsecure()) {
+                    sslContextBuilder.loadTrustMaterial(TrustAllStrategy.INSTANCE);
+                }
+                if (hasKeyStore) {
+                    loadKeyMaterial(sslContextBuilder, ssl);
+                }
+                SSLConnectionSocketFactoryBuilder socketFactoryBuilder = SSLConnectionSocketFactoryBuilder.create()
+                        .setSslContext(sslContextBuilder.build());
+                if (ssl.isInsecure()) {
+                    socketFactoryBuilder.setHostnameVerifier(NoopHostnameVerifier.INSTANCE);
+                    log.info("HTTP 客户端已启用 Insecure SSL 模式，信任所有自签名证书并跳过主机名校验");
+                }
+                connectionManagerBuilder.setSSLSocketFactory(socketFactoryBuilder.build());
+            } catch (IllegalArgumentException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IllegalStateException("构建 SSLContext 失败: " + e.getMessage(), e);
             }
         }
 
@@ -108,11 +125,23 @@ public final class ApacheHttpClient5Factory {
                 .build();
         clientBuilder.setDefaultRequestConfig(requestConfig);
 
-        // 6. 出口正向代理支持
+        // 6. 出口正向代理与白名单直连支持
         if (proxy.isEnabled()) {
             Assert.hasText(proxy.getHost(), "HTTP 代理已启用(ateng.boot.http.proxy.enabled=true)，代理主机 host 不能为空");
             HttpHost proxyHost = new HttpHost(proxy.getHost(), proxy.getPort());
-            clientBuilder.setProxy(proxyHost);
+            if (proxy.getNonProxyHosts() != null && !proxy.getNonProxyHosts().isEmpty()) {
+                clientBuilder.setRoutePlanner(new DefaultProxyRoutePlanner(proxyHost) {
+                    @Override
+                    protected HttpHost determineProxy(HttpHost target, HttpContext context) throws HttpException {
+                        if (target != null && proxy.isNonProxyHost(target.getHostName())) {
+                            return null;
+                        }
+                        return super.determineProxy(target, context);
+                    }
+                });
+            } else {
+                clientBuilder.setProxy(proxyHost);
+            }
             if (StringUtils.hasText(proxy.getUsername())) {
                 BasicCredentialsProvider credentialsProvider = new BasicCredentialsProvider();
                 credentialsProvider.setCredentials(
@@ -121,7 +150,7 @@ public final class ApacheHttpClient5Factory {
                 );
                 clientBuilder.setDefaultCredentialsProvider(credentialsProvider);
             }
-            log.info("HTTP 客户端已启用出口代理: {}:{}", proxy.getHost(), proxy.getPort());
+            log.info("HTTP 客户端已启用出口代理: {}:{}, nonProxyHosts={}", proxy.getHost(), proxy.getPort(), proxy.getNonProxyHosts());
         }
 
         // 7. 回调业务自定义扩展 SPI
@@ -139,18 +168,44 @@ public final class ApacheHttpClient5Factory {
                 pool.getMaxConnections(), pool.getMaxPerRoute(), pool.getConnectTimeout(), pool.getReadTimeout());
         return new HttpComponentsClientHttpRequestFactory(httpClient) {
             @Override
+            protected HttpContext createHttpContext(HttpMethod httpMethod, URI uri) {
+                HttpContext context = super.createHttpContext(httpMethod, uri);
+                if (HttpRequestContextHolder.getReadTimeout() != null
+                        || HttpRequestContextHolder.getConnectTimeout() != null) {
+                    HttpClientContext clientContext = context != null
+                            ? HttpClientContext.adapt(context)
+                            : HttpClientContext.create();
+                    if (clientContext.getRequestConfig() == null) {
+                        clientContext.setRequestConfig(requestConfig);
+                    }
+                    return clientContext;
+                }
+                return context;
+            }
+
+            @Override
             public ClientHttpRequest createRequest(URI uri, HttpMethod httpMethod) throws IOException {
                 ClientHttpRequest request = super.createRequest(uri, httpMethod);
-                Duration perRequestTimeout = HttpRequestContextHolder.getReadTimeout();
-                if (perRequestTimeout != null) {
-                    try {
-                        RequestOptionsApplier.applyTimeout(request, perRequestTimeout);
-                    } finally {
-                        HttpRequestContextHolder.clear();
-                    }
+                Duration perRequestReadTimeout = HttpRequestContextHolder.getReadTimeout();
+                Duration perRequestConnectTimeout = HttpRequestContextHolder.getConnectTimeout();
+                if (perRequestReadTimeout != null || perRequestConnectTimeout != null) {
+                    RequestOptionsApplier.applyTimeout(request, perRequestReadTimeout, perRequestConnectTimeout);
                 }
                 return request;
             }
         };
+    }
+
+    /**
+     * 加载 mTLS 客户端私钥证书密钥库至 SSLContextBuilder
+     *
+     * @param sslContextBuilder SSL 上下文构建器
+     * @param ssl               SSL 配置属性
+     * @throws Exception 证书加载或解析异常
+     */
+    private static void loadKeyMaterial(SSLContextBuilder sslContextBuilder, HttpSslProperties ssl) throws Exception {
+        KeyStore keyStore = HttpSslUtil.loadKeyStore(ssl);
+        char[] password = StringUtils.hasText(ssl.getKeyStorePassword()) ? ssl.getKeyStorePassword().toCharArray() : new char[0];
+        sslContextBuilder.loadKeyMaterial(keyStore, password);
     }
 }

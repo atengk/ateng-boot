@@ -1,5 +1,8 @@
 package io.github.atengk.boot.core.id;
 
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import io.github.atengk.boot.core.jackson.NumericLongSerializer;
+
 import java.io.Serializable;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -20,12 +23,12 @@ import java.time.LocalDateTime;
  */
 public record SnowflakeIdInfo(
         long id,
-        long timestamp,
+        @JsonSerialize(using = NumericLongSerializer.class) long timestamp,
         Instant instant,
         LocalDateTime dateTime,
-        long datacenterId,
-        long workerId,
-        long sequence,
-        long epoch
+        @JsonSerialize(using = NumericLongSerializer.class) long datacenterId,
+        @JsonSerialize(using = NumericLongSerializer.class) long workerId,
+        @JsonSerialize(using = NumericLongSerializer.class) long sequence,
+        @JsonSerialize(using = NumericLongSerializer.class) long epoch
 ) implements Serializable {
 }

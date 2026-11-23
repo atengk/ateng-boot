@@ -214,4 +214,93 @@ class PayBillParserTest {
                 io.github.atengk.boot.pay.model.bill.PayBillDownloadResponse.builder().build();
         assertDoesNotThrow(nullStreamResponse::close);
     }
+
+    @Test
+    @DisplayName("支付宝标准双 CSV ZIP（业务明细 + 汇总）无论顺序先后解析结果完全一致")
+    void testParse_alipayDualCsvZipOrderIndependent() throws Exception {
+        String detailCsv = String.join("\n",
+                "# 支付宝业务明细查询结果",
+                "支付宝交易号,商户订单号,业务类型,商品名称,创建时间,完成时间,门店编号,门店名称,操作员,终端号,对方账户,订单金额（元）,商家实收（元）,服务费（元）",
+                "202611180001,ALI_D_001,交易,美式咖啡,2026-11-18 09:00:00,2026-11-18 09:01:00,S1,店1,O1,T1,138****1,28.00,27.83,0.17",
+                "202611180002,ALI_D_002,交易,拿铁咖啡,2026-11-18 10:00:00,2026-11-18 10:01:00,S1,店1,O1,T1,138****2,22.00,21.87,0.13",
+                "202611180003,ALI_D_003,退款,美式咖啡,2026-11-18 11:00:00,2026-11-18 11:01:00,S1,店1,O1,T1,138****1,-28.00,-27.83,-0.17",
+                "# 业务明细列表结束");
+        String summaryCsv = String.join("\n",
+                "# 支付宝业务汇总查询结果",
+                "总交易笔数,总交易金额（元）,总商家实收（元）,总退款金额（元）,总服务费（元）",
+                "3,50.00,49.70,28.00,0.30");
+
+        java.nio.charset.Charset gbk = java.nio.charset.Charset.forName("GBK");
+        byte[] detailFirstZip = buildDualEntryZip(gbk,
+                "2088000000000000_20261118_业务明细.csv", detailCsv.getBytes(gbk),
+                "2088000000000000_20261118_业务明细(汇总).csv", summaryCsv.getBytes(gbk));
+        byte[] summaryFirstZip = buildDualEntryZip(gbk,
+                "2088000000000000_20261118_业务明细(汇总).csv", summaryCsv.getBytes(gbk),
+                "2088000000000000_20261118_业务明细.csv", detailCsv.getBytes(gbk));
+
+        PayBillResult resDetailFirst = parser.parse(new ByteArrayInputStream(detailFirstZip));
+        PayBillResult resSummaryFirst = parser.parse(new ByteArrayInputStream(summaryFirstZip));
+
+        assertEquals(3, resDetailFirst.size());
+        assertEquals(3, resSummaryFirst.size());
+        assertEquals(PayChannel.ALIPAY, resDetailFirst.getSummary().getChannel());
+        assertEquals(PayChannel.ALIPAY, resSummaryFirst.getSummary().getChannel());
+        assertEquals(3L, resDetailFirst.getSummary().getTotalCount());
+        assertEquals(new BigDecimal("50.00"), resDetailFirst.getSummary().getTotalAmount());
+        assertEquals(new BigDecimal("49.70"), resDetailFirst.getSummary().getSettlementAmount());
+        assertEquals(new BigDecimal("28.00"), resDetailFirst.getSummary().getRefundAmount());
+        assertEquals(new BigDecimal("0.30"), resDetailFirst.getSummary().getServiceFee());
+        assertEquals(resDetailFirst, resSummaryFirst);
+    }
+
+    @Test
+    @DisplayName("支付宝双 CSV ZIP（明细含注释汇总行 + 独立汇总文件）先汇总后明细时表汇总不被覆盖")
+    void testParse_alipayDualCsvZipWithCommentSummaryInDetailPreservesTableSummary() throws Exception {
+        String detailCsvWithComment = String.join("\n",
+                "# 支付宝业务明细查询结果",
+                "支付宝交易号,商户订单号,业务类型,商品名称,创建时间,完成时间,门店编号,门店名称,操作员,终端号,对方账户,订单金额（元）,商家实收（元）,服务费（元）",
+                "202611180001,ALI_D_001,交易,美式咖啡,2026-11-18 09:00:00,2026-11-18 09:01:00,S1,店1,O1,T1,138****1,28.00,27.83,0.17",
+                "202611180002,ALI_D_002,交易,拿铁咖啡,2026-11-18 10:00:00,2026-11-18 10:01:00,S1,店1,O1,T1,138****2,22.00,21.87,0.13",
+                "202611180003,ALI_D_003,退款,美式咖啡,2026-11-18 11:00:00,2026-11-18 11:01:00,S1,店1,O1,T1,138****1,-28.00,-27.83,-0.17",
+                "#总交易笔数：3",
+                "#总交易金额：78.00",
+                "# 业务明细列表结束");
+        String summaryCsv = String.join("\n",
+                "# 支付宝业务汇总查询结果",
+                "总交易笔数,总交易金额（元）,总商家实收（元）,总退款金额（元）,总服务费（元）",
+                "3,50.00,49.70,28.00,0.30");
+
+        java.nio.charset.Charset gbk = java.nio.charset.Charset.forName("GBK");
+        byte[] summaryFirstZip = buildDualEntryZip(gbk,
+                "2088000000000000_20261118_业务明细(汇总).csv", summaryCsv.getBytes(gbk),
+                "2088000000000000_20261118_业务明细.csv", detailCsvWithComment.getBytes(gbk));
+        byte[] detailFirstZip = buildDualEntryZip(gbk,
+                "2088000000000000_20261118_业务明细.csv", detailCsvWithComment.getBytes(gbk),
+                "2088000000000000_20261118_业务明细(汇总).csv", summaryCsv.getBytes(gbk));
+
+        PayBillResult resSummaryFirst = parser.parse(new ByteArrayInputStream(summaryFirstZip));
+        PayBillResult resDetailFirst = parser.parse(new ByteArrayInputStream(detailFirstZip));
+
+        assertEquals(3L, resSummaryFirst.getSummary().getTotalCount());
+        assertEquals(new BigDecimal("50.00"), resSummaryFirst.getSummary().getTotalAmount());
+        assertEquals(new BigDecimal("49.70"), resSummaryFirst.getSummary().getSettlementAmount());
+        assertEquals(new BigDecimal("28.00"), resSummaryFirst.getSummary().getRefundAmount());
+        assertEquals(new BigDecimal("0.30"), resSummaryFirst.getSummary().getServiceFee());
+        assertEquals(resSummaryFirst, resDetailFirst);
+    }
+
+    private static byte[] buildDualEntryZip(java.nio.charset.Charset charset,
+                                            String name1, byte[] data1,
+                                            String name2, byte[] data2) throws Exception {
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        try (ZipOutputStream zos = new ZipOutputStream(baos, charset)) {
+            zos.putNextEntry(new ZipEntry(name1));
+            zos.write(data1);
+            zos.closeEntry();
+            zos.putNextEntry(new ZipEntry(name2));
+            zos.write(data2);
+            zos.closeEntry();
+        }
+        return baos.toByteArray();
+    }
 }

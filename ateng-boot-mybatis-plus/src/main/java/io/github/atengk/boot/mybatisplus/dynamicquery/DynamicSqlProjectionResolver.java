@@ -328,14 +328,35 @@ public final class DynamicSqlProjectionResolver {
             Map<String, Object> camelMap = new HashMap<>(map.size() * 2);
             map.forEach((k, v) -> {
                 if (k != null) {
+                    Object normalizedVal = normalizeJdbcValue(v);
                     String keyStr = k.toString();
-                    camelMap.put(keyStr, v);
+                    camelMap.put(keyStr, normalizedVal);
                     String camelKey = underlineToCamel(keyStr);
-                    camelMap.putIfAbsent(camelKey, v);
+                    camelMap.putIfAbsent(camelKey, normalizedVal);
                 }
             });
             return JsonUtil.convertValue(camelMap, targetType);
         }
         return JsonUtil.convertValue(raw, targetType);
+    }
+
+    /**
+     * 归一化 JDBC 原生时间类型（如 java.sql.Timestamp / Date / Time）为 JSR-310 标准时间对象，
+     * 避免 Map 结果集通过 Jackson convertValue 转换至含 LocalDateTime 字段的 VO 时发生带时区格式反序列化冲突
+     */
+    private static Object normalizeJdbcValue(Object value) {
+        if (value instanceof java.sql.Timestamp ts) {
+            return ts.toLocalDateTime();
+        }
+        if (value instanceof java.sql.Date d) {
+            return d.toLocalDate();
+        }
+        if (value instanceof java.sql.Time t) {
+            return t.toLocalTime();
+        }
+        if (value instanceof java.time.OffsetDateTime odt) {
+            return odt.toLocalDateTime();
+        }
+        return value;
     }
 }

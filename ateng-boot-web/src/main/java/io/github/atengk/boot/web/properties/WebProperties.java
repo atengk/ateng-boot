@@ -25,6 +25,14 @@ import java.util.List;
 public class WebProperties {
 
     /**
+     * 审计日志与请求参数默认敏感字段脱敏基线
+     */
+    private static final List<String> DEFAULT_SENSITIVE_EXCLUDE_PARAMS = List.of(
+            "password", "passwd", "pwd", "oldPassword", "newPassword", "confirmPassword",
+            "secret", "token", "accessToken", "refreshToken", "authorization"
+    );
+
+    /**
      * 是否启用 Web 运行时增强模块（默认 true）
      */
     private boolean enabled = true;
@@ -41,10 +49,35 @@ public class WebProperties {
     private boolean longToString = true;
 
     /**
+     * Jackson 序列化增强配置
+     */
+    @NestedConfigurationProperty
+    private JacksonProperties jackson = new JacksonProperties();
+
+    /**
+     * 全局授信反向代理 IP / CIDR 网段列表（默认包含本地环回 127.0.0.1 与 ::1）
+     * 启动期自动与 ateng.boot.web.ip-access-control.trusted-proxies 合并并同步至 IpUtil 默认防伪造基线
+     */
+    private List<String> trustedProxies = new ArrayList<>(List.of("127.0.0.1", "::1"));
+
+    /**
      * CORS 跨域自动化配置
      */
     @NestedConfigurationProperty
     private CorsProperties cors = new CorsProperties();
+
+    /**
+     * Jackson 序列化属性配置
+     */
+    @Getter
+    @Setter
+    public static class JacksonProperties {
+
+        /**
+         * 是否将 BigDecimal 按平原十进制输出，禁用科学计数法（默认 true）
+         */
+        private boolean writeBigDecimalAsPlain = true;
+    }
 
     /**
      * 链路追踪属性配置
@@ -62,6 +95,11 @@ public class WebProperties {
          * 链路追踪请求头键名
          */
         private String header = "X-Trace-Id";
+
+        /**
+         * 入站链路追踪标识最大允许长度（默认 64；超出或含非法字符时丢弃并重生成安全 UUID）
+         */
+        private int maxLength = 64;
 
         public String getHeaderName() {
             return header;
@@ -118,24 +156,6 @@ public class WebProperties {
          * 跨域预检请求缓存有效时间（强类型 Duration，默认 3600 秒）
          */
         private Duration maxAge = Duration.ofSeconds(3600);
-
-        /**
-         * 获取跨域预检请求缓存有效时间（秒，向后兼容）
-         *
-         * @return 缓存秒数
-         */
-        public Long getMaxAgeSeconds() {
-            return maxAge != null ? maxAge.toSeconds() : 3600L;
-        }
-
-        /**
-         * 设置跨域预检请求缓存有效时间（秒，向后兼容）
-         *
-         * @param maxAgeSeconds 缓存秒数
-         */
-        public void setMaxAgeSeconds(Long maxAgeSeconds) {
-            this.maxAge = maxAgeSeconds != null ? Duration.ofSeconds(maxAgeSeconds) : Duration.ofSeconds(3600);
-        }
     }
 
     /**
@@ -155,6 +175,11 @@ public class WebProperties {
          * 是否启用 Web 接口审计日志切面
          */
         private boolean enabled = false;
+
+        /**
+         * 全局默认敏感排除参数列表（与 @WebLog#excludeParams 合并并忽略大小写匹配）
+         */
+        private List<String> defaultExcludeParams = new ArrayList<>(DEFAULT_SENSITIVE_EXCLUDE_PARAMS);
     }
 
     /**
@@ -201,6 +226,26 @@ public class WebProperties {
         private String privateKey;
 
         /**
+         * RSA 算法专属公钥（多算法并存场景优先使用，未配置时回退读取 publicKey）
+         */
+        private String rsaPublicKey;
+
+        /**
+         * RSA 算法专属私钥（多算法并存场景优先使用，未配置时回退读取 privateKey）
+         */
+        private String rsaPrivateKey;
+
+        /**
+         * 国密 SM2 算法专属公钥（多算法并存场景优先使用，未配置时回退读取 publicKey）
+         */
+        private String sm2PublicKey;
+
+        /**
+         * 国密 SM2 算法专属私钥（多算法并存场景优先使用，未配置时回退读取 privateKey）
+         */
+        private String sm2PrivateKey;
+
+        /**
          * 请求时效防重放时间窗口（强类型 Duration，默认 60 秒）
          */
         private Duration expire = Duration.ofSeconds(60);
@@ -209,42 +254,6 @@ public class WebProperties {
          * 请求体缓存最大字节数载荷上限（强类型 DataSize 防 OOM，默认 2MB）
          */
         private DataSize maxBodySize = DataSize.ofMegabytes(2);
-
-        /**
-         * 获取防重放窗口时间（秒，向后兼容）
-         *
-         * @return 超时秒数
-         */
-        public long getExpireSeconds() {
-            return expire != null ? expire.toSeconds() : 60L;
-        }
-
-        /**
-         * 设置防重放窗口时间（秒，向后兼容）
-         *
-         * @param expireSeconds 超时秒数
-         */
-        public void setExpireSeconds(long expireSeconds) {
-            this.expire = Duration.ofSeconds(expireSeconds);
-        }
-
-        /**
-         * 获取请求体最大缓存字节数（向后兼容）
-         *
-         * @return 字节数
-         */
-        public int getMaxBodySizeBytes() {
-            return maxBodySize != null ? (int) maxBodySize.toBytes() : 2 * 1024 * 1024;
-        }
-
-        /**
-         * 设置请求体最大缓存字节数（向后兼容）
-         *
-         * @param maxBodySizeBytes 字节数
-         */
-        public void setMaxBodySizeBytes(int maxBodySizeBytes) {
-            this.maxBodySize = DataSize.ofBytes(maxBodySizeBytes);
-        }
 
         /**
          * 应用标识请求头名称（默认 X-App-Id）
@@ -262,9 +271,24 @@ public class WebProperties {
         private String headerNonce = "X-Nonce";
 
         /**
+         * Nonce 防重放缓存 Key 默认前缀
+         */
+        public static final String DEFAULT_NONCE_PREFIX = "ateng:sign:nonce:";
+
+        /**
          * 签名串请求头/响应头名称（默认 X-Signature）
          */
         private String headerSignature = "X-Signature";
+
+        /**
+         * Nonce 防重放缓存 Key 前缀（默认 ateng:sign:nonce:）
+         */
+        private String noncePrefix = DEFAULT_NONCE_PREFIX;
+
+        /**
+         * 分布式 Nonce 防重放存储异常时的降级策略（默认 false 强安全阻断；设为 true 时降级至本地内存锁）
+         */
+        private boolean failOpen = false;
     }
 
     /**
@@ -290,24 +314,6 @@ public class WebProperties {
          * 请求体缓存最大字节数载荷上限（强类型 DataSize 防 OOM，默认 2MB）
          */
         private DataSize maxBodySize = DataSize.ofMegabytes(2);
-
-        /**
-         * 获取请求体最大缓存字节数（向后兼容）
-         *
-         * @return 字节数
-         */
-        public int getMaxBodySizeBytes() {
-            return maxBodySize != null ? (int) maxBodySize.toBytes() : 2 * 1024 * 1024;
-        }
-
-        /**
-         * 设置请求体最大缓存字节数（向后兼容）
-         *
-         * @param maxBodySizeBytes 字节数
-         */
-        public void setMaxBodySizeBytes(int maxBodySizeBytes) {
-            this.maxBodySize = DataSize.ofBytes(maxBodySizeBytes);
-        }
     }
 
     /**
@@ -331,24 +337,6 @@ public class WebProperties {
          * 采样日志排除路径白名单（Ant 风格匹配，如 /actuator/**）
          */
         private List<String> excludeUrls = new ArrayList<>();
-
-        /**
-         * 获取单次最大采样截断字节数（向后兼容）
-         *
-         * @return 字节数
-         */
-        public int getMaxPayloadSizeBytes() {
-            return maxPayloadSize != null ? (int) maxPayloadSize.toBytes() : 4096;
-        }
-
-        /**
-         * 设置单次最大采样截断字节数（向后兼容）
-         *
-         * @param maxPayloadSizeBytes 字节数
-         */
-        public void setMaxPayloadSizeBytes(int maxPayloadSizeBytes) {
-            this.maxPayloadSize = DataSize.ofBytes(maxPayloadSizeBytes);
-        }
     }
 
     /**
@@ -365,9 +353,34 @@ public class WebProperties {
     public static class OperateLogProperties {
 
         /**
+         * 默认保存的 User-Agent 最大字符长度
+         */
+        public static final int DEFAULT_USER_AGENT_MAX_LENGTH = 512;
+
+        /**
          * 是否启用结构化操作审计切面（默认 true）
          */
         private boolean enabled = true;
+
+        /**
+         * 全局默认敏感排除参数列表（与 @OperateLog#excludeParams 合并并忽略大小写匹配）
+         */
+        private List<String> defaultExcludeParams = new ArrayList<>(DEFAULT_SENSITIVE_EXCLUDE_PARAMS);
+
+        /**
+         * 是否在进入目标方法前同步采集 HTTP User-Agent 请求头（默认 true）
+         */
+        private boolean collectUserAgent = true;
+
+        /**
+         * 是否使用轻量原生 UserAgentUtil 自动解析浏览器与操作系统名称（默认 true；仅在 collectUserAgent 开启时生效）
+         */
+        private boolean parseUserAgent = true;
+
+        /**
+         * 采集保存的 User-Agent 最大长度限制（默认 512，防超长恶意头污染存储；<= 0 时回退默认上限 512）
+         */
+        private int userAgentMaxLength = DEFAULT_USER_AGENT_MAX_LENGTH;
     }
 
     /**
@@ -389,9 +402,19 @@ public class WebProperties {
         private boolean enabled = true;
 
         /**
-         * 就绪探针置为拒绝后静默排空等待时间（强类型 Duration，默认 10 秒）
+         * 就绪探针置为拒绝后静默排空等待总上限（强类型 Duration，默认 10 秒）
          */
         private Duration drainTimeout = Duration.ofSeconds(10);
+
+        /**
+         * K8s 路由摘除传播静默等待期（第一阶段；未配置时默认与 drainTimeout 一致以保持向后兼容）
+         */
+        private Duration quietPeriod;
+
+        /**
+         * 在途请求自适应排空轮询步长（第二阶段，默认 100ms；最小毫秒级粒度，小于 1ms 时自动回退为 100ms 防止忙等）
+         */
+        private Duration pollInterval = Duration.ofMillis(100);
 
         /**
          * 是否启用 SmartLifecycle 兜底保护（未配 preStop 收到 SIGTERM 时自动排空，默认 true）
@@ -441,24 +464,6 @@ public class WebProperties {
          * 慢请求监控排除路径白名单（Ant 风格匹配，如 /actuator/**）
          */
         private List<String> excludeUrls = new ArrayList<>();
-
-        /**
-         * 获取判定阈值毫秒数（向后兼容）
-         *
-         * @return 毫秒数
-         */
-        public long getThresholdMillis() {
-            return threshold != null ? threshold.toMillis() : 3000L;
-        }
-
-        /**
-         * 设置判定阈值毫秒数（向后兼容）
-         *
-         * @param thresholdMillis 毫秒数
-         */
-        public void setThresholdMillis(long thresholdMillis) {
-            this.threshold = Duration.ofMillis(thresholdMillis);
-        }
     }
 
     /**
@@ -478,6 +483,18 @@ public class WebProperties {
      */
     @NestedConfigurationProperty
     private XssProperties xss = new XssProperties();
+
+    /**
+     * 启动一体化就绪总览卡片配置
+     */
+    @NestedConfigurationProperty
+    private ReadyCardProperties readyCard = new ReadyCardProperties();
+
+    /**
+     * 生产环境安全防呆自检配置
+     */
+    @NestedConfigurationProperty
+    private SanityCheckProperties sanityCheck = new SanityCheckProperties();
 
     /**
      * HTTP 安全响应头属性配置
@@ -543,6 +560,42 @@ public class WebProperties {
          * 是否生成弱 ETag (W/"...")，默认 false 生成强 ETag
          */
         private boolean writeWeakETag = false;
+
+        /**
+         * 获取是否生成弱 ETag
+         *
+         * @return true 生成弱 ETag
+         */
+        public boolean isWriteWeakETag() {
+            return writeWeakETag;
+        }
+
+        /**
+         * 设置是否生成弱 ETag
+         *
+         * @param writeWeakETag true 生成弱 ETag
+         */
+        public void setWriteWeakETag(boolean writeWeakETag) {
+            this.writeWeakETag = writeWeakETag;
+        }
+
+        /**
+         * 获取是否生成弱 ETag（兼容标准驼峰 write-weak-etag 属性绑定）
+         *
+         * @return true 生成弱 ETag
+         */
+        public boolean isWriteWeakEtag() {
+            return writeWeakETag;
+        }
+
+        /**
+         * 设置是否生成弱 ETag（兼容标准驼峰 write-weak-etag 属性绑定）
+         *
+         * @param writeWeakEtag true 生成弱 ETag
+         */
+        public void setWriteWeakEtag(boolean writeWeakEtag) {
+            this.writeWeakETag = writeWeakEtag;
+        }
     }
 
     /**
@@ -566,6 +619,44 @@ public class WebProperties {
          * XSS 清洗排除路径白名单列表（Ant 风格匹配，如 /api/admin/announcement/**）
          */
         private List<String> excludeUrls = new ArrayList<>();
+
+        /**
+         * 是否对 HTTP 请求头执行 XSS 清洗（默认 false，按需开启）
+         */
+        private boolean cleanHeaders = false;
+
+        /**
+         * 请求头 XSS 清洗排除白名单列表（大小写不敏感匹配，默认排除常见鉴权与媒体类型标头）
+         */
+        private List<String> excludeHeaders = new ArrayList<>(List.of(
+                "Authorization", "Cookie", "X-Signature", "Content-Type", "Accept"
+        ));
+    }
+
+    /**
+     * 启动一体化就绪总览卡片属性配置
+     */
+    @Getter
+    @Setter
+    public static class ReadyCardProperties {
+
+        /**
+         * 是否启用服务完全启动就绪 ASCII 卡片输出（默认 true）
+         */
+        private boolean enabled = true;
+    }
+
+    /**
+     * 生产环境安全防呆自检属性配置
+     */
+    @Getter
+    @Setter
+    public static class SanityCheckProperties {
+
+        /**
+         * 是否启用生产环境高危配置安全防呆自检（默认 true）
+         */
+        private boolean enabled = true;
     }
 }
 

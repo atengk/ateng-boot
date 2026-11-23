@@ -21,7 +21,17 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.aop.aspectj.annotation.AspectJProxyFactory;
+import org.springframework.beans.factory.support.StaticListableBeanFactory;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -55,6 +65,24 @@ class OperateLogAspectTest {
         Result<TestUserVO> getUser(Long id);
         Result<Void> deleteUser(Long id);
         Result<String> noSaveMethod(String input);
+        Result<String> loginWithoutExclude(String username, Map<String, Object> payload);
+        Result<String> updateSecurity(Map<String, Object> payload);
+        Result<String> submitDtoAndArray(AuthPayloadDTO dto, List<AuthPayloadDTO> items, Object[] extras);
+        Result<String> circularArg(CircularTokenNode node);
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    static class AuthPayloadDTO {
+        private String account;
+        private String accessToken;
+        private String oldPassword;
+    }
+
+    static class CircularTokenNode {
+        public String token = "secret-cycle-token";
+        public CircularTokenNode self;
     }
 
     static class OperateLogServiceImpl implements OperateLogService {
@@ -82,6 +110,30 @@ class OperateLogAspectTest {
         public Result<String> noSaveMethod(String input) {
             return Result.success("echo:" + input);
         }
+
+        @Override
+        @OperateLog(module = "认证中心", type = OperateTypeEnum.OTHER, description = "默认基线脱敏")
+        public Result<String> loginWithoutExclude(String username, Map<String, Object> payload) {
+            return Result.success("ok:" + username);
+        }
+
+        @Override
+        @OperateLog(module = "认证中心", type = OperateTypeEnum.UPDATE, description = "叠加排除字段", excludeParams = {"customPin"})
+        public Result<String> updateSecurity(Map<String, Object> payload) {
+            return Result.success("updated");
+        }
+
+        @Override
+        @OperateLog(module = "认证中心", type = OperateTypeEnum.INSERT, description = "DTO与集合数组默认脱敏")
+        public Result<String> submitDtoAndArray(AuthPayloadDTO dto, List<AuthPayloadDTO> items, Object[] extras) {
+            return Result.success("dto-ok");
+        }
+
+        @Override
+        @OperateLog(module = "认证中心", type = OperateTypeEnum.OTHER, description = "环引用安全降级")
+        public Result<String> circularArg(CircularTokenNode node) {
+            return Result.success("circular-ok");
+        }
     }
 
     @BeforeEach
@@ -99,6 +151,7 @@ class OperateLogAspectTest {
 
     @AfterEach
     void tearDown() {
+        RequestContextHolder.resetRequestAttributes();
         UserContextHolder.clear();
         UserContextHolder.setUserProvider(null);
         TenantContextHolder.clear();
@@ -238,5 +291,186 @@ class OperateLogAspectTest {
         assertThat(model.getExtra().get("isRunAs")).isEqualTo(true);
         assertThat(model.getExtra().get("originalUserId")).isEqualTo("admin-90001");
         assertThat(model.getExtra().get("targetUserId")).isEqualTo("target-user-66002");
+    }
+
+    @Test
+    @DisplayName("默认敏感参数脱敏基线：未配注解 excludeParams 时自动掩码全部默认敏感字段（忽略大小写及嵌套字段）")
+    void shouldMaskDefaultSensitiveParamsWhenAnnotationExcludeEmpty() {
+        Map<String, Object> nested = new LinkedHashMap<>();
+        nested.put("accessToken", "nested-access-token");
+        nested.put("remark", "safe-note");
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("password", "p1");
+        payload.put("passwd", "p2");
+        payload.put("pwd", "p3");
+        payload.put("oldPassword", "p4");
+        payload.put("newPassword", "p5");
+        payload.put("confirmPassword", "p6");
+        payload.put("secret", "s1");
+        payload.put("token", "t1");
+        payload.put("accessToken", "t2");
+        payload.put("refreshToken", "t3");
+        payload.put("AUTHORIZATION", "Bearer xyz");
+        payload.put("nested", nested);
+
+        targetService.loginWithoutExclude("alice", payload);
+
+        OperateLogModel model = capturedModel.get();
+        assertThat(model).isNotNull();
+        String params = model.getRequestParams();
+        assertThat(params).contains("\"username\":\"alice\"");
+        assertThat(params).contains("\"remark\":\"safe-note\"");
+        for (String expectedMaskedKey : List.of(
+                "password", "passwd", "pwd", "oldPassword", "newPassword",
+                "confirmPassword", "secret", "token", "accessToken", "refreshToken", "AUTHORIZATION"
+        )) {
+            assertThat(params).contains("\"" + expectedMaskedKey + "\":\"[EXCLUDED]\"");
+        }
+        assertThat(params).doesNotContain("nested-access-token");
+        assertThat(params).doesNotContain("Bearer xyz");
+    }
+
+    @Test
+    @DisplayName("全局 defaultExcludeParams 与注解 excludeParams 叠加生效，且支持自定义覆盖与 null 安全兜底")
+    void shouldMergeAnnotationExcludesAndAllowCustomDefaultOverride() {
+        Map<String, Object> mergedPayload = new LinkedHashMap<>();
+        mergedPayload.put("password", "raw-pass");
+        mergedPayload.put("customPin", "9527");
+        mergedPayload.put("region", "cn-hz");
+
+        targetService.updateSecurity(mergedPayload);
+        String mergedParams = capturedModel.get().getRequestParams();
+        assertThat(mergedParams).contains("\"password\":\"[EXCLUDED]\"");
+        assertThat(mergedParams).contains("\"customPin\":\"[EXCLUDED]\"");
+        assertThat(mergedParams).contains("\"region\":\"cn-hz\"");
+
+        // 自定义覆盖默认列表：仅屏蔽 apiKey（与注解 customPin 叠加），未纳入的 password 不再被默认基线屏蔽
+        WebProperties customProps = new WebProperties();
+        customProps.getOperateLog().setDefaultExcludeParams(List.of("apiKey"));
+        OperateLogAspect customAspect = new OperateLogAspect(
+                capturedModel::set, null, JsonUtil.getObjectMapper(), null, customProps);
+        AspectJProxyFactory customProxy = new AspectJProxyFactory(new OperateLogServiceImpl());
+        customProxy.setProxyTargetClass(true);
+        customProxy.addAspect(customAspect);
+        OperateLogService customService = customProxy.getProxy();
+
+        Map<String, Object> overridePayload = new LinkedHashMap<>();
+        overridePayload.put("apiKey", "ak-secret");
+        overridePayload.put("customPin", "8848");
+        overridePayload.put("password", "kept-for-override-check");
+        customService.updateSecurity(overridePayload);
+
+        String overrideParams = capturedModel.get().getRequestParams();
+        assertThat(overrideParams).contains("\"apiKey\":\"[EXCLUDED]\"");
+        assertThat(overrideParams).contains("\"customPin\":\"[EXCLUDED]\"");
+        assertThat(overrideParams).contains("\"password\":\"kept-for-override-check\"");
+
+        // null 防御不抛空指针
+        customProps.getOperateLog().setDefaultExcludeParams(null);
+        customService.loginWithoutExclude("bob", Map.of("plain", "ok"));
+        assertThat(capturedModel.get().getRequestParams()).contains("\"plain\":\"ok\"");
+    }
+
+    @Test
+    @DisplayName("DTO/集合/Object[] 数组与循环引用安全防御：默认基线穿透脱敏且环引用或异常回退绝不泄漏明文")
+    void shouldMaskDtoCollectionArrayAndGuardCircularReferences() {
+        AuthPayloadDTO dto = new AuthPayloadDTO("u1", "at-dto-secret", "old-pass-dto");
+        AuthPayloadDTO itemDto = new AuthPayloadDTO("u2", "at-list-secret", "old-pass-list");
+        Map<String, Object> extraMap = Map.of("refreshToken", "rt-array-secret", "tag", "ok");
+
+        targetService.submitDtoAndArray(dto, List.of(itemDto), new Object[]{extraMap});
+
+        String params = capturedModel.get().getRequestParams();
+        assertThat(params).contains("\"account\":\"u1\"", "\"account\":\"u2\"", "\"tag\":\"ok\"");
+        assertThat(params).doesNotContain("at-dto-secret", "old-pass-dto", "at-list-secret", "old-pass-list", "rt-array-secret");
+        assertThat(params).contains("\"accessToken\":\"[EXCLUDED]\"", "\"oldPassword\":\"[EXCLUDED]\"", "\"refreshToken\":\"[EXCLUDED]\"");
+
+        // 自引用对象环检测与异常回退：不抛 StackOverflowError，且绝不通过 raw toString() 泄露 token 明文
+        CircularTokenNode cycle = new CircularTokenNode();
+        cycle.self = cycle;
+        targetService.circularArg(cycle);
+
+        String cycleParams = capturedModel.get().getRequestParams();
+        assertThat(cycleParams).isNotBlank();
+        assertThat(cycleParams).doesNotContain("secret-cycle-token");
+    }
+
+    @Test
+    @DisplayName("异步派发前同步采集并解析 User-Agent（含控制字符净化、截断、异步线程隔离与开关控制）")
+    void shouldCaptureAndParseUserAgentSynchronouslyBeforeAsyncDispatch() throws Exception {
+        String chromeUa = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader("User-Agent", chromeUa + "\r\nEvilHeader: 1");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+
+        // 1. 异步线程池中 RequestContextHolder 已销毁的场景仍可完整获取 UA 与解析结果
+        CountDownLatch firstLatch = new CountDownLatch(1);
+        CountDownLatch secondLatch = new CountDownLatch(2);
+        AtomicReference<OperateLogModel> asyncCaptured = new AtomicReference<>();
+        AtomicReference<Boolean> requestAttrsPresentInAsync = new AtomicReference<>(true);
+
+        Executor asyncExecutor = task -> java.util.concurrent.CompletableFuture.runAsync(() -> {
+            requestAttrsPresentInAsync.set(RequestContextHolder.getRequestAttributes() != null);
+            task.run();
+            firstLatch.countDown();
+            secondLatch.countDown();
+        });
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        beanFactory.addBean("asyncExecutor", asyncExecutor);
+
+        WebProperties props = new WebProperties();
+        OperateLogAspect asyncAspect = new OperateLogAspect(
+                asyncCaptured::set,
+                beanFactory.getBeanProvider(Executor.class),
+                JsonUtil.getObjectMapper(),
+                null,
+                props
+        );
+        AspectJProxyFactory asyncProxy = new AspectJProxyFactory(new OperateLogServiceImpl());
+        asyncProxy.setProxyTargetClass(true);
+        asyncProxy.addAspect(asyncAspect);
+        OperateLogService asyncService = asyncProxy.getProxy();
+
+        asyncService.createUser("ua-user", "secret");
+        assertThat(firstLatch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(requestAttrsPresentInAsync.get()).isFalse();
+
+        OperateLogModel asyncModel = asyncCaptured.get();
+        assertThat(asyncModel).isNotNull();
+        assertThat(asyncModel.getUserAgent()).doesNotContain("\r", "\n");
+        assertThat(asyncModel.getUserAgent()).startsWith(chromeUa);
+        assertThat(asyncModel.getBrowser()).isEqualTo("Chrome");
+        assertThat(asyncModel.getOs()).isEqualTo("Windows");
+
+        // 2. 最大长度截断与关闭 parseUserAgent
+        props.getOperateLog().setUserAgentMaxLength(32);
+        props.getOperateLog().setParseUserAgent(false);
+        asyncService.noSaveMethod("truncate-check");
+        assertThat(secondLatch.await(3, TimeUnit.SECONDS)).isTrue();
+        OperateLogModel truncatedModel = asyncCaptured.get();
+        assertThat(truncatedModel.getUserAgent()).hasSize(32);
+        assertThat(truncatedModel.getBrowser()).isNull();
+        assertThat(truncatedModel.getOs()).isNull();
+
+        // 3. 关闭 collectUserAgent
+        WebProperties disabledUaProps = new WebProperties();
+        disabledUaProps.getOperateLog().setCollectUserAgent(false);
+        OperateLogAspect disabledUaAspect = new OperateLogAspect(
+                capturedModel::set, null, JsonUtil.getObjectMapper(), null, disabledUaProps);
+        AspectJProxyFactory disabledUaProxy = new AspectJProxyFactory(new OperateLogServiceImpl());
+        disabledUaProxy.setProxyTargetClass(true);
+        disabledUaProxy.addAspect(disabledUaAspect);
+        ((OperateLogService) disabledUaProxy.getProxy()).createUser("no-ua", "pwd");
+        assertThat(capturedModel.get().getUserAgent()).isNull();
+        assertThat(capturedModel.get().getBrowser()).isNull();
+        assertThat(capturedModel.get().getOs()).isNull();
+
+        // 4. 无 RequestAttributes / 无 UA 头平滑降级
+        RequestContextHolder.resetRequestAttributes();
+        targetService.createUser("non-web", "pwd");
+        assertThat(capturedModel.get().getUserAgent()).isNull();
+        assertThat(capturedModel.get().getBrowser()).isNull();
+        assertThat(capturedModel.get().getOs()).isNull();
     }
 }

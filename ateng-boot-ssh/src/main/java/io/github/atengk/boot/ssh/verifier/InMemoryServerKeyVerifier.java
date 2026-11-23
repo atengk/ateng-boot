@@ -150,6 +150,38 @@ public class InMemoryServerKeyVerifier implements ServerKeyVerifier {
     }
 
     /**
+     * 移除指定主机的已知公钥指纹缓存（用于云主机同 IP 重建或公钥轮换场景）
+     *
+     * @param host 目标主机名或 IP
+     * @param port 端口
+     * @return 被移除的公钥，若原本不存在或参数非法则返回 null
+     */
+    public PublicKey removeKnownKey(String host, int port) {
+        if (host == null || host.isBlank() || port <= 0) {
+            return null;
+        }
+        return removeKnownKey(host.trim() + ":" + port);
+    }
+
+    /**
+     * 移除指定主机端口键对应的已知公钥指纹缓存
+     *
+     * @param hostPortKey 主机端口键值 (host:port)
+     * @return 被移除的公钥，若原本不存在或参数为空白则返回 null
+     */
+    public PublicKey removeKnownKey(String hostPortKey) {
+        if (hostPortKey == null || hostPortKey.isBlank()) {
+            return null;
+        }
+        String trimmedKey = hostPortKey.trim();
+        PublicKey removed = knownKeys.remove(trimmedKey);
+        if (removed != null) {
+            log.info("ateng-boot-ssh: 已定点移除主机内存公钥指纹缓存 [{}]", trimmedKey);
+        }
+        return removed;
+    }
+
+    /**
      * 获取当前纯内存已知公钥只读映射表
      *
      * @return 只读映射表

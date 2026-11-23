@@ -4,6 +4,7 @@ import lombok.Builder;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
+import org.springframework.util.unit.DataSize;
 
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -60,16 +61,31 @@ public final class SshExecOptions {
     @Builder.Default
     private final boolean pty = false;
 
+    /**
+     * 单次同步命令最大输出缓冲容量上限（覆盖全局默认值）
+     */
+    private final DataSize maxOutputSize;
+
     public SshExecOptions(String workingDir,
                           Map<String, String> env,
                           Duration timeout,
                           Charset charset,
                           boolean pty) {
+        this(workingDir, env, timeout, charset, pty, null);
+    }
+
+    public SshExecOptions(String workingDir,
+                          Map<String, String> env,
+                          Duration timeout,
+                          Charset charset,
+                          boolean pty,
+                          DataSize maxOutputSize) {
         this.workingDir = workingDir;
         this.env = env != null ? Collections.unmodifiableMap(new LinkedHashMap<>(env)) : Collections.emptyMap();
         this.timeout = timeout;
         this.charset = charset != null ? charset : StandardCharsets.UTF_8;
         this.pty = pty;
+        this.maxOutputSize = maxOutputSize;
     }
 
     /**

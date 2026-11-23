@@ -120,19 +120,6 @@ public enum SensitiveType {
     }
 
     /**
-     * 执行脱敏掩码转换（兼容旧版入参）
-     *
-     * @param value        原始待脱敏字符串
-     * @param startInclude 自定义起始包含索引（仅 CUSTOM 生效）
-     * @param endExclude   自定义结束排除索引（仅 CUSTOM 生效）
-     * @param maskChar     自定义掩码字符（仅 CUSTOM 生效）
-     * @return 掩码后的字符串
-     */
-    public String mask(String value, int startInclude, int endExclude, char maskChar) {
-        return mask(value, startInclude, endExclude, 0, 0, maskChar);
-    }
-
-    /**
      * 执行脱敏掩码转换（支持首尾保留参数）
      *
      * @param value        原始待脱敏字符串

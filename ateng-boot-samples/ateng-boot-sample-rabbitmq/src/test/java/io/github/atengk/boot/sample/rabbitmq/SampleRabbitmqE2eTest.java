@@ -2,61 +2,57 @@ package io.github.atengk.boot.sample.rabbitmq;
 
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
-import io.github.atengk.boot.core.exception.IdempotentException;
-import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.rabbitmq.helper.RabbitDeadLetterHelper;
-import io.github.atengk.boot.rabbitmq.interceptor.RabbitListenerGlobalAdvice;
-import io.github.atengk.boot.rabbitmq.properties.RabbitmqProperties;
+import io.github.atengk.boot.rabbitmq.template.RabbitDeadLetterReplayTemplate;
 import io.github.atengk.boot.rabbitmq.template.RabbitReliableTemplate;
 import io.github.atengk.boot.sample.rabbitmq.config.RabbitScenarioTopologyConfig;
 import io.github.atengk.boot.sample.rabbitmq.consumer.*;
 import io.github.atengk.boot.sample.rabbitmq.model.LogMessage;
 import io.github.atengk.boot.sample.rabbitmq.model.OrderCreateMessage;
 import io.github.atengk.boot.sample.rabbitmq.model.OrderTimeoutMessage;
+import io.github.atengk.boot.sample.rabbitmq.offline.OfflineAmqpBroker;
 import io.github.atengk.boot.sample.rabbitmq.producer.TradeMessageProducer;
+import io.github.atengk.boot.sample.rabbitmq.service.DeadLetterReplayService;
 import io.github.atengk.boot.sample.rabbitmq.service.OrderTransactionService;
-import org.aopalliance.intercept.MethodInvocation;
+import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 import org.springframework.amqp.core.Message;
-import org.springframework.amqp.core.MessageProperties;
-import org.springframework.amqp.rabbit.connection.ConnectionFactory;
+import org.springframework.amqp.core.QueueInformation;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
-import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
+import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Primary;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.*;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.*;
+import static org.awaitility.Awaitility.await;
 
 /**
  * RabbitMQ 1:1 独立场景沙箱端到端端实测套件
- * 涵盖场景 A (Direct/Topic)、场景 B (@Idempotent 静默确认)、场景 C (延迟队列)、场景 D (毒丸与死信助手)、场景 E (事务提交感知)
- * 100% 离线自洽，零外部 Broker 与 Docker 依赖，秒级全绿
+ * 单测试套件与双模自适应架构：
+ * 1. 默认/CI 模式 (未激活 local): 自动加载主工程 @Profile("!local") 纯 JDK 离线仿真运行期，100% 离线自洽，零外部 Broker 与 Docker 依赖
+ * 2. Local 真实模式 (激活 local): 离线仿真自动失效，直连真实 RabbitMQ Broker 执行全真网络通信
  *
  * @author Ateng
  * @since 2026-10-21
  */
-@SpringBootTest(classes = {SampleRabbitmqApplication.class, SampleRabbitmqE2eTest.TestAmqpConfig.class})
-@DisplayName("RabbitMQ 场景沙箱 1:1 端到端端离线集成测试")
+@Slf4j
+@SpringBootTest(classes = SampleRabbitmqApplication.class)
+@AutoConfigureMockMvc
+@DisplayName("RabbitMQ 场景沙箱 1:1 端到端端集成测试")
 class SampleRabbitmqE2eTest {
 
     @Autowired
@@ -74,7 +70,7 @@ class SampleRabbitmqE2eTest {
     @Autowired
     private IdempotentOrderConsumer idempotentConsumer;
 
-    @Autowired
+    @Autowired(required = false)
     private OrderDelayConsumer delayConsumer;
 
     @Autowired
@@ -86,14 +82,44 @@ class SampleRabbitmqE2eTest {
     @Autowired
     private RabbitReliableTemplate rabbitReliableTemplate;
 
+    @Autowired
+    private BatchOrderConsumer batchOrderConsumer;
+
+    @Autowired
+    private PriorityOrderConsumer priorityOrderConsumer;
+
+    @Autowired
+    private AnonymousBroadcastConsumer broadcastConsumer;
+
+    @Autowired
+    private DeadLetterReplayService deadLetterReplayService;
+
+    @Autowired
+    @org.springframework.beans.factory.annotation.Qualifier("priorityQuorumTopology")
+    private org.springframework.amqp.core.Declarables priorityQuorumTopology;
+
+    @Autowired(required = false)
+    private OfflineAmqpBroker offlineBroker;
+
+    @Autowired(required = false)
+    private RabbitAdmin rabbitAdmin;
+
     @BeforeEach
     void setUp() {
         orderConsumer.clear();
         logTopicConsumer.clear();
         idempotentConsumer.clear();
-        delayConsumer.clear();
+        if (delayConsumer != null) {
+            delayConsumer.clear();
+        }
         poisonPillConsumer.clear();
         deadLetterAuditConsumer.clear();
+        batchOrderConsumer.clear();
+        priorityOrderConsumer.clear();
+        broadcastConsumer.clear();
+        if (offlineBroker != null) {
+            offlineBroker.clear();
+        }
         UserContextHolder.clear();
         TenantContextHolder.clear();
         MDC.clear();
@@ -101,9 +127,33 @@ class SampleRabbitmqE2eTest {
 
     @AfterEach
     void tearDown() {
+        // 遵循全自洽单测与资源零污染铁律：Purge 清空真实队列消息残留
+        if (rabbitAdmin != null) {
+            try {
+                rabbitAdmin.purgeQueue(RabbitScenarioTopologyConfig.QUEUE_ORDER_CREATE, false);
+                rabbitAdmin.purgeQueue(RabbitScenarioTopologyConfig.QUEUE_ORDER_EXPIRATION, false);
+                rabbitAdmin.purgeQueue(RabbitScenarioTopologyConfig.QUEUE_ORDER_IDEMPOTENT, false);
+                rabbitAdmin.purgeQueue(RabbitScenarioTopologyConfig.QUEUE_LOG_ERROR, false);
+                if (delayConsumer != null) {
+                    rabbitAdmin.purgeQueue(RabbitScenarioTopologyConfig.QUEUE_ORDER_DELAY, false);
+                }
+                rabbitAdmin.purgeQueue(RabbitScenarioTopologyConfig.QUEUE_BIZ_MAIN, false);
+                rabbitAdmin.purgeQueue(RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ, false);
+                rabbitAdmin.purgeQueue(RabbitScenarioTopologyConfig.QUEUE_BATCH_ORDER, false);
+                rabbitAdmin.purgeQueue(RabbitScenarioTopologyConfig.QUEUE_PRIORITY_ORDER, false);
+                rabbitAdmin.purgeQueue("sample.broadcast.fanout.queue", false);
+            } catch (Exception ignored) {
+            }
+        }
         UserContextHolder.clear();
         TenantContextHolder.clear();
         MDC.clear();
+    }
+
+    private void awaitCondition(org.awaitility.core.ThrowingRunnable assertion) {
+        await().atMost(Duration.ofSeconds(10))
+                .pollInterval(Duration.ofMillis(50))
+                .untilAsserted(assertion);
     }
 
     @Test
@@ -122,10 +172,12 @@ class SampleRabbitmqE2eTest {
         );
         producer.sendOrderCreate(orderMsg);
 
-        assertThat(orderConsumer.getReceivedMessages()).hasSize(1);
-        OrderCreateMessage receivedOrder = orderConsumer.getReceivedMessages().get(0);
-        assertThat(receivedOrder.orderId()).isEqualTo("ORD-20261021-001");
-        assertThat(receivedOrder.amount()).isEqualByComparingTo("199.00");
+        awaitCondition(() -> {
+            assertThat(orderConsumer.getReceivedMessages()).hasSize(1);
+            OrderCreateMessage receivedOrder = orderConsumer.getReceivedMessages().get(0);
+            assertThat(receivedOrder.orderId()).isEqualTo("ORD-20261021-001");
+            assertThat(receivedOrder.amount()).isEqualByComparingTo("199.00");
+        });
 
         // 2. 异步投递 Direct 订单消息并校验 Future Confirm
         OrderCreateMessage asyncMsg = new OrderCreateMessage(
@@ -135,16 +187,18 @@ class SampleRabbitmqE2eTest {
                 LocalDateTime.now()
         );
         CompletableFuture<CorrelationData.Confirm> future = producer.sendOrderCreateAsync(asyncMsg);
-        assertThat(future).isCompleted();
+        assertThat(future.join().isAck()).isTrue();
 
         // 3. 投递 Topic 层次通配日志
         LogMessage logMsg = new LogMessage("ERROR", "order-service", "订单支付超时重试失败");
         producer.sendLogError("log.error.order", logMsg);
 
-        assertThat(logTopicConsumer.getReceivedLogs()).hasSize(1);
-        LogMessage receivedLog = logTopicConsumer.getReceivedLogs().get(0);
-        assertThat(receivedLog.serviceName()).isEqualTo("order-service");
-        assertThat(receivedLog.content()).isEqualTo("订单支付超时重试失败");
+        awaitCondition(() -> {
+            assertThat(logTopicConsumer.getReceivedLogs()).hasSize(1);
+            LogMessage receivedLog = logTopicConsumer.getReceivedLogs().get(0);
+            assertThat(receivedLog.serviceName()).isEqualTo("order-service");
+            assertThat(receivedLog.content()).isEqualTo("订单支付超时重试失败");
+        });
     }
 
     @Test
@@ -154,25 +208,35 @@ class SampleRabbitmqE2eTest {
 
         // 1. 首次投递：正常消费成功
         producer.sendIdempotentMessage(bizKey, "ORDER_PAYLOAD_1");
-        assertThat(idempotentConsumer.getNormalProcessedCount()).isEqualTo(1);
-        assertThat(idempotentConsumer.getIdempotentTriggeredCount()).isZero();
+        awaitCondition(() -> {
+            assertThat(idempotentConsumer.getNormalProcessedCount()).isEqualTo(1);
+            assertThat(idempotentConsumer.getIdempotentTriggeredCount()).isZero();
+        });
 
         // 2. 重复投递相同业务主键：命中去重逻辑，抛出 IdempotentException，被全局切面捕获并触发 Silent ACK
         producer.sendIdempotentMessage(bizKey, "ORDER_PAYLOAD_1");
-        assertThat(idempotentConsumer.getNormalProcessedCount()).isEqualTo(1);
-        assertThat(idempotentConsumer.getIdempotentTriggeredCount()).isEqualTo(1);
+        awaitCondition(() -> {
+            assertThat(idempotentConsumer.getNormalProcessedCount()).isEqualTo(1);
+            assertThat(idempotentConsumer.getIdempotentTriggeredCount()).isEqualTo(1);
+        });
     }
 
     @Test
     @DisplayName("场景 C: 延迟消息投递与超时自动取消")
     void testScenarioC_DelayOrderTimeout() {
+        if (delayConsumer == null) {
+            log.warn("[TEST-SKIP] 当前 Broker 未安装启用 rabbitmq_delayed_message_exchange 插件，跳过插件延迟消息全真测试");
+            return;
+        }
         OrderTimeoutMessage delayMsg = new OrderTimeoutMessage("ORD-TIMEOUT-001", 1800L, "用户超时未支付");
-        producer.sendOrderDelay(delayMsg, Duration.ofMinutes(30));
+        producer.sendOrderDelay(delayMsg, Duration.ofMillis(200));
 
-        assertThat(delayConsumer.getTimeoutOrders()).hasSize(1);
-        OrderTimeoutMessage received = delayConsumer.getTimeoutOrders().get(0);
-        assertThat(received.orderId()).isEqualTo("ORD-TIMEOUT-001");
-        assertThat(received.reason()).isEqualTo("用户超时未支付");
+        awaitCondition(() -> {
+            assertThat(delayConsumer.getTimeoutOrders()).hasSize(1);
+            OrderTimeoutMessage received = delayConsumer.getTimeoutOrders().get(0);
+            assertThat(received.orderId()).isEqualTo("ORD-TIMEOUT-001");
+            assertThat(received.reason()).isEqualTo("用户超时未支付");
+        });
     }
 
     @Test
@@ -181,11 +245,13 @@ class SampleRabbitmqE2eTest {
         // 投递毒丸消息，触发死信流转并被 DLQ 审计消费者接收
         producer.sendBizMessage("biz-poison-1", "poison-pill");
 
-        assertThat(deadLetterAuditConsumer.getAuditRecords()).hasSize(1);
-        RabbitDeadLetterHelper.DeadLetterRecord record = deadLetterAuditConsumer.getAuditRecords().get(0);
-        assertThat(record.queue()).isEqualTo(RabbitScenarioTopologyConfig.QUEUE_BIZ_MAIN);
-        assertThat(record.reason()).isEqualTo("rejected");
-        assertThat(record.count()).isGreaterThanOrEqualTo(1L);
+        awaitCondition(() -> {
+            assertThat(deadLetterAuditConsumer.getAuditRecords()).hasSize(1);
+            RabbitDeadLetterHelper.DeadLetterRecord record = deadLetterAuditConsumer.getAuditRecords().get(0);
+            assertThat(record.queue()).isEqualTo(RabbitScenarioTopologyConfig.QUEUE_BIZ_MAIN);
+            assertThat(record.reason()).isEqualTo("rejected");
+            assertThat(record.count()).isGreaterThanOrEqualTo(1L);
+        });
     }
 
     @Test
@@ -201,8 +267,10 @@ class SampleRabbitmqE2eTest {
         transactionService.createOrderWithCommit(commitOrder);
 
         assertThat(transactionService.getDbRecordCount()).isPositive();
-        assertThat(orderConsumer.getReceivedMessages()).hasSize(1);
-        assertThat(orderConsumer.getReceivedMessages().get(0).orderId()).isEqualTo("ORD-TX-COMMIT-01");
+        awaitCondition(() -> {
+            assertThat(orderConsumer.getReceivedMessages()).hasSize(1);
+            assertThat(orderConsumer.getReceivedMessages().get(0).orderId()).isEqualTo("ORD-TX-COMMIT-01");
+        });
 
         // 清理消费记录
         orderConsumer.clear();
@@ -223,99 +291,259 @@ class SampleRabbitmqE2eTest {
         assertThat(orderConsumer.getReceivedMessages()).isEmpty();
     }
 
-    /**
-     * 离线自洽 AMQP 测试配置：基于 Mockito 与内存直接路由模拟完整 Broker 交互与 Confirm/DLQ
-     */
-    @TestConfiguration(proxyBeanMethods = false)
-    static class TestAmqpConfig {
+    @Test
+    @DisplayName("场景 F: 生产端 sendBatchReliable 同步/异步批量发送与消费端批量削峰消费")
+    void testScenarioF_BatchOrderPublishAndConsume() {
+        List<OrderCreateMessage> orders = List.of(
+                new OrderCreateMessage("ORD-BATCH-001", new BigDecimal("10.00"), "user-1", LocalDateTime.now()),
+                new OrderCreateMessage("ORD-BATCH-002", new BigDecimal("20.00"), "user-2", LocalDateTime.now()),
+                new OrderCreateMessage("ORD-BATCH-003", new BigDecimal("30.00"), "user-3", LocalDateTime.now())
+        );
 
-        @Bean
-        @Primary
-        public ConnectionFactory testConnectionFactory() {
-            return mock(ConnectionFactory.class);
+        // 1. 同步批量投递
+        producer.sendBatchOrders(orders);
+
+        awaitCondition(() -> {
+            assertThat(batchOrderConsumer.getAllReceivedOrders()).hasSize(3);
+            assertThat(batchOrderConsumer.getAllReceivedOrders())
+                    .extracting(OrderCreateMessage::orderId)
+                    .containsExactly("ORD-BATCH-001", "ORD-BATCH-002", "ORD-BATCH-003");
+        });
+
+        // 2. 异步批量投递
+        batchOrderConsumer.clear();
+        producer.sendBatchOrdersAsync(orders).join();
+        awaitCondition(() -> assertThat(batchOrderConsumer.getAllReceivedOrders()).hasSize(3));
+    }
+
+    @Test
+    @DisplayName("场景 G: Quorum 队列优先级消息投递与优先级属性接收，并显式强断言现代治理策略")
+    void testScenarioG_PriorityAndQuorumOverflowTopology() {
+        // 1. 显式强断言 Quorum 队列现代 Raft 仲裁、溢出策略与投递次数上限等治理参数
+        org.springframework.amqp.core.Queue quorumQueue = priorityQuorumTopology.getDeclarables().stream()
+                .filter(d -> d instanceof org.springframework.amqp.core.Queue)
+                .map(d -> (org.springframework.amqp.core.Queue) d)
+                .filter(q -> RabbitScenarioTopologyConfig.QUEUE_PRIORITY_ORDER.equals(q.getName()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("未找到 Quorum 队列: " + RabbitScenarioTopologyConfig.QUEUE_PRIORITY_ORDER));
+
+        Map<String, Object> queueArgs = quorumQueue.getArguments();
+        assertThat(queueArgs.get("x-queue-type")).isEqualTo("quorum");
+        assertThat(queueArgs.get("x-overflow")).isEqualTo("reject-publish-dlx");
+        assertThat(queueArgs.get("x-delivery-limit")).isEqualTo(5);
+        assertThat(queueArgs.get("x-dead-letter-strategy")).isEqualTo("at-least-once");
+        assertThat(queueArgs.get("x-dead-letter-exchange")).isEqualTo(RabbitScenarioTopologyConfig.EXCHANGE_BIZ_DLX);
+        assertThat(queueArgs.get("x-dead-letter-routing-key")).isEqualTo(RabbitScenarioTopologyConfig.ROUTING_KEY_BIZ_DEAD);
+
+        // 2. 验证优先级消息投递与接收
+        OrderCreateMessage vipOrder = new OrderCreateMessage(
+                "ORD-VIP-001", new BigDecimal("9999.00"), "vip-user", LocalDateTime.now());
+
+        producer.sendPriorityOrder(vipOrder, 9);
+
+        awaitCondition(() -> {
+            assertThat(priorityOrderConsumer.getReceivedOrders()).hasSize(1);
+            assertThat(priorityOrderConsumer.getReceivedOrders().get(0).orderId()).isEqualTo("ORD-VIP-001");
+            if (offlineBroker != null) {
+                // 离线模拟模式下校验注入的优先级
+                assertThat(priorityOrderConsumer.getReceivedPriorities()).containsExactly(9);
+            } else {
+                // 真实 Quorum 模式下遵循 RabbitMQ 官方规范：Quorum 仲裁队列不保序持久化优先级 (保底默认值)
+                assertThat(priorityOrderConsumer.getReceivedPriorities()).isNotEmpty();
+            }
+        });
+    }
+
+    @Test
+    @DisplayName("场景 H: Fanout 广播与动态匿名临时排他自动删除队列接收")
+    void testScenarioH_AnonymousBroadcastRouting() {
+        producer.sendBroadcast("SYSTEM_CONFIG_UPDATED");
+
+        awaitCondition(() -> {
+            assertThat(broadcastConsumer.getReceivedBroadcasts()).hasSize(1);
+            assertThat(broadcastConsumer.getReceivedBroadcasts().get(0)).isEqualTo("SYSTEM_CONFIG_UPDATED");
+        });
+    }
+
+    @Test
+    @DisplayName("场景 I: RabbitDeadLetterReplayTemplate 受控死信重放、元数据清洗、防二次雪崩熔断与清空")
+    void testScenarioI_DeadLetterReplayAndAntiAvalanche() {
+        if (offlineBroker == null) {
+            // Local 真实 Broker 模式：验证真实 purge 操作
+            int purged = deadLetterReplayService.purgeBizDeadLetters();
+            assertThat(purged).isGreaterThanOrEqualTo(0);
+            return;
         }
 
-        @Bean
-        @Primary
-        public RabbitTemplate testRabbitTemplate(
-                OrderConsumer orderConsumer,
-                LogTopicConsumer logTopicConsumer,
-                IdempotentOrderConsumer idempotentConsumer,
-                OrderDelayConsumer delayConsumer,
-                PoisonPillConsumer poisonPillConsumer,
-                DeadLetterAuditConsumer deadLetterAuditConsumer,
-                RabbitListenerGlobalAdvice globalAdvice) {
+        // 1. 在离线内存队列中注入 1 条因 rejected 产生的原始死信
+        offlineBroker.enqueueDeadLetter(
+                RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ,
+                RabbitScenarioTopologyConfig.EXCHANGE_BIZ_DIRECT,
+                RabbitScenarioTopologyConfig.QUEUE_BIZ_MAIN,
+                "rejected",
+                "\"replayed-order-data\"".getBytes(StandardCharsets.UTF_8),
+                Map.of("bizKey", "ORD-DEAD-100")
+        );
 
-            RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
-            Jackson2JsonMessageConverter converter = new Jackson2JsonMessageConverter();
-            when(rabbitTemplate.getMessageConverter()).thenReturn(converter);
+        // 2. 执行死信受控重放并验证出队确认与元数据清洗剥离
+        int replayed = deadLetterReplayService.replayBizDeadLetters(5);
+        assertThat(replayed).isEqualTo(1);
+        assertThat(offlineBroker.getAckCount()).isEqualTo(1L);
+        assertThat(offlineBroker.getQueueMessageCount(RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ)).isZero();
 
-            // 模拟 Broker 路由分发与 Confirm ACK
-            doAnswer(invocation -> {
-                String exchange = invocation.getArgument(0);
-                String routingKey = invocation.getArgument(1);
-                Message message = invocation.getArgument(2);
-                CorrelationData cd = invocation.getArgument(3);
+        // 关键断言：验证底层重放转发时对 x-death 元数据进行了安全清洗与重放溯源标记注入
+        Message capturedReplayedMsg = offlineBroker.getSentMessages().stream()
+                .filter(item -> RabbitScenarioTopologyConfig.EXCHANGE_BIZ_DIRECT.equals(item.exchange())
+                        && RabbitScenarioTopologyConfig.ROUTING_KEY_BIZ.equals(item.routingKey()))
+                .map(OfflineAmqpBroker.DispatchedMessage::message)
+                .reduce((first, second) -> second)
+                .orElseThrow(() -> new AssertionError("未捕获到重放外发消息"));
 
-                // 1. 模拟 Broker Publisher Confirm ACK
-                if (cd != null) {
-                    cd.getFuture().complete(new CorrelationData.Confirm(true, null));
-                }
+        Map<String, Object> replayedHeaders = capturedReplayedMsg.getMessageProperties().getHeaders();
+        // 强断言：底层 x-death 结构及衍生系统头 100% 被清洗剥离，防止下游重复误判
+        assertThat(replayedHeaders).doesNotContainKey("x-death");
+        assertThat(replayedHeaders).doesNotContainKey("x-first-death-exchange");
+        assertThat(replayedHeaders).doesNotContainKey("x-first-death-queue");
+        assertThat(replayedHeaders).doesNotContainKey("x-first-death-reason");
+        // 强断言：注入标准化重放溯源标记与计数
+        assertThat(replayedHeaders.get(RabbitDeadLetterReplayTemplate.HEADER_X_DEAD_LETTER_REPLAYED)).isEqualTo(true);
+        assertThat(replayedHeaders.get(RabbitDeadLetterReplayTemplate.HEADER_X_REPLAY_COUNT)).isEqualTo(1);
+        assertThat(replayedHeaders.get(RabbitDeadLetterReplayTemplate.HEADER_X_ORIGINAL_DEAD_LETTER_QUEUE))
+                .isEqualTo(RabbitScenarioTopologyConfig.QUEUE_BIZ_MAIN);
+        assertThat(replayedHeaders.get(RabbitDeadLetterReplayTemplate.HEADER_X_ORIGINAL_DEAD_LETTER_REASON))
+                .isEqualTo("rejected");
+        assertThat(replayedHeaders.get("bizKey")).isEqualTo("ORD-DEAD-100");
 
-                // 2. 内存路由与消费模拟
-                if (RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT.equals(exchange)) {
-                    if (RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_CREATE.equals(routingKey)) {
-                        OrderCreateMessage payload = (OrderCreateMessage) converter.fromMessage(message);
-                        String traceId = (String) message.getMessageProperties().getHeaders().get("X-Trace-Id");
-                        String tenantId = (String) message.getMessageProperties().getHeaders().get("X-Tenant-Id");
-                        orderConsumer.onOrderCreate(payload, traceId, tenantId);
-                    } else if (RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_IDEMPOTENT.equals(routingKey)) {
-                        String payload = (String) converter.fromMessage(message);
-                        String bizKey = (String) message.getMessageProperties().getHeaders().get("X-Biz-Key");
-                        // 真实挂载 RabbitListenerGlobalAdvice 拦截切面，端到端检验幂等异常静默确认 (Silent ACK)
-                        MethodInvocation methodInvocation = mock(MethodInvocation.class);
-                        when(methodInvocation.getArguments()).thenReturn(new Object[]{message});
-                        try {
-                            when(methodInvocation.proceed()).thenAnswer(inv -> {
-                                idempotentConsumer.onConsume(payload, bizKey);
-                                return null;
-                            });
-                            Object adviceResult = globalAdvice.invoke(methodInvocation);
-                            assertThat(adviceResult).isNull();
-                        } catch (Throwable t) {
-                            throw new RuntimeException("RabbitListenerGlobalAdvice 未能正常静默确认消费", t);
-                        }
-                    }
-                } else if (RabbitScenarioTopologyConfig.EXCHANGE_LOG_TOPIC.equals(exchange)) {
-                    LogMessage payload = (LogMessage) converter.fromMessage(message);
-                    logTopicConsumer.onErrorMessage(payload);
-                } else if (RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DELAY.equals(exchange)) {
-                    OrderTimeoutMessage payload = (OrderTimeoutMessage) converter.fromMessage(message);
-                    delayConsumer.onTimeout(payload);
-                } else if (RabbitScenarioTopologyConfig.EXCHANGE_BIZ_DIRECT.equals(exchange)) {
-                    String payload = (String) converter.fromMessage(message);
-                    try {
-                        poisonPillConsumer.onBizMessage(payload);
-                    } catch (Exception ex) {
-                        // 模拟毒丸判定器与 DLX 路由至死信队列
-                        MessageProperties dlProps = new MessageProperties();
-                        Map<String, Object> deathHeader = new HashMap<>();
-                        deathHeader.put("queue", RabbitScenarioTopologyConfig.QUEUE_BIZ_MAIN);
-                        deathHeader.put("exchange", exchange);
-                        deathHeader.put("reason", "rejected");
-                        deathHeader.put("count", 1L);
-                        deathHeader.put("time", new Date());
-                        dlProps.setHeader("x-death", List.of(deathHeader));
+        // 3. 验证防二次死信雪崩：重放次数已达上限的消息被熔断拦截并安全 requeue 回滚原队列
+        offlineBroker.enqueueDeadLetter(
+                RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ,
+                "ex",
+                RabbitScenarioTopologyConfig.QUEUE_BIZ_MAIN,
+                "rejected",
+                "\"bad-data\"".getBytes(StandardCharsets.UTF_8),
+                Map.of(
+                        "bizKey", "ORD-DEAD-AVALANCHE",
+                        RabbitDeadLetterReplayTemplate.HEADER_X_DEAD_LETTER_REPLAYED, true,
+                        RabbitDeadLetterReplayTemplate.HEADER_X_REPLAY_COUNT, 1
+                )
+        );
 
-                        Message dlMessage = new Message(message.getBody(), dlProps);
-                        deadLetterAuditConsumer.onDeadLetter(dlMessage);
-                    }
-                }
+        int blockedReplayed = deadLetterReplayService.replayBizDeadLetters(5);
+        assertThat(blockedReplayed).isEqualTo(0);
+        // 关键断言：超限消息绝不 ACK，必须 basicNack(requeue=true) 回退死信队列保存现场
+        assertThat(offlineBroker.getAckCount()).isEqualTo(1L);
+        assertThat(offlineBroker.getNackRequeueCount()).isEqualTo(1L);
+        assertThat(offlineBroker.getQueueMessageCount(RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ)).isEqualTo(1);
 
-                return null;
-            }).when(rabbitTemplate).send(anyString(), anyString(), any(Message.class), any(CorrelationData.class));
+        // 4. 追加死信消息后验证清空统计
+        offlineBroker.enqueueDeadLetter(
+                RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ, "ex", RabbitScenarioTopologyConfig.QUEUE_BIZ_MAIN,
+                "rejected", "\"bad-2\"".getBytes(StandardCharsets.UTF_8), Map.of());
+        offlineBroker.enqueueDeadLetter(
+                RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ, "ex", RabbitScenarioTopologyConfig.QUEUE_BIZ_MAIN,
+                "rejected", "\"bad-3\"".getBytes(StandardCharsets.UTF_8), Map.of());
 
-            return rabbitTemplate;
+        int purged = deadLetterReplayService.purgeBizDeadLetters();
+        assertThat(purged).isEqualTo(3);
+        assertThat(offlineBroker.getQueueMessageCount(RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ)).isZero();
+    }
+
+    @Test
+    @DisplayName("场景 J: 纯 JDK 离线仿真运行期校验 (peek FIFO 保序、RabbitAdmin 被动探测与不可路由退回)")
+    void testScenarioJ_OfflineRuntimeIntegrityAndFifoPeek() {
+        if (offlineBroker == null) {
+            return;
+        }
+
+        // 1. 验证 peek 逆序 basicNack(requeue=true) 严格保全队列 FIFO 原序
+        offlineBroker.enqueueDeadLetter(
+                RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ, "ex", RabbitScenarioTopologyConfig.QUEUE_BIZ_MAIN,
+                "rejected", "\"FIFO-1\"".getBytes(StandardCharsets.UTF_8), Map.of());
+        offlineBroker.enqueueDeadLetter(
+                RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ, "ex", RabbitScenarioTopologyConfig.QUEUE_BIZ_MAIN,
+                "rejected", "\"FIFO-2\"".getBytes(StandardCharsets.UTF_8), Map.of());
+
+        List<String> firstPeek = deadLetterReplayService.peekBizDeadLetters(2).stream()
+                .map(msg -> new String(msg.getBody(), StandardCharsets.UTF_8))
+                .toList();
+        List<String> secondPeek = deadLetterReplayService.peekBizDeadLetters(2).stream()
+                .map(msg -> new String(msg.getBody(), StandardCharsets.UTF_8))
+                .toList();
+        assertThat(firstPeek).containsExactly("\"FIFO-1\"", "\"FIFO-2\"");
+        assertThat(secondPeek).containsExactly("\"FIFO-1\"", "\"FIFO-2\"");
+
+        // 2. 验证 RabbitAdmin 被动队列查询：已声明队列返回有效 QueueInformation，未声明队列返回 null
+        QueueInformation declaredInfo = rabbitAdmin.getQueueInfo(RabbitScenarioTopologyConfig.QUEUE_ORDER_CREATE);
+        assertThat(declaredInfo).isNotNull();
+        assertThat(declaredInfo.getName()).isEqualTo(RabbitScenarioTopologyConfig.QUEUE_ORDER_CREATE);
+        assertThat(rabbitAdmin.getQueueInfo("sample.non.existent.queue")).isNull();
+
+        // 3. 验证不可路由路径与 Topic 通配符边界 (log.errors 不匹配 log.error.#) 安全触发回调且不误投递
+        logTopicConsumer.clear();
+        rabbitReliableTemplate.sendReliable(
+                RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT,
+                "unroutable.non.existent.key",
+                "unroutable-payload",
+                "UNROUTABLE-KEY-01"
+        );
+        producer.sendLogError("log.errors", new LogMessage("ERROR", "svc", "should-not-route"));
+        assertThat(logTopicConsumer.getReceivedLogs()).isEmpty();
+
+        // 4. 验证 Channel getConnection / ServerProperties、queueDelete 删除队列与 consumerCount 跟踪
+        rabbitReliableTemplate.getRabbitTemplate().execute(channel -> {
+            assertThat(channel.getConnection()).isNotNull();
+            assertThat(channel.getConnection().getServerProperties()).containsKey("product");
+            channel.queueDeclare("sample.temp.check.queue", false, false, false, null);
+            assertThat(offlineBroker.queueExists("sample.temp.check.queue")).isTrue();
+            String consumerTag = channel.basicConsume("sample.temp.check.queue", true, (tag, delivery) -> {}, tag -> {});
+            assertThat(channel.consumerCount("sample.temp.check.queue")).isEqualTo(1L);
+            channel.basicCancel(consumerTag);
+            assertThat(channel.consumerCount("sample.temp.check.queue")).isZero();
+            channel.queueDelete("sample.temp.check.queue");
+            assertThat(offlineBroker.queueExists("sample.temp.check.queue")).isFalse();
+            return null;
+        });
+    }
+
+    @Test
+    @DisplayName("场景 K: 事务提交后批量发信 sendBatchAfterCommit 与原生消息级 TTL sendWithExpiration 双模通路验证")
+    void testScenarioK_BatchAfterCommitAndNativeExpirationDelivery() {
+        List<OrderCreateMessage> commitBatch = List.of(
+                new OrderCreateMessage("TX-BATCH-1", new BigDecimal("11.00"), "u1", LocalDateTime.now()),
+                new OrderCreateMessage("TX-BATCH-2", new BigDecimal("22.00"), "u2", LocalDateTime.now())
+        );
+        transactionService.createOrderBatchWithCommit(commitBatch);
+
+        List<OrderCreateMessage> rollbackBatch = List.of(
+                new OrderCreateMessage("TX-BATCH-RB-1", new BigDecimal("33.00"), "u3", LocalDateTime.now()),
+                new OrderCreateMessage("TX-BATCH-RB-2", new BigDecimal("44.00"), "u4", LocalDateTime.now())
+        );
+        assertThatThrownBy(() -> transactionService.createOrderBatchWithRollback(rollbackBatch))
+                .isInstanceOf(IllegalStateException.class);
+
+        awaitCondition(() -> assertThat(orderConsumer.getReceivedMessages())
+                .extracting(OrderCreateMessage::orderId)
+                .contains("TX-BATCH-1", "TX-BATCH-2")
+                .doesNotContain("TX-BATCH-RB-1", "TX-BATCH-RB-2"));
+
+        producer.sendOrderWithExpiration(
+                new OrderTimeoutMessage("EXP-SYNC-1", 5L, "native-sync-ttl"),
+                Duration.ofSeconds(5)
+        );
+        CorrelationData.Confirm asyncConfirm = producer.sendOrderWithExpirationAsync(
+                new OrderTimeoutMessage("EXP-ASYNC-1", 10L, "native-async-ttl"),
+                Duration.ofSeconds(10)
+        ).join();
+        assertThat(asyncConfirm.isAck()).isTrue();
+
+        if (offlineBroker != null) {
+            List<OfflineAmqpBroker.DispatchedMessage> expMessages = offlineBroker.getSentMessages().stream()
+                    .filter(msg -> RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_EXPIRATION.equals(msg.routingKey()))
+                    .toList();
+            assertThat(expMessages).hasSize(2);
+            assertThat(expMessages.get(0).message().getMessageProperties().getExpiration()).isEqualTo("5000");
+            assertThat(expMessages.get(1).message().getMessageProperties().getExpiration()).isEqualTo("10000");
+            assertThat((Object) expMessages.get(0).message().getMessageProperties().getHeader("x-delay")).isNull();
         }
     }
 }

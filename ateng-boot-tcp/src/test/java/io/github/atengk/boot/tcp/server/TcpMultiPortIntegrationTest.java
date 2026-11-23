@@ -7,6 +7,7 @@ import io.github.atengk.boot.tcp.enums.FramingMode;
 import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.model.TcpPayload;
 import io.github.atengk.boot.tcp.properties.TcpClientProperties;
+import io.github.atengk.boot.tcp.session.TcpSessionManager;
 import io.github.atengk.boot.tcp.spi.TcpPacketFilter;
 import io.github.atengk.boot.tcp.template.TcpClientTemplate;
 import io.netty.channel.ChannelHandlerContext;
@@ -50,10 +51,14 @@ class TcpMultiPortIntegrationTest {
     private TcpServerRegistry serverRegistry;
 
     @Autowired
+    private TcpSessionManager sessionManager;
+
+    @Autowired
     private MessageCollector messageCollector;
 
     private TcpClient client1;
     private TcpClient client2;
+    private TcpClient client1Restarted;
 
     @AfterEach
     void tearDown() {
@@ -62,6 +67,9 @@ class TcpMultiPortIntegrationTest {
         }
         if (client2 != null) {
             client2.stop();
+        }
+        if (client1Restarted != null) {
+            client1Restarted.stop();
         }
         messageCollector.clear();
     }
@@ -89,6 +97,7 @@ class TcpMultiPortIntegrationTest {
         props1.setPort(port1);
         props1.getFraming().setMode(FramingMode.DELIMITER);
         props1.getFraming().setDelimiter("\n");
+        props1.getReconnect().setEnabled(false);
         client1 = new TcpClient("client-line", props1);
         client1.start();
         TcpClientTemplate template1 = new TcpClientTemplate(client1, props1);
@@ -99,6 +108,7 @@ class TcpMultiPortIntegrationTest {
         props2.setPort(port2);
         props2.getFraming().setMode(FramingMode.FIXED_LENGTH);
         props2.getFraming().setFixedLength(16);
+        props2.getReconnect().setEnabled(false);
         client2 = new TcpClient("client-fixed", props2);
         client2.start();
         TcpClientTemplate template2 = new TcpClientTemplate(client2, props2);
@@ -110,13 +120,42 @@ class TcpMultiPortIntegrationTest {
         byte[] fixedBytes = "1234567890ABCDEF".getBytes(StandardCharsets.UTF_8);
         template2.send(TcpPayload.of(fixedBytes));
 
-        // 6. 断言服务端均成功接收到对应格式的完整报文
+        // 6. 断言服务端均成功接收到对应格式的完整报文，且会话按 serverName 正确隔离归属
         await().untilAsserted(() -> {
             assertThat(messageCollector.getReceivedTexts())
                     .anyMatch(text -> text.contains("HELLO-LINE"));
             assertThat(messageCollector.getReceivedLengths())
                     .contains(16);
+            assertThat(sessionManager.getSessionsByServer("lineBased")).hasSize(1);
+            assertThat(sessionManager.getSessionsByServer("fixedLength")).hasSize(1);
         });
+
+        // 7. 单独停止 lineBased 服务端，仅切断 lineBased 会话，fixedLength 端口及会话不受任何影响
+        lineServer.stop();
+        assertThat(lineServer.isRunning()).isFalse();
+        assertThat(fixedServer.isRunning()).isTrue();
+        await().untilAsserted(() -> {
+            assertThat(client1.isConnected()).isFalse();
+            assertThat(sessionManager.getSessionsByServer("lineBased")).isEmpty();
+            assertThat(sessionManager.getSessionsByServer("fixedLength")).hasSize(1);
+        });
+        assertThat(client2.isConnected()).isTrue();
+
+        byte[] secondFixedBytes = "SECOND16BYTEBODY".getBytes(StandardCharsets.UTF_8);
+        template2.send(TcpPayload.of(secondFixedBytes));
+        await().untilAsserted(() -> assertThat(messageCollector.getReceivedTexts())
+                .anyMatch(text -> text.contains("SECOND16BYTEBODY")));
+
+        // 8. 重启 lineBased 服务端并允许新客户端接入
+        lineServer.start();
+        assertThat(lineServer.isRunning()).isTrue();
+        props1.setPort(lineServer.getActualPort());
+        client1Restarted = new TcpClient("client-line-restarted", props1);
+        client1Restarted.start();
+        TcpClientTemplate restartedTemplate = new TcpClientTemplate(client1Restarted, props1);
+        restartedTemplate.send(TcpPayload.of("HELLO-AFTER-RESTART\n"));
+        await().untilAsserted(() -> assertThat(messageCollector.getReceivedTexts())
+                .anyMatch(text -> text.contains("HELLO-AFTER-RESTART")));
     }
 
     @Component

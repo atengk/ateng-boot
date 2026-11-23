@@ -24,6 +24,7 @@ public class OrderSqlConsumer {
     private final List<OrderMessage> receivedSqlOrders = new CopyOnWriteArrayList<>();
 
     @RocketmqListener(
+            endpointId = "sample-sql-order-listener",
             topic = "sample_sql_topic",
             consumerGroup = "sample_sql_group",
             sql92 = "amount > 100"

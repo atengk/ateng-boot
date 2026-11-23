@@ -14,12 +14,13 @@ import java.time.Instant;
  * @since 2026-10-25
  */
 @Getter
-@Builder
+@Builder(toBuilder = true)
 @ToString
 public class JobAlertContext {
 
     public static final String ALERT_TYPE_FAILED = "FAILED";
     public static final String ALERT_TYPE_TIMEOUT = "TIMEOUT";
+    public static final String ALERT_TYPE_RECOVERY = "RECOVERY";
 
     /**
      * 任务名称

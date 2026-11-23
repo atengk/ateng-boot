@@ -2,6 +2,7 @@ package io.github.atengk.boot.encrypt.decryptor;
 
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
+import io.github.atengk.boot.encrypt.config.EncryptRetryProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -9,6 +10,7 @@ import javax.crypto.BadPaddingException;
 import java.io.IOException;
 import java.net.SocketTimeoutException;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -115,5 +117,84 @@ class AbstractKmsConfigDecryptorTest {
         assertEquals(3, attempts.get());
         assertTrue(ex.getMessage().contains("502 Bad Gateway")
                 || (ex.getCause() != null && ex.getCause().getMessage().contains("502 Bad Gateway")));
+    }
+
+    @Test
+    @DisplayName("测试基于 EncryptRetryProperties 构造的 KMS 解密器正常退避重试")
+    void testKmsWithEncryptRetryProperties() throws Exception {
+        AtomicInteger attempts = new AtomicInteger(0);
+
+        EncryptRetryProperties retryProps = new EncryptRetryProperties();
+        retryProps.setMaxAttempts(4);
+        retryProps.setDelay(Duration.ofMillis(5));
+        retryProps.setMultiplier(1.2);
+        retryProps.setMaxDelay(Duration.ofMillis(30));
+        retryProps.setJitter(false);
+
+        AbstractKmsConfigDecryptor kmsDecryptor = new AbstractKmsConfigDecryptor(retryProps) {
+            @Override
+            protected String doDecrypt(String ciphertext, String keyIdOrPassword) throws Exception {
+                int count = attempts.incrementAndGet();
+                if (count < 4) {
+                    throw new SocketTimeoutException("KMS 抖动 (count=" + count + ")");
+                }
+                return "kms-ok";
+            }
+        };
+
+        String result = kmsDecryptor.decrypt("payload", "alias/key");
+        assertEquals("kms-ok", result);
+        assertEquals(4, attempts.get());
+    }
+
+    @Test
+    @DisplayName("测试经由 ConfigDecryptorFactory 装配 AbstractKmsConfigDecryptor 时注入 retry 配置且绝不触发双重嵌套重试")
+    void testFactoryAppliesRetryPropertiesWithoutDoubleWrapping() throws Exception {
+        AtomicInteger attempts = new AtomicInteger(0);
+        AbstractKmsConfigDecryptor kmsDecryptor = new AbstractKmsConfigDecryptor() {
+            @Override
+            protected String doDecrypt(String ciphertext, String keyIdOrPassword) throws Exception {
+                int count = attempts.incrementAndGet();
+                if (count < 4) {
+                    throw new SocketTimeoutException("KMS 抖动 (attempt=" + count + ")");
+                }
+                return "kms-single-layer-ok";
+            }
+        };
+
+        EncryptRetryProperties retryProps = new EncryptRetryProperties();
+        retryProps.setMaxAttempts(4);
+        retryProps.setDelay(Duration.ofMillis(5));
+        retryProps.setMaxDelay(Duration.ofMillis(20));
+        retryProps.setJitter(false);
+
+        List<ConfigDecryptor> decryptors = ConfigDecryptorFactory.createDefaultDecryptors(
+                List.of(kmsDecryptor), retryProps);
+        ConfigDecryptor resolved = decryptors.stream()
+                .filter(d -> d.supports(EncryptAlgorithm.KMS))
+                .findFirst()
+                .orElseThrow();
+
+        assertFalse(resolved instanceof RetryingConfigDecryptor, "AbstractKmsConfigDecryptor 不应再被 RetryingConfigDecryptor 二次包裹");
+        assertEquals("kms-single-layer-ok", resolved.decrypt("cipher", "key"));
+        assertEquals(4, attempts.get(), "实际重试总次数必须严格等于 maxAttempts=4，严禁双重嵌套重试");
+
+        // 耗尽重试时也应严格执行 4 次
+        AtomicInteger exhaustedAttempts = new AtomicInteger(0);
+        AbstractKmsConfigDecryptor alwaysFailKms = new AbstractKmsConfigDecryptor() {
+            @Override
+            protected String doDecrypt(String ciphertext, String keyIdOrPassword) throws Exception {
+                exhaustedAttempts.incrementAndGet();
+                throw new IOException("KMS 503");
+            }
+        };
+        ConfigDecryptor resolvedFail = ConfigDecryptorFactory.createDefaultDecryptors(
+                List.of(alwaysFailKms), retryProps).stream()
+                .filter(d -> d.supports(EncryptAlgorithm.KMS))
+                .findFirst()
+                .orElseThrow();
+
+        assertThrows(IOException.class, () -> resolvedFail.decrypt("cipher", "key"));
+        assertEquals(4, exhaustedAttempts.get(), "耗尽重试时调用次数必须严格等于 maxAttempts=4");
     }
 }

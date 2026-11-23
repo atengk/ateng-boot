@@ -7,7 +7,7 @@
     <parent>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot-samples</artifactId>
-        <version>1.0.0</version>
+        <version>1.2.0</version>
     </parent>
 
     <artifactId>ateng-boot-sample-storage</artifactId>
@@ -23,10 +23,28 @@
             <artifactId>ateng-boot-web</artifactId>
         </dependency>
 
+        <!-- Spring 事务支持（用于演示事务提交后延迟删除与回滚补偿清理） -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-tx</artifactId>
+        </dependency>
+
         <!-- 对象存储核心 Starter -->
         <dependency>
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-storage</artifactId>
+        </dependency>
+
+        <!-- AWS SDK S3 客户端（开启云原生 S3 驱动与企业级治理能力） -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+        </dependency>
+
+        <!-- AWS SDK Apache HTTP Client 连接池传输实现 -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>apache-client</artifactId>
         </dependency>
 
         <!-- Spring Boot Actuator 健康检查与监控 -->

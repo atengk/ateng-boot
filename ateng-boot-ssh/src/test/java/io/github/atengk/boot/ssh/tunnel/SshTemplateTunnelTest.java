@@ -1,6 +1,9 @@
 package io.github.atengk.boot.ssh.tunnel;
 
 import io.github.atengk.boot.ssh.enums.HostKeyPolicy;
+import io.github.atengk.boot.ssh.enums.TunnelMode;
+import io.github.atengk.boot.ssh.exception.SshOperationException;
+import io.github.atengk.boot.ssh.exception.SshResultCode;
 import io.github.atengk.boot.ssh.lifecycle.SshLifecycleManager;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.pool.SshSessionPool;
@@ -9,8 +12,10 @@ import io.github.atengk.boot.ssh.registry.SshClientRegistry;
 import io.github.atengk.boot.ssh.template.SshTemplate;
 import org.apache.sshd.client.SshClient;
 import org.apache.sshd.client.keyverifier.AcceptAllServerKeyVerifier;
+import org.apache.sshd.common.util.net.SshdSocketAddress;
 import org.apache.sshd.server.SshServer;
 import org.apache.sshd.server.forward.AcceptAllForwardingFilter;
+import org.apache.sshd.server.forward.RejectAllForwardingFilter;
 import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -87,6 +92,7 @@ class SshTemplateTunnelTest {
         // 3. 构建客户端底座与操作门面
         sshClient = SshClient.setUpDefaultClient();
         sshClient.setServerKeyVerifier(AcceptAllServerKeyVerifier.INSTANCE);
+        sshClient.setForwardingFilter(SshTunnelHandle.REMOTE_FORWARDED_ONLY_FILTER);
         sshClient.start();
 
         SshProperties properties = new SshProperties();
@@ -152,6 +158,7 @@ class SshTemplateTunnelTest {
         // 1. 打开本地端口转发（localPort=0 表示操作系统动态分配随机可用端口）
         try (SshTunnelHandle handle = template.openLocalTunnel(0, "127.0.0.1", echoServerPort)) {
             assertThat(handle).isNotNull();
+            assertThat(handle.getTunnelMode()).isEqualTo(TunnelMode.LOCAL);
             assertThat(handle.isAlive()).isTrue();
             assertThat(handle.getLocalPort()).isPositive();
             assertThat(handle.getLocalPort()).isNotEqualTo(0);
@@ -228,5 +235,105 @@ class SshTemplateTunnelTest {
         assertThatThrownBy(() -> template.openLocalTunnel(0, "127.0.0.1", 70000))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("remotePort must be between 1 and 65535");
+
+        assertThatThrownBy(() -> template.openRemoteTunnel(-1, "127.0.0.1", echoServerPort))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("remotePort must be between 0 and 65535");
+
+        assertThatThrownBy(() -> template.openRemoteTunnel(0, "", echoServerPort))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("localHost must not be blank");
+
+        assertThatThrownBy(() -> template.openRemoteTunnel(0, "127.0.0.1", 0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("localPort must be between 1 and 65535");
+    }
+
+    @Test
+    @DisplayName("测试远程端口转发：动态分配远端监听端口、反向 TCP 流量端到端回显与确定性关闭")
+    void testRemotePortForwardingEndToEnd(@TempDir Path tempDir) throws Exception {
+        int closedRemotePort;
+        // 1. 打开远程端口转发（remotePort=0 由远端 SSH 服务端动态分配监听端口）
+        try (SshTunnelHandle handle = template.openRemoteTunnel(0, "127.0.0.1", echoServerPort)) {
+            assertThat(handle).isNotNull();
+            assertThat(handle.getTunnelMode()).isEqualTo(TunnelMode.REMOTE);
+            assertThat(handle.isAlive()).isTrue();
+            assertThat(handle.getRemotePort()).isPositive();
+            assertThat(handle.getLocalHost()).isEqualTo("127.0.0.1");
+            assertThat(handle.getLocalPort()).isEqualTo(echoServerPort);
+            closedRemotePort = handle.getRemotePort();
+
+            assertThat(lifecycleManager.getActiveTunnels()).contains(handle);
+
+            // 2. 向远端 SSH 服务器绑定的监听端口发起 TCP 读写，经由 SSH 隧道反向穿透至本地 Echo 服务
+            try (Socket clientSocket = new Socket("127.0.0.1", handle.getRemotePort());
+                 BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(clientSocket.getOutputStream(), StandardCharsets.UTF_8));
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream(), StandardCharsets.UTF_8))) {
+
+                clientSocket.setSoTimeout(3000);
+                writer.write("PING_FROM_REMOTE_TUNNEL\n");
+                writer.flush();
+
+                String response = reader.readLine();
+                assertThat(response).isEqualTo("ECHO:PING_FROM_REMOTE_TUNNEL");
+            }
+
+            // 3. 显式关闭隧道
+            handle.close();
+            assertThat(handle.isAlive()).isFalse();
+            assertThat(handle.isClosed()).isTrue();
+            assertThat(lifecycleManager.getActiveTunnels()).doesNotContain(handle);
+        }
+
+        // 4. 关闭后远端绑定端口应拒绝新连接
+        Thread.sleep(100);
+        assertThatThrownBy(() -> {
+            try (Socket ignored = new Socket("127.0.0.1", closedRemotePort)) {
+                // expected connect failure
+            }
+        }).isInstanceOf(IOException.class);
+
+        // 5. 具名节点、显式描述符与 SshdSocketAddress 精细绑定重载
+        try (SshTunnelHandle namedHandle = template.openRemoteTunnel("bastion", 0, "127.0.0.1", echoServerPort)) {
+            assertThat(namedHandle.getTunnelMode()).isEqualTo(TunnelMode.REMOTE);
+            assertThat(namedHandle.getRemotePort()).isPositive();
+            try (Socket socket = new Socket("127.0.0.1", namedHandle.getRemotePort());
+                 BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
+                socket.setSoTimeout(3000);
+                writer.write("REMOTE_VIA_BASTION\n");
+                writer.flush();
+                assertThat(reader.readLine()).isEqualTo("ECHO:REMOTE_VIA_BASTION");
+            }
+        }
+
+        try (SshTunnelHandle socketAddressHandle = template.openRemoteTunnel(
+                serverInfo,
+                new SshdSocketAddress("127.0.0.1", 0),
+                new SshdSocketAddress("127.0.0.1", echoServerPort))) {
+            assertThat(socketAddressHandle.getTunnelMode()).isEqualTo(TunnelMode.REMOTE);
+            assertThat(socketAddressHandle.getRemotePort()).isPositive();
+        }
+
+        // 6. 服务端拒绝转发时应转译为 SshOperationException(TUNNEL_FAILED) 并保留原始 cause
+        SshServer rejectServer = SshServer.setUpDefaultServer();
+        rejectServer.setHost("127.0.0.1");
+        rejectServer.setPort(0);
+        rejectServer.setKeyPairProvider(new SimpleGeneratorHostKeyProvider(tempDir.resolve("reject-hostkey.ser")));
+        rejectServer.setPasswordAuthenticator((u, p, s) -> true);
+        rejectServer.setForwardingFilter(RejectAllForwardingFilter.INSTANCE);
+        rejectServer.start();
+        try {
+            SshServerInfo rejectServerInfo = SshServerInfo.of("127.0.0.1", rejectServer.getPort(), "testuser", "testpass");
+            assertThatThrownBy(() -> template.openRemoteTunnel(rejectServerInfo, 0, "127.0.0.1", echoServerPort))
+                    .isInstanceOf(SshOperationException.class)
+                    .satisfies(ex -> {
+                        SshOperationException sshEx = (SshOperationException) ex;
+                        assertThat(sshEx.getResultCode()).isEqualTo(SshResultCode.TUNNEL_FAILED);
+                        assertThat(sshEx.getCause()).isNotNull();
+                    });
+        } finally {
+            rejectServer.stop(true);
+        }
     }
 }

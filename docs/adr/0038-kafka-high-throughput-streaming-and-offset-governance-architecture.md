@@ -26,7 +26,7 @@
 
 ## 决策内容与架构拓扑 (Decision & Architecture)
 
-为彻底解决上述深水区缺陷，`ateng-boot-kafka` Starter 遵循**纯原生、零臃肿依赖、四维上下文透明贯通、高吞吐微批预调优、事务提交感知（sendAfterCommit + 补偿 SPI）、严格即时提交（AckMode.RECORD / MANUAL_IMMEDIATE）、不可自愈毒丸快速隔离至死信 Topic（*.DLT）、微服务推断反序列化解耦、批量消费多租户安全执行（KafkaRecordExecutor）、云原生协作重平衡与 10 秒优雅停机、100% 离线自洽**的工业级设计原则，确立以下核心架构体系：
+为彻底解决上述深水区缺陷，`ateng-boot-kafka` Starter 遵循**纯原生、零臃肿依赖、四维上下文透明贯通、高吞吐微批预调优、事务提交感知（sendAfterCommit + 补偿 SPI）、双模式确定性位点提交（AckMode.RECORD / AckMode.BATCH）、不可自愈毒丸快速隔离至死信 Topic（*.DLT）、微服务推断反序列化解耦、批量消费多租户安全执行（KafkaRecordExecutor）、云原生协作重平衡与 10 秒优雅停机、100% 离线自洽**的工业级设计原则，确立以下核心架构体系：
 
 ```mermaid
 flowchart TD

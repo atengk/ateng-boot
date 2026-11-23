@@ -94,7 +94,18 @@ public interface AtengBaseService<T> extends IService<T> {
      */
     default <V> List<V> list(Wrapper<T> queryWrapper, Class<V> voClass) {
         Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
-        List<T> entityList = list(queryWrapper);
+        return convertEntitiesToVoList(list(queryWrapper), voClass);
+    }
+
+    /**
+     * 将实体列表安全投影转换为强类型 VO 列表（空集合保底，零持久层实体泄露）
+     *
+     * @param entityList 实体列表
+     * @param voClass    目标 VO 类型
+     * @param <V>        目标 VO 泛型
+     * @return VO 列表，无元素时返回空集合
+     */
+    private <V> List<V> convertEntitiesToVoList(List<T> entityList, Class<V> voClass) {
         if (entityList == null || entityList.isEmpty()) {
             return Collections.emptyList();
         }
@@ -143,7 +154,7 @@ public interface AtengBaseService<T> extends IService<T> {
     default PageResult<T> pageDynamic(DynamicQueryRequest request) {
         Class<T> entityClass = getEntityClass();
         QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(request, entityClass);
-        Page<T> page = PageUtil.toPage(request, entityClass);
+        Page<T> page = PageUtil.toUnsortedPage(request);
         return PageUtil.toPageResult(page(page, wrapper));
     }
 
@@ -175,7 +186,7 @@ public interface AtengBaseService<T> extends IService<T> {
         Class<T> entityClass = getEntityClass();
         QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
         PageQuery pageQuery = (queryDto instanceof PageQuery pq) ? pq : null;
-        Page<T> page = PageUtil.toPage(pageQuery, entityClass);
+        Page<T> page = PageUtil.toUnsortedPage(pageQuery);
         return PageUtil.toPageResult(page(page, wrapper));
     }
 
@@ -476,7 +487,7 @@ public interface AtengBaseService<T> extends IService<T> {
         }
         Map<String, String> mapping = resolveMethodMapping(mapperMethod);
         QueryWrapper<V> wrapper = DynamicQueryHelper.buildWrapper(request, voClass, mapping);
-        Page<V> page = PageUtil.toPage(request);
+        Page<V> page = PageUtil.toUnsortedPage(request);
         IPage<V> resultPage = mapperMethod.select(page, wrapper);
         return PageUtil.toPageResult(resultPage);
     }
@@ -515,8 +526,8 @@ public interface AtengBaseService<T> extends IService<T> {
                 ? DynamicQueryHelper.buildWrapper(queryDto, voClass, mapping)
                 : DynamicQueryHelper.buildWrapper(queryDto, mapping);
         Page<V> page = (queryDto instanceof PageQuery pq)
-                ? PageUtil.toPage(pq)
-                : new Page<>(1, 10);
+                ? PageUtil.toUnsortedPage(pq)
+                : PageUtil.toUnsortedPage(null);
         IPage<V> resultPage = mapperMethod.select(page, wrapper);
         return PageUtil.toPageResult(resultPage);
     }
@@ -1305,6 +1316,33 @@ public interface AtengBaseService<T> extends IService<T> {
     T getByIdForUpdate(Serializable id, LockMode lockMode);
 
     /**
+     * 根据主键 ID 加悲观排他锁（默认 FOR_UPDATE）并直接投影为强类型 VO（零实体泄露）
+     *
+     * @param id      实体主键 ID
+     * @param voClass 目标 VO 类型
+     * @param <V>     目标 VO 泛型
+     * @return 视图对象，主键为 null 或无匹配记录时返回 null
+     */
+    default <V> V getByIdForUpdate(Serializable id, Class<V> voClass) {
+        return getByIdForUpdate(id, LockMode.FOR_UPDATE, voClass);
+    }
+
+    /**
+     * 根据主键 ID 与指定悲观锁模式加锁查询并投影为强类型 VO（零实体泄露）
+     *
+     * @param id       实体主键 ID
+     * @param lockMode 悲观锁模式（FOR_UPDATE, NOWAIT, SKIP_LOCKED, FOR_SHARE）
+     * @param voClass  目标 VO 类型
+     * @param <V>      目标 VO 泛型
+     * @return 视图对象，主键为 null 或无匹配记录时返回 null
+     */
+    default <V> V getByIdForUpdate(Serializable id, LockMode lockMode, Class<V> voClass) {
+        Objects.requireNonNull(voClass, "voClass 不能为 null");
+        T entity = getByIdForUpdate(id, lockMode);
+        return entity != null ? JsonUtil.convertValue(entity, voClass) : null;
+    }
+
+    /**
      * 根据条件封装器加悲观排他锁（FOR UPDATE）查询实体列表
      *
      * @param queryWrapper 查询条件封装器（可为 null）
@@ -1324,6 +1362,78 @@ public interface AtengBaseService<T> extends IService<T> {
      */
     List<T> listForUpdate(Wrapper<T> queryWrapper, LockMode lockMode);
 
+    /**
+     * 根据条件封装器加悲观排他锁（默认 FOR_UPDATE）查询并投影为强类型 VO 列表（零实体泄露）
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @param voClass      目标 VO 类型
+     * @param <V>          目标 VO 泛型
+     * @return 视图对象列表（无匹配时保底返回空集合，严禁返回 null）
+     */
+    default <V> List<V> listForUpdate(Wrapper<T> queryWrapper, Class<V> voClass) {
+        return listForUpdate(queryWrapper, LockMode.FOR_UPDATE, voClass);
+    }
+
+    /**
+     * 根据条件封装器与指定悲观锁模式加锁查询并投影为强类型 VO 列表（零实体泄露）
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @param lockMode     悲观锁模式（FOR_UPDATE, NOWAIT, SKIP_LOCKED, FOR_SHARE）
+     * @param voClass      目标 VO 类型
+     * @param <V>          目标 VO 泛型
+     * @return 视图对象列表（无匹配时保底返回空集合，严禁返回 null）
+     */
+    default <V> List<V> listForUpdate(Wrapper<T> queryWrapper, LockMode lockMode, Class<V> voClass) {
+        Objects.requireNonNull(voClass, "voClass 不能为 null");
+        return convertEntitiesToVoList(listForUpdate(queryWrapper, lockMode), voClass);
+    }
+
+    /**
+     * 根据条件封装器加悲观排他锁（FOR UPDATE）查询单条实体记录
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @return 实体对象，无匹配记录时返回 null
+     */
+    default T getOneForUpdate(Wrapper<T> queryWrapper) {
+        return getOneForUpdate(queryWrapper, LockMode.FOR_UPDATE);
+    }
+
+    /**
+     * 根据条件封装器与指定悲观锁模式加锁查询单条实体记录
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @param lockMode     悲观锁模式（FOR_UPDATE, NOWAIT, SKIP_LOCKED, FOR_SHARE）
+     * @return 实体对象，无匹配记录时返回 null
+     */
+    T getOneForUpdate(Wrapper<T> queryWrapper, LockMode lockMode);
+
+    /**
+     * 根据条件封装器加悲观排他锁（默认 FOR_UPDATE）查询单条记录并投影为强类型 VO（零实体泄露）
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @param voClass      目标 VO 类型
+     * @param <V>          目标 VO 泛型
+     * @return 视图对象，无匹配记录时返回 null
+     */
+    default <V> V getOneForUpdate(Wrapper<T> queryWrapper, Class<V> voClass) {
+        return getOneForUpdate(queryWrapper, LockMode.FOR_UPDATE, voClass);
+    }
+
+    /**
+     * 根据条件封装器与指定悲观锁模式加锁查询单条实体记录并投影为强类型 VO（零实体泄露）
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @param lockMode     悲观锁模式（FOR_UPDATE, NOWAIT, SKIP_LOCKED, FOR_SHARE）
+     * @param voClass      目标 VO 类型
+     * @param <V>          目标 VO 泛型
+     * @return 视图对象，无匹配记录时返回 null
+     */
+    default <V> V getOneForUpdate(Wrapper<T> queryWrapper, LockMode lockMode, Class<V> voClass) {
+        Objects.requireNonNull(voClass, "voClass 不能为 null");
+        T entity = getOneForUpdate(queryWrapper, lockMode);
+        return entity != null ? JsonUtil.convertValue(entity, voClass) : null;
+    }
+
     // ==========================================
     // 8. 逻辑删除穿透检索与误删恢复闭环 (Logic Delete Restore & Penetration Facade)
     // ==========================================
@@ -1335,6 +1445,14 @@ public interface AtengBaseService<T> extends IService<T> {
      * @return true 若恢复成功影响行数大于 0；否则 false
      */
     boolean restoreById(Serializable id);
+
+    /**
+     * 根据主键 ID 集合批量恢复已逻辑删除的记录（穿透逻辑删除并分批切片执行，自动刷新审计更新时间与操作人）
+     *
+     * @param idList 实体主键 ID 集合（为 null、空集合或全为 null 时安全返回 false）
+     * @return true 若累计恢复影响行数大于 0；否则 false
+     */
+    boolean restoreByIds(Collection<? extends Serializable> idList);
 
     /**
      * 根据条件构造器批量恢复已逻辑删除的记录（重置 deleted = 0 并自动刷新审计更新时间与操作人）
@@ -1421,4 +1539,102 @@ public interface AtengBaseService<T> extends IService<T> {
     default <V> V getOneWithDeleted(Wrapper<T> queryWrapper, Class<V> voClass) {
         return LogicDeleteContextHolder.callWithDeleted(() -> getOne(queryWrapper, voClass, false));
     }
+
+    /**
+     * 穿透逻辑删除，统计满足条件的记录总数（包含已删除与未删除数据）
+     *
+     * @param queryWrapper 查询条件构造器（可为 null）
+     * @return 记录总数
+     */
+    default long countWithDeleted(Wrapper<T> queryWrapper) {
+        return LogicDeleteContextHolder.callWithDeleted(() -> count(queryWrapper));
+    }
+
+    /**
+     * 穿透逻辑删除，判断是否存在满足条件的记录（包含已删除与未删除数据）
+     *
+     * @param queryWrapper 查询条件构造器
+     * @return true 若存在匹配记录；否则 false
+     */
+    default boolean existsWithDeleted(Wrapper<T> queryWrapper) {
+        return LogicDeleteContextHolder.callWithDeleted(() -> exists(queryWrapper));
+    }
+
+    /**
+     * 穿透逻辑删除，基于 PageQuery 与条件构造器执行分页查询并投影转换为强类型 PageResult<V>（零实体泄露）
+     *
+     * @param pageQuery   通用分页查询参数
+     * @param queryWrapper 查询条件构造器
+     * @param voClass     目标 VO 类型
+     * @param <V>         目标 VO 泛型
+     * @return 映射后的强类型分页结果
+     */
+    default <V> PageResult<V> pageWithDeleted(PageQuery pageQuery, Wrapper<T> queryWrapper, Class<V> voClass) {
+        Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
+        return LogicDeleteContextHolder.callWithDeleted(() -> {
+            Page<T> page = PageUtil.toPage(pageQuery, getEntityClass());
+            IPage<T> resultPage = page(page, queryWrapper);
+            PageResult<T> entityPageResult = PageUtil.toPageResult(resultPage);
+            return entityPageResult.map(item -> JsonUtil.convertValue(item, voClass));
+        });
+    }
+
+    /**
+     * 穿透逻辑删除，基于 IPage 与条件构造器执行分页查询并投影转换为强类型 PageResult<V>（零实体泄露）
+     *
+     * @param page        MyBatis-Plus IPage 分页参数
+     * @param queryWrapper 查询条件构造器
+     * @param voClass     目标 VO 类型
+     * @param <V>         目标 VO 泛型
+     * @return 映射后的强类型分页结果
+     */
+    default <V> PageResult<V> pageWithDeleted(IPage<T> page, Wrapper<T> queryWrapper, Class<V> voClass) {
+        Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
+        Objects.requireNonNull(page, "page 不能为 null");
+        return LogicDeleteContextHolder.callWithDeleted(() -> {
+            IPage<T> resultPage = page(page, queryWrapper);
+            PageResult<T> entityPageResult = PageUtil.toPageResult(resultPage);
+            return entityPageResult.map(item -> JsonUtil.convertValue(item, voClass));
+        });
+    }
+
+    /**
+     * 根据主键物理硬删除单条记录（彻底物理擦除，无视 @TableLogic）
+     *
+     * @param id 实体主键 ID（不能为 null）
+     * @return true 若物理删除成功且影响行数大于 0；否则 false
+     * @throws IllegalArgumentException 若 id 为 null
+     */
+    boolean removePhysicallyById(Serializable id);
+
+    /**
+     * 根据主键集合批量物理硬删除记录（彻底物理擦除，无视 @TableLogic）
+     *
+     * @param idList 实体主键 ID 集合（不能为空）
+     * @return true 若物理删除成功且影响行数大于 0；否则 false
+     * @throws IllegalArgumentException 若 idList 为 null 或空
+     */
+    boolean removePhysicallyByIds(Collection<?> idList);
+
+    /**
+     * 根据主键集合批量物理硬删除记录（彻底物理擦除，无视 @TableLogic）
+     * 语义等同于 {@link #removePhysicallyByIds(Collection)}，提供严格对齐规格命名的别名方法
+     *
+     * @param idList 实体主键 ID 集合（不能为空）
+     * @return true 若物理删除成功且影响行数大于 0；否则 false
+     * @throws IllegalArgumentException 若 idList 为 null 或空
+     */
+    default boolean removePhysicallyBatchByIds(Collection<?> idList) {
+        return removePhysicallyByIds(idList);
+    }
+
+    /**
+     * 根据条件构造器物理硬删除记录（彻底物理擦除，无视 @TableLogic）
+     * 强制要求具备有效 WHERE 条件，与 BlockAttack 共同构建全表防卫双重防灾机制
+     *
+     * @param queryWrapper 物理删除条件构造器（不能为 null 且必须包含有效 WHERE 条件）
+     * @return true 若物理删除成功且影响行数大于 0；否则 false
+     * @throws IllegalArgumentException 若 queryWrapper 为 null 或无有效 WHERE 条件
+     */
+    boolean removePhysically(Wrapper<T> queryWrapper);
 }

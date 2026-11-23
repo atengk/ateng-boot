@@ -1,28 +1,21 @@
 package io.github.atengk.boot.mybatisplus.util;
 
-import com.baomidou.mybatisplus.annotation.IdType;
-import com.baomidou.mybatisplus.annotation.TableId;
-import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
 import io.github.atengk.boot.core.util.CollectionUtil;
-import io.github.atengk.boot.core.util.IdUtil;
-import io.github.atengk.boot.mybatisplus.entity.BaseDeleteIdEntity;
-import io.github.atengk.boot.mybatisplus.entity.BaseEntity;
-import io.github.atengk.boot.mybatisplus.entity.BaseFullEntity;
-import io.github.atengk.boot.mybatisplus.entity.BaseIdEntity;
-import io.github.atengk.boot.mybatisplus.entity.BaseTimeEntity;
-import io.github.atengk.boot.mybatisplus.entity.TenantEntity;
+import io.github.atengk.boot.mybatisplus.entity.Auditable;
+import io.github.atengk.boot.mybatisplus.entity.Identifiable;
+import io.github.atengk.boot.mybatisplus.entity.LogicDeletable;
+import io.github.atengk.boot.mybatisplus.entity.TenantAware;
+import io.github.atengk.boot.mybatisplus.entity.TimeAuditable;
+import io.github.atengk.boot.mybatisplus.entity.Versioned;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 
-import java.lang.reflect.Field;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 原生高性能批量操作门面工具类
@@ -51,9 +44,19 @@ public final class BatchUtil {
     private static volatile CurrentUserProvider currentUserProvider;
 
     /**
-     * 非基类实体主键元数据反射引用缓存（类 -> TableIdMetadata）
+     * 是否启用自动审计字段（createTime / updateTime / createBy / updateBy）填充，默认 true
      */
-    private static final Map<Class<?>, TableIdMetadata> TABLE_ID_METADATA_CACHE = new ConcurrentHashMap<>();
+    private static volatile boolean auditEnabled = true;
+
+    /**
+     * 全局默认兜底操作人标识（无上下文且需审计填充时使用），默认 SYSTEM
+     */
+    private static volatile String defaultOperator = DEFAULT_OPERATOR;
+
+    /**
+     * 全局默认批量切片批次大小，默认 1000
+     */
+    private static volatile int defaultBatchSize = DEFAULT_BATCH_SIZE;
 
     private BatchUtil() {
     }
@@ -77,7 +80,61 @@ public final class BatchUtil {
     }
 
     /**
-     * 原生分批批量插入（采用默认分批大小 1000）
+     * 设置是否启用批量自愈与审计字段自动填充
+     *
+     * @param enabled 是否启用审计填充
+     */
+    public static void setAuditEnabled(boolean enabled) {
+        auditEnabled = enabled;
+    }
+
+    /**
+     * 获取当前是否启用审计字段自动填充
+     *
+     * @return true 表示启用，false 表示跳过审计时间与操作人填充
+     */
+    public static boolean isAuditEnabled() {
+        return auditEnabled;
+    }
+
+    /**
+     * 设置全局默认兜底操作人标识（传入 null 或空白字符串时回退为 DEFAULT_OPERATOR）
+     *
+     * @param operator 默认操作人标识
+     */
+    public static void setDefaultOperator(String operator) {
+        defaultOperator = (operator == null || operator.isBlank()) ? DEFAULT_OPERATOR : operator;
+    }
+
+    /**
+     * 获取当前全局默认兜底操作人标识
+     *
+     * @return 默认操作人标识
+     */
+    public static String getDefaultOperator() {
+        return defaultOperator;
+    }
+
+    /**
+     * 设置全局默认批量切片批次大小（传入小于等于 0 的值时回退为 DEFAULT_BATCH_SIZE）
+     *
+     * @param batchSize 默认批次大小
+     */
+    public static void setDefaultBatchSize(int batchSize) {
+        defaultBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+    }
+
+    /**
+     * 获取当前全局默认批量切片批次大小
+     *
+     * @return 默认批次大小
+     */
+    public static int getDefaultBatchSize() {
+        return defaultBatchSize;
+    }
+
+    /**
+     * 原生分批批量插入（采用默认分批大小，默认 1000）
      * 插入前自动对实体集合执行自愈补偿处理
      *
      * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
@@ -86,7 +143,7 @@ public final class BatchUtil {
      * @return 累计成功插入影响的总行数
      */
     public static <T> int insertBatch(AtengBaseMapper<T> mapper, Collection<T> entityList) {
-        return insertBatch(mapper, entityList, DEFAULT_BATCH_SIZE);
+        return insertBatch(mapper, entityList, getDefaultBatchSize());
     }
 
     /**
@@ -95,7 +152,7 @@ public final class BatchUtil {
      *
      * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
      * @param entityList 待批量插入的实体数据集合
-     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用默认值 1000）
+     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用全局默认批次大小）
      * @param <T>        实体类型
      * @return 累计成功插入影响的总行数
      */
@@ -111,7 +168,7 @@ public final class BatchUtil {
         autoHealAll(entityList);
 
         // 2. 切片分批执行
-        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        int effectiveBatchSize = batchSize > 0 ? batchSize : getDefaultBatchSize();
         List<T> list = (entityList instanceof List) ? (List<T>) entityList : new ArrayList<>(entityList);
 
         int affectedRows = 0;
@@ -157,7 +214,7 @@ public final class BatchUtil {
      * @return 累计成功操作影响的总行数
      */
     public static <T> int upsertBatch(AtengBaseMapper<T> mapper, Collection<T> entityList) {
-        return upsertBatch(mapper, entityList, DEFAULT_BATCH_SIZE);
+        return upsertBatch(mapper, entityList, getDefaultBatchSize());
     }
 
     /**
@@ -166,7 +223,7 @@ public final class BatchUtil {
      *
      * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
      * @param entityList 待批量 Upsert 的实体数据集合
-     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用默认值 1000）
+     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用全局默认批次大小）
      * @param <T>        实体类型
      * @return 累计成功操作影响的总行数
      */
@@ -182,7 +239,7 @@ public final class BatchUtil {
         autoHealAll(entityList);
 
         // 2. 切片分批执行
-        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        int effectiveBatchSize = batchSize > 0 ? batchSize : getDefaultBatchSize();
         List<T> list = (entityList instanceof List) ? (List<T>) entityList : new ArrayList<>(entityList);
 
         int affectedRows = 0;
@@ -194,7 +251,7 @@ public final class BatchUtil {
     }
 
     /**
-     * 原生分批批量 Upsert 别名方法（采用默认分批大小 1000）
+     * 原生分批批量 Upsert 别名方法（采用默认分批大小）
      *
      * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
      * @param entityList 待批量 Upsert 的实体数据集合
@@ -202,7 +259,7 @@ public final class BatchUtil {
      * @return 累计成功操作影响的总行数
      */
     public static <T> int upsertBatchSomeColumn(AtengBaseMapper<T> mapper, Collection<T> entityList) {
-        return upsertBatch(mapper, entityList, DEFAULT_BATCH_SIZE);
+        return upsertBatch(mapper, entityList, getDefaultBatchSize());
     }
 
     /**
@@ -210,7 +267,7 @@ public final class BatchUtil {
      *
      * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
      * @param entityList 待批量 Upsert 的实体数据集合
-     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用默认值 1000）
+     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用全局默认批次大小）
      * @param <T>        实体类型
      * @return 累计成功操作影响的总行数
      */
@@ -219,7 +276,7 @@ public final class BatchUtil {
     }
 
     /**
-     * 原生分批批量更新（采用默认分批大小 1000）
+     * 原生分批批量更新（采用默认分批大小）
      * 执行前自动对实体集合执行更新审计自愈补偿，并在内存中无条件按主键升序排序以落实防死锁铁律
      *
      * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
@@ -228,7 +285,7 @@ public final class BatchUtil {
      * @return 累计成功更新影响的总行数
      */
     public static <T> int updateBatch(AtengBaseMapper<T> mapper, Collection<T> entityList) {
-        return updateBatch(mapper, entityList, DEFAULT_BATCH_SIZE);
+        return updateBatch(mapper, entityList, getDefaultBatchSize());
     }
 
     /**
@@ -237,7 +294,7 @@ public final class BatchUtil {
      *
      * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
      * @param entityList 待批量更新的实体数据集合
-     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用默认值 1000）
+     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用全局默认批次大小）
      * @param <T>        实体类型
      * @return 累计成功更新影响的总行数
      */
@@ -256,7 +313,7 @@ public final class BatchUtil {
         List<T> sortedList = sortByIdAscending(entityList);
 
         // 3. 切片分批执行
-        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        int effectiveBatchSize = batchSize > 0 ? batchSize : getDefaultBatchSize();
         int affectedRows = 0;
         for (List<T> subList : CollectionUtil.partition(sortedList, effectiveBatchSize)) {
             affectedRows += mapper.updateBatchSomeColumn(subList);
@@ -266,7 +323,7 @@ public final class BatchUtil {
     }
 
     /**
-     * 原生分批批量更新别名方法（采用默认分批大小 1000）
+     * 原生分批批量更新别名方法（采用默认分批大小）
      *
      * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
      * @param entityList 待批量更新的实体数据集合
@@ -274,7 +331,7 @@ public final class BatchUtil {
      * @return 累计成功更新影响的总行数
      */
     public static <T> int updateBatchSomeColumn(AtengBaseMapper<T> mapper, Collection<T> entityList) {
-        return updateBatch(mapper, entityList, DEFAULT_BATCH_SIZE);
+        return updateBatch(mapper, entityList, getDefaultBatchSize());
     }
 
     /**
@@ -308,11 +365,11 @@ public final class BatchUtil {
     /**
      * 对单个实体对象执行轻量自愈补偿处理（原地修改实体内存对象）
      * <ol>
-     *   <li>主键自愈：若继承 BaseIdEntity 且 id 为空，自动分配雪花 ID；若为普通实体且标注 ASSIGN_ID，自动通过反射发号回填；</li>
-     *   <li>时间自愈：若继承 BaseTimeEntity 且 createTime/updateTime 为空，自动注入当前系统时钟；</li>
-     *   <li>操作人自愈：若继承 BaseEntity 且 createBy/updateBy 为空，自动从 CurrentUserProvider / UserContextHolder 注入；</li>
-     *   <li>租户自愈：若实现 TenantEntity 且 tenantId 为空且上下文存在租户，自动注入当前租户 ID；</li>
-     *   <li>状态流转自愈：若继承 BaseFullEntity，补全 version=1 与 deleted=0；若继承 BaseDeleteIdEntity，补全 version=1 与 deleted=0L。</li>
+     *   <li>主键自愈：实现 {@link Identifiable} 或标注 {@code @TableId} 时按策略自动发号（跳过 {@code AUTO}/{@code INPUT}）；</li>
+     *   <li>时间自愈：实现 {@link TimeAuditable} 且 {@code createTime}/{@code updateTime} 为空时注入当前时钟；</li>
+     *   <li>操作人自愈：实现 {@link Auditable} 且 {@code createBy}/{@code updateBy} 为空时从上下文注入；</li>
+     *   <li>租户自愈：实现 {@link TenantAware} 且 {@code tenantId} 为空时按泛型（{@code Long}/{@code String}）Fail-Fast 注入；</li>
+     *   <li>状态流转自愈：实现 {@link Versioned} 补全 {@code version=0}；实现 {@link LogicDeletable} 补全未删除默认值（{@code 0L}/{@code 0}/{@code "0"}/{@code false}）。</li>
      * </ol>
      *
      * @param item 待自愈的实体对象
@@ -323,130 +380,67 @@ public final class BatchUtil {
             return;
         }
 
-        // 1. 主键自愈 (Fast-Path: BaseIdEntity -> 反射元数据缓存通道)
-        if (item instanceof BaseIdEntity idEntity) {
-            if (idEntity.getId() == null) {
-                idEntity.setId(IdUtil.getSnowflakeNextId());
-            }
+        // 1. 主键自愈 (Fast-Path: Identifiable -> @TableId 元数据缓存通道)
+        if (item instanceof Identifiable<?> identifiable) {
+            EntityContractHelper.autoAssignId(identifiable);
         } else {
-            healCustomEntityId(item);
+            EntityContractHelper.autoAssignCustomTableId(item);
         }
 
-        // 2. 审计时间自愈 (BaseTimeEntity)
-        if (item instanceof BaseTimeEntity timeEntity) {
-            LocalDateTime now = null;
-            if (timeEntity.getCreateTime() == null) {
-                now = LocalDateTime.now();
-                timeEntity.setCreateTime(now);
-            }
-            if (timeEntity.getUpdateTime() == null) {
-                if (now == null) {
+        // 2. 审计时间自愈 (TimeAuditable，仅在 auditEnabled=true 时执行)
+        if (auditEnabled) {
+            if (item instanceof TimeAuditable timeAuditable) {
+                LocalDateTime now = null;
+                if (timeAuditable.getCreateTime() == null) {
                     now = LocalDateTime.now();
+                    timeAuditable.setCreateTime(now);
                 }
-                timeEntity.setUpdateTime(now);
+                if (timeAuditable.getUpdateTime() == null) {
+                    if (now == null) {
+                        now = LocalDateTime.now();
+                    }
+                    timeAuditable.setUpdateTime(now);
+                }
             }
-        }
 
-        // 3. 审计操作人自愈 (BaseEntity)
-        if (item instanceof BaseEntity baseEntity) {
-            String operator = null;
-            if (baseEntity.getCreateBy() == null || baseEntity.getCreateBy().isBlank()) {
-                operator = resolveCurrentUser();
-                baseEntity.setCreateBy(operator);
-            }
-            if (baseEntity.getUpdateBy() == null || baseEntity.getUpdateBy().isBlank()) {
-                if (operator == null) {
+            // 3. 审计操作人自愈 (Auditable)
+            if (item instanceof Auditable auditable) {
+                String operator = null;
+                if (auditable.getCreateBy() == null || auditable.getCreateBy().isBlank()) {
                     operator = resolveCurrentUser();
+                    auditable.setCreateBy(operator);
                 }
-                baseEntity.setUpdateBy(operator);
-            }
-        }
-
-        // 4. 多租户标识自愈 (TenantEntity)
-        if (item instanceof TenantEntity tenantEntity) {
-            if (tenantEntity.getTenantId() == null || tenantEntity.getTenantId().isBlank()) {
-                String tenantId = TenantContextHolder.getTenantId();
-                if (tenantId != null && !tenantId.isBlank()) {
-                    tenantEntity.setTenantId(tenantId);
+                if (auditable.getUpdateBy() == null || auditable.getUpdateBy().isBlank()) {
+                    if (operator == null) {
+                        operator = resolveCurrentUser();
+                    }
+                    auditable.setUpdateBy(operator);
                 }
             }
         }
 
-        // 5. 乐观锁与逻辑删除标记自愈 (BaseFullEntity 与 BaseDeleteIdEntity)
-        if (item instanceof BaseFullEntity fullEntity) {
-            if (fullEntity.getVersion() == null) {
-                fullEntity.setVersion(1);
-            }
-            if (fullEntity.getDeleted() == null) {
-                fullEntity.setDeleted(0);
-            }
+        // 4. 多租户标识自愈 (TenantAware<T>)
+        if (item instanceof TenantAware<?> tenantAware) {
+            EntityContractHelper.fillTenantIdIfNull(tenantAware);
         }
-        if (item instanceof BaseDeleteIdEntity deleteIdEntity) {
-            if (deleteIdEntity.getVersion() == null) {
-                deleteIdEntity.setVersion(1);
-            }
-            if (deleteIdEntity.getDeleted() == null) {
-                deleteIdEntity.setDeleted(0L);
-            }
+
+        // 5. 乐观锁与逻辑删除标记自愈 (Versioned 与 LogicDeletable<T>)
+        if (item instanceof Versioned versioned && versioned.getVersion() == null) {
+            versioned.setVersion(0);
+        }
+        if (item instanceof LogicDeletable<?> logicDeletable) {
+            EntityContractHelper.fillLogicNotDeletedIfNull(logicDeletable);
         }
     }
 
     /**
-     * 针对普通实体通过反射元数据缓存通道自愈主键 ID
-     *
-     * @param item 普通实体对象
-     */
-    private static void healCustomEntityId(Object item) {
-        if (item == null) {
-            return;
-        }
-        TableIdMetadata metadata = TABLE_ID_METADATA_CACHE.computeIfAbsent(item.getClass(), BatchUtil::resolveTableIdMetadata);
-        if (metadata.isAssignable()) {
-            metadata.assignIdIfNull(item);
-        }
-    }
-
-    /**
-     * 解析普通实体的 @TableId 注解元数据并构建不可变缓存对象
-     *
-     * @param clazz 实体类 Class
-     * @return TableIdMetadata 元数据对象
-     */
-    private static TableIdMetadata resolveTableIdMetadata(Class<?> clazz) {
-        Class<?> current = clazz;
-        while (current != null && current != Object.class) {
-            for (Field field : current.getDeclaredFields()) {
-                TableId tableId = field.getAnnotation(TableId.class);
-                if (tableId != null) {
-                    field.setAccessible(true);
-                    Class<?> fieldType = field.getType();
-                    boolean isLong = Long.class.equals(fieldType) || long.class.equals(fieldType);
-                    boolean isString = String.class.equals(fieldType);
-                    IdType type = tableId.type();
-                    boolean assignable = (type == IdType.ASSIGN_ID || type == IdType.NONE) && (isLong || isString);
-                    return new TableIdMetadata(field, assignable, isLong, isString);
-                }
-            }
-            current = current.getSuperclass();
-        }
-        return TableIdMetadata.NON_ASSIGNABLE;
-    }
-
-    /**
-     * 获取实体的唯一主键 ID（支持继承 BaseIdEntity 与标注 @TableId 的普通实体）
+     * 获取实体的唯一主键 ID（支持实现 {@link Identifiable} 与标注 {@code @TableId} 的普通实体）
      *
      * @param item 实体对象
      * @return 主键 ID（实现 Comparable 接口），获取失败或不存在时返回 null
      */
     public static Comparable<?> getEntityId(Object item) {
-        if (item == null) {
-            return null;
-        }
-        if (item instanceof BaseIdEntity idEntity) {
-            return idEntity.getId();
-        }
-        TableIdMetadata metadata = TABLE_ID_METADATA_CACHE.computeIfAbsent(item.getClass(), BatchUtil::resolveTableIdMetadata);
-        return metadata.getId(item);
+        return EntityContractHelper.getEntityId(item);
     }
 
     /**
@@ -509,23 +503,29 @@ public final class BatchUtil {
     }
 
     /**
-     * 对单个实体对象执行更新前轻量自愈补偿处理（仅在 updateTime / updateBy 为空时注入当前系统时钟与操作人）
+     * 对单个实体对象执行更新前轻量自愈补偿处理
+     * <p>
+     * 仅在 {@code auditEnabled == true} 时执行：强制刷新 {@code updateTime} 为当前系统时钟；
+     * 若存在有效上下文操作人（SPI 或 {@link UserContextHolder}），强制刷新 {@code updateBy}，
+     * 否则保留实体已有非空 {@code updateBy} 或兜底填充 {@code defaultOperator}。
+     * </p>
      *
      * @param item 待自愈的实体对象
      * @param <T>  实体类型
      */
     public static <T> void autoHealForUpdate(T item) {
-        if (item == null) {
+        if (item == null || !auditEnabled) {
             return;
         }
-        if (item instanceof BaseTimeEntity timeEntity) {
-            if (timeEntity.getUpdateTime() == null) {
-                timeEntity.setUpdateTime(LocalDateTime.now());
-            }
+        if (item instanceof TimeAuditable timeAuditable) {
+            timeAuditable.setUpdateTime(LocalDateTime.now());
         }
-        if (item instanceof BaseEntity baseEntity) {
-            if (baseEntity.getUpdateBy() == null || baseEntity.getUpdateBy().isBlank()) {
-                baseEntity.setUpdateBy(resolveCurrentUser());
+        if (item instanceof Auditable auditable) {
+            String contextUser = resolveContextUserOrNull();
+            if (contextUser != null) {
+                auditable.setUpdateBy(contextUser);
+            } else if (auditable.getUpdateBy() == null || auditable.getUpdateBy().isBlank()) {
+                auditable.setUpdateBy(defaultOperator);
             }
         }
     }
@@ -536,6 +536,11 @@ public final class BatchUtil {
      * @return 当前操作人标识
      */
     private static String resolveCurrentUser() {
+        String contextUser = resolveContextUserOrNull();
+        return contextUser != null ? contextUser : defaultOperator;
+    }
+
+    private static String resolveContextUserOrNull() {
         String user = null;
         if (currentUserProvider != null) {
             try {
@@ -547,65 +552,6 @@ public final class BatchUtil {
         if (user == null || user.isBlank()) {
             user = UserContextHolder.get();
         }
-        if (user == null || user.isBlank()) {
-            user = DEFAULT_OPERATOR;
-        }
-        return user;
-    }
-
-    /**
-     * 普通实体 @TableId 反射元数据缓存项
-     */
-    private static class TableIdMetadata {
-        private static final TableIdMetadata NON_ASSIGNABLE = new TableIdMetadata(null, false, false, false);
-
-        private final Field field;
-        private final boolean assignable;
-        private final boolean isLong;
-        private final boolean isString;
-
-        TableIdMetadata(Field field, boolean assignable, boolean isLong, boolean isString) {
-            this.field = field;
-            this.assignable = assignable;
-            this.isLong = isLong;
-            this.isString = isString;
-        }
-
-        boolean isAssignable() {
-            return assignable;
-        }
-
-        Comparable<?> getId(Object target) {
-            if (field == null || target == null) {
-                return null;
-            }
-            try {
-                Object currentVal = field.get(target);
-                if (currentVal instanceof Comparable<?> comp) {
-                    return comp;
-                }
-                return currentVal != null ? currentVal.toString() : null;
-            } catch (IllegalAccessException ignored) {
-                return null;
-            }
-        }
-
-        void assignIdIfNull(Object target) {
-            if (field == null || target == null) {
-                return;
-            }
-            try {
-                Object currentVal = field.get(target);
-                if (currentVal == null) {
-                    if (isLong) {
-                        field.set(target, IdUtil.getSnowflakeNextId());
-                    } else if (isString) {
-                        field.set(target, IdUtil.getSnowflakeNextIdStr());
-                    }
-                }
-            } catch (IllegalAccessException ignored) {
-                // 防御安全管理器与非法访问
-            }
-        }
+        return (user != null && !user.isBlank()) ? user : null;
     }
 }

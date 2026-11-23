@@ -27,6 +27,11 @@ public class IdempotentProperties {
     private String keyPrefix = "idempotent:";
 
     /**
+     * 底层存储（Redis/Redisson）发生网络或驱动故障时是否降级放行（默认 false 阻断请求；true 记录告警并降级至内存存储）
+     */
+    private boolean failOpen = false;
+
+    /**
      * 单机内存存储配置
      */
     @NestedConfigurationProperty
@@ -39,9 +44,9 @@ public class IdempotentProperties {
     public static class InMemory {
 
         /**
-         * 内存最大元素容量软上限（超过后触发主动过期淘汰与溢出剔除，防止 OOM）
+         * 内存最大元素容量软上限（超过后触发主动过期淘汰与溢出剔除，防止 OOM，默认 100,000）
          */
-        private int maxCapacity = 10000;
+        private int maxCapacity = 100_000;
 
         /**
          * 后台定期过期淘汰扫描周期

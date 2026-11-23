@@ -77,6 +77,17 @@ public interface NotificationRateLimiter {
     int resolvePermitsPerMinute(NotificationChannel channel);
 
     /**
+     * 解析指定通道生效的单秒突发防卫配额阈值（条/秒）
+     * 缺省返回 0 表示未启用单秒突发防卫限制
+     *
+     * @param channel 目标通知渠道
+     * @return 单秒允许的最大发信条数（<= 0 表示不限制单秒突发）
+     */
+    default int resolveBurstPermitsPerSecond(NotificationChannel channel) {
+        return 0;
+    }
+
+    /**
      * 获取频控器配置的默认最大微退避排队等待时长
      *
      * @return 默认最大排队等待时长

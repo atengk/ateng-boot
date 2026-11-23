@@ -79,6 +79,11 @@ public class PageNumberOptions {
     private String customFontPath;
 
     /**
+     * 打开加密 PDF 文档的密码（可选）
+     */
+    private String password;
+
+    /**
      * 快速构建跳过指定封面页数的默认页码选项
      *
      * @param skipPages 跳过的封面与目录页数

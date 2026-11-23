@@ -1,0 +1,9 @@
+# 本地/真实网络服务联调配置文件模板 (请复制为 application-local.yml 并按需配置，该文件已被 .gitignore 忽略)
+ateng:
+  boot:
+    job:
+      xxl:
+        admin-addresses: "http://YOUR_XXL_JOB_ADMIN_HOST:8080/xxl-job-admin"
+        appname: "YOUR_EXECUTOR_APPNAME"
+        access-token: "YOUR_ACCESS_TOKEN"
+        port: 9999

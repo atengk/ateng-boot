@@ -4,6 +4,8 @@ server:
 spring:
   application:
     name: ateng-boot-sample-http
+  config:
+    import: "optional:classpath:application-local.yml"
 
 ateng:
   boot:
@@ -22,14 +24,55 @@ ateng:
         enabled: true
       logging:
         enabled: true
+      retry:
+        enabled: false
+        max-attempts: 3
+        delay: 50ms
+        multiplier: 2.0
+        max-delay: 2s
+        jitter: true
+        retry-status-codes: [429, 502, 503, 504]
+        retry-methods: [GET, HEAD]
       clients:
+        flaky-service:
+          base-url: ${sample.flaky-service.url:http://localhost:8080}/mock/provider/flaky
+          retry:
+            enabled: true
+            max-attempts: 3
+            delay: 50ms
+            multiplier: 2.0
+            max-delay: 2s
+            jitter: true
+            retry-status-codes: [429, 502, 503, 504]
+            retry-methods: [GET, HEAD]
         user-service:
-          base-url: ${sample.user-service.url:http://localhost:8080}
+          base-url: ${sample.user-service.url:http://localhost:8080/mock/provider}
           connect-timeout: 2s
           read-timeout: 5s
           propagate-context: true
         wechat-pay:
-          base-url: ${sample.wechat-pay.url:https://api.mch.weixin.qq.com}
+          base-url: ${sample.wechat-pay.url:http://localhost:8080/mock/provider/wechat}
           connect-timeout: 2s
           read-timeout: 5s
           propagate-context: false
+        order-service:
+          base-url: ${sample.order-service.url:http://localhost:8080/mock/provider}
+          connect-timeout: 2s
+          read-timeout: 5s
+          propagate-context: true
+        scoped-proxy-client:
+          base-url: http://proxy-target.internal:8080
+          connect-timeout: 2s
+          read-timeout: 5s
+          proxy:
+            enabled: true
+            host: 127.0.0.1
+            port: 8888
+        mtls-service:
+          base-url: https://mtls.internal:8443
+          connect-timeout: 2s
+          read-timeout: 5s
+          ssl:
+            key-store: ${sample.mtls-service.key-store:classpath:certs/sample-client-cert.p12}
+            key-store-password: ${sample.mtls-service.key-store-password:cert_password}
+            key-store-type: PKCS12

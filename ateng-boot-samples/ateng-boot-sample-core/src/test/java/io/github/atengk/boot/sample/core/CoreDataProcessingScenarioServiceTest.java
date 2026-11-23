@@ -7,9 +7,11 @@ import io.github.atengk.boot.core.model.Triple;
 import io.github.atengk.boot.core.util.ValidatorUtil;
 import io.github.atengk.boot.core.validation.ValidList;
 import io.github.atengk.boot.core.validation.ValidationGroups;
+import io.github.atengk.boot.sample.core.dto.JsonAndBeanRequest;
 import io.github.atengk.boot.sample.core.model.SampleMenuNodeDTO;
 import io.github.atengk.boot.sample.core.model.SampleUserDTO;
 import io.github.atengk.boot.sample.core.service.CoreDataProcessingScenarioService;
+import io.github.atengk.boot.sample.core.vo.JsonAndBeanVO;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -49,7 +51,7 @@ class CoreDataProcessingScenarioServiceTest {
                 .build();
 
         Pair<String, SampleUserDTO> pair = dataProcessingService.processJson(user);
-        assertThat(pair.left()).contains("\"id\":1");
+        assertThat(pair.left()).contains("\"id\":\"1\"");
         assertThat(pair.right().getId()).isEqualTo(1L);
     }
 
@@ -300,17 +302,29 @@ class CoreDataProcessingScenarioServiceTest {
     }
 
     @Test
-    @DisplayName("测试ConcurrentLruCache纯原生有界LRU缓存淘汰与原子计算")
+    @DisplayName("测试ConcurrentLruCache纯原生有界LRU缓存淘汰与原子计算（租户配额业务语义演进）")
     void testDemonstrateConcurrentLruCache() {
         Map<String, Object> results = dataProcessingService.demonstrateConcurrentLruCache();
 
         assertThat(results.get("initialSize")).isEqualTo(2);
-        assertThat(results.get("k1Value")).isEqualTo("v1");
+        assertThat(results.get("tenant1Quota")).isEqualTo(200);
         assertThat(results.get("afterEvictSize")).isEqualTo(2);
-        assertThat(results.get("hasK1")).isEqualTo(true);
-        assertThat(results.get("hasK2")).isEqualTo(false); // 淘汰
-        assertThat(results.get("hasK3")).isEqualTo(true);
-        assertThat(results.get("computedValue")).isEqualTo("computed_k4");
+        assertThat(results.get("hasTenant1")).isEqualTo(true);
+        assertThat(results.get("hasTenant2")).isEqualTo(false); // 淘汰
+        assertThat(results.get("hasTenant3")).isEqualTo(true);
+        assertThat(results.get("computedQuota")).isEqualTo(800);
+    }
+
+    @Test
+    @DisplayName("测试BatchSliceUtil基于subList原生视图零内存拷贝分批与流式遍历消费")
+    void testProcessBatchSliceOrders() {
+        List<String> orderCodes = List.of("ORD-001", "ORD-002", "ORD-003", "ORD-004", "ORD-005", "ORD-006", "ORD-007");
+        List<List<String>> batches = dataProcessingService.processBatchSliceOrders(orderCodes, 3);
+
+        assertThat(batches).hasSize(3);
+        assertThat(batches.get(0)).containsExactly("ORD-001", "ORD-002", "ORD-003");
+        assertThat(batches.get(1)).containsExactly("ORD-004", "ORD-005", "ORD-006");
+        assertThat(batches.get(2)).containsExactly("ORD-007");
     }
 
     @Test
@@ -347,5 +361,47 @@ class CoreDataProcessingScenarioServiceTest {
         // 验证内存状态变更绝对隔离
         cloned.setName("李四");
         assertThat(original.getName()).isEqualTo("张三");
+    }
+
+    @Test
+    @DisplayName("测试JsonUtil二进制载荷(byte[])泛型/集合/字典反序列化与Bean增量合并场景")
+    void testProcessJsonAndBeanScenario() {
+        SampleUserDTO u1 = SampleUserDTO.builder()
+                .id(101L)
+                .name("张三丰")
+                .phone("13800138001")
+                .status(1)
+                .build();
+        SampleUserDTO u2 = SampleUserDTO.builder()
+                .id(102L)
+                .name("张无忌")
+                .phone("13800138002")
+                .status(0)
+                .build();
+        SampleUserDTO patch = SampleUserDTO.builder()
+                .name("张真人")
+                .build();
+
+        JsonAndBeanRequest request = JsonAndBeanRequest.builder()
+                .users(List.of(u1, u2))
+                .metadata(Map.of("source", "mq-consumer", "codec", "utf8-bytes"))
+                .patchUser(patch)
+                .build();
+
+        JsonAndBeanVO vo = dataProcessingService.processJsonAndBeanScenario(request);
+
+        assertThat(vo.getUserBytesLength()).isPositive();
+        assertThat(vo.getParsedUsers()).hasSize(2);
+        assertThat(vo.getParsedUsers().get(0).getId()).isEqualTo(101L);
+        assertThat(vo.getParsedUsers().get(0).getName()).isEqualTo("张*丰");
+        assertThat(vo.getParsedUsers().get(1).getName()).isEqualTo("张*忌");
+        assertThat(vo.getGenericEnvelopeUserCount()).isEqualTo(2);
+        assertThat(vo.getParsedTypedMap()).containsEntry("source", "mq-consumer").containsEntry("codec", "utf8-bytes");
+        assertThat(vo.getParsedGenericMap()).containsEntry("source", "mq-consumer").containsEntry("codec", "utf8-bytes");
+        assertThat(vo.getDeepClonedFirstUser().getName()).isEqualTo("张真人");
+        // 深拷贝遵循 ADR-0012 保留内存真明文，并与输入原对象引用隔离
+        assertThat(vo.getDeepClonedFirstUser().getPhone()).isEqualTo("13800138001");
+        assertThat(vo.getDeepClonedFirstUser()).isNotSameAs(u1);
+        assertThat(u1.getName()).isEqualTo("张三丰");
     }
 }

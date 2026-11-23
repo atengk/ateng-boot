@@ -1,6 +1,7 @@
 package io.github.atengk.boot.encrypt.env;
 
 import io.github.atengk.boot.encrypt.decryptor.AesGcmConfigDecryptor;
+import io.github.atengk.boot.encrypt.decryptor.Sm4ConfigDecryptor;
 import io.github.atengk.boot.encrypt.detector.KeyDetector;
 import io.github.atengk.boot.encrypt.wrapper.EncryptPropertySourceWrapper;
 import org.junit.jupiter.api.AfterEach;
@@ -82,5 +83,51 @@ class EncryptConfigDataEnvironmentUpdateListenerTest {
         // 重复包装应返回自身
         PropertySource<?> wrappedAgain = listener.wrapPropertySource(wrapped);
         assertThat(wrappedAgain).isSameAs(wrapped);
+    }
+
+    @Test
+    @DisplayName("测试全局开关 ateng.boot.encrypt.enabled=false 时监听器构造与回调均短路不包装")
+    void testDisabledSkipsWrappingAndKeyDetection() {
+        System.clearProperty(KeyDetector.PROPERTY_PASSWORD);
+        StandardEnvironment environment = new StandardEnvironment();
+        Map<String, Object> map = new HashMap<>();
+        map.put("ateng.boot.encrypt.enabled", "false");
+        map.put(KeyDetector.PROPERTY_PASSWORD, "hardcoded-when-disabled");
+        map.put("spring.datasource.password", "ENC(abc)");
+        MapPropertySource localSource = new MapPropertySource("application.yml", map);
+        environment.getPropertySources().addLast(localSource);
+
+        EncryptConfigDataEnvironmentUpdateListener listener = new EncryptConfigDataEnvironmentUpdateListener(environment);
+        listener.onPropertySourceAdded(localSource, null, null);
+
+        assertThat(environment.getPropertySources().get("application.yml"))
+                .isNotInstanceOf(EncryptPropertySourceWrapper.class);
+        assertThat(listener.wrapPropertySource(localSource))
+                .isNotInstanceOf(EncryptPropertySourceWrapper.class);
+    }
+
+    @Test
+    @DisplayName("测试监听器真实读取 fail-on-error=false、algorithm 与 compatible-cipher-prefix")
+    void testListenerHonorsFailOnErrorFalseAlgorithmAndParserConfig() {
+        StandardEnvironment environment = new StandardEnvironment();
+        String sm4Plain = "listener-sm4-secret";
+        String sm4Cipher = Sm4ConfigDecryptor.encryptCbc(sm4Plain, PASSWORD);
+
+        Map<String, Object> map = new HashMap<>();
+        map.put("ateng.boot.encrypt.algorithm", "SM4-CBC");
+        map.put("ateng.boot.encrypt.fail-on-error", "false");
+        map.put("ateng.boot.encrypt.compatible-cipher-prefix", "true");
+        map.put("service.sm4.secret", "ENC(" + sm4Cipher + ")");
+        map.put("service.legacy.secret", "{cipher}" + sm4Cipher);
+        map.put("service.broken.secret", "ENC(BrokenToken)");
+        MapPropertySource source = new MapPropertySource("applicationConfig: [classpath:/application.yml]", map);
+        environment.getPropertySources().addLast(source);
+
+        EncryptConfigDataEnvironmentUpdateListener listener = new EncryptConfigDataEnvironmentUpdateListener(environment);
+        listener.onPropertySourceAdded(source, null, null);
+
+        assertThat(environment.getProperty("service.sm4.secret")).isEqualTo(sm4Plain);
+        assertThat(environment.getProperty("service.legacy.secret")).isEqualTo(sm4Plain);
+        assertThat(environment.getProperty("service.broken.secret")).isEqualTo("ENC(BrokenToken)");
     }
 }

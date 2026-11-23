@@ -1,5 +1,8 @@
 package io.github.atengk.boot.storage.driver;
 
+import io.github.atengk.boot.storage.exception.StorageException;
+import io.github.atengk.boot.storage.exception.StorageResultCode;
+import io.github.atengk.boot.storage.model.PresignedDownloadRequest;
 import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
@@ -53,6 +56,84 @@ public interface StorageDriver extends AutoCloseable {
     }
 
     /**
+     * 上传存储对象（携带用户自定义元数据与公共读访问权限控制）
+     *
+     * @param path         存储对象相对路径
+     * @param in           对象输入流
+     * @param contentType  MIME 内容类型（若为 null 或空白由实现负责推导）
+     * @param size         对象字节长度（流未知长度时传 -1）
+     * @param userMetadata 用户自定义元数据键值对
+     * @param publicRead   是否赋予公共读取权限（S3 协议下注入 ObjectCannedACL.PUBLIC_READ）
+     * @return 存储对象元数据
+     */
+    default StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata, boolean publicRead) {
+        return upload(path, in, contentType, size, userMetadata);
+    }
+
+    /**
+     * 当目标路径对象不存在时执行非覆盖上传（存在则抛出冲突异常）
+     *
+     * @param path         对象路径
+     * @param in           输入流
+     * @param contentType  MIME 类型
+     * @param size         字节大小（未知可传 {@code -1}）
+     * @param userMetadata 用户自定义元数据
+     * @param publicRead   是否公共读
+     * @return 上传后的对象元数据
+     */
+    default StorageObject uploadIfAbsent(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata, boolean publicRead) {
+        if (exists(path)) {
+            throw new StorageException(StorageResultCode.STORAGE_OBJECT_ALREADY_EXISTS, "目标存储对象已存在，禁止覆盖写入: " + path);
+        }
+        return upload(path, in, contentType, size, userMetadata, publicRead);
+    }
+
+    /**
+     * 上传公开可读存储对象（赋予公共读 Canned ACL 或对外直接访问权限）
+     *
+     * @param path 存储对象相对路径
+     * @param in   对象输入流
+     * @return 存储对象元数据
+     */
+    default StorageObject uploadPublic(String path, InputStream in) {
+        return uploadPublic(path, in, null, -1);
+    }
+
+    /**
+     * 携带明确 MIME 内容类型上传公开可读存储对象
+     *
+     * @param path        存储对象相对路径
+     * @param in          对象输入流
+     * @param contentType MIME 内容类型
+     * @return 存储对象元数据
+     */
+    default StorageObject uploadPublic(String path, InputStream in, String contentType) {
+        return uploadPublic(path, in, contentType, -1);
+    }
+
+    /**
+     * 携带明确 MIME 内容类型与长度上传公开可读存储对象
+     *
+     * @param path        存储对象相对路径
+     * @param in          对象输入流
+     * @param contentType MIME 内容类型
+     * @param size        数据流字节大小（未知时传 -1）
+     * @return 存储对象元数据
+     */
+    default StorageObject uploadPublic(String path, InputStream in, String contentType, long size) {
+        return upload(path, in, contentType, size, null, true);
+    }
+
+    /**
+     * 获取公开存储桶或具有公开读取权限对象的永久直接访问链接 (Public URL)
+     * 优先使用 domain 自定义域名/CDN 域名；若未配置 domain，S3 根据寻址模式动态拼接 endpoint 与 bucket；本地驱动返回相对或带 domain 路径
+     *
+     * @param path 存储对象相对路径
+     * @return 永久直接访问 URL 字符串
+     */
+    String getUrl(String path);
+
+    /**
      * 探查底层物理存储介质的健康状态与连通性
      *
      * @throws Exception 当底层存储不可用（如本地目录不存在/不可写、S3 存储桶无法访问等）时抛出异常
@@ -70,12 +151,53 @@ public interface StorageDriver extends AutoCloseable {
     InputStream download(String path);
 
     /**
+     * 分段下载存储对象指定字节范围内容输入流 (Byte-Range Read)
+     *
+     * @param path        存储对象相对路径
+     * @param startOffset 起始字节偏移量（0-based，必须 >= 0）
+     * @param length      需读取的字节长度（必须 > 0）
+     * @return 字节切片输入流（调用方负责关闭）
+     */
+    default InputStream download(String path, long startOffset, long length) {
+        throw new UnsupportedOperationException("Current storage driver does not support byte-range download");
+    }
+
+    /**
      * 获取存储对象元数据信息
      *
      * @param path 存储对象相对路径
      * @return 强类型元数据对象
      */
     StorageObject getMetadata(String path);
+
+    /**
+     * 获取指定存储对象的标签键值对映射 (Object Tagging)
+     *
+     * @param path 存储对象相对路径
+     * @return 标签只读映射字典（无标签时返回空 Map，不返回 null）
+     */
+    default Map<String, String> getObjectTags(String path) {
+        throw new UnsupportedOperationException("Current storage driver does not support object tagging");
+    }
+
+    /**
+     * 设置指定存储对象的标签集合（覆盖式全量设置）
+     *
+     * @param path 存储对象相对路径
+     * @param tags 标签键值对映射
+     */
+    default void setObjectTags(String path, Map<String, String> tags) {
+        throw new UnsupportedOperationException("Current storage driver does not support object tagging");
+    }
+
+    /**
+     * 删除指定存储对象的所有标签（天然幂等）
+     *
+     * @param path 存储对象相对路径
+     */
+    default void deleteObjectTags(String path) {
+        throw new UnsupportedOperationException("Current storage driver does not support object tagging");
+    }
 
     /**
      * 判断存储对象是否存在
@@ -157,6 +279,37 @@ public interface StorageDriver extends AutoCloseable {
      * @return 预签名外链模型
      */
     default PresignedUrl getPresignedUrl(String path, Duration duration) {
+        return getPresignedUrl(PresignedDownloadRequest.builder()
+                .path(path)
+                .duration(duration)
+                .build());
+    }
+
+    /**
+     * 获取预签名只读下载外链凭证（指定自定义友好下载文件名）
+     * 自动按照 RFC 5987 / RFC 6266 编码 Content-Disposition 响应头
+     *
+     * @param path             存储对象相对路径
+     * @param duration         链接有效持续时长
+     * @param downloadFilename 自定义下载文件名（如 "年度财务报表.xlsx"）
+     * @return 预签名外链模型
+     */
+    default PresignedUrl getPresignedUrl(String path, Duration duration, String downloadFilename) {
+        return getPresignedUrl(PresignedDownloadRequest.builder()
+                .path(path)
+                .duration(duration)
+                .downloadFilename(downloadFilename)
+                .build());
+    }
+
+    /**
+     * 基于强类型配置构建预签名只读下载外链凭证
+     * 支持定制有效时长、友好下载文件名、响应 Content-Type 与 Content-Disposition
+     *
+     * @param request 下载配置请求
+     * @return 预签名外链模型
+     */
+    default PresignedUrl getPresignedUrl(PresignedDownloadRequest request) {
         throw new UnsupportedOperationException("Current storage driver does not support presigned download URL");
     }
 

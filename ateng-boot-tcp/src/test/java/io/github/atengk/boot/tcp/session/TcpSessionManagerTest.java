@@ -167,14 +167,71 @@ class TcpSessionManagerTest {
         manager.addToGroup("GATEWAY", "S1");
         manager.addToGroup("GATEWAY", "S2");
 
-        assertThat(manager.getGroupSessions("GATEWAY")).containsExactlyInAnyOrder(s1, s2);
-        assertThat(manager.getGroupSessions("NON_EXISTENT")).isEmpty();
+        assertThat(manager.getSessionsByGroup("GATEWAY")).containsExactlyInAnyOrder(s1, s2);
+        assertThat(manager.getSessionsByGroup("NON_EXISTENT")).isEmpty();
 
         manager.removeFromGroup("GATEWAY", "S1");
-        assertThat(manager.getGroupSessions("GATEWAY")).containsExactly(s2);
+        assertThat(manager.getSessionsByGroup("GATEWAY")).containsExactly(s2);
 
         // 会话断开注销时自动清理分组
         manager.unregister("S2", CloseReason.NORMAL);
-        assertThat(manager.getGroupSessions("GATEWAY")).isEmpty();
+        assertThat(manager.getSessionsByGroup("GATEWAY")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("验证会话 serverName 归属、按服务端隔离关闭与逆向分组及空分组清理")
+    void testServerIsolationAndGroupReverseLookup() {
+        TcpSessionManager manager = new TcpSessionManager();
+        EmbeddedChannel chDefault = new EmbeddedChannel();
+        EmbeddedChannel chJt808 = new EmbeddedChannel();
+        EmbeddedChannel chModbus = new EmbeddedChannel();
+
+        TcpSession sDefault = new TcpSession("S-DEF", chDefault);
+        TcpSession sJt808 = new TcpSession("S-JT", "jt808", chJt808);
+        TcpSession sModbus = new TcpSession("S-MOD", "modbus", chModbus);
+
+        assertThat(sDefault.getServerName()).isEqualTo("default");
+        assertThat(sJt808.getServerName()).isEqualTo("jt808");
+        assertThat(sModbus.getServerName()).isEqualTo("modbus");
+
+        manager.register(sDefault);
+        manager.register(sJt808);
+        manager.register(sModbus);
+
+        assertThat(manager.getSessionsByServer("jt808")).containsExactly(sJt808);
+        assertThat(manager.getSessionsByServer("modbus")).containsExactly(sModbus);
+        assertThat(manager.getSessionsByServer("unknown")).isEmpty();
+        assertThat(manager.getSessionsByServer(null)).isEmpty();
+
+        // 分组双向检索与空分组原子回收
+        manager.addToGroup("FLEET-A", "S-JT");
+        manager.addToGroup("FLEET-B", "S-JT");
+        manager.addToGroup("FLEET-B", "S-MOD");
+
+        assertThat(manager.getGroupsBySession("S-JT")).containsExactlyInAnyOrder("FLEET-A", "FLEET-B");
+        assertThat(manager.getGroupsBySession("S-MOD")).containsExactly("FLEET-B");
+        assertThat(manager.getGroupsBySession("NON_EXISTENT")).isEmpty();
+        assertThat(manager.getGroupsBySession(null)).isEmpty();
+        assertThat(manager.getAllGroups()).containsExactlyInAnyOrder("FLEET-A", "FLEET-B");
+
+        manager.removeFromGroup("FLEET-A", "S-JT");
+        assertThat(manager.getGroupsBySession("S-JT")).containsExactly("FLEET-B");
+        assertThat(manager.getAllGroups()).containsExactly("FLEET-B");
+
+        // 单独关闭 jt808 服务端会话，绝不误杀 modbus 与 default 会话
+        manager.closeSessionsByServer("jt808", CloseReason.SERVER_SHUTDOWN);
+        assertThat(sJt808.isActive()).isFalse();
+        assertThat(sJt808.getCloseReason()).isEqualTo(CloseReason.SERVER_SHUTDOWN);
+        assertThat(manager.getSession("S-JT")).isNull();
+        assertThat(manager.getSessionsByServer("jt808")).isEmpty();
+
+        assertThat(sDefault.isActive()).isTrue();
+        assertThat(sModbus.isActive()).isTrue();
+        assertThat(manager.getSession("S-MOD")).isSameAs(sModbus);
+        assertThat(manager.getActiveCount()).isEqualTo(2);
+
+        // 再注销 S-MOD 后，FLEET-B 变空并被原子清理
+        manager.unregister("S-MOD", CloseReason.NORMAL);
+        assertThat(manager.getAllGroups()).isEmpty();
     }
 }

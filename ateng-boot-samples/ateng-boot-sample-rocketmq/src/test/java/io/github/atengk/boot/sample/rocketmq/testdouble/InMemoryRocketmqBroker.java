@@ -1,34 +1,37 @@
 package io.github.atengk.boot.sample.rocketmq.testdouble;
 
+import io.github.atengk.boot.rocketmq.constant.RocketmqConstants;
 import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
+import io.github.atengk.boot.rocketmq.consumer.SimpleConsumerFactory;
+import io.github.atengk.boot.rocketmq.helper.RocketmqMessageHelper;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.apis.ClientConfiguration;
 import org.apache.rocketmq.client.apis.ClientException;
-import org.apache.rocketmq.client.apis.consumer.FilterExpression;
-import org.apache.rocketmq.client.apis.consumer.FilterExpressionType;
-import org.apache.rocketmq.client.apis.consumer.MessageListener;
-import org.apache.rocketmq.client.apis.consumer.PushConsumer;
+import org.apache.rocketmq.client.apis.consumer.*;
 import org.apache.rocketmq.client.apis.message.Message;
 import org.apache.rocketmq.client.apis.message.MessageId;
 import org.apache.rocketmq.client.apis.message.MessageView;
 import org.apache.rocketmq.client.apis.producer.Producer;
+import org.apache.rocketmq.client.apis.producer.RecallReceipt;
 import org.apache.rocketmq.client.apis.producer.SendReceipt;
 import org.apache.rocketmq.client.apis.producer.Transaction;
 import org.mockito.Mockito;
+import org.springframework.context.annotation.Profile;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.*;
 
 /**
  * RocketMQ 5.x 内存自洽测试替身 (In-Memory TestDouble Broker)
@@ -36,19 +39,35 @@ import static org.mockito.Mockito.when;
  * <p>核心职责：
  * 1. 纯内存模拟 RocketMQ 5.x Broker 路由拓扑，100% 离线自洽，毫秒级响应；
  * 2. 模拟 PushConsumerFactory SPI，拦截声明式消费者注册并捕获 MessageListener；
- * 3. 模拟 Producer 投递路由，支持同步发信、异步发信、TAG 过滤、SQL92 属性过滤；
- * 4. 模拟 2PC 分布式事务半消息机制：beginTransaction -> 发送半消息 -> commit (分发) / rollback (丢弃)；
- * 5. 全生命周期状态跟踪与停机排空监控。</p>
+ * 3. 模拟 SimpleConsumerFactory SPI，支持流式微批拉取、隐身租约续期及显式 ACK 确认；
+ * 4. 模拟 Producer 投递路由，支持同步发信、异步发信、单向发信、批量切片、延时定时发信与原生撤回；
+ * 5. 模拟 2PC 分布式事务半消息机制：beginTransaction -> 发送半消息 -> commit (分发) / rollback (丢弃)；
+ * 6. 支持死信队列 (%DLQ%<Group>) 模拟积压、只读探查与受控重放流转；
+ * 7. 标注 {@code @Profile("!local")}，在本地/CI 双模测试自适应中保障离线无感秒级构建。</p>
  *
  * @author Ateng
  * @since 2026-10-22
  */
 @Slf4j
-public class InMemoryRocketmqBroker implements PushConsumerFactory {
+@Profile("!local")
+public class InMemoryRocketmqBroker implements PushConsumerFactory, SimpleConsumerFactory {
 
     private final AtomicLong messageIdSeq = new AtomicLong(1000);
     private final List<SubscriptionEntry> subscriptions = new CopyOnWriteArrayList<>();
     private final List<PushConsumerHolder> activePushConsumers = new CopyOnWriteArrayList<>();
+
+    // 内存消息队列：Topic -> Queue<MessageView> (包含死信队列 %DLQ%<Group>)
+    private final Map<String, Queue<MessageView>> inMemoryQueues = new ConcurrentHashMap<>();
+    private final Set<String> failingPayloadKeywords = ConcurrentHashMap.newKeySet();
+
+    @Getter
+    private final List<String> ackedMessageIds = new CopyOnWriteArrayList<>();
+    @Getter
+    private final List<String> renewedMessageIds = new CopyOnWriteArrayList<>();
+    @Getter
+    private final List<String> recalledHandles = new CopyOnWriteArrayList<>();
+    @Getter
+    private final List<String> simpleSubscribeRecords = new CopyOnWriteArrayList<>();
 
     @Getter
     private final AtomicInteger sentMessageCount = new AtomicInteger(0);
@@ -75,6 +94,10 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory {
             AtomicBoolean closed
     ) {}
 
+    // =========================================================================
+    // 1. PushConsumer 工厂实现
+    // =========================================================================
+
     @Override
     public PushConsumer createPushConsumer(
             ClientConfiguration clientConfiguration,
@@ -93,7 +116,8 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory {
         try {
             doAnswer(inv -> {
                 closed.set(true);
-                log.info("[TEST-DOUBLE] 内存消费者已关闭: topic={}, consumerGroup={}", topic, consumerGroup);
+                subscriptions.remove(entry);
+                log.info("[TEST-DOUBLE] 内存消费者已关闭并注销订阅: topic={}, consumerGroup={}", topic, consumerGroup);
                 return null;
             }).when(mockConsumer).close();
         } catch (IOException ignored) {
@@ -102,7 +126,7 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory {
 
         activePushConsumers.add(new PushConsumerHolder(consumerGroup, topic, mockConsumer, closed));
 
-        log.info("[TEST-DOUBLE] 注册内存消费者: topic={}, group={}, filterType={}, expression={}",
+        log.info("[TEST-DOUBLE] 注册内存 Push 消费者: topic={}, group={}, filterType={}, expression={}",
                 topic,
                 consumerGroup,
                 filterExpression != null ? filterExpression.getFilterExpressionType() : "NULL",
@@ -111,9 +135,146 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory {
         return mockConsumer;
     }
 
-    /**
-     * 创建内存 Producer 代理
-     */
+    // =========================================================================
+    // 2. SimpleConsumer 工厂实现
+    // =========================================================================
+
+    @Override
+    public SimpleConsumer createSimpleConsumer(
+            ClientConfiguration clientConfiguration,
+            String consumerGroup,
+            Map<String, FilterExpression> subscriptionExpressions,
+            Duration awaitDuration) throws ClientException {
+
+        SimpleConsumer mockConsumer = mock(SimpleConsumer.class);
+        Map<String, FilterExpression> activeSubscriptions = new ConcurrentHashMap<>();
+        if (subscriptionExpressions != null) {
+            activeSubscriptions.putAll(subscriptionExpressions);
+        }
+
+        when(mockConsumer.getSubscriptionExpressions()).thenAnswer(
+                invocation -> Collections.unmodifiableMap(new HashMap<>(activeSubscriptions)));
+
+        doAnswer(invocation -> {
+            String targetTopic = invocation.getArgument(0);
+            FilterExpression newFilter = invocation.getArgument(1);
+            if (targetTopic != null && newFilter != null) {
+                activeSubscriptions.put(targetTopic, newFilter);
+                String filterFingerprint = RocketmqMessageHelper.toFilterFingerprint(newFilter);
+                simpleSubscribeRecords.add(consumerGroup + "#" + targetTopic + "#" + filterFingerprint);
+                log.info("[TEST-DOUBLE] 内存 SimpleConsumer 动态刷新订阅: group={}, topic={}, filter={}",
+                        consumerGroup, targetTopic, filterFingerprint);
+            }
+            return mockConsumer;
+        }).when(mockConsumer).subscribe(anyString(), any(FilterExpression.class));
+
+        // 同步批量拉取
+        when(mockConsumer.receive(anyInt(), any(Duration.class))).thenAnswer(invocation -> {
+            int maxNum = invocation.getArgument(0);
+            return pollMessagesForGroup(consumerGroup, activeSubscriptions, maxNum);
+        });
+
+        // 异步批量拉取
+        when(mockConsumer.receiveAsync(anyInt(), any(Duration.class))).thenAnswer(invocation -> {
+            int maxNum = invocation.getArgument(0);
+            List<MessageView> list = pollMessagesForGroup(consumerGroup, activeSubscriptions, maxNum);
+            return CompletableFuture.completedFuture(list);
+        });
+
+        // 消息显式确认 (ack)
+        doAnswer(invocation -> {
+            MessageView mv = invocation.getArgument(0);
+            if (mv != null && mv.getMessageId() != null) {
+                String id = mv.getMessageId().toString();
+                ackedMessageIds.add(id);
+                if (mv.getTopic() != null) {
+                    Queue<MessageView> q = inMemoryQueues.get(mv.getTopic());
+                    if (q != null) {
+                        q.removeIf(m -> m.getMessageId() != null && id.equals(m.getMessageId().toString()));
+                    }
+                }
+                log.info("[TEST-DOUBLE] 内存 SimpleConsumer 确认消息 ACK 并从队列移除: msgId={}", id);
+            }
+            return null;
+        }).when(mockConsumer).ack(any(MessageView.class));
+
+        when(mockConsumer.ackAsync(any(MessageView.class))).thenAnswer(invocation -> {
+            MessageView mv = invocation.getArgument(0);
+            if (mv != null && mv.getMessageId() != null) {
+                String id = mv.getMessageId().toString();
+                ackedMessageIds.add(id);
+                if (mv.getTopic() != null) {
+                    Queue<MessageView> q = inMemoryQueues.get(mv.getTopic());
+                    if (q != null) {
+                        q.removeIf(m -> m.getMessageId() != null && id.equals(m.getMessageId().toString()));
+                    }
+                }
+            }
+            return CompletableFuture.completedFuture(null);
+        });
+
+        // 租约动态续期 (changeInvisibleDuration)
+        doAnswer(invocation -> {
+            MessageView mv = invocation.getArgument(0);
+            Duration duration = invocation.getArgument(1);
+            if (mv != null && mv.getMessageId() != null) {
+                renewedMessageIds.add(mv.getMessageId().toString());
+                log.info("[TEST-DOUBLE] 内存 SimpleConsumer 租约续期: msgId={}, duration={}", mv.getMessageId(), duration);
+            }
+            return null;
+        }).when(mockConsumer).changeInvisibleDuration(any(MessageView.class), any(Duration.class));
+
+        when(mockConsumer.changeInvisibleDurationAsync(any(MessageView.class), any(Duration.class))).thenAnswer(invocation -> {
+            MessageView mv = invocation.getArgument(0);
+            if (mv != null && mv.getMessageId() != null) {
+                renewedMessageIds.add(mv.getMessageId().toString());
+            }
+            return CompletableFuture.completedFuture(null);
+        });
+
+        try {
+            doAnswer(inv -> {
+                log.info("[TEST-DOUBLE] 内存 SimpleConsumer 关闭: group={}", consumerGroup);
+                return null;
+            }).when(mockConsumer).close();
+        } catch (IOException ignored) {
+        }
+
+        log.info("[TEST-DOUBLE] 注册内存 Simple 消费者: group={}, subscriptions={}",
+                consumerGroup, subscriptionExpressions != null ? subscriptionExpressions.keySet() : "EMPTY");
+        return mockConsumer;
+    }
+
+    private List<MessageView> pollMessagesForGroup(
+            String consumerGroup,
+            Map<String, FilterExpression> subscriptionExpressions,
+            int maxNum) {
+        List<MessageView> polled = new ArrayList<>();
+        if (subscriptionExpressions != null && !subscriptionExpressions.isEmpty()) {
+            for (Map.Entry<String, FilterExpression> entry : subscriptionExpressions.entrySet()) {
+                String topic = entry.getKey();
+                FilterExpression filter = entry.getValue();
+                Queue<MessageView> queue = inMemoryQueues.get(topic);
+                if (queue != null) {
+                    Iterator<MessageView> it = queue.iterator();
+                    while (polled.size() < maxNum && it.hasNext()) {
+                        MessageView mv = it.next();
+                        String tag = mv.getTag().orElse("");
+                        Map<String, String> props = mv.getProperties();
+                        if (matchesFilter(filter, tag, props)) {
+                            polled.add(mv);
+                        }
+                    }
+                }
+            }
+        }
+        return polled;
+    }
+
+    // =========================================================================
+    // 3. Producer 模拟实现
+    // =========================================================================
+
     public Producer createProducer() {
         Producer mockProducer = mock(Producer.class);
 
@@ -134,6 +295,29 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory {
                 }
                 return routeAndDispatch(message);
             });
+
+            RecallReceipt mockRecallReceipt = mock(RecallReceipt.class);
+            MessageId mockRecallMsgId = mock(MessageId.class);
+            when(mockRecallMsgId.toString()).thenReturn("MSG-RECALL-999");
+            when(mockRecallReceipt.getMessageId()).thenReturn(mockRecallMsgId);
+
+            // 延时消息原生撤回 (recallMessage)
+            doAnswer(invocation -> {
+                String topic = invocation.getArgument(0);
+                String recallHandle = invocation.getArgument(1);
+                recalledHandles.add(recallHandle);
+                log.info("[TEST-DOUBLE] 原生撤回延时消息成功: topic={}, recallHandle={}", topic, recallHandle);
+                return mockRecallReceipt;
+            }).when(mockProducer).recallMessage(anyString(), anyString());
+
+            when(mockProducer.recallMessageAsync(anyString(), anyString())).thenAnswer(invocation -> {
+                String topic = invocation.getArgument(0);
+                String recallHandle = invocation.getArgument(1);
+                recalledHandles.add(recallHandle);
+                log.info("[TEST-DOUBLE] 异步原生撤回延时消息成功: topic={}, recallHandle={}", topic, recallHandle);
+                return CompletableFuture.completedFuture(mockRecallReceipt);
+            });
+
         } catch (ClientException e) {
             throw new RuntimeException(e);
         }
@@ -188,7 +372,21 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory {
      * 路由并直接分发消息
      */
     public SendReceipt routeAndDispatch(Message message) {
+        if (!failingPayloadKeywords.isEmpty()) {
+            ByteBuffer buf = message.getBody();
+            byte[] bytes = new byte[buf.remaining()];
+            buf.asReadOnlyBuffer().get(bytes);
+            String payloadText = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+            for (String keyword : failingPayloadKeywords) {
+                if (payloadText.contains(keyword)) {
+                    throw new RuntimeException("Simulated broker send failure for keyword: " + keyword);
+                }
+            }
+        }
         sentMessageCount.incrementAndGet();
+        MessageView mv = toMessageView(message);
+        // 保存至内存主题队列，供 SimpleConsumer 消费
+        inMemoryQueues.computeIfAbsent(message.getTopic(), k -> new ConcurrentLinkedQueue<>()).offer(mv);
         dispatchToSubscribers(message);
         return createSendReceipt();
     }
@@ -209,10 +407,72 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory {
                     log.info("[TEST-DOUBLE] 命中消费分发: topic={}, group={}, tag={}",
                             topic, entry.consumerGroup(), tag);
                     dispatchedMessageCount.incrementAndGet();
-                    entry.messageListener().consume(messageView);
+                    ConsumeResult result = entry.messageListener().consume(messageView);
+                    if (result == ConsumeResult.FAILURE) {
+                        log.info("[TEST-DOUBLE] 消费返回 FAILURE，模拟转入死信队列: topic=%DLQ%{}, msgId={}",
+                                entry.consumerGroup(), messageView.getMessageId());
+                        enqueueDlqMessage(entry.consumerGroup(), messageView);
+                    }
                 }
             }
         }
+    }
+
+    /**
+     * 将消息入队指定主题
+     */
+    public void enqueueMessage(String topic, MessageView messageView) {
+        inMemoryQueues.computeIfAbsent(topic, k -> new ConcurrentLinkedQueue<>()).offer(messageView);
+    }
+
+    /**
+     * 将消息入队指定消费组的死信队列 (%DLQ%<ConsumerGroup>)
+     */
+    public void enqueueDlqMessage(String consumerGroup, MessageView messageView) {
+        String trimmedGroup = consumerGroup.trim();
+        String dlqTopic = RocketmqConstants.DLQ_TOPIC_PREFIX + trimmedGroup;
+        MessageView dlqView = wrapAsDlqMessageView(dlqTopic, trimmedGroup, messageView);
+        inMemoryQueues.computeIfAbsent(dlqTopic, k -> new ConcurrentLinkedQueue<>()).offer(dlqView);
+    }
+
+    private MessageView wrapAsDlqMessageView(String dlqTopic, String consumerGroup, MessageView source) {
+        if (source.getTopic() != null && source.getTopic().startsWith(RocketmqConstants.DLQ_TOPIC_PREFIX)) {
+            return source;
+        }
+        MessageView mv = mock(MessageView.class);
+        byte[] bytes = extractBodyBytes(source.getBody());
+        Map<String, String> mergedProps = new LinkedHashMap<>();
+        if (source.getProperties() != null) {
+            mergedProps.putAll(source.getProperties());
+        }
+        if (source.getTopic() != null && !source.getTopic().isBlank()) {
+            mergedProps.putIfAbsent(RocketmqConstants.HEADER_DEAD_LETTER_ORIGINAL_TOPIC, source.getTopic());
+        }
+        mergedProps.putIfAbsent(RocketmqConstants.HEADER_DEAD_LETTER_CONSUMER_GROUP, consumerGroup);
+        if (source.getMessageId() != null) {
+            mergedProps.putIfAbsent(RocketmqConstants.HEADER_DEAD_LETTER_ORIGINAL_MESSAGE_ID, source.getMessageId().toString());
+        }
+
+        when(mv.getMessageId()).thenReturn(source.getMessageId());
+        when(mv.getTopic()).thenReturn(dlqTopic);
+        when(mv.getBody()).thenAnswer(inv -> ByteBuffer.wrap(bytes));
+        when(mv.getProperties()).thenReturn(Collections.unmodifiableMap(mergedProps));
+        when(mv.getTag()).thenReturn(source.getTag());
+        when(mv.getKeys()).thenReturn(source.getKeys());
+        when(mv.getMessageGroup()).thenReturn(source.getMessageGroup());
+        when(mv.getDeliveryTimestamp()).thenReturn(source.getDeliveryTimestamp());
+        when(mv.getDeliveryAttempt()).thenReturn(Math.max(1, source.getDeliveryAttempt()));
+        return mv;
+    }
+
+    private static byte[] extractBodyBytes(ByteBuffer body) {
+        if (body == null) {
+            return new byte[0];
+        }
+        ByteBuffer slice = body.asReadOnlyBuffer();
+        byte[] bytes = new byte[slice.remaining()];
+        slice.get(bytes);
+        return bytes;
     }
 
     /**
@@ -228,7 +488,6 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory {
             if (expr == null || expr.isBlank() || "*".equals(expr.trim())) {
                 return true;
             }
-            // 支持 "tagA || tagB"
             String[] tags = expr.split("\\|\\|");
             for (String t : tags) {
                 if (t.trim().equalsIgnoreCase(tag != null ? tag.trim() : "")) {
@@ -243,7 +502,6 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory {
             if (expr == null || expr.isBlank()) {
                 return true;
             }
-            // 简单模拟 SQL92: amount > 100
             if (expr.contains("amount > 100")) {
                 if (properties != null && properties.containsKey("amount")) {
                     try {
@@ -272,11 +530,16 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory {
         originalBuffer.asReadOnlyBuffer().get(bytes);
 
         when(mv.getBody()).thenAnswer(inv -> ByteBuffer.wrap(bytes));
-        when(mv.getProperties()).thenReturn(message.getProperties() != null ? message.getProperties() : Collections.emptyMap());
+        Map<String, String> props = message.getProperties() != null
+                ? Collections.unmodifiableMap(new LinkedHashMap<>(message.getProperties()))
+                : Collections.emptyMap();
+        when(mv.getProperties()).thenReturn(props);
         when(mv.getTag()).thenReturn(message.getTag());
         when(mv.getKeys()).thenReturn(message.getKeys());
         when(mv.getMessageGroup()).thenReturn(message.getMessageGroup());
         when(mv.getDeliveryTimestamp()).thenReturn(message.getDeliveryTimestamp());
+        when(mv.getTopic()).thenReturn(message.getTopic());
+        when(mv.getDeliveryAttempt()).thenReturn(1);
 
         MessageId mockId = mock(MessageId.class);
         String idStr = "MSG-MOCK-" + messageIdSeq.incrementAndGet();
@@ -286,12 +549,31 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory {
         return mv;
     }
 
+    public static MessageView createMockMessageView(String topic, String msgId, byte[] body, Map<String, String> properties, String tag, String group) {
+        MessageView mv = mock(MessageView.class);
+        MessageId mockId = mock(MessageId.class);
+        when(mockId.toString()).thenReturn(msgId);
+        when(mv.getMessageId()).thenReturn(mockId);
+        when(mv.getTopic()).thenReturn(topic);
+        when(mv.getBody()).thenAnswer(inv -> ByteBuffer.wrap(body));
+        Map<String, String> props = properties != null
+                ? Collections.unmodifiableMap(new LinkedHashMap<>(properties))
+                : Collections.emptyMap();
+        when(mv.getProperties()).thenReturn(props);
+        when(mv.getTag()).thenReturn(Optional.ofNullable(tag));
+        when(mv.getMessageGroup()).thenReturn(Optional.ofNullable(group));
+        when(mv.getKeys()).thenReturn(List.of("KEY-" + msgId));
+        when(mv.getDeliveryAttempt()).thenReturn(1);
+        return mv;
+    }
+
     private SendReceipt createSendReceipt() {
         SendReceipt receipt = mock(SendReceipt.class);
         MessageId mockId = mock(MessageId.class);
         String idStr = "MSG-RECEIPT-" + messageIdSeq.incrementAndGet();
         when(mockId.toString()).thenReturn(idStr);
         when(receipt.getMessageId()).thenReturn(mockId);
+        when(receipt.getRecallHandle()).thenReturn("RECALL-HANDLE-" + idStr);
         return receipt;
     }
 
@@ -299,8 +581,36 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory {
         return Collections.unmodifiableList(activePushConsumers);
     }
 
+    /**
+     * 获取指定主题下内存 Broker 已接收的消息视图快照
+     */
+    public List<MessageView> getSentMessages(String topic) {
+        Queue<MessageView> queue = inMemoryQueues.get(topic);
+        if (queue == null || queue.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return Collections.unmodifiableList(new ArrayList<>(queue));
+    }
+
+    /**
+     * 注入按载荷关键字匹配的发送失败规则（用于测试部分投递失败与补偿回调隔离）
+     *
+     * @param keyword 载荷关键字
+     */
+    public void failSendContaining(String keyword) {
+        if (keyword != null && !keyword.isBlank()) {
+            failingPayloadKeywords.add(keyword);
+        }
+    }
+
     public void clear() {
         sentMessageCount.set(0);
         dispatchedMessageCount.set(0);
+        inMemoryQueues.clear();
+        ackedMessageIds.clear();
+        renewedMessageIds.clear();
+        recalledHandles.clear();
+        simpleSubscribeRecords.clear();
+        failingPayloadKeywords.clear();
     }
 }

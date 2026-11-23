@@ -216,4 +216,35 @@ class HttpLoggingInterceptorTest {
         assertEquals(totalSize, readBackBytes.length, "下游读取到的总字节数必须完全等于原始流大小");
         assertArrayEquals(largeData, readBackBytes, "下游读取到的流数据内容必须与原始流完全一致");
     }
+
+    @Test
+    @DisplayName("URL 查询参数敏感脱敏测试：验证 secret/token/apiKey/password 等敏感 query 参数在 URI 与 cURL 中自动打码")
+    void shouldMaskSensitiveQueryParamsInUriAndCurl() {
+        URI uri = URI.create("https://api.example.com/oauth/token?client_id=myApp&secret=my_super_secret_key&token=abcdef123456&page=1&password=123#frag");
+        MockClientHttpRequest request = new MockClientHttpRequest(HttpMethod.GET, uri);
+
+        // 1. 测试 maskUri 方法
+        String maskedUri = interceptor.maskUri(uri, properties.getLogging().getMaskParams());
+        assertNotNull(maskedUri);
+        assertTrue(maskedUri.contains("client_id=myApp"), "非敏感参数保持明文");
+        assertTrue(maskedUri.contains("page=1"), "非敏感参数保持明文");
+        assertTrue(maskedUri.contains("#frag"), "URI 片段标记应保留");
+        assertFalse(maskedUri.contains("my_super_secret_key"), "敏感 secret 参数明文严禁泄露");
+        assertFalse(maskedUri.contains("abcdef123456"), "敏感 token 参数明文严禁泄露");
+        assertFalse(maskedUri.contains("password=123"), "敏感 password 参数明文严禁泄露");
+        assertTrue(maskedUri.contains("password=******"));
+
+        // 2. 测试 generateCurlCommand 中 URL 自动脱敏
+        String curl = interceptor.generateCurlCommand(request, new byte[0], properties.getLogging());
+        assertTrue(curl.contains("curl -X GET 'https://api.example.com/oauth/token?"));
+        assertFalse(curl.contains("my_super_secret_key"));
+        assertFalse(curl.contains("password=123"));
+
+        // 3. 测试无敏感参数或无 query 时原样返回
+        URI cleanUri = URI.create("https://api.example.com/items?category=books&sort=asc");
+        assertEquals(cleanUri.toString(), interceptor.maskUri(cleanUri, properties.getLogging().getMaskParams()));
+
+        URI noQueryUri = URI.create("https://api.example.com/items");
+        assertEquals(noQueryUri.toString(), interceptor.maskUri(noQueryUri, properties.getLogging().getMaskParams()));
+    }
 }

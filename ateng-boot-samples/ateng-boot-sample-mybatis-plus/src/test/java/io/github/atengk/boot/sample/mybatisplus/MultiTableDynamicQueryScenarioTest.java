@@ -47,10 +47,10 @@ class MultiTableDynamicQueryScenarioTest {
         cleanDb();
 
         // 插入测试部门数据
-        jdbcTemplate.execute("INSERT INTO sys_dept (id, dept_name, status, version, deleted) VALUES " +
-                "(101, '研发一部', 'ACTIVE', 0, 0), " +
-                "(102, '研发二部', 'ACTIVE', 0, 0), " +
-                "(103, '运营中心', 'INACTIVE', 0, 0)");
+        jdbcTemplate.execute("INSERT INTO sys_dept (id, dept_name, status, deleted) VALUES " +
+                "(101, '研发一部', 'ACTIVE', 0), " +
+                "(102, '研发二部', 'ACTIVE', 0), " +
+                "(103, '运营中心', 'INACTIVE', 0)");
 
         // 插入测试用户数据（包含关联 dept_id）
         jdbcTemplate.execute("INSERT INTO sys_user (id, name, age, email, phone, dept_id, version, deleted) VALUES " +

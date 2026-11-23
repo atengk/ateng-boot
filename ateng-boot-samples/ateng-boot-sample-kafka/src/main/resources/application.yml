@@ -4,29 +4,31 @@ server:
 spring:
   application:
     name: ateng-boot-sample-kafka
+  config:
+    import: "optional:classpath:application-local.yml"
   kafka:
     bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
     consumer:
       group-id: sample-kafka-group
       auto-offset-reset: earliest
     listener:
-      auto-startup: false
+      auto-startup: true
 
 ateng:
   boot:
     kafka:
       enabled: true
-      send-timeout: 5s
-      max-payload-size: 1MB
       auto-create-topics: true
       producer:
-        compression-type: snappy
-        batch-size: 32KB
-        linger-ms: 10ms
+        send-timeout: 5s
+        max-payload-size: 1MB
+        default-tuning-enabled: true
       consumer:
         max-retries: 3
         retry-interval: 1s
         retry-multiplier: 2.0
-      logging:
-        enabled: true
-        payload-max-length: 1024

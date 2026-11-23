@@ -8,6 +8,7 @@ import io.github.atengk.boot.mqtt.annotation.MqttVariable;
 import io.github.atengk.boot.mqtt.listener.MqttListenerMethodAdapter;
 import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.properties.MqttClientProperties;
+import io.github.atengk.boot.mqtt.properties.MqttMetricsProperties;
 import io.github.atengk.boot.mqtt.properties.MqttSslProperties;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
@@ -26,17 +27,28 @@ import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.Status;
 
+import javax.crypto.Cipher;
+import javax.crypto.EncryptedPrivateKeyInfo;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.PBEParameterSpec;
 import javax.net.ssl.SSLSocketFactory;
 import java.io.FileOutputStream;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.AlgorithmParameters;
+import java.security.Key;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.KeyStore;
+import java.security.PrivateKey;
+import java.security.SecureRandom;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -370,6 +382,34 @@ class MqttCodecAndObservabilityTest {
     }
 
     @Test
+    @DisplayName("测试 MqttHealthIndicator 超时后不发生跨线程 Health.Builder 并发篡改")
+    void testHealthIndicatorTimeoutSnapshotIsolation() {
+        NamedMqttClientRegistry registry = mock(NamedMqttClientRegistry.class);
+        MqttClientHandle slowHandle = mock(MqttClientHandle.class);
+        when(slowHandle.isConnected()).thenAnswer(inv -> {
+            Thread.sleep(2500);
+            return true;
+        });
+        when(slowHandle.getHealthDetails()).thenReturn(Map.of("connected", true, "status", "CONNECTED"));
+        when(registry.getClientHandles()).thenReturn(Map.of("slow", slowHandle));
+
+        org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor probeExec = new org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor();
+        probeExec.setCorePoolSize(1);
+        probeExec.setMaxPoolSize(1);
+        probeExec.setThreadNamePrefix("mqtt-health-test-");
+        probeExec.initialize();
+        try {
+            MqttHealthIndicator healthIndicator = new MqttHealthIndicator(registry, probeExec);
+            Health health = healthIndicator.health();
+            assertEquals(Status.DOWN, health.getStatus());
+            assertTrue(String.valueOf(health.getDetails().get("error")).contains("timed out"));
+            assertFalse(health.getDetails().containsKey("clients"), "超时后异步线程不应篡改主线程 Health.Builder");
+        } finally {
+            probeExec.shutdown();
+        }
+    }
+
+    @Test
     @DisplayName("测试 MqttClientHandle.getHealthDetails() 真实快照提取")
     void testMqttClientHandleHealthDetails() {
         MqttClientProperties props = new MqttClientProperties();
@@ -401,60 +441,61 @@ class MqttCodecAndObservabilityTest {
         SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
         MqttMetrics metrics = new MqttMetrics(meterRegistry);
 
-        // 1. 测试发信 Counter 与耗时 Timer
-        metrics.recordPublished("primary", "telemetry/data", 1, 2_000_000L); // 2ms
-        metrics.recordPublished("primary", "telemetry/data", 1);
+        // 1. 测试默认低基数发信 Counter 与耗时 Timer（默认屏蔽物理 topic 标签）
+        metrics.recordPublished("primary", "telemetry/dev-1", 1, 2_000_000L); // 2ms
+        metrics.recordPublished("primary", "telemetry/dev-2", 1);
         Counter publishCounter = meterRegistry.find("mqtt.message.published")
                 .tag("client", "primary")
-                .tag("topic", "telemetry/data")
                 .tag("qos", "1")
                 .counter();
         assertNotNull(publishCounter);
+        assertNull(publishCounter.getId().getTag("topic"), "默认配置不应产生高基数 topic 标签");
         assertEquals(2.0, publishCounter.count());
 
         Timer publishTimer = meterRegistry.find("mqtt.publish.latency")
                 .tag("client", "primary")
-                .tag("topic", "telemetry/data")
                 .tag("qos", "1")
                 .timer();
         assertNotNull(publishTimer);
+        assertNull(publishTimer.getId().getTag("topic"), "默认配置不应产生高基数 topic 标签");
         assertEquals(1, publishTimer.count());
 
-        // 2. 测试收信 Counter
-        metrics.recordReceived("primary", "devices/alerts");
+        // 2. 测试默认低基数收信 Counter
+        metrics.recordReceived("primary", "devices/dev-1/alerts");
+        metrics.recordReceived("primary", "devices/dev-2/alerts");
         Counter receiveCounter = meterRegistry.find("mqtt.message.received")
                 .tag("client", "primary")
-                .tag("topic", "devices/alerts")
                 .counter();
         assertNotNull(receiveCounter);
-        assertEquals(1.0, receiveCounter.count());
+        assertNull(receiveCounter.getId().getTag("topic"), "默认配置不应产生高基数 topic 标签");
+        assertEquals(2.0, receiveCounter.count());
 
-        // 3. 测试消费耗时 Timer
-        metrics.recordConsume("bean#onAlert", "devices/alerts", true, 5_000_000L); // 5ms
+        // 3. 测试消费耗时 Timer（保留有限基数声明式主题模板 topicPattern 标签）
+        metrics.recordConsume("bean#onAlert", "devices/{deviceId}/alerts", true, 5_000_000L); // 5ms
         Timer consumeTimer = meterRegistry.find("mqtt.consumer.latency")
                 .tag("endpoint", "bean#onAlert")
-                .tag("topic", "devices/alerts")
+                .tag("topic", "devices/{deviceId}/alerts")
                 .tag("status", "success")
                 .timer();
         assertNotNull(consumeTimer);
         assertEquals(1, consumeTimer.count());
         assertTrue(consumeTimer.totalTime(java.util.concurrent.TimeUnit.MILLISECONDS) >= 4.0);
 
-        // 4. 测试死信 DLT Counter 与 请求-响应 超时 Counter
-        metrics.recordDlt("bean#onAlert", "devices/alerts");
+        // 4. 测试死信 DLT Counter（保留声明式模板标签）与 请求-响应 超时 Counter（默认低基数无 topic 标签）
+        metrics.recordDlt("bean#onAlert", "devices/{deviceId}/alerts");
         Counter dltCounter = meterRegistry.find("mqtt.consumer.dlt")
                 .tag("endpoint", "bean#onAlert")
-                .tag("topic", "devices/alerts")
+                .tag("topic", "devices/{deviceId}/alerts")
                 .counter();
         assertNotNull(dltCounter);
         assertEquals(1.0, dltCounter.count());
 
-        metrics.recordRequestTimeout("primary", "devices/rpc/control");
+        metrics.recordRequestTimeout("primary", "devices/dev-1/rpc");
         Counter timeoutCounter = meterRegistry.find("mqtt.requestreply.timeout")
                 .tag("client", "primary")
-                .tag("topic", "devices/rpc/control")
                 .counter();
         assertNotNull(timeoutCounter);
+        assertNull(timeoutCounter.getId().getTag("topic"), "默认配置不应产生高基数 topic 标签");
         assertEquals(1.0, timeoutCounter.count());
 
         // 5. 测试客户端连接 Gauge 绑定
@@ -473,5 +514,112 @@ class MqttCodecAndObservabilityTest {
         // 模拟断开
         when(handle.isConnected()).thenReturn(false);
         assertEquals(0.0, gauge.value());
+    }
+
+    @Test
+    @DisplayName("测试 MqttSslSocketFactoryBuilder 解密加密 PKCS#8 PEM 私钥及缺密码/错密码快速失败")
+    void testSslEncryptedPkcs8PrivateKeyPem(@TempDir Path tempDir) throws Exception {
+        Path p12Path = tempDir.resolve("client-identity.p12");
+        String keytool = Path.of(System.getProperty("java.home"), "bin", "keytool").toString();
+        Process process = new ProcessBuilder(
+                keytool, "-genkeypair",
+                "-alias", "mqtt-client",
+                "-keyalg", "RSA",
+                "-keysize", "2048",
+                "-storetype", "PKCS12",
+                "-keystore", p12Path.toAbsolutePath().toString(),
+                "-storepass", "changeit",
+                "-keypass", "changeit",
+                "-dname", "CN=localhost",
+                "-validity", "1"
+        ).redirectErrorStream(true).start();
+        String toolOutput = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(0, process.waitFor(), "keytool 生成测试密钥失败: " + toolOutput);
+
+        KeyStore ks = KeyStore.getInstance("PKCS12");
+        try (var fis = Files.newInputStream(p12Path)) {
+            ks.load(fis, "changeit".toCharArray());
+        }
+        X509Certificate cert = (X509Certificate) ks.getCertificate("mqtt-client");
+        PrivateKey privateKey = (PrivateKey) ks.getKey("mqtt-client", "changeit".toCharArray());
+
+        String certPem = "-----BEGIN CERTIFICATE-----\n"
+                + Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.UTF_8)).encodeToString(cert.getEncoded())
+                + "\n-----END CERTIFICATE-----\n";
+        Path certPath = tempDir.resolve("client.crt");
+        Files.writeString(certPath, certPem, StandardCharsets.UTF_8);
+
+        // 生成标准 PKCS#8 加密 PEM (PBEWithSHA1AndDESede, 100% 兼容 JDK 17 AlgorithmId DER 编码与解码)
+        byte[] salt = new byte[8];
+        new SecureRandom().nextBytes(salt);
+        PBEParameterSpec pbeParamSpec = new PBEParameterSpec(salt, 4096);
+        String encAlg = "PBEWithSHA1AndDESede";
+        SecretKeyFactory skf = SecretKeyFactory.getInstance(encAlg);
+        Key pbeKey = skf.generateSecret(new PBEKeySpec("pem-pass-123".toCharArray()));
+        Cipher cipher = Cipher.getInstance(encAlg);
+        cipher.init(Cipher.ENCRYPT_MODE, pbeKey, pbeParamSpec);
+        byte[] encryptedBytes = cipher.doFinal(privateKey.getEncoded());
+        EncryptedPrivateKeyInfo epki = new EncryptedPrivateKeyInfo(cipher.getParameters(), encryptedBytes);
+
+        String encryptedKeyPem = "-----BEGIN ENCRYPTED PRIVATE KEY-----\n"
+                + Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.UTF_8)).encodeToString(epki.getEncoded())
+                + "\n-----END ENCRYPTED PRIVATE KEY-----\n";
+        Path encryptedKeyPath = tempDir.resolve("client-encrypted.key");
+        Files.writeString(encryptedKeyPath, encryptedKeyPem, StandardCharsets.UTF_8);
+
+        // 1. 正确密码正常解密并构建双向认证 SSLSocketFactory
+        MqttSslProperties validProps = new MqttSslProperties();
+        validProps.setEnabled(true);
+        validProps.setClientCert(certPath.toAbsolutePath().toString());
+        validProps.setClientKey(encryptedKeyPath.toAbsolutePath().toString());
+        validProps.setClientKeyPassword("pem-pass-123");
+        assertNotNull(MqttSslSocketFactoryBuilder.build(validProps));
+
+        // 2. 加密私钥未配置密码时快速失败，且保留因果链
+        MqttSslProperties missingPwdProps = new MqttSslProperties();
+        missingPwdProps.setEnabled(true);
+        missingPwdProps.setClientCert(certPath.toAbsolutePath().toString());
+        missingPwdProps.setClientKey(encryptedKeyPath.toAbsolutePath().toString());
+        Exception missingEx = assertThrows(io.github.atengk.boot.core.exception.BusinessException.class,
+                () -> MqttSslSocketFactoryBuilder.build(missingPwdProps));
+        assertInstanceOf(IllegalArgumentException.class, missingEx.getCause());
+
+        // 3. 错误密码解密失败快速抛出清晰异常，且保留因果链
+        MqttSslProperties wrongPwdProps = new MqttSslProperties();
+        wrongPwdProps.setEnabled(true);
+        wrongPwdProps.setClientCert(certPath.toAbsolutePath().toString());
+        wrongPwdProps.setClientKey(encryptedKeyPath.toAbsolutePath().toString());
+        wrongPwdProps.setClientKeyPassword("wrong-pass");
+        Exception wrongEx = assertThrows(io.github.atengk.boot.core.exception.BusinessException.class,
+                () -> MqttSslSocketFactoryBuilder.build(wrongPwdProps));
+        assertInstanceOf(IllegalArgumentException.class, wrongEx.getCause());
+    }
+
+    @Test
+    @DisplayName("测试 MqttMetrics 开启 includeTopicTag 后的有界基数防线：超出 maxTopicCardinality 归并至 __overflow__")
+    void testMqttMetricsTopicTagCardinalityGuard() {
+        SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+        MqttMetricsProperties metricsProps = new MqttMetricsProperties();
+        metricsProps.setIncludeTopicTag(true);
+        metricsProps.setMaxTopicCardinality(2);
+
+        MqttMetrics metrics = new MqttMetrics(meterRegistry, metricsProps);
+
+        metrics.recordPublished("primary", "dev/1/data", 1);
+        metrics.recordPublished("primary", "dev/2/data", 1);
+        metrics.recordPublished("primary", "dev/3/data", 1);
+        metrics.recordPublished("primary", "dev/4/data", 1);
+        metrics.recordPublished("primary", "dev/1/data", 1); // 已登记主题允许继续命中原标签
+
+        metrics.recordReceived("primary", "dev/5/data");
+        metrics.recordRequestTimeout("primary", "dev/6/rpc");
+
+        assertEquals(2.0, meterRegistry.find("mqtt.message.published").tag("topic", "dev/1/data").counter().count());
+        assertEquals(1.0, meterRegistry.find("mqtt.message.published").tag("topic", "dev/2/data").counter().count());
+        assertNull(meterRegistry.find("mqtt.message.published").tag("topic", "dev/3/data").counter());
+        assertNull(meterRegistry.find("mqtt.message.published").tag("topic", "dev/4/data").counter());
+        assertEquals(2.0, meterRegistry.find("mqtt.message.published").tag("topic", "__overflow__").counter().count());
+        assertEquals(1.0, meterRegistry.find("mqtt.message.received").tag("topic", "__overflow__").counter().count());
+        assertEquals(1.0, meterRegistry.find("mqtt.requestreply.timeout").tag("topic", "__overflow__").counter().count());
     }
 }

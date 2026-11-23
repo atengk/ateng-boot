@@ -9,6 +9,8 @@ import io.github.atengk.boot.statemachine.model.TransitionResult;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -233,6 +235,145 @@ class StateMachineCasTemplateTest {
         assertThat(quietResult.isAccepted()).isFalse();
         assertThat(quietResult.getCause()).isInstanceOf(RuntimeException.class);
         assertThat(quietResult.getFailureReason()).contains("执行 CAS 更新时发生异常");
+    }
+
+    @Test
+    @DisplayName("测试 CAS 乐观锁成功时动作链按序执行，并发冲突时严格阻断且零动作副作用")
+    void testCasActionExecutionAndConflictZeroSideEffects() {
+        AtomicInteger actionCounter = new AtomicInteger(0);
+        List<String> executionLog = new ArrayList<>();
+
+        StateMachineBuilder<OrderState, OrderEvent, Boolean> builder = StateMachineBuilderFactory.create();
+        builder.externalTransition()
+                .from(OrderState.WAIT_PAY)
+                .to(OrderState.PAID)
+                .on(OrderEvent.PAY)
+                .when(allow -> allow != null && allow)
+                .perform((from, to, event, ctx) -> {
+                    actionCounter.incrementAndGet();
+                    executionLog.add("ACTION_1");
+                })
+                .perform((from, to, event, ctx) -> {
+                    actionCounter.incrementAndGet();
+                    executionLog.add("ACTION_2");
+                });
+
+        StateMachine<OrderState, OrderEvent, Boolean> machine = builder.build("CAS_ACTION_TEST_MACHINE");
+
+        // 1. 测试并发冲突场景（CAS 返回 0）：严格断言零动作执行（Zero Side-effects）
+        OrderDO conflictOrder = new OrderDO(201L, OrderState.WAIT_PAY);
+        assertThatThrownBy(() -> machine.fireEventWithCas(
+                conflictOrder,
+                OrderDO::getState,
+                OrderDO::setState,
+                OrderEvent.PAY,
+                true,
+                (entity, from, to) -> 0 // 模拟并发 CAS 失败
+        ))
+                .isInstanceOf(StateMachineException.class)
+                .satisfies(ex -> {
+                    StateMachineException smEx = (StateMachineException) ex;
+                    assertThat(smEx.getCode()).isEqualTo(StateMachineResultCode.CONCURRENT_CAS_CONFLICT.getCode());
+                    assertThat(smEx.getSourceState()).isEqualTo(OrderState.WAIT_PAY);
+                    assertThat(smEx.getTargetState()).isEqualTo(OrderState.PAID);
+                });
+
+        assertThat(conflictOrder.getState()).isEqualTo(OrderState.WAIT_PAY);
+        assertThat(actionCounter.get()).isEqualTo(0);
+        assertThat(executionLog).isEmpty();
+
+        // 2. 测试静默模式并发冲突：同样严格断言零动作执行
+        TransitionResult<OrderState> quietConflictResult = machine.fireEventWithCasQuietly(
+                conflictOrder,
+                OrderDO::getState,
+                OrderDO::setState,
+                OrderEvent.PAY,
+                true,
+                (entity, from, to) -> 0
+        );
+        assertThat(quietConflictResult.isAccepted()).isFalse();
+        assertThat(quietConflictResult.getFailureReason()).contains("并发 CAS 乐观锁更新冲突");
+        assertThat(conflictOrder.getState()).isEqualTo(OrderState.WAIT_PAY);
+        assertThat(actionCounter.get()).isEqualTo(0);
+        assertThat(executionLog).isEmpty();
+
+        // 3. 测试 CAS 成功场景（CAS 返回 1）：动作链按序执行，实体状态更新
+        OrderDO successOrder = new OrderDO(202L, OrderState.WAIT_PAY);
+        OrderState target = machine.fireEventWithCas(
+                successOrder,
+                OrderDO::getState,
+                OrderDO::setState,
+                OrderEvent.PAY,
+                true,
+                (entity, from, to) -> 1
+        );
+        assertThat(target).isEqualTo(OrderState.PAID);
+        assertThat(successOrder.getState()).isEqualTo(OrderState.PAID);
+        assertThat(actionCounter.get()).isEqualTo(2);
+        assertThat(executionLog).containsExactly("ACTION_1", "ACTION_2");
+
+        // 4. 测试静默模式 CAS 成功场景
+        OrderDO quietSuccessOrder = new OrderDO(203L, OrderState.WAIT_PAY);
+        TransitionResult<OrderState> quietSuccessResult = machine.fireEventWithCasQuietly(
+                quietSuccessOrder,
+                OrderDO::getState,
+                OrderDO::setState,
+                OrderEvent.PAY,
+                true,
+                (entity, from, to) -> 1
+        );
+        assertThat(quietSuccessResult.isAccepted()).isTrue();
+        assertThat(quietSuccessResult.getTargetState()).isEqualTo(OrderState.PAID);
+        assertThat(quietSuccessOrder.getState()).isEqualTo(OrderState.PAID);
+        assertThat(actionCounter.get()).isEqualTo(4);
+        assertThat(executionLog).containsExactly("ACTION_1", "ACTION_2", "ACTION_1", "ACTION_2");
+    }
+
+    @Test
+    @DisplayName("测试 CAS 成功后 Action 动作抛出异常处理与因果保留")
+    void testCasActionExceptionHandling() {
+        StateMachineBuilder<OrderState, OrderEvent, Boolean> builder = StateMachineBuilderFactory.create();
+        builder.externalTransition()
+                .from(OrderState.WAIT_PAY)
+                .to(OrderState.PAID)
+                .on(OrderEvent.PAY)
+                .perform((from, to, event, ctx) -> {
+                    throw new IllegalStateException("下游积分发放异常");
+                });
+
+        StateMachine<OrderState, OrderEvent, Boolean> machine = builder.build("CAS_ACTION_EX_MACHINE");
+
+        // 1. Fail-Fast 模式
+        OrderDO order1 = new OrderDO(301L, OrderState.WAIT_PAY);
+        assertThatThrownBy(() -> machine.fireEventWithCas(
+                order1,
+                OrderDO::getState,
+                OrderDO::setState,
+                OrderEvent.PAY,
+                true,
+                (entity, from, to) -> 1 // CAS 成功
+        ))
+                .isInstanceOf(StateMachineException.class)
+                .satisfies(ex -> {
+                    StateMachineException smEx = (StateMachineException) ex;
+                    assertThat(smEx.getCode()).isEqualTo(StateMachineResultCode.ACTION_EXECUTION_FAILED.getCode());
+                    assertThat(smEx.getMessage()).contains("下游积分发放异常");
+                    assertThat(smEx.getCause()).isInstanceOf(IllegalStateException.class);
+                });
+
+        // 2. 静默模式
+        OrderDO order2 = new OrderDO(302L, OrderState.WAIT_PAY);
+        TransitionResult<OrderState> quietResult = machine.fireEventWithCasQuietly(
+                order2,
+                OrderDO::getState,
+                OrderDO::setState,
+                OrderEvent.PAY,
+                true,
+                (entity, from, to) -> 1 // CAS 成功
+        );
+        assertThat(quietResult.isAccepted()).isFalse();
+        assertThat(quietResult.getCause()).isInstanceOf(IllegalStateException.class);
+        assertThat(quietResult.getFailureReason()).contains("跃迁动作执行失败");
     }
 
     @Test

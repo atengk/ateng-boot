@@ -1,106 +1,81 @@
-# ateng-boot-sample-ftp 客户端自验集成工程
+# ateng-boot-sample-ftp 远程文件传输自验样例工程
 
-> 专一面向生产就绪的 FTP/FTPS 协议客户端自验沙箱：覆盖 Commons Pool2 连接池借还生命周期与心跳保活、工作目录双重复位防串目录、`FtpContextHolder` 线程级动态切源、表单原子上传守护（`.tmp` + `rename`）、流式下载响应、RFC 3659 MLSD 机器目录解析、级联递归创建（`mkdir -p`）、跨目录移动、路径穿越防卫与原生逃逸舱 100% 端到端实测验证。
-
----
-
-## 1. 场景定位与功能矩阵
-
-传统 FTP 客户端在业务集成中通常面临以下痛点：
-1. **短连接开销巨大与长连接池化复杂**：传统单次传输频繁握手鉴权开销严重，而自行维护连接池易导致网络断线、假死悬挂或会话泄露；
-2. **工作目录污染引发严重串目录事故**：FTP 状态机具备全局工作目录（CWD），若某次操作切换目录后未还原，下游操作将全线写错或读错目录；
-3. **云防火墙截断控制通道**：长时间传输大文件时，控制通道无数据流动极易被云安全组或防火墙静默斩断；
-4. **半截残缺文件灾难**：网络波动导致上传中断时，残余半截废文件直接暴露给下游消费系统，引发严重业务解析异常；
-5. **多环境多节点切换代码侵入严重**：多 FTP 数据源切换时代码充斥 `if-else` 或硬编码配置；
-6. **路径穿越（Path Traversal）安全风险**：直接拼接用户输入路径容易遭遇 `../` 越权逃逸风险；
-7. **大文件下载引发堆内存 OOM**：缺乏安全阈值守护，一次性加载大文件直接撑爆 JVM 堆内存。
-
-`ateng-boot-sample-ftp` 提供了工业级规范且完全离线自洽的集成验证沙箱：
-- **纯内存 FakeFtpServer 极速自验**：零物理网络与外部 FTP 依赖，毫秒级独立离线全绿运行；
-- **Apache Commons Pool2 受管对象池**：提供心跳保活（`NOOP`）、存活探针与异常自动剔除；
-- **绝对工作目录隔离**：借出与归还双重 `cwd("/")` 复位，彻底消除串目录隐患；
-- **原子上传守护与异常补偿**：采用 `.tmp` 临时文件写入 + 成功原子 `rename`，异常时在独立会话中物理清理脏文件；
-- **线程级动态切源路由**：基于 `FtpContextHolder` 实现栈式嵌套上下文切换，`finally` 确定性复位；
-- **严格路径穿越安全清洗**：`cleanAndValidatePath` 前置防御 `..` 序列与空字符注入；
-- **内存防爆机制**：默认 50MB 内存下载上限保护，大文件强制推行流式受管回调消费。
+> 专注于演示与自验 `ateng-boot-ftp` 核心特性在真实企业级场景（电子合同安全流转、金融日结对账全目录递归镜像同步、大文件流式防抖进度监听、多节点栈式动态切源、无副作用物理健康探针与连接池生命周期治理）下的开箱使用。
 
 ---
 
-## 2. 10 项端到端自验场景全景表
+## 1. 快速启动与服务端口
 
-| 序号 | 自验场景 | 覆盖核心机制 / API | 验证端点 / 动作 | 预期响应 / 校验点 |
-| :--- | :--- | :--- | :--- | :--- |
-| **01** | 表单文件原子上传与 HTTP 流式下载 | `FtpTemplate.upload` / `FtpTemplate.download` | `POST /api/ftp/upload`<br>`GET /api/ftp/download` | 经过 `.tmp` 临时文件中转并原子重命名；下载携带标准 `Content-Disposition` 附件报头与字节内容 100% 对齐 |
-| **02** | 纯文本快捷写入与读取 | `writeString` / `readString` | `POST /api/ftp/write-text`<br>`GET /api/ftp/read-text` | 便捷 UTF-8 文本写入与读取，免除底层繁琐样板流代码 |
-| **03** | 详细元数据获取与存在性探测 | `exists` / `getFileInfo` (`FtpFileInfo`) | `GET /api/ftp/exists`<br>`GET /api/ftp/info` | 优先通过 RFC 3659 `MLST` 精确获取文件名、大小、修改时间与目录属性；不存在文件安全返回 false |
-| **04** | 递归创建多级目录与目录列表检索 | `makeDirectories` / `listFiles` | `POST /api/ftp/mkdir`<br>`GET /api/ftp/list` | 级联递归创建多级父目录（`mkdir -p`）；通过 RFC 3659 `MLSD` 机器可读格式准确列举子目录项 |
-| **05** | 文件安全重命名与跨目录移动 | `rename` / `move` (`FtpRenameRequest`) | `POST /api/ftp/rename`<br>`POST /api/ftp/move` | 同目录重命名与跨父目录移动；自动完成目标父目录探测创建与旧路径安全更新 |
-| **06** | 确定性文件与目录删除 | `deleteFile` / `deleteDirectory` | `DELETE /api/ftp/delete-file`<br>`DELETE /api/ftp/delete-dir` | 物理删除单个文件；级联清空并安全删除非空目录树，释放服务端空间 |
-| **07** | 多节点动态切源路由隔离 | `FtpContextHolder.runWith` | `POST /api/ftp/upload?server=backup`<br>`GET /api/ftp/routed-read?server=backup` | 线程级路由至 `backup` 节点执行文件落盘与读取；默认主节点探查该路径不存在，实现物理级多源数据隔离 |
-| **08** | 逃逸舱原生会话指令 | `FtpTemplate.execute` (`FTPClientCallback`) | `GET /api/ftp/native-pwd` | 用户穿透受管池直接获取底层 `FTPClient` 执行原生指令（如 `printWorkingDirectory`），操作后连接安全归还 |
-| **09** | 路径穿越高危字符安全防御 | `cleanAndValidatePath` 路径清洗 | `GET /api/ftp/exists?remotePath=/../../etc/passwd` | 拦截非法包含 `..` 的越权路径，抛出 `51007` (`INVALID_PATH`) 并由全局异常处理器转译为结构化业务错误契约 |
-| **10** | JSR-303 参数格式校验 Fail-Fast | Spring MVC `@Validated` + `@NotBlank` | `GET /api/ftp/read-text?remotePath=   ` | 拦截空白入参，Fail-Fast 触发参数校验异常，统一返回 HTTP 400 规范业务错误报文 |
+- **默认 HTTP 端口**：`8080`（可在 `src/main/resources/application.yml` 中修改）
+- **启动方式**：
+  ```bash
+  # 方式一：在 IDE 中直接运行主启动类 main 方法
+  io.github.atengk.boot.sample.ftp.SampleFtpApplication
+
+  # 方式二：命令行极速启动
+  mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-ftp
+  ```
 
 ---
 
-## 3. 本地启动与实测体验
+## 2. 运行环境与双模切换
 
-### 1. 启动服务
+- **默认 / CI 模式**（未激活 `local` Profile）：
+  应用主工程内置 `@Profile("!local")` 的 `EmbeddedFtpServerConfig`，启动时自动为 `default` 与 `servers.*` 具名节点拉起轻量嵌入式 `FakeFtpServer`；集成测试套件同样内置随机端口内存 `FakeFtpServer`，无需部署外部 FTP 服务即可一键体验全套 REST 端点或 100% 离线跑通全量回归测试；
+- **Local 真实模式**（激活 `local` Profile）：
+  若需连接真实物理 FTP/FTPS 中间件（如 vsftpd、ProFTPD、FileZilla Server 等），复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml` 并填入真实主机、端口与鉴权账密；启动应用或运行测试时追加 `-Dspring.profiles.active=local` 即可直连真实服务联调（该文件已被 `.gitignore` 严格拦截，CI 零风险与凭据安全）。
+
+---
+
+## 3. 核心 Controller 接口与一键体验
+
+应用启动后，可通过以下 cURL 命令或浏览器直接发起调用体验：
+
+| 功能领域 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **表单文件原子上传** | `FtpDocumentController` | `POST /sample/ftp/document/upload` | `curl -X POST "http://localhost:8080/sample/ftp/document/upload" -F "file=@README.md" -F "remotePath=/upload/notice.txt"` |
+| **磁盘文件指定上传** | `FtpDocumentController` | `POST /sample/ftp/document/upload-file` | `curl -X POST "http://localhost:8080/sample/ftp/document/upload-file" -H "Content-Type: application/json" -d "{\"localPath\":\"/tmp/contract.pdf\",\"remotePath\":\"/docs/contract.pdf\"}"` |
+| **快捷写入纯文本** | `FtpDocumentController` | `POST /sample/ftp/document/write-text` | `curl -X POST "http://localhost:8080/sample/ftp/document/write-text" -H "Content-Type: application/json" -d "{\"remotePath\":\"/docs/policy.txt\",\"content\":\"Enterprise Security Policy v1.0\"}"` |
+| **快捷读取纯文本** | `FtpDocumentController` | `GET /sample/ftp/document/read-text` | `curl "http://localhost:8080/sample/ftp/document/read-text?remotePath=/docs/policy.txt"` |
+| **RFC 959 增量追加写** | `FtpDocumentController` | `POST /sample/ftp/document/append-text` | `curl -X POST "http://localhost:8080/sample/ftp/document/append-text" -H "Content-Type: application/json" -d "{\"remotePath\":\"/docs/policy.txt\",\"content\":\"\nAmendment: Section 4.2 Approved.\"}"` |
+| **受管管道流原子对拷** | `FtpDocumentController` | `POST /sample/ftp/document/copy` | `curl -X POST "http://localhost:8080/sample/ftp/document/copy" -H "Content-Type: application/json" -d "{\"sourcePath\":\"/docs/policy.txt\",\"targetPath\":\"/docs/policy-bak.txt\"}"` |
+| **跨目录安全移动** | `FtpDocumentController` | `POST /sample/ftp/document/move` | `curl -X POST "http://localhost:8080/sample/ftp/document/move" -H "Content-Type: application/json" -d "{\"sourcePath\":\"/docs/policy-bak.txt\",\"targetPath\":\"/archive\"}"` |
+| **同级文件重命名** | `FtpDocumentController` | `POST /sample/ftp/document/rename` | `curl -X POST "http://localhost:8080/sample/ftp/document/rename" -H "Content-Type: application/json" -d "{\"sourcePath\":\"/docs/policy.txt\",\"targetPath\":\"/docs/policy-v2.txt\"}"` |
+| **查询文件详细元数据** | `FtpDocumentController` | `GET /sample/ftp/document/info` | `curl "http://localhost:8080/sample/ftp/document/info?remotePath=/docs/policy-v2.txt"` |
+| **RFC 3659 MLSD 机器列表** | `FtpDocumentController` | `GET /sample/ftp/document/list-files` | `curl "http://localhost:8080/sample/ftp/document/list-files?remoteDir=/docs"` |
+| **对称流式文件下载** | `FtpDocumentController` | `GET /sample/ftp/document/download` | `curl -OJ "http://localhost:8080/sample/ftp/document/download?remotePath=/docs/policy-v2.txt"` |
+| **零落盘流式摘要计算** | `FtpDocumentController` | `GET /sample/ftp/document/hash` | `curl "http://localhost:8080/sample/ftp/document/hash?remotePath=/docs/policy-v2.txt&algorithm=SHA-256"` |
+| **零落盘摘要常量比对** | `FtpDocumentController` | `POST /sample/ftp/document/verify-hash` | `curl -X POST "http://localhost:8080/sample/ftp/document/verify-hash" -H "Content-Type: application/json" -d "{\"remotePath\":\"/docs/policy-v2.txt\",\"expectedHex\":\"YOUR_SHA256_HEX\",\"algorithm\":\"SHA-256\"}"` |
+| **单文件确定性删除** | `FtpDocumentController` | `POST /sample/ftp/document/delete-file` | `curl -X POST "http://localhost:8080/sample/ftp/document/delete-file" -H "Content-Type: application/json" -d "{\"path\":\"/upload/notice.txt\"}"` |
+| **级联清空删除目录** | `FtpDocumentController` | `POST /sample/ftp/document/delete-directory` | `curl -X POST "http://localhost:8080/sample/ftp/document/delete-directory" -H "Content-Type: application/json" -d "{\"path\":\"/archive\",\"recursive\":true}"` |
+| **金融日结对账全目录上传** | `FtpBatchSyncController` | `POST /sample/ftp/sync/upload-directory` | `curl -X POST "http://localhost:8080/sample/ftp/sync/upload-directory" -H "Content-Type: application/json" -d "{\"localDir\":\"/data/settlement/20261110\",\"remoteDir\":\"/finance/settlement\",\"filterExtension\":\".csv\",\"failFast\":false}"` |
+| **金融日结对账全目录下载** | `FtpBatchSyncController` | `POST /sample/ftp/sync/download-directory` | `curl -X POST "http://localhost:8080/sample/ftp/sync/download-directory" -H "Content-Type: application/json" -d "{\"localDir\":\"/data/audit/20261110\",\"remoteDir\":\"/finance/settlement\",\"filterExtension\":\".csv\",\"failFast\":false}"` |
+| **对账信标伴随原子上传** | `FtpBatchSyncController` | `POST /sample/ftp/sync/upload-with-sentinel` | `curl -X POST "http://localhost:8080/sample/ftp/sync/upload-with-sentinel" -H "Content-Type: application/json" -d "{\"remotePath\":\"/finance/settle.csv\",\"localPath\":\"/data/settle.csv\",\"sentinelSuffix\":\".ok\"}"` |
+| **大文件流式进度上传** | `FtpTransferController` | `POST /sample/ftp/transfer/upload-large` | `curl -X POST "http://localhost:8080/sample/ftp/transfer/upload-large" -H "Content-Type: application/json" -d "{\"remotePath\":\"/transfer/payload-10m.bin\",\"sizeKb\":10240}"` |
+| **大文件流式进度下载** | `FtpTransferController` | `POST /sample/ftp/transfer/download-large` | `curl -X POST "http://localhost:8080/sample/ftp/transfer/download-large" -H "Content-Type: application/json" -d "{\"remotePath\":\"/transfer/payload-10m.bin\",\"localPath\":\"/tmp/downloaded-10m.bin\"}"` |
+| **大文件断点续传上传** | `FtpTransferController` | `POST /sample/ftp/transfer/upload-resume` | `curl -X POST "http://localhost:8080/sample/ftp/transfer/upload-resume" -H "Content-Type: application/json" -d "{\"remotePath\":\"/transfer/payload-10m.bin\",\"localPath\":\"/tmp/payload-10m.bin\"}"` |
+| **大文件断点续传下载** | `FtpTransferController` | `POST /sample/ftp/transfer/download-resume` | `curl -X POST "http://localhost:8080/sample/ftp/transfer/download-resume" -H "Content-Type: application/json" -d "{\"remotePath\":\"/transfer/payload-10m.bin\",\"localPath\":\"/tmp/resume-10m.bin\"}"` |
+| **50MB 内存防爆熔断守护** | `FtpTransferController` | `GET /sample/ftp/transfer/download-safe` | `curl "http://localhost:8080/sample/ftp/transfer/download-safe?remotePath=/transfer/payload-10m.bin"` |
+| **默认主节点无副作用探针** | `FtpGovernanceController` | `GET /sample/ftp/governance/probe-health` | `curl "http://localhost:8080/sample/ftp/governance/probe-health"` |
+| **具名备用节点健康探针** | `FtpGovernanceController` | `GET /sample/ftp/governance/probe-health` | `curl "http://localhost:8080/sample/ftp/governance/probe-health?serverName=backup"` |
+| **物理健康连通性强断言** | `FtpGovernanceController` | `POST /sample/ftp/governance/assert-healthy` | `curl -X POST "http://localhost:8080/sample/ftp/governance/assert-healthy?serverName=backup"` |
+| **动态切源写入 (backup 节点)** | `FtpGovernanceController` | `POST /sample/ftp/governance/dynamic-routing-write` | `curl -X POST "http://localhost:8080/sample/ftp/governance/dynamic-routing-write" -H "Content-Type: application/json" -d "{\"serverName\":\"backup\",\"remotePath\":\"/routing/notice.txt\",\"content\":\"Backup Datacenter Payload\"}"` |
+| **动态切源读取 (backup 节点)** | `FtpGovernanceController` | `GET /sample/ftp/governance/dynamic-routing-read` | `curl "http://localhost:8080/sample/ftp/governance/dynamic-routing-read?serverName=backup&remotePath=/routing/notice.txt"` |
+| **运行期动态热注册节点** | `FtpGovernanceController` | `POST /sample/ftp/governance/register-node` | `curl -X POST "http://localhost:8080/sample/ftp/governance/register-node" -H "Content-Type: application/json" -d "{\"serverName\":\"tenant-01\",\"host\":\"127.0.0.1\",\"port\":2121,\"username\":\"admin\",\"password\":\"YOUR_PASSWORD\",\"mode\":\"PASSIVE\"}"` |
+| **运行期安全注销服务节点** | `FtpGovernanceController` | `POST /sample/ftp/governance/unregister-node` | `curl -X POST "http://localhost:8080/sample/ftp/governance/unregister-node" -H "Content-Type: application/json" -d "{\"serverName\":\"tenant-01\"}"` |
+| **单节点连接池实时指标** | `FtpGovernanceController` | `GET /sample/ftp/governance/pool-stats` | `curl "http://localhost:8080/sample/ftp/governance/pool-stats?serverName=default"` |
+| **全节点连接池批量指标** | `FtpGovernanceController` | `GET /sample/ftp/governance/all-pool-stats` | `curl "http://localhost:8080/sample/ftp/governance/all-pool-stats"` |
+
+---
+
+## 4. 全真自动化回归命令
+
 ```bash
-mvn -pl ateng-boot-samples/ateng-boot-sample-ftp spring-boot:run
+# 执行 Starter 核心与 Sample 场景工程联合全真回归
+mvn test -pl ateng-boot-ftp,ateng-boot-samples/ateng-boot-sample-ftp -am -T 1C -nsu -B
+
+# 激活 local Profile 直连真实 FTP 服务端联调（需配置 application-local.yml）
+mvn test -pl ateng-boot-samples/ateng-boot-sample-ftp -Dspring.profiles.active=local -am -T 1C -nsu -B
 ```
 
-### 2. 表单文件上传
-```bash
-curl -X POST -F "file=@test.txt" -F "remotePath=/data/test.txt" http://localhost:8080/api/ftp/upload
-```
-
-### 3. 流式下载文件
-```bash
-curl -O -J "http://localhost:8080/api/ftp/download?remotePath=/data/test.txt"
-```
-
-### 4. 纯文本快捷读写
-```bash
-# 写入纯文本
-curl -X POST "http://localhost:8080/api/ftp/write-text" -d "remotePath=/config/app.json&content={\"env\":\"prod\"}"
-
-# 读取纯文本
-curl "http://localhost:8080/api/ftp/read-text?remotePath=/config/app.json"
-```
-
-### 5. 跨多节点动态切源
-```bash
-# 在 backup 备用节点上传文件
-curl -X POST -F "file=@backup.log" -F "remotePath=/logs/backup.log" -F "server=backup" http://localhost:8080/api/ftp/upload
-
-# 在 backup 备用节点读取文件
-curl "http://localhost:8080/api/ftp/routed-read?server=backup&remotePath=/logs/backup.log"
-```
-
-### 6. 目录操作与列表检索
-```bash
-# 递归创建多级目录
-curl -X POST "http://localhost:8080/api/ftp/mkdir?remoteDir=/nested/tree/dir"
-
-# 列出目录下所有文件与子目录
-curl "http://localhost:8080/api/ftp/list?remoteDir=/nested/tree"
-```
-
-### 7. 重命名与移动文件
-```bash
-# 重命名
-curl -X POST -H "Content-Type: application/json" -d '{"fromPath":"/config/app.json","toPath":"/config/app-v2.json"}' http://localhost:8080/api/ftp/rename
-
-# 移动到目标目录
-curl -X POST -H "Content-Type: application/json" -d '{"fromPath":"/config/app-v2.json","toPath":"/nested/tree/dir"}' http://localhost:8080/api/ftp/move
-```
-
-### 8. 删除文件与目录
-```bash
-# 删除文件
-curl -X DELETE "http://localhost:8080/api/ftp/delete-file?remotePath=/nested/tree/dir/app-v2.json"
-
-# 递归删除目录
-curl -X DELETE "http://localhost:8080/api/ftp/delete-dir?remoteDir=/nested"
-```
+> 详细架构原理、设计不变量、配置清单与扩展定制，请参阅核心 Starter 文档：[ateng-boot-ftp README](../../ateng-boot-ftp/README.md)。

@@ -1,9 +1,16 @@
 package io.github.atengk.boot.statemachine.core;
 
+import io.github.atengk.boot.core.util.BatchSliceUtil;
+import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.statemachine.cas.CasUpdater;
 import io.github.atengk.boot.statemachine.cas.StateMachineCasTemplate;
+import io.github.atengk.boot.statemachine.enums.StateMachineResultCode;
+import io.github.atengk.boot.statemachine.exception.StateMachineException;
+import io.github.atengk.boot.statemachine.model.BatchOptions;
+import io.github.atengk.boot.statemachine.model.BatchTransitionResult;
 import io.github.atengk.boot.statemachine.model.TransitionResult;
 
+import java.util.*;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 
@@ -62,8 +69,433 @@ public interface StateMachine<S, E, C> {
     }
 
     /**
+     * 大批量切片状态流转门面
+     * <p>原生复用 Core 模块 BatchSliceUtil 进行分批切片，按批次执行状态流转</p>
+     * <p>支持 Fail-Safe（记录失败持续推进）与 Fail-Fast（遭遇首个异常立即熔断中断）</p>
+     *
+     * @param entities 实体集合
+     * @param getter   源状态提取函数
+     * @param setter   新状态回写消费器
+     * @param event    触发事件
+     * @param context  业务上下文
+     * @param options  分批配置选项
+     * @param <T>      实体类型
+     * @return 批量流转聚合结果
+     */
+    default <T> BatchTransitionResult<S, T> fireEventBatch(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            C context,
+            BatchOptions options
+    ) {
+        if (getter == null || setter == null) {
+            throw new IllegalArgumentException("Getter and setter must not be null");
+        }
+        return executeBatchSlice(entities, getter, event, options, entity -> {
+            S sourceState = getter.apply(entity);
+            S targetState = fireEvent(sourceState, event, context);
+            setter.accept(entity, targetState);
+            return targetState;
+        });
+    }
+
+    /**
+     * 大批量切片 CAS 乐观锁防重流转门面
+     * <p>依托 Core {@link BatchSliceUtil} 分批切片，针对每笔实体严格执行 CAS-First 安全时序：
+     * 只读试算目标状态与卫语句 -> 执行持久层 CAS 条件更新 -> 回写实体状态 -> 触发动作链，杜绝并发冲突下的虚假副作用</p>
+     *
+     * @param entities   实体集合
+     * @param getter     源状态提取函数
+     * @param setter     新状态回写消费器
+     * @param event      触发事件
+     * @param context    业务上下文
+     * @param casUpdater 数据库 CAS 乐观锁持久化更新函数
+     * @param options    分批配置选项
+     * @param <T>        实体类型
+     * @return 批量流转聚合结果
+     */
+    default <T> BatchTransitionResult<S, T> fireEventBatchWithCas(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            C context,
+            CasUpdater<T, S> casUpdater,
+            BatchOptions options
+    ) {
+        if (getter == null || setter == null) {
+            throw new IllegalArgumentException("Getter and setter must not be null");
+        }
+        if (casUpdater == null) {
+            throw new IllegalArgumentException("CasUpdater must not be null");
+        }
+        return executeBatchSlice(entities, getter, event, options,
+                entity -> fireEventWithCas(entity, getter, setter, event, context, casUpdater));
+    }
+
+    /**
+     * 大批量切片 CAS 乐观锁防重流转门面（默认分批配置：批次 200，Fail-Safe 模式）
+     *
+     * @param entities   实体集合
+     * @param getter     源状态提取函数
+     * @param setter     新状态回写消费器
+     * @param event      触发事件
+     * @param context    业务上下文
+     * @param casUpdater 数据库 CAS 乐观锁持久化更新函数
+     * @param <T>        实体类型
+     * @return 批量流转聚合结果
+     */
+    default <T> BatchTransitionResult<S, T> fireEventBatchWithCas(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            C context,
+            CasUpdater<T, S> casUpdater
+    ) {
+        return fireEventBatchWithCas(entities, getter, setter, event, context, casUpdater, BatchOptions.defaults());
+    }
+
+    /**
+     * 大批量切片 CAS 乐观锁防重流转门面（免上下文重载）
+     *
+     * @param entities   实体集合
+     * @param getter     源状态提取函数
+     * @param setter     新状态回写消费器
+     * @param event      触发事件
+     * @param casUpdater 数据库 CAS 乐观锁持久化更新函数
+     * @param <T>        实体类型
+     * @return 批量流转聚合结果
+     */
+    default <T> BatchTransitionResult<S, T> fireEventBatchWithCas(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            CasUpdater<T, S> casUpdater
+    ) {
+        return fireEventBatchWithCas(entities, getter, setter, event, (C) null, casUpdater, BatchOptions.defaults());
+    }
+
+    /**
+     * 大批量切片 CAS 乐观锁防重流转门面（带分批配置免上下文重载）
+     *
+     * @param entities   实体集合
+     * @param getter     源状态提取函数
+     * @param setter     新状态回写消费器
+     * @param event      触发事件
+     * @param casUpdater 数据库 CAS 乐观锁持久化更新函数
+     * @param options    分批配置选项
+     * @param <T>        实体类型
+     * @return 批量流转聚合结果
+     */
+    default <T> BatchTransitionResult<S, T> fireEventBatchWithCas(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            CasUpdater<T, S> casUpdater,
+            BatchOptions options
+    ) {
+        return fireEventBatchWithCas(entities, getter, setter, event, (C) null, casUpdater, options);
+    }
+
+    private <T> BatchTransitionResult<S, T> executeBatchSlice(
+            List<T> entities,
+            Function<T, S> getter,
+            E event,
+            BatchOptions options,
+            Function<T, S> stepExecutor
+    ) {
+        if (event == null) {
+            throw new IllegalArgumentException("Event must not be null");
+        }
+        BatchOptions opts = options != null ? options : BatchOptions.defaults();
+        if (CollectionUtil.isEmpty(entities)) {
+            return BatchTransitionResult.empty();
+        }
+
+        List<T> nonNullEntities = entities.stream().filter(Objects::nonNull).toList();
+        if (nonNullEntities.isEmpty()) {
+            return BatchTransitionResult.empty();
+        }
+
+        List<List<T>> slices = BatchSliceUtil.slice(nonNullEntities, opts.getBatchSize());
+        List<T> successEntities = new ArrayList<>(nonNullEntities.size());
+        Map<T, StateMachineException> failures = new LinkedHashMap<>();
+
+        for (List<T> slice : slices) {
+            for (T entity : slice) {
+                try {
+                    stepExecutor.apply(entity);
+                    successEntities.add(entity);
+                } catch (StateMachineException smEx) {
+                    if (opts.isFailFast()) {
+                        throw new StateMachineException(
+                                StateMachineResultCode.BATCH_TRANSITION_FAILED,
+                                smEx.getSourceState(),
+                                smEx.getTargetState(),
+                                event,
+                                String.format("状态机 [%s] 大批量流转触发 Fail-Fast 熔断中断 [entity=%s]: %s",
+                                        getMachineId(), entity, smEx.getMessage()),
+                                smEx
+                        );
+                    }
+                    failures.put(entity, smEx);
+                } catch (Exception ex) {
+                    S sourceState = null;
+                    try {
+                        sourceState = getter.apply(entity);
+                    } catch (Exception ignored) {
+                        // 忽略二次提取状态异常，保留原始异常因果链
+                    }
+                    StateMachineException smEx = new StateMachineException(
+                            StateMachineResultCode.ACTION_EXECUTION_FAILED,
+                            sourceState,
+                            event,
+                            String.format("状态机 [%s] 实体批量跃迁异常 [entity=%s]: %s",
+                                    getMachineId(), entity, ex.getMessage()),
+                            ex
+                    );
+                    if (opts.isFailFast()) {
+                        throw new StateMachineException(
+                                StateMachineResultCode.BATCH_TRANSITION_FAILED,
+                                sourceState,
+                                null,
+                                event,
+                                String.format("状态机 [%s] 大批量流转触发 Fail-Fast 熔断中断 [entity=%s]: %s",
+                                        getMachineId(), entity, smEx.getMessage()),
+                                smEx
+                        );
+                    }
+                    failures.put(entity, smEx);
+                }
+            }
+        }
+
+        return BatchTransitionResult.of(nonNullEntities.size(), successEntities, failures);
+    }
+
+    /**
+     * 大批量切片状态流转门面（默认分批配置：批次 200，Fail-Safe 模式）
+     *
+     * @param entities 实体集合
+     * @param getter   源状态提取函数
+     * @param setter   新状态回写消费器
+     * @param event    触发事件
+     * @param context  业务上下文
+     * @param <T>      实体类型
+     * @return 批量流转聚合结果
+     */
+    default <T> BatchTransitionResult<S, T> fireEventBatch(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            C context
+    ) {
+        return fireEventBatch(entities, getter, setter, event, context, BatchOptions.defaults());
+    }
+
+    /**
+     * 大批量切片状态流转门面（免上下文重载）
+     *
+     * @param entities 实体集合
+     * @param getter   源状态提取函数
+     * @param setter   新状态回写消费器
+     * @param event    触发事件
+     * @param <T>      实体类型
+     * @return 批量流转聚合结果
+     */
+    default <T> BatchTransitionResult<S, T> fireEventBatch(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event
+    ) {
+        return fireEventBatch(entities, getter, setter, event, (C) null, BatchOptions.defaults());
+    }
+
+    /**
+     * 大批量切片状态流转门面（带分批配置免上下文重载）
+     *
+     * @param entities 实体集合
+     * @param getter   源状态提取函数
+     * @param setter   新状态回写消费器
+     * @param event    触发事件
+     * @param options  分批配置选项
+     * @param <T>      实体类型
+     * @return 批量流转聚合结果
+     */
+    default <T> BatchTransitionResult<S, T> fireEventBatch(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            BatchOptions options
+    ) {
+        return fireEventBatch(entities, getter, setter, event, (C) null, options);
+    }
+
+    /**
+     * 判断当前状态是否可接受指定事件（纯只读无副作用预检）
+     * <p>仅求值流转路由与前置卫语句，100% 杜绝触发任何 Action 动作与持久层更新</p>
+     *
+     * @param sourceState 当前源状态
+     * @param event       触发事件
+     * @param context     业务上下文
+     * @return 若存在匹配路由且卫语句满足则返回 true，否则返回 false（卫语句异常时安全返回 false）
+     */
+    boolean canFire(S sourceState, E event, C context);
+
+    /**
+     * 判断当前状态是否可接受指定事件（纯只读无副作用预检，免上下文重载）
+     *
+     * @param sourceState 当前源状态
+     * @param event       触发事件
+     * @return 若存在匹配路由且卫语句满足则返回 true，否则返回 false
+     */
+    default boolean canFire(S sourceState, E event) {
+        return canFire(sourceState, event, (C) null);
+    }
+
+    /**
+     * 实体状态只读预检门面（零侵入 Lambda 访问）
+     *
+     * @param entity  业务实体
+     * @param getter  状态提取函数
+     * @param event   触发事件
+     * @param context 业务上下文
+     * @param <T>     业务实体类型
+     * @return 若可接受跃迁返回 true，否则返回 false
+     */
+    default <T> boolean canFire(T entity, Function<T, S> getter, E event, C context) {
+        if (entity == null || getter == null) {
+            return false;
+        }
+        return canFire(getter.apply(entity), event, context);
+    }
+
+    /**
+     * 实体状态只读预检门面（免上下文重载）
+     *
+     * @param entity 业务实体
+     * @param getter 状态提取函数
+     * @param event  触发事件
+     * @param <T>    业务实体类型
+     * @return 若可接受跃迁返回 true，否则返回 false
+     */
+    default <T> boolean canFire(T entity, Function<T, S> getter, E event) {
+        return canFire(entity, getter, event, (C) null);
+    }
+
+    /**
+     * 试算状态跃迁结果（纯只读无副作用预检）
+     * <p>仅试算目标状态与卫语句，100% 杜绝触发任何 Action 动作与持久层更新</p>
+     *
+     * @param sourceState 当前源状态
+     * @param event       触发事件
+     * @param context     业务上下文
+     * @return 结构化预检结果（成功时携带目标状态，失败时携带失败原因及异常根因）
+     */
+    TransitionResult<S> verifyTransition(S sourceState, E event, C context);
+
+    /**
+     * 试算状态跃迁结果（纯只读无副作用预检，免上下文重载）
+     *
+     * @param sourceState 当前源状态
+     * @param event       触发事件
+     * @return 结构化预检结果
+     */
+    default TransitionResult<S> verifyTransition(S sourceState, E event) {
+        return verifyTransition(sourceState, event, (C) null);
+    }
+
+    /**
+     * 实体状态试算跃迁预检门面（零侵入 Lambda 访问）
+     *
+     * @param entity  业务实体
+     * @param getter  状态提取函数
+     * @param event   触发事件
+     * @param context 业务上下文
+     * @param <T>     业务实体类型
+     * @return 结构化预检结果
+     */
+    default <T> TransitionResult<S> verifyTransition(T entity, Function<T, S> getter, E event, C context) {
+        if (entity == null) {
+            return TransitionResult.failure(null, event, "Target entity must not be null");
+        }
+        if (getter == null) {
+            throw new IllegalArgumentException("Getter must not be null");
+        }
+        return verifyTransition(getter.apply(entity), event, context);
+    }
+
+    /**
+     * 实体状态试算跃迁预检门面（免上下文重载）
+     *
+     * @param entity 业务实体
+     * @param getter 状态提取函数
+     * @param event  触发事件
+     * @param <T>    业务实体类型
+     * @return 结构化预检结果
+     */
+    default <T> TransitionResult<S> verifyTransition(T entity, Function<T, S> getter, E event) {
+        return verifyTransition(entity, getter, event, (C) null);
+    }
+
+    /**
+     * 获取当前状态下所有满足卫语句的可用事件集合（纯只读无副作用计算）
+     *
+     * @param sourceState 当前源状态
+     * @param context     业务上下文
+     * @return 可用事件集合（保底返回不可变空集合，严禁返回 null）
+     */
+    Set<E> getAvailableEvents(S sourceState, C context);
+
+    /**
+     * 获取当前状态下所有满足卫语句的可用事件集合（纯只读无副作用计算，免上下文重载）
+     *
+     * @param sourceState 当前源状态
+     * @return 可用事件集合
+     */
+    default Set<E> getAvailableEvents(S sourceState) {
+        return getAvailableEvents(sourceState, (C) null);
+    }
+
+    /**
+     * 实体当前状态可用事件集合查询门面（零侵入 Lambda 访问）
+     *
+     * @param entity  业务实体
+     * @param getter  状态提取函数
+     * @param context 业务上下文
+     * @param <T>     业务实体类型
+     * @return 可用事件集合
+     */
+    default <T> Set<E> getAvailableEvents(T entity, Function<T, S> getter, C context) {
+        if (entity == null || getter == null) {
+            return java.util.Collections.emptySet();
+        }
+        return getAvailableEvents(getter.apply(entity), context);
+    }
+
+    /**
+     * 实体当前状态可用事件集合查询门面（免上下文重载）
+     *
+     * @param entity 业务实体
+     * @param getter 状态提取函数
+     * @param <T>    业务实体类型
+     * @return 可用事件集合
+     */
+    default <T> Set<E> getAvailableEvents(T entity, Function<T, S> getter) {
+        return getAvailableEvents(entity, getter, (C) null);
+    }
+
+    /**
      * 安全探测触发状态跃迁（静默模式）
-     * <p>不向外抛出异常，返回结构化结果承载对象，供前端按钮权限计算或状态预检使用</p>
+     * <p>静默执行状态跃迁（捕获异常并返回结果对象，包含后置动作副作用执行；若需纯只读无副作用预检，请使用 {@link #canFire} 或 {@link #verifyTransition}）</p>
      *
      * @param sourceState 当前源状态
      * @param event       触发事件
@@ -101,7 +533,8 @@ public interface StateMachine<S, E, C> {
 
     /**
      * 实体状态 CAS 乐观锁防重流转门面（Fail-Fast 模式）
-     * <p>触发跃迁后执行持久化 CAS 条件更新，受影响行数为 0 时判定为并发冲突并抛出异常</p>
+     * <p>按序执行生命周期：试算目标状态与卫语句 -> 执行持久化 CAS 条件更新 -> 校验影响行数 -> 回写实体状态 -> 执行动作链</p>
+     * <p>受影响行数为 0 时判定为并发冲突并阻断动作执行</p>
      *
      * @param entity     业务实体
      * @param getter     状态提取函数
@@ -113,7 +546,22 @@ public interface StateMachine<S, E, C> {
      * @return 跃迁并成功持久化后的目标状态
      */
     default <T> S fireEventWithCas(T entity, Function<T, S> getter, BiConsumer<T, S> setter, E event, C context, CasUpdater<T, S> casUpdater) {
-        return StateMachineCasTemplate.execute(this, entity, getter, setter, event, context, casUpdater);
+        throw new UnsupportedOperationException("CAS-based transition is not supported by this StateMachine implementation");
+    }
+
+    /**
+     * 实体状态 CAS 乐观锁防重流转门面（免上下文重载）
+     *
+     * @param entity     业务实体
+     * @param getter     状态提取函数
+     * @param setter     状态回写消费器
+     * @param event      触发事件
+     * @param casUpdater 数据库 CAS 乐观锁持久化更新函数
+     * @param <T>        业务实体类型
+     * @return 跃迁并成功持久化后的目标状态
+     */
+    default <T> S fireEventWithCas(T entity, Function<T, S> getter, BiConsumer<T, S> setter, E event, CasUpdater<T, S> casUpdater) {
+        return fireEventWithCas(entity, getter, setter, event, (C) null, casUpdater);
     }
 
     /**
@@ -130,7 +578,51 @@ public interface StateMachine<S, E, C> {
      * @return 结构化跃迁结果
      */
     default <T> TransitionResult<S> fireEventWithCasQuietly(T entity, Function<T, S> getter, BiConsumer<T, S> setter, E event, C context, CasUpdater<T, S> casUpdater) {
-        return StateMachineCasTemplate.executeQuietly(this, entity, getter, setter, event, context, casUpdater);
+        throw new UnsupportedOperationException("CAS-based transition is not supported by this StateMachine implementation");
+    }
+
+    /**
+     * 实体状态 CAS 乐观锁防重安全探测门面（免上下文静默模式重载）
+     *
+     * @param entity     业务实体
+     * @param getter     状态提取函数
+     * @param setter     状态回写消费器
+     * @param event      触发事件
+     * @param casUpdater 数据库 CAS 乐观锁持久化更新函数
+     * @param <T>        业务实体类型
+     * @return 结构化跃迁结果
+     */
+    default <T> TransitionResult<S> fireEventWithCasQuietly(T entity, Function<T, S> getter, BiConsumer<T, S> setter, E event, CasUpdater<T, S> casUpdater) {
+        return fireEventWithCasQuietly(entity, getter, setter, event, (C) null, casUpdater);
+    }
+
+    /**
+     * 获取状态机已声明的全部状态节点集合（包含源状态、目标状态与生命周期状态节点的不可变并集）
+     *
+     * @return 状态全集（保底返回不可变空集合）
+     */
+    default Set<S> getAllStates() {
+        return Collections.emptySet();
+    }
+
+    /**
+     * 获取状态机已声明的全部触发事件集合
+     *
+     * @return 事件全集（保底返回不可变空集合）
+     */
+    default Set<E> getAllEvents() {
+        return Collections.emptySet();
+    }
+
+    /**
+     * 查询指定源状态与触发事件下所有可能抵达的目标状态集合
+     *
+     * @param sourceState 源状态
+     * @param event       触发事件
+     * @return 候选目标状态集合（涵盖外部、内部与 Choice 全分支；无匹配或空输入保底返回不可变空集合）
+     */
+    default Set<S> getPossibleTargetStates(S sourceState, E event) {
+        return Collections.emptySet();
     }
 
     /**
@@ -155,4 +647,58 @@ public interface StateMachine<S, E, C> {
      * @return PlantUML 状态机图例定义文本
      */
     String generatePlantUML();
+
+    /**
+     * 注册切面拦截器
+     *
+     * @param interceptor 状态机拦截器
+     */
+    default void addInterceptor(StateMachineInterceptor<? super S, ? super E, ? super C> interceptor) {
+    }
+
+    /**
+     * 注销切面拦截器
+     *
+     * @param interceptor 状态机拦截器
+     * @return 若注销成功返回 true，否则返回 false
+     */
+    default boolean removeInterceptor(StateMachineInterceptor<? super S, ? super E, ? super C> interceptor) {
+        return false;
+    }
+
+    /**
+     * 获取已注册的切面拦截器只读视图
+     *
+     * @return 拦截器列表
+     */
+    default List<StateMachineInterceptor<? super S, ? super E, ? super C>> getInterceptors() {
+        return Collections.emptyList();
+    }
+
+    /**
+     * 注册状态跃迁轨迹审计监听器
+     *
+     * @param listener 审计监听器
+     */
+    default void addAuditListener(StateTransitionAuditListener<? super S, ? super E, ? super C> listener) {
+    }
+
+    /**
+     * 注销状态跃迁轨迹审计监听器
+     *
+     * @param listener 审计监听器
+     * @return 若注销成功返回 true，否则返回 false
+     */
+    default boolean removeAuditListener(StateTransitionAuditListener<? super S, ? super E, ? super C> listener) {
+        return false;
+    }
+
+    /**
+     * 获取已注册的状态跃迁轨迹审计监听器只读视图
+     *
+     * @return 审计监听器列表
+     */
+    default List<StateTransitionAuditListener<? super S, ? super E, ? super C>> getAuditListeners() {
+        return Collections.emptyList();
+    }
 }

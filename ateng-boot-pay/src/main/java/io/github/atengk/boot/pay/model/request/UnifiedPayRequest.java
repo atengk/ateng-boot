@@ -95,6 +95,16 @@ public class UnifiedPayRequest implements Serializable {
     private String subOpenid;
 
     /**
+     * 支付宝买家用户 ID (2088 开头 16 位数字，若为空可通过 openid 智能推导)
+     */
+    private String buyerId;
+
+    /**
+     * 支付宝买家 open_id (若为空可通过 openid 智能推导)
+     */
+    private String buyerOpenId;
+
+    /**
      * 附加数据 / 回传数据 (在查询 API 和支付通知中原样返回)
      */
     private String attach;

@@ -1,42 +1,41 @@
 package io.github.atengk.boot.sample.statemachine.vo;
 
 import io.github.atengk.boot.sample.statemachine.constant.OrderState;
+import io.github.atengk.boot.sample.statemachine.entity.OrderDO;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
-import java.io.Serial;
-import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 /**
- * 订单展示视图对象
+ * 订单展示视图对象（Zero-Entity-Leakage 契约守卫）
  *
  * @author Ateng
- * @since 2026-10-25
+ * @since 2026-11-11
  */
-public class OrderVO implements Serializable {
-
-    @Serial
-    private static final long serialVersionUID = 1L;
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class OrderVO {
 
     /**
-     * 订单 ID
+     * 订单主键 ID
      */
     private Long id;
 
     /**
-     * 订单编号
+     * 业务订单编号
      */
     private String orderSn;
 
     /**
-     * 当前状态
+     * 当前订单生命周期状态
      */
     private OrderState status;
-
-    /**
-     * 状态中文说明
-     */
-    private String statusDesc;
 
     /**
      * 订单金额
@@ -44,12 +43,12 @@ public class OrderVO implements Serializable {
     private BigDecimal amount;
 
     /**
-     * 运单编号
+     * 物流运单号
      */
     private String trackingNo;
 
     /**
-     * 物流轨迹说明
+     * 物流轨迹最新备注
      */
     private String trackingRemark;
 
@@ -59,157 +58,41 @@ public class OrderVO implements Serializable {
     private Integer riskScore;
 
     /**
-     * 乐观锁版本号
+     * CAS 乐观锁版本号
      */
     private Integer version;
 
     /**
-     * 最近更新时间
+     * 创建时间
+     */
+    private LocalDateTime createdTime;
+
+    /**
+     * 更新时间
      */
     private LocalDateTime updatedTime;
 
-    public OrderVO() {
-    }
-
-    public static Builder builder() {
-        return new Builder();
-    }
-
-    public static class Builder {
-        private final OrderVO vo = new OrderVO();
-
-        public Builder id(Long id) {
-            vo.id = id;
-            return this;
+    /**
+     * 从持久化实体安全转译为展示视图对象
+     *
+     * @param entity 订单持久化实体
+     * @return 订单视图对象
+     */
+    public static OrderVO fromDO(OrderDO entity) {
+        if (entity == null) {
+            return null;
         }
-
-        public Builder orderSn(String orderSn) {
-            vo.orderSn = orderSn;
-            return this;
-        }
-
-        public Builder status(OrderState status) {
-            vo.status = status;
-            return this;
-        }
-
-        public Builder statusDesc(String statusDesc) {
-            vo.statusDesc = statusDesc;
-            return this;
-        }
-
-        public Builder amount(BigDecimal amount) {
-            vo.amount = amount;
-            return this;
-        }
-
-        public Builder trackingNo(String trackingNo) {
-            vo.trackingNo = trackingNo;
-            return this;
-        }
-
-        public Builder trackingRemark(String trackingRemark) {
-            vo.trackingRemark = trackingRemark;
-            return this;
-        }
-
-        public Builder riskScore(Integer riskScore) {
-            vo.riskScore = riskScore;
-            return this;
-        }
-
-        public Builder version(Integer version) {
-            vo.version = version;
-            return this;
-        }
-
-        public Builder updatedTime(LocalDateTime updatedTime) {
-            vo.updatedTime = updatedTime;
-            return this;
-        }
-
-        public OrderVO build() {
-            return vo;
-        }
-    }
-
-    public Long getId() {
-        return id;
-    }
-
-    public void setId(Long id) {
-        this.id = id;
-    }
-
-    public String getOrderSn() {
-        return orderSn;
-    }
-
-    public void setOrderSn(String orderSn) {
-        this.orderSn = orderSn;
-    }
-
-    public OrderState getStatus() {
-        return status;
-    }
-
-    public void setStatus(OrderState status) {
-        this.status = status;
-    }
-
-    public String getStatusDesc() {
-        return statusDesc;
-    }
-
-    public void setStatusDesc(String statusDesc) {
-        this.statusDesc = statusDesc;
-    }
-
-    public BigDecimal getAmount() {
-        return amount;
-    }
-
-    public void setAmount(BigDecimal amount) {
-        this.amount = amount;
-    }
-
-    public String getTrackingNo() {
-        return trackingNo;
-    }
-
-    public void setTrackingNo(String trackingNo) {
-        this.trackingNo = trackingNo;
-    }
-
-    public String getTrackingRemark() {
-        return trackingRemark;
-    }
-
-    public void setTrackingRemark(String trackingRemark) {
-        this.trackingRemark = trackingRemark;
-    }
-
-    public Integer getRiskScore() {
-        return riskScore;
-    }
-
-    public void setRiskScore(Integer riskScore) {
-        this.riskScore = riskScore;
-    }
-
-    public Integer getVersion() {
-        return version;
-    }
-
-    public void setVersion(Integer version) {
-        this.version = version;
-    }
-
-    public LocalDateTime getUpdatedTime() {
-        return updatedTime;
-    }
-
-    public void setUpdatedTime(LocalDateTime updatedTime) {
-        this.updatedTime = updatedTime;
+        return OrderVO.builder()
+                .id(entity.getId())
+                .orderSn(entity.getOrderSn())
+                .status(entity.getStatus())
+                .amount(entity.getAmount())
+                .trackingNo(entity.getTrackingNo())
+                .trackingRemark(entity.getTrackingRemark())
+                .riskScore(entity.getRiskScore())
+                .version(entity.getVersion())
+                .createdTime(entity.getCreatedTime())
+                .updatedTime(entity.getUpdatedTime())
+                .build();
     }
 }

@@ -26,11 +26,17 @@ import org.springframework.util.unit.DataSize;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -69,9 +75,7 @@ class KafkaReliableTemplateTest {
         MDC.clear();
         UserContextHolder.clear();
         TenantContextHolder.clear();
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.clearSynchronization();
-        }
+        TransactionSynchronizationManager.clear();
     }
 
     @Test
@@ -371,5 +375,489 @@ class KafkaReliableTemplateTest {
         assertThat(new String(traceHeader.value(), StandardCharsets.UTF_8)).isEqualTo("trace-auto-ctx");
         assertThat(tenantHeader).isNotNull();
         assertThat(new String(tenantHeader.value(), StandardCharsets.UTF_8)).isEqualTo("tenant-auto");
+    }
+
+    @Test
+    @DisplayName("自定义消息头重载：安全注入业务头，防御 null/空映射/空白键并禁止覆盖系统头")
+    @SuppressWarnings("unchecked")
+    void testSendWithCustomHeadersOverloads() {
+        MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "trace-hdr-001");
+        TenantContextHolder.setTenantId("tenant-hdr-001");
+        UserContextHolder.setUserId("user-hdr-001");
+
+        ArgumentCaptor<ProducerRecord<Object, Object>> recordCaptor = ArgumentCaptor.forClass(ProducerRecord.class);
+        when(kafkaTemplate.send(recordCaptor.capture())).thenAnswer(invocation -> {
+            ProducerRecord<Object, Object> rec = invocation.getArgument(0);
+            RecordMetadata metadata = new RecordMetadata(new TopicPartition(rec.topic(), 0), 1L, 0, System.currentTimeMillis(), 0, 0);
+            return CompletableFuture.completedFuture(new SendResult<>(rec, metadata));
+        });
+
+        Map<String, String> dirtyHeaders = new HashMap<>();
+        dirtyHeaders.put("X-Event-Type", "ORDER_PAID");
+        dirtyHeaders.put("  X-Source-App  ", "checkout-svc");
+        dirtyHeaders.put("", "ignored-empty-key");
+        dirtyHeaders.put("   ", "ignored-blank-key");
+        dirtyHeaders.put(null, "ignored-null-key");
+        dirtyHeaders.put("X-Null-Val", null);
+        // 尝试伪造或覆盖框架系统头（含大小写变体），必须被防御拦截
+        dirtyHeaders.put(MessageHeaderConstants.TRACE_ID, "spoofed-trace");
+        dirtyHeaders.put("x-trace-id", "spoofed-trace-lower");
+        dirtyHeaders.put(MessageHeaderConstants.TENANT_ID, "spoofed-tenant");
+        dirtyHeaders.put(MessageHeaderConstants.USER_ID, "spoofed-user");
+        dirtyHeaders.put(MessageHeaderConstants.IGNORE_TENANT, "true");
+        dirtyHeaders.put(MessageHeaderConstants.BIZ_KEY, "spoofed-biz");
+
+        // 1. 同步发送重载
+        template.sendReliable("hdr.sync.topic", "k1", "payload-1", "biz-sync-1", dirtyHeaders);
+        template.sendReliable("hdr.sync.topic", "k2", "payload-2", (Map<String, String>) null);
+        template.sendReliable("hdr.sync.topic", 1, "k3", "payload-3", "biz-sync-3", Duration.ofSeconds(3), Map.of("X-Tag", "vip"));
+
+        // 2. 异步发送重载
+        template.sendReliableAsync("hdr.async.topic", "ak1", "async-1", dirtyHeaders).join();
+        template.sendReliableAsync("hdr.async.topic", "ak2", "async-2", "biz-async-2", Map.of()).join();
+        template.sendReliableAsync("hdr.async.topic", 2, "ak3", "async-3", "biz-async-3", Map.of("X-Async-Mode", "fast")).join();
+
+        // 3. 事务提交后发信重载
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        template.sendAfterCommit("hdr.tx.topic", "tk1", "tx-1", dirtyHeaders);
+        template.sendAfterCommit("hdr.tx.topic", "tk2", "tx-2", "biz-tx-2", dirtyHeaders);
+        template.sendAfterCommit("hdr.tx.topic", 0, "tk3", "tx-3", "biz-tx-3", Duration.ofSeconds(2), Map.of("X-Tx-Tag", "atomic"));
+        for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+            sync.afterCommit();
+        }
+
+        List<ProducerRecord<Object, Object>> records = recordCaptor.getAllValues();
+        assertThat(records).hasSize(9);
+
+        // 验证第一条（sync + dirtyHeaders）
+        ProducerRecord<Object, Object> r0 = records.get(0);
+        assertThat(new String(r0.headers().lastHeader("X-Event-Type").value(), StandardCharsets.UTF_8)).isEqualTo("ORDER_PAID");
+        assertThat(new String(r0.headers().lastHeader("X-Source-App").value(), StandardCharsets.UTF_8)).isEqualTo("checkout-svc");
+        assertThat(r0.headers().lastHeader("")).isNull();
+        assertThat(r0.headers().lastHeader("   ")).isNull();
+        assertThat(r0.headers().lastHeader("X-Null-Val")).isNull();
+        assertThat(new String(r0.headers().lastHeader(MessageHeaderConstants.TRACE_ID).value(), StandardCharsets.UTF_8))
+                .isEqualTo("trace-hdr-001");
+        assertThat(r0.headers().lastHeader("x-trace-id")).isNull();
+        assertThat(new String(r0.headers().lastHeader(MessageHeaderConstants.TENANT_ID).value(), StandardCharsets.UTF_8))
+                .isEqualTo("tenant-hdr-001");
+        assertThat(new String(r0.headers().lastHeader(MessageHeaderConstants.USER_ID).value(), StandardCharsets.UTF_8))
+                .isEqualTo("user-hdr-001");
+        assertThat(r0.headers().lastHeader(MessageHeaderConstants.IGNORE_TENANT)).isNull();
+        assertThat(new String(r0.headers().lastHeader(MessageHeaderConstants.BIZ_KEY).value(), StandardCharsets.UTF_8))
+                .isEqualTo("biz-sync-1");
+
+        // 验证异步与事务提交后发信携带了自定义头且保留系统头
+        ProducerRecord<Object, Object> rAsync = records.get(5);
+        assertThat(new String(rAsync.headers().lastHeader("X-Async-Mode").value(), StandardCharsets.UTF_8)).isEqualTo("fast");
+        ProducerRecord<Object, Object> rTx = records.get(7);
+        assertThat(new String(rTx.headers().lastHeader("X-Event-Type").value(), StandardCharsets.UTF_8)).isEqualTo("ORDER_PAID");
+        assertThat(new String(rTx.headers().lastHeader(MessageHeaderConstants.BIZ_KEY).value(), StandardCharsets.UTF_8)).isEqualTo("biz-tx-2");
+        ProducerRecord<Object, Object> rTx3 = records.get(8);
+        assertThat(new String(rTx3.headers().lastHeader("X-Tx-Tag").value(), StandardCharsets.UTF_8)).isEqualTo("atomic");
+    }
+
+    @Test
+    @DisplayName("两阶段批量：空集合均安全返回空列表且零网络调用")
+    void testBatchMethodsEmptyCollectionsReturnEmptyAndNoSend() {
+        assertThat(template.sendBatch("batch.empty.topic", Collections.emptyList())).isEmpty();
+        assertThat(template.sendBatch("batch.empty.topic", "k", Collections.emptyList())).isEmpty();
+        assertThat(template.sendBatch("batch.empty.topic", Collections.emptyMap())).isEmpty();
+        assertThat(template.sendBatchRecords(Collections.emptyList())).isEmpty();
+
+        assertThat(template.sendBatchAsync("batch.empty.topic", Collections.emptyList()).join()).isEmpty();
+        assertThat(template.sendBatchAsync("batch.empty.topic", "k", Collections.emptyList()).join()).isEmpty();
+        assertThat(template.sendBatchAsync("batch.empty.topic", Collections.emptyMap()).join()).isEmpty();
+        assertThat(template.sendBatchRecordsAsync(Collections.emptyList()).join()).isEmpty();
+
+        verify(kafkaTemplate, never()).send(any(ProducerRecord.class));
+    }
+
+    @Test
+    @DisplayName("两阶段批量前置防卫：超 maxBatchSize、含 null 元素或后段报文超限时阶段 1 Fail-Fast 且零网络发送")
+    void testTwoPhaseBatchFailFastZeroNetworkSend() {
+        properties.getProducer().setMaxBatchSize(2);
+        properties.getProducer().setMaxPayloadSize(DataSize.ofKilobytes(4));
+
+        // 1. 超过 maxBatchSize (3 > 2)
+        List<String> tooManyPayloads = List.of("m1", "m2", "m3");
+        assertThatThrownBy(() -> template.sendBatch("batch.limit.topic", tooManyPayloads))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("超出最大限制");
+        assertThatThrownBy(() -> template.sendBatchAsync("batch.limit.topic", tooManyPayloads))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("超出最大限制");
+
+        Map<String, Object> tooManyMap = new LinkedHashMap<>();
+        tooManyMap.put("k1", "v1");
+        tooManyMap.put("k2", "v2");
+        tooManyMap.put("k3", "v3");
+        assertThatThrownBy(() -> template.sendBatch("batch.limit.topic", tooManyMap))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("超出最大限制");
+        assertThatThrownBy(() -> template.sendBatchAsync("batch.limit.topic", tooManyMap))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("超出最大限制");
+
+        List<ProducerRecord<Object, Object>> tooManyRecords = List.of(
+                new ProducerRecord<>("batch.limit.topic", "k1", "v1"),
+                new ProducerRecord<>("batch.limit.topic", "k2", "v2"),
+                new ProducerRecord<>("batch.limit.topic", "k3", "v3")
+        );
+        assertThatThrownBy(() -> template.sendBatchRecords(tooManyRecords))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("超出最大限制");
+        assertThatThrownBy(() -> template.sendBatchRecordsAsync(tooManyRecords))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("超出最大限制");
+
+        // 2. 列表中第 2 条为 null，前 1 条绝对禁止提前发送
+        List<String> withNull = Arrays.asList("valid-1", null);
+        assertThatThrownBy(() -> template.sendBatch("batch.null.topic", "k", withNull))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.sendBatchAsync("batch.null.topic", "k", withNull))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        Map<String, Object> mapWithNull = new LinkedHashMap<>();
+        mapWithNull.put("k1", "valid-1");
+        mapWithNull.put("k2", null);
+        assertThatThrownBy(() -> template.sendBatch("batch.null.topic", mapWithNull))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        List<ProducerRecord<Object, Object>> recordsWithNull = Arrays.asList(
+                new ProducerRecord<>("batch.null.topic", "k1", "v1"),
+                null
+        );
+        assertThatThrownBy(() -> template.sendBatchRecords(recordsWithNull))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.sendBatchRecordsAsync(recordsWithNull))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // 3. 第 1 条正常，第 2 条超出 maxPayloadSize (6KB > 4KB)，阶段 1 整批阻断且零发送
+        List<Object> secondOversized = List.of("small-ok", new byte[6 * 1024]);
+        assertThatThrownBy(() -> template.sendBatch("batch.oversize.topic", secondOversized))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("出站消息报文体积超出最大限制");
+        assertThatThrownBy(() -> template.sendBatchAsync("batch.oversize.topic", secondOversized))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("出站消息报文体积超出最大限制");
+
+        List<ProducerRecord<Object, Object>> recordsSecondOversized = List.of(
+                new ProducerRecord<>("batch.oversize.topic", "k1", "small-ok"),
+                new ProducerRecord<>("batch.oversize.topic", "k2", new byte[6 * 1024])
+        );
+        assertThatThrownBy(() -> template.sendBatchRecords(recordsSecondOversized))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("出站消息报文体积超出最大限制");
+        assertThatThrownBy(() -> template.sendBatchRecordsAsync(recordsSecondOversized))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("出站消息报文体积超出最大限制");
+
+        verify(kafkaTemplate, never()).send(any(ProducerRecord.class));
+    }
+
+    @Test
+    @DisplayName("异步批量发送：sendBatchAsync 与 sendBatchRecordsAsync 支持四维上下文、自定义头注入与异常传播")
+    @SuppressWarnings("unchecked")
+    void testSendBatchAsyncAndRecordsAsyncSuccessAndFailurePropagation() {
+        MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "trace-batch-async");
+        TenantContextHolder.setTenantId("tenant-batch-async");
+        UserContextHolder.setUserId("user-batch-async");
+
+        ArgumentCaptor<ProducerRecord<Object, Object>> recordCaptor = ArgumentCaptor.forClass(ProducerRecord.class);
+        when(kafkaTemplate.send(recordCaptor.capture())).thenAnswer(invocation -> {
+            ProducerRecord<Object, Object> rec = invocation.getArgument(0);
+            RecordMetadata metadata = new RecordMetadata(new TopicPartition(rec.topic(), 0), 10L, 0, System.currentTimeMillis(), 0, 0);
+            return CompletableFuture.completedFuture(new SendResult<>(rec, metadata));
+        });
+
+        // 1. sendBatchAsync (List + key + customHeaders)
+        List<SendResult<Object, Object>> listRes = template.sendBatchAsync(
+                "async.batch.topic",
+                "order-group-1",
+                List.of("e1", "e2"),
+                Map.of("X-Batch-Source", "orders-async", MessageHeaderConstants.TRACE_ID, "spoofed")
+        ).join();
+        assertThat(listRes).hasSize(2);
+
+        // 2. sendBatchAsync (Map)
+        Map<String, Object> keyMap = new LinkedHashMap<>();
+        keyMap.put("k1", "v1");
+        keyMap.put("k2", "v2");
+        List<SendResult<Object, Object>> mapRes = template.sendBatchAsync("async.map.topic", keyMap).join();
+        assertThat(mapRes).hasSize(2);
+
+        // 3. sendBatchRecordsAsync
+        List<ProducerRecord<Object, Object>> rawRecords = List.of(
+                new ProducerRecord<>("async.rec.topic", "rk1", "rv1"),
+                new ProducerRecord<>("async.rec.topic", "rk2", "rv2")
+        );
+        List<SendResult<Object, Object>> recRes = template.sendBatchRecordsAsync(rawRecords).join();
+        assertThat(recRes).hasSize(2);
+
+        List<ProducerRecord<Object, Object>> sent = recordCaptor.getAllValues();
+        assertThat(sent).hasSize(6);
+        assertThat(new String(sent.get(0).headers().lastHeader("X-Batch-Source").value(), StandardCharsets.UTF_8))
+                .isEqualTo("orders-async");
+        assertThat(new String(sent.get(0).headers().lastHeader(MessageHeaderConstants.TRACE_ID).value(), StandardCharsets.UTF_8))
+                .isEqualTo("trace-batch-async");
+        assertThat(new String(sent.get(4).headers().lastHeader(MessageHeaderConstants.TENANT_ID).value(), StandardCharsets.UTF_8))
+                .isEqualTo("tenant-batch-async");
+
+        // 4. 阶段 2 底层 Future 失败应通过聚合 Future 向外传播
+        CompletableFuture<SendResult<Object, Object>> failedFuture = new CompletableFuture<>();
+        failedFuture.completeExceptionally(new RuntimeException("broker batch write failed"));
+        reset(kafkaTemplate);
+        when(kafkaTemplate.send(any(ProducerRecord.class))).thenReturn(failedFuture);
+
+        CompletableFuture<List<SendResult<Object, Object>>> asyncErrFuture =
+                template.sendBatchAsync("async.err.topic", List.of("err-1"));
+        assertThatThrownBy(asyncErrFuture::join)
+                .isInstanceOf(CompletionException.class)
+                .hasCauseInstanceOf(RuntimeException.class)
+                .hasMessageContaining("broker batch write failed");
+    }
+
+    @Test
+    @DisplayName("sendBatchAfterCommit 前置校验：违规 Fail-Fast 不注册事务同步器且零发送，空集合直接跳过")
+    void testSendBatchAfterCommitFailFastBeforeSynchronization() {
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        properties.getProducer().setMaxBatchSize(2);
+        properties.getProducer().setMaxPayloadSize(DataSize.ofKilobytes(2));
+
+        // 1. 空集合不注册同步器，零发送
+        template.sendBatchAfterCommit("tx.batch.topic", Collections.emptyList());
+        template.sendBatchAfterCommit("tx.batch.topic", Collections.emptyMap());
+        assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
+
+        // 2. 超 maxBatchSize / 含 null / 超 maxPayloadSize 立即抛错且不注册同步器
+        assertThatThrownBy(() -> template.sendBatchAfterCommit("tx.batch.topic", List.of("1", "2", "3")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("超出最大限制");
+        assertThatThrownBy(() -> template.sendBatchAfterCommit("tx.batch.topic", "k", Arrays.asList("1", null)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.sendBatchAfterCommit("tx.batch.topic", List.of("ok", new byte[4 * 1024])))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("出站消息报文体积超出最大限制");
+
+        assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
+        verify(kafkaTemplate, never()).send(any(ProducerRecord.class));
+    }
+
+    @Test
+    @DisplayName("sendBatchAfterCommit 四维上下文捕获恢复与 finally 确定性清理")
+    @SuppressWarnings("unchecked")
+    void testSendBatchAfterCommitRestores4DContextAndCleansUpInFinally() {
+        MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "trace-tx-batch-001");
+        UserContextHolder.setUserId("user-tx-batch-001");
+        TenantContextHolder.setTenantId("tenant-tx-batch-001");
+        TenantContextHolder.setIgnoreTenant(true);
+
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+
+        template.sendBatchAfterCommit(
+                "tx.ctx.topic",
+                "order-key",
+                List.of("msg-1", "msg-2"),
+                Duration.ofSeconds(3),
+                Map.of("X-Tx-Batch", "v1")
+        );
+
+        List<TransactionSynchronization> syncs = TransactionSynchronizationManager.getSynchronizations();
+        assertThat(syncs).hasSize(1);
+        verify(kafkaTemplate, never()).send(any(ProducerRecord.class));
+
+        // 模拟提交回调执行前线程上下文被清空或切换为其他值
+        MDC.clear();
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
+
+        List<String> observedTraces = new ArrayList<>();
+        List<String> observedUsers = new ArrayList<>();
+        List<String> observedTenants = new ArrayList<>();
+        List<Boolean> observedIgnoreTenants = new ArrayList<>();
+
+        when(kafkaTemplate.send(any(ProducerRecord.class))).thenAnswer(invocation -> {
+            observedTraces.add(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY));
+            observedUsers.add(UserContextHolder.getUserId());
+            observedTenants.add(TenantContextHolder.getTenantId());
+            observedIgnoreTenants.add(TenantContextHolder.isIgnoreTenant());
+            ProducerRecord<Object, Object> rec = invocation.getArgument(0);
+            RecordMetadata metadata = new RecordMetadata(new TopicPartition(rec.topic(), 0), 1L, 0, System.currentTimeMillis(), 0, 0);
+            return CompletableFuture.completedFuture(new SendResult<>(rec, metadata));
+        });
+
+        syncs.get(0).afterCommit();
+
+        // 验证发送期四维上下文完整恢复
+        assertThat(observedTraces).containsExactly("trace-tx-batch-001", "trace-tx-batch-001");
+        assertThat(observedUsers).containsExactly("user-tx-batch-001", "user-tx-batch-001");
+        assertThat(observedTenants).containsExactly("tenant-tx-batch-001", "tenant-tx-batch-001");
+        assertThat(observedIgnoreTenants).containsExactly(true, true);
+
+        // 验证 finally 块确定性清理现场，不残留事务内上下文
+        assertThat(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY)).isNull();
+        assertThat(UserContextHolder.getUserId()).isNull();
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+        assertThat(TenantContextHolder.isIgnoreTenant()).isFalse();
+    }
+
+    @Test
+    @DisplayName("sendBatchAfterCommit 部分记录发送失败：逐条精准回调 SPI，其余记录继续投递，无事务立即同步发送")
+    @SuppressWarnings("unchecked")
+    void testSendBatchAfterCommitPartialFailurePerRecordCallbackAndNonTxMode() {
+        MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "trace-partial-tx");
+        TenantContextHolder.setTenantId("tenant-partial");
+        UserContextHolder.setUserId("user-partial");
+
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+
+        Map<String, Object> txMap = new LinkedHashMap<>();
+        txMap.put("k1", "payload-1");
+        txMap.put("k2", "payload-2");
+        txMap.put("k3", "payload-3");
+        template.sendBatchAfterCommit("tx.partial.topic", txMap, Duration.ofSeconds(2));
+
+        List<TransactionSynchronization> syncs = TransactionSynchronizationManager.getSynchronizations();
+        assertThat(syncs).hasSize(1);
+
+        // 清理线程上下文以验证回调时恢复、回调后清理
+        MDC.clear();
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
+
+        when(kafkaTemplate.send(any(ProducerRecord.class))).thenAnswer(invocation -> {
+            ProducerRecord<Object, Object> rec = invocation.getArgument(0);
+            if ("k2".equals(rec.key())) {
+                CompletableFuture<SendResult<Object, Object>> failed = new CompletableFuture<>();
+                failed.completeExceptionally(new RuntimeException("k2 broker timeout"));
+                return failed;
+            }
+            RecordMetadata metadata = new RecordMetadata(new TopicPartition(rec.topic(), 0), 1L, 0, System.currentTimeMillis(), 0, 0);
+            return CompletableFuture.completedFuture(new SendResult<>(rec, metadata));
+        });
+
+        AtomicReference<String> callbackTenant = new AtomicReference<>();
+        doAnswer(invocation -> {
+            callbackTenant.set(TenantContextHolder.getTenantId());
+            return null;
+        }).when(failureCallback).onFailure(anyString(), any(), any(), any(), any(), any(), any());
+
+        syncs.get(0).afterCommit();
+
+        // 3 条全部尝试发送，k2 失败不阻断 k3
+        verify(kafkaTemplate, times(3)).send(any(ProducerRecord.class));
+        // 仅针对 k2 精准回调 1 次
+        verify(failureCallback, times(1)).onFailure(
+                eq("tx.partial.topic"),
+                isNull(),
+                eq("k2"),
+                eq("payload-2"),
+                eq("k2"),
+                eq("trace-partial-tx"),
+                argThat(ex -> ex != null && ex.getMessage().contains("k2 broker timeout"))
+        );
+        verify(failureCallback, times(1)).onFailure(any(), any(), any(), any(), any(), any(), any());
+        assertThat(callbackTenant.get()).isEqualTo("tenant-partial");
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+
+        // 无活跃事务场景：立即同步发送
+        TransactionSynchronizationManager.clear();
+        template.sendBatchAfterCommit("notx.batch.topic", List.of("d1", "d2"));
+        verify(kafkaTemplate, times(5)).send(any(ProducerRecord.class));
+    }
+
+    @Test
+    @DisplayName("sendBatchRecordsAfterCommit 与边界对抗：Fail-Fast 零头注入副作用、非正超时校验、外层上下文还原及同步SDK异常转译")
+    @SuppressWarnings("unchecked")
+    void testSendBatchRecordsAfterCommitAndAdversarialGuards() {
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+
+        // 1. 空列表不注册同步器也不发送
+        template.sendBatchRecordsAfterCommit(Collections.emptyList());
+        assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
+
+        // 2. 非正超时时间在阶段 1 立即 Fail-Fast（零注册、零发送）
+        assertThatThrownBy(() -> template.sendBatch("tx.t", List.of("a"), Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("timeout");
+        assertThatThrownBy(() -> template.sendBatchAfterCommit("tx.t", List.of("a"), Duration.ofMillis(-5)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("timeout");
+        assertThatThrownBy(() -> template.sendBatchRecordsAfterCommit(Collections.emptyList(), Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("timeout");
+        assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
+
+        // 3. sendBatchRecordsAfterCommit 后段记录超限 Fail-Fast：对前段外部 ProducerRecord 不产生上下文头注入副作用
+        properties.getProducer().setMaxPayloadSize(DataSize.ofBytes(20));
+        ProducerRecord<Object, Object> r1 = new ProducerRecord<>("records.tx.topic", "rk1", "ok");
+        ProducerRecord<Object, Object> r2 = new ProducerRecord<>("records.tx.topic", "rk2", "0123456789012345678901");
+        assertThatThrownBy(() -> template.sendBatchRecordsAfterCommit(List.of(r1, r2)))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("超出最大限制");
+        assertThat(r1.headers().lastHeader(MessageHeaderConstants.TRACE_ID)).isNull();
+        assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
+        verify(kafkaTemplate, never()).send(any(ProducerRecord.class));
+
+        // 4. sendBatchRecordsAfterCommit 正常注册并在存在非空外层上下文时，afterCommit 后精确还原外层上下文
+        properties.getProducer().setMaxPayloadSize(DataSize.ofMegabytes(1));
+        MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "trace-records-tx");
+        TenantContextHolder.setTenantId("tenant-records-tx");
+        UserContextHolder.setUserId("user-records-tx");
+
+        ProducerRecord<Object, Object> validR1 = new ProducerRecord<>("records.tx.topic", "vr1", "v1");
+        ProducerRecord<Object, Object> validR2 = new ProducerRecord<>("records.tx.topic", "vr2", "v2");
+        template.sendBatchRecordsAfterCommit(List.of(validR1, validR2), Duration.ofSeconds(1));
+        assertThat(TransactionSynchronizationManager.getSynchronizations()).hasSize(1);
+
+        // 切换为外层已有不同上下文
+        MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "outer-trace");
+        TenantContextHolder.setTenantId("outer-tenant");
+        UserContextHolder.setUserId("outer-user");
+
+        AtomicReference<String> inSendTenant = new AtomicReference<>();
+        when(kafkaTemplate.send(any(ProducerRecord.class))).thenAnswer(invocation -> {
+            ProducerRecord<Object, Object> rec = invocation.getArgument(0);
+            inSendTenant.set(TenantContextHolder.getTenantId());
+            if ("vr2".equals(rec.key())) {
+                // 模拟第 2 条底层同步抛原生异常，验证边界转译为 MessageDeliveryException 并触发 SPI 回调
+                throw new IllegalStateException("sdk sync send error");
+            }
+            RecordMetadata metadata = new RecordMetadata(new TopicPartition(rec.topic(), 0), 1L, 0, System.currentTimeMillis(), 0, 0);
+            return CompletableFuture.completedFuture(new SendResult<>(rec, metadata));
+        });
+
+        TransactionSynchronizationManager.getSynchronizations().get(0).afterCommit();
+
+        assertThat(inSendTenant.get()).isEqualTo("tenant-records-tx");
+        // 外层原有上下文必须被准确恢复
+        assertThat(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY)).isEqualTo("outer-trace");
+        assertThat(TenantContextHolder.getTenantId()).isEqualTo("outer-tenant");
+        assertThat(UserContextHolder.getUserId()).isEqualTo("outer-user");
+
+        verify(failureCallback, times(1)).onFailure(
+                eq("records.tx.topic"),
+                isNull(),
+                eq("vr2"),
+                eq("v2"),
+                eq("vr2"),
+                eq("trace-records-tx"),
+                argThat(ex -> ex instanceof MessageDeliveryException
+                        && ex.getCause() instanceof IllegalStateException
+                        && ex.getMessage().contains("sdk sync send error"))
+        );
+
+        // 5. sendBatchAsync 遇到底层同步 SDK 异常时通过聚合 Future 传播 MessageDeliveryException
+        CompletableFuture<List<SendResult<Object, Object>>> asyncFuture =
+                template.sendBatchAsync("records.tx.topic", "vr2", List.of("v2"));
+        assertThatThrownBy(asyncFuture::join)
+                .isInstanceOf(CompletionException.class)
+                .hasCauseInstanceOf(MessageDeliveryException.class);
     }
 }

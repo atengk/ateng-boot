@@ -1,0 +1,175 @@
+# 76. SnailJob 分布式调度与分布式重试双擎生产级加固架构决策 (SnailJob Dual-Engine Production Hardening and Resilient Distributed Architecture)
+
+## 背景与痛点
+
+在企业级分布式与微服务架构中，**分布式定时任务调度（Job）**与**分布式业务异常重试（Retry）**往往是紧密耦合的共性基础设施：定时批量任务执行失败需要受控重试；微服务 RPC/支付/消息投递失败需要分布式持久化补偿并在死信时人工介入。
+
+SnailJob（原 EasyRetry，由 Aizuda 开源）作为国内新兴的现代化高可用双擎平台，凭借原生支持 Spring Boot 3 与 JDK 17、Netty 长连接通信、**普通任务 / 广播分片 / MapReduce 动态分布式切片计算 / 复杂 DAG 工作流**，以及**本地重试 / 远程持久化调度重试 / 死信队列**一体化治理，正迅速成为企业级核心底座的关键选型。
+
+然而，在面对高并发生产落地、严苛的金融级数据一致性及云原生多租户隔离场景时，SnailJob 官方客户端 SDK 依然存在以下十大核心痛点与工程缺陷：
+
+1. **远程重试四维上下文彻底断裂 (Context Loss & Tenant Cross-Talk Risk)**：
+   当方法标注 `@Retryable` 遭遇异常并转入远程重试（`ONLY_REMOTE` 或 `LOCAL_REMOTE`）时，重试任务被持久化至服务端，数分钟或数小时后重新下发回调客户端执行。此时原请求的 MDC `traceId`、操作人 `userId`、租户 `tenantId` 彻底丢失，导致链路断层，更致命的是在 SaaS 多租户系统中极易引发**跨租户数据串写与越权更新**。
+2. **缺乏本地硬看门狗与僵尸线程雪崩 (Zombie Thread & ThreadPool Exhaustion)**：
+   服务端调度超时仅在管控台记录标记。如果客户端工作线程在执行任务或重试时陷入死锁、慢 SQL 或长连接无界阻塞，本地执行线程将被永久悬挂，最终耗尽线程池引发微服务雪崩。
+3. **业务日志与调度中心断层 (SLF4J vs SnailJobLog Disconnect)**：
+   官方通过 `SnailJobLog.REMOTE.info(...)` 上报远程日志。在实际工程中，业务代码普遍使用 SLF4J `log.info(...)`，导致业务日志无法同步至 SnailJob 管理控制台，严重破坏业务代码纯净度与故障排查体验。
+4. **形参样板代码与缺乏 JSR-303 防卫 (Raw JobArgs & Missing Fail-Fast)**：
+   官方 `@JobExecutor` 任务方法默认接收裸 `JobArgs`，业务开发者被迫编写冗余的 JSON 反序列化与参数判空代码；缺乏在传输边界自动将调度入参反序列化为强类型 DTO 并执行 JSR-303 Fail-Fast 校验的机制。
+5. **大数据批处理缺乏流式防 OOM 规范 (Streaming Cursor & Sharding Blindspot)**：
+   面对百万级持久化数据批处理时，开发者若缺乏标准流式步进抽象，极易陷入深分页（Deep Pagination）慢查询与堆内存 OOM 泥潭。
+6. **OpenAPI 编程式治理缺乏强类型与因果异常保护 (OpenAPI SDK Decoupling Gap)**：
+   SnailJob 官方自 `1.2.0-beta2` 及 `1.7.0+` 推出了 `SnailJobOpenApi`，但缺少微服务友好的强类型对称门面；底层网络与服务端异常未受控转译，容易造成 Log-and-Throw 污染或异常吞咽。
+7. **编程式重试门面缺失 (Missing Imperative SnailRetryTemplate)**：
+   针对动态计算幂等键、外部第三方 HTTP 接口调用无源码无法标注注解等场景，官方缺乏纯编程式对称执行门面，调用方被迫穿透底层复杂 SPI。
+8. **高频重试与死信告警风暴 (Alert Storm & Dead-Letter Blindspot)**：
+   网络抖动或下游系统宕机时，批量重试与任务失败高频轰炸，极易打爆协同机器人 Webhook；同时，重试耗尽真正进入**死信队列（Dead Letter）**的紧急事故缺乏高优先级领域事件与群卡片通道。
+9. **K8s 缩容发版缺乏平滑排空状态机 (SIGTERM & In-flight Task Truncation)**：
+   容器接收到 `SIGTERM` 信号停止时，SnailJob 默认缺乏对在途任务（In-flight Jobs）与正在重放重试任务的轮询排空机制，直接停机会导致数据库事务半提交与数据脏状态。
+10. **本地单测与 CI 脱网环境脆弱 (Missing Hermetic Test Sandbox)**：
+    SnailJob 客户端启动时默认尝试建立 Netty 长连接，在未部署服务端的本地开发与 GitHub Actions CI 环境中极易因连接超时抛错失败，阻断全自动流水线。
+
+---
+
+## 核心架构与决策内容
+
+经由严格技术推演、盲点对标与全场景审查，正式确立 **`ateng-boot-job-snail`（工业级 SnailJob 分布式调度与重试加固底座）**，其整体架构拓扑如下：
+
+```mermaid
+flowchart TD
+    subgraph ServerSide["SnailJob 服务端与管控中心 (SnailJob Server & OpenAPI)"]
+        SERVER["SnailJob Server (Netty 长连接集群)"]
+        OPENAPI["SnailJob OpenAPI 服务端 (任务CRUD / 工作流 / 状态启停)"]
+    end
+
+    subgraph ClientStarter["ateng-boot-job-snail 客户端加固底座"]
+        direction TB
+
+        subgraph CoreFacades["双擎核心门面与编程式治理 (Templates)"]
+            ADMIN_TPL["OpenAPI 编程式管理门面\n(SnailJobAdminTemplate)"]
+            RETRY_TPL["编程式分布式重试门面\n(SnailRetryTemplate)"]
+            BATCH_TPL["大数据游标分片批处理门面\n(SnailShardingBatchTemplate)"]
+            TENANT_TPL["多租户隔离遍历门面\n(TenantJobTemplate)"]
+        end
+
+        subgraph AnnotationsAndAop["声明式注解与智能织入切面 (Aspects & Engine)"]
+            JOB_ANN["@AtengSnailJob (超时/租户/JSR-303)"]
+            RETRY_ANN["@AtengSnailRetry (SpEL幂等/现场绑定)"]
+            JOB_ASPECT["调度切面: 四维上下文/参数反序列化/Fail-Fast"]
+            RETRY_ASPECT["重试切面: 现场快照封包/跨时间还原/死信捕获"]
+        end
+
+        subgraph RuntimeSafety["生产运行时健壮防线 (Runtime Protection)"]
+            WATCHDOG["本地硬超时看门狗 (SnailLocalWatchdog: 时间轮强中断)"]
+            LOG_APPENDER["SLF4J 动态日志双写镜像 (SnailJobLogbackAppender)"]
+            DRAIN_SM["三阶平滑停机排空状态机 (GracefulDrainStateMachine)"]
+            ALERT_AGG["三阶告警防风暴聚合器 (SnailJobAlertAggregator)"]
+        end
+
+        subgraph CloudNativeOps["云原生运维度量与脱网沙箱 (Observability & Test)"]
+            ACTUATOR["运维端点 (/actuator/snailjobs: 大盘/详情/脱网触发)"]
+            HEALTH["健康探针 (/actuator/health: Netty连通性)"]
+            METRICS["Micrometer 百分位耗时与吞吐指标 (ateng.job.snail.*)"]
+            TEST_HELPER["100% 离线脱网单测沙箱 (SnailJobTestHelper)"]
+        end
+    end
+
+    SERVER <-->|Netty 通信与长连接心跳| RuntimeSafety
+    OPENAPI <-->|RESTful HTTP 强契约交互| ADMIN_TPL
+    JOB_ANN --> JOB_ASPECT
+    RETRY_ANN --> RETRY_ASPECT
+    JOB_ASPECT --> WATCHDOG
+    JOB_ASPECT --> LOG_APPENDER
+    RETRY_ASPECT --> ALERT_AGG
+```
+
+---
+
+## 关键技术决策明细
+
+### 1. 1.10.0 稳定基线与双擎模块化装配
+- **依赖基线**：锁定官方稳定版本 `com.aizuda:snail-job-client-starter:1.10.0`（兼顾原生 Spring Boot 3 与 JDK 17 LTS 生产运行稳定性，架构设计前瞻兼容 2.x API 演进），并在 `ateng-boot-bom` 中全局纳管。
+- **细粒度特性开关**：
+  ```yaml
+  ateng:
+    boot:
+      job:
+        snail:
+          enabled: true                     # 总开关
+          server: 127.0.0.1:7888            # 服务端 Netty 节点地址 (支持集群逗号分隔)
+          group: ${spring.application.name} # 命名组
+          namespace: default                # 命名空间
+          token: default_token              # 鉴权令牌
+          job:
+            enabled: true                   # 任务调度功能开关
+          retry:
+            enabled: true                   # 分布式重试功能开关
+          openapi:
+            enabled: true                   # OpenAPI 门面开关
+            port: 8080                      # 服务端 Web 端口
+  ```
+
+### 2. 远程重试四维上下文保真与多租户沙箱
+- **快照封包与跨时间还原**：在重试拦截点，切面利用 `AsyncContext.capture()` 抓取当前四维上下文（MDC `traceId`、`userId`、`tenantId`、`ignoreTenant`），注入 SnailJob 重试请求元数据；服务端回调执行时，切面自动解包并还原至线程，并在 `finally` 执行确定性清理。
+- **租户隔离策略**：调度任务支持 `JobTenantMode`（`IGNORE` / `PARAM` / `ITERATE`），多租户全量遍历依托 `TenantJobTemplate` 在独立沙箱上下文中流式安全执行。
+
+### 3. OpenAPI 强类型管理门面 (`SnailJobAdminTemplate`)
+- **生命周期完备性**：封装任务新增（集群、广播、静态分片、Map、MapReduce）、更新、按 `jobId` 详情查询、即时触发、启停状态切换、任务删除及工作流（DAG）触发。
+- **因果异常转译**：严格遵循成熟度防线第七条，受控拦截底层网络与 HTTP 异常，保留原始 cause 转译为 `BusinessException`。
+
+### 4. 本地硬超时看门狗与 SLF4J 动态日志镜像
+- **`SnailLocalWatchdog`**：依托 Netty `HashedWheelTimer` 时间轮构建，超时强行触发 `workerThread.interrupt()`，广播 `SnailJobTimeoutEvent` 并记录异常现场堆栈。
+- **`SnailJobLogbackAppender`**：向 Logback Root Logger 动态挂载镜像 Appender，在调度与重试线程中，标准 SLF4J 日志透明镜像至 SnailJob 服务端，脱离执行线程自动静默。
+
+### 5. 分布式批处理与编程式重试双轨门面
+- **`SnailShardingBatchTemplate`**：为主键步长游标查询、多线程背压并发消费及 MyBatis-Plus 流式游标（`StreamingQueryTemplate`）提供标准化封装，彻底杜绝深分页与堆 OOM。
+- **`SnailRetryTemplate`**：提供对称的编程式重试门面，支持 SpEL 表达式与 SHA-256 结构摘要两种标准幂等键生成器。
+
+### 6. 云原生运维度量、防风暴聚合与脱网沙箱
+- **`/actuator/snailjobs`**：统一暴露已注册 JobHandler 与 Retry 场景大盘，提供单任务详情查询与脱网手动触发接口；
+- **告警防风暴与死信通道**：任务失败三阶状态机抑制风暴（首发告警 -> 聚合摘要 -> 成功自愈），重试死信极速发布 `SnailRetryDeadLetterEvent` 直投协同机器人；
+- **`SnailJobTestHelper`**：提供纯内存脱网驱动器，单测无需外部 SnailJob 服务端，配合 Sample 工程的双模机制保障 CI 100% 离线全绿。
+
+### 7. Map / MapReduce 动态分布式切片计算全面纳管
+- **全生命周期切面织入**：切面全面覆盖 `@MapExecutor`、`@ReduceExecutor` 与 `@MergeReduceExecutor`，打通 MDC `traceId` 染色、看门狗超时监控与入参校验。
+- **复合命名空间契约**：切片方法以 `<JobName>:<taskName>` 复合命名（如 `orderSyncJob:mapOrders`），杜绝跨任务同名切片方法的指标与看门狗会话碰撞。
+
+### 8. 调度生命周期责任链拦截器 SPI (`SnailJobInterceptor`)
+- **正交职责分离**：设计专职于 Job 调度与切片执行链路的 `SnailJobInterceptor` 责任链扩展点（`preHandle` / `postHandle` / `afterCompletion`），传递强类型 `SnailJobExecutionContext`。
+- **与 Retry 隔离**：重试链路维持原有的四维现场快照与死信回调机制，保持各引擎职责清晰。
+
+### 9. 本地看门狗超时降级与两级补偿机制
+- **方法级与全局降级双防线**：`@AtengSnailJob` 扩展 `fallbackMethod` 属性，工作线程响应中断后就地优先触发同 Bean 降级方法；同时提供全局 `JobTimeoutFallbackHandler` SPI，在线程严重卡死时由受管异步线程池隔离执行保底脱困。
+
+### 10. 分布式远程重试上下文存储 SPI (`SnailRetryContextStore`)
+- **多实例集群沙箱保真**：抽象 `SnailRetryContextStore` SPI，默认维持 `InMemorySnailRetryContextStore`，预留分布式 Redis 持久化扩展点，并在实参回退提取失败时输出明确告警日志，防御跨节点多租户越权。
+
+### 11. 批处理失败分片游标模型 (`FailedBatch<K>`)
+- **精准故障追溯与补跑**：在 `SnailShardingBatchTemplate` 的返回模型 `BatchExecutionResult` 中增补 `List<FailedBatch<K>>`，记录失败游标起始值与异常原因，对齐 XXL-Job 批处理成熟度。
+
+### 12. 节点级任务运行时治理总线 (`SnailJobRuntimeGovernor`)
+- **节点级动态静默与旁路**：提供单机内存任务治理总线，支持临时 `pause` 与 `resume` 特定任务处理器，被静默任务安全旁路并返回成功以防报警风暴；随 Pod 重启自复位并接入 Actuator 运维端点。
+
+### 13. 样例工程架构纯净化与零 Controller 污染治理
+- **坚守非 Web 模块准出铁律**：彻底清理 `ateng-boot-sample-job-snail` 中违规设立的 `SampleSnailJobController`，重构为标准 `ScenarioService` 并由 `@SpringBootTest` 驱动端到端验证，彻底消除架构破窗。
+
+> **演进注记 (Superseding Note)**：本节关于“移除 Sample Web Controller、仅保留非 Web `ScenarioService`”的局部样例形态约定，已由全局 [工业级文档与样例工程标准规范](../agents/documentation-specification.md) 与 [ADR-0104](./0104-snail-job-sample-multi-controller-and-documentation-specification-architecture.md) 正式取代（`Superseded by ADR-0104`）——现行 `ateng-boot-sample-job-snail` 已统一引入 `ateng-boot-web` 并按业务能力领域拆分为 5 大高内聚 `@RestController` 暴露体验端点。
+
+### 14. 独立单注解扫描注册与方法级本地退避重试/告警粒度覆写
+- **独立注解一键闭环**：新增 `AtengSnailJobScanner`（实现 Job `Scanner` SPI，覆盖独立方法/类级 `@AtengSnailJob` 及其 MapReduce 执行器，同任务名冲突 Fail-Fast）与 `AtengSnailRetryScanner` + `AtengSnailRetryPointcutAdvisor` + `AtengSnailRetryInterceptor`（实现 Retry `Scanner` SPI，同时向后兼容混用场景下显式 `@Retryable` 优先）。
+- **方法级瞬态重试与告警覆写**：`@AtengSnailJob` 扩展 `value`/`name` 别名、`method`、`retryCount`、`retryInterval`、`alertEnabled` 与 `alertSuppressThreshold`。其中本地退避重试仅针对业务执行期瞬态异常生效，对 JSR-303 校验、JSON 反序列化、`maxPayloadSize` 超限、看门狗超时与 `GracefulDrain` 停机拒绝强制 0 次快速失败；告警抑制支持方法级覆写全局阈值或单任务静音。
+
+### 15. Redis Fail-Open 重试现场集群化与虚拟线程防 Pinning 并发重构
+- **集群共享快照与安全序列化**：在保留 `InMemorySnailRetryContextStore`（`ReentrantLock` 保护访问序淘汰，容量由 `retry.in-memory-max-size=10000` 控制）的同时，新增基于 `StringRedisTemplate` 的 `RedisSnailRetryContextStore`（键前缀 `ateng:boot:job:snail:retry:ctx:`，TTL 绑定 `retry.context-ttl=24h`）；通过可序列化扁平载荷 `RetryContextSnapshotPayload` 规避 `AsyncContext.ContextSnapshot` 私有构造器直接反序列化风险，并在 Redis 故障时自动 Fail-Open 降级读写内置有界内存存储。
+- **全模块虚拟线程安全（ADR-0029）**：全面清零 `synchronized` 块与 `ForkJoinPool.commonPool()`，统一迁移为显式 `ReentrantLock` + `finally` 释放与 Core 受管线程池 `taskExecutor`（配置开关 `managed-pool-enabled`），`AtengSnailJobAutoConfiguration` 按 `@Qualifier("taskExecutor")` 解析并在关闭/缺失时采用调用线程安全退化执行，杜绝 JDK 21+ 虚拟线程 Carrier Pinning。
+
+### 16. 并发批处理模板扩展、非阻塞缓存健康探针与调度内核收口
+- **批处理与多租户能力对称扩展**：在 `SnailShardingBatchTemplate` 与 `SnailMyBatisStreamingTemplate` 引入不可变派生配置视图（`withFailFast`、`withProgressLogInterval`、`withMaxConcurrency`）、独立函数式回调 SPI `BatchFailureHandler<K>`（全局 `@Bean` 与调用方局部回调互不重复触发）及 `BatchExecutionResult.MAX_FAILED_ITEMS = 500` 有界截断；在 `TenantJobTemplate` 新增 `executeForEachTenantWithResult` 与基于 `Semaphore` 背压的 `executeForEachTenantParallel`。
+- **双轨 `maxPayloadSize` 防线**：`max-payload-size`（默认 `1MB`）在调度切面/脱机入口执行入参 UTF-8 字节 Fail-Fast 拦截，并在 `SnailJobLogbackAppender` 执行日志镜像 UTF-8 安全截断。
+- **非阻塞去反射健康探针与统一支撑内核**：`SnailJobHealthIndicator` 彻底移除易脆的 `GrpcChannel` 私有字段反射，改为依托 `ReentrantLock` 保护的 `health-cache-ttl`（默认 `10s`）缓存与受管并行有界 Socket 探活（`health-probe-timeout=800ms`），多活节点至少 1 个可达返回 `UP`（透出 `degraded` 标记与在线/离线节点清单），全失联返回 `DOWN`；`SnailJobInvocationSupport` 集中收口 `SnailJobEndpoint` 与 `SnailJobTestHelper` 的执行器发现、多参数绑定与前置校验。
+
+---
+
+## 结论与后续演进
+
+本架构决策经过全场景对标、深水区并发安全加固与多轮审查闭环，确立了完整的双擎契约、高并发护栏与验收标准。

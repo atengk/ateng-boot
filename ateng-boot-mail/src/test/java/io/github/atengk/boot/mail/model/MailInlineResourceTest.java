@@ -1,8 +1,11 @@
 package io.github.atengk.boot.mail.model;
 
+import io.github.atengk.boot.mail.exception.MailResultCode;
+import io.github.atengk.boot.mail.exception.MailSendException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.core.io.ByteArrayResource;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -30,6 +33,8 @@ class MailInlineResourceTest {
 
         assertThrows(IllegalArgumentException.class, () -> MailInlineResource.cleanContentId(null));
         assertThrows(IllegalArgumentException.class, () -> MailInlineResource.cleanContentId("   "));
+        assertEquals("logoX-Evil: 1", MailInlineResource.cleanContentId("<logo\r\nX-Evil: 1\0>"));
+        assertThrows(IllegalArgumentException.class, () -> MailInlineResource.cleanContentId("\r\n\0"));
     }
 
     @Test
@@ -65,5 +70,34 @@ class MailInlineResourceTest {
 
         inline.close();
         assertTrue(closed.get(), "close() 必须可靠释放底层流");
+    }
+
+    @Test
+    @DisplayName("测试内联资源 repeatable 标记与 ofBuffered 有界缓冲工厂")
+    void testInlineRepeatableAndOfBuffered() {
+        assertTrue(MailInlineResource.of("cid1", new byte[]{1, 2}, "image/png").isRepeatable());
+        assertTrue(MailInlineResource.of("cid2", new ByteArrayResource(new byte[]{1}), "image/png").isRepeatable());
+        assertFalse(MailInlineResource.of("cid3", new ByteArrayInputStream(new byte[]{1}), "image/png").isRepeatable());
+
+        MailInlineResource buffered = MailInlineResource.ofBuffered(
+                "cid4", new ByteArrayInputStream(new byte[]{1, 2, 3, 4}), "image/png", 16);
+        assertTrue(buffered.isRepeatable());
+        assertEquals(4L, buffered.getSize());
+
+        MailSendException ex = assertThrows(MailSendException.class, () ->
+                MailInlineResource.ofBuffered("cid5", new ByteArrayInputStream(new byte[30]), "image/png", 10));
+        assertEquals(MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED, ex.getResultCode());
+
+        AtomicBoolean leakedCheckClosed = new AtomicBoolean(false);
+        ByteArrayInputStream invalidCidStream = new ByteArrayInputStream(new byte[]{1, 2}) {
+            @Override
+            public void close() throws IOException {
+                leakedCheckClosed.set(true);
+                super.close();
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () ->
+                MailInlineResource.ofBuffered("   ", invalidCidStream, "image/png", 16));
+        assertTrue(leakedCheckClosed.get(), "ofBuffered 前置 contentId 校验失败时仍须关闭入参流");
     }
 }

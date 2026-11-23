@@ -36,21 +36,46 @@ class ObservabilityPropertiesTest {
 
         // 度量指标默认配置
         assertThat(properties.getMetrics()).isNotNull();
+        assertThat(properties.getMetrics().isIncludeApplicationTag()).isTrue();
+        assertThat(properties.getMetrics().getCommonTags()).isEmpty();
+        assertThat(properties.getMetrics().getMaxTagValueLength()).isEqualTo(128);
+        assertThat(properties.getMetrics().getMaxMeterCardinality()).isEqualTo(1000);
+        assertThat(properties.getMetrics().getDenyMetricPrefixes()).isEmpty();
         assertThat(properties.getMetrics().getPrometheus().isEnabled()).isTrue();
         assertThat(properties.getMetrics().getThreadPool().isEnabled()).isTrue();
+        assertThat(properties.getMetrics().getObserved().isEnabled()).isTrue();
 
         // 健康探针默认配置
         assertThat(properties.getHealth()).isNotNull();
         assertThat(properties.getHealth().getTimeout()).isEqualTo(Duration.ofSeconds(2));
+        assertThat(properties.getHealth().getCacheTtl()).isEqualTo(Duration.ZERO);
+        assertThat(properties.getHealth().getDegradedEventCooldown()).isEqualTo(Duration.ZERO);
+        assertThat(properties.getHealth().isK8sIsolationEnabled()).isTrue();
         assertThat(properties.getHealth().getStorage().isEnabled()).isTrue();
         assertThat(properties.getHealth().getRocketmq().isEnabled()).isTrue();
         assertThat(properties.getHealth().getRealtime().isEnabled()).isTrue();
         assertThat(properties.getHealth().getDynamicDatasource().isEnabled()).isTrue();
+        assertThat(properties.getHealth().getRedis().isEnabled()).isTrue();
+        assertThat(properties.getHealth().getKafka().isEnabled()).isTrue();
+        assertThat(properties.getHealth().getRabbitmq().isEnabled()).isTrue();
+        assertThat(properties.getHealth().getSearch().isEnabled()).isTrue();
+        assertThat(properties.getHealth().getMail().isEnabled()).isTrue();
+        assertThat(properties.getHealth().getMail().getCacheTtl()).isEqualTo(Duration.ofSeconds(60));
 
         // 端点安全默认配置
         assertThat(properties.getSecurity()).isNotNull();
         assertThat(properties.getSecurity().isLockdownEnabled()).isTrue();
         assertThat(properties.getSecurity().getToken()).isEmpty();
+        assertThat(properties.getSecurity().getAllowedIpRanges()).isEmpty();
+        assertThat(properties.getSecurity().isTrustProxyHeaders()).isFalse();
+        assertThat(properties.getSecurity().getTrustedProxies()).isEmpty();
+        assertThat(properties.getSecurity().isStealthMode()).isFalse();
+        assertThat(properties.getSecurity().getWhitelistedEndpoints())
+                .containsExactly("health", "info", "prometheus", "pre-stop");
+        assertThat(properties.getSecurity().getBasicAuth()).isNotNull();
+        assertThat(properties.getSecurity().getBasicAuth().isEnabled()).isFalse();
+        assertThat(properties.getSecurity().getBasicAuth().getUsername()).isEmpty();
+        assertThat(properties.getSecurity().getBasicAuth().getPassword()).isEmpty();
 
         // Admin 客户端默认配置
         assertThat(properties.getAdminClient()).isNotNull();
@@ -66,13 +91,41 @@ class ObservabilityPropertiesTest {
         contextRunner
                 .withPropertyValues(
                         "ateng.boot.observability.enabled=true",
+                        "ateng.boot.observability.metrics.include-application-tag=false",
+                        "ateng.boot.observability.metrics.common-tags.env=prod",
+                        "ateng.boot.observability.metrics.common-tags.region=cn-east",
+                        "ateng.boot.observability.metrics.max-tag-value-length=64",
+                        "ateng.boot.observability.metrics.max-meter-cardinality=500",
+                        "ateng.boot.observability.metrics.deny-metric-prefixes[0]=jvm.gc.pause",
+                        "ateng.boot.observability.metrics.deny-metric-prefixes[1]=tomcat.sessions",
                         "ateng.boot.observability.metrics.prometheus.enabled=false",
                         "ateng.boot.observability.metrics.thread-pool.enabled=true",
+                        "ateng.boot.observability.metrics.observed.enabled=false",
                         "ateng.boot.observability.health.timeout=5s",
+                        "ateng.boot.observability.health.cache-ttl=3s",
+                        "ateng.boot.observability.health.degraded-event-cooldown=30s",
+                        "ateng.boot.observability.health.k8s-isolation-enabled=false",
                         "ateng.boot.observability.health.storage.enabled=false",
                         "ateng.boot.observability.health.rocketmq.enabled=false",
+                        "ateng.boot.observability.health.redis.enabled=false",
+                        "ateng.boot.observability.health.kafka.enabled=false",
+                        "ateng.boot.observability.health.rabbitmq.enabled=false",
+                        "ateng.boot.observability.health.search.enabled=false",
+                        "ateng.boot.observability.health.mail.enabled=false",
+                        "ateng.boot.observability.health.mail.cache-ttl=120s",
                         "ateng.boot.observability.security.lockdown-enabled=true",
                         "ateng.boot.observability.security.token=SEC_TOKEN_123456",
+                        "ateng.boot.observability.security.allowed-ip-ranges[0]=10.0.0.0/8",
+                        "ateng.boot.observability.security.allowed-ip-ranges[1]=192.168.1.0/24",
+                        "ateng.boot.observability.security.trust-proxy-headers=true",
+                        "ateng.boot.observability.security.trusted-proxies[0]=172.16.0.0/12",
+                        "ateng.boot.observability.security.trusted-proxies[1]=127.0.0.1",
+                        "ateng.boot.observability.security.stealth-mode=true",
+                        "ateng.boot.observability.security.whitelisted-endpoints[0]=health",
+                        "ateng.boot.observability.security.whitelisted-endpoints[1]=metrics",
+                        "ateng.boot.observability.security.basic-auth.enabled=true",
+                        "ateng.boot.observability.security.basic-auth.username=admin",
+                        "ateng.boot.observability.security.basic-auth.password=secret123",
                         "ateng.boot.observability.admin-client.enabled=true",
                         "ateng.boot.observability.admin-client.client-secret=SBA_SECRET_777",
                         "ateng.boot.observability.admin-client.service-url=http://app:8080",
@@ -83,14 +136,40 @@ class ObservabilityPropertiesTest {
                     ObservabilityProperties props = context.getBean(ObservabilityProperties.class);
 
                     assertThat(props.isEnabled()).isTrue();
+                    assertThat(props.getMetrics().isIncludeApplicationTag()).isFalse();
+                    assertThat(props.getMetrics().getCommonTags())
+                            .containsEntry("env", "prod")
+                            .containsEntry("region", "cn-east");
+                    assertThat(props.getMetrics().getMaxTagValueLength()).isEqualTo(64);
+                    assertThat(props.getMetrics().getMaxMeterCardinality()).isEqualTo(500);
+                    assertThat(props.getMetrics().getDenyMetricPrefixes())
+                            .containsExactly("jvm.gc.pause", "tomcat.sessions");
                     assertThat(props.getMetrics().getPrometheus().isEnabled()).isFalse();
                     assertThat(props.getMetrics().getThreadPool().isEnabled()).isTrue();
+                    assertThat(props.getMetrics().getObserved().isEnabled()).isFalse();
                     assertThat(props.getHealth().getTimeout()).isEqualTo(Duration.ofSeconds(5));
+                    assertThat(props.getHealth().getCacheTtl()).isEqualTo(Duration.ofSeconds(3));
+                    assertThat(props.getHealth().getDegradedEventCooldown()).isEqualTo(Duration.ofSeconds(30));
+                    assertThat(props.getHealth().isK8sIsolationEnabled()).isFalse();
                     assertThat(props.getHealth().getStorage().isEnabled()).isFalse();
                     assertThat(props.getHealth().getRocketmq().isEnabled()).isFalse();
+                    assertThat(props.getHealth().getRedis().isEnabled()).isFalse();
+                    assertThat(props.getHealth().getKafka().isEnabled()).isFalse();
+                    assertThat(props.getHealth().getRabbitmq().isEnabled()).isFalse();
+                    assertThat(props.getHealth().getSearch().isEnabled()).isFalse();
+                    assertThat(props.getHealth().getMail().isEnabled()).isFalse();
+                    assertThat(props.getHealth().getMail().getCacheTtl()).isEqualTo(Duration.ofSeconds(120));
                     assertThat(props.getHealth().getRealtime().isEnabled()).isTrue();
                     assertThat(props.getSecurity().isLockdownEnabled()).isTrue();
                     assertThat(props.getSecurity().getToken()).isEqualTo("SEC_TOKEN_123456");
+                    assertThat(props.getSecurity().getAllowedIpRanges()).containsExactly("10.0.0.0/8", "192.168.1.0/24");
+                    assertThat(props.getSecurity().isTrustProxyHeaders()).isTrue();
+                    assertThat(props.getSecurity().getTrustedProxies()).containsExactly("172.16.0.0/12", "127.0.0.1");
+                    assertThat(props.getSecurity().isStealthMode()).isTrue();
+                    assertThat(props.getSecurity().getWhitelistedEndpoints()).containsExactly("health", "metrics");
+                    assertThat(props.getSecurity().getBasicAuth().isEnabled()).isTrue();
+                    assertThat(props.getSecurity().getBasicAuth().getUsername()).isEqualTo("admin");
+                    assertThat(props.getSecurity().getBasicAuth().getPassword()).isEqualTo("secret123");
                     assertThat(props.getAdminClient().isEnabled()).isTrue();
                     assertThat(props.getAdminClient().getClientSecret()).isEqualTo("SBA_SECRET_777");
                     assertThat(props.getAdminClient().getServiceUrl()).isEqualTo("http://app:8080");

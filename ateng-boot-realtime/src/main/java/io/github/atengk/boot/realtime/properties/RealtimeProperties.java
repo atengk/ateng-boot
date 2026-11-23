@@ -157,6 +157,34 @@ public class RealtimeProperties {
          * 并发安全装饰器单次写超时阈值（默认: 10s）
          */
         private Duration sendTimeout = Duration.ofSeconds(10);
+
+        /**
+         * 上行消息会话级流量限制与防 DoS 配置
+         */
+        @NestedConfigurationProperty
+        private RateLimitProperties rateLimit = new RateLimitProperties();
+    }
+
+    /**
+     * WebSocket 上行流量治理与限流配置
+     */
+    @Data
+    public static class RateLimitProperties {
+
+        /**
+         * 是否开启会话级上行流量限制（默认: false）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 单会话每秒最大允许上行请求数（默认: 50）
+         */
+        private int maxRequestsPerSecond = 50;
+
+        /**
+         * 连续超限触发强制断开长连接的违规次数阈值（默认: 3，设为 0 表示不强制断开仅丢弃警告）
+         */
+        private int consecutiveViolationsBeforeClose = 3;
     }
 
     /**
@@ -244,6 +272,16 @@ public class RealtimeProperties {
         private String nodesHashKey = "ateng:realtime:cluster:nodes";
 
         /**
+         * 集群分布式群组正向成员索引 Redis Set 键前缀（默认: ateng:realtime:cluster:group:）
+         */
+        private String groupKeyPrefix = "ateng:realtime:cluster:group:";
+
+        /**
+         * 集群分布式群组反向所属索引 Redis Set 键前缀（默认: ateng:realtime:cluster:session:）
+         */
+        private String sessionGroupsKeyPrefix = "ateng:realtime:cluster:session:";
+
+        /**
          * 集群节点度量上报心跳周期（默认: 5s）
          */
         private Duration metricsInterval = Duration.ofSeconds(5);
@@ -269,6 +307,16 @@ public class RealtimeProperties {
          * 离线消息保留时间（默认: 7d）
          */
         private Duration ttl = Duration.ofDays(7);
+
+        /**
+         * 离线消息 Redis ZSet 键前缀（默认: ateng:realtime:offline:）
+         */
+        private String keyPrefix = "ateng:realtime:offline:";
+
+        /**
+         * WebSocket 重连建连时是否自动拉取并顺序下发离线消息（默认: false）
+         */
+        private boolean autoPushOnConnect = false;
     }
 
     /**

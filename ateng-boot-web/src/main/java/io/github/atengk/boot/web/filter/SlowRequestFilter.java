@@ -33,9 +33,9 @@ public class SlowRequestFilter extends OncePerRequestFilter implements Ordered {
     private static final Logger log = LoggerFactory.getLogger(SlowRequestFilter.class);
 
     /**
-     * 默认过滤器执行优先级：位于 TraceFilter 与可重读管道之后
+     * 默认过滤器执行优先级：位于 PayloadLoggingFilter(+40) 之后，安全响应头过滤器(+60) 之前
      */
-    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 3;
+    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 50;
 
     private static final Duration DEFAULT_THRESHOLD = Duration.ofSeconds(3);
     private static final String UPGRADE_HEADER = "Upgrade";

@@ -4,9 +4,12 @@ import io.github.atengk.boot.ssh.enums.HostKeyPolicy;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
+import org.springframework.util.unit.DataSize;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -65,6 +68,11 @@ public class SshProperties {
     private HostKeyPolicy hostKeyPolicy = HostKeyPolicy.LENIENT;
 
     /**
+     * 跳板机 / 堡垒机节点名称（引用 {@code ateng.boot.ssh.servers.<name>} 中的已配置节点标识，支持多级级联与环路防卫）
+     */
+    private String jumpHost;
+
+    /**
      * 网络 TCP 连接与 SSH 协议协商超时阈值
      */
     private Duration connectTimeout = Duration.ofSeconds(10);
@@ -78,6 +86,21 @@ public class SshProperties {
      * 远程命令执行超时阈值
      */
     private Duration commandTimeout = Duration.ofSeconds(60);
+
+    /**
+     * 单次同步命令标准输出或标准错误最大内存缓冲容量上限（默认 10MB，防 OOM）
+     */
+    private DataSize maxOutputSize = DataSize.ofMegabytes(10);
+
+    /**
+     * 是否启用内置高危毁灭性命令安全防火墙守卫（默认开启）
+     */
+    private boolean dangerousCommandGuardEnabled = true;
+
+    /**
+     * 自定义附加高危命令拦截正则表达式列表
+     */
+    private List<String> dangerousCommandPatterns = new ArrayList<>();
 
     /**
      * 会话连接池配置

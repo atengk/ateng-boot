@@ -18,6 +18,7 @@ import org.redisson.api.RReadWriteLock;
 import org.redisson.api.RedissonClient;
 
 import java.lang.reflect.Method;
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -281,7 +282,7 @@ class DistributedLockAspectTest {
         when(rLock.isHeldByCurrentThread()).thenReturn(true);
 
         // 设置极低的慢锁阈值触发告警分支
-        redisProperties.getLock().setSlowThresholdMs(10L);
+        redisProperties.getLock().setSlowThreshold(Duration.ofMillis(10L));
 
         Method method = SampleService.class.getMethod("processSlow", String.class);
         DistributedLock annotation = method.getAnnotation(DistributedLock.class);
@@ -289,6 +290,28 @@ class DistributedLockAspectTest {
         Object result = aspect.around(joinPoint, annotation);
 
         assertThat(result).isEqualTo("slow:SLOW_01");
+        verify(rLock).unlock();
+    }
+
+    @Test
+    @DisplayName("测试 @DistributedLock 默认继承全局 ateng.boot.redis.lock.prefix 配置")
+    void shouldInheritGlobalLockPrefixWhenDefault() throws Throwable {
+        redisProperties.getLock().setPrefix("custom-lock:");
+        aspect = new DistributedLockAspect(redissonClient, redisProperties);
+
+        mockJoinPoint("processOrder", new Class<?>[]{String.class}, new Object[]{"ORD_999"});
+        when(joinPoint.proceed()).thenReturn("ok:ORD_999");
+        when(redissonClient.getLock("custom-lock:ORD_999")).thenReturn(rLock);
+        when(rLock.tryLock(anyLong(), any(TimeUnit.class))).thenReturn(true);
+        when(rLock.isHeldByCurrentThread()).thenReturn(true);
+
+        Method method = SampleService.class.getMethod("processOrder", String.class);
+        DistributedLock annotation = method.getAnnotation(DistributedLock.class);
+
+        Object result = aspect.around(joinPoint, annotation);
+
+        assertThat(result).isEqualTo("ok:ORD_999");
+        verify(redissonClient).getLock("custom-lock:ORD_999");
         verify(rLock).unlock();
     }
 }

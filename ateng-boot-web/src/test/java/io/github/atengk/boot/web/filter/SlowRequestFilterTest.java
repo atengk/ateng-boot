@@ -65,7 +65,8 @@ class SlowRequestFilterTest {
     @DisplayName("验证默认构造器与配置优先级契约")
     void shouldVerifyDefaultPropertiesAndOrder() {
         SlowRequestFilter filter = new SlowRequestFilter();
-        assertThat(filter.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 3);
+        assertThat(filter.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 50);
+        assertThat(filter.getOrder()).isEqualTo(SlowRequestFilter.ORDER);
         assertThat(filter.getThreshold()).isEqualTo(Duration.ofSeconds(3));
         assertThat(filter.getExcludeUrls()).isEmpty();
         assertThat(filter.shouldNotFilterAsyncDispatch()).isTrue();

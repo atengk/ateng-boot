@@ -133,9 +133,59 @@ flowchart TD
 5. **Redis 5.0+ Stream 可靠消息流引擎与声明式消费组切面 (#402)**：
    - 落地 `RedisStreamTemplate`，封装流追加、消费组自动创建、Pending 积压检查、XCLAIM 孤儿认领与 XTRIM 定长裁剪；
    - 落地 `@RedisStreamListener` 声明式监听切面与 `StreamBootstrap` 调度器，受管线程池驱动，支持 At-Least-Once 可靠投递、MDC 上下文透传与死信流 (`:dlq`) + `StreamFailureHandler` SPI。
-6. **样例工程去 Web 污染重构与 1:1 全场景驱动实测 (#403)**：
-   - 彻底废除非 Web 模块样例工程违规引入的 Controller 与 MockMvc，打造 8 大独立场景业务组件（`StockDeductScenarioService`, `OrderDelayScenarioService`, `StreamEventScenarioService`, `IdempotentScenarioService`, `SemaphoreThrottlingScenarioService`, `ScriptExecutionScenarioService`, `NoticeBroadcastScenarioService`, `CacheScenarioService`）；
-   - 以纯粹 `@SpringBootTest` 驱动 21 个端到端集成测试，实现 100% 场景真实闭环与离线自洽。
+6. **样例工程去 Web 污染重构与 1:1 全场景驱动实测 (#403)**（*注：本条关于“零 Controller”的阶段性约定已被下文 Phase 4 演进决策正式废止替代*）：
+   - 早期阶段曾移除样例工程中的独立 Controller，构建 8 大场景业务组件并以 `@SpringBootTest` 验证。
+
+### 9. Phase 4 全面 Web 体验化重构、双模内存仿真桩与全局前缀一致性加固 (Full Web Experience & KeyPrefix Unification)
+遵循全仓统一的《工业级文档与样例工程标准规范》（`docs/agents/documentation-specification.md`），经由 `/grill-with-docs` 决策推演，对 `ateng-boot-redis` 及其配套 `ateng-boot-sample-redis` 确立以下增量架构演进决策：
+1. **废止“零 Controller”旧规，升级为 8 领域高内聚 Web 交互沙箱**：
+   - 正式废止 Phase 3 (#403) 中关于“非 Web 模块保持零 Controller”的历史过渡约定；
+   - `ateng-boot-sample-redis` 引入 `ateng-boot-web` 底座，按单一职责拆分为 8 个领域 `@RestController`（`RedisOpsAndScriptController`、`RedisLockController`、`RedisIdempotentController`、`RedisTrafficController`、`RedisCacheController`、`RedisDelayQueueController`、`RedisStreamController`、`RedisPubSubController`），统一挂载 `/sample/redis/<feature>/<action>` 语义路由并返回强类型 `Result<T>`。
+2. **`src/main` 纯 JDK 原生动态代理离线内存仿真桩与 `local` 双模切换**：
+   - 针对 `Redisson.create(config)` 与后台监听容器在启动期强依赖物理连接的特性，在 `ateng-boot-sample-redis/src/main` 中内置标注 `@Profile("!local")` 的纯 JDK 原生动态代理内存仿真配置（零 Mockito 生产依赖），统一驱动 `mvn spring-boot:run` 离线交互体验与 `@SpringBootTest` + `MockMvc` 端到端测试；
+   - 当激活 `local` Profile 并加载 `application-local.yml` 时，内存仿真桩自动退出，100% 切换至真实物理 Redis 与 Redisson 客户端联调。
+3. **全局 `key-prefix` 高级组件全覆盖对齐与两级缓存配置向后兼容**：
+   - 补齐 `RedisRateLimiterClient` 与单级 `RedisCacheManager` 对 `ateng.boot.redis.key-prefix` 的统一前置拼接能力，消除多环境/多租户共享实例下的局部串键盲区（仅最底层 `RedisUtil` 保持显式原生透传并提供 `buildKey` 辅助）；
+   - `RedisProperties.TwoLevelCacheProperties` 的 `L1Properties` 与 `L2Properties` 在保持 `ttls` 标准属性名的同时，提供 `expires` 兼容绑定入口，实现向后平滑兼容。
+4. **权威文档 0~7 章领域大章收敛与三要素同屏闭环**：
+   - 彻底重构 `ateng-boot-redis/README.md`，将原 17 个散落章节收敛为 0~7 八大领域章节，原第 16 章（SPI 扩展定制）与第 17 章（生产边界与故障模式）全量拆解并就近内聚至各特性子节内部；Sample 自身 `README.md` 收敛为四段式极简体验卡。
+
+### 10. Phase 5 工业级防线加固、死信受控重放/PEL自愈与全场景对称门面演进 (#838)
+立足于九道成熟度防线与更极端的高并发、分布式故障自愈场景，经由 `/grill-with-docs` 推演，确立以下增量架构决策：
+1. **Redisson 看门狗配置自洽、全局前缀分层契约与两级缓存 L2-TTL 对齐 (#839)**：
+   - 彻底修复 Redisson 看门狗时间配置覆盖失效问题，显式通过 `config.setLockWatchdogTimeout` 注入；
+   - 确立全局 `key-prefix` 刚性分层契约：高级受管组件（锁、防重、延时队列、Stream、缓存、信号量、布隆）100% 自动拼接，最底层 `RedisUtil` 保持原生透传；
+   - 两级缓存修复 L2 序列化时未纳管特定 CacheName TTL 映射的缺陷，实现与 L1 TTL 深度对齐。
+2. **延时队列死信受控重放、静态门面补齐与高并发全场景对称操作 (#840)**：
+   - `DeadLetterMessage` 增强支持累计重放计数（`replayCount`）；
+   - 新增 `ateng.boot.redis.delay-queue.max-replay-attempts`（默认 3 次），超过阈值阻断重放，防止毒丸死循环引发二次死信雪崩；
+   - 补齐 `RedisDelayedQueueUtil` 静态门面与 `peekDeadLetters` 非破坏检视接口，保障对称操作完备性。
+3. **分布式锁多模式静态门面补齐、降级 fallback 扩展与原子 CAS 对称演进 (#841)**：
+   - `RedisLockUtil` 静态门面全量对齐 `DistributedLockTemplate`，全面支持 `FAIR`、`READ`、`WRITE` 锁模式与超时 `fallback` 降级闭包；
+   - `RedisAtomicUtil` 补齐通用 `compareAndSet(key, expect, update, duration)` 等对称操作，增强过期时间保护。
+4. **Stream 四维上下文透传、死信受控重放与 PEL 孤儿消息自动认领自愈 (#842)**：
+   - Stream 投递与消费链路深度集成 Core 四维上下文（MDC `traceId`、`TenantContextHolder`、`UserContextHolder`），消费端在 `finally` 中严格清理上下文，业务监听入参前置过滤 `__ateng_*` 内部系统键；
+   - 扩展 `StreamDeadLetterMessage` 记录 `replayCount`，新增 `ateng.boot.redis.stream.max-replay-attempts`（默认 3 次）防雪崩守卫，修复进入死信后的双重 ACK 冗余缺陷；
+   - `StreamBootstrap` 升级实现 `SmartLifecycle` 规范契约，消费主循环内置周期性 PEL 巡检与 `claimPendingMessages` 自动抢占孤儿待决消息（`claim-idle-time` 默认 1m，`claim-batch-size` 默认 20 条），消费者宕机故障无感自愈。
+5. **Sample 与 Starter 五维文档 1:1 逆向对齐、领域词汇表及 ADR-0022 闭环 (#843)**：
+   - Sample 与 Starter 双端文档 100% 逆向对齐，消除参数与路由幻觉；
+   - 沉淀 **DeadLetterReplay** 与 **PELOrphanClaiming** 核心标准术语至 `CONTEXT.md`，阶梯二测试与 12 项自检清单全绿准出。
+
+### 11. Phase 6 全局前缀幂等、异步上下文隔离、装配守卫与五维 8 大章文档收敛 (#931 ~ #935)
+围绕模块体检发现的装配边界、全局前缀分裂、SPI 原因链完整度、静态门面同步与文档结构碎片化问题，确立以下增量加固与文档治理决策：
+1. **全局键前缀幂等合成统一与全量受管组件对齐 (#932)**：
+   - 收敛全局 `key-prefix` 与模块二级前缀（`lock:`、`idempotent:`、`semaphore:`、`bloom:` 等）合成逻辑至 `RedisProperties.normalizePrefix` 与 `RedisProperties.buildKey(modulePrefix, rawKey)`，严格执行“规范化末尾冒号 + 剥离重复全局/模块前缀”幂等规则；
+   - 统一对齐 `RedisCacheTemplate`、`DistributedLockTemplate`、`RedisIdempotentTemplate`、`RedisDelayedQueue`、`RedisStreamTemplate`、`RedisRateLimiterClient`、`RedisSemaphoreTemplate`、`RedisBloomFilter`、`RedisAtomicUtil` 与 `RedisUtil.buildKey`，消除 `sample:sample:` / `sample:lock:lock:` 等冗余前缀及无冒号粘连缺陷。
+2. **Stream 死信双参 SPI 对称扩展与异步消费容器四维上下文隔离 (#933)**：
+   - `StreamFailureHandler` 在保留函数式单参 `onFailure(StreamDeadLetterMessage)` 向后兼容的同时，新增默认双参方法 `onFailed(StreamDeadLetterMessage deadLetterMessage, Throwable cause)`，`StreamBootstrap` 重试耗尽后直接传递完整异常原因链 `lastError` 并接入 `LoggingStreamFailureHandler`；
+   - 提取共享工具 `RedisConsumptionContext.clearAll()`（嵌套 `try-finally` 保护）替代各容器重复实现；`DelayedQueueBootstrap`、`ChannelTopicBootstrap` 与 `StreamBootstrap` 在启动轮询及每次消费前后彻底清空 MDC、租户上下文（`TenantId` / `IgnoreTenant`）与用户身份上下文，且延时队列与 Pub/Sub 广播在每次消费均生成独立 `traceId`，严禁复用启动线程或分发线程残留链路标识。
+3. **自动装配顺序守卫、看门狗双层级超时配置、信号量属性与 8 大静态门面统一桥接 (#934)**：
+   - 在 `AtengRedisAutoConfiguration` 显式补充 `@AutoConfigureAfter(AtengCoreAutoConfiguration.class)` 与 `@AutoConfigureBefore({RedisAutoConfiguration.class, CacheAutoConfiguration.class})` 顺序守卫；
+   - 在 `RedisProperties.RedissonProperties` 中规范 `lockWatchdogTimeout`（默认 `30s`），并在 `LockProperties` 中提供可选覆盖属性 `watchdogTimeout`（优先级 `lock.watchdog-timeout` > `redisson.lock-watchdog-timeout`），构建 `RedissonClient` 时经 `Duration` 转毫秒并校验 `> 0ms` 注入 `Config.setLockWatchdogTimeout`；
+   - 新增 `RedisProperties.SemaphoreProperties`（`enabled = true`、`prefix = "semaphore:"`）及 `redisSemaphoreTemplate` 上的 `@ConditionalOnProperty` 条件守卫；
+   - 补齐 `redisStaticFacadesInitializer`（`SmartInitializingSingleton` + `@ConditionalOnMissingBean`）通过 `ObjectProvider` 对全量 8 大静态门面（含 `RedisUtil`、`RedisAtomicUtil`、`RedisBloomUtil` 等）的统一动态绑定，并在 `RedisAtomicUtil.init` 中守卫无参构造实例不清空既有 `staticTemplate`。
+4. **五维 `README.md` 8 大能力章收敛与领域/ADR 文档同步 (#935)**：
+   - 将 `ateng-boot-redis/README.md` 按 `ateng-boot-sample-redis` 8 个 `@RestController` 领域 1:1 收敛为 8 大高内聚业务能力章节，对齐全景速查矩阵、全局前缀表与全量 YAML 清单，同步更新 `CONTEXT.md` 与 `ADR-0022`。
 
 ---
 
@@ -153,7 +203,7 @@ flowchart TD
 
 ---
 
-## 9. 演进落地状态与交付审计 (Delivery & Verification Audit)
+## 演进落地状态与交付审计 (Delivery & Verification Audit)
 
 - **当前状态**：`Accepted & Implemented (已全面落地交付)`
 - **工单切片闭环**：
@@ -172,7 +222,18 @@ flowchart TD
     - **#402**：Redis 5.0+ Stream 可靠消息流引擎与声明式消费组切面 (`RedisStreamTemplate` & `@RedisStreamListener`)；
     - **#403**：样例工程去 Web 污染重构与 1:1 全场景驱动实测（8 大场景 Service 与 21 项端到端测试）；
     - **#404**：五维生产就绪文档体系、100% 全景速查矩阵与 ADR-0022 落地闭环。
-- **质量门禁基准**：依赖树联动编译与端到端集成测试通过，覆盖率与工业级健壮性红线全达标（218 个模块单测 + 21 个场景测试 100% 通过）。
+  - **Phase 5 工业级防线加固、死信受控重放/PEL自愈与全场景对称门面演进工单 (#838)**：
+    - **#839**：Redisson 看门狗配置自洽、全局前缀分层契约与两级缓存 L2-TTL 对齐加固；
+    - **#840**：延时队列死信受控重放、静态门面补齐与高并发全场景对称操作演进；
+    - **#841**：分布式锁多模式静态门面补齐、降级 fallback 扩展与原子 CAS 对称演进；
+    - **#842**：Stream 四维上下文透传、死信受控重放与 PEL 孤儿消息自动认领自愈闭环；
+    - **#843**：Sample 与 Starter 五维文档 1:1 逆向对齐、领域词汇表及 ADR-0022 闭环。
+  - **Phase 6 全局前缀幂等、上下文隔离、装配守卫与五维 8 大章文档收敛工单 (#931)**：
+    - **#932**：全局 `key-prefix` 幂等合成规则（`RedisProperties.normalizePrefix` / `buildKey`）统一与 9 大受管组件及 `RedisUtil` 全量对齐；
+    - **#933**：`StreamFailureHandler.onFailed(deadLetterMessage, cause)` 双参原因链 SPI 扩展与异步消费容器（`DelayedQueueBootstrap` / `ChannelTopicBootstrap` / `StreamBootstrap`）四维上下文隔离清理加固；
+    - **#934**：自动装配顺序守卫（`@AutoConfigureAfter` / `@AutoConfigureBefore`）、看门狗双层级超时配置注入（`lock.watchdog-timeout` / `redisson.lock-watchdog-timeout`）、`SemaphoreProperties` 条件装配与 `redisStaticFacadesInitializer` 全量 8 大静态门面统一桥接；
+    - **#935**：Starter 五维 `README.md` 8 大能力章收敛与 `CONTEXT.md` / `ADR-0022` 同步闭环。
+- **质量门禁基准**：依赖树联动编译与端到端集成测试通过，覆盖率与工业级健壮性红线全达标（277 个模块单测 + 44 个场景端到端测试 100% 通过）。
 
 
 

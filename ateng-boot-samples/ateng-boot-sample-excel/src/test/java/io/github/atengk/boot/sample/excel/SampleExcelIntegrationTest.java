@@ -2,15 +2,41 @@ package io.github.atengk.boot.sample.excel;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.excel.async.ExportTask;
+import io.github.atengk.boot.excel.async.ExportTaskStatus;
 import io.github.atengk.boot.excel.builder.ExcelBuilder;
 import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
+import io.github.atengk.boot.excel.enums.HeaderValidationStrategy;
+import io.github.atengk.boot.excel.model.ExcelMultiSheetResult;
+import io.github.atengk.boot.excel.model.ExcelReadResult;
+import io.github.atengk.boot.excel.util.ExcelSecurityUtil;
 import io.github.atengk.boot.excel.util.ExcelUtil;
+import io.github.atengk.boot.sample.excel.enums.EmployeeStatusEnum;
 import io.github.atengk.boot.sample.excel.enums.SampleGenderEnum;
+import io.github.atengk.boot.sample.excel.service.AsyncExportScenarioService;
+import io.github.atengk.boot.sample.excel.service.DynamicColumnProjectionScenarioService;
+import io.github.atengk.boot.sample.excel.service.MultiSheetScenarioService;
+import io.github.atengk.boot.sample.excel.service.SecurityWorkbookScenarioService;
+import io.github.atengk.boot.sample.excel.service.StreamingPageExportScenarioService;
+import io.github.atengk.boot.sample.excel.service.ValidationAndFeedbackScenarioService;
+import io.github.atengk.boot.sample.excel.vo.DepartmentAttendanceMergeVO;
 import io.github.atengk.boot.sample.excel.vo.DepartmentUserMergeVO;
+import io.github.atengk.boot.sample.excel.vo.EmployeeRosterVO;
 import io.github.atengk.boot.sample.excel.vo.I18nUserExcelVO;
+import io.github.atengk.boot.sample.excel.vo.OnboardingImportVO;
 import io.github.atengk.boot.sample.excel.vo.SecurityUserExcelVO;
 import io.github.atengk.boot.sample.excel.vo.UserExcelVO;
-import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.ss.usermodel.BorderStyle;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellStyle;
+import org.apache.poi.ss.usermodel.Comment;
+import org.apache.poi.ss.usermodel.DataValidation;
+import org.apache.poi.ss.usermodel.FillPatternType;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -24,25 +50,31 @@ import org.springframework.test.web.servlet.MvcResult;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * Excel Starter 全栈端到端自动化验收集成测试
- * 覆盖流式导出、多 Sheet 编排、单元格合并、动态脱敏、防呆模板下载、JSR-303 导入校验与错题集标红批注回写全场景
+ * <p>
+ * 覆盖 6 大专职业务场景组件与 6 个领域 Controller 全端点契约，实现 100% 离线自洽全真断言。
+ * </p>
  *
  * @author Ateng
  * @since 2026-10-17
@@ -58,276 +90,1451 @@ class SampleExcelIntegrationTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private StreamingPageExportScenarioService streamingPageExportService;
+
+    @Autowired
+    private MultiSheetScenarioService multiSheetService;
+
+    @Autowired
+    private ValidationAndFeedbackScenarioService validationService;
+
+    @Autowired
+    private AsyncExportScenarioService asyncExportService;
+
+    @Autowired
+    private SecurityWorkbookScenarioService securityWorkbookService;
+
+    @Autowired
+    private DynamicColumnProjectionScenarioService dynamicProjectionService;
+
     @TempDir
     Path tempDir;
-
-    @Test
-    @DisplayName("测试流式导出用户列表：验证 HTTP 响应头、动态脱敏掩码与枚举/字典转义")
-    void testExportUsers() throws Exception {
-        MvcResult mvcResult = mockMvc.perform(get("/api/excel/export"))
-                .andExpect(status().isOk())
-                .andExpect(header().exists("Content-Disposition"))
-                .andReturn();
-
-        String disposition = mvcResult.getResponse().getHeader("Content-Disposition");
-        assertThat(disposition).contains("attachment");
-        assertThat(URLDecoder.decode(disposition, StandardCharsets.UTF_8)).contains("用户列表.xlsx");
-
-        byte[] content = mvcResult.getResponse().getContentAsByteArray();
-        assertThat(content).isNotEmpty();
-
-        // 使用 POI 打开工作簿断言脱敏字面量与枚举转义
-        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
-            Sheet sheet = workbook.getSheetAt(0);
-            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(4); // 1 行表头 + 3 行数据
-
-            // 验证样式：企业级默认极简白表头（无底色填充）、细边框与加粗字体
-            CellStyle headStyle = sheet.getRow(0).getCell(0).getCellStyle();
-            assertThat(headStyle.getFillPattern()).isEqualTo(FillPatternType.NO_FILL);
-            assertThat(headStyle.getBorderTop()).isEqualTo(BorderStyle.THIN);
-
-            Row row1 = sheet.getRow(1);
-            // 索引 2: 手机号脱敏
-            String phone = row1.getCell(2).getStringCellValue();
-            assertThat(phone).isEqualTo("138****8000");
-
-            // 索引 3: 邮箱脱敏
-            String email = row1.getCell(3).getStringCellValue();
-            assertThat(email).contains("@example.com").contains("*");
-
-            // 索引 4: 性别枚举转义
-            String gender = row1.getCell(4).getStringCellValue();
-            assertThat(gender).isEqualTo("男");
-
-            // 索引 6: 状态字典转义
-            String status = row1.getCell(6).getStringCellValue();
-            assertThat(status).isEqualTo("正常");
-        }
-
-        saveTempExcel("sample-exported-users.xlsx", content);
-    }
 
     private void saveTempExcel(String fileName, byte[] bytes) throws Exception {
         Path target = tempDir.resolve(fileName);
         Files.write(target, bytes);
     }
 
-    @Test
-    @DisplayName("测试 Fluent 多 Sheet 复杂流式导出：验证工作表数量、各表名称与数据流式写出")
-    void testExportMultiSheetViaController() throws Exception {
-        MvcResult mvcResult = mockMvc.perform(get("/api/excel/export-multi-sheet"))
-                .andExpect(status().isOk())
-                .andExpect(header().exists("Content-Disposition"))
-                .andReturn();
-
-        String disposition = mvcResult.getResponse().getHeader("Content-Disposition");
-        assertThat(URLDecoder.decode(disposition, StandardCharsets.UTF_8)).contains("综合多工作表报表.xlsx");
-
-        byte[] content = mvcResult.getResponse().getContentAsByteArray();
-        assertThat(content).isNotEmpty();
-
-        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
-            assertThat(workbook.getNumberOfSheets()).isEqualTo(2);
-
-            // Sheet 0: 用户清单
-            Sheet sheet1 = workbook.getSheetAt(0);
-            assertThat(sheet1.getSheetName()).isEqualTo("用户清单");
-            assertThat(sheet1.getPhysicalNumberOfRows()).isEqualTo(4); // 1 行表头 + 3 行数据
-
-            // Sheet 1: 销售汇总
-            Sheet sheet2 = workbook.getSheetAt(1);
-            assertThat(sheet2.getSheetName()).isEqualTo("销售汇总");
-            assertThat(sheet2.getPhysicalNumberOfRows()).isEqualTo(4); // 1 行表头 + 3 行数据
-            Row head2 = sheet2.getRow(0);
-            assertThat(head2.getCell(0).getStringCellValue()).isEqualTo("销售大区");
-            assertThat(head2.getCell(1).getStringCellValue()).isEqualTo("季度目标");
-        }
-
-        saveTempExcel("sample-multi-sheet.xlsx", content);
-    }
+    // ==========================================
+    // 领域控制器 1：EmployeeRosterController 测试 (/sample/excel/roster/*)
+    // ==========================================
 
     @Test
-    @DisplayName("测试纵向相邻单元格合并导出：验证 @ExcelMerge 区域与合并单元格数量")
-    void testExportMergeViaController() throws Exception {
-        MvcResult mvcResult = mockMvc.perform(get("/api/excel/export-merge"))
-                .andExpect(status().isOk())
-                .andExpect(header().exists("Content-Disposition"))
+    @DisplayName("花名册端点 1：ResponseEntity<StreamingResponseBody> 异步流式写出与动态列裁剪")
+    void testRoster_ExportResponseEntity_WithProjection() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/roster/export-response-entity")
+                        .param("includeColumns", "id", "name"))
+                .andExpect(request().asyncStarted())
                 .andReturn();
 
+        mockMvc.perform(asyncDispatch(mvcResult))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"));
+
         String disposition = mvcResult.getResponse().getHeader("Content-Disposition");
-        assertThat(URLDecoder.decode(disposition, StandardCharsets.UTF_8)).contains("部门员工合并报表.xlsx");
+        assertThat(disposition).contains("attachment");
+        assertThat(URLDecoder.decode(disposition, StandardCharsets.UTF_8)).contains("员工花名册_异步流式.xlsx");
 
         byte[] content = mvcResult.getResponse().getContentAsByteArray();
         assertThat(content).isNotEmpty();
 
         try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
             Sheet sheet = workbook.getSheetAt(0);
-            // 验证存在纵向合并区域
-            assertThat(sheet.getNumMergedRegions()).isGreaterThan(0);
-            // 部门列第 0 列发生相邻行纵向合并（研发部 2 行、市场部 2 行）
-            boolean foundCol0Merge = false;
-            for (int i = 0; i < sheet.getNumMergedRegions(); i++) {
-                var range = sheet.getMergedRegion(i);
-                if (range.getFirstColumn() == 0 && range.getLastColumn() == 0 && range.getFirstRow() < range.getLastRow()) {
-                    foundCol0Merge = true;
-                    break;
-                }
-            }
-            assertThat(foundCol0Merge).isTrue();
-        }
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(5); // 1 表头 + 4 条数据
 
-        saveTempExcel("sample-merge.xlsx", content);
-    }
-
-    @Test
-    @DisplayName("测试下载防呆导入模板：验证表头批注指南与静态及动态下拉选单数据约束")
-    void testDownloadTemplate() throws Exception {
-        MvcResult mvcResult = mockMvc.perform(get("/api/excel/template"))
-                .andExpect(status().isOk())
-                .andExpect(header().exists("Content-Disposition"))
-                .andReturn();
-
-        byte[] content = mvcResult.getResponse().getContentAsByteArray();
-        assertThat(content).isNotEmpty();
-
-        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
-            Sheet sheet = workbook.getSheetAt(0);
             Row headRow = sheet.getRow(0);
+            assertThat(headRow.getPhysicalNumberOfCells()).isEqualTo(2);
+            assertThat(headRow.getCell(0).getStringCellValue()).isEqualTo("员工工号");
+            assertThat(headRow.getCell(1).getStringCellValue()).isEqualTo("姓名");
 
-            // 验证表头批注指南
-            Cell nameCell = headRow.getCell(1);
-            assertThat(nameCell.getStringCellValue()).isEqualTo("用户姓名");
-            Comment nameComment = nameCell.getCellComment();
-            assertThat(nameComment).isNotNull();
-            assertThat(nameComment.getString().getString()).contains("请输入 2-20 位真实姓名");
+            Row row1 = sheet.getRow(1);
+            assertThat(row1.getCell(1).getStringCellValue()).isEqualTo("张三");
+        }
 
-            Cell deptCell = headRow.getCell(5);
-            assertThat(deptCell.getStringCellValue()).isEqualTo("所属部门");
-            Comment deptComment = deptCell.getCellComment();
-            assertThat(deptComment).isNotNull();
-            assertThat(deptComment.getString().getString()).contains("请从下拉列表中选择所属部门");
+        saveTempExcel("roster-response-entity.xlsx", content);
+    }
 
-            // 验证下拉数据约束（包含性别静态下拉与部门动态下拉）
+    @Test
+    @DisplayName("花名册端点 2：HttpServletResponse 同步流式写出与脱敏/枚举转义")
+    void testRoster_ExportServletResponse() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/roster/export-servlet-response"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        String disposition = mvcResult.getResponse().getHeader("Content-Disposition");
+        assertThat(disposition).contains("attachment");
+        assertThat(URLDecoder.decode(disposition, StandardCharsets.UTF_8)).contains("员工花名册_同步流式.xlsx");
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet sheet = workbook.getSheetAt(0);
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(5); // 1 表头 + 4 条数据
+
+            Row row1 = sheet.getRow(1);
+            // 姓名
+            assertThat(row1.getCell(1).getStringCellValue()).isEqualTo("张三");
+            // 性别枚举
+            assertThat(row1.getCell(2).getStringCellValue()).isEqualTo("男");
+            // 手机号脱敏
+            assertThat(row1.getCell(3).getStringCellValue()).isEqualTo("138****8000");
+            // 邮箱脱敏
+            assertThat(row1.getCell(4).getStringCellValue()).contains("@example.com").contains("*");
+            // 在职状态枚举
+            assertThat(row1.getCell(6).getStringCellValue()).isEqualTo("正式");
+        }
+
+        saveTempExcel("roster-servlet-response.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("花名册端点 3：应用企业预设主题渲染导出")
+    void testRoster_ExportTheme() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/roster/export-theme")
+                        .param("theme", "WARM_ORANGE"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet sheet = workbook.getSheetAt(0);
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(5);
+            CellStyle headStyle = sheet.getRow(0).getCell(0).getCellStyle();
+            assertThat(headStyle.getFillPattern()).isEqualTo(FillPatternType.SOLID_FOREGROUND);
+        }
+
+        saveTempExcel("roster-theme-warm-orange.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("花名册端点 4：多语言国际化表头动态转译导出")
+    void testRoster_ExportI18n() throws Exception {
+        // 中文测试
+        MvcResult zhResult = mockMvc.perform(get("/sample/excel/roster/export-i18n")
+                        .header("Accept-Language", "zh-CN"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        try (Workbook wbZh = WorkbookFactory.create(new ByteArrayInputStream(zhResult.getResponse().getContentAsByteArray()))) {
+            Row headRow = wbZh.getSheetAt(0).getRow(0);
+            assertThat(headRow.getCell(0).getStringCellValue()).isEqualTo("用户标识");
+            assertThat(headRow.getCell(1).getStringCellValue()).isEqualTo("用户名称");
+        }
+
+        // 英文测试
+        MvcResult enResult = mockMvc.perform(get("/sample/excel/roster/export-i18n")
+                        .header("Accept-Language", "en-US"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        try (Workbook wbEn = WorkbookFactory.create(new ByteArrayInputStream(enResult.getResponse().getContentAsByteArray()))) {
+            Row headRow = wbEn.getSheetAt(0).getRow(0);
+            assertThat(headRow.getCell(0).getStringCellValue()).isEqualTo("User ID");
+            assertThat(headRow.getCell(1).getStringCellValue()).isEqualTo("User Name");
+        }
+    }
+
+    @Test
+    @DisplayName("花名册端点 5：部门考勤纵向单元格合并导出")
+    void testRoster_ExportMerge() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/roster/export-merge"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet sheet = workbook.getSheetAt(0);
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(6); // 1 表头 + 5 条数据
+            assertThat(sheet.getNumMergedRegions()).isGreaterThan(0);
+        }
+
+        saveTempExcel("roster-merge-attendance.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("花名册端点 1B：ExcelWebUtil.toResponseEntity 快捷重载与加密导出")
+    void testRoster_ExportEntityShortcut() throws Exception {
+        MvcResult plainResult = mockMvc.perform(get("/sample/excel/roster/export-entity-shortcut")
+                        .param("includeColumns", "id", "name"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(plainResult))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"));
+
+        byte[] plainBytes = plainResult.getResponse().getContentAsByteArray();
+        assertThat(plainBytes).isNotEmpty();
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(plainBytes))) {
+            Sheet sheet = wb.getSheet("员工花名册");
+            assertThat(sheet).isNotNull();
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(5);
+            assertThat(sheet.getRow(0).getPhysicalNumberOfCells()).isEqualTo(2);
+        }
+
+        MvcResult encResult = mockMvc.perform(get("/sample/excel/roster/export-entity-shortcut")
+                        .param("password", "RosterPass@2026"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(encResult))
+                .andExpect(status().isOk());
+
+        byte[] cipherBytes = encResult.getResponse().getContentAsByteArray();
+        assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(cipherBytes))).isTrue();
+    }
+
+    // ==========================================
+    // 领域控制器 2：OnboardingImportController 测试 (/sample/excel/onboarding/*)
+    // ==========================================
+
+    @Test
+    @DisplayName("入职防呆端点 1：下载防呆导入模板（含下拉选单与批注）")
+    void testOnboarding_DownloadTemplate() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/onboarding/template"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet sheet = workbook.getSheetAt(0);
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(1); // 仅有表头行
             List<? extends DataValidation> validations = sheet.getDataValidations();
             assertThat(validations).isNotEmpty();
+
+            // 验证表头悬浮批注
+            Comment comment = sheet.getRow(0).getCell(0).getCellComment();
+            assertThat(comment).isNotNull();
+            assertThat(comment.getString().getString()).contains("2-20 位员工真实姓名");
+        }
+
+        saveTempExcel("onboarding-template.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("入职防呆端点 1B：突破 255 字符下拉隐藏字典表模板与 ResponseEntityTemplate 导出")
+    void testOnboarding_DownloadLongDropdownTemplate() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/onboarding/template-long-dropdown"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(mvcResult))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"));
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet mainSheet = wb.getSheet("超长下拉入职模板");
+            assertThat(mainSheet).isNotNull();
+            assertThat(mainSheet.getDataValidations()).hasSize(2);
+
+            String hiddenSheetName = io.github.atengk.boot.excel.handler.DropdownSheetWriteHandler.HIDDEN_DICT_SHEET_NAME;
+            Sheet dictSheet = wb.getSheet(hiddenSheetName);
+            assertThat(dictSheet).isNotNull();
+            int dictIndex = wb.getSheetIndex(dictSheet);
+            assertThat(wb.isSheetHidden(dictIndex)).isTrue();
+            assertThat(dictSheet.getPhysicalNumberOfRows()).isEqualTo(14);
+            assertThat(dictSheet.getRow(0).getCell(0).getStringCellValue()).isEqualTo("CC-1001-总部基础平台研发中心");
+
+            assertThat(wb.getAllNames())
+                    .anySatisfy(name -> {
+                        assertThat(name.getNameName()).startsWith("_ateng_dd_");
+                        assertThat(name.getRefersToFormula()).contains(hiddenSheetName);
+                    });
+        }
+
+        saveTempExcel("onboarding-long-dropdown-template.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("入职防呆端点 2 & 3：下载合规模拟样本与含错测试样本")
+    void testOnboarding_DownloadSamples() throws Exception {
+        MvcResult validResult = mockMvc.perform(get("/sample/excel/onboarding/sample-valid"))
+                .andExpect(status().isOk())
+                .andReturn();
+        byte[] validBytes = validResult.getResponse().getContentAsByteArray();
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(validBytes))) {
+            assertThat(wb.getSheetAt(0).getPhysicalNumberOfRows()).isEqualTo(4); // 1 表头 + 3 数据
+        }
+
+        MvcResult dirtyResult = mockMvc.perform(get("/sample/excel/onboarding/sample-dirty"))
+                .andExpect(status().isOk())
+                .andReturn();
+        byte[] dirtyBytes = dirtyResult.getResponse().getContentAsByteArray();
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(dirtyBytes))) {
+            assertThat(wb.getSheetAt(0).getPhysicalNumberOfRows()).isEqualTo(4); // 1 表头 + 3 数据
         }
     }
 
     @Test
-    @DisplayName("测试导入用户数据成功：合规数据解析为 Java 集合并显式返回 Result")
-    void testImportUsersSuccess() throws Exception {
-        List<UserExcelVO> validList = new ArrayList<>();
-        validList.add(new UserExcelVO(2001L, "赵六", "13600136000", "zhaoliu@example.com",
-                SampleGenderEnum.MALE, "研发部", "0"));
-
-        byte[] rawExcelBytes = createRawExcel(validList);
-
-        MockMultipartFile file = new MockMultipartFile(
-                "file", "import_users.xlsx",
+    @DisplayName("入职防呆端点 4：前置表头契约校验（严格匹配与异常拦截）")
+    void testOnboarding_ValidateHeader() throws Exception {
+        // 1. 合规模板文件进行表头校验
+        MvcResult templateResult = mockMvc.perform(get("/sample/excel/onboarding/template"))
+                .andExpect(status().isOk())
+                .andReturn();
+        MockMultipartFile validFile = new MockMultipartFile(
+                "file", "template.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                rawExcelBytes
+                templateResult.getResponse().getContentAsByteArray()
         );
 
-        MvcResult mvcResult = mockMvc.perform(multipart("/api/excel/import").file(file))
+        MvcResult successResult = mockMvc.perform(multipart("/sample/excel/onboarding/validate-header")
+                        .file(validFile)
+                        .param("strategy", "STRICT"))
                 .andExpect(status().isOk())
                 .andReturn();
 
-        String responseBody = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
-        JsonNode root = objectMapper.readTree(responseBody);
-        assertThat(root.get("code").asInt()).isEqualTo(200);
-        assertThat(root.get("data").isArray()).isTrue();
-        assertThat(root.get("data").size()).isEqualTo(1);
-        assertThat(root.get("data").get(0).get("username").asText()).isEqualTo("赵六");
-    }
+        JsonNode successNode = objectMapper.readTree(successResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(successNode.get("code").asInt()).isEqualTo(200);
+        assertThat(successNode.get("data").asText()).contains("表头契约校验通过");
 
-    @Test
-    @DisplayName("测试双向业务枚举与字典 SPI 反向解析：表格中文字面量精确还原为枚举与业务代码")
-    void testImportEnumAndDictReverseMapping() throws Exception {
-        // 构建带有中文展示字面量的用户列表：性别="女"、状态="停用"
-        List<UserExcelVO> inputList = List.of(
-                new UserExcelVO(2002L, "孙俪", "13700137000", "sunli@example.com",
-                        SampleGenderEnum.FEMALE, "财务部", "1")
-        );
-
-        byte[] rawExcelBytes = createRawExcel(inputList);
-
-        MockMultipartFile file = new MockMultipartFile(
-                "file", "reverse_mapping.xlsx",
+        // 2. 构造错误表头文件进行校验
+        ByteArrayOutputStream wrongHeaderOut = new ByteArrayOutputStream();
+        ExcelUtil.export(wrongHeaderOut, List.of(new I18nUserExcelVO(1L, "a", "b", "c")), I18nUserExcelVO.class);
+        MockMultipartFile wrongFile = new MockMultipartFile(
+                "file", "wrong_header.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                rawExcelBytes
+                wrongHeaderOut.toByteArray()
         );
 
-        MvcResult mvcResult = mockMvc.perform(multipart("/api/excel/import").file(file))
+        MvcResult wrongResult = mockMvc.perform(multipart("/sample/excel/onboarding/validate-header")
+                        .file(wrongFile)
+                        .param("strategy", "STRICT"))
                 .andExpect(status().isOk())
                 .andReturn();
 
-        String responseBody = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
-        JsonNode root = objectMapper.readTree(responseBody);
-        assertThat(root.get("code").asInt()).isEqualTo(200);
-        JsonNode firstUser = root.get("data").get(0);
-        // 断言反向解析结果：枚举还原为 FEMALE，状态还原为 "1"
-        assertThat(firstUser.get("gender").asText()).isEqualTo("FEMALE");
-        assertThat(firstUser.get("status").asText()).isEqualTo("1");
+        JsonNode wrongNode = objectMapper.readTree(wrongResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(wrongNode.get("code").asInt()).isNotEqualTo(200);
     }
 
     @Test
-    @DisplayName("测试导入用户数据校验失败：结构化返回错误行数与业务提示")
-    void testImportUsersValidationError() throws Exception {
-        List<UserExcelVO> invalidList = new ArrayList<>();
-        // 姓名为空、手机号格式错误、邮箱格式错误
-        invalidList.add(new UserExcelVO(3001L, "", "invalid-phone", "not-an-email",
-                SampleGenderEnum.FEMALE, "研发部", "0"));
-
-        byte[] rawExcelBytes = createRawExcel(invalidList);
-
-        MockMultipartFile file = new MockMultipartFile(
-                "file", "invalid_users.xlsx",
+    @DisplayName("入职防呆端点 5：读取与 JSR-303 行级校验复合结果（含错误聚合）")
+    void testOnboarding_ImportResult() throws Exception {
+        // 下载脏数据测试样本
+        MvcResult dirtyResult = mockMvc.perform(get("/sample/excel/onboarding/sample-dirty"))
+                .andExpect(status().isOk())
+                .andReturn();
+        MockMultipartFile dirtyFile = new MockMultipartFile(
+                "file", "dirty.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                rawExcelBytes
+                dirtyResult.getResponse().getContentAsByteArray()
         );
 
-        MvcResult mvcResult = mockMvc.perform(multipart("/api/excel/import").file(file))
+        MvcResult importResult = mockMvc.perform(multipart("/sample/excel/onboarding/import-result")
+                        .file(dirtyFile))
                 .andExpect(status().isOk())
                 .andReturn();
 
-        String responseBody = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
-        JsonNode root = objectMapper.readTree(responseBody);
-        assertThat(root.get("code").asInt()).isEqualTo(400);
-        assertThat(root.get("msg").asText()).contains("Excel 数据校验不通过");
+        JsonNode jsonNode = objectMapper.readTree(importResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(jsonNode.get("code").asInt()).isEqualTo(200);
+        JsonNode dataNode = jsonNode.get("data");
+        assertThat(dataNode.get("data").size()).isEqualTo(1); // 1 条合规
+        assertThat(dataNode.get("errors").size()).isGreaterThanOrEqualTo(2); // 至少 2 行存在错误
+        assertThat(dataNode.get("success").asBoolean()).isFalse();
     }
 
     @Test
-    @DisplayName("测试导入失败错题集回写：验证生成的错误反馈 Excel 中单元格标红与悬浮批注")
-    void testImportWithFeedbackExcel() throws Exception {
-        List<UserExcelVO> invalidList = new ArrayList<>();
-        invalidList.add(new UserExcelVO(4001L, "", "13800138000", "good@example.com",
-                SampleGenderEnum.FEMALE, "研发部", "0"));
-
-        byte[] rawExcelBytes = createRawExcel(invalidList);
-
-        MockMultipartFile file = new MockMultipartFile(
-                "file", "feedback_test.xlsx",
+    @DisplayName("入职防呆端点 6：差错数据独立剥离导出")
+    void testOnboarding_ExportFailedRows() throws Exception {
+        MvcResult dirtyResult = mockMvc.perform(get("/sample/excel/onboarding/sample-dirty"))
+                .andExpect(status().isOk())
+                .andReturn();
+        MockMultipartFile dirtyFile = new MockMultipartFile(
+                "file", "dirty.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                rawExcelBytes
+                dirtyResult.getResponse().getContentAsByteArray()
         );
 
-        MvcResult mvcResult = mockMvc.perform(multipart("/api/excel/import-feedback").file(file))
+        MvcResult exportResult = mockMvc.perform(multipart("/sample/excel/onboarding/export-failed-rows")
+                        .file(dirtyFile))
                 .andExpect(status().isOk())
                 .andExpect(header().exists("Content-Disposition"))
                 .andReturn();
 
-        String disposition = mvcResult.getResponse().getHeader("Content-Disposition");
-        assertThat(URLDecoder.decode(disposition, StandardCharsets.UTF_8)).contains("导入错误反馈.xlsx");
+        byte[] content = exportResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
 
-        byte[] feedbackBytes = mvcResult.getResponse().getContentAsByteArray();
-        assertThat(feedbackBytes).isNotEmpty();
-
-        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(feedbackBytes))) {
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
             Sheet sheet = workbook.getSheetAt(0);
+            assertThat(sheet.getPhysicalNumberOfRows()).isGreaterThanOrEqualTo(2); // 表头 + 失败行
+        }
+
+        saveTempExcel("onboarding-failed-rows.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("入职防呆端点 7：原样标红与悬浮批注错误反馈 Excel")
+    void testOnboarding_ExportFeedback() throws Exception {
+        MvcResult dirtyResult = mockMvc.perform(get("/sample/excel/onboarding/sample-dirty"))
+                .andExpect(status().isOk())
+                .andReturn();
+        MockMultipartFile dirtyFile = new MockMultipartFile(
+                "file", "dirty.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                dirtyResult.getResponse().getContentAsByteArray()
+        );
+
+        MvcResult feedbackResult = mockMvc.perform(multipart("/sample/excel/onboarding/export-feedback")
+                        .file(dirtyFile))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = feedbackResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet sheet = workbook.getSheetAt(0);
+            // 验证存在标红单元格与批注
+            boolean hasComment = false;
+            for (int r = 1; r <= sheet.getLastRowNum(); r++) {
+                Row row = sheet.getRow(r);
+                if (row != null) {
+                    for (int c = 0; c < row.getLastCellNum(); c++) {
+                        Cell cell = row.getCell(c);
+                        if (cell != null && cell.getCellComment() != null) {
+                            hasComment = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            assertThat(hasComment).isTrue();
+        }
+
+        saveTempExcel("onboarding-feedback.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("入职防呆端点 8：分批流式校验与消费")
+    void testOnboarding_ImportBatch() throws Exception {
+        MvcResult validResult = mockMvc.perform(get("/sample/excel/onboarding/sample-valid"))
+                .andExpect(status().isOk())
+                .andReturn();
+        MockMultipartFile validFile = new MockMultipartFile(
+                "file", "valid.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                validResult.getResponse().getContentAsByteArray()
+        );
+
+        MvcResult batchResult = mockMvc.perform(multipart("/sample/excel/onboarding/import-batch")
+                        .file(validFile)
+                        .param("batchSize", "2"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode node = objectMapper.readTree(batchResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(node.get("code").asInt()).isEqualTo(200);
+        assertThat(node.get("data").get("totalSuccess").asInt()).isEqualTo(3);
+        assertThat(node.get("data").get("totalErrors").asInt()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("入职防呆端点 6B & 7B：ResponseEntity 差错剥离导出与标红批注反馈")
+    void testOnboarding_ExportFailedRowsAndFeedbackEntity() throws Exception {
+        MvcResult dirtyResult = mockMvc.perform(get("/sample/excel/onboarding/sample-dirty"))
+                .andExpect(status().isOk())
+                .andReturn();
+        MockMultipartFile dirtyFile = new MockMultipartFile(
+                "file", "dirty.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                dirtyResult.getResponse().getContentAsByteArray()
+        );
+
+        // 1. toResponseEntityFailedRows
+        MvcResult failedEntityResult = mockMvc.perform(multipart("/sample/excel/onboarding/export-failed-rows-entity")
+                        .file(dirtyFile))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(failedEntityResult))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"));
+
+        byte[] failedBytes = failedEntityResult.getResponse().getContentAsByteArray();
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(failedBytes))) {
+            assertThat(wb.getSheetAt(0).getPhysicalNumberOfRows()).isEqualTo(3); // 1 表头 + 2 失败行
+        }
+
+        // 2. toResponseEntityErrorFeedback
+        MvcResult feedbackEntityResult = mockMvc.perform(multipart("/sample/excel/onboarding/export-feedback-entity")
+                        .file(dirtyFile))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(feedbackEntityResult))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"));
+
+        byte[] feedbackBytes = feedbackEntityResult.getResponse().getContentAsByteArray();
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(feedbackBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertThat(sheet.getRow(2).getCell(0).getCellComment()).isNotNull();
+        }
+    }
+
+    @Test
+    @DisplayName("入职防呆端点 7C：两阶段校验（JSR-303 + 物理行号追踪 + 批内唯一性冲突）与原表精确标红反馈")
+    void testOnboarding_TwoPhaseValidationWithPhysicalRowIndexAndErrorFactory() throws Exception {
+        // 通过 ExcelUtil.export 构造 4 行：第2行(张三-13800138000) -> 第3行移除为空白行 -> 第4行(JSR-303 姓名空) -> 第5行(合规但与第2行手机号重复)
+        List<OnboardingImportVO> seedRows = List.of(
+                new OnboardingImportVO("张三", "13800138000", "zhangsan@example.com",
+                        SampleGenderEnum.MALE, "研发部", "1", new java.math.BigDecimal("18000.00"), java.time.LocalDate.of(2026, 11, 1)),
+                new OnboardingImportVO("待清空占位", "13600136000", "blank@example.com",
+                        SampleGenderEnum.MALE, "研发部", "1", new java.math.BigDecimal("10000.00"), java.time.LocalDate.of(2026, 11, 2)),
+                new OnboardingImportVO("", "13900139000", "invalid@example.com",
+                        SampleGenderEnum.FEMALE, "市场部", "2", new java.math.BigDecimal("15000.00"), java.time.LocalDate.of(2026, 11, 5)),
+                new OnboardingImportVO("王五", "13800138000", "wangwu@example.com",
+                        SampleGenderEnum.MALE, "财务部", "1", new java.math.BigDecimal("16000.00"), java.time.LocalDate.of(2026, 11, 10))
+        );
+        ByteArrayOutputStream seedOut = new ByteArrayOutputStream();
+        ExcelUtil.export(seedOut, seedRows, OnboardingImportVO.class);
+
+        byte[] mixedBytes;
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(seedOut.toByteArray()));
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Sheet sheet = wb.getSheetAt(0);
+            // 清空 0-based 第 2 行（物理第 3 行），令 Fesod 自动跳过该空行
+            Row blankRow = sheet.getRow(2);
+            if (blankRow != null) {
+                sheet.removeRow(blankRow);
+            }
+            wb.write(out);
+            mixedBytes = out.toByteArray();
+        }
+
+        MockMultipartFile mixedFile = new MockMultipartFile(
+                "file", "two-phase-mixed.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                mixedBytes
+        );
+
+        // 1. 验证 /import-result 返回 rowRecords 与物理行号（物理第 2 行 与 第 5 行，跳过第 3 空行与第 4 错行）
+        MvcResult importRes = mockMvc.perform(multipart("/sample/excel/onboarding/import-result").file(mixedFile))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode importJson = objectMapper.readTree(importRes.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(importJson.get("code").asInt()).isEqualTo(200);
+        JsonNode rowRecordsNode = importJson.get("data").get("rowRecords");
+        assertThat(rowRecordsNode.size()).isEqualTo(2);
+        assertThat(rowRecordsNode.get(0).get("rowIndex").asInt()).isEqualTo(2);
+        assertThat(rowRecordsNode.get(1).get("rowIndex").asInt()).isEqualTo(5);
+
+        // 2. 验证 /import-two-phase-feedback 精准标红物理第 4 行姓名列(row=3, col=0) 与 第 5 行手机号列(row=4, col=1)
+        MvcResult feedbackAsync = mockMvc.perform(multipart("/sample/excel/onboarding/import-two-phase-feedback")
+                        .file(mixedFile))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(feedbackAsync))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"));
+
+        byte[] feedbackBytes = feedbackAsync.getResponse().getContentAsByteArray();
+        saveTempExcel("onboarding-two-phase-feedback.xlsx", feedbackBytes);
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(feedbackBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            // 物理第 4 行（0-based row=3），姓名列 col=0 必须标红+批注
+            Cell row4Name = sheet.getRow(3).getCell(0);
+            assertThat(row4Name.getCellStyle().getFillForegroundColor())
+                    .isEqualTo(org.apache.poi.ss.usermodel.IndexedColors.ROSE.getIndex());
+            assertThat(row4Name.getCellComment()).isNotNull();
+            assertThat(row4Name.getCellComment().getString().getString()).contains("员工姓名不能为空");
+
+            // 物理第 5 行（0-based row=4），手机号列 col=1 必须标红+批注，未误标第 0 列
+            Cell row5Phone = sheet.getRow(4).getCell(1);
+            assertThat(row5Phone.getCellStyle().getFillForegroundColor())
+                    .isEqualTo(org.apache.poi.ss.usermodel.IndexedColors.ROSE.getIndex());
+            assertThat(row5Phone.getCellComment()).isNotNull();
+            assertThat(row5Phone.getCellComment().getString().getString()).contains("手机号与前序有效行重复");
+            assertThat(sheet.getRow(4).getCell(0).getCellComment()).isNull();
+        }
+    }
+
+    // ==========================================
+    // 领域控制器 3：WorkbookReportController 测试 (/sample/excel/report/*)
+    // ==========================================
+
+    @Test
+    @DisplayName("报表端点 1 & 2：异构多 Sheet 联合导出与反向解析闭环")
+    void testReport_MultiSheet_ExportAndParse() throws Exception {
+        // 1. 导出多 Sheet 报表
+        MvcResult exportResult = mockMvc.perform(get("/sample/excel/report/multi-sheet"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = exportResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            assertThat(wb.getNumberOfSheets()).isEqualTo(3);
+            assertThat(wb.getSheetAt(0).getSheetName()).isEqualTo("员工花名册");
+            assertThat(wb.getSheetAt(1).getSheetName()).isEqualTo("部门考勤");
+            assertThat(wb.getSheetAt(2).getSheetName()).isEqualTo("财务动态流水");
+            assertThat(wb.getSheetAt(0).getPhysicalNumberOfRows()).isEqualTo(3); // 1 表头 + 2 数据
+            assertThat(wb.getSheetAt(1).getPhysicalNumberOfRows()).isEqualTo(4); // 1 表头 + 3 数据
+        }
+
+        saveTempExcel("report-multi-sheet.xlsx", content);
+
+        // 2. 上传该多 Sheet 文件执行联合解析
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "multi-sheet.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                content
+        );
+
+        MvcResult parseResult = mockMvc.perform(multipart("/sample/excel/report/multi-sheet-parse")
+                        .file(file))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode node = objectMapper.readTree(parseResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(node.get("code").asInt()).isEqualTo(200);
+        assertThat(node.get("data").get("rosterCount").asInt()).isEqualTo(2);
+        assertThat(node.get("data").get("attendanceCount").asInt()).isEqualTo(3);
+        assertThat(node.get("data").get("totalRowCount").asInt()).isEqualTo(5);
+    }
+
+    @Test
+    @DisplayName("报表端点 3：无实体动态表头与 Map 键值映射动态导出")
+    void testReport_ExportDynamic() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/report/dynamic"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet sheet = wb.getSheet("指标统计");
+            assertThat(sheet).isNotNull();
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(4); // 1 表头 + 3 行数据
+            Row headRow = sheet.getRow(0);
+            assertThat(headRow.getCell(0).getStringCellValue()).isEqualTo("指标代号");
+            assertThat(headRow.getCell(1).getStringCellValue()).isEqualTo("统计维度");
+            Row row1 = sheet.getRow(1);
+            assertThat(row1.getCell(0).getStringCellValue()).isEqualTo("MTR-001");
+            assertThat(row1.getCell(1).getStringCellValue()).isEqualTo("华东大区");
+        }
+
+        saveTempExcel("report-dynamic.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("报表端点 4：商品图文画册导出（@ExcelImage 75pt 行高与图片内嵌）")
+    void testReport_ExportImageCatalog() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/report/image-catalog"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(4); // 1 表头 + 3 条商品
+            Row row1 = sheet.getRow(1);
+            assertThat(row1.getCell(1).getStringCellValue()).isEqualTo("旗舰智能手机 Pro");
+            // 验证自适应撑起的行高约为 75pt
+            assertThat(row1.getHeightInPoints()).isGreaterThanOrEqualTo(70.0f);
+            assertThat(sheet.getDrawingPatriarch()).isNotNull();
+        }
+
+        saveTempExcel("report-image-catalog.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("报表端点 5 & 6：费用报销单空白模板下载与数据复合填充导出")
+    void testReport_Template_BlankAndFill() throws Exception {
+        // 1. 空白模板下载
+        MvcResult blankResult = mockMvc.perform(get("/sample/excel/report/template-blank"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] blankBytes = blankResult.getResponse().getContentAsByteArray();
+        assertThat(blankBytes).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(blankBytes))) {
+            Sheet sheet = wb.getSheet("费用报销单");
+            assertThat(sheet).isNotNull();
+            assertThat(sheet.getRow(0).getCell(0).getStringCellValue()).contains("费用报销审批单");
+        }
+
+        saveTempExcel("report-blank-template.xlsx", blankBytes);
+
+        // 2. 复合数据填充导出
+        MvcResult fillResult = mockMvc.perform(get("/sample/excel/report/fill"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] filledBytes = fillResult.getResponse().getContentAsByteArray();
+        assertThat(filledBytes).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(filledBytes))) {
+            Sheet sheet = wb.getSheet("费用报销单");
+            assertThat(sheet).isNotNull();
+            // 验证单对象占位符替换
+            assertThat(sheet.getRow(1).getCell(0).getStringCellValue()).contains("EXP-202611-0089");
+            assertThat(sheet.getRow(2).getCell(0).getStringCellValue()).contains("张三");
+            // 验证列表行填充
+            assertThat(sheet.getRow(4).getCell(0).getStringCellValue()).isEqualTo("差旅交通费");
+            assertThat(sheet.getRow(5).getCell(0).getStringCellValue()).isEqualTo("差旅住宿费");
+            assertThat(sheet.getRow(6).getCell(0).getStringCellValue()).isEqualTo("餐饮招待费");
+        }
+
+        saveTempExcel("report-filled-reimbursement.xlsx", filledBytes);
+    }
+
+    @Test
+    @DisplayName("报表端点 1B & 2B：多 Sheet AES-256 加密导出与带 JSR-303 校验聚合读取闭环")
+    void testReport_MultiSheetEncrypt_And_Validate() throws Exception {
+        String password = "ReportSecret@2026";
+
+        // 1. 导出纯合规 AES-256 加密多 Sheet 工作簿
+        MvcResult cleanEncryptResult = mockMvc.perform(get("/sample/excel/report/multi-sheet-encrypt")
+                        .param("password", password)
+                        .param("includeInvalid", "false"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] cleanCipherBytes = cleanEncryptResult.getResponse().getContentAsByteArray();
+        assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(cleanCipherBytes))).isTrue();
+
+        MockMultipartFile cleanFile = new MockMultipartFile(
+                "file", "multi-sheet-clean-enc.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                cleanCipherBytes
+        );
+
+        MvcResult cleanValidateResult = mockMvc.perform(multipart("/sample/excel/report/multi-sheet-validate")
+                        .file(cleanFile)
+                        .param("password", password)
+                        .param("headerStrategy", "STRICT"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode cleanNode = objectMapper.readTree(cleanValidateResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(cleanNode.get("code").asInt()).isEqualTo(200);
+        assertThat(cleanNode.get("data").get("hasErrors").asBoolean()).isFalse();
+        assertThat(cleanNode.get("data").get("onboardingValidCount").asInt()).isEqualTo(2);
+        assertThat(cleanNode.get("data").get("attendanceCount").asInt()).isEqualTo(3);
+
+        // 2. 导出含脏数据 AES-256 加密多 Sheet 工作簿并验证跨表错误聚合
+        MvcResult dirtyEncryptResult = mockMvc.perform(get("/sample/excel/report/multi-sheet-encrypt")
+                        .param("password", password)
+                        .param("includeInvalid", "true"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        MockMultipartFile dirtyFile = new MockMultipartFile(
+                "file", "multi-sheet-dirty-enc.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                dirtyEncryptResult.getResponse().getContentAsByteArray()
+        );
+
+        MvcResult dirtyValidateResult = mockMvc.perform(multipart("/sample/excel/report/multi-sheet-validate")
+                        .file(dirtyFile)
+                        .param("password", password)
+                        .param("headerStrategy", "STRICT"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode dirtyNode = objectMapper.readTree(dirtyValidateResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(dirtyNode.get("code").asInt()).isEqualTo(200);
+        assertThat(dirtyNode.get("data").get("hasErrors").asBoolean()).isTrue();
+        assertThat(dirtyNode.get("data").get("onboardingValidCount").asInt()).isEqualTo(1);
+        assertThat(dirtyNode.get("data").get("sheet0ErrorCount").asInt()).isGreaterThanOrEqualTo(4);
+        assertThat(dirtyNode.get("data").get("allErrors").size()).isGreaterThanOrEqualTo(4);
+
+        // 3. 错误密码访问阻断
+        MvcResult wrongPwdResult = mockMvc.perform(multipart("/sample/excel/report/multi-sheet-validate")
+                        .file(cleanFile)
+                        .param("password", "WrongPwd!"))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode wrongNode = objectMapper.readTree(wrongPwdResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(wrongNode.get("code").asInt()).isNotEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("报表端点 3B & 6B：toResponseEntityDynamic 与 toResponseEntityFill 明文/加密闭环")
+    void testReport_DynamicAndFillResponseEntity() throws Exception {
+        // 1. toResponseEntityDynamic (明文 + 加密)
+        MvcResult dynPlain = mockMvc.perform(get("/sample/excel/report/dynamic-response-entity"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(dynPlain)).andExpect(status().isOk());
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(dynPlain.getResponse().getContentAsByteArray()))) {
+            assertThat(wb.getSheet("指标统计").getPhysicalNumberOfRows()).isEqualTo(4);
+        }
+
+        MvcResult dynEnc = mockMvc.perform(get("/sample/excel/report/dynamic-response-entity")
+                        .param("password", "DynPass@2026"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(dynEnc)).andExpect(status().isOk());
+        byte[] dynCipherBytes = dynEnc.getResponse().getContentAsByteArray();
+        assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(dynCipherBytes))).isTrue();
+        ByteArrayOutputStream dynPlainOut = new ByteArrayOutputStream();
+        ExcelSecurityUtil.decryptWorkbook(new ByteArrayInputStream(dynCipherBytes), dynPlainOut, "DynPass@2026");
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(dynPlainOut.toByteArray()))) {
+            assertThat(wb.getSheet("指标统计").getPhysicalNumberOfRows()).isEqualTo(4);
+        }
+
+        // 2. toResponseEntityFill (明文 + 加密)
+        MvcResult fillPlain = mockMvc.perform(get("/sample/excel/report/fill-response-entity"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(fillPlain)).andExpect(status().isOk());
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(fillPlain.getResponse().getContentAsByteArray()))) {
+            Sheet sheet = wb.getSheet("费用报销单");
+            assertThat(sheet.getRow(1).getCell(0).getStringCellValue()).contains("EXP-202611-0099");
+            assertThat(sheet.getRow(4).getCell(0).getStringCellValue()).isEqualTo("差旅交通费");
+        }
+
+        MvcResult fillEnc = mockMvc.perform(get("/sample/excel/report/fill-response-entity")
+                        .param("password", "FillPass@2026"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(fillEnc)).andExpect(status().isOk());
+        byte[] fillCipherBytes = fillEnc.getResponse().getContentAsByteArray();
+        assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(fillCipherBytes))).isTrue();
+        ByteArrayOutputStream fillPlainOut = new ByteArrayOutputStream();
+        ExcelSecurityUtil.decryptWorkbook(new ByteArrayInputStream(fillCipherBytes), fillPlainOut, "FillPass@2026");
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(fillPlainOut.toByteArray()))) {
+            assertThat(wb.getSheet("费用报销单").getRow(1).getCell(0).getStringCellValue()).contains("EXP-202611-0099");
+        }
+    }
+
+    // ==========================================
+    // 领域控制器 4：PayrollSecurityController 测试 (/sample/excel/security/*)
+    // ==========================================
+
+    @Test
+    @DisplayName("薪酬安全端点 1：脱敏与公式防注入对照演示导出")
+    void testSecurity_ExportContrast() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/security/export-contrast"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet sheet = wb.getSheetAt(0);
+            Row row1 = sheet.getRow(1);
+
+            // 验证 @ExcelSensitive 脱敏
+            assertThat(row1.getCell(1).getStringCellValue()).contains("*"); // 姓名脱敏
+            assertThat(row1.getCell(2).getStringCellValue()).isEqualTo("138****8000"); // 手机脱敏
+            assertThat(row1.getCell(3).getStringCellValue()).contains("********"); // 身份证脱敏
+
+            // 验证 @ExcelFormulaAllowed 白名单豁免（不被转义）
+            assertThat(row1.getCell(5).getStringCellValue()).isEqualTo("=SUM(E2*1.2)");
+
+            // 验证未豁免公式注入字符前置单引号转义
+            assertThat(row1.getCell(6).getStringCellValue()).startsWith("'=");
+        }
+
+        saveTempExcel("security-contrast.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("薪酬安全端点 2：防伪暗水印与工作表只读保护导出")
+    void testSecurity_ExportWatermark() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/security/export-watermark"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertThat(sheet.getProtect()).isTrue();
+        }
+
+        saveTempExcel("security-watermark.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("薪酬安全端点 3 & 5：整工作簿 AES-256 强加密导出与带密码解密上传闭环")
+    void testSecurity_ExportEncrypt_And_ImportDecrypt() throws Exception {
+        String testPassword = "AgilePass@2026";
+
+        // 1. 导出 AES-256 密文工作簿
+        MvcResult encryptResult = mockMvc.perform(get("/sample/excel/security/export-encrypt")
+                        .param("password", testPassword))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] cipherBytes = encryptResult.getResponse().getContentAsByteArray();
+        assertThat(cipherBytes).isNotEmpty();
+
+        // 验证文件已被 OLE2 AES-256 强加密
+        assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(cipherBytes))).isTrue();
+
+        saveTempExcel("security-encrypted.xlsx", cipherBytes);
+
+        // 2. 正确密码解密上传：成功还原 3 条数据
+        MockMultipartFile validFile = new MockMultipartFile(
+                "file", "encrypted.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                cipherBytes
+        );
+
+        MvcResult decryptSuccess = mockMvc.perform(multipart("/sample/excel/security/import-decrypt")
+                        .file(validFile)
+                        .param("password", testPassword))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode successNode = objectMapper.readTree(decryptSuccess.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(successNode.get("code").asInt()).isEqualTo(200);
+        assertThat(successNode.get("data").get("data").size()).isEqualTo(3);
+
+        // 3. 错误密码解密上传：快速失败阻断
+        MvcResult decryptWrong = mockMvc.perform(multipart("/sample/excel/security/import-decrypt")
+                        .file(validFile)
+                        .param("password", "WrongPassword!"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode wrongNode = objectMapper.readTree(decryptWrong.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(wrongNode.get("code").asInt()).isNotEqualTo(200);
+
+        // 4. 未传密码解密上传：快速失败阻断
+        MvcResult decryptNoPwd = mockMvc.perform(multipart("/sample/excel/security/import-decrypt")
+                        .file(validFile))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode noPwdNode = objectMapper.readTree(decryptNoPwd.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(noPwdNode.get("code").asInt()).isNotEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("薪酬安全端点 4：下载加密测试样本工作簿")
+    void testSecurity_DownloadEncryptedSample() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/security/sample-encrypted"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+        assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(content))).isTrue();
+    }
+
+    @Test
+    @DisplayName("薪酬安全端点 2B & 3B：ResponseEntity 暗水印锁定与 AES-256 强加密流式导出")
+    void testSecurity_ResponseEntity_WatermarkAndEncrypt() throws Exception {
+        MvcResult wmResult = mockMvc.perform(get("/sample/excel/security/export-watermark-entity"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(wmResult)).andExpect(status().isOk());
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(wmResult.getResponse().getContentAsByteArray()))) {
+            assertThat(wb.getSheetAt(0).getProtect()).isTrue();
+            assertThat(wb.getAllPictures()).isNotEmpty();
+        }
+
+        MvcResult encResult = mockMvc.perform(get("/sample/excel/security/export-encrypt-entity")
+                        .param("password", "PayrollEntity@2026"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(encResult)).andExpect(status().isOk());
+        assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(encResult.getResponse().getContentAsByteArray()))).isTrue();
+    }
+
+    // ==========================================
+    // 领域控制器 5：OrderStreamingController 测试 (/sample/excel/streaming/*)
+    // ==========================================
+
+    @Test
+    @DisplayName("海量流式端点 1：基于 PageResult 的多 Sheet 自动阈值分片轮转导出")
+    void testStreaming_ExportPage_WithSheetRotation() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/streaming/export-page")
+                        .param("totalRows", "250")
+                        .param("pageSize", "100")
+                        .param("maxRowsPerSheet", "100"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            assertThat(wb.getNumberOfSheets()).isEqualTo(3);
+            assertThat(wb.getSheetAt(0).getSheetName()).isEqualTo("订单流水");
+            assertThat(wb.getSheetAt(0).getPhysicalNumberOfRows()).isEqualTo(101); // 1 表头 + 100 数据
+            assertThat(wb.getSheetAt(1).getSheetName()).isEqualTo("订单流水_2");
+            assertThat(wb.getSheetAt(1).getPhysicalNumberOfRows()).isEqualTo(101);
+            assertThat(wb.getSheetAt(2).getSheetName()).isEqualTo("订单流水_3");
+            assertThat(wb.getSheetAt(2).getPhysicalNumberOfRows()).isEqualTo(51); // 1 表头 + 50 数据
+        }
+
+        saveTempExcel("streaming-page-rotation.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("海量流式端点 2：基于主键游标的零深分页跨表流式导出")
+    void testStreaming_ExportCursor() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/streaming/export-cursor")
+                        .param("totalRows", "180")
+                        .param("pageSize", "50")
+                        .param("maxRowsPerSheet", "100"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            assertThat(wb.getNumberOfSheets()).isEqualTo(2);
+            assertThat(wb.getSheetAt(0).getSheetName()).isEqualTo("交易账单");
+            assertThat(wb.getSheetAt(0).getPhysicalNumberOfRows()).isEqualTo(101);
+            assertThat(wb.getSheetAt(1).getSheetName()).isEqualTo("交易账单_2");
+            assertThat(wb.getSheetAt(1).getPhysicalNumberOfRows()).isEqualTo(81);
+        }
+
+        saveTempExcel("streaming-cursor-export.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("海量流式端点 3：流式分页模板显式写控制导出")
+    void testStreaming_ExportTemplate() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/sample/excel/streaming/export-template"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            assertThat(wb.getNumberOfSheets()).isEqualTo(1);
+            assertThat(wb.getSheetAt(0).getPhysicalNumberOfRows()).isEqualTo(151);
+        }
+
+        saveTempExcel("streaming-template-export.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("海量流式端点 4 & 5：下载模拟订单账单并执行 readBatch 流式消费")
+    void testStreaming_DownloadSample_And_ImportBatch() throws Exception {
+        // 1. 下载 80 条模拟订单样本
+        MvcResult sampleResult = mockMvc.perform(get("/sample/excel/streaming/sample-order-bill")
+                        .param("count", "80"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] sampleBytes = sampleResult.getResponse().getContentAsByteArray();
+        assertThat(sampleBytes).isNotEmpty();
+
+        // 2. 上传该样本文件，以批次 25 条进行分批消费解析
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "orders.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                sampleBytes
+        );
+
+        MvcResult importResult = mockMvc.perform(multipart("/sample/excel/streaming/import-batch")
+                        .file(file)
+                        .param("batchSize", "25"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode node = objectMapper.readTree(importResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(node.get("code").asInt()).isEqualTo(200);
+        assertThat(node.get("data").get("totalRead").asInt()).isEqualTo(80);
+    }
+
+    @Test
+    @DisplayName("海量流式端点 1B & 2B & 3：toResponseEntityStreaming / Cursor 与模板 AES-256 加密导出")
+    void testStreaming_ResponseEntityShortcuts_And_EncryptedTemplate() throws Exception {
+        // 1. toResponseEntityStreaming
+        MvcResult pageEntity = mockMvc.perform(get("/sample/excel/streaming/export-page-entity")
+                        .param("totalRows", "120")
+                        .param("pageSize", "50"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(pageEntity)).andExpect(status().isOk());
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(pageEntity.getResponse().getContentAsByteArray()))) {
+            assertThat(wb.getSheet("订单流水").getPhysicalNumberOfRows()).isEqualTo(121);
+        }
+
+        // 2. toResponseEntityStreamingByCursor
+        MvcResult cursorEntity = mockMvc.perform(get("/sample/excel/streaming/export-cursor-entity")
+                        .param("totalRows", "120")
+                        .param("pageSize", "50"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        mockMvc.perform(asyncDispatch(cursorEntity)).andExpect(status().isOk());
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(cursorEntity.getResponse().getContentAsByteArray()))) {
+            assertThat(wb.getSheet("交易账单").getPhysicalNumberOfRows()).isEqualTo(121);
+        }
+
+        // 3. StreamingPageExportTemplate + encrypt
+        MvcResult templateEnc = mockMvc.perform(get("/sample/excel/streaming/export-template")
+                        .param("password", "StreamPass@2026"))
+                .andExpect(status().isOk())
+                .andReturn();
+        byte[] cipherBytes = templateEnc.getResponse().getContentAsByteArray();
+        assertThat(ExcelSecurityUtil.isEncryptedWorkbook(new ByteArrayInputStream(cipherBytes))).isTrue();
+        ByteArrayOutputStream plainOut = new ByteArrayOutputStream();
+        ExcelSecurityUtil.decryptWorkbook(new ByteArrayInputStream(cipherBytes), plainOut, "StreamPass@2026");
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(plainOut.toByteArray()))) {
+            assertThat(wb.getSheet("标准账单").getPhysicalNumberOfRows()).isEqualTo(151);
+        }
+    }
+
+    // ==========================================
+    // 领域控制器 6：ExcelAsyncExportController 测试 (/sample/excel/async/*)
+    // ==========================================
+
+    @Test
+    @DisplayName("异步导出端点 1 & 2 & 4：异步提交、X-Trace-Id 跨线程透传、状态轮询与受管文件下载")
+    void testAsync_Submit_And_CheckTraceId_And_Download() throws Exception {
+        String testTraceId = "trace-excel-async-7777";
+
+        // 1. 发起异步导出任务提交并显式携带 X-Trace-Id 请求头
+        MvcResult submitResult = mockMvc.perform(post("/sample/excel/async/submit")
+                        .header("X-Trace-Id", testTraceId)
+                        .param("taskName", "海量交易账单自动化自验")
+                        .param("count", "120"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode submitNode = objectMapper.readTree(submitResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(submitNode.get("code").asInt()).isEqualTo(200);
+        String taskId = submitNode.get("data").get("taskId").asText();
+        assertThat(taskId).isNotBlank();
+
+        // 2. 轮询任务状态直至 SUCCESS（至多等待 5 秒）
+        JsonNode statusNode = null;
+        int maxAttempts = 50;
+        for (int i = 0; i < maxAttempts; i++) {
+            MvcResult statusResult = mockMvc.perform(get("/sample/excel/async/status")
+                            .param("taskId", taskId))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            statusNode = objectMapper.readTree(statusResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            String taskStatus = statusNode.get("data").get("status").asText();
+            if ("SUCCESS".equals(taskStatus)) {
+                break;
+            }
+            Thread.sleep(100);
+        }
+
+        assertThat(statusNode).isNotNull();
+        assertThat(statusNode.get("code").asInt()).isEqualTo(200);
+        JsonNode data = statusNode.get("data");
+        assertThat(data.get("status").asText()).isEqualTo("SUCCESS");
+        assertThat(data.get("progress").asInt()).isEqualTo(100);
+        assertThat(data.get("downloadUrl").asText()).isEqualTo("/sample/excel/async/download?taskId=" + taskId);
+        assertThat(data.get("fileSize").asLong()).isGreaterThan(0L);
+
+        // 验证 X-Trace-Id 在后台工作线程中的 100% 完整透传
+        assertThat(data.get("workerTraceId").asText()).isEqualTo(testTraceId);
+
+        // 3. 通过受管下载端点拉取二进制 Excel 并核验
+        MvcResult downloadResult = mockMvc.perform(get("/sample/excel/async/download")
+                        .param("taskId", taskId))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] downloadBytes = downloadResult.getResponse().getContentAsByteArray();
+        assertThat(downloadBytes).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(downloadBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertThat(sheet.getSheetName()).isEqualTo("交易账单");
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(121); // 1 表头 + 120 行数据
+        }
+
+        saveTempExcel("async-export-result.xlsx", downloadBytes);
+    }
+
+    @Test
+    @DisplayName("异步导出端点 3：任务取消生命周期验证")
+    void testAsync_Cancel_Task() throws Exception {
+        // 1. 提交一个任务
+        MvcResult submitResult = mockMvc.perform(post("/sample/excel/async/submit")
+                        .param("taskName", "待取消测试任务")
+                        .param("count", "500"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode submitNode = objectMapper.readTree(submitResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        String taskId = submitNode.get("data").get("taskId").asText();
+
+        // 2. 取消该任务
+        MvcResult cancelResult = mockMvc.perform(post("/sample/excel/async/cancel")
+                        .param("taskId", taskId))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode cancelNode = objectMapper.readTree(cancelResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(cancelNode.get("code").asInt()).isEqualTo(200);
+        assertThat(cancelNode.get("data").get("taskId").asText()).isEqualTo(taskId);
+    }
+
+    @Test
+    @DisplayName("异步导出端点 2B：轻量进度百分比轮询与 StreamingPageExportTemplate.onProgress 联动")
+    void testAsync_ProgressEndpoint() throws Exception {
+        MvcResult submitResult = mockMvc.perform(post("/sample/excel/async/submit")
+                        .param("taskName", "进度百分比轮询验证")
+                        .param("count", "200"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String taskId = objectMapper.readTree(submitResult.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                .get("data").get("taskId").asText();
+
+        JsonNode progressNode = null;
+        for (int i = 0; i < 50; i++) {
+            MvcResult res = mockMvc.perform(get("/sample/excel/async/progress")
+                            .param("taskId", taskId))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            progressNode = objectMapper.readTree(res.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            if ("SUCCESS".equals(progressNode.get("data").get("status").asText())) {
+                break;
+            }
+            Thread.sleep(50);
+        }
+
+        assertThat(progressNode).isNotNull();
+        JsonNode data = progressNode.get("data");
+        assertThat(data.get("status").asText()).isEqualTo("SUCCESS");
+        assertThat(data.get("progress").asInt()).isEqualTo(100);
+        assertThat(data.get("fileSize").asLong()).isGreaterThan(0L);
+        assertThat(data.get("downloadUrl").asText()).isEqualTo("/sample/excel/async/download?taskId=" + taskId);
+    }
+
+    @Test
+    @DisplayName("SPI 扩展验证：自定义 ExportFileStorage 条件化装配")
+    void testAsync_CustomStorage_SPI_Verification() {
+        new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+                .withUserConfiguration(
+                        io.github.atengk.boot.sample.excel.storage.CustomOssExportFileStorage.class,
+                        io.github.atengk.boot.excel.properties.ExcelProperties.class
+                )
+                .withPropertyValues("ateng.boot.excel.sample.custom-storage.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.excel.async.storage.ExportFileStorage.class);
+                    io.github.atengk.boot.excel.async.storage.ExportFileStorage storage =
+                            context.getBean(io.github.atengk.boot.excel.async.storage.ExportFileStorage.class);
+                    assertThat(storage).isInstanceOf(io.github.atengk.boot.sample.excel.storage.CustomOssExportFileStorage.class);
+                    assertThat(storage.getDownloadUrl("task_999", "key_999"))
+                            .startsWith(io.github.atengk.boot.sample.excel.storage.CustomOssExportFileStorage.OSS_URL_PREFIX);
+                });
+    }
+
+    // ==========================================
+    // 场景 1：StreamingPageExportScenarioService 实测
+    // ==========================================
+
+    @Test
+    @DisplayName("场景 1：海量数据游标分页流式写出与跨 Sheet 自动分割轮转")
+    void testScenario1_StreamingPageExport_ByCursor() throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        // 导出 250 条数据，限制单表 100 条 -> 应自动分割为 3 个 Sheet（100, 100, 50）
+        long exported = streamingPageExportService.exportBigDataByCursor(out, 250, 100);
+        assertThat(exported).isEqualTo(250);
+
+        byte[] bytes = out.toByteArray();
+        saveTempExcel("scenario1-cursor-export.xlsx", bytes);
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            assertThat(wb.getNumberOfSheets()).isEqualTo(3);
+            assertThat(wb.getSheetAt(0).getSheetName()).isEqualTo("销售流水");
+            assertThat(wb.getSheetAt(0).getPhysicalNumberOfRows()).isEqualTo(101); // 1 表头 + 100 数据
+            assertThat(wb.getSheetAt(1).getSheetName()).isEqualTo("销售流水_2");
+            assertThat(wb.getSheetAt(1).getPhysicalNumberOfRows()).isEqualTo(101);
+            assertThat(wb.getSheetAt(2).getSheetName()).isEqualTo("销售流水_3");
+            assertThat(wb.getSheetAt(2).getPhysicalNumberOfRows()).isEqualTo(51); // 1 表头 + 50 数据
+        }
+    }
+
+    @Test
+    @DisplayName("场景 1：海量数据页码驱动流式分页写出")
+    void testScenario1_StreamingPageExport_ByPage() throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        long exported = streamingPageExportService.exportBigDataByPage(out, 150, 200);
+        assertThat(exported).isEqualTo(150);
+
+        byte[] bytes = out.toByteArray();
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            assertThat(wb.getNumberOfSheets()).isEqualTo(1);
+            assertThat(wb.getSheetAt(0).getPhysicalNumberOfRows()).isEqualTo(151);
+        }
+    }
+
+    // ==========================================
+    // 场景 2：MultiSheetScenarioService 实测
+    // ==========================================
+
+    @Test
+    @DisplayName("场景 2：异构多 Sheet 流式 Fluent 编排导出与异构流式模型读取全真闭环")
+    void testScenario2_MultiSheet_FluentBuilderAndReader() throws Exception {
+        // 1. 导出包含 3 个异构 Sheet 的复合工作簿
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        multiSheetService.exportHeterogeneousMultiSheet(out);
+        byte[] bytes = out.toByteArray();
+        assertThat(bytes).isNotEmpty();
+        saveTempExcel("scenario2-multi-sheet.xlsx", bytes);
+
+        // 2. 校验 Sheet 结构与内容
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            assertThat(wb.getNumberOfSheets()).isEqualTo(3);
+            assertThat(wb.getSheetAt(0).getSheetName()).isEqualTo("用户清单");
+            assertThat(wb.getSheetAt(1).getSheetName()).isEqualTo("部门架构");
+            assertThat(wb.getSheetAt(2).getSheetName()).isEqualTo("交易流水");
+        }
+
+        // 3. 使用 ExcelReaderBuilder 逆向流式读取解析为强类型对象
+        try (InputStream in = new ByteArrayInputStream(bytes)) {
+            ExcelMultiSheetResult result = multiSheetService.readHeterogeneousMultiSheet(in);
+            assertThat(result).isNotNull();
+
+            List<UserExcelVO> users = result.getSheetData(0);
+            assertThat(users).hasSize(3);
+            assertThat(users.get(0).getUsername()).isEqualTo("张三");
+
+            List<DepartmentUserMergeVO> departments = result.getSheetData(1);
+            assertThat(departments).hasSize(5);
+            assertThat(departments.get(0).getDepartment()).isEqualTo("研发部");
+        }
+    }
+
+    // ==========================================
+    // 场景 3：ValidationAndFeedbackScenarioService 实测
+    // ==========================================
+
+    @Test
+    @DisplayName("场景 3：严格表头契约校验合法放行与非法阻断")
+    void testScenario3_Validation_HeaderStrictCheck() throws Exception {
+        // 1. 合法表头
+        byte[] validExcel;
+        try (Workbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Sheet sheet = wb.createSheet("Sheet1");
+            Row head = sheet.createRow(0);
+            head.createCell(0).setCellValue("用户ID");
+            head.createCell(1).setCellValue("用户姓名");
+            head.createCell(2).setCellValue("联系手机");
+            head.createCell(3).setCellValue("电子邮箱");
+            head.createCell(4).setCellValue("用户性别");
+            head.createCell(5).setCellValue("所属部门");
+            head.createCell(6).setCellValue("账号状态");
+            wb.write(out);
+            validExcel = out.toByteArray();
+        }
+
+        try (InputStream in = new ByteArrayInputStream(validExcel)) {
+            validationService.validateHeader(in, HeaderValidationStrategy.STRICT);
+        }
+
+        // 2. 非法表头（缺少必须列）
+        byte[] invalidExcel;
+        try (Workbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Sheet sheet = wb.createSheet("Sheet1");
+            Row head = sheet.createRow(0);
+            head.createCell(0).setCellValue("用户ID");
+            head.createCell(1).setCellValue("错误列");
+            wb.write(out);
+            invalidExcel = out.toByteArray();
+        }
+
+        try (InputStream in = new ByteArrayInputStream(invalidExcel)) {
+            assertThatThrownBy(() -> validationService.validateHeader(in, HeaderValidationStrategy.STRICT))
+                    .isInstanceOf(BusinessException.class)
+                    .hasMessageContaining("表头");
+        }
+    }
+
+    @Test
+    @DisplayName("场景 3：JSR-303 行级校验与错误熔断阈值机制")
+    void testScenario3_Validation_ReadAndCircuitBreaker() throws Exception {
+        List<UserExcelVO> mixedList = List.of(
+                new UserExcelVO(1L, "合规用户", "13800000000", "ok@example.com", SampleGenderEnum.MALE, "研发部", "0"),
+                new UserExcelVO(2L, "", "110", "bad-email", SampleGenderEnum.FEMALE, "研发部", "0"),
+                new UserExcelVO(3L, "", "120", "bad-email", SampleGenderEnum.MALE, "市场部", "0")
+        );
+        byte[] excelBytes = createRawExcel(mixedList);
+
+        // 1. 全量校验聚合
+        try (InputStream in = new ByteArrayInputStream(excelBytes)) {
+            ExcelReadResult<UserExcelVO> result = validationService.readAndValidate(in);
+            assertThat(result.isSuccess()).isFalse();
+            assertThat(result.getData()).hasSize(1);
+            assertThat(result.getErrorCount()).isEqualTo(6);
+        }
+
+        // 2. 错误熔断（限制错误行数上限为 1，第 2 行错误直接触发熔断）
+        try (InputStream in = new ByteArrayInputStream(excelBytes)) {
+            ExcelReadResult<UserExcelVO> result = validationService.readWithCircuitBreaker(in, 1);
+            assertThat(result.isCircuitBroken()).isTrue();
+            assertThat(result.getErrorCount()).isLessThan(6);
+        }
+    }
+
+    @Test
+    @DisplayName("场景 3：错题集生成：单元格标红与浮动批注回写")
+    void testScenario3_Validation_GenerateErrorFeedback() throws Exception {
+        List<UserExcelVO> invalidList = List.of(
+                new UserExcelVO(4001L, "", "13800138000", "good@example.com",
+                        SampleGenderEnum.FEMALE, "研发部", "0")
+        );
+        byte[] rawExcelBytes = createRawExcel(invalidList);
+
+        ExcelReadResult<UserExcelVO> readResult;
+        try (InputStream in = new ByteArrayInputStream(rawExcelBytes)) {
+            readResult = validationService.readAndValidate(in);
+        }
+
+        ByteArrayOutputStream feedbackOut = new ByteArrayOutputStream();
+        try (InputStream in = new ByteArrayInputStream(rawExcelBytes)) {
+            validationService.generateErrorFeedback(in, feedbackOut, readResult.getErrors());
+        }
+
+        byte[] feedbackBytes = feedbackOut.toByteArray();
+        saveTempExcel("scenario3-feedback.xlsx", feedbackBytes);
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(feedbackBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
             Row row1 = sheet.getRow(1);
             Cell nameCell = row1.getCell(1);
 
-            // 校验失败单元格标红背景并挂载悬浮批注
+            // 标红与批注断言
             assertThat(nameCell.getCellStyle().getFillForegroundColor()).isGreaterThan((short) 0);
             Comment comment = nameCell.getCellComment();
             assertThat(comment).isNotNull();
@@ -336,28 +1543,327 @@ class SampleExcelIntegrationTest {
     }
 
     @Test
-    @DisplayName("测试导入反馈端点校验通过场景：全部合规时写回强类型成功 Result")
-    void testImportWithFeedbackSuccess() throws Exception {
-        List<UserExcelVO> validList = new ArrayList<>();
-        validList.add(new UserExcelVO(5001L, "孙七", "13500135000", "sunqi@example.com",
-                SampleGenderEnum.MALE, "研发部", "0"));
+    @DisplayName("场景 3：差错数据隔离提取导出：仅将校验失败的数据生成专属纠错 Excel 文件")
+    void testScenario3_Validation_ExportFailedRows() throws Exception {
+        List<UserExcelVO> mixedList = List.of(
+                new UserExcelVO(1L, "合规用户", "13800000000", "ok@example.com", SampleGenderEnum.MALE, "研发部", "0"),
+                new UserExcelVO(2L, "", "110", "bad-email", SampleGenderEnum.FEMALE, "研发部", "0"),
+                new UserExcelVO(3L, "", "120", "bad-email", SampleGenderEnum.MALE, "市场部", "0")
+        );
+        byte[] rawExcelBytes = createRawExcel(mixedList);
 
-        byte[] rawExcelBytes = createRawExcel(validList);
+        ExcelReadResult<UserExcelVO> readResult;
+        try (InputStream in = new ByteArrayInputStream(rawExcelBytes)) {
+            readResult = validationService.readAndValidate(in);
+        }
+        assertThat(readResult.getFailedData()).hasSize(2);
 
-        MockMultipartFile file = new MockMultipartFile(
-                "file", "valid_feedback.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                rawExcelBytes
+        ByteArrayOutputStream failedOut = new ByteArrayOutputStream();
+        validationService.exportFailedRows(failedOut, readResult.getFailedData(), readResult.getErrors());
+        byte[] failedBytes = failedOut.toByteArray();
+        assertThat(failedBytes).isNotEmpty();
+        saveTempExcel("scenario3-failed-rows.xlsx", failedBytes);
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(failedBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertThat(sheet).isNotNull();
+            // 包含 1 个表头行 + 2 个校验失败行
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(3);
+            Row head = sheet.getRow(0);
+            assertThat(head.getCell(0).getStringCellValue()).isEqualTo("用户ID");
+        }
+    }
+
+    // ==========================================
+    // 场景 4：AsyncExportScenarioService 实测
+    // ==========================================
+
+    @Test
+    @DisplayName("场景 4：后台受管异步导出任务提交、状态轮询、物理文件下载与过期清理")
+    void testScenario4_AsyncExport_SubmitAndPollWorkflow() throws Exception {
+        String taskId = asyncExportService.submitTask("场景4异步导出测试", 50);
+        assertThat(taskId).isNotBlank();
+
+        // 轮询直至任务成功
+        long deadline = System.currentTimeMillis() + 8000;
+        ExportTask task = null;
+        while (System.currentTimeMillis() < deadline) {
+            task = asyncExportService.getTask(taskId);
+            if (task != null && task.getStatus() == ExportTaskStatus.SUCCESS) {
+                break;
+            }
+            Thread.sleep(100);
+        }
+
+        assertThat(task).isNotNull();
+        assertThat(task.getStatus()).isEqualTo(ExportTaskStatus.SUCCESS);
+
+        // 下载任务文件并校验有效性
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        asyncExportService.downloadTaskFile(taskId, out);
+        byte[] fileBytes = out.toByteArray();
+        assertThat(fileBytes).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(fileBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(51); // 1 表头 + 50 条数据
+        }
+
+        // 测试过期任务清理
+        asyncExportService.cleanExpiredTasks(Duration.ofHours(24));
+    }
+
+    // ==========================================
+    // 场景 5：SecurityWorkbookScenarioService 实测
+    // ==========================================
+
+    @Test
+    @DisplayName("场景 5：POI 原生 Agile AES-256 工作簿强加密与解密闭环")
+    void testScenario5_SecurityWorkbook_Aes256Encryption() throws Exception {
+        List<UserExcelVO> users = createMockUserList();
+        String password = "StrongPassword@2026";
+
+        ByteArrayOutputStream cipherOut = new ByteArrayOutputStream();
+        securityWorkbookService.exportEncryptedWorkbook(cipherOut, users, password);
+        byte[] cipherBytes = cipherOut.toByteArray();
+        assertThat(cipherBytes).isNotEmpty();
+        saveTempExcel("scenario5-encrypted.xlsx", cipherBytes);
+
+        // 验证密文工作簿使用 POI 裸打开必然抛出 EncryptedDocumentException
+        assertThatThrownBy(() -> WorkbookFactory.create(new ByteArrayInputStream(cipherBytes)))
+                .isInstanceOf(org.apache.poi.EncryptedDocumentException.class);
+
+        // 验证受管解密门面恢复明文
+        ByteArrayOutputStream plainOut = new ByteArrayOutputStream();
+        try (InputStream cipherIn = new ByteArrayInputStream(cipherBytes)) {
+            securityWorkbookService.decryptWorkbook(cipherIn, plainOut, password);
+        }
+        byte[] plainBytes = plainOut.toByteArray();
+        assertThat(plainBytes).isNotEmpty();
+
+        try (Workbook plainWb = WorkbookFactory.create(new ByteArrayInputStream(plainBytes))) {
+            Sheet sheet = plainWb.getSheetAt(0);
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(5); // 1 表头 + 4 数据
+            Row row1 = sheet.getRow(1);
+            assertThat(row1.getCell(1).getStringCellValue()).isEqualTo("张三");
+        }
+    }
+
+    @Test
+    @DisplayName("场景 5：防拍照半透明全景文字水印与工作表只读保护密码")
+    void testScenario5_SecurityWorkbook_WatermarkAndSheetLock() throws Exception {
+        List<UserExcelVO> users = createMockUserList();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        securityWorkbookService.exportWithWatermarkAndProtection(
+                out, users, "机密 · 内部严禁外传", "protect123"
+        );
+        byte[] bytes = out.toByteArray();
+        saveTempExcel("scenario5-watermark.xlsx", bytes);
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertThat(sheet.getProtect()).isTrue();
+            assertThat(wb.getAllPictures()).isNotEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("场景 5：公式注入安全防御（CWE-1236）、白名单豁免与列级只读锁")
+    void testScenario5_SecurityWorkbook_SecurityTemplate() throws Exception {
+        // 1. 导出安全防呆空模板并验证表头与下拉约束
+        ByteArrayOutputStream templateOut = new ByteArrayOutputStream();
+        securityWorkbookService.exportSecurityTemplate(templateOut);
+        byte[] templateBytes = templateOut.toByteArray();
+        saveTempExcel("scenario5-security-template.xlsx", templateBytes);
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(templateBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            Row headRow = sheet.getRow(0);
+            assertThat(headRow).isNotNull();
+            assertThat(headRow.getCell(0).getStringCellValue()).isEqualTo("系统工号");
+            assertThat(headRow.getCell(1).getStringCellValue()).isEqualTo("员工姓名");
+            assertThat(headRow.getCell(2).getStringCellValue()).isEqualTo("薪资计算公式");
+            assertThat(headRow.getCell(3).getStringCellValue()).isEqualTo("核定职级");
+        }
+
+        // 2. 导出包含高危公式注入前缀与白名单计算公式的真实数据，验证单引号转译与白名单豁免
+        List<SecurityUserExcelVO> securityData = createMockSecurityUserList();
+        ByteArrayOutputStream dataOut = new ByteArrayOutputStream();
+        securityWorkbookService.exportSecurityData(dataOut, securityData);
+        byte[] dataBytes = dataOut.toByteArray();
+        saveTempExcel("scenario5-security-data.xlsx", dataBytes);
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(dataBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(4); // 1 表头 + 3 数据
+
+            // 第 1 行：=cmd|'/C calc'!A0 应被前置单引号转译；=SUM(A1:B1) 因 @ExcelFormulaAllowed 保留原样
+            Row row1 = sheet.getRow(1);
+            assertThat(row1.getCell(1).getStringCellValue()).isEqualTo("'=cmd|'/C calc'!A0");
+            assertThat(row1.getCell(2).getStringCellValue()).isEqualTo("=SUM(A1:B1)");
+
+            // 第 2 行：+12345678 也应被前置单引号转译；=AVERAGE(C1:C10) 保留原样
+            Row row2 = sheet.getRow(2);
+            assertThat(row2.getCell(1).getStringCellValue()).isEqualTo("'+12345678");
+            assertThat(row2.getCell(2).getStringCellValue()).isEqualTo("=AVERAGE(C1:C10)");
+
+            // 第 3 行：普通文本保持不变
+            Row row3 = sheet.getRow(3);
+            assertThat(row3.getCell(1).getStringCellValue()).isEqualTo("普通员工");
+            assertThat(row3.getCell(2).getStringCellValue()).isEqualTo("普通文本");
+        }
+    }
+
+    // ==========================================
+    // 场景 6：DynamicColumnProjectionScenarioService 实测
+    // ==========================================
+
+    @Test
+    @DisplayName("场景 6：强类型 VO 动态列投影裁剪（白名单包含模式与黑名单排除模式）")
+    void testScenario6_DynamicProjection_IncludeAndExclude() throws Exception {
+        // 1. 白名单模式：仅导出 userId 与 email
+        ByteArrayOutputStream includeOut = new ByteArrayOutputStream();
+        dynamicProjectionService.exportWithColumnInclude(includeOut, List.of("userId", "email"));
+        byte[] includeBytes = includeOut.toByteArray();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(includeBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            Row head = sheet.getRow(0);
+            assertThat(head.getPhysicalNumberOfCells()).isEqualTo(2);
+            assertThat(head.getCell(0).getStringCellValue()).isEqualTo("用户ID");
+            assertThat(head.getCell(1).getStringCellValue()).isEqualTo("电子邮箱");
+
+            // 数据行与脱敏断言：白名单列投影紧凑左移且电子邮箱脱敏真实生效
+            Row row1 = sheet.getRow(1);
+            assertThat(row1.getCell(0).getNumericCellValue()).isEqualTo(1.0);
+            assertThat(row1.getCell(1).getStringCellValue()).contains("***").endsWith("@example.com");
+        }
+
+        // 2. 黑名单模式：排除 phone 与 gender
+        ByteArrayOutputStream excludeOut = new ByteArrayOutputStream();
+        dynamicProjectionService.exportWithColumnExclude(excludeOut, Set.of("phone", "gender"));
+        byte[] excludeBytes = excludeOut.toByteArray();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(excludeBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            Row head = sheet.getRow(0);
+            // 原 7 列 - 排除 2 列 = 5 列
+            assertThat(head.getPhysicalNumberOfCells()).isEqualTo(5);
+            for (int i = 0; i < head.getPhysicalNumberOfCells(); i++) {
+                String colName = head.getCell(i).getStringCellValue();
+                assertThat(colName).isNotEqualTo("联系手机");
+                assertThat(colName).isNotEqualTo("用户性别");
+            }
+
+            // 数据行断言：黑名单排除后，其余字段（如电子邮箱）依然保真脱敏
+            Row row1 = sheet.getRow(1);
+            assertThat(row1.getCell(0).getNumericCellValue()).isEqualTo(1.0);
+            assertThat(row1.getCell(1).getStringCellValue()).isEqualTo("张三");
+            assertThat(row1.getCell(2).getStringCellValue()).contains("***").endsWith("@example.com");
+        }
+    }
+
+    @Test
+    @DisplayName("场景 6：无实体动态流式导出二维报表")
+    void testScenario6_DynamicProjection_DynamicMatrix() throws Exception {
+        List<List<String>> headList = List.of(
+                List.of("报表日期"),
+                List.of("销售大区"),
+                List.of("业绩金额")
+        );
+        List<List<Object>> dataList = List.of(
+                List.of("2026-10-28", "华东大区", 88888.88),
+                List.of("2026-10-28", "华南大区", 66666.66)
         );
 
-        MvcResult mvcResult = mockMvc.perform(multipart("/api/excel/import-feedback").file(file))
-                .andExpect(status().isOk())
-                .andReturn();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        dynamicProjectionService.exportDynamic(out, headList, dataList);
+        byte[] bytes = out.toByteArray();
+        saveTempExcel("scenario6-dynamic-matrix.xlsx", bytes);
 
-        String responseBody = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
-        JsonNode root = objectMapper.readTree(responseBody);
-        assertThat(root.get("code").asInt()).isEqualTo(200);
-        assertThat(root.get("data").asInt()).isEqualTo(1);
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(3); // 1 表头 + 2 数据
+            Row head = sheet.getRow(0);
+            assertThat(head.getCell(0).getStringCellValue()).isEqualTo("报表日期");
+            assertThat(head.getCell(1).getStringCellValue()).isEqualTo("销售大区");
+            assertThat(head.getCell(2).getStringCellValue()).isEqualTo("业绩金额");
+
+            Row row1 = sheet.getRow(1);
+            assertThat(row1.getCell(1).getStringCellValue()).isEqualTo("华东大区");
+            assertThat(row1.getCell(2).getNumericCellValue()).isEqualTo(88888.88);
+        }
+    }
+
+    @Test
+    @DisplayName("场景 6：多语言国际化表头导出与纵向相邻单元格自动合并")
+    void testScenario6_DynamicProjection_I18nAndMerge() throws Exception {
+        // 1. 国际化导出
+        ByteArrayOutputStream i18nOut = new ByteArrayOutputStream();
+        dynamicProjectionService.exportI18nUsers(i18nOut);
+        byte[] i18nBytes = i18nOut.toByteArray();
+        assertThat(i18nBytes).isNotEmpty();
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(i18nBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            Row head = sheet.getRow(0);
+            assertThat(head.getCell(0).getStringCellValue()).isNotBlank();
+        }
+
+        // 2. 纵向合并导出
+        ByteArrayOutputStream mergeOut = new ByteArrayOutputStream();
+        dynamicProjectionService.exportMerge(mergeOut);
+        byte[] mergeBytes = mergeOut.toByteArray();
+        saveTempExcel("scenario6-merge.xlsx", mergeBytes);
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(mergeBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertThat(sheet.getNumMergedRegions()).isGreaterThan(0);
+        }
+    }
+
+    @Test
+    @DisplayName("场景 6：防呆导入模板导出（下拉列表约束与表头悬浮批注）")
+    void testScenario6_DynamicProjection_DropdownTemplate() throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        dynamicProjectionService.exportDropdownTemplate(out);
+        byte[] bytes = out.toByteArray();
+        saveTempExcel("scenario6-dropdown-template.xlsx", bytes);
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            Row headRow = sheet.getRow(0);
+
+            // 批注验证
+            Cell nameCell = headRow.getCell(1);
+            assertThat(nameCell.getStringCellValue()).isEqualTo("用户姓名");
+            Comment nameComment = nameCell.getCellComment();
+            assertThat(nameComment).isNotNull();
+            assertThat(nameComment.getString().getString()).contains("请输入 2-20 位真实姓名");
+
+            // 下拉验证
+            List<? extends DataValidation> validations = sheet.getDataValidations();
+            assertThat(validations).isNotEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("企业级内置主题：生成 5 套主题 Excel 样式输出至临时目录")
+    void testThemes_AllSampleThemesOutput() throws Exception {
+        List<UserExcelVO> sampleUsers = createMockUserList();
+
+        for (ExcelThemeEnum theme : ExcelThemeEnum.values()) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            try (ExcelBuilder builder = ExcelUtil.builder(out)) {
+                builder.theme(theme)
+                        .zebraStripe(true)
+                        .autoColumnWidth(12, 60)
+                        .sheet(theme.name(), UserExcelVO.class, sampleUsers);
+            }
+            byte[] bytes = out.toByteArray();
+            saveTempExcel("theme-" + theme.name().toLowerCase().replace('_', '-') + ".xlsx", bytes);
+            assertThat(bytes).isNotEmpty();
+        }
     }
 
     /**
@@ -372,388 +1878,20 @@ class SampleExcelIntegrationTest {
         return out.toByteArray();
     }
 
-    @Test
-    @DisplayName("测试无实体动态导出：验证动态表头与二维数据流式写出")
-    void testExportDynamic() throws Exception {
-        MvcResult mvcResult = mockMvc.perform(get("/api/excel/export-dynamic"))
-                .andExpect(status().isOk())
-                .andExpect(header().exists("Content-Disposition"))
-                .andReturn();
-
-        byte[] content = mvcResult.getResponse().getContentAsByteArray();
-        assertThat(content).isNotEmpty();
-
-        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
-            Sheet sheet = workbook.getSheetAt(0);
-            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(4); // 1 行表头 + 3 行数据
-
-            Row head = sheet.getRow(0);
-            assertThat(head.getCell(0).getStringCellValue()).isEqualTo("报表日期");
-            assertThat(head.getCell(1).getStringCellValue()).isEqualTo("销售大区");
-            assertThat(head.getCell(2).getStringCellValue()).isEqualTo("业绩金额");
-
-            Row row1 = sheet.getRow(1);
-            assertThat(row1.getCell(1).getStringCellValue()).isEqualTo("华东大区");
-            assertThat(row1.getCell(2).getNumericCellValue()).isEqualTo(88888.88);
-        }
-
-        saveTempExcel("sample-exported-dynamic.xlsx", content);
-    }
-
-    @Test
-    @DisplayName("测试生成 5 套企业级内置主题样例 Excel 并输出至临时目录供人工核验")
-    void testAllSampleThemesOutputToTempDirectory() throws Exception {
-        List<UserExcelVO> sampleUsers = List.of(
-                new UserExcelVO(101L, "张三丰", "13800000001", "zhang@example.com", SampleGenderEnum.MALE, "研发部", "0"),
-                new UserExcelVO(102L, "李清照", "13800000002", "li@example.com", SampleGenderEnum.FEMALE, "市场部", "0"),
-                new UserExcelVO(103L, "王阳明", "13800000003", "wang@example.com", SampleGenderEnum.MALE, "财务部", "1")
+    private List<UserExcelVO> createMockUserList() {
+        return List.of(
+                new UserExcelVO(1L, "张三", "13800138000", "zhangsan@example.com", SampleGenderEnum.MALE, "研发部", "0"),
+                new UserExcelVO(2L, "李四", "13900139000", "lisi@example.com", SampleGenderEnum.FEMALE, "研发部", "0"),
+                new UserExcelVO(3L, "王五", "13700137000", "wangwu@example.com", SampleGenderEnum.MALE, "市场部", "1"),
+                new UserExcelVO(4L, "赵六", "13600136000", "zhaoliu@example.com", SampleGenderEnum.FEMALE, "财务部", "0")
         );
-
-        for (ExcelThemeEnum theme : ExcelThemeEnum.values()) {
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            try (ExcelBuilder builder = ExcelUtil.builder(out)) {
-                builder.theme(theme)
-                        .zebraStripe(true)
-                        .autoColumnWidth(12, 60)
-                        .sheet(theme.name(), UserExcelVO.class, sampleUsers);
-            }
-            byte[] bytes = out.toByteArray();
-            saveTempExcel("sample-theme-" + theme.name().toLowerCase().replace('_', '-') + ".xlsx", bytes);
-            assertThat(bytes).isNotEmpty();
-        }
     }
 
-    @Test
-    @DisplayName("测试防拍照全屏暗水印与工作表密码锁定端到端集成")
-    void testExportWithWatermarkAndProtection() throws Exception {
-        List<UserExcelVO> sampleUsers = List.of(
-                new UserExcelVO(101L, "张三丰", "13800000001", "zhang@example.com", SampleGenderEnum.MALE, "研发部", "0")
+    private List<SecurityUserExcelVO> createMockSecurityUserList() {
+        return List.of(
+                new SecurityUserExcelVO(1001L, "=cmd|'/C calc'!A0", "=SUM(A1:B1)", "P7 专家"),
+                new SecurityUserExcelVO(1002L, "+12345678", "=AVERAGE(C1:C10)", "P8 架构师"),
+                new SecurityUserExcelVO(1003L, "普通员工", "普通文本", "P6 工程师")
         );
-
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        ExcelUtil.exportWithWatermark(
-                out,
-                "机密内参表",
-                sampleUsers,
-                UserExcelVO.class,
-                "机密 · 示例项目 · 2026-10-17",
-                "samplePass123"
-        );
-        byte[] bytes = out.toByteArray();
-        saveTempExcel("sample-watermark-confidential.xlsx", bytes);
-
-        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
-            Sheet sheet = workbook.getSheet("机密内参表");
-            assertThat(sheet).isNotNull();
-            assertThat(sheet.getProtect()).isTrue();
-            assertThat(workbook.getAllPictures()).isNotEmpty();
-        }
-    }
-
-    @Test
-    @DisplayName("测试异步导出任务中心 Controller 端点：提交任务、查询进度并验证文件落盘")
-    void testAsyncExportControllerWorkflow() throws Exception {
-        MvcResult submitResult = mockMvc.perform(post("/api/excel/async-export")
-                        .param("taskName", "全量用户异步导出测试"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andReturn();
-
-        String body = submitResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
-        JsonNode root = objectMapper.readTree(body);
-        String taskId = root.get("data").asText();
-        assertThat(taskId).isNotBlank();
-
-        // 轮询查询任务状态
-        long deadline = System.currentTimeMillis() + 8000;
-        JsonNode taskNode = null;
-        while (System.currentTimeMillis() < deadline) {
-            MvcResult queryResult = mockMvc.perform(get("/api/excel/async-task/" + taskId))
-                    .andExpect(status().isOk())
-                    .andReturn();
-            JsonNode queryRoot = objectMapper.readTree(queryResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
-            taskNode = queryRoot.get("data");
-            String status = taskNode.get("status").asText();
-            if ("SUCCESS".equals(status)) {
-                break;
-            }
-            Thread.sleep(100);
-        }
-
-        assertThat(taskNode).isNotNull();
-        assertThat(taskNode.get("status").asText()).isEqualTo("SUCCESS");
-        String filePath = taskNode.get("filePath").asText();
-        assertThat(new java.io.File(filePath)).exists();
-    }
-
-    @Test
-    @DisplayName("测试万级大数据量流式读写与内存有界分批消费仿真")
-    void testLargeDatasetStreamingSimulation() throws Exception {
-        int totalRows = 5000;
-        List<UserExcelVO> largeList = new ArrayList<>(totalRows);
-        for (int i = 1; i <= totalRows; i++) {
-            largeList.add(new UserExcelVO(
-                    (long) i,
-                    "批量用户_" + i,
-                    "138" + String.format("%08d", i),
-                    "user_" + i + "@example.com",
-                    (i % 2 == 0) ? SampleGenderEnum.MALE : SampleGenderEnum.FEMALE,
-                    "研发部",
-                    "0"
-            ));
-        }
-
-        // 1. 流式写出到输出流
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        ExcelUtil.export(out, largeList, UserExcelVO.class);
-        byte[] excelBytes = out.toByteArray();
-        assertThat(excelBytes).isNotEmpty();
-
-        // 2. 分批流式读取消费（每批 1000 条），验证有界内存缓冲区与完整性
-        ByteArrayInputStream in = new ByteArrayInputStream(excelBytes);
-        java.util.concurrent.atomic.AtomicInteger batchCounter = new java.util.concurrent.atomic.AtomicInteger(0);
-        java.util.concurrent.atomic.AtomicInteger totalCounter = new java.util.concurrent.atomic.AtomicInteger(0);
-
-        ExcelUtil.readBatch(in, UserExcelVO.class, 1000, batch -> {
-            batchCounter.incrementAndGet();
-            totalCounter.addAndGet(batch.size());
-            // 校验批次数据脱敏前瞻（写出时已由 SensitiveCellWriteHandler 掩码）
-            for (UserExcelVO user : batch) {
-                assertThat(user.getPhone()).contains("****");
-            }
-        });
-
-        assertThat(batchCounter.get()).isEqualTo(5);
-        assertThat(totalCounter.get()).isEqualTo(totalRows);
-    }
-
-    @Test
-    @DisplayName("测试流式游标分页导出端点：验证基于游标驱动写出、无缝跨页拉取与文件生成")
-    void testExportStreamingPageViaController() throws Exception {
-        MvcResult mvcResult = mockMvc.perform(get("/api/excel/export-streaming-page"))
-                .andExpect(status().isOk())
-                .andExpect(header().exists("Content-Disposition"))
-                .andReturn();
-
-        String disposition = mvcResult.getResponse().getHeader("Content-Disposition");
-        assertThat(URLDecoder.decode(disposition, StandardCharsets.UTF_8)).contains("流式游标用户导出.xlsx");
-
-        byte[] content = mvcResult.getResponse().getContentAsByteArray();
-        assertThat(content).isNotEmpty();
-
-        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
-            Sheet sheet = workbook.getSheetAt(0);
-            // 3 页，每页 100 条，总计 300 条数据 + 1 行表头 = 301 行
-            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(301);
-            Row head = sheet.getRow(0);
-            assertThat(head.getCell(0).getStringCellValue()).isEqualTo("用户ID");
-            assertThat(head.getCell(1).getStringCellValue()).isEqualTo("用户姓名");
-
-            Row row1 = sheet.getRow(1);
-            assertThat(row1.getCell(1).getStringCellValue()).isEqualTo("游标用户_1");
-            Row row300 = sheet.getRow(300);
-            assertThat(row300.getCell(1).getStringCellValue()).isEqualTo("游标用户_300");
-        }
-
-        saveTempExcel("sample-streaming-cursor.xlsx", content);
-    }
-
-    @Test
-    @DisplayName("测试异步导出任务完整闭环：提交任务、轮询状态并直接下载文件验证有效性")
-    void testAsyncExportAndDownloadWorkflow() throws Exception {
-        MvcResult submitResult = mockMvc.perform(post("/api/excel/async-export")
-                        .param("taskName", "用户下载闭环测试"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andReturn();
-
-        String body = submitResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
-        JsonNode root = objectMapper.readTree(body);
-        String taskId = root.get("data").asText();
-        assertThat(taskId).isNotBlank();
-
-        // 等待异步任务执行完成
-        long deadline = System.currentTimeMillis() + 8000;
-        while (System.currentTimeMillis() < deadline) {
-            MvcResult queryResult = mockMvc.perform(get("/api/excel/async-task/" + taskId))
-                    .andExpect(status().isOk())
-                    .andReturn();
-            JsonNode queryRoot = objectMapper.readTree(queryResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
-            String status = queryRoot.get("data").get("status").asText();
-            if ("SUCCESS".equals(status)) {
-                break;
-            }
-            Thread.sleep(100);
-        }
-
-        // 下载文件端点调用
-        MvcResult downloadResult = mockMvc.perform(get("/api/excel/async-task/" + taskId + "/download"))
-                .andExpect(status().isOk())
-                .andExpect(header().exists("Content-Disposition"))
-                .andReturn();
-
-        byte[] fileBytes = downloadResult.getResponse().getContentAsByteArray();
-        assertThat(fileBytes).isNotEmpty();
-
-        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(fileBytes))) {
-            assertThat(workbook.getNumberOfSheets()).isGreaterThanOrEqualTo(1);
-            Sheet sheet = workbook.getSheetAt(0);
-            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(4); // 1 行表头 + 3 条 Mock 用户
-        }
-    }
-
-    @Test
-    @DisplayName("测试导入前置表头契约严格校验：合法表头放行、畸形表头被精确拦截阻断")
-    void testImportHeaderCheckViaController() throws Exception {
-        // 1. 构造合法表头 Excel
-        byte[] validExcel;
-        try (Workbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            Sheet sheet = wb.createSheet("Sheet1");
-            Row head = sheet.createRow(0);
-            head.createCell(0).setCellValue("用户ID");
-            head.createCell(1).setCellValue("用户姓名");
-            head.createCell(2).setCellValue("联系手机");
-            head.createCell(3).setCellValue("电子邮箱");
-            head.createCell(4).setCellValue("用户性别");
-            head.createCell(5).setCellValue("所属部门");
-            head.createCell(6).setCellValue("账号状态");
-
-            Row row1 = sheet.createRow(1);
-            row1.createCell(0).setCellValue(1001L);
-            row1.createCell(1).setCellValue("赵六");
-            row1.createCell(2).setCellValue("13812345678");
-            row1.createCell(3).setCellValue("zhaoliu@example.com");
-            row1.createCell(4).setCellValue("男");
-            row1.createCell(5).setCellValue("研发部");
-            row1.createCell(6).setCellValue("正常");
-            wb.write(out);
-            validExcel = out.toByteArray();
-        }
-
-        MockMultipartFile validFile = new MockMultipartFile("file", "valid.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", validExcel);
-        mockMvc.perform(multipart("/api/excel/import-header-check").file(validFile).param("strategy", "STRICT"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").isArray());
-
-        // 2. 构造缺失必填列的畸形表头 Excel
-        byte[] invalidExcel;
-        try (Workbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            Sheet sheet = wb.createSheet("Sheet1");
-            Row head = sheet.createRow(0);
-            head.createCell(0).setCellValue("用户ID");
-            head.createCell(1).setCellValue("错误列名"); // 非法列名
-            wb.write(out);
-            invalidExcel = out.toByteArray();
-        }
-
-        MockMultipartFile invalidFile = new MockMultipartFile("file", "invalid.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", invalidExcel);
-        mockMvc.perform(multipart("/api/excel/import-header-check").file(invalidFile).param("strategy", "STRICT"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(400))
-                .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("表头")));
-    }
-
-    @Test
-    @DisplayName("测试导入错误熔断防穿透：超过指定错误阈值时立即熔断阻断")
-    void testImportCircuitBreakerViaController() throws Exception {
-        byte[] invalidExcel;
-        try (Workbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            Sheet sheet = wb.createSheet("Sheet1");
-            Row head = sheet.createRow(0);
-            head.createCell(0).setCellValue("用户ID");
-            head.createCell(1).setCellValue("用户姓名");
-            head.createCell(2).setCellValue("联系手机");
-            head.createCell(3).setCellValue("电子邮箱");
-            head.createCell(4).setCellValue("用户性别");
-            head.createCell(5).setCellValue("所属部门");
-            head.createCell(6).setCellValue("账号状态");
-
-            // 写入 20 行完全不合法数据（姓名为空，手机格式错误）
-            for (int i = 1; i <= 20; i++) {
-                Row row = sheet.createRow(i);
-                row.createCell(0).setCellValue((long) i);
-                row.createCell(1).setCellValue(""); // 触发 @NotBlank
-                row.createCell(2).setCellValue("110"); // 手机格式不合法
-                row.createCell(3).setCellValue("invalid-email");
-            }
-            wb.write(out);
-            invalidExcel = out.toByteArray();
-        }
-
-        MockMultipartFile invalidFile = new MockMultipartFile("file", "circuit-breaker.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", invalidExcel);
-        mockMvc.perform(multipart("/api/excel/import-circuit-breaker").file(invalidFile).param("maxErrorRows", "5"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(400))
-                .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("熔断")));
-    }
-
-    @Test
-    @DisplayName("测试安全防呆模板：验证公式注入单引号转译、@ExcelFormulaAllowed 白名单豁免与 @ExcelColumnLock 只读保护")
-    void testDownloadSecurityTemplateViaController() throws Exception {
-        MvcResult mvcResult = mockMvc.perform(get("/api/excel/template-security"))
-                .andExpect(status().isOk())
-                .andExpect(header().exists("Content-Disposition"))
-                .andReturn();
-
-        byte[] content = mvcResult.getResponse().getContentAsByteArray();
-        assertThat(content).isNotEmpty();
-
-        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
-            Sheet sheet = workbook.getSheetAt(0);
-            Row row1 = sheet.getRow(1);
-
-            // 索引 1: 员工姓名原为 "=cmd|'/C calc'!A0"，写出时应前置单引号转译为普通文本防 CWE-1236 攻击
-            String safeEmployeeName = row1.getCell(1).getStringCellValue();
-            assertThat(safeEmployeeName).isEqualTo("'=cmd|'/C calc'!A0");
-
-            // 索引 2: 薪资公式原为 "=SUM(A1:B1)"，标注了 @ExcelFormulaAllowed，保留真公式
-            String allowedFormula = row1.getCell(2).getStringCellValue();
-            assertThat(allowedFormula).isEqualTo("=SUM(A1:B1)");
-
-            // 索引 0: 工号被 @ExcelColumnLock 锁定
-            CellStyle lockStyle = row1.getCell(0).getCellStyle();
-            assertThat(lockStyle.getLocked()).isTrue();
-
-            // 索引 3: 职级被 @ExcelColumnLock 锁定
-            CellStyle gradeStyle = row1.getCell(3).getCellStyle();
-            assertThat(gradeStyle.getLocked()).isTrue();
-        }
-
-        saveTempExcel("sample-security-template.xlsx", content);
-    }
-
-    @Test
-    @DisplayName("测试多语言国际化表头导出端点：验证基于 Accept-Language 动态转译中英文表头")
-    void testExportI18nViaController() throws Exception {
-        // 1. 中文请求头导出
-        MvcResult zhResult = mockMvc.perform(get("/api/excel/export-i18n").header("Accept-Language", "zh-CN"))
-                .andExpect(status().isOk())
-                .andReturn();
-
-        byte[] zhBytes = zhResult.getResponse().getContentAsByteArray();
-        try (Workbook wbZh = WorkbookFactory.create(new ByteArrayInputStream(zhBytes))) {
-            Sheet sheet = wbZh.getSheetAt(0);
-            Row head = sheet.getRow(0);
-            assertThat(head.getCell(0).getStringCellValue()).isEqualTo("用户标识");
-            assertThat(head.getCell(1).getStringCellValue()).isEqualTo("用户名称");
-            assertThat(head.getCell(2).getStringCellValue()).isEqualTo("电子邮箱");
-            assertThat(head.getCell(3).getStringCellValue()).isEqualTo("默认部门");
-        }
-
-        // 2. 英文请求头导出
-        MvcResult enResult = mockMvc.perform(get("/api/excel/export-i18n").header("Accept-Language", "en-US"))
-                .andExpect(status().isOk())
-                .andReturn();
-
-        byte[] enBytes = enResult.getResponse().getContentAsByteArray();
-        try (Workbook wbEn = WorkbookFactory.create(new ByteArrayInputStream(enBytes))) {
-            Sheet sheet = wbEn.getSheetAt(0);
-            Row head = sheet.getRow(0);
-            assertThat(head.getCell(0).getStringCellValue()).isEqualTo("User ID");
-            assertThat(head.getCell(1).getStringCellValue()).isEqualTo("User Name");
-            assertThat(head.getCell(2).getStringCellValue()).isEqualTo("Email Address");
-            assertThat(head.getCell(3).getStringCellValue()).isEqualTo("默认部门");
-        }
     }
 }

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<flow>
+    <!-- 批量结算路由链路：初始化 -> 循环迭代(税务判定/降级 -> 结算/风控熔断) -> 批次汇总 -->
+    <chain name="batch-settle-flow">
+        THEN(
+            settleInitCmp,
+            ITERATOR(settleItemIteratorCmp).DO(
+                THEN(
+                    IF(settleTaxCheckIfCmp, settleApplyTaxCmp),
+                    settleItemProcessCmp
+                )
+            ),
+            settleSummaryCmp
+        );
+    </chain>
+</flow>

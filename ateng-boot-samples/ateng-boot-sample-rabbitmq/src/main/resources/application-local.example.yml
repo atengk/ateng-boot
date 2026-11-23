@@ -1,0 +1,25 @@
+# ===================================================================
+# RabbitMQ 本地场景联调配置模板
+# 复制当前文件并重命名为 application-local.yml 填入真实连接信息即可直连测试
+# 注意：application-local.yml 已被 .gitignore 强制忽略，严禁提交敏感凭据！
+# ===================================================================
+spring:
+  rabbitmq:
+    host: YOUR_RABBITMQ_HOST
+    port: 5672
+    username: YOUR_RABBITMQ_USERNAME
+    password: YOUR_RABBITMQ_PASSWORD
+    virtual-host: /
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    listener:
+      simple:
+        auto-startup: true
+        missing-queues-fatal: false
+
+ateng:
+  boot:
+    rabbitmq:
+      sample:
+        # 若远端 RabbitMQ 未安装 rabbitmq_delayed_message_exchange 插件，请保持 false
+        delayed-plugin-enabled: false

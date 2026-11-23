@@ -1,0 +1,876 @@
+package io.github.atengk.boot.sample.liteflow;
+
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.liteflow.model.BatchSettleRequest;
+import io.github.atengk.boot.sample.liteflow.model.BatchSettleResponse;
+import io.github.atengk.boot.sample.liteflow.model.DynamicChainReloadRequest;
+import io.github.atengk.boot.sample.liteflow.model.DynamicElExecuteRequest;
+import io.github.atengk.boot.sample.liteflow.model.DynamicElExecuteResponse;
+import io.github.atengk.boot.sample.liteflow.model.DynamicElValidateRequest;
+import io.github.atengk.boot.sample.liteflow.model.InterceptorStatsResponse;
+import io.github.atengk.boot.sample.liteflow.model.OrderFulfillmentRequest;
+import io.github.atengk.boot.sample.liteflow.model.OrderFulfillmentResponse;
+import io.github.atengk.boot.sample.liteflow.model.PriceCalculationRequest;
+import io.github.atengk.boot.sample.liteflow.model.PriceCalculationResponse;
+import io.github.atengk.boot.sample.liteflow.model.PromotionMatchRequest;
+import io.github.atengk.boot.sample.liteflow.model.PromotionMatchResponse;
+import io.github.atengk.boot.sample.liteflow.model.RiskApprovalRequest;
+import io.github.atengk.boot.sample.liteflow.model.RiskApprovalResponse;
+import io.github.atengk.boot.sample.liteflow.model.SettleItem;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/**
+ * LiteFlow 场景工程全量 Controller 端到端业务与时序轨迹集成测试
+ *
+ * @author Ateng
+ * @since 2026-11-03
+ */
+@SpringBootTest
+@AutoConfigureMockMvc
+@DisplayName("LiteFlow 样例工程 E2E 全链路集成测试")
+class LiteflowSampleE2eTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Test
+    @DisplayName("测试场景 1.1：普通用户无券小额算价（验证不满 99 加运费 10 元）")
+    void testPriceCalculationNormalUser() throws Exception {
+        PriceCalculationRequest request = new PriceCalculationRequest();
+        request.setOrderId("ORD_TEST_001");
+        request.setUserId("user_normal_001");
+        request.setOriginalAmount(new BigDecimal("50.00"));
+        request.setCouponId(null);
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/price/calculate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderId").value("ORD_TEST_001"))
+                .andReturn();
+
+        Result<PriceCalculationResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+
+        PriceCalculationResponse data = result.getData();
+        assertThat(data).isNotNull();
+        // 原价 50，无券折扣，无等级折扣，运费 10，应付 60
+        assertThat(data.getPostage()).isEqualByComparingTo("10.00");
+        assertThat(data.getFinalAmount()).isEqualByComparingTo("60.00");
+        assertThat(data.getTraceSummary()).contains("validateOrderCmp");
+    }
+
+    @Test
+    @DisplayName("测试场景 1.2：SVIP 用户大额带券算价（验证满 99 免运费与双重优惠抵扣）")
+    void testPriceCalculationSvipUser() throws Exception {
+        PriceCalculationRequest request = new PriceCalculationRequest();
+        request.setOrderId("ORD_TEST_002");
+        request.setUserId("user_svip_888");
+        request.setOriginalAmount(new BigDecimal("200.00"));
+        request.setCouponId("COUPON_50");
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/price/calculate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        Result<PriceCalculationResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+
+        PriceCalculationResponse data = result.getData();
+        assertThat(data).isNotNull();
+        // 原价 200，COUPON_50 抵扣 50，SVIP 抵扣 30，满 99 免运费 0，最终应付 120
+        assertThat(data.getCouponDiscount()).isEqualByComparingTo("50.00");
+        assertThat(data.getLevelDiscount()).isEqualByComparingTo("30.00");
+        assertThat(data.getPostage()).isEqualByComparingTo("0.00");
+        assertThat(data.getFinalAmount()).isEqualByComparingTo("120.00");
+        assertThat(data.getTraceSummary()).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("测试场景 2.1：信贷风控命中失信黑名单（验证 IF 组件直接阻断与 REJECT 决策）")
+    void testRiskApprovalBlacklist() throws Exception {
+        RiskApprovalRequest request = new RiskApprovalRequest();
+        request.setApplicantId("app_black_999");
+        request.setIdCard("110101199001019999");
+        request.setApplyAmount(new BigDecimal("100000.00"));
+        request.setCreditScore(700);
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/risk/evaluate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        Result<RiskApprovalResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+
+        RiskApprovalResponse data = result.getData();
+        assertThat(data).isNotNull();
+        assertThat(data.isApproved()).isFalse();
+        assertThat(data.getDecision()).isEqualTo("REJECT");
+        assertThat(data.getRiskLevel()).isEqualTo("HIGH");
+        assertThat(data.getApprovedAmount()).isEqualByComparingTo("0.00");
+        assertThat(data.getTraceSummary()).contains("checkBlacklistIfCmp");
+    }
+
+    @Test
+    @DisplayName("测试场景 2.2：信贷风控优良客户（验证 SWITCH 分流至 PASS 极速放款）")
+    void testRiskApprovalPass() throws Exception {
+        RiskApprovalRequest request = new RiskApprovalRequest();
+        request.setApplicantId("app_good_001");
+        request.setIdCard("110101199505051234");
+        request.setApplyAmount(new BigDecimal("50000.00"));
+        request.setCreditScore(780);
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/risk/evaluate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        Result<RiskApprovalResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+
+        RiskApprovalResponse data = result.getData();
+        assertThat(data).isNotNull();
+        assertThat(data.isApproved()).isTrue();
+        assertThat(data.getDecision()).isEqualTo("PASS");
+        assertThat(data.getRiskLevel()).isEqualTo("LOW");
+        assertThat(data.getApprovedAmount()).isEqualByComparingTo("50000.00");
+    }
+
+    @Test
+    @DisplayName("测试场景 2.3：信贷风控边缘客户（验证 SWITCH 分流至 MANUAL 人工复核）")
+    void testRiskApprovalManualReview() throws Exception {
+        RiskApprovalRequest request = new RiskApprovalRequest();
+        request.setApplicantId("app_edge_002");
+        request.setIdCard("110101199203035678");
+        request.setApplyAmount(new BigDecimal("80000.00"));
+        request.setCreditScore(620); // 介于 550 与 680 之间，触发人工复核
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/risk/evaluate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        Result<RiskApprovalResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+
+        RiskApprovalResponse data = result.getData();
+        assertThat(data).isNotNull();
+        assertThat(data.isApproved()).isFalse();
+        assertThat(data.getDecision()).isEqualTo("MANUAL");
+        assertThat(data.getRiskLevel()).isEqualTo("MEDIUM");
+        assertThat(data.getApprovedAmount()).isEqualByComparingTo("40000.00");
+    }
+
+    @Test
+    @DisplayName("测试场景 3.1：订单履约正向成功流（验证全节点顺利流转）")
+    void testOrderFulfillmentSuccess() throws Exception {
+        OrderFulfillmentRequest request = new OrderFulfillmentRequest();
+        request.setOrderId("ORD_FULFILL_001");
+        request.setSkuId("SKU_IPHONE_16");
+        request.setQuantity(2);
+        request.setSimulateFailure(false);
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/fulfillment/fulfill")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        Result<OrderFulfillmentResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+
+        OrderFulfillmentResponse data = result.getData();
+        assertThat(data).isNotNull();
+        assertThat(data.isSuccess()).isTrue();
+        assertThat(data.getFulfillmentStatus()).isEqualTo("FULFILLED");
+        assertThat(data.getCompensationLogs()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("测试场景 3.2：订单履约下游通知超时故障注入（验证 Saga 逆序补偿自动回滚库存与运单）")
+    void testOrderFulfillmentCompensation() throws Exception {
+        OrderFulfillmentRequest request = new OrderFulfillmentRequest();
+        request.setOrderId("ORD_FULFILL_FAIL_002");
+        request.setSkuId("SKU_MACBOOK_PRO");
+        request.setQuantity(1);
+        request.setSimulateFailure(true); // 故障注入触发补偿
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/fulfillment/fulfill")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        Result<OrderFulfillmentResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+
+        OrderFulfillmentResponse data = result.getData();
+        assertThat(data).isNotNull();
+        assertThat(data.isSuccess()).isFalse();
+        assertThat(data.getFulfillmentStatus()).isEqualTo("COMPENSATED");
+        // 核心验证：前序节点必须按逆序被触发 rollback，产生补偿审计日志
+        assertThat(data.getCompensationLogs()).hasSize(2);
+        assertThat(data.getCompensationLogs().get(0)).contains("仓储物流");
+        assertThat(data.getCompensationLogs().get(1)).contains("库存服务");
+    }
+
+    @Test
+    @DisplayName("测试场景 4.1：动态规则探测与热更新 (containChain & reloadChain)")
+    void testDynamicChainReloadAndProbe() throws Exception {
+        // 1. 探测已有预置链
+        mockMvc.perform(get("/sample/liteflow/dynamic/contain-chain")
+                        .param("chainId", "price-calc-flow"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 2. 动态注册一条新链
+        DynamicChainReloadRequest reloadRequest = new DynamicChainReloadRequest();
+        reloadRequest.setChainId("dynamic-custom-chain");
+        reloadRequest.setEl("THEN(dynamicValidateCmp, dynamicTransformCmp);");
+
+        mockMvc.perform(post("/sample/liteflow/dynamic/reload-chain")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(reloadRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 3. 再次探测新链已被加载
+        mockMvc.perform(get("/sample/liteflow/dynamic/contain-chain")
+                        .param("chainId", "dynamic-custom-chain"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(true));
+    }
+
+    @Test
+    @DisplayName("测试场景 4.2：在线即时执行 EL 表达式 (executeElWithTrace)")
+    void testDynamicElExecute() throws Exception {
+        DynamicElExecuteRequest request = new DynamicElExecuteRequest();
+        request.setEl("THEN(dynamicValidateCmp, dynamicEchoCmp);");
+        request.setPayload("Antigravity_LiteFlow_Engine");
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/dynamic/execute-el")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        Result<DynamicElExecuteResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+
+        DynamicElExecuteResponse data = result.getData();
+        assertThat(data).isNotNull();
+        assertThat(data.isSuccess()).isTrue();
+        assertThat(data.getOutputData()).containsKey("echoPayload");
+        assertThat(data.getOutputData().get("echoPayload")).isEqualTo("ECHO:Antigravity_LiteFlow_Engine");
+    }
+
+    @Test
+    @DisplayName("测试场景 4.3：领域事件总线热更通知发布 (refresh-event)")
+    void testRefreshEventBus() throws Exception {
+        // 1. 单链热更事件
+        mockMvc.perform(post("/sample/liteflow/dynamic/refresh-event")
+                        .param("chainId", "price-calc-flow")
+                        .param("el", "THEN(validateOrderCmp, calculatePostageCmp);"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("price-calc-flow")));
+
+        // 2. 全量规则重载事件
+        mockMvc.perform(post("/sample/liteflow/dynamic/refresh-event"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("全量")));
+    }
+
+    @Test
+    @DisplayName("测试场景 4.4：在线预校验 EL 表达式有效性 (validate-el)")
+    void testValidateElEndpoint() throws Exception {
+        // 1. 合法语法与引用拓扑校验
+        DynamicElValidateRequest validReq = new DynamicElValidateRequest();
+        validReq.setEl("THEN(dynamicValidateCmp.tag(\"SAFE_TAG\"), dynamicEchoCmp);");
+
+        mockMvc.perform(post("/sample/liteflow/dynamic/validate-el")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(validReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.valid").value(true))
+                .andExpect(jsonPath("$.data.componentMissing").value(false))
+                .andExpect(jsonPath("$.data.referencedNodeIds", org.hamcrest.Matchers.contains("dynamicValidateCmp", "dynamicEchoCmp")))
+                .andExpect(jsonPath("$.data.missingComponentIds").isEmpty())
+                .andExpect(jsonPath("$.data.errorMessage").isEmpty());
+
+        // 2. 非法语法校验
+        DynamicElValidateRequest invalidReq = new DynamicElValidateRequest();
+        invalidReq.setEl("THEN(dynamicValidateCmp");
+
+        mockMvc.perform(post("/sample/liteflow/dynamic/validate-el")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.valid").value(false))
+                .andExpect(jsonPath("$.data.componentMissing").value(false))
+                .andExpect(jsonPath("$.data.errorMessage").isNotEmpty());
+
+        // 3. 缺失未注册组件静态清单诊断
+        DynamicElValidateRequest missingReq = new DynamicElValidateRequest();
+        missingReq.setEl("THEN(dynamicValidateCmp, unknownCmpAlpha, unknownCmpBeta);");
+
+        mockMvc.perform(post("/sample/liteflow/dynamic/validate-el")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(missingReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.valid").value(false))
+                .andExpect(jsonPath("$.data.componentMissing").value(true))
+                .andExpect(jsonPath("$.data.referencedNodeIds", org.hamcrest.Matchers.contains("dynamicValidateCmp")))
+                .andExpect(jsonPath("$.data.missingComponentIds", org.hamcrest.Matchers.contains("unknownCmpAlpha", "unknownCmpBeta")));
+    }
+
+    @Test
+    @DisplayName("测试场景 4.5：查询系统当前已加载全部规则链 ID 集合 (chains)")
+    void testGetLoadedChainsEndpoint() throws Exception {
+        mockMvc.perform(get("/sample/liteflow/dynamic/chains"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasItem("price-calc-flow")))
+                .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasItem("risk-approval-flow")));
+    }
+
+    @Test
+    @DisplayName("测试场景 4.5b：查询运行时规则链拓扑元数据与已注册组件节点列表 (chain-metadata / chains-metadata / nodes)")
+    void testChainTopologyIntrospectionEndpoints() throws Exception {
+        // 1. 已注册组件节点列表
+        mockMvc.perform(get("/sample/liteflow/dynamic/nodes"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasItems("dynamicValidateCmp", "dynamicEchoCmp", "validateOrderCmp")));
+
+        // 2. 单条普通链元数据自省
+        mockMvc.perform(get("/sample/liteflow/dynamic/chain-metadata")
+                        .param("chainId", "price-calc-flow"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.chainId").value("price-calc-flow"))
+                .andExpect(jsonPath("$.data.routeChain").value(false))
+                .andExpect(jsonPath("$.data.bodyEl").isNotEmpty())
+                .andExpect(jsonPath("$.data.referencedNodeIds", org.hamcrest.Matchers.hasItem("validateOrderCmp")));
+
+        // 3. 决策路由链元数据自省
+        mockMvc.perform(get("/sample/liteflow/dynamic/chain-metadata")
+                        .param("chainId", "promotionVipRouteChain"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.chainId").value("promotionVipRouteChain"))
+                .andExpect(jsonPath("$.data.routeChain").value(true))
+                .andExpect(jsonPath("$.data.namespace").value("PROMOTION"))
+                .andExpect(jsonPath("$.data.routeEl").isNotEmpty());
+
+        // 4. 全量规则链元数据列表
+        mockMvc.perform(get("/sample/liteflow/dynamic/chains-metadata"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data[*].chainId", org.hamcrest.Matchers.hasItems("price-calc-flow", "promotionVipRouteChain")));
+    }
+
+    @Test
+    @DisplayName("测试场景 5.1：批量路由结算正常循环流转（验证 ITERATOR 强类型迭代与纳税核算）")
+    void testBatchSettleNormal() throws Exception {
+        BatchSettleRequest request = BatchSettleRequest.builder()
+                .merchantId("M1001")
+                .batchNo("BATCH-20261106-001")
+                .terminateOnSuspicious(false)
+                .items(java.util.List.of(
+                        SettleItem.builder()
+                                .itemId("ITEM_001")
+                                .amount(new BigDecimal("150.00"))
+                                .category("ELECTRONICS")
+                                .simulateTaxError(false)
+                                .suspicious(false)
+                                .build(),
+                        SettleItem.builder()
+                                .itemId("ITEM_002")
+                                .amount(new BigDecimal("50.00"))
+                                .category("BOOKS")
+                                .simulateTaxError(false)
+                                .suspicious(false)
+                                .build()
+                ))
+                .build();
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/routing/batch-settle")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.batchNo").value("BATCH-20261106-001"))
+                .andExpect(jsonPath("$.data.totalItems").value(2))
+                .andExpect(jsonPath("$.data.processedCount").value(2))
+                .andExpect(jsonPath("$.data.terminatedEarly").value(false))
+                .andReturn();
+
+        Result<BatchSettleResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+
+        BatchSettleResponse data = result.getData();
+        assertThat(data).isNotNull();
+        assertThat(data.getSettledAmount()).isEqualByComparingTo("200.00");
+        assertThat(data.getSettledItemIds()).containsExactly("ITEM_001", "ITEM_002");
+        assertThat(data.getTaxAppliedItems()).containsExactly("ITEM_001");
+        assertThat(data.getDegradedItems()).isEmpty();
+        assertThat(data.getSummary()).contains("全量处理完成");
+    }
+
+    @Test
+    @DisplayName("测试场景 5.2：批量路由结算税控异常（验证 BaseIfComponent onError 就地优雅降级）")
+    void testBatchSettleTaxFallback() throws Exception {
+        BatchSettleRequest request = BatchSettleRequest.builder()
+                .merchantId("M1002")
+                .batchNo("BATCH-20261106-002")
+                .terminateOnSuspicious(false)
+                .items(java.util.List.of(
+                        SettleItem.builder()
+                                .itemId("ITEM_FALLBACK_01")
+                                .amount(new BigDecimal("120.00"))
+                                .category("DIGITAL")
+                                .simulateTaxError(true)
+                                .suspicious(false)
+                                .build(),
+                        SettleItem.builder()
+                                .itemId("ITEM_NORMAL_02")
+                                .amount(new BigDecimal("80.00"))
+                                .category("GROCERY")
+                                .simulateTaxError(false)
+                                .suspicious(false)
+                                .build()
+                ))
+                .build();
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/routing/batch-settle")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        Result<BatchSettleResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+
+        BatchSettleResponse data = result.getData();
+        assertThat(data).isNotNull();
+        // 异常被 onError 捕获就地优雅降级，整批仍结算成功
+        assertThat(data.getProcessedCount()).isEqualTo(2);
+        assertThat(data.getSettledAmount()).isEqualByComparingTo("200.00");
+        assertThat(data.getDegradedItems()).containsExactly("ITEM_FALLBACK_01");
+        assertThat(data.getTaxAppliedItems()).isEmpty();
+        assertThat(data.getSummary()).contains("降级 [1] 笔");
+    }
+
+    @Test
+    @DisplayName("测试场景 5.3：批量路由结算高危风控拦截（验证 BaseNodeComponent endFlow 提前正常熔断）")
+    void testBatchSettleEarlyTermination() throws Exception {
+        BatchSettleRequest request = BatchSettleRequest.builder()
+                .merchantId("M1003")
+                .batchNo("BATCH-20261106-003")
+                .terminateOnSuspicious(true)
+                .items(java.util.List.of(
+                        SettleItem.builder()
+                                .itemId("ITEM_SAFE_01")
+                                .amount(new BigDecimal("60.00"))
+                                .category("STATIONERY")
+                                .simulateTaxError(false)
+                                .suspicious(false)
+                                .build(),
+                        SettleItem.builder()
+                                .itemId("ITEM_RISK_02")
+                                .amount(new BigDecimal("500.00"))
+                                .category("UNKNOWN")
+                                .simulateTaxError(false)
+                                .suspicious(true)
+                                .build(),
+                        SettleItem.builder()
+                                .itemId("ITEM_UNREACHED_03")
+                                .amount(new BigDecimal("30.00"))
+                                .category("OFFICE")
+                                .simulateTaxError(false)
+                                .suspicious(false)
+                                .build()
+                ))
+                .build();
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/routing/batch-settle")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        Result<BatchSettleResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+
+        BatchSettleResponse data = result.getData();
+        assertThat(data).isNotNull();
+        // 命中可疑项目触发 endFlow()，提前正常终止，后续项目不执行
+        assertThat(data.isTerminatedEarly()).isTrue();
+        assertThat(data.getProcessedCount()).isEqualTo(1);
+        assertThat(data.getSettledAmount()).isEqualByComparingTo("60.00");
+        assertThat(data.getSettledItemIds()).containsExactly("ITEM_SAFE_01");
+        // settleSummaryCmp 位于 endFlow 之后，绝不执行
+        assertThat(data.getSummary()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("测试场景 4.6：动态规则版本快照与一键回退接口 (rollback-chain & chain-snapshots)")
+    void testRollbackChainEndpoint() throws Exception {
+        String testChainId = "e2eRollbackChain";
+
+        // 1. 首次加载版本 1
+        DynamicChainReloadRequest req1 = new DynamicChainReloadRequest();
+        req1.setChainId(testChainId);
+        req1.setEl("THEN(dynamicValidateCmp, dynamicTransformCmp);");
+
+        mockMvc.perform(post("/sample/liteflow/dynamic/reload-chain")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req1)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 2. 更新为版本 2
+        DynamicChainReloadRequest req2 = new DynamicChainReloadRequest();
+        req2.setChainId(testChainId);
+        req2.setEl("THEN(dynamicTransformCmp, dynamicValidateCmp);");
+
+        mockMvc.perform(post("/sample/liteflow/dynamic/reload-chain")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req2)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 3. 查询历史快照列表，预期包含版本 1
+        mockMvc.perform(get("/sample/liteflow/dynamic/chain-snapshots")
+                        .param("chainId", testChainId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data[0]").value("THEN(dynamicValidateCmp, dynamicTransformCmp);"));
+
+        // 4. 执行一键回退
+        mockMvc.perform(post("/sample/liteflow/dynamic/rollback-chain")
+                        .param("chainId", testChainId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 5. 再次回退（已无历史快照，预期返回 false 优雅降级）
+        mockMvc.perform(post("/sample/liteflow/dynamic/rollback-chain")
+                        .param("chainId", testChainId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(false));
+
+        // 6. 不存在的流程链回退，预期返回 false
+        mockMvc.perform(post("/sample/liteflow/dynamic/rollback-chain")
+                        .param("chainId", "nonExistentChain_12345"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(false));
+
+        // 7. 测试结束后清理现场
+        mockMvc.perform(post("/sample/liteflow/dynamic/reload-chain")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(req1)));
+    }
+
+    @Test
+    @DisplayName("测试场景 4.7：决策路由表（Route Chain）全命中多优惠累加与共享上下文聚合")
+    void testPromotionRoutingAllMatch() throws Exception {
+        PromotionMatchRequest request = PromotionMatchRequest.builder()
+                .userId("user_vip_super")
+                .userLevel("VIP")
+                .cartAmount(new BigDecimal("300.00"))
+                .category("DIGITAL")
+                .build();
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/routing/match-promotions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.matchedCount").value(3))
+                .andReturn();
+
+        Result<PromotionMatchResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+
+        PromotionMatchResponse data = result.getData();
+        assertThat(data).isNotNull();
+        // 原价 300，VIP 9折立减 30，满 200 减 30，数码专享减 20，总优惠 80，最终应付 220
+        assertThat(data.getOriginalAmount()).isEqualByComparingTo("300.00");
+        assertThat(data.getTotalDiscount()).isEqualByComparingTo("80.00");
+        assertThat(data.getFinalAmount()).isEqualByComparingTo("220.00");
+        assertThat(data.getAppliedPromotions()).containsExactlyInAnyOrder(
+                "VIP_9折特惠", "满200减30大促", "数码专属品类券"
+        );
+        assertThat(data.getMatchedChainIds()).containsExactlyInAnyOrder(
+                "promotionVipRouteChain", "promotionThresholdRouteChain", "promotionCategoryRouteChain"
+        );
+        assertThat(data.getAuditLogs()).hasSize(3);
+    }
+
+    @Test
+    @DisplayName("测试场景 4.8：决策路由表（Route Chain）部分命中与零命中保底返回")
+    void testPromotionRoutingPartialAndZeroMatch() throws Exception {
+        // 场景 1: 普通用户，仅满 200 减 30 生效
+        PromotionMatchRequest partialReq = PromotionMatchRequest.builder()
+                .userId("user_reg_001")
+                .userLevel("REGULAR")
+                .cartAmount(new BigDecimal("250.00"))
+                .category("FOOD")
+                .build();
+
+        MvcResult partialMvc = mockMvc.perform(post("/sample/liteflow/routing/match-promotions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(partialReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.matchedCount").value(1))
+                .andReturn();
+
+        Result<PromotionMatchResponse> partialResult = objectMapper.readValue(
+                partialMvc.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+        PromotionMatchResponse partialData = partialResult.getData();
+        assertThat(partialData.getTotalDiscount()).isEqualByComparingTo("30.00");
+        assertThat(partialData.getFinalAmount()).isEqualByComparingTo("220.00");
+        assertThat(partialData.getAppliedPromotions()).containsExactly("满200减30大促");
+
+        // 场景 2: 小额非 VIP 普通商品，零命中保底
+        PromotionMatchRequest zeroReq = PromotionMatchRequest.builder()
+                .userId("user_reg_002")
+                .userLevel("REGULAR")
+                .cartAmount(new BigDecimal("100.00"))
+                .category("BOOK")
+                .build();
+
+        MvcResult zeroMvc = mockMvc.perform(post("/sample/liteflow/routing/match-promotions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(zeroReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.matchedCount").value(0))
+                .andReturn();
+
+        Result<PromotionMatchResponse> zeroResult = objectMapper.readValue(
+                zeroMvc.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+        PromotionMatchResponse zeroData = zeroResult.getData();
+        assertThat(zeroData.getTotalDiscount()).isEqualByComparingTo("0.00");
+        assertThat(zeroData.getFinalAmount()).isEqualByComparingTo("100.00");
+        assertThat(zeroData.getAppliedPromotions()).isEmpty();
+        assertThat(zeroData.getMatchedChainIds()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("测试场景 6.3：全局执行拦截器演示 Bean 端到端自动生效与审计统计接口闭环")
+    void testGlobalExecutionInterceptorStatsEndpoint() throws Exception {
+        MvcResult beforeMvc = mockMvc.perform(get("/sample/liteflow/dynamic/interceptor-stats"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+        Result<InterceptorStatsResponse> beforeRes = objectMapper.readValue(
+                beforeMvc.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+        long initialSuccess = beforeRes.getData().successCount();
+
+        DynamicElExecuteRequest req = new DynamicElExecuteRequest();
+        req.setEl("THEN(dynamicValidateCmp, dynamicEchoCmp);");
+        req.setPayload("interceptor-e2e-payload");
+        mockMvc.perform(post("/sample/liteflow/dynamic/execute-el")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        MvcResult afterMvc = mockMvc.perform(get("/sample/liteflow/dynamic/interceptor-stats"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+        Result<InterceptorStatsResponse> afterRes = objectMapper.readValue(
+                afterMvc.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+        InterceptorStatsResponse stats = afterRes.getData();
+        assertThat(stats.successCount()).isGreaterThan(initialSuccess);
+        assertThat(stats.recentRecords()).anyMatch(r -> r.startsWith("SUCCESS:DYNAMIC_EL[THEN(dynamicValidateCmp, dynamicEchoCmp);]"));
+    }
+
+    @Test
+    @DisplayName("测试场景 1.3：受管异步算价编排端点 (calculate-async)")
+    void testPriceCalculationAsync() throws Exception {
+        PriceCalculationRequest request = new PriceCalculationRequest();
+        request.setOrderId("ORD_ASYNC_001");
+        request.setUserId("user_svip_888");
+        request.setOriginalAmount(new BigDecimal("200.00"));
+        request.setCouponId("COUPON_50");
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/price/calculate-async")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderId").value("ORD_ASYNC_001"))
+                .andReturn();
+
+        Result<PriceCalculationResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+        PriceCalculationResponse data = result.getData();
+        assertThat(data).isNotNull();
+        assertThat(data.getFinalAmount()).isEqualByComparingTo("120.00");
+        assertThat(data.getTraceSummary()).contains("validateOrderCmp");
+    }
+
+    @Test
+    @DisplayName("测试场景 6.4：外部合规慢查询触发 slow-node-threshold 慢节点标记 (execute-el)")
+    void testSlowExecutionThresholdInSample() throws Exception {
+        DynamicElExecuteRequest request = new DynamicElExecuteRequest();
+        request.setEl("THEN(dynamicValidateCmp, dynamicComplianceAuditCmp.tag(\"SLOW_AUDIT\"), dynamicEchoCmp);");
+        request.setPayload("SLOW_AUDIT_ORDER_999");
+
+        MvcResult mvcResult = mockMvc.perform(post("/sample/liteflow/dynamic/execute-el")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.slow").value(true))
+                .andExpect(jsonPath("$.data.slowNodeIds", org.hamcrest.Matchers.hasItem("dynamicComplianceAuditCmp")))
+                .andReturn();
+
+        Result<DynamicElExecuteResponse> result = objectMapper.readValue(
+                mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                new TypeReference<>() {}
+        );
+        assertThat(result.getData().getOutputData()).containsEntry("complianceStatus", "PASSED");
+    }
+
+    @Test
+    @DisplayName("测试场景 4.9：多源动态规则纳管、同步刷新与孤儿链自动下线 (managed-chains / sync-source / evict)")
+    void testDynamicRuleSourceSyncAndOrphanEviction() throws Exception {
+        String tempManagedChain = "dynamic-temp-campaign-rule";
+
+        // 1. 查询初始受管动态规则链快照，应包含默认规则，不包含静态 XML 链
+        mockMvc.perform(get("/sample/liteflow/dynamic/managed-chains"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasItem("dynamic-vip-discount-rule")))
+                .andExpect(jsonPath("$.data", org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem("price-calc-flow"))));
+
+        // 2. 向动态规则源新增规则并同步刷新
+        DynamicChainReloadRequest upsertReq = new DynamicChainReloadRequest();
+        upsertReq.setChainId(tempManagedChain);
+        upsertReq.setEl("THEN(dynamicValidateCmp, dynamicEchoCmp);");
+
+        mockMvc.perform(post("/sample/liteflow/dynamic/source-rule/upsert")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(upsertReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasItem(tempManagedChain)));
+
+        mockMvc.perform(get("/sample/liteflow/dynamic/contain-chain")
+                        .param("chainId", tempManagedChain))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 3. 物理移除动态规则并触发全量刷新，验证孤儿链自动下线且本地静态链不受影响
+        mockMvc.perform(post("/sample/liteflow/dynamic/source-rule/evict")
+                        .param("chainId", tempManagedChain))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data", org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem(tempManagedChain))));
+
+        mockMvc.perform(get("/sample/liteflow/dynamic/contain-chain")
+                        .param("chainId", tempManagedChain))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(false));
+
+        mockMvc.perform(post("/sample/liteflow/dynamic/sync-source"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.greaterThanOrEqualTo(1)));
+
+        mockMvc.perform(get("/sample/liteflow/dynamic/contain-chain")
+                        .param("chainId", "price-calc-flow"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(true));
+    }
+}

@@ -1,10 +1,11 @@
 package io.github.atengk.boot.rocketmq.listener;
 
-import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.rocketmq.annotation.RocketmqListener;
 import io.github.atengk.boot.rocketmq.constant.RocketmqConstants;
 import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
+import io.github.atengk.boot.rocketmq.helper.RocketmqLockHelper;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
+import io.github.atengk.boot.rocketmq.spi.RocketmqPoisonPillCallback;
 import jakarta.validation.Validator;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -12,6 +13,7 @@ import org.apache.rocketmq.client.apis.ClientConfiguration;
 import org.apache.rocketmq.client.apis.consumer.FilterExpression;
 import org.apache.rocketmq.client.apis.consumer.FilterExpressionType;
 import org.apache.rocketmq.client.apis.consumer.PushConsumer;
+import org.apache.rocketmq.client.apis.producer.Producer;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.ObjectProvider;
@@ -21,6 +23,7 @@ import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.EmbeddedValueResolverAware;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.util.Assert;
 import org.springframework.util.ReflectionUtils;
 import org.springframework.util.StringUtils;
@@ -28,10 +31,9 @@ import org.springframework.util.StringValueResolver;
 
 import java.lang.reflect.Method;
 import java.time.Duration;
-import java.util.Collections;
-import java.util.List;
-import java.util.Objects;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * RocketMQ 5.x 声明式消费端监听容器与生命周期管理器
@@ -57,12 +59,17 @@ public class RocketmqConsumerContainer implements
     private final ObjectProvider<ClientConfiguration> clientConfigurationProvider;
     private final PushConsumerFactory pushConsumerFactory;
     private final ObjectProvider<Validator> validatorProvider;
+    private final Executor taskExecutor;
+    private final ObjectProvider<Producer> producerProvider;
+    private final ObjectProvider<RocketmqPoisonPillCallback> poisonPillCallbackProvider;
 
     private ApplicationContext applicationContext;
     private StringValueResolver stringValueResolver;
 
     private final List<RocketmqListenerEndpoint> endpoints = new CopyOnWriteArrayList<>();
+    private final Map<String, RocketmqListenerEndpoint> endpointMap = new ConcurrentHashMap<>();
     private final List<PushConsumer> activeConsumers = new CopyOnWriteArrayList<>();
+    private final ReentrantLock lifecycleLock = new ReentrantLock();
 
     private volatile boolean running = false;
 
@@ -71,10 +78,76 @@ public class RocketmqConsumerContainer implements
             ObjectProvider<ClientConfiguration> clientConfigurationProvider,
             PushConsumerFactory pushConsumerFactory,
             ObjectProvider<Validator> validatorProvider) {
+        this(properties, clientConfigurationProvider, pushConsumerFactory, validatorProvider, (Executor) null);
+    }
+
+    public RocketmqConsumerContainer(
+            AtengRocketmqProperties properties,
+            ObjectProvider<ClientConfiguration> clientConfigurationProvider,
+            PushConsumerFactory pushConsumerFactory,
+            ObjectProvider<Validator> validatorProvider,
+            ObjectProvider<Executor> taskExecutorProvider) {
+        this(
+                properties,
+                clientConfigurationProvider,
+                pushConsumerFactory,
+                validatorProvider,
+                taskExecutorProvider != null ? taskExecutorProvider.getIfAvailable() : null);
+    }
+
+    public RocketmqConsumerContainer(
+            AtengRocketmqProperties properties,
+            ObjectProvider<ClientConfiguration> clientConfigurationProvider,
+            PushConsumerFactory pushConsumerFactory,
+            ObjectProvider<Validator> validatorProvider,
+            Executor taskExecutor) {
+        this(
+                properties,
+                clientConfigurationProvider,
+                pushConsumerFactory,
+                validatorProvider,
+                taskExecutor,
+                null,
+                null);
+    }
+
+    public RocketmqConsumerContainer(
+            AtengRocketmqProperties properties,
+            ObjectProvider<ClientConfiguration> clientConfigurationProvider,
+            PushConsumerFactory pushConsumerFactory,
+            ObjectProvider<Validator> validatorProvider,
+            ObjectProvider<Executor> taskExecutorProvider,
+            ObjectProvider<Producer> producerProvider,
+            ObjectProvider<RocketmqPoisonPillCallback> poisonPillCallbackProvider) {
+        this(
+                properties,
+                clientConfigurationProvider,
+                pushConsumerFactory,
+                validatorProvider,
+                taskExecutorProvider != null ? taskExecutorProvider.getIfAvailable() : null,
+                producerProvider,
+                poisonPillCallbackProvider);
+    }
+
+    public RocketmqConsumerContainer(
+            AtengRocketmqProperties properties,
+            ObjectProvider<ClientConfiguration> clientConfigurationProvider,
+            PushConsumerFactory pushConsumerFactory,
+            ObjectProvider<Validator> validatorProvider,
+            Executor taskExecutor,
+            ObjectProvider<Producer> producerProvider,
+            ObjectProvider<RocketmqPoisonPillCallback> poisonPillCallbackProvider) {
         this.properties = Objects.requireNonNull(properties, "properties 不能为空");
         this.clientConfigurationProvider = Objects.requireNonNull(clientConfigurationProvider, "clientConfigurationProvider 不能为空");
         this.pushConsumerFactory = Objects.requireNonNull(pushConsumerFactory, "pushConsumerFactory 不能为空");
         this.validatorProvider = validatorProvider;
+        this.taskExecutor = taskExecutor;
+        this.producerProvider = producerProvider;
+        this.poisonPillCallbackProvider = poisonPillCallbackProvider;
+    }
+
+    public Executor getTaskExecutor() {
+        return taskExecutor;
     }
 
     @Override
@@ -89,6 +162,17 @@ public class RocketmqConsumerContainer implements
 
     public List<RocketmqListenerEndpoint> getEndpoints() {
         return Collections.unmodifiableList(endpoints);
+    }
+
+    public Set<String> getEndpointIds() {
+        return Collections.unmodifiableSet(endpointMap.keySet());
+    }
+
+    public RocketmqListenerEndpoint getEndpoint(String id) {
+        if (!StringUtils.hasText(id)) {
+            return null;
+        }
+        return endpointMap.get(id.trim());
     }
 
     public List<PushConsumer> getActiveConsumers() {
@@ -130,6 +214,7 @@ public class RocketmqConsumerContainer implements
     }
 
     private void registerEndpoint(Object bean, Method method, RocketmqListener annotation, Validator validator) {
+        String rawId = resolvePlaceholder(annotation.id());
         String rawTopic = resolvePlaceholder(annotation.topic());
         String rawGroup = resolvePlaceholder(annotation.consumerGroup());
         String rawTag = resolvePlaceholder(annotation.tag());
@@ -140,6 +225,28 @@ public class RocketmqConsumerContainer implements
 
         String topic = rawTopic.trim();
         String consumerGroup = rawGroup.trim();
+
+        String id;
+        if (StringUtils.hasText(rawId)) {
+            id = rawId.trim();
+            if (this.endpointMap.containsKey(id)) {
+                throw new IllegalArgumentException(String.format(
+                        "检测到重复的 RocketMQ Listener Endpoint ID [%s]！方法 [%s#%s] 与已有端点冲突，请确保 id 唯一！",
+                        id, bean.getClass().getSimpleName(), method.getName()));
+            }
+        } else {
+            String candidateId = consumerGroup + "#" + topic;
+            if (this.endpointMap.containsKey(candidateId)) {
+                id = candidateId + "#" + method.getName();
+            } else {
+                id = candidateId;
+            }
+            if (this.endpointMap.containsKey(id)) {
+                throw new IllegalArgumentException(String.format(
+                        "检测到重复的 RocketMQ Listener Endpoint ID [%s]！方法 [%s#%s] 与已有端点冲突！",
+                        id, bean.getClass().getSimpleName(), method.getName()));
+            }
+        }
 
         if (!RocketmqConstants.TOPIC_PATTERN.matcher(topic).matches()) {
             throw new IllegalArgumentException(String.format(
@@ -160,9 +267,13 @@ public class RocketmqConsumerContainer implements
                 method,
                 topic,
                 consumerGroup,
-                validator);
+                validator,
+                properties.getConsumer().isForwardPoisonPillToDlq(),
+                producerProvider,
+                poisonPillCallbackProvider);
 
         RocketmqListenerEndpoint endpoint = RocketmqListenerEndpoint.builder()
+                .id(id)
                 .targetBean(bean)
                 .method(method)
                 .topic(topic)
@@ -175,6 +286,7 @@ public class RocketmqConsumerContainer implements
                 .build();
 
         this.endpoints.add(endpoint);
+        this.endpointMap.put(id, endpoint);
     }
 
     private String resolvePlaceholder(String value) {
@@ -182,6 +294,130 @@ public class RocketmqConsumerContainer implements
             return value;
         }
         return stringValueResolver != null ? stringValueResolver.resolveStringValue(value) : value;
+    }
+
+    // =========================================================================
+    // 单端点物理 PushConsumer 启停管控
+    // =========================================================================
+
+    /**
+     * 启动单个监听端点的物理 PushConsumer
+     *
+     * @param id 端点唯一标识
+     * @return 若成功启动返回 true，若端点不存在或已在运行返回 false
+     */
+    public boolean startEndpoint(String id) {
+        return RocketmqLockHelper.withLock(lifecycleLock, () -> {
+            RocketmqListenerEndpoint endpoint = getEndpoint(id);
+            if (endpoint == null) {
+                log.warn("[ateng-boot-rocketmq] 启动端点失败，未找到匹配端点: id={}", id);
+                return false;
+            }
+            return startEndpoint(endpoint);
+        });
+    }
+
+    /**
+     * 启动单个监听端点的物理 PushConsumer
+     *
+     * @param endpoint 监听端点
+     * @return 若成功启动返回 true，若已在运行或缺少配置返回 false
+     */
+    public boolean startEndpoint(RocketmqListenerEndpoint endpoint) {
+        return RocketmqLockHelper.withLock(lifecycleLock, () -> {
+            if (endpoint == null || endpoint.isRunning()) {
+                return false;
+            }
+
+            ClientConfiguration clientConfiguration = clientConfigurationProvider.getIfAvailable();
+            if (clientConfiguration == null) {
+                log.warn("[ateng-boot-rocketmq] 未检测到 ClientConfiguration，跳过物理 PushConsumer 启动: id={}", endpoint.getId());
+                return false;
+            }
+
+            try {
+                FilterExpression filterExpression;
+                if (StringUtils.hasText(endpoint.getSql92())) {
+                    filterExpression = new FilterExpression(endpoint.getSql92().trim(), FilterExpressionType.SQL92);
+                } else {
+                    String tag = StringUtils.hasText(endpoint.getTag()) ? endpoint.getTag().trim() : "*";
+                    filterExpression = new FilterExpression(tag, FilterExpressionType.TAG);
+                }
+
+                PushConsumer pushConsumer = pushConsumerFactory.createPushConsumer(
+                        clientConfiguration,
+                        endpoint.getConsumerGroup(),
+                        endpoint.getTopic(),
+                        filterExpression,
+                        endpoint.getInvoker(),
+                        endpoint.getConsumptionThreadCount(),
+                        endpoint.getMaxCacheMessageCount());
+
+                endpoint.setPushConsumer(pushConsumer);
+                endpoint.setRunning(true);
+                this.activeConsumers.add(pushConsumer);
+
+                log.info("[ateng-boot-rocketmq] 启动 RocketMQ PushConsumer 成功: id={}, topic={}, consumerGroup={}, filterType={}, filter={}",
+                        endpoint.getId(),
+                        endpoint.getTopic(),
+                        endpoint.getConsumerGroup(),
+                        filterExpression.getFilterExpressionType(),
+                        filterExpression.getExpression());
+                return true;
+            } catch (Exception ex) {
+                log.error("[ateng-boot-rocketmq] 启动 RocketMQ PushConsumer 失败: id={}, topic={}, consumerGroup={}",
+                        endpoint.getId(), endpoint.getTopic(), endpoint.getConsumerGroup(), ex);
+                throw new IllegalStateException("RocketMQ PushConsumer 启动失败: " + ex.getMessage(), ex);
+            }
+        });
+    }
+
+    /**
+     * 优雅停止单个监听端点的物理 PushConsumer 并清理资源
+     *
+     * @param id 端点唯一标识
+     * @return 若成功停止返回 true，若端点不存在或未在运行返回 false
+     */
+    public boolean stopEndpoint(String id) {
+        return RocketmqLockHelper.withLock(lifecycleLock, () -> {
+            RocketmqListenerEndpoint endpoint = getEndpoint(id);
+            if (endpoint == null) {
+                log.warn("[ateng-boot-rocketmq] 停止端点失败，未找到匹配端点: id={}", id);
+                return false;
+            }
+            return doStopEndpoint(endpoint);
+        });
+    }
+
+    /**
+     * 优雅停止单个监听端点的物理 PushConsumer 并清理资源
+     *
+     * @param endpoint 监听端点
+     * @return 若成功停止返回 true，若未在运行返回 false
+     */
+    public boolean stopEndpoint(RocketmqListenerEndpoint endpoint) {
+        return RocketmqLockHelper.withLock(lifecycleLock, () -> doStopEndpoint(endpoint));
+    }
+
+    private boolean doStopEndpoint(RocketmqListenerEndpoint endpoint) {
+        if (endpoint == null || !endpoint.isRunning()) {
+            return false;
+        }
+
+        PushConsumer pushConsumer = endpoint.getPushConsumer();
+        if (pushConsumer != null) {
+            try {
+                pushConsumer.close();
+            } catch (Exception ex) {
+                log.warn("[ateng-boot-rocketmq] 停止 PushConsumer 出现异常: id={}, error={}", endpoint.getId(), ex.getMessage());
+            }
+            this.activeConsumers.remove(pushConsumer);
+            endpoint.setPushConsumer(null);
+        }
+        endpoint.setRunning(false);
+        log.info("[ateng-boot-rocketmq] 成功停止 RocketMQ PushConsumer 端点: id={}, topic={}, consumerGroup={}",
+                endpoint.getId(), endpoint.getTopic(), endpoint.getConsumerGroup());
+        return true;
     }
 
     // =========================================================================
@@ -207,96 +443,72 @@ public class RocketmqConsumerContainer implements
     }
 
     @Override
-    public synchronized void start() {
-        if (this.running) {
-            return;
-        }
-
-        if (endpoints.isEmpty()) {
-            this.running = true;
-            return;
-        }
-
-        ClientConfiguration clientConfiguration = clientConfigurationProvider.getIfAvailable();
-        if (clientConfiguration == null) {
-            log.info("[ateng-boot-rocketmq] 未检测到 ClientConfiguration，RocketMQ 消费监听容器跳过物理 PushConsumer 启动");
-            this.running = true;
-            return;
-        }
-
-        for (RocketmqListenerEndpoint endpoint : endpoints) {
-            try {
-                FilterExpression filterExpression;
-                if (StringUtils.hasText(endpoint.getSql92())) {
-                    filterExpression = new FilterExpression(endpoint.getSql92().trim(), FilterExpressionType.SQL92);
-                } else {
-                    String tag = StringUtils.hasText(endpoint.getTag()) ? endpoint.getTag().trim() : "*";
-                    filterExpression = new FilterExpression(tag, FilterExpressionType.TAG);
-                }
-
-                PushConsumer pushConsumer = pushConsumerFactory.createPushConsumer(
-                        clientConfiguration,
-                        endpoint.getConsumerGroup(),
-                        endpoint.getTopic(),
-                        filterExpression,
-                        endpoint.getInvoker(),
-                        endpoint.getConsumptionThreadCount(),
-                        endpoint.getMaxCacheMessageCount());
-
-                this.activeConsumers.add(pushConsumer);
-                log.info("[ateng-boot-rocketmq] 启动 RocketMQ PushConsumer 成功: topic={}, consumerGroup={}, filterType={}, filter={}",
-                        endpoint.getTopic(),
-                        endpoint.getConsumerGroup(),
-                        filterExpression.getFilterExpressionType(),
-                        filterExpression.getExpression());
-            } catch (Exception ex) {
-                log.error("[ateng-boot-rocketmq] 启动 RocketMQ PushConsumer 失败: topic={}, consumerGroup={}",
-                        endpoint.getTopic(), endpoint.getConsumerGroup(), ex);
-                throw new IllegalStateException("RocketMQ PushConsumer 启动失败: " + ex.getMessage(), ex);
+    public void start() {
+        RocketmqLockHelper.runWithLock(lifecycleLock, () -> {
+            if (this.running) {
+                return;
             }
-        }
 
-        this.running = true;
+            if (endpoints.isEmpty()) {
+                this.running = true;
+                return;
+            }
+
+            ClientConfiguration clientConfiguration = clientConfigurationProvider.getIfAvailable();
+            if (clientConfiguration == null) {
+                log.info("[ateng-boot-rocketmq] 未检测到 ClientConfiguration，RocketMQ 消费监听容器跳过物理 PushConsumer 启动");
+                this.running = true;
+                return;
+            }
+
+            for (RocketmqListenerEndpoint endpoint : endpoints) {
+                startEndpoint(endpoint);
+            }
+
+            this.running = true;
+        });
     }
 
     @Override
-    public synchronized void stop() {
+    public void stop() {
         stop(() -> {});
     }
 
     @Override
-    public synchronized void stop(Runnable callback) {
-        this.running = false;
-        log.info("[ateng-boot-rocketmq] 开始优雅停止 RocketMQ 消费监听容器，排空在途消费 (共 {} 个 PushConsumer)...", activeConsumers.size());
-
+    public void stop(Runnable callback) {
         Duration closeTimeout = properties.getConsumer().getCloseTimeout();
         long timeoutMillis = (closeTimeout != null && !closeTimeout.isNegative() && !closeTimeout.isZero())
                 ? closeTimeout.toMillis()
                 : 15_000L;
 
-        Thread shutdownThread = new NamedThreadFactory("rocketmq-consumer-shutdown-", true).newThread(() -> {
-            for (PushConsumer consumer : activeConsumers) {
-                try {
-                    consumer.close();
-                } catch (Exception ex) {
-                    log.warn("[ateng-boot-rocketmq] 关闭 PushConsumer 出现异常: {}", ex.getMessage());
+        RocketmqLockHelper.runWithLock(lifecycleLock, () -> {
+            this.running = false;
+            log.info("[ateng-boot-rocketmq] 开始优雅停止 RocketMQ 消费监听容器，排空在途消费 (共 {} 个 PushConsumer)...", activeConsumers.size());
+
+            Future<?> shutdownFuture = submitDrainTask(() -> {
+                for (RocketmqListenerEndpoint endpoint : endpoints) {
+                    if (endpoint.isRunning()) {
+                        doStopEndpoint(endpoint);
+                    }
                 }
-            }
-        });
-        shutdownThread.start();
+            });
 
-        try {
-            shutdownThread.join(timeoutMillis);
-            if (shutdownThread.isAlive()) {
+            try {
+                shutdownFuture.get(timeoutMillis, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException ex) {
+                shutdownFuture.cancel(true);
                 log.warn("[ateng-boot-rocketmq] 优雅关闭 PushConsumer 超时 (已等待 {}ms)，强制放弃等待", timeoutMillis);
-                shutdownThread.interrupt();
+            } catch (InterruptedException ex) {
+                shutdownFuture.cancel(true);
+                Thread.currentThread().interrupt();
+                log.warn("[ateng-boot-rocketmq] 关闭 PushConsumer 线程被中断: {}", ex.getMessage());
+            } catch (ExecutionException ex) {
+                log.warn("[ateng-boot-rocketmq] 关闭 PushConsumer 执行异常: {}",
+                        ex.getCause() != null ? ex.getCause().getMessage() : ex.getMessage());
             }
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            log.warn("[ateng-boot-rocketmq] 关闭 PushConsumer 线程被中断: {}", ex.getMessage());
-        }
 
-        activeConsumers.clear();
+            activeConsumers.clear();
+        });
 
         if (callback != null) {
             callback.run();
@@ -304,9 +516,22 @@ public class RocketmqConsumerContainer implements
         log.info("[ateng-boot-rocketmq] RocketMQ 消费监听容器已优雅停止排空完毕");
     }
 
+    private Future<?> submitDrainTask(Runnable drainTask) {
+        if (taskExecutor instanceof AsyncTaskExecutor asyncTaskExecutor) {
+            return asyncTaskExecutor.submit(drainTask);
+        }
+        if (taskExecutor instanceof ExecutorService executorService) {
+            return executorService.submit(drainTask);
+        }
+        if (taskExecutor != null) {
+            return CompletableFuture.runAsync(drainTask, taskExecutor);
+        }
+        return CompletableFuture.runAsync(drainTask);
+    }
+
     @Override
     public void destroy() {
-        if (isRunning()) {
+        if (isRunning() || !activeConsumers.isEmpty()) {
             stop();
         }
     }

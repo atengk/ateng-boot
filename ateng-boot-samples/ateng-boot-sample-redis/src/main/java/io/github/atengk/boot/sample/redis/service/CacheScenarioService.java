@@ -4,6 +4,8 @@ import io.github.atengk.boot.redis.bloom.RedisBloomFilter;
 import io.github.atengk.boot.redis.cache.template.RedisCacheTemplate;
 import io.github.atengk.boot.sample.redis.model.BloomFilterMetricsVO;
 import io.github.atengk.boot.sample.redis.model.ProductVO;
+import io.github.atengk.boot.sample.redis.model.cache.SysDictVO;
+import io.github.atengk.boot.sample.redis.model.cache.UserProfileVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.cache.annotation.CacheEvict;
@@ -38,6 +40,34 @@ public class CacheScenarioService {
             1002L, new ProductVO(1002L, "MacBook Pro M4", new BigDecimal("12999.00"), 20),
             1003L, new ProductVO(1003L, "AirPods Pro 2", new BigDecimal("1899.00"), 100)
     );
+
+    /**
+     * 单级系统字典缓存查询（显式指定 cacheManager = "redisCacheManager"，个性化 TTL 隔离）
+     *
+     * @param dictCode 字典编码
+     * @return 字典 VO
+     */
+    @Cacheable(cacheNames = "sys-dict", key = "#dictCode", cacheManager = "redisCacheManager")
+    public SysDictVO getSysDict(String dictCode) {
+        dbQueryCount.incrementAndGet();
+        log.info("[CacheScenario] 单级字典缓存未命中，回源模拟数据库: dictCode={}", dictCode);
+        return SysDictVO.builder()
+                .dictCode(dictCode)
+                .dictName("字典_" + dictCode)
+                .dictValue("VAL_" + dictCode)
+                .sortOrder(1)
+                .build();
+    }
+
+    /**
+     * 淘汰单级系统字典缓存
+     *
+     * @param dictCode 字典编码
+     */
+    @CacheEvict(cacheNames = "sys-dict", key = "#dictCode", cacheManager = "redisCacheManager")
+    public void evictSysDict(String dictCode) {
+        log.info("[CacheScenario] 淘汰单级字典缓存: dictCode={}", dictCode);
+    }
 
     /**
      * 单商品安全查询（通过 RedisCacheTemplate 防穿透、防击穿、防雪崩）
@@ -94,12 +124,30 @@ public class CacheScenarioService {
     }
 
     /**
-     * 基于 Spring Cache @Cacheable 两级缓存查询用户档案
+     * 基于 Spring Cache @Cacheable 两级缓存查询用户档案 VO
+     *
+     * @param userId 用户 ID
+     * @return 用户档案 VO
+     */
+    @Cacheable(cacheNames = "user-profile", key = "#userId")
+    public UserProfileVO getUserProfileVO(Long userId) {
+        dbQueryCount.incrementAndGet();
+        log.info("[CacheScenario] 两级缓存未命中，执行模拟数据库查询: userId={}", userId);
+        return UserProfileVO.builder()
+                .userId(userId)
+                .username("user_" + userId)
+                .membershipTier("VIP")
+                .points(1000)
+                .build();
+    }
+
+    /**
+     * 基于 Spring Cache @Cacheable 两级缓存查询用户档案（兼容存量单测）
      *
      * @param userId 用户 ID
      * @return 档案角色
      */
-    @Cacheable(cacheNames = "user-profile", key = "#userId")
+    @Cacheable(cacheNames = "user-profile-legacy", key = "#userId")
     public String getUserProfile(Long userId) {
         dbQueryCount.incrementAndGet();
         log.info("[CacheScenario] 两级缓存未命中，执行模拟数据库查询: userId={}", userId);
@@ -111,7 +159,7 @@ public class CacheScenarioService {
      *
      * @param userId 用户 ID
      */
-    @CacheEvict(cacheNames = "user-profile", key = "#userId")
+    @CacheEvict(cacheNames = {"user-profile", "user-profile-legacy"}, key = "#userId")
     public void evictUserProfile(Long userId) {
         log.info("[CacheScenario] 淘汰用户档案两级缓存: userId={}", userId);
     }
@@ -119,7 +167,7 @@ public class CacheScenarioService {
     /**
      * 清空用户档案全量两级缓存 (@CacheEvict allEntries = true)
      */
-    @CacheEvict(cacheNames = "user-profile", allEntries = true)
+    @CacheEvict(cacheNames = {"user-profile", "user-profile-legacy"}, allEntries = true)
     public void clearUserProfileCache() {
         log.info("[CacheScenario] 清空用户档案全量两级缓存");
     }

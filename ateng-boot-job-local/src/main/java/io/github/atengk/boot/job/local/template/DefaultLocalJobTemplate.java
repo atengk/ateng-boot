@@ -8,9 +8,16 @@ import io.github.atengk.boot.job.local.model.JobExecutionRecord;
 import io.github.atengk.boot.job.local.model.JobInfo;
 import io.github.atengk.boot.job.local.model.JobResult;
 import io.github.atengk.boot.job.local.registry.LocalJobRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.support.CronExpression;
 import org.springframework.util.Assert;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -22,6 +29,13 @@ import java.util.Map;
  * @since 2026-10-25
  */
 public class DefaultLocalJobTemplate implements LocalJobTemplate {
+
+    private static final Logger log = LoggerFactory.getLogger(DefaultLocalJobTemplate.class);
+
+    /**
+     * 预演计算未来执行时间点的单次最大上限（防止过大入参触发 OOM）
+     */
+    public static final int MAX_PREVIEW_COUNT = 100;
 
     private final LocalJobRegistry registry;
 
@@ -146,6 +160,64 @@ public class DefaultLocalJobTemplate implements LocalJobTemplate {
     @Override
     public List<JobInfo> listJobs() {
         return registry.listJobInfos();
+    }
+
+    @Override
+    public boolean exists(String jobName) {
+        if (jobName == null || jobName.isBlank()) {
+            return false;
+        }
+        return registry.exists(jobName.trim());
+    }
+
+    @Override
+    public boolean isExecuting(String jobName) {
+        if (jobName == null || jobName.isBlank()) {
+            return false;
+        }
+        return registry.isExecuting(jobName.trim());
+    }
+
+    @Override
+    public boolean isClusterLocked(String jobName) {
+        if (jobName == null || jobName.isBlank()) {
+            return false;
+        }
+        return registry.isClusterLocked(jobName.trim());
+    }
+
+    @Override
+    public boolean isValidCron(String cronExpression) {
+        if (cronExpression == null || cronExpression.isBlank()) {
+            return false;
+        }
+        return CronExpression.isValidExpression(cronExpression.trim());
+    }
+
+    @Override
+    public List<Instant> getNextExecutionTimes(String cronExpression, int count, Instant fromTime) {
+        if (!isValidCron(cronExpression) || count <= 0) {
+            return Collections.emptyList();
+        }
+        int targetCount = Math.min(count, MAX_PREVIEW_COUNT);
+        try {
+            CronExpression cron = CronExpression.parse(cronExpression.trim());
+            List<Instant> result = new ArrayList<>(targetCount);
+            ZoneId zoneId = ZoneId.systemDefault();
+            ZonedDateTime current = ZonedDateTime.ofInstant(fromTime != null ? fromTime : Instant.now(), zoneId);
+            for (int i = 0; i < targetCount; i++) {
+                ZonedDateTime next = cron.next(current);
+                if (next == null) {
+                    break;
+                }
+                result.add(next.toInstant());
+                current = next;
+            }
+            return Collections.unmodifiableList(result);
+        } catch (Exception ex) {
+            log.warn("Failed to parse or calculate next execution times for cron [{}]: {}", cronExpression, ex.getMessage());
+            return Collections.emptyList();
+        }
     }
 
     @Override

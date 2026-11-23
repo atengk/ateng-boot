@@ -1,15 +1,20 @@
 package io.github.atengk.boot.satoken.cluster.listener;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.satoken.cache.PermissionCacheService;
 import io.github.atengk.boot.satoken.cluster.broadcaster.SaTokenClusterBroadcaster;
 import io.github.atengk.boot.satoken.cluster.enums.SaTokenClusterEventType;
 import io.github.atengk.boot.satoken.cluster.model.SaTokenClusterMessage;
+import io.github.atengk.boot.satoken.constant.SaTokenConstant;
 import io.github.atengk.boot.satoken.event.SaDisableEvent;
 import io.github.atengk.boot.satoken.event.SaKickoutEvent;
 import io.github.atengk.boot.satoken.event.SaLogoutEvent;
 import io.github.atengk.boot.satoken.event.SaReplacedEvent;
 import io.github.atengk.boot.satoken.event.SaUntieDisableEvent;
+import io.github.atengk.boot.satoken.model.LoginUser;
+import io.github.atengk.boot.satoken.model.ParsedLoginId;
+import io.github.atengk.boot.satoken.util.LoginHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
@@ -34,32 +39,57 @@ public class SaTokenClusterSyncListener {
 
     @EventListener
     public void onLogout(SaLogoutEvent event) {
-        String loginId = event.getLoginId() != null ? String.valueOf(event.getLoginId()) : null;
-        broadcaster.broadcast(SaTokenClusterEventType.LOGOUT, loginId);
+        broadcastLifecycle(SaTokenClusterEventType.LOGOUT, event.getLoginType(), event.getLoginId());
     }
 
     @EventListener
     public void onKickout(SaKickoutEvent event) {
-        String loginId = event.getLoginId() != null ? String.valueOf(event.getLoginId()) : null;
-        broadcaster.broadcast(SaTokenClusterEventType.KICKOUT, loginId);
+        broadcastLifecycle(SaTokenClusterEventType.KICKOUT, event.getLoginType(), event.getLoginId());
     }
 
     @EventListener
     public void onReplaced(SaReplacedEvent event) {
-        String loginId = event.getLoginId() != null ? String.valueOf(event.getLoginId()) : null;
-        broadcaster.broadcast(SaTokenClusterEventType.REPLACED, loginId);
+        broadcastLifecycle(SaTokenClusterEventType.REPLACED, event.getLoginType(), event.getLoginId());
     }
 
     @EventListener
     public void onDisable(SaDisableEvent event) {
-        String loginId = event.getLoginId() != null ? String.valueOf(event.getLoginId()) : null;
-        broadcaster.broadcast(SaTokenClusterEventType.DISABLE, loginId);
+        broadcastLifecycle(SaTokenClusterEventType.DISABLE, event.getLoginType(), event.getLoginId());
     }
 
     @EventListener
     public void onUntieDisable(SaUntieDisableEvent event) {
-        String loginId = event.getLoginId() != null ? String.valueOf(event.getLoginId()) : null;
-        broadcaster.broadcast(SaTokenClusterEventType.UNTIE_DISABLE, loginId);
+        broadcastLifecycle(SaTokenClusterEventType.UNTIE_DISABLE, event.getLoginType(), event.getLoginId());
+    }
+
+    private void broadcastLifecycle(SaTokenClusterEventType eventType, String loginType, Object loginIdObj) {
+        String loginId = loginIdObj != null ? String.valueOf(loginIdObj) : null;
+        boolean defaultType = PermissionCacheService.isDefaultLoginType(loginType);
+        if (loginId != null && !loginId.isBlank()) {
+            LoginUser sessionUser = LoginHelper.getSessionLoginUser(loginId, loginType);
+            if (sessionUser != null && sessionUser.getTenantId() != null && !sessionUser.getTenantId().isBlank()) {
+                ParsedLoginId parsed = LoginHelper.parseCompositeLoginId(loginIdObj, loginType);
+                broadcaster.broadcast(eventType, defaultType ? null : loginType.trim(), parsed.tenantId(), parsed.userId(), null);
+                return;
+            }
+            if (sessionUser == null) {
+                String contextTenant = TenantContextHolder.getTenantId();
+                if (contextTenant != null && !contextTenant.isBlank()) {
+                    String normalizedTenant = contextTenant.trim();
+                    String prefix = normalizedTenant + SaTokenConstant.TENANT_DELIMITER;
+                    if (loginId.startsWith(prefix) && loginId.length() > prefix.length()) {
+                        broadcaster.broadcast(eventType, defaultType ? null : loginType.trim(),
+                                normalizedTenant, loginId.substring(prefix.length()), null);
+                        return;
+                    }
+                }
+            }
+        }
+        if (defaultType) {
+            broadcaster.broadcast(eventType, loginId);
+        } else {
+            broadcaster.broadcast(eventType, loginType.trim(), loginId);
+        }
     }
 
     // ==================== 2. 集群广播消息消费与本地精准失效 ====================
@@ -107,15 +137,31 @@ public class SaTokenClusterSyncListener {
             return;
         }
         String targetKey = clusterMessage.getTargetKey();
+        String loginType = clusterMessage.getLoginType();
+        boolean defaultType = PermissionCacheService.isDefaultLoginType(loginType);
         switch (clusterMessage.getEventType()) {
             case USER_PERMISSION_REFRESH, KICKOUT, LOGOUT, REPLACED, DISABLE, UNTIE_DISABLE -> {
                 if (targetKey != null && !targetKey.isBlank()) {
-                    cacheService.clearLocalUserCache(targetKey);
+                    String tenantId = clusterMessage.getTenantId();
+                    if (tenantId != null && !tenantId.isBlank()) {
+                        cacheService.clearLocalUserCache(defaultType ? null : loginType.trim(), tenantId.trim(), targetKey);
+                    } else if (defaultType) {
+                        cacheService.clearLocalUserCache(targetKey);
+                    } else {
+                        cacheService.clearLocalUserCache(loginType.trim(), targetKey);
+                    }
                 }
             }
             case ROLE_PERMISSION_REFRESH -> {
                 if (targetKey != null && !targetKey.isBlank()) {
-                    cacheService.clearLocalRoleCache(targetKey);
+                    String tenantId = clusterMessage.getTenantId();
+                    if (tenantId != null && !tenantId.isBlank()) {
+                        cacheService.clearLocalRoleCache(defaultType ? null : loginType.trim(), tenantId.trim(), targetKey);
+                    } else if (defaultType) {
+                        cacheService.clearLocalRoleCache(targetKey);
+                    } else {
+                        cacheService.clearLocalRoleCache(loginType.trim(), targetKey);
+                    }
                 }
             }
             case ALL_CACHE_CLEAR -> cacheService.clearLocalAllCache();

@@ -1,0 +1,148 @@
+package io.github.atengk.boot.ai.properties;
+
+import io.github.atengk.boot.ai.guardrail.AiGuardrailProperties;
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
+
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+/**
+ * AI 智能体与大模型底座根配置属性
+ *
+ * @author Ateng
+ * @since 2026-11-03
+ */
+@Data
+@ConfigurationProperties(prefix = "ateng.boot.ai")
+public class AtengAiProperties {
+
+    /**
+     * 是否启用 AI 智能体与大模型基础设施
+     */
+    private boolean enabled = true;
+
+    /**
+     * 默认全局主模型配置
+     */
+    @NestedConfigurationProperty
+    private AiModelConfig model = new AiModelConfig();
+
+    /**
+     * 会话记忆治理强类型配置
+     */
+    @NestedConfigurationProperty
+    private ChatMemoryProperties chatMemory = new ChatMemoryProperties();
+
+    /**
+     * 全维链路可观测审计与脱敏配置
+     */
+    @NestedConfigurationProperty
+    private AiAuditProperties audit = new AiAuditProperties();
+
+    /**
+     * 调用配额与风控强类型配置
+     */
+    @NestedConfigurationProperty
+    private AtengAiQuotaProperties quota = new AtengAiQuotaProperties();
+
+    /**
+     * AI 微观突发流量限流 (RPS & TPM) 强类型配置
+     */
+    @NestedConfigurationProperty
+    private AtengAiRateLimitProperties rateLimit = new AtengAiRateLimitProperties();
+
+    /**
+     * AI 双向内容安全护栏强类型配置
+     */
+    @NestedConfigurationProperty
+    private AiGuardrailProperties guardrail = new AiGuardrailProperties();
+
+    /**
+     * RAG 企业知识库与向量检索强类型配置
+     */
+    @NestedConfigurationProperty
+    private AtengAiRagProperties rag = new AtengAiRagProperties();
+
+    /**
+     * MCP (Model Context Protocol) 标准客户端强类型配置
+     */
+    @NestedConfigurationProperty
+    private AtengAiMcpProperties mcp = new AtengAiMcpProperties();
+
+    /**
+     * 高危工具人机协同审批治理强类型配置
+     */
+    @NestedConfigurationProperty
+    private ToolApprovalProperties toolApproval = new ToolApprovalProperties();
+
+    /**
+     * 跨会话原子化长效情景语义记忆强类型配置
+     */
+    @NestedConfigurationProperty
+    private EpisodicMemoryProperties episodicMemory = new EpisodicMemoryProperties();
+
+    /**
+     * 精确与向量语义双级响应缓存强类型配置
+     */
+    @NestedConfigurationProperty
+    private AiCacheProperties cache = new AiCacheProperties();
+
+    /**
+     * 动态提示词资产托管与版本路由强类型配置
+     */
+    @NestedConfigurationProperty
+    private AtengAiPromptProperties prompt = new AtengAiPromptProperties();
+
+    /**
+     * SaaS 多租户专有模型绑定映射 (key 为租户标识 tenantId，value 为绑定的专有模型标识别名)
+     */
+    private Map<String, String> tenantModels = new LinkedHashMap<>();
+
+    /**
+     * 命名多模型配置拓扑 (key 为模型标识别名，例如 deepseek-r1, qwen-max, fast-chat 等)
+     */
+    private Map<String, AiModelConfig> models = new LinkedHashMap<>();
+
+    /**
+     * 获取不可变多租户模型绑定映射
+     *
+     * @return 只读多租户模型映射 Map
+     */
+    public Map<String, String> getTenantModels() {
+        if (tenantModels == null || tenantModels.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return Collections.unmodifiableMap(tenantModels);
+    }
+
+    /**
+     * 获取不可变多模型配置映射，防御外部无界篡改
+     *
+     * @return 只读多模型配置 Map
+     */
+    public Map<String, AiModelConfig> getModels() {
+        if (models == null || models.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return Collections.unmodifiableMap(models);
+    }
+
+    /**
+     * 根据模型标识名称解析对应的模型配置；若未显式配置则平滑回退至默认模型配置
+     *
+     * @param modelName 模型名称或别名
+     * @return 对应的 AiModelConfig 实例，绝不返回 null
+     */
+    public AiModelConfig resolveConfig(String modelName) {
+        if (modelName != null && !modelName.isBlank() && models != null && models.containsKey(modelName.trim())) {
+            AiModelConfig config = models.get(modelName.trim());
+            if (config != null) {
+                return config;
+            }
+        }
+        return model != null ? model : new AiModelConfig();
+    }
+}

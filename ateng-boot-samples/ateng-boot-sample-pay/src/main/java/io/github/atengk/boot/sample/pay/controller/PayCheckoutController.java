@@ -33,7 +33,7 @@ import java.util.Objects;
 @Slf4j
 @Validated
 @RestController
-@RequestMapping("/pay")
+@RequestMapping("/sample/pay/checkout")
 public class PayCheckoutController {
 
     private final PayTemplate payTemplate;
@@ -48,7 +48,7 @@ public class PayCheckoutController {
      * @param dto 下单请求参数
      * @return 扁平统一出参（包含 qrCode 字段）
      */
-    @PostMapping("/checkout/native")
+    @PostMapping("/native")
     public Result<PayResponse> checkoutNative(@Valid @RequestBody PayCheckoutDTO dto) {
         log.info("Processing Native QR payment request: channel={}, outTradeNo={}, amount={}",
                 dto.getChannel(), dto.getOutTradeNo(), dto.getAmount());
@@ -69,15 +69,15 @@ public class PayCheckoutController {
     }
 
     /**
-     * JSAPI 调起收单 (小程序 / 公众号支付，生成服务端二次加签 5 元素调起包)
+     * JSAPI 调起收单 (小程序 / 公众号支付，生成服务端二次加签 5 元素调起包或支付宝交易号 tradeNo)
      *
      * @param dto 下单请求参数
-     * @return 扁平统一出参（包含 wechatJsapi 调起包）
+     * @return 扁平统一出参（包含 wechatJsapi 调起包或 tradeNo）
      */
-    @PostMapping("/checkout/jsapi")
+    @PostMapping("/jsapi")
     public Result<PayResponse> checkoutJsapi(@Valid @RequestBody PayCheckoutDTO dto) {
-        log.info("Processing JSAPI payment request: channel={}, outTradeNo={}, amount={}, openid={}",
-                dto.getChannel(), dto.getOutTradeNo(), dto.getAmount(), dto.getOpenid());
+        log.info("Processing JSAPI payment request: channel={}, outTradeNo={}, amount={}, openid={}, buyerId={}, buyerOpenId={}",
+                dto.getChannel(), dto.getOutTradeNo(), dto.getAmount(), dto.getOpenid(), dto.getBuyerId(), dto.getBuyerOpenId());
 
         UnifiedPayRequest request = UnifiedPayRequest.builder()
                 .channel(dto.getChannel())
@@ -86,6 +86,8 @@ public class PayCheckoutController {
                 .amount(dto.getAmount())
                 .subject(dto.getSubject())
                 .openid(dto.getOpenid())
+                .buyerId(dto.getBuyerId())
+                .buyerOpenId(dto.getBuyerOpenId())
                 .merchantKey(dto.getMerchantKey())
                 .notifyUrl(dto.getNotifyUrl())
                 .attach(dto.getAttach())
@@ -96,12 +98,26 @@ public class PayCheckoutController {
     }
 
     /**
+     * 支付宝小程序收单 (生成 tradeNo 供 my.tradePay 调起)
+     *
+     * @param dto 下单请求参数
+     * @return 扁平统一出参（包含 tradeNo 字段）
+     */
+    @PostMapping("/alipay-miniapp")
+    public Result<PayResponse> checkoutAlipayMiniApp(@Valid @RequestBody PayCheckoutDTO dto) {
+        log.info("Processing Alipay mini-program payment request: outTradeNo={}, amount={}, buyerId={}, buyerOpenId={}",
+                dto.getOutTradeNo(), dto.getAmount(), dto.getBuyerId(), dto.getBuyerOpenId());
+        dto.setChannel(io.github.atengk.boot.pay.enums.PayChannel.ALIPAY);
+        return checkoutJsapi(dto);
+    }
+
+    /**
      * H5 移动网页收单 (生成手机网页跳转支付链接)
      *
      * @param dto 下单请求参数
      * @return 扁平统一出参（包含 payUrl 或 formHtml 字段）
      */
-    @PostMapping("/checkout/h5")
+    @PostMapping("/h5")
     public Result<PayResponse> checkoutH5(@Valid @RequestBody PayCheckoutDTO dto) {
         log.info("Processing H5 web payment request: channel={}, outTradeNo={}, amount={}",
                 dto.getChannel(), dto.getOutTradeNo(), dto.getAmount());
@@ -128,7 +144,7 @@ public class PayCheckoutController {
      * @param dto 下单请求参数
      * @return 扁平统一出参（包含 orderString 或 wechatApp 字段）
      */
-    @PostMapping("/checkout/app")
+    @PostMapping("/app")
     public Result<PayResponse> checkoutApp(@Valid @RequestBody PayCheckoutDTO dto) {
         log.info("Processing App SDK payment request: channel={}, outTradeNo={}, amount={}",
                 dto.getChannel(), dto.getOutTradeNo(), dto.getAmount());
@@ -154,7 +170,7 @@ public class PayCheckoutController {
      * @param dto 查询请求入参
      * @return 交易状态出参
      */
-    @PostMapping("/order/query")
+    @PostMapping("/query")
     public Result<PayResponse> queryOrder(@Valid @RequestBody PayOrderQueryDTO dto) {
         log.info("Querying payment order status: channel={}, outTradeNo={}, transactionId={}",
                 dto.getChannel(), dto.getOutTradeNo(), dto.getTransactionId());
@@ -176,7 +192,7 @@ public class PayCheckoutController {
      * @param dto 关单请求入参
      * @return 关单操作响应
      */
-    @PostMapping("/order/close")
+    @PostMapping("/close")
     public Result<PayResponse> closeOrder(@Valid @RequestBody PayOrderCloseDTO dto) {
         log.info("Closing unpaid payment order: channel={}, outTradeNo={}",
                 dto.getChannel(), dto.getOutTradeNo());

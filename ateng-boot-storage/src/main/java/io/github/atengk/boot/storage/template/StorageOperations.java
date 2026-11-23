@@ -3,9 +3,11 @@ package io.github.atengk.boot.storage.template;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.storage.model.HashAlgorithm;
+import io.github.atengk.boot.storage.model.PresignedDownloadRequest;
 import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
+import io.github.atengk.boot.storage.model.StorageUploadRequest;
 import io.github.atengk.boot.storage.resource.StorageResource;
 import io.github.atengk.boot.storage.util.StorageHashUtil;
 import jakarta.servlet.http.HttpServletResponse;
@@ -95,6 +97,15 @@ public interface StorageOperations {
     }
 
     /**
+     * 单参快捷上传 Spring Web MultipartFile 表单文件
+     * 自动提取原始文件扩展名并按日期目录（yyyy/MM/dd/uuid[.ext]）归档生成唯一安全路径
+     *
+     * @param file 表单上传文件
+     * @return 存储元数据对象（包含自动归档路径）
+     */
+    StorageObject upload(MultipartFile file);
+
+    /**
      * 上传 Spring Web MultipartFile 表单文件
      *
      * @param path 目标相对路径
@@ -114,12 +125,151 @@ public interface StorageOperations {
     StorageObject upload(String path, MultipartFile file, Map<String, String> userMetadata);
 
     /**
+     * 完整参数上传输入流（携带用户自定义元数据与公共读访问权限控制）
+     *
+     * @param path         目标相对路径
+     * @param in           输入流
+     * @param contentType  MIME 内容类型
+     * @param size         数据流字节大小（未知时传 -1）
+     * @param userMetadata 用户自定义元数据键值对
+     * @param publicRead   是否赋予公共读取权限（S3 协议下注入 ObjectCannedACL.PUBLIC_READ）
+     * @return 存储元数据对象
+     */
+    StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata, boolean publicRead);
+
+    /**
+     * 基于结构化请求对象执行统一上传（支持自定义元数据、公共读与覆盖控制）
+     *
+     * @param request 统一上传请求对象
+     * @return 存储元数据对象
+     */
+    StorageObject upload(StorageUploadRequest request);
+
+    /**
+     * 当目标路径不存在时上传 MultipartFile 表单文件（已存在则抛出 40024 冲突异常）
+     *
+     * @param file 表单上传文件
+     * @param path 目标相对路径
+     * @return 存储元数据对象
+     */
+    StorageObject uploadIfAbsent(MultipartFile file, String path);
+
+    /**
+     * 当目标路径不存在时上传输入流（已存在则抛出 40024 冲突异常）
+     *
+     * @param in          输入流
+     * @param path        目标相对路径
+     * @param contentType MIME 内容类型
+     * @param size        数据流字节大小（未知时传 -1）
+     * @return 存储元数据对象
+     */
+    StorageObject uploadIfAbsent(InputStream in, String path, String contentType, long size);
+
+    /**
+     * 当目标路径不存在时按结构化请求对象执行非覆盖上传（已存在则抛出 40024 冲突异常）
+     *
+     * @param request 统一上传请求对象
+     * @return 存储元数据对象
+     */
+    StorageObject uploadIfAbsent(StorageUploadRequest request);
+
+    /**
+     * 上传 MultipartFile 表单文件，并绑定 Spring 事务回滚补偿删除（无活动事务时正常上传）
+     *
+     * @param file 表单上传文件
+     * @param path 目标相对路径
+     * @return 存储元数据对象
+     */
+    StorageObject uploadWithRollbackDelete(MultipartFile file, String path);
+
+    /**
+     * 上传输入流，并绑定 Spring 事务回滚补偿删除（无活动事务时正常上传）
+     *
+     * @param in          输入流
+     * @param path        目标相对路径
+     * @param contentType MIME 内容类型
+     * @param size        数据流字节大小（未知时传 -1）
+     * @return 存储元数据对象
+     */
+    StorageObject uploadWithRollbackDelete(InputStream in, String path, String contentType, long size);
+
+    /**
+     * 按结构化请求对象上传文件，并绑定 Spring 事务回滚补偿删除（无活动事务时正常上传）
+     *
+     * @param request 统一上传请求对象
+     * @return 存储元数据对象
+     */
+    StorageObject uploadWithRollbackDelete(StorageUploadRequest request);
+
+    /**
+     * 注册 Spring 事务回滚补偿删除动作（事务回滚时自动删除指定路径对象，无活动事务时静默跳过）
+     *
+     * @param path 目标相对路径
+     */
+    void registerRollbackDelete(String path);
+
+    /**
+     * 上传公开可读对象（自动推导 MIME 与计算大小，赋予公共读权限）
+     *
+     * @param path 目标相对路径
+     * @param in   输入流
+     * @return 存储元数据对象
+     */
+    default StorageObject uploadPublic(String path, InputStream in) {
+        return uploadPublic(path, in, null, -1);
+    }
+
+    /**
+     * 携带明确 MIME 内容类型上传公开可读对象
+     *
+     * @param path        目标相对路径
+     * @param in          输入流
+     * @param contentType MIME 内容类型
+     * @return 存储元数据对象
+     */
+    default StorageObject uploadPublic(String path, InputStream in, String contentType) {
+        return uploadPublic(path, in, contentType, -1);
+    }
+
+    /**
+     * 完整参数上传公开可读对象
+     *
+     * @param path        目标相对路径
+     * @param in          输入流
+     * @param contentType MIME 内容类型
+     * @param size        数据流字节大小（未知时传 -1）
+     * @return 存储元数据对象
+     */
+    default StorageObject uploadPublic(String path, InputStream in, String contentType, long size) {
+        return upload(path, in, contentType, size, null, true);
+    }
+
+    /**
+     * 上传 Spring Web MultipartFile 表单文件为公开可读对象
+     *
+     * @param path 目标相对路径
+     * @param file 表单上传文件
+     * @return 存储元数据对象
+     */
+    StorageObject uploadPublic(String path, MultipartFile file);
+
+    /**
      * 下载目标对象内容输入流
      *
      * @param path 目标相对路径
      * @return 输入流（调用方负责关闭）
      */
     InputStream download(String path);
+
+    /**
+     * 分段下载存储对象指定字节范围内容输入流 (Byte-Range Read)
+     *
+     * @param path        目标相对路径
+     * @param startOffset 起始字节偏移量（0-based，必须 >= 0）
+     * @param length      需读取的字节长度（必须 > 0）
+     * @return 字节切片输入流（调用方负责关闭）
+     */
+    InputStream download(String path, long startOffset, long length);
 
     /**
      * 获取 Spring 原生资源载荷
@@ -136,6 +286,29 @@ public interface StorageOperations {
      * @return 存储元数据对象
      */
     StorageObject getMetadata(String path);
+
+    /**
+     * 获取指定存储对象的标签键值对映射 (Object Tagging)
+     *
+     * @param path 目标相对路径
+     * @return 标签只读映射字典（无标签时返回空 Map，不返回 null）
+     */
+    Map<String, String> getObjectTags(String path);
+
+    /**
+     * 设置指定存储对象的标签集合（覆盖式全量设置）
+     *
+     * @param path 目标相对路径
+     * @param tags 标签键值对映射
+     */
+    void setObjectTags(String path, Map<String, String> tags);
+
+    /**
+     * 删除指定存储对象的所有标签（天然幂等）
+     *
+     * @param path 目标相对路径
+     */
+    void deleteObjectTags(String path);
 
     /**
      * 判断对象是否存在
@@ -161,6 +334,20 @@ public interface StorageOperations {
      * @return true 操作成功
      */
     boolean deleteBatch(List<String> paths);
+
+    /**
+     * 在当前 Spring 事务成功提交后延迟物理删除目标对象（无活动事务时平滑降级为立即物理删除）
+     *
+     * @param path 目标相对路径
+     */
+    void deleteAfterCommit(String path);
+
+    /**
+     * 在当前 Spring 事务成功提交后延迟批量物理删除目标对象（无活动事务时平滑降级为立即批量删除）
+     *
+     * @param paths 目标相对路径列表
+     */
+    void deleteBatchAfterCommit(List<String> paths);
 
     /**
      * 删除指定路径前缀下的所有存储对象（天然幂等，流式分批删除）
@@ -199,6 +386,26 @@ public interface StorageOperations {
      * @return true 移动成功
      */
     boolean move(String sourcePath, String targetPath);
+
+    /**
+     * 跨存储源复制对象（同驱动直连短路，跨驱动则流式同步元数据与内容）
+     *
+     * @param sourcePath      当前存储源的源对象路径
+     * @param targetSourceKey 目标存储源标识
+     * @param targetPath      目标存储源下的目标对象路径
+     * @return 目标存储源落盘后的对象元数据
+     */
+    StorageObject copyTo(String sourcePath, String targetSourceKey, String targetPath);
+
+    /**
+     * 跨存储源移动对象（目标写完并校验通过后才删除源对象，确保异常时源文件不受损）
+     *
+     * @param sourcePath      当前存储源的源对象路径
+     * @param targetSourceKey 目标存储源标识
+     * @param targetPath      目标存储源下的目标对象路径
+     * @return 目标存储源落盘后的对象元数据
+     */
+    StorageObject moveTo(String sourcePath, String targetSourceKey, String targetPath);
 
     /**
      * 上传纯文本字符串（默认 UTF-8 编码）
@@ -329,6 +536,14 @@ public interface StorageOperations {
     PageResult<StorageObject> listPage(String prefix, PageQuery pageQuery, boolean recursive);
 
     /**
+     * 获取公开存储桶或具有公开读取权限对象的永久直接访问链接 (Public URL)
+     *
+     * @param path 目标相对路径
+     * @return 永久直接访问 URL
+     */
+    String getUrl(String path);
+
+    /**
      * 获取预签名只读下载外链凭证
      *
      * @param path     目标相对路径
@@ -336,6 +551,32 @@ public interface StorageOperations {
      * @return 预签名外链模型
      */
     PresignedUrl getPresignedUrl(String path, Duration duration);
+
+    /**
+     * 获取预签名只读下载外链凭证（指定自定义友好下载文件名）
+     * 自动按照 RFC 5987 / RFC 6266 编码 Content-Disposition 响应头
+     *
+     * @param path             目标相对路径
+     * @param duration         有效时长
+     * @param downloadFilename 自定义下载文件名（如 "年度财务报表.xlsx"）
+     * @return 预签名外链模型
+     */
+    default PresignedUrl getPresignedUrl(String path, Duration duration, String downloadFilename) {
+        return getPresignedUrl(PresignedDownloadRequest.builder()
+                .path(path)
+                .duration(duration)
+                .downloadFilename(downloadFilename)
+                .build());
+    }
+
+    /**
+     * 基于强类型配置请求构建预签名只读下载外链凭证
+     * 支持定制有效时长、友好下载文件名、响应 Content-Type 与 Content-Disposition
+     *
+     * @param request 下载配置请求
+     * @return 预签名外链模型
+     */
+    PresignedUrl getPresignedUrl(PresignedDownloadRequest request);
 
     /**
      * 获取预签名直传写入外链凭证（极简重载，默认向后兼容）
@@ -512,4 +753,18 @@ public interface StorageOperations {
     default String calculateHash(String path) {
         return calculateHash(path, HashAlgorithm.SHA256);
     }
+
+    /**
+     * 探查当前活动存储源的健康状态与物理连通性
+     *
+     * @return true 连通且正常；false 异常或不可达
+     */
+    boolean ping();
+
+    /**
+     * 获取当前活动存储源的健康探测与诊断上下文参数字典
+     *
+     * @return 包含驱动类型与核心状态信息的只读字典
+     */
+    Map<String, Object> getDiagnostics();
 }

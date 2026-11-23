@@ -1,0 +1,403 @@
+package io.github.atengk.boot.ai.properties;
+
+import lombok.Data;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+/**
+ * AI RAG 企业知识库与向量检索强类型配置属性
+ *
+ * @author Ateng
+ * @since 2026-11-04
+ */
+@Data
+public class AtengAiRagProperties {
+
+    /**
+     * 是否启用 RAG 企业知识库与向量化基础设施
+     */
+    private boolean enabled = true;
+
+    /**
+     * 向量召回最大结果数 (Top-K)
+     */
+    private int maxResults = 3;
+
+    /**
+     * 向量召回最低相关度得分阈值 (0.0 ~ 1.0)
+     */
+    private Double minScore = 0.6;
+
+    /**
+     * 默认 Embedding 模型标识名称常量
+     */
+    public static final String DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
+
+    /**
+     * 默认 Embedding 模型标识名称 (例如 text-embedding-3-small, text-embedding-3-large 等)
+     */
+    private String modelName = DEFAULT_EMBEDDING_MODEL;
+
+    /**
+     * 向量维度 (可选，部分模型如 text-embedding-3 支持指定维度缩减)
+     */
+    private Integer dimensions;
+
+    /**
+     * 默认文档切片分块大小 (字符数，默认 500)
+     */
+    private int chunkSize = 500;
+
+    /**
+     * 默认文档切片分块重叠大小 (字符数，默认 50)
+     */
+    private int chunkOverlap = 50;
+
+    /**
+     * 智能文档切片套件专属配置 (Token 预算切片与父子分级切片)
+     */
+    @NestedConfigurationProperty
+    private SplitterProperties splitter = new SplitterProperties();
+
+    /**
+     * 重排模型 (Reranker) 专属配置
+     */
+    @NestedConfigurationProperty
+    private RerankProperties rerank = new RerankProperties();
+
+    /**
+     * 多轮对话查询改写 (QueryTransformer) 专属配置
+     */
+    @NestedConfigurationProperty
+    private QueryTransformProperties queryTransform = new QueryTransformProperties();
+
+    /**
+     * 文档解析与图文多模态处理专属配置
+     */
+    @NestedConfigurationProperty
+    private ParserProperties parser = new ParserProperties();
+
+    /**
+     * 统一向量存储库专属配置 (支持 auto, in-memory, milvus, redis, pgvector, elasticsearch 等)
+     */
+    @NestedConfigurationProperty
+    private VectorStoreProperties store = new VectorStoreProperties();
+
+    /**
+     * 稠密向量与稀疏关键词混合知识库检索专属配置
+     */
+    @NestedConfigurationProperty
+    private HybridProperties hybrid = new HybridProperties();
+
+    /**
+     * 混合检索强类型配置属性
+     */
+    @Data
+    public static class HybridProperties {
+        /**
+         * 是否启用稠密与稀疏混合多路召回 (默认 false)
+         */
+        private boolean enabled = false;
+
+        /**
+         * 稠密向量召回权重系数 (默认 1.0)
+         */
+        private double denseWeight = 1.0;
+
+        /**
+         * 稀疏关键词召回权重系数 (默认 1.0)
+         */
+        private double sparseWeight = 1.0;
+
+        /**
+         * RRF 排名融合常数 K (默认 60)
+         */
+        private int rrfK = 60;
+    }
+
+    /**
+     * 多轮对话查询改写 (QueryTransformer) 强类型配置属性
+     */
+    @Data
+    public static class QueryTransformProperties {
+        /**
+         * 是否启用多轮对话查询改写与意图消解
+         */
+        private boolean enabled = false;
+
+        /**
+         * 用于意图改写的轻量模型标识名称 (可选；未配置时继承全局主模型名称)
+         */
+        private String modelName;
+
+        /**
+         * 最大保留的历史消息轮数 (默认 6 轮)
+         */
+        private int maxHistoryMessages = 6;
+    }
+
+    /**
+     * 文档解析多模态强类型配置
+     */
+    @Data
+    public static class ParserProperties {
+        /**
+         * 视觉多模态摘要增强专属配置
+         */
+        @NestedConfigurationProperty
+        private MultimodalProperties multimodal = new MultimodalProperties();
+    }
+
+    /**
+     * 多模态视觉摘要与扫描件 OCR 强类型配置
+     */
+    @Data
+    public static class MultimodalProperties {
+        /**
+         * 是否启用文档解析中的图文多模态提取与视觉摘要增强 (默认 false)
+         */
+        private boolean enabled = false;
+
+        /**
+         * 用于视觉分析摘要的专属模型标识名称 (可选；未配置时自动从 AiModelRegistry 或全局主模型中探测)
+         */
+        private String model;
+
+        /**
+         * 视觉图表摘要提示词模板
+         */
+        private String prompt = "请对以下架构图、流程图或数据图表进行精确、结构化的语义摘要描述，提炼核心概念、逻辑关系、关键指标及说明，输出为纯净文字：";
+
+        /**
+         * 扫描件 PDF 触发视觉 OCR 的单页文本字符数阈值 (默认 30 字符)
+         */
+        private int scannedPdfThreshold = 30;
+
+        /**
+         * 扫描件 PDF 栅格化渲染分辨率 DPI (默认 150)
+         */
+        private int scannedPdfDpi = 150;
+
+        /**
+         * 是否将提取到的原始图表上传至对象存储 (需容器中存在 StorageTemplate，默认 true)
+         */
+        private boolean storageUpload = true;
+
+        /**
+         * 提取图表的最小宽度阈值 (像素，过滤小图标或装饰分割线，默认 100)
+         */
+        private int minImageWidth = 100;
+
+        /**
+         * 提取图表的最小高度阈值 (像素，过滤装饰性小元素，默认 100)
+         */
+        private int minImageHeight = 100;
+
+        /**
+         * 视觉模型独立配置 (可选；若未单独指定 baseUrl 或 apiKey，则平滑继承全局主模型凭据)
+         */
+        @NestedConfigurationProperty
+        private AiModelConfig modelConfig;
+    }
+
+    /**
+     * Reranker 交叉重排模型强类型配置属性
+     */
+    @Data
+    public static class RerankProperties {
+        /**
+         * 是否启用 Reranker 交叉重排二次精排
+         */
+        private boolean enabled = false;
+
+        /**
+         * Rerank 服务接口地址 (例如 https://api.siliconflow.cn/v1/rerank 或 http://localhost:8080/rerank)
+         */
+        private String baseUrl;
+
+        /**
+         * Rerank 服务认证令牌 API Key (可选；未配置时继承全局主模型 API Key)
+         */
+        private String apiKey;
+
+        /**
+         * Rerank 模型标识名称 (例如 BAAI/bge-reranker-v2-m3)
+         */
+        private String modelName = "BAAI/bge-reranker-v2-m3";
+
+        /**
+         * 重排调用超时时间
+         */
+        private java.time.Duration timeout = java.time.Duration.ofSeconds(5);
+
+        /**
+         * 最终精排保留的最大结果数 (Top-K)
+         */
+        private int topK = 3;
+
+        /**
+         * 最终精排最低相关度得分阈值 (可选，低于此分数的片段将被过滤)
+         */
+        private Double minScore;
+    }
+
+    /**
+     * 独立 Embedding 模型专属配置 (可选；若未单独指定 baseUrl 或 apiKey，则平滑继承全局主模型 ateng.boot.ai.model 的凭据)
+     */
+    @NestedConfigurationProperty
+    private AiModelConfig model = new AiModelConfig();
+
+    /**
+     * 命名多向量化模型配置拓扑字典 (name -> AiModelConfig)
+     * 例如 ateng.boot.ai.rag.embeddings.bge-large.model-name=BAAI/bge-large-zh-v1.5
+     */
+    @NestedConfigurationProperty
+    private Map<String, AiModelConfig> embeddings = new LinkedHashMap<>();
+
+    /**
+     * 解析最终生效的 Embedding 模型配置
+     * 若未在 rag.model 中指定 apiKey/baseUrl，平滑回退继承 rootModel 的 apiKey 与 baseUrl
+     *
+     * @param rootModel 全局主模型配置
+     * @return 最终生效的 AiModelConfig 实例，绝不返回 null
+     */
+    public AiModelConfig resolveEmbeddingConfig(AiModelConfig rootModel) {
+        AiModelConfig effective = AiModelConfig.from(rootModel);
+
+        // 覆盖默认 embedding modelName 与 dimensions
+        effective.setModelName(this.modelName != null && !this.modelName.isBlank() ? this.modelName : DEFAULT_EMBEDDING_MODEL);
+        if (this.dimensions != null) {
+            effective.setDimensions(this.dimensions);
+        }
+
+        // 若 rag.model 具备有效配置，进行就近合并覆盖
+        if (this.model != null && (this.model.isConfigured() || (this.model.getBaseUrl() != null && !this.model.getBaseUrl().isBlank() && !"https://api.openai.com/v1".equals(this.model.getBaseUrl())))) {
+            effective.mergeFrom(this.model);
+        }
+        return effective;
+    }
+
+    /**
+     * 解析指定名称的命名 Embedding 模型配置
+     * 若未在命名配置中指定 apiKey/baseUrl，平滑回退继承 rootModel 的对应连接参数
+     *
+     * @param name      命名模型标识 (如 bge-large)
+     * @param rootModel 全局主模型配置
+     * @return 最终生效的 AiModelConfig 实例，绝不返回 null
+     */
+    public AiModelConfig resolveNamedEmbeddingConfig(String name, AiModelConfig rootModel) {
+        AiModelConfig target = embeddings != null ? embeddings.get(name) : null;
+        AiModelConfig effective = AiModelConfig.from(rootModel);
+
+        // 覆盖默认 modelName 与 dimensions
+        effective.setModelName(this.modelName != null && !this.modelName.isBlank() ? this.modelName : DEFAULT_EMBEDDING_MODEL);
+        if (this.dimensions != null) {
+            effective.setDimensions(this.dimensions);
+        }
+
+        // 命名模型配置就近覆盖
+        if (target != null) {
+            effective.mergeFrom(target);
+        }
+        return effective;
+    }
+
+    /**
+     * 智能切片套件强类型配置属性
+     */
+    @Data
+    public static class SplitterProperties {
+        /**
+         * 默认切片器类型 (RECURSIVE, TOKEN, PARENT_CHILD, TABLE)
+         */
+        private SplitterType type = SplitterType.RECURSIVE;
+
+        /**
+         * Token 预算切片器专属配置
+         */
+        @NestedConfigurationProperty
+        private TokenSplitterProperties token = new TokenSplitterProperties();
+
+        /**
+         * 父子分级切片器专属配置
+         */
+        @NestedConfigurationProperty
+        private ParentChildSplitterProperties parentChild = new ParentChildSplitterProperties();
+    }
+
+    /**
+     * 切片器类型枚举
+     */
+    public enum SplitterType {
+        /**
+         * 原生递归字符切片器
+         */
+        RECURSIVE,
+        /**
+         * Token 预算防溢出切片器
+         */
+        TOKEN,
+        /**
+         * 父子分级切片器
+         */
+        PARENT_CHILD,
+        /**
+         * 表格感知分块切片器
+         */
+        TABLE
+    }
+
+    /**
+     * Token 预算切片器强类型配置属性
+     */
+    @Data
+    public static class TokenSplitterProperties {
+        /**
+         * 单分块最大允许 Token 预算数 (默认 500)
+         */
+        private int maxTokens = 500;
+
+        /**
+         * 相邻分块重叠 Token 预算数 (默认 50)
+         */
+        private int tokenOverlap = 50;
+
+        /**
+         * Token 安全余量比例 (0.0 ~ <1.0，默认 0.0)
+         */
+        private double safetyMargin = 0.0;
+    }
+
+    /**
+     * 父子分级切片器强类型配置属性
+     */
+    @Data
+    public static class ParentChildSplitterProperties {
+        /**
+         * 宏观父分块最大字符数 (默认 1200)
+         */
+        private int parentChunkSize = 1200;
+
+        /**
+         * 宏观父分块重叠字符数 (默认 100)
+         */
+        private int parentChunkOverlap = 100;
+
+        /**
+         * 微观子分块最大字符数 (默认 300)
+         */
+        private int childChunkSize = 300;
+
+        /**
+         * 微观子分块重叠字符数 (默认 30)
+         */
+        private int childChunkOverlap = 30;
+
+        /**
+         * 是否在子分块元数据中直接嵌入父分块完整文本 (默认 true)
+         */
+        private boolean selfContainedParent = true;
+    }
+}

@@ -1,0 +1,23 @@
+# 本地服务真实联调配置模板（请复制为 application-local.yml 并填入真实邮箱信息）
+# 真实 application-local.yml 已被 .gitignore 忽略，绝对严禁提交公网真实 IP 与密码凭据至 Git
+spring:
+  config:
+    activate:
+      on-profile: local
+
+ateng:
+  boot:
+    mail:
+      accounts:
+        default:
+          host: smtp.qq.com
+          port: 465
+          ssl: true
+          username: YOUR_EMAIL_ACCOUNT@qq.com
+          password: YOUR_EMAIL_AUTH_CODE
+          from: YOUR_EMAIL_ACCOUNT@qq.com
+          from-name: Ateng官方通知
+          properties:
+            mail.smtp.auth: "true"
+            mail.smtp.ssl.enable: "true"
+            mail.smtp.ssl.required: "true"

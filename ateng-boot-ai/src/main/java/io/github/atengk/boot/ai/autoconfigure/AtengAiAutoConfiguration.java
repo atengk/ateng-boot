@@ -1,0 +1,819 @@
+package io.github.atengk.boot.ai.autoconfigure;
+
+import dev.langchain4j.memory.chat.ChatMemoryProvider;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+import dev.langchain4j.memory.chat.TokenWindowChatMemory;
+import dev.langchain4j.model.Tokenizer;
+import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.chat.StreamingChatLanguageModel;
+import dev.langchain4j.model.chat.listener.ChatModelListener;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+import dev.langchain4j.model.openai.OpenAiTokenizer;
+import io.github.atengk.boot.ai.cache.AiCacheStore;
+import io.github.atengk.boot.ai.cache.AiSemanticCache;
+import io.github.atengk.boot.ai.cache.InMemoryAiCacheStore;
+import io.github.atengk.boot.ai.cache.RedisAiCacheStore;
+import io.github.atengk.boot.ai.exception.AiException;
+import io.github.atengk.boot.ai.exception.AiResultCode;
+import io.github.atengk.boot.ai.failover.FailoverChatLanguageModel;
+import io.github.atengk.boot.ai.failover.FailoverStreamingChatLanguageModel;
+import io.github.atengk.boot.ai.failover.NamedModel;
+import io.github.atengk.boot.ai.factory.OpenAiModelFactory;
+import io.github.atengk.boot.ai.guardrail.AiGuardrail;
+import io.github.atengk.boot.ai.guardrail.DefaultAiGuardrail;
+import io.github.atengk.boot.ai.mcp.HttpMcpClientAdapter;
+import io.github.atengk.boot.ai.mcp.McpClientRegistry;
+import io.github.atengk.boot.ai.memory.ChatMemoryManager;
+import io.github.atengk.boot.ai.memory.HeuristicTokenizer;
+import io.github.atengk.boot.ai.memory.SummaryChatMemory;
+import io.github.atengk.boot.ai.memory.store.ChatMemoryStore;
+import io.github.atengk.boot.ai.memory.store.InMemoryChatMemoryStore;
+import io.github.atengk.boot.ai.memory.store.InMemorySummaryChatMemoryStore;
+import io.github.atengk.boot.ai.memory.store.RedisChatMemoryStore;
+import io.github.atengk.boot.ai.memory.store.RedisSummaryChatMemoryStore;
+import io.github.atengk.boot.ai.memory.store.SummaryChatMemoryStore;
+import io.github.atengk.boot.ai.properties.AtengAiMcpProperties;
+import io.github.atengk.boot.ai.properties.AtengAiProperties;
+import io.github.atengk.boot.ai.properties.ChatMemoryProperties;
+import io.github.atengk.boot.ai.properties.ChatMemoryStoreType;
+import io.github.atengk.boot.ai.properties.ChatMemoryWindowType;
+import io.github.atengk.boot.ai.ratelimit.AiRateLimiter;
+import io.github.atengk.boot.ai.ratelimit.DefaultAiRateLimiter;
+import io.github.atengk.boot.ai.ratelimit.RedisAiRateLimiter;
+import io.github.atengk.boot.ai.registry.AiModelRegistry;
+import io.github.atengk.boot.ai.streaming.ActiveStreamRegistry;
+import io.github.atengk.boot.ai.template.AiTemplate;
+import io.github.atengk.boot.ai.tool.approval.ToolApprovalTemplate;
+import io.github.atengk.boot.ai.tool.approval.store.InMemoryToolApprovalStore;
+import io.github.atengk.boot.ai.tool.approval.store.RedisToolApprovalStore;
+import io.github.atengk.boot.ai.tool.approval.store.ToolApprovalStore;
+import io.github.atengk.boot.ai.properties.ToolApprovalProperties;
+import org.springframework.context.ApplicationContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.util.StringUtils;
+
+import java.util.ArrayList;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingClass;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import io.github.atengk.boot.ai.registrar.AiAgentRegistrar;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
+import io.github.atengk.boot.ai.observability.AiAuditLogHandler;
+import io.github.atengk.boot.ai.observability.AtengAiObservabilityListener;
+import io.github.atengk.boot.ai.prompt.DefaultPromptProvider;
+import io.github.atengk.boot.ai.prompt.PromptProvider;
+import io.github.atengk.boot.ai.prompt.PromptRegistry;
+import io.github.atengk.boot.ai.properties.AiCacheProperties;
+import io.github.atengk.boot.ai.quota.AiQuotaChecker;
+import io.github.atengk.boot.ai.quota.DefaultAiQuotaChecker;
+import io.github.atengk.boot.ai.quota.RedisAiQuotaChecker;
+import io.github.atengk.boot.ai.tenant.AiTenantModelResolver;
+import io.github.atengk.boot.ai.tenant.DefaultAiTenantModelResolver;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.core.task.TaskExecutor;
+import org.springframework.data.redis.core.StringRedisTemplate;
+
+import java.util.Collections;
+import java.util.List;
+
+/**
+ * AI 智能体与认知图底座核心自动装配入口
+ *
+ * @author Ateng
+ * @since 2026-11-03
+ */
+@AutoConfiguration
+@AutoConfigureAfter(name = "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration")
+@ConditionalOnClass(OpenAiChatModel.class)
+@ConditionalOnProperty(prefix = "ateng.boot.ai", name = "enabled", havingValue = "true", matchIfMissing = true)
+@EnableConfigurationProperties(AtengAiProperties.class)
+@Import(AiAgentRegistrar.class)
+public class AtengAiAutoConfiguration {
+
+    private static final Logger log = LoggerFactory.getLogger(AtengAiAutoConfiguration.class);
+
+    /**
+     * 自动装配 AI 大模型全维链路可观测审计监听器
+     *
+     * @param properties               AI 根配置属性
+     * @param auditLogHandlerProvider 可选的审计记录持久化扩展点
+     * @param taskExecutorProvider     可选的受管异步线程池
+     * @return AtengAiObservabilityListener 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.audit", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public AtengAiObservabilityListener atengAiObservabilityListener(
+            AtengAiProperties properties,
+            ObjectProvider<AiAuditLogHandler> auditLogHandlerProvider,
+            ObjectProvider<TaskExecutor> taskExecutorProvider) {
+        return new AtengAiObservabilityListener(properties, auditLogHandlerProvider, taskExecutorProvider);
+    }
+
+    /**
+     * 自动装配默认同步大模型 (仅当配置了默认 apiKey 时初始化，实现平滑探测防御)
+     *
+     * @param properties        AI 根配置属性
+     * @param listenersProvider 链路监听器提供者
+     * @return ChatLanguageModel 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.model", name = "api-key")
+    public ChatLanguageModel openAiChatModel(AtengAiProperties properties,
+                                             ObjectProvider<ChatModelListener> listenersProvider) {
+        List<ChatModelListener> listeners = listenersProvider.orderedStream().toList();
+        return OpenAiModelFactory.createChatModel(properties.getModel(), listeners);
+    }
+
+    /**
+     * 自动装配 AI 流式推流活跃连接并发注册表
+     *
+     * @return ActiveStreamRegistry 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public ActiveStreamRegistry activeStreamRegistry() {
+        return new ActiveStreamRegistry();
+    }
+
+    /**
+     * 自动装配默认异步流式大模型 (仅当配置了默认 apiKey 时初始化)
+     *
+     * @param properties                  AI 根配置属性
+     * @param listenersProvider           链路监听器提供者
+     * @param activeStreamRegistryProvider 活跃流式注册表提供者
+     * @return StreamingChatLanguageModel 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.model", name = "api-key")
+    public StreamingChatLanguageModel openAiStreamingChatModel(
+            AtengAiProperties properties,
+            ObjectProvider<ChatModelListener> listenersProvider,
+            ObjectProvider<ActiveStreamRegistry> activeStreamRegistryProvider) {
+        List<ChatModelListener> listeners = listenersProvider.orderedStream().toList();
+        return OpenAiModelFactory.createStreamingChatModel(properties.getModel(), listeners, activeStreamRegistryProvider.getIfAvailable());
+    }
+
+    /**
+     * 自动装配多模型统一命名注册中心
+     *
+     * @param properties                       AI 根配置属性
+     * @param defaultChatModelProvider          默认同步模型提供者
+     * @param defaultStreamingChatModelProvider 默认流式模型提供者
+     * @param listenersProvider                链路监听器提供者
+     * @param activeStreamRegistryProvider     活跃流式注册表提供者
+     * @return AiModelRegistry 注册表实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public AiModelRegistry aiModelRegistry(
+            AtengAiProperties properties,
+            ObjectProvider<ChatLanguageModel> defaultChatModelProvider,
+            ObjectProvider<StreamingChatLanguageModel> defaultStreamingChatModelProvider,
+            ObjectProvider<ChatModelListener> listenersProvider,
+            ObjectProvider<ActiveStreamRegistry> activeStreamRegistryProvider) {
+        AiModelRegistry registry = new AiModelRegistry();
+        List<ChatModelListener> listeners = listenersProvider.orderedStream().toList();
+        ActiveStreamRegistry activeStreamRegistry = activeStreamRegistryProvider.getIfAvailable();
+
+        // 1. 注册默认模型 (若已由 Spring 容器装配或独立配置，优先使用唯一/Primary Bean，多 Bean 时平滑退避首个)
+        ChatLanguageModel defaultChatModel = defaultChatModelProvider.getIfUnique();
+        if (defaultChatModel == null) {
+            defaultChatModel = defaultChatModelProvider.orderedStream().findFirst().orElse(null);
+        }
+        StreamingChatLanguageModel defaultStreamingChatModel = defaultStreamingChatModelProvider.getIfUnique();
+        if (defaultStreamingChatModel == null) {
+            defaultStreamingChatModel = defaultStreamingChatModelProvider.orderedStream().findFirst().orElse(null);
+        }
+
+        if (defaultChatModel != null || defaultStreamingChatModel != null) {
+            String defaultAlias = properties.getModel() != null ? properties.getModel().getModelName() : null;
+            registry.registerDefault(defaultChatModel, defaultStreamingChatModel, defaultAlias);
+        } else if (properties.getModel() != null && properties.getModel().isConfigured()) {
+            OpenAiChatModel chatModel = OpenAiModelFactory.createChatModel(properties.getModel(), listeners);
+            OpenAiStreamingChatModel streamingChatModel = OpenAiModelFactory.createStreamingChatModel(properties.getModel(), listeners, activeStreamRegistry);
+            registry.registerDefault(chatModel, streamingChatModel, properties.getModel().getModelName());
+        }
+
+        // 2. 注册命名多模型拓扑
+        if (properties.getModels() != null && !properties.getModels().isEmpty()) {
+            properties.getModels().forEach((name, config) -> {
+                if (config != null && config.isConfigured()) {
+                    OpenAiChatModel chatModel = OpenAiModelFactory.createChatModel(config, listeners);
+                    OpenAiStreamingChatModel streamingChatModel = OpenAiModelFactory.createStreamingChatModel(config, listeners, activeStreamRegistry);
+                    registry.register(name, chatModel, streamingChatModel);
+                } else {
+                    log.warn("跳过未配置有效 apiKey 的命名大模型: {}", name);
+                }
+            });
+        }
+
+        // 3. 构建多模型故障自动转移 (Failover) 包装代理
+        applyFailoverWrappers(registry, properties);
+
+        if (!registry.hasModels()) {
+            log.info("ateng-boot-ai 未检测到任何有效的大模型 API Key 配置，模型注册表处于待命状态。");
+        }
+        return registry;
+    }
+
+    private void applyFailoverWrappers(AiModelRegistry registry, AtengAiProperties properties) {
+        if (properties == null) {
+            return;
+        }
+
+        // 3.1 遍历命名多模型拓扑
+        if (properties.getModels() != null && !properties.getModels().isEmpty()) {
+            properties.getModels().forEach((name, config) -> {
+                if (config != null && !config.getFallbacks().isEmpty()) {
+                    wrapModelWithFailover(registry, name, config);
+                }
+            });
+        }
+
+        // 3.2 检查主默认模型是否配置了 fallbacks
+        if (properties.getModel() != null && !properties.getModel().getFallbacks().isEmpty()) {
+            wrapModelWithFailover(registry, AiModelRegistry.DEFAULT_MODEL_NAME, properties.getModel());
+            String defaultAlias = properties.getModel().getModelName();
+            if (StringUtils.hasText(defaultAlias) && !AiModelRegistry.DEFAULT_MODEL_NAME.equalsIgnoreCase(defaultAlias.trim())) {
+                wrapModelWithFailover(registry, defaultAlias.trim(), properties.getModel());
+            }
+        }
+    }
+
+    private void wrapModelWithFailover(AiModelRegistry registry, String primaryName, io.github.atengk.boot.ai.properties.AiModelConfig config) {
+        List<String> fallbacks = config.getFallbacks();
+        java.time.Duration totalTimeout = config.getTotalTimeout() != null ? config.getTotalTimeout() : config.getTimeout();
+
+        // 同步聊天模型故障转移包装
+        if (registry.hasChatModel(primaryName)) {
+            ChatLanguageModel primaryChatModel = registry.getChatModel(primaryName);
+            List<NamedModel<ChatLanguageModel>> chatCandidates = new ArrayList<>();
+            chatCandidates.add(NamedModel.of(primaryName, primaryChatModel));
+
+            for (String fallbackName : fallbacks) {
+                if (registry.hasChatModel(fallbackName)) {
+                    chatCandidates.add(NamedModel.of(fallbackName, registry.getChatModel(fallbackName)));
+                } else {
+                    log.warn("[AI-FAILOVER] 大模型 [{}] 配置的备选模型 [{}] 未在注册中心找到，已忽略", primaryName, fallbackName);
+                }
+            }
+
+            if (chatCandidates.size() > 1) {
+                FailoverChatLanguageModel failoverChatModel = new FailoverChatLanguageModel(chatCandidates, totalTimeout);
+                registry.registerChatModel(primaryName, failoverChatModel);
+                log.info("已为大模型 [{}] 启用 FailoverChatLanguageModel 故障自动转移 [候选序列={}, totalTimeout={}]",
+                        primaryName, chatCandidates.stream().map(NamedModel::name).toList(), totalTimeout);
+            }
+        }
+
+        // 流式聊天模型故障转移包装
+        if (registry.hasStreamingChatModel(primaryName)) {
+            StreamingChatLanguageModel primaryStreamingModel = registry.getStreamingChatModel(primaryName);
+            List<NamedModel<StreamingChatLanguageModel>> streamingCandidates = new ArrayList<>();
+            streamingCandidates.add(NamedModel.of(primaryName, primaryStreamingModel));
+
+            for (String fallbackName : fallbacks) {
+                if (registry.hasStreamingChatModel(fallbackName)) {
+                    streamingCandidates.add(NamedModel.of(fallbackName, registry.getStreamingChatModel(fallbackName)));
+                } else {
+                    log.warn("[AI-FAILOVER-STREAM] 流式模型 [{}] 配置的备选模型 [{}] 未在注册中心找到，已忽略", primaryName, fallbackName);
+                }
+            }
+
+            if (streamingCandidates.size() > 1) {
+                FailoverStreamingChatLanguageModel failoverStreamingModel = new FailoverStreamingChatLanguageModel(streamingCandidates, totalTimeout);
+                registry.registerStreamingChatModel(primaryName, failoverStreamingModel);
+                log.info("已为大模型 [{}] 启用 FailoverStreamingChatLanguageModel 故障自动转移 [候选序列={}, totalTimeout={}]",
+                        primaryName, streamingCandidates.stream().map(NamedModel::name).toList(), totalTimeout);
+            }
+        }
+    }
+
+    /**
+     * 自动装配 SaaS 多租户动态大模型切源解析器
+     *
+     * @param properties AI 根配置属性
+     * @return AiTenantModelResolver 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public AiTenantModelResolver aiTenantModelResolver(AtengAiProperties properties) {
+        return new DefaultAiTenantModelResolver(properties);
+    }
+
+    /**
+     * Redis 分布式配额风控自动装配配置类（当 StringRedisTemplate 在类路径存在时生效）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "org.springframework.data.redis.core.StringRedisTemplate")
+    static class RedisQuotaConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(AiQuotaChecker.class)
+        public AiQuotaChecker redisAiQuotaChecker(AtengAiProperties properties,
+                                                  ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+            StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+            if (redisTemplate != null) {
+                return new RedisAiQuotaChecker(properties.getQuota(), redisTemplate);
+            }
+            return new DefaultAiQuotaChecker(properties.getQuota());
+        }
+
+        @Bean
+        @ConditionalOnMissingBean(AiRateLimiter.class)
+        @ConditionalOnProperty(prefix = "ateng.boot.ai.rate-limit", name = "enabled", havingValue = "true", matchIfMissing = true)
+        public AiRateLimiter redisAiRateLimiter(AtengAiProperties properties,
+                                                ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+            StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+            if (redisTemplate != null) {
+                return new RedisAiRateLimiter(properties.getRateLimit(), redisTemplate);
+            }
+            return new DefaultAiRateLimiter(properties.getRateLimit());
+        }
+    }
+
+    /**
+     * 单机内存配额与突发限流风控兜底装配配置类（当未引入 Redis 依赖即类路径无 StringRedisTemplate 时保底装配）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnMissingClass("org.springframework.data.redis.core.StringRedisTemplate")
+    static class InMemoryQuotaFallbackConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(AiQuotaChecker.class)
+        public AiQuotaChecker inMemoryAiQuotaChecker(AtengAiProperties properties) {
+            return new DefaultAiQuotaChecker(properties.getQuota());
+        }
+
+        @Bean
+        @ConditionalOnMissingBean(AiRateLimiter.class)
+        @ConditionalOnProperty(prefix = "ateng.boot.ai.rate-limit", name = "enabled", havingValue = "true", matchIfMissing = true)
+        public AiRateLimiter inMemoryAiRateLimiter(AtengAiProperties properties) {
+            return new DefaultAiRateLimiter(properties.getRateLimit());
+        }
+    }
+
+    /**
+     * 自动装配 AI 双向内容安全护栏
+     *
+     * @param properties AI 根配置属性
+     * @return AiGuardrail 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(AiGuardrail.class)
+    public AiGuardrail aiGuardrail(AtengAiProperties properties) {
+        return new DefaultAiGuardrail(properties.getGuardrail());
+    }
+
+    /**
+     * 自动装配 AI 核心命令式操作门面
+     *
+     * @param registry                     模型注册中心
+     * @param properties                   AI 根配置属性
+     * @param tenantModelResolverProvider   可选的多租户切源解析器
+     * @param quotaCheckerProvider         可选的配额风控检查器
+     * @param activeStreamRegistryProvider 可选的活跃流式并发注册表
+     * @param guardrailProvider            可选的双向内容安全护栏
+     * @return AiTemplate 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public AiTemplate aiTemplate(AiModelRegistry registry,
+                                 AtengAiProperties properties,
+                                 ObjectProvider<AiTenantModelResolver> tenantModelResolverProvider,
+                                 ObjectProvider<AiQuotaChecker> quotaCheckerProvider,
+                                 ObjectProvider<ActiveStreamRegistry> activeStreamRegistryProvider,
+                                 ObjectProvider<AiGuardrail> guardrailProvider,
+                                 ObjectProvider<AiRateLimiter> rateLimiterProvider,
+                                 ObjectProvider<AiSemanticCache> semanticCacheProvider,
+                                 ObjectProvider<PromptRegistry> promptRegistryProvider) {
+        return new AiTemplate(
+                registry,
+                properties,
+                tenantModelResolverProvider.getIfAvailable(),
+                quotaCheckerProvider.getIfAvailable(),
+                activeStreamRegistryProvider.getIfAvailable(),
+                guardrailProvider.getIfAvailable(),
+                rateLimiterProvider.getIfAvailable(),
+                semanticCacheProvider.getIfAvailable(),
+                promptRegistryProvider.getIfAvailable()
+        );
+    }
+
+    /**
+     * 自动装配默认基于滑动窗口或异步长会话摘要的会话记忆提供者 ChatMemoryProvider
+     * 支持 MESSAGE 条数、TOKEN 容量与 SUMMARY 异步长会话摘要三种策略
+     *
+     * @param chatMemoryStore           底层基础会话存储
+     * @param properties                AI 根配置属性
+     * @param tokenizerProvider         可选的自定义分词器提供者
+     * @param summaryStoreProvider      可选的长会话双层状态存储提供者
+     * @param chatLanguageModelProvider 可选的用于提炼摘要的聊天大模型提供者
+     * @param taskExecutorProvider      可选的受管异步线程池提供者
+     * @return ChatMemoryProvider 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(ChatMemoryProvider.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.chat-memory", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public ChatMemoryProvider chatMemoryProvider(ChatMemoryStore chatMemoryStore,
+                                                 AtengAiProperties properties,
+                                                 ObjectProvider<Tokenizer> tokenizerProvider,
+                                                 ObjectProvider<SummaryChatMemoryStore> summaryStoreProvider,
+                                                 ObjectProvider<ChatLanguageModel> chatLanguageModelProvider,
+                                                 ObjectProvider<TaskExecutor> taskExecutorProvider) {
+        ChatMemoryProperties config = properties.getChatMemory();
+
+        if (config.getWindowType() == ChatMemoryWindowType.SUMMARY) {
+            SummaryChatMemoryStore summaryStore = summaryStoreProvider.getIfAvailable();
+            if (summaryStore == null) {
+                summaryStore = new InMemorySummaryChatMemoryStore();
+            }
+            Tokenizer tokenizer = resolveTokenizer(tokenizerProvider);
+            ChatLanguageModel summaryModel = chatLanguageModelProvider.getIfAvailable();
+            TaskExecutor taskExecutor = taskExecutorProvider.getIfAvailable();
+            log.info("AI 会话记忆启用非阻塞异步长会话摘要 (SummaryChatMemory) [maxMessagesBeforeSummary={}, maxTokensBeforeSummary={}, keepRecentMessages={}]",
+                    config.getMaxMessagesBeforeSummary(), config.getMaxTokensBeforeSummary(), config.getKeepRecentMessages());
+
+            SummaryChatMemoryStore finalSummaryStore = summaryStore;
+            return memoryId -> SummaryChatMemory.builder()
+                    .id(memoryId)
+                    .store(finalSummaryStore)
+                    .chatLanguageModel(summaryModel)
+                    .executor(taskExecutor)
+                    .tokenizer(tokenizer)
+                    .maxMessagesBeforeSummary(config.getMaxMessagesBeforeSummary())
+                    .maxTokensBeforeSummary(config.getMaxTokensBeforeSummary())
+                    .keepRecentMessages(config.getKeepRecentMessages())
+                    .summaryPrefix(config.getSummaryPrefix())
+                    .build();
+        }
+
+        if (config.getWindowType() == ChatMemoryWindowType.TOKEN) {
+            Tokenizer tokenizer = resolveTokenizer(tokenizerProvider);
+            int maxTokens = config.getMaxTokens();
+            log.info("AI 会话记忆启用基于 Token 的滑动窗口 (TokenWindowChatMemory) [maxTokens={}]", maxTokens);
+            return memoryId -> TokenWindowChatMemory.builder()
+                    .id(memoryId)
+                    .maxTokens(maxTokens, tokenizer)
+                    .chatMemoryStore(chatMemoryStore)
+                    .build();
+        }
+
+        int maxMessages = config.getMaxMessages();
+        log.info("AI 会话记忆启用基于消息条数的滑动窗口 (MessageWindowChatMemory) [maxMessages={}]", maxMessages);
+        return memoryId -> MessageWindowChatMemory.builder()
+                .id(memoryId)
+                .maxMessages(maxMessages)
+                .chatMemoryStore(chatMemoryStore)
+                .build();
+    }
+
+    /**
+     * 自动装配 AI 会话记忆对称管理门面 ChatMemoryManager
+     *
+     * @param chatMemoryStore   底层会话存储
+     * @param properties        AI 根配置属性
+     * @param tokenizerProvider 可选的自定义分词器提供者
+     * @return ChatMemoryManager 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(ChatMemoryManager.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.chat-memory", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public ChatMemoryManager chatMemoryManager(ChatMemoryStore chatMemoryStore,
+                                               AtengAiProperties properties,
+                                               ObjectProvider<Tokenizer> tokenizerProvider) {
+        Tokenizer tokenizer = resolveTokenizer(tokenizerProvider);
+        return new ChatMemoryManager(chatMemoryStore, properties.getChatMemory(), tokenizer);
+    }
+
+    private Tokenizer resolveTokenizer(ObjectProvider<Tokenizer> tokenizerProvider) {
+        Tokenizer tokenizer = tokenizerProvider.getIfAvailable();
+        if (tokenizer != null) {
+            return tokenizer;
+        }
+        try {
+            return new OpenAiTokenizer();
+        } catch (Throwable t) {
+            log.debug("初始化 OpenAiTokenizer 失败，使用纯原生 HeuristicTokenizer 保底: {}", t.getMessage());
+            return new HeuristicTokenizer();
+        }
+    }
+
+    /**
+     * 远程 MCP (Model Context Protocol) 客户端注册中心自动装配
+     *
+     * @param properties AI 根配置属性
+     * @return McpClientRegistry 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.mcp", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public McpClientRegistry mcpClientRegistry(AtengAiProperties properties) {
+        McpClientRegistry registry = new McpClientRegistry();
+        AtengAiMcpProperties mcpConfig = properties.getMcp();
+        if (mcpConfig != null && mcpConfig.getServers() != null && !mcpConfig.getServers().isEmpty()) {
+            mcpConfig.getServers().forEach((serverName, serverConfig) -> {
+                if (serverConfig != null && StringUtils.hasText(serverConfig.getUrl())) {
+                    log.info("[AI-MCP] 正在初始化远程 MCP 服务端端点 [name={}, url={}]", serverName, serverConfig.getUrl());
+                    HttpMcpClientAdapter adapter = new HttpMcpClientAdapter(
+                            serverName,
+                            serverConfig.getUrl(),
+                            serverConfig.getTimeout(),
+                            serverConfig.getApiKey(),
+                            serverConfig.getTransport(),
+                            serverConfig.isEagerInit()
+                    );
+                    registry.register(serverName, adapter);
+                }
+            });
+        }
+        return registry;
+    }
+
+    /**
+     * Redis 分布式会话存储自动装配配置类
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(StringRedisTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.chat-memory", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class RedisChatMemoryConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(ChatMemoryStore.class)
+        public ChatMemoryStore redisChatMemoryStore(AtengAiProperties properties,
+                                                    ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+            ChatMemoryProperties config = properties.getChatMemory();
+            StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+
+            if (config.getType() == ChatMemoryStoreType.REDIS) {
+                if (redisTemplate == null) {
+                    throw new AiException(AiResultCode.AI_CONFIG_ERROR,
+                            "已配置 ateng.boot.ai.chat-memory.type=REDIS，但 Spring 容器中未找到 StringRedisTemplate Bean，请检查 Redis 依赖与连接配置");
+                }
+                return createRedisStore(redisTemplate, config, "");
+            }
+
+            if (config.getType() == ChatMemoryStoreType.AUTO && redisTemplate != null) {
+                return createRedisStore(redisTemplate, config, "自动探测到 Redis，");
+            }
+
+            return new InMemoryChatMemoryStore();
+        }
+
+        private ChatMemoryStore createRedisStore(StringRedisTemplate redisTemplate, ChatMemoryProperties config, String modeDesc) {
+            log.info("AI 会话记忆{}启用分布式 Redis 存储 [keyPrefix={}, ttl={}]", modeDesc, config.getKeyPrefix(), config.getTtl());
+            return new RedisChatMemoryStore(redisTemplate, config.getKeyPrefix(), config.getTtl());
+        }
+
+        @Bean
+        @ConditionalOnMissingBean(SummaryChatMemoryStore.class)
+        public SummaryChatMemoryStore redisSummaryChatMemoryStore(AtengAiProperties properties,
+                                                                  ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+            ChatMemoryProperties config = properties.getChatMemory();
+            StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+
+            if (config.getType() == ChatMemoryStoreType.REDIS) {
+                if (redisTemplate == null) {
+                    throw new AiException(AiResultCode.AI_CONFIG_ERROR,
+                            "已配置 ateng.boot.ai.chat-memory.type=REDIS，但 Spring 容器中未找到 StringRedisTemplate Bean，请检查 Redis 依赖与连接配置");
+                }
+                return createRedisSummaryStore(redisTemplate, config, "");
+            }
+
+            if (config.getType() == ChatMemoryStoreType.AUTO && redisTemplate != null) {
+                return createRedisSummaryStore(redisTemplate, config, "自动探测到 Redis，");
+            }
+
+            return new InMemorySummaryChatMemoryStore();
+        }
+
+        private SummaryChatMemoryStore createRedisSummaryStore(StringRedisTemplate redisTemplate, ChatMemoryProperties config, String modeDesc) {
+            log.info("AI 长会话摘要记忆{}启用分布式 Redis 存储 [keyPrefix={}, ttl={}]", modeDesc, config.getSummaryKeyPrefix(), config.getTtl());
+            return new RedisSummaryChatMemoryStore(redisTemplate, config.getSummaryKeyPrefix(), config.getTtl());
+        }
+    }
+
+    /**
+     * 单机内存会话存储兜底装配配置类（当未引入 Redis 或上述配置未生效时保底装配）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnMissingBean(ChatMemoryStore.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.chat-memory", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class InMemoryChatMemoryFallbackConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(ChatMemoryStore.class)
+        public ChatMemoryStore inMemoryChatMemoryStore() {
+            log.info("AI 会话记忆启用单机内存存储 (InMemoryChatMemoryStore)");
+            return new InMemoryChatMemoryStore();
+        }
+
+        @Bean
+        @ConditionalOnMissingBean(SummaryChatMemoryStore.class)
+        public SummaryChatMemoryStore inMemorySummaryChatMemoryStore() {
+            log.info("AI 长会话摘要记忆启用单机内存存储 (InMemorySummaryChatMemoryStore)");
+            return new InMemorySummaryChatMemoryStore();
+        }
+    }
+
+    /**
+     * Micrometer 云原生度量监控扩展装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(MeterRegistry.class)
+    static class AiMetricsConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(name = "aiMetricsBinder")
+        public SmartInitializingSingleton aiMetricsBinder(
+                ObjectProvider<AtengAiObservabilityListener> listenerProvider,
+                ObjectProvider<AiSemanticCache> semanticCacheProvider,
+                ObjectProvider<MeterRegistry> meterRegistryProvider) {
+            return () -> {
+                MeterRegistry registry = meterRegistryProvider.getIfAvailable();
+                if (registry == null) {
+                    return;
+                }
+                AtengAiObservabilityListener listener = listenerProvider.getIfAvailable();
+                if (listener != null) {
+                    listener.setMeterRegistry(registry);
+                }
+                AiSemanticCache semanticCache = semanticCacheProvider.getIfAvailable();
+                if (semanticCache != null) {
+                    semanticCache.setMeterRegistry(registry);
+                }
+            };
+        }
+    }
+
+    /**
+     * 动态提示词资产提供者自动装配
+     */
+    @Bean
+    @ConditionalOnMissingBean(PromptProvider.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.prompt", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public PromptProvider defaultPromptProvider(AtengAiProperties properties) {
+        return new DefaultPromptProvider(properties.getPrompt());
+    }
+
+    /**
+     * 动态提示词版本路由注册表自动装配
+     */
+    @Bean
+    @ConditionalOnMissingBean(PromptRegistry.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.prompt", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public PromptRegistry promptRegistry(AtengAiProperties properties,
+                                         ObjectProvider<PromptProvider> promptProviders) {
+        List<PromptProvider> providerList = promptProviders.orderedStream().toList();
+        return new PromptRegistry(properties.getPrompt(), providerList, true);
+    }
+
+    /**
+     * AI 双级语义缓存存储自动装配（Redis 支持）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(StringRedisTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.cache", name = "enabled", havingValue = "true")
+    static class RedisAiCacheConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(AiCacheStore.class)
+        public AiCacheStore redisAiCacheStore(AtengAiProperties properties,
+                                              ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+            AiCacheProperties cacheConfig = properties.getCache();
+            StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+
+            if (cacheConfig.getType() == AiCacheProperties.CacheType.REDIS) {
+                if (redisTemplate == null) {
+                    throw new AiException(AiResultCode.AI_CONFIG_ERROR,
+                            "已配置 ateng.boot.ai.cache.type=REDIS，但 Spring 容器中未找到 StringRedisTemplate Bean");
+                }
+                log.info("AI 响应缓存启用分布式 Redis 存储 [keyPrefix={}, ttl={}, maxEntries={}]",
+                        cacheConfig.getKeyPrefix(), cacheConfig.getTtl(), cacheConfig.getMaxEntries());
+                return new RedisAiCacheStore(redisTemplate, cacheConfig.getKeyPrefix(), cacheConfig.getTtl(), cacheConfig.getMaxEntries());
+            }
+
+            if (cacheConfig.getType() == AiCacheProperties.CacheType.AUTO && redisTemplate != null) {
+                log.info("AI 响应缓存自动探测到 Redis，启用分布式存储 [keyPrefix={}, ttl={}, maxEntries={}]",
+                        cacheConfig.getKeyPrefix(), cacheConfig.getTtl(), cacheConfig.getMaxEntries());
+                return new RedisAiCacheStore(redisTemplate, cacheConfig.getKeyPrefix(), cacheConfig.getTtl(), cacheConfig.getMaxEntries());
+            }
+
+            log.info("AI 响应缓存启用单机内存有界 LRU 存储 [maxEntries={}, ttl={}]",
+                    cacheConfig.getMaxEntries(), cacheConfig.getTtl());
+            return new InMemoryAiCacheStore(cacheConfig.getMaxEntries());
+        }
+    }
+
+    /**
+     * AI 双级语义缓存存储单机内存兜底装配（未引入 Redis 时保底装配）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnMissingBean(AiCacheStore.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.cache", name = "enabled", havingValue = "true")
+    static class InMemoryAiCacheFallbackConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(AiCacheStore.class)
+        public AiCacheStore inMemoryAiCacheStore(AtengAiProperties properties) {
+            AiCacheProperties cacheConfig = properties.getCache();
+            if (cacheConfig.getType() == AiCacheProperties.CacheType.REDIS) {
+                throw new AiException(AiResultCode.AI_CONFIG_ERROR,
+                        "已配置 ateng.boot.ai.cache.type=REDIS，但未引入 Spring Data Redis / StringRedisTemplate 依赖，无法启动单机降级");
+            }
+            log.info("AI 响应缓存启用单机内存有界 LRU 存储兜底 [maxEntries={}, ttl={}]",
+                    cacheConfig.getMaxEntries(), cacheConfig.getTtl());
+            return new InMemoryAiCacheStore(cacheConfig.getMaxEntries());
+        }
+    }
+
+    /**
+     * AI 精确与向量语义双级响应缓存门面自动装配
+     */
+    @Bean
+    @ConditionalOnMissingBean(AiSemanticCache.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.cache", name = "enabled", havingValue = "true")
+    public AiSemanticCache aiSemanticCache(AiCacheStore cacheStore,
+                                           AtengAiProperties properties,
+                                           ObjectProvider<EmbeddingModel> embeddingModelProvider) {
+        return new AiSemanticCache(cacheStore, properties.getCache(), embeddingModelProvider, null, properties.getAudit());
+    }
+
+    /**
+     * 高危工具人机协作审批存储自动装配（Redis 支持）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(StringRedisTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.tool-approval", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class RedisToolApprovalConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(ToolApprovalStore.class)
+        public ToolApprovalStore redisToolApprovalStore(AtengAiProperties properties,
+                                                        ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+            ToolApprovalProperties config = properties.getToolApproval();
+            StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+
+            if (config.getType() == ToolApprovalProperties.StorageType.REDIS) {
+                if (redisTemplate == null) {
+                    throw new AiException(AiResultCode.AI_CONFIG_ERROR,
+                            "已配置 ateng.boot.ai.tool-approval.type=REDIS，但 Spring 容器中未找到 StringRedisTemplate Bean");
+                }
+                log.info("高危工具审批启用分布式 Redis 存储 [keyPrefix={}, defaultTimeout={}]",
+                        config.getKeyPrefix(), config.getDefaultTimeout());
+                return new RedisToolApprovalStore(config, redisTemplate);
+            }
+
+            if (config.getType() == ToolApprovalProperties.StorageType.AUTO && redisTemplate != null) {
+                log.info("高危工具审批自动探测到 Redis，启用分布式存储 [keyPrefix={}, defaultTimeout={}]",
+                        config.getKeyPrefix(), config.getDefaultTimeout());
+                return new RedisToolApprovalStore(config, redisTemplate);
+            }
+
+            log.info("高危工具审批启用单机内存存储 (InMemoryToolApprovalStore)");
+            return new InMemoryToolApprovalStore();
+        }
+    }
+
+    /**
+     * 高危工具人机协作审批存储单机内存兜底装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnMissingBean(ToolApprovalStore.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.tool-approval", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class InMemoryToolApprovalFallbackConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(ToolApprovalStore.class)
+        public ToolApprovalStore inMemoryToolApprovalStore() {
+            log.info("高危工具审批启用单机内存存储兜底 (InMemoryToolApprovalStore)");
+            return new InMemoryToolApprovalStore();
+        }
+    }
+
+    /**
+     * 自动装配高危工具人机协同审批生命周期统一门面 ToolApprovalTemplate
+     */
+    @Bean
+    @ConditionalOnMissingBean(ToolApprovalTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.tool-approval", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public ToolApprovalTemplate toolApprovalTemplate(ToolApprovalStore toolApprovalStore,
+                                                     AtengAiProperties properties,
+                                                     ApplicationContext applicationContext) {
+        return new ToolApprovalTemplate(toolApprovalStore, properties.getToolApproval(), applicationContext);
+    }
+}

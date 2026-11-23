@@ -31,7 +31,27 @@ public final class CurrencyUtil {
      */
     public static long yuanToFen(BigDecimal amount) {
         validateAmount(amount);
-        return amount.multiply(HUNDRED).setScale(0, RoundingMode.HALF_UP).longValueExact();
+        try {
+            return amount.multiply(HUNDRED).setScale(0, RoundingMode.HALF_UP).longValueExact();
+        } catch (ArithmeticException e) {
+            throw new PayException(PayResultCode.PAY_AMOUNT_INVALID, "金额换算分值超出长整型上限: " + amount, e);
+        }
+    }
+
+    /**
+     * 将金额（元）安全转换为 32 位整型（分），超出 {@link Integer#MAX_VALUE} 时前置快速失败
+     *
+     * @param amount 金额（元），精确到两位小数
+     * @return 金额（分，32 位整型）
+     * @throws PayException 当金额不合法或分值超出 32 位整型上限时抛出
+     */
+    public static int yuanToFenInt(BigDecimal amount) {
+        long fen = yuanToFen(amount);
+        if (fen > Integer.MAX_VALUE) {
+            throw new PayException(PayResultCode.PAY_AMOUNT_INVALID,
+                    "金额换算分值 [" + fen + "] 超出 32 位整型上限 (" + Integer.MAX_VALUE + ")");
+        }
+        return (int) fen;
     }
 
     /**

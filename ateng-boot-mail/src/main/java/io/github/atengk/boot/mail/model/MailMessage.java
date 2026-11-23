@@ -15,6 +15,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -108,6 +109,46 @@ public class MailMessage implements AutoCloseable, Serializable {
     @Builder.Default
     private List<MailInlineResource> inlines = new ArrayList<>();
 
+    /**
+     * 邮件国际化多语言区域（用于模板引擎级联寻址，若为空则自动探测 LocaleContextHolder）
+     */
+    private Locale locale;
+
+    /**
+     * 强类型邮件优先级（X-Priority 与 Importance）
+     */
+    private MailPriority priority;
+
+    /**
+     * 阅读回执目标收件地址 (RFC 3798 Disposition-Notification-To)
+     */
+    private String readReceiptTo;
+
+    /**
+     * 是否请求阅读回执（若开启且未显式指定 readReceiptTo，则发信时默认回执至有效发件人）
+     */
+    private boolean requestReadReceipt;
+
+    /**
+     * 单封独立退信信封地址（RFC 5321 Return-Path / Envelope MAIL FROM，绝不污染共享 Session）
+     */
+    private String returnPath;
+
+    /**
+     * 一键退订标头值（RFC 2369 List-Unsubscribe，如 "&lt;https://example.com/unsub&gt;, &lt;mailto:unsub@example.com&gt;"）
+     */
+    private String listUnsubscribe;
+
+    /**
+     * 一键 POST 退订声明标头值（RFC 8058 List-Unsubscribe-Post，如 "List-Unsubscribe=One-Click"）
+     */
+    private String listUnsubscribePost;
+
+    /**
+     * 业务幂等流水号（用于出站幂等防重，仅当 require-biz-id=true 且非空时启用）
+     */
+    private String bizId;
+
     // ==================== 链式 Fluent / DSL 构造辅助方法 ====================
 
     /**
@@ -119,6 +160,113 @@ public class MailMessage implements AutoCloseable, Serializable {
     public MailMessage account(String account) {
         this.account = account;
         return this;
+    }
+
+    /**
+     * 指定业务幂等流水号（用于出站幂等防重）
+     *
+     * @param bizId 业务唯一流水号
+     * @return 当前消息构建对象
+     */
+    public MailMessage bizId(String bizId) {
+        this.bizId = bizId;
+        return this;
+    }
+
+    /**
+     * 指定邮件国际化多语言区域
+     *
+     * @param locale 语言区域
+     * @return 当前消息构建对象
+     */
+    public MailMessage locale(Locale locale) {
+        this.locale = locale;
+        return this;
+    }
+
+    /**
+     * 设置强类型邮件优先级 (X-Priority: 1/3/5, Importance: High/Normal/Low)
+     *
+     * @param priority 邮件优先级枚举
+     * @return 当前消息构建对象
+     */
+    public MailMessage priority(MailPriority priority) {
+        this.priority = priority;
+        return this;
+    }
+
+    /**
+     * 设置阅读回执目标收件地址 (RFC 3798 Disposition-Notification-To)
+     *
+     * @param readReceiptTo 阅读回执目标邮箱
+     * @return 当前消息构建对象
+     */
+    public MailMessage readReceiptTo(String readReceiptTo) {
+        this.readReceiptTo = readReceiptTo;
+        this.requestReadReceipt = (readReceiptTo != null && !readReceiptTo.isBlank());
+        return this;
+    }
+
+    /**
+     * 是否请求已读/阅读回执（若开启且未显式指定 readReceiptTo，则发信时默认回执至发件人）
+     *
+     * @param requestReadReceipt 是否请求阅读回执
+     * @return 当前消息构建对象
+     */
+    public MailMessage requestReadReceipt(boolean requestReadReceipt) {
+        this.requestReadReceipt = requestReadReceipt;
+        return this;
+    }
+
+    /**
+     * 指定单封独立退信信封地址 (Envelope MAIL FROM / Return-Path)
+     *
+     * @param returnPath 退信接收邮箱地址
+     * @return 当前消息构建对象
+     */
+    public MailMessage returnPath(String returnPath) {
+        this.returnPath = returnPath;
+        return this;
+    }
+
+    /**
+     * 指定一键退订标头 (RFC 2369 List-Unsubscribe)
+     *
+     * @param listUnsubscribe 退订 URI 列表
+     * @return 当前消息构建对象
+     */
+    public MailMessage listUnsubscribe(String listUnsubscribe) {
+        this.listUnsubscribe = sanitizeHeaderText(listUnsubscribe);
+        return this;
+    }
+
+    /**
+     * 设置一键退订标头（清洗 CR/LF/NUL 防头部注入）
+     *
+     * @param listUnsubscribe 退订 URI 列表
+     */
+    public void setListUnsubscribe(String listUnsubscribe) {
+        this.listUnsubscribe = sanitizeHeaderText(listUnsubscribe);
+    }
+
+    /**
+     * 指定一键 POST 退订标头 (RFC 8058 List-Unsubscribe-Post)
+     *
+     * @param listUnsubscribePost 退订 POST 声明（通常为 "List-Unsubscribe=One-Click"）
+     * @return 当前消息构建对象
+     */
+    public MailMessage listUnsubscribePost(String listUnsubscribePost) {
+        this.listUnsubscribePost = sanitizeHeaderText(listUnsubscribePost);
+        return this;
+    }
+
+    /**
+     * 设置一键 POST 退订标头（清洗 CR/LF/NUL 防头部注入）
+     *
+     * @param listUnsubscribePost 退订 POST 声明
+     */
+    public void setListUnsubscribePost(String listUnsubscribePost) {
+        this.listUnsubscribePost = sanitizeHeaderText(listUnsubscribePost);
     }
 
     /**
@@ -141,7 +289,7 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage from(String from, String fromName) {
         this.from = from;
-        this.fromName = fromName;
+        this.fromName = sanitizeHeaderText(fromName);
         return this;
     }
 
@@ -152,8 +300,17 @@ public class MailMessage implements AutoCloseable, Serializable {
      * @return 当前消息构建对象
      */
     public MailMessage fromName(String fromName) {
-        this.fromName = fromName;
+        this.fromName = sanitizeHeaderText(fromName);
         return this;
+    }
+
+    /**
+     * 设置发件人昵称（清洗 CR/LF/NUL 防头部注入）
+     *
+     * @param fromName 发件人昵称
+     */
+    public void setFromName(String fromName) {
+        this.fromName = sanitizeHeaderText(fromName);
     }
 
     /**
@@ -164,7 +321,7 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage to(String... to) {
         if (to != null) {
-            this.to.addAll(Arrays.stream(to).filter(Objects::nonNull).toList());
+            this.to.addAll(Arrays.asList(to));
         }
         return this;
     }
@@ -177,7 +334,7 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage to(Collection<String> to) {
         if (to != null) {
-            this.to.addAll(to.stream().filter(Objects::nonNull).toList());
+            this.to.addAll(to);
         }
         return this;
     }
@@ -190,7 +347,7 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage cc(String... cc) {
         if (cc != null) {
-            this.cc.addAll(Arrays.stream(cc).filter(Objects::nonNull).toList());
+            this.cc.addAll(Arrays.asList(cc));
         }
         return this;
     }
@@ -203,7 +360,7 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage cc(Collection<String> cc) {
         if (cc != null) {
-            this.cc.addAll(cc.stream().filter(Objects::nonNull).toList());
+            this.cc.addAll(cc);
         }
         return this;
     }
@@ -216,7 +373,7 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage bcc(String... bcc) {
         if (bcc != null) {
-            this.bcc.addAll(Arrays.stream(bcc).filter(Objects::nonNull).toList());
+            this.bcc.addAll(Arrays.asList(bcc));
         }
         return this;
     }
@@ -229,7 +386,7 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage bcc(Collection<String> bcc) {
         if (bcc != null) {
-            this.bcc.addAll(bcc.stream().filter(Objects::nonNull).toList());
+            this.bcc.addAll(bcc);
         }
         return this;
     }
@@ -252,8 +409,17 @@ public class MailMessage implements AutoCloseable, Serializable {
      * @return 当前消息构建对象
      */
     public MailMessage subject(String subject) {
-        this.subject = subject;
+        this.subject = sanitizeHeaderText(subject);
         return this;
+    }
+
+    /**
+     * 设置邮件主题（清洗 CR/LF/NUL 防头部注入）
+     *
+     * @param subject 邮件主题
+     */
+    public void setSubject(String subject) {
+        this.subject = sanitizeHeaderText(subject);
     }
 
     /**
@@ -288,8 +454,12 @@ public class MailMessage implements AutoCloseable, Serializable {
      * @return 当前消息构建对象
      */
     public MailMessage header(String name, String value) {
-        if (name != null && !name.isBlank() && value != null) {
-            this.headers.put(name, value);
+        String cleanName = sanitizeHeaderText(name);
+        if (cleanName != null && !cleanName.isBlank() && value != null) {
+            if (this.headers == null) {
+                this.headers = new LinkedHashMap<>();
+            }
+            this.headers.put(cleanName.trim(), sanitizeHeaderText(value));
         }
         return this;
     }
@@ -302,9 +472,26 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage headers(Map<String, String> headers) {
         if (headers != null) {
-            this.headers.putAll(headers);
+            if (this.headers == null) {
+                this.headers = new LinkedHashMap<>();
+            }
+            for (Map.Entry<String, String> entry : headers.entrySet()) {
+                header(entry.getKey(), entry.getValue());
+            }
         }
         return this;
+    }
+
+    /**
+     * 设置邮件标头映射（清洗键值 CR/LF/NUL 防头部注入）
+     *
+     * @param headers 标头映射
+     */
+    public void setHeaders(Map<String, String> headers) {
+        this.headers = new LinkedHashMap<>();
+        if (headers != null) {
+            headers(headers);
+        }
     }
 
     /**
@@ -500,7 +687,11 @@ public class MailMessage implements AutoCloseable, Serializable {
                     }
                 }
             }
-            attachments.clear();
+            try {
+                attachments.clear();
+            } catch (UnsupportedOperationException ignored) {
+                attachments = new ArrayList<>();
+            }
         }
         if (inlines != null) {
             for (MailInlineResource inline : inlines) {
@@ -511,7 +702,24 @@ public class MailMessage implements AutoCloseable, Serializable {
                     }
                 }
             }
-            inlines.clear();
+            try {
+                inlines.clear();
+            } catch (UnsupportedOperationException ignored) {
+                inlines = new ArrayList<>();
+            }
         }
+    }
+
+    /**
+     * 清洗邮件标头文本中的回车、换行与空字符，防范邮件头注入攻击
+     *
+     * @param value 原始文本
+     * @return 清洗后的文本
+     */
+    public static String sanitizeHeaderText(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value.replace("\r", "").replace("\n", "").replace("\0", "");
     }
 }

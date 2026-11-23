@@ -2,6 +2,7 @@ package io.github.atengk.boot.realtime.cluster;
 
 import io.github.atengk.boot.realtime.enums.ClusterBroadcastType;
 import io.github.atengk.boot.realtime.model.RealtimeMessage;
+import io.github.atengk.boot.realtime.model.SessionKey;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -9,6 +10,9 @@ import lombok.NoArgsConstructor;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /**
  * 集群分布式广播数据包契约载荷
@@ -65,6 +69,11 @@ public class RealtimeClusterPacket implements Serializable {
     private String reason;
 
     /**
+     * 排除投递的会话标识集合（存储 {@link SessionKey#format()} 字符串，用于跨节点排除发送端等指定会话）
+     */
+    private Set<String> excludeSessionKeys;
+
+    /**
      * 广播发送时间戳（毫秒）
      */
     @Builder.Default
@@ -74,19 +83,31 @@ public class RealtimeClusterPacket implements Serializable {
      * 构建指定用户单播广播包
      */
     public static RealtimeClusterPacket ofUser(String sourceNodeId, Object userId, RealtimeMessage<?> message) {
-        return ofUser(sourceNodeId, userId, null, message);
+        return ofUser(sourceNodeId, userId, null, message, null);
     }
 
     /**
      * 构建指定租户下指定用户单播广播包
      */
     public static RealtimeClusterPacket ofUser(String sourceNodeId, Object userId, Long tenantId, RealtimeMessage<?> message) {
+        return ofUser(sourceNodeId, userId, tenantId, message, null);
+    }
+
+    /**
+     * 构建指定租户下指定用户单播广播包（支持排除指定会话）
+     */
+    public static RealtimeClusterPacket ofUser(String sourceNodeId,
+                                               Object userId,
+                                               Long tenantId,
+                                               RealtimeMessage<?> message,
+                                               Collection<SessionKey> excludeSessionKeys) {
         return RealtimeClusterPacket.builder()
                 .sourceNodeId(sourceNodeId)
                 .broadcastType(ClusterBroadcastType.USER)
                 .targetKey(userId != null ? String.valueOf(userId) : null)
                 .tenantId(tenantId)
                 .message(message)
+                .excludeSessionKeys(toExcludeKeySet(excludeSessionKeys))
                 .build();
     }
 
@@ -94,11 +115,22 @@ public class RealtimeClusterPacket implements Serializable {
      * 构建房间/频道群组组播广播包
      */
     public static RealtimeClusterPacket ofGroup(String sourceNodeId, String groupId, RealtimeMessage<?> message) {
+        return ofGroup(sourceNodeId, groupId, message, null);
+    }
+
+    /**
+     * 构建房间/频道群组组播广播包（支持排除指定会话）
+     */
+    public static RealtimeClusterPacket ofGroup(String sourceNodeId,
+                                                String groupId,
+                                                RealtimeMessage<?> message,
+                                                Collection<SessionKey> excludeSessionKeys) {
         return RealtimeClusterPacket.builder()
                 .sourceNodeId(sourceNodeId)
                 .broadcastType(ClusterBroadcastType.GROUP)
                 .targetKey(groupId)
                 .message(message)
+                .excludeSessionKeys(toExcludeKeySet(excludeSessionKeys))
                 .build();
     }
 
@@ -119,11 +151,34 @@ public class RealtimeClusterPacket implements Serializable {
      * 构建全网全员广播包
      */
     public static RealtimeClusterPacket ofAll(String sourceNodeId, RealtimeMessage<?> message) {
+        return ofAll(sourceNodeId, message, null);
+    }
+
+    /**
+     * 构建全网全员广播包（支持排除指定会话）
+     */
+    public static RealtimeClusterPacket ofAll(String sourceNodeId,
+                                              RealtimeMessage<?> message,
+                                              Collection<SessionKey> excludeSessionKeys) {
         return RealtimeClusterPacket.builder()
                 .sourceNodeId(sourceNodeId)
                 .broadcastType(ClusterBroadcastType.ALL)
                 .message(message)
+                .excludeSessionKeys(toExcludeKeySet(excludeSessionKeys))
                 .build();
+    }
+
+    private static Set<String> toExcludeKeySet(Collection<SessionKey> excludeSessionKeys) {
+        if (excludeSessionKeys == null || excludeSessionKeys.isEmpty()) {
+            return null;
+        }
+        Set<String> keys = new LinkedHashSet<>(excludeSessionKeys.size());
+        for (SessionKey key : excludeSessionKeys) {
+            if (key != null) {
+                keys.add(key.format());
+            }
+        }
+        return keys.isEmpty() ? null : keys;
     }
 
     /**
@@ -134,6 +189,31 @@ public class RealtimeClusterPacket implements Serializable {
                 .sourceNodeId(sourceNodeId)
                 .broadcastType(ClusterBroadcastType.KICKOUT)
                 .targetKey(userId != null ? String.valueOf(userId) : null)
+                .closeStatusCode(closeStatusCode)
+                .reason(reason)
+                .build();
+    }
+
+    /**
+     * 构建解散群组房间信令广播包
+     */
+    public static RealtimeClusterPacket ofDismissGroup(String sourceNodeId, String groupId) {
+        return RealtimeClusterPacket.builder()
+                .sourceNodeId(sourceNodeId)
+                .broadcastType(ClusterBroadcastType.DISMISS_GROUP)
+                .targetKey(groupId)
+                .build();
+    }
+
+    /**
+     * 构建租户全量剔除信令广播包
+     */
+    public static RealtimeClusterPacket ofKickoutTenant(String sourceNodeId, Long tenantId, Integer closeStatusCode, String reason) {
+        return RealtimeClusterPacket.builder()
+                .sourceNodeId(sourceNodeId)
+                .broadcastType(ClusterBroadcastType.KICKOUT_TENANT)
+                .targetKey(tenantId != null ? String.valueOf(tenantId) : null)
+                .tenantId(tenantId)
                 .closeStatusCode(closeStatusCode)
                 .reason(reason)
                 .build();

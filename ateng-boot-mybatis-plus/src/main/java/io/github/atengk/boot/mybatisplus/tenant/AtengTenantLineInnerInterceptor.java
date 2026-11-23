@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.handler.TenantLineHandler;
 import com.baomidou.mybatisplus.extension.plugins.inner.TenantLineInnerInterceptor;
 import io.github.atengk.boot.mybatisplus.annotation.IgnoreTenant;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.mybatisplus.util.MybatisInterceptorUtil;
 import org.apache.ibatis.executor.Executor;
 import org.apache.ibatis.executor.statement.StatementHandler;
 import org.apache.ibatis.mapping.BoundSql;
@@ -72,48 +73,7 @@ public class AtengTenantLineInnerInterceptor extends TenantLineInnerInterceptor 
             return false;
         }
 
-        // 2. 检查缓存或解析 Mapper 类与方法上标注的 @IgnoreTenant 注解
-        return ignoreCache.computeIfAbsent(ms.getId(), this::resolveIgnoreAnnotation);
-    }
-
-    /**
-     * 反射解析 MappedStatement 对应的 Mapper 接口类与方法是否标注了 @IgnoreTenant 注解
-     *
-     * @param mappedStatementId MyBatis 映射语句唯一标识（如 io.github.atengk.boot.sample.mapper.UserMapper.selectList）
-     * @return true 表示标注了 @IgnoreTenant 注解
-     */
-    private boolean resolveIgnoreAnnotation(String mappedStatementId) {
-        int lastDotIndex = mappedStatementId.lastIndexOf('.');
-        if (lastDotIndex <= 0) {
-            return false;
-        }
-
-        String className = mappedStatementId.substring(0, lastDotIndex);
-        String methodName = mappedStatementId.substring(lastDotIndex + 1);
-
-        // 如果是 MyBatis-Plus 分页自动生成的 count 语句（如 selectPage_mpCount），剥离后缀还原原方法名
-        if (methodName.endsWith("_mpCount")) {
-            methodName = methodName.substring(0, methodName.length() - "_mpCount".length());
-        }
-
-        try {
-            Class<?> mapperClass = Class.forName(className);
-
-            // 1. 检查 Mapper 接口级别是否标注 @IgnoreTenant
-            if (mapperClass.isAnnotationPresent(IgnoreTenant.class)) {
-                return true;
-            }
-
-            // 2. 检查具体 Mapper 方法级别是否标注 @IgnoreTenant
-            for (Method method : mapperClass.getMethods()) {
-                if (method.getName().equals(methodName) && method.isAnnotationPresent(IgnoreTenant.class)) {
-                    return true;
-                }
-            }
-        } catch (ClassNotFoundException ignored) {
-            // 兼容动态代理或特殊 Synthetic 语句，未找到物理类时默认不忽略
-        }
-
-        return false;
+        // 2. 检查缓存或解析 Mapper 类与方法上标注的 @IgnoreTenant 注解（统一由 MybatisInterceptorUtil 支持衍生后缀剥离）
+        return MybatisInterceptorUtil.hasMapperAnnotation(ms.getId(), IgnoreTenant.class, ignoreCache);
     }
 }

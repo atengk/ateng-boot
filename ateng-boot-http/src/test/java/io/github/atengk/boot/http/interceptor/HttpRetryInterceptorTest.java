@@ -1,11 +1,15 @@
 package io.github.atengk.boot.http.interceptor;
 
+import io.github.atengk.boot.http.constant.HttpConstants;
+import io.github.atengk.boot.http.context.HttpRequestContextHolder;
 import io.github.atengk.boot.http.properties.HttpClientItemProperties;
 import io.github.atengk.boot.http.properties.HttpProperties;
 import io.github.atengk.boot.http.properties.HttpRetryProperties;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.client.ClientHttpRequestExecution;
@@ -18,6 +22,9 @@ import java.net.ConnectException;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -57,6 +64,11 @@ class HttpRetryInterceptorTest {
         properties.getClients().put("order-service", orderClient);
 
         interceptor = new HttpRetryInterceptor(properties);
+    }
+
+    @AfterEach
+    void tearDown() {
+        HttpRequestContextHolder.clear();
     }
 
     @Test
@@ -200,5 +212,142 @@ class HttpRetryInterceptorTest {
 
         assertEquals(HttpStatus.BAD_GATEWAY, response.getStatusCode());
         assertEquals(2, callCount.get(), "应采用命名客户端配置的 maxAttempts=2");
+    }
+
+    @Test
+    @DisplayName("RFC 7231 / RFC 6585 Retry-After 解析单元测试")
+    void testParseRetryAfter() {
+        // 1. 纯秒数
+        assertEquals(Duration.ofSeconds(120), HttpRetryInterceptor.parseRetryAfter("120"));
+        assertEquals(Duration.ofSeconds(0), HttpRetryInterceptor.parseRetryAfter("0"));
+        assertEquals(Duration.ZERO, HttpRetryInterceptor.parseRetryAfter("-10"));
+
+        // 2. HTTP-Date (未来时间点)
+        ZonedDateTime future = ZonedDateTime.now().plusSeconds(60);
+        String futureStr = DateTimeFormatter.RFC_1123_DATE_TIME.format(future);
+        Duration futureDuration = HttpRetryInterceptor.parseRetryAfter(futureStr);
+        assertNotNull(futureDuration);
+        assertTrue(futureDuration.getSeconds() >= 55 && futureDuration.getSeconds() <= 65);
+
+        // 3. HTTP-Date (过去时间点)
+        ZonedDateTime past = ZonedDateTime.now().minusSeconds(10);
+        String pastStr = DateTimeFormatter.RFC_1123_DATE_TIME.format(past);
+        assertEquals(Duration.ZERO, HttpRetryInterceptor.parseRetryAfter(pastStr));
+
+        // 4. 空值与非法文本
+        assertNull(HttpRetryInterceptor.parseRetryAfter(null));
+        assertNull(HttpRetryInterceptor.parseRetryAfter(""));
+        assertNull(HttpRetryInterceptor.parseRetryAfter("   "));
+        assertNull(HttpRetryInterceptor.parseRetryAfter("invalid-date-format"));
+    }
+
+    @Test
+    @DisplayName("429 Too Many Requests 响应携带 Retry-After 触发重试并应用降频时延")
+    void shouldRetryOn429WithRetryAfterHeader() throws IOException {
+        MockClientHttpRequest request = new MockClientHttpRequest(HttpMethod.GET, URI.create("https://api.example.com/rate-limited"));
+        AtomicInteger callCount = new AtomicInteger(0);
+
+        ClientHttpRequestExecution execution = (req, body) -> {
+            int attempt = callCount.incrementAndGet();
+            if (attempt == 1) {
+                MockClientHttpResponse resp = new MockClientHttpResponse(new byte[0], HttpStatus.TOO_MANY_REQUESTS);
+                resp.getHeaders().set(HttpHeaders.RETRY_AFTER, "0"); // 0 秒以便单测极速完成
+                return resp;
+            }
+            return new MockClientHttpResponse("{\"data\":\"unblocked\"}".getBytes(), HttpStatus.OK);
+        };
+
+        ClientHttpResponse response = interceptor.intercept(request, new byte[0], execution);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals(2, callCount.get(), "429 遭遇后应根据 Retry-After 降频重试并在第 2 次成功");
+    }
+
+    @Test
+    @DisplayName("多命名客户端共享相同基地址时：优先依 HttpRequestContextHolder clientName 精准命中专属重试策略")
+    void shouldResolveRetryByContextClientNameBeforeUrlPrefix() throws IOException {
+        HttpClientItemProperties clientAlpha = new HttpClientItemProperties();
+        clientAlpha.setBaseUrl("https://shared.internal.com");
+        HttpRetryProperties retryAlpha = new HttpRetryProperties();
+        retryAlpha.setEnabled(true);
+        retryAlpha.setMaxAttempts(2);
+        retryAlpha.setDelay(Duration.ofMillis(10));
+        clientAlpha.setRetry(retryAlpha);
+        properties.getClients().put("shared-alpha", clientAlpha);
+
+        HttpClientItemProperties clientBeta = new HttpClientItemProperties();
+        clientBeta.setBaseUrl("https://shared.internal.com");
+        HttpRetryProperties retryBeta = new HttpRetryProperties();
+        retryBeta.setEnabled(true);
+        retryBeta.setMaxAttempts(4);
+        retryBeta.setDelay(Duration.ofMillis(10));
+        clientBeta.setRetry(retryBeta);
+        properties.getClients().put("shared-beta", clientBeta);
+
+        HttpRequestContextHolder.setClientName("shared-beta");
+        MockClientHttpRequest request = new MockClientHttpRequest(HttpMethod.GET, URI.create("https://shared.internal.com/v1/orders"));
+        AtomicInteger callCount = new AtomicInteger(0);
+
+        ClientHttpResponse response = interceptor.intercept(request, new byte[0], (req, body) -> {
+            callCount.incrementAndGet();
+            return new MockClientHttpResponse(new byte[0], HttpStatus.SERVICE_UNAVAILABLE);
+        });
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, response.getStatusCode());
+        assertEquals(4, callCount.get(), "应命中上下文绑定的 shared-beta 专属重试次数 4");
+    }
+
+    @Test
+    @DisplayName("无 TraceContext 注入上下文时：从请求内部头兜底识别 clientName 并剥离内部控制头")
+    void shouldFallbackToClientNameHeaderAndStripIt() throws IOException {
+        HttpClientItemProperties noUrlClient = new HttpClientItemProperties();
+        HttpRetryProperties noUrlRetry = new HttpRetryProperties();
+        noUrlRetry.setEnabled(true);
+        noUrlRetry.setMaxAttempts(4);
+        noUrlRetry.setDelay(Duration.ofMillis(10));
+        noUrlClient.setRetry(noUrlRetry);
+        properties.getClients().put("dynamic-gateway", noUrlClient);
+
+        MockClientHttpRequest request = new MockClientHttpRequest(HttpMethod.GET, URI.create("https://unconfigured-host.com/api"));
+        request.getHeaders().add(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE, "dynamic-gateway");
+        AtomicInteger callCount = new AtomicInteger(0);
+        AtomicBoolean headerLeaked = new AtomicBoolean(false);
+
+        ClientHttpResponse response = interceptor.intercept(request, new byte[0], (req, body) -> {
+            callCount.incrementAndGet();
+            if (req.getHeaders().containsKey(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE)) {
+                headerLeaked.set(true);
+            }
+            return new MockClientHttpResponse(new byte[0], HttpStatus.BAD_GATEWAY);
+        });
+
+        assertEquals(HttpStatus.BAD_GATEWAY, response.getStatusCode());
+        assertEquals(4, callCount.get(), "无 URL 前缀匹配时应从请求头兜底命中 dynamic-gateway 的 maxAttempts=4");
+        assertFalse(headerLeaked.get(), "兜底消费后应同步剥离内部控制头避免泄漏");
+    }
+
+    @Test
+    @DisplayName("外层已存在 clientName 上下文时：当前请求显式内部头优先于外层 ThreadLocal")
+    void shouldPreferExplicitHeaderClientNameOverThreadLocal() throws IOException {
+        HttpClientItemProperties innerClient = new HttpClientItemProperties();
+        HttpRetryProperties innerRetry = new HttpRetryProperties();
+        innerRetry.setEnabled(true);
+        innerRetry.setMaxAttempts(4);
+        innerRetry.setDelay(Duration.ofMillis(10));
+        innerClient.setRetry(innerRetry);
+        properties.getClients().put("inner-service", innerClient);
+
+        HttpRequestContextHolder.setClientName("order-service");
+        MockClientHttpRequest request = new MockClientHttpRequest(HttpMethod.GET, URI.create("https://orders.internal.com/query"));
+        request.getHeaders().add(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE, "inner-service");
+        AtomicInteger callCount = new AtomicInteger(0);
+
+        ClientHttpResponse response = interceptor.intercept(request, new byte[0], (req, body) -> {
+            callCount.incrementAndGet();
+            return new MockClientHttpResponse(new byte[0], HttpStatus.SERVICE_UNAVAILABLE);
+        });
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, response.getStatusCode());
+        assertEquals(4, callCount.get(), "显式请求头 clientName 应优先于外层 ThreadLocal 上下文");
     }
 }

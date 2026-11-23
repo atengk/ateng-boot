@@ -1,5 +1,7 @@
 package io.github.atengk.boot.web.sign.annotation;
 
+import io.github.atengk.boot.web.sign.enums.SignAlgorithm;
+
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -31,7 +33,7 @@ public @interface ApiSign {
     boolean signResponse() default true;
 
     /**
-     * 请求时效防重放时间窗口（秒，默认 -1 表示继承全局配置 ateng.boot.web.sign.expire-seconds；若大于 0 则覆盖全局配置）
+     * 请求时效防重放时间窗口（秒，默认 -1 表示继承全局配置 ateng.boot.web.sign.expire；若大于 0 则覆盖全局配置）
      */
     long expireSeconds() default -1L;
 
@@ -39,4 +41,9 @@ public @interface ApiSign {
      * 验签或防重放失败时的异常提示信息
      */
     String message() default "数据验签失败";
+
+    /**
+     * 指定当前接口使用的签名算法（默认 {@link SignAlgorithm#DEFAULT} 表示继承全局配置 ateng.boot.web.sign.algorithm）
+     */
+    SignAlgorithm algorithm() default SignAlgorithm.DEFAULT;
 }

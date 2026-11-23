@@ -38,9 +38,9 @@ public class PayloadLoggingFilter extends OncePerRequestFilter implements Ordere
     private static final Logger log = LoggerFactory.getLogger(PayloadLoggingFilter.class);
 
     /**
-     * 默认过滤器执行优先级：位于可重读管道之后，慢请求告警过滤器之前
+     * 默认过滤器执行优先级：位于可重读管道(+30)之后，慢请求告警过滤器(+50)之前
      */
-    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 2;
+    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 40;
 
     public static final DataSize DEFAULT_MAX_PAYLOAD_SIZE = DataSize.ofKilobytes(4);
     public static final String BINARY_STREAM_PLACEHOLDER = "[BINARY_STREAM]";

@@ -9,6 +9,7 @@ import org.springframework.util.Assert;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 命名多客户端注册表
@@ -30,6 +31,7 @@ public class TcpClientRegistry implements SmartLifecycle {
 
     private final Map<String, TcpClient> clients = new ConcurrentHashMap<>();
     private final Map<String, TcpClientTemplate> templates = new ConcurrentHashMap<>();
+    private final ReentrantLock lifecycleLock = new ReentrantLock();
     private volatile boolean running = false;
 
     /**
@@ -43,7 +45,7 @@ public class TcpClientRegistry implements SmartLifecycle {
     }
 
     /**
-     * 注册 TCP 客户端实例及其对应操作门面
+     * 注册 TCP 客户端实例及其对应操作门面（若存在同名不同引用的运行中旧实例，将先受控平滑停止旧实例后再纳管新实例）
      *
      * @param name     客户端名称
      * @param client   客户端实例
@@ -52,12 +54,62 @@ public class TcpClientRegistry implements SmartLifecycle {
     public void register(String name, TcpClient client, TcpClientTemplate template) {
         Assert.hasText(name, "客户端名称不能为空");
         Assert.notNull(client, "客户端实例不能为空");
-        clients.put(name, client);
-        if (template != null) {
-            templates.put(name, template);
+        lifecycleLock.lock();
+        try {
+            TcpClient existing = clients.get(name);
+            if (existing != null && existing != client && existing.isRunning()) {
+                log.info("检测到同名 TCP 客户端覆盖注册，正在平滑停止旧实例: name={}", name);
+                existing.stop();
+            }
+            clients.put(name, client);
+            if (template != null) {
+                templates.put(name, template);
+            } else {
+                templates.remove(name);
+            }
+            log.info("已注册 TCP 客户端实例: name={}, host={}, port={}",
+                    name, client.getProperties().getHost(), client.getProperties().getPort());
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
+            }
         }
-        log.info("已注册 TCP 客户端实例: name={}, host={}, port={}",
-                name, client.getProperties().getHost(), client.getProperties().getPort());
+    }
+
+    /**
+     * 注销并移除指定名称的 TCP 客户端及其关联门面（若处于运行态将自动平滑停止）
+     *
+     * @param name 客户端名称
+     * @return 被移除的客户端实例，不存在时返回 null
+     */
+    public TcpClient unregister(String name) {
+        if (name == null) {
+            return null;
+        }
+        lifecycleLock.lock();
+        try {
+            templates.remove(name);
+            TcpClient removed = clients.remove(name);
+            if (removed != null && removed.isRunning()) {
+                log.info("注销 TCP 客户端实例，正在平滑停止: name={}", name);
+                removed.stop();
+            }
+            return removed;
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
+            }
+        }
+    }
+
+    /**
+     * 判断是否已注册指定名称的 TCP 客户端实例
+     *
+     * @param name 客户端名称
+     * @return true 表示存在
+     */
+    public boolean contains(String name) {
+        return name != null && clients.containsKey(name);
     }
 
     /**
@@ -151,33 +203,47 @@ public class TcpClientRegistry implements SmartLifecycle {
     }
 
     @Override
-    public synchronized void start() {
-        if (running) {
-            return;
-        }
-        log.info("正在启动 TCP 客户端注册表，共纳管 {} 个客户端实例...", clients.size());
-        for (Map.Entry<String, TcpClient> entry : clients.entrySet()) {
-            TcpClient client = entry.getValue();
-            if (!client.isRunning()) {
-                client.start();
+    public void start() {
+        lifecycleLock.lock();
+        try {
+            if (running) {
+                return;
+            }
+            log.info("正在启动 TCP 客户端注册表，共纳管 {} 个客户端实例...", clients.size());
+            for (Map.Entry<String, TcpClient> entry : clients.entrySet()) {
+                TcpClient client = entry.getValue();
+                if (!client.isRunning()) {
+                    client.start();
+                }
+            }
+            this.running = true;
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
             }
         }
-        this.running = true;
     }
 
     @Override
-    public synchronized void stop() {
-        if (!running) {
-            return;
-        }
-        log.info("正在停止 TCP 客户端注册表，关闭全部 {} 个客户端实例...", clients.size());
-        for (Map.Entry<String, TcpClient> entry : clients.entrySet()) {
-            TcpClient client = entry.getValue();
-            if (client.isRunning()) {
-                client.stop();
+    public void stop() {
+        lifecycleLock.lock();
+        try {
+            if (!running) {
+                return;
+            }
+            log.info("正在停止 TCP 客户端注册表，关闭全部 {} 个客户端实例...", clients.size());
+            for (Map.Entry<String, TcpClient> entry : clients.entrySet()) {
+                TcpClient client = entry.getValue();
+                if (client.isRunning()) {
+                    client.stop();
+                }
+            }
+            this.running = false;
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
             }
         }
-        this.running = false;
     }
 
     @Override

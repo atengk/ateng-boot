@@ -6,6 +6,8 @@ import org.apache.ibatis.type.JdbcType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -125,6 +127,41 @@ public class EncryptTypeHandler extends BaseTypeHandler<String> {
         } catch (Exception e) {
             log.error("数据持久化加密失败: {}", e.getMessage(), e);
             throw new IllegalStateException("数据持久化加密失败", e);
+        }
+    }
+
+    /**
+     * 基于 HMAC-SHA256 合成初始化向量（SIV）对明文字符串进行确定性 AES-CBC 加密
+     * 对相同明文始终生成一致的以 "v1:" 为前缀的密文字符串，支持精确等值检索与 IN 检索；
+     * 产出的密文与默认随机 IV 密文 100% 双向解密兼容。
+     *
+     * @param plaintext 明文字符串
+     * @return 带 "v1:" 前缀的 Base64 组合密文字符串；若明文为 null 或空串则原样返回
+     */
+    public static String encryptDeterministic(String plaintext) {
+        if (plaintext == null || plaintext.isEmpty()) {
+            return plaintext;
+        }
+        try {
+            byte[] keyBytes = cachedSecretKeyBytes;
+            byte[] plainBytes = plaintext.getBytes(StandardCharsets.UTF_8);
+
+            // 基于 HMAC-SHA256(secretKey, plaintext) 截取前 16 字节作为合成初始化向量 (SIV)
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(keyBytes, "HmacSHA256"));
+            byte[] hmac = mac.doFinal(plainBytes);
+            byte[] siv = Arrays.copyOfRange(hmac, 0, CryptoUtil.DEFAULT_CBC_IV_SIZE);
+
+            byte[] cipherBytes = CryptoUtil.encryptCbc(plainBytes, keyBytes, siv);
+
+            // 前置拼接 16 字节 SIV 与密文内容
+            byte[] combined = new byte[siv.length + cipherBytes.length];
+            System.arraycopy(siv, 0, combined, 0, siv.length);
+            System.arraycopy(cipherBytes, 0, combined, siv.length, cipherBytes.length);
+            return CIPHER_PREFIX_V1 + CryptoUtil.encodeBase64(combined);
+        } catch (Exception e) {
+            log.error("数据确定性持久化加密失败: {}", e.getMessage(), e);
+            throw new IllegalStateException("数据确定性持久化加密失败", e);
         }
     }
 

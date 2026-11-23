@@ -1,18 +1,21 @@
+server:
+  port: 8080
+
 spring:
   application:
     name: ateng-boot-sample-core
-  main:
-    web-application-type: none
+  config:
+    import: "optional:classpath:application-local.yml"
 
 ateng:
   boot:
     core:
-      clock-backoff-tolerance: 10ms
-      cache-ttl: 30m
       snowflake:
         worker-id: 1
         datacenter-id: 1
         clock-backoff-tolerance: 10ms
+      cache:
+        default-ttl: 30m
     async:
       enabled: true
       core-pool-size: 4
@@ -25,4 +28,10 @@ ateng:
           max-pool-size: 4
           queue-capacity: 50
           thread-name-prefix: sample-export-async-
+          rejected-policy: CALLER_RUNS
+        report:
+          core-pool-size: 2
+          max-pool-size: 4
+          queue-capacity: 50
+          thread-name-prefix: sample-report-async-
           rejected-policy: CALLER_RUNS

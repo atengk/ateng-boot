@@ -1,0 +1,10 @@
+# Auto Configuration Import Filter (Isolated DDL Credential Protection)
+org.springframework.boot.autoconfigure.AutoConfigurationImportFilter=\
+  io.github.atengk.boot.flyway.autoconfigure.AtengFlywayAutoConfigurationImportFilter
+
+# Database Initializer & MyBatis-Plus Initialization Barrier Detectors
+org.springframework.boot.sql.init.dependency.DatabaseInitializerDetector=\
+  io.github.atengk.boot.flyway.autoconfigure.AtengFlywayDatabaseInitializerDetector
+
+org.springframework.boot.sql.init.dependency.DependsOnDatabaseInitializationDetector=\
+  io.github.atengk.boot.flyway.autoconfigure.AtengMybatisPlusDependsOnDatabaseInitializationDetector

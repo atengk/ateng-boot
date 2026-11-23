@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.core.toolkit.Constants;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlDefinition;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlRegistry;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
@@ -28,6 +29,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 通用受管动态查询执行模板组件
@@ -62,6 +64,23 @@ public class DynamicQueryTemplate {
      * MappedStatements 反射字段句柄（用于解除 StrictMap 冲突安全注入自适应 Statement）
      */
     private final Field mappedStatementsField;
+
+    /**
+     * 匹配 MyBatis 动态 SQL {@code </where>} 闭合标签的预编译正则
+     */
+    private static final java.util.regex.Pattern CLOSE_WHERE_PATTERN =
+            java.util.regex.Pattern.compile("(?i)</where>");
+
+    /**
+     * 匹配 ORDER BY 子句关键字的预编译正则
+     */
+    private static final java.util.regex.Pattern ORDER_BY_CLAUSE_PATTERN =
+            java.util.regex.Pattern.compile("(?i)\\bORDER\\s+BY\\b");
+
+    /**
+     * 运行时动态自适应 Statement 注册锁（依托 ReentrantLock 杜绝虚拟线程 Carrier Pinning，遵循 ADR-0029）
+     */
+    private final ReentrantLock adaptiveStatementLock = new ReentrantLock();
 
     public DynamicQueryTemplate(SqlSessionTemplate sqlSessionTemplate) {
         this(sqlSessionTemplate, null);
@@ -108,7 +127,7 @@ public class DynamicQueryTemplate {
         Map<String, String> mapping = resolveProjections(statementId);
         QueryWrapper<V> wrapper = DynamicQueryHelper.buildWrapper(request, voClass, mapping);
 
-        Page<V> page = PageUtil.toPage(request);
+        Page<V> page = PageUtil.toUnsortedPage(request);
         Map<String, Object> paramMap = new HashMap<>();
         paramMap.put("page", page);
         paramMap.put(Constants.WRAPPER, wrapper);
@@ -145,8 +164,8 @@ public class DynamicQueryTemplate {
         QueryWrapper<V> wrapper = DynamicQueryHelper.buildWrapper(queryDto, voClass, mapping);
 
         Page<V> page = (queryDto instanceof io.github.atengk.boot.core.model.PageQuery pq)
-                ? PageUtil.toPage(pq)
-                : new Page<>(1, 10);
+                ? PageUtil.toUnsortedPage(pq)
+                : PageUtil.toUnsortedPage(null);
         Map<String, Object> paramMap = new HashMap<>();
         paramMap.put("page", page);
         paramMap.put(Constants.WRAPPER, wrapper);
@@ -295,14 +314,19 @@ public class DynamicQueryTemplate {
      * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
      */
     public boolean exists(String statementName, DynamicQueryRequest request) {
-        Objects.requireNonNull(statementName, "statementName 不能为 null");
-        if (request == null) {
-            return false;
-        }
-        String statementId = findStatementId(statementName);
-        Map<String, String> mapping = resolveProjections(statementId);
-        QueryWrapper<?> wrapper = DynamicQueryHelper.buildWrapper(request, mapping);
-        return executeExistsWithWrapper(statementId, wrapper);
+        return exists(statementName, request, null);
+    }
+
+    /**
+     * 基于 StatementId、结构化请求与额外命名绑定参数执行存在性探测（单页 LIMIT 1 短路，不触发全表 COUNT）
+     *
+     * @param statementName 语句名称（支持短方法名或全限定 statementId）
+     * @param request       动态查询请求（可为 null，仅依赖 extraParams 时亦可执行）
+     * @param extraParams   额外命名绑定参数（供 #{key} 或动态 SQL 条件标签读取，可为 null）
+     * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
+     */
+    public boolean exists(String statementName, DynamicQueryRequest request, Map<String, Object> extraParams) {
+        return executeExists(statementName, request, extraParams);
     }
 
     /**
@@ -313,17 +337,37 @@ public class DynamicQueryTemplate {
      * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
      */
     public boolean exists(String statementName, Object queryDto) {
-        if (queryDto instanceof DynamicQueryRequest request) {
-            return exists(statementName, request);
-        }
+        return exists(statementName, queryDto, null);
+    }
+
+    /**
+     * 基于 StatementId、普通查询 DTO 与额外命名绑定参数执行存在性探测（单页 LIMIT 1 短路）
+     *
+     * @param statementName 语句名称
+     * @param queryDto      业务查询 DTO（可为 null，仅依赖 extraParams 时亦可执行）
+     * @param extraParams   额外命名绑定参数（可为 null）
+     * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
+     */
+    public boolean exists(String statementName, Object queryDto, Map<String, Object> extraParams) {
+        return executeExists(statementName, queryDto, extraParams);
+    }
+
+    private boolean executeExists(String statementName, Object criteria, Map<String, Object> extraParams) {
         Objects.requireNonNull(statementName, "statementName 不能为 null");
-        if (queryDto == null) {
+        if (criteria == null && (extraParams == null || extraParams.isEmpty())) {
             return false;
         }
         String statementId = findStatementId(statementName);
-        Map<String, String> mapping = resolveProjections(statementId);
-        QueryWrapper<?> wrapper = DynamicQueryHelper.buildWrapper(queryDto, mapping);
-        return executeExistsWithWrapper(statementId, wrapper);
+        Map<String, String> projections = resolveProjections(statementId);
+        QueryWrapper<?> wrapper;
+        if (criteria instanceof DynamicQueryRequest request) {
+            wrapper = DynamicQueryHelper.buildWrapper(request, projections);
+        } else if (criteria != null) {
+            wrapper = DynamicQueryHelper.buildWrapper(criteria, projections);
+        } else {
+            wrapper = new QueryWrapper<>();
+        }
+        return executeExistsWithWrapper(statementId, wrapper, extraParams);
     }
 
     private long executeCountWithWrapper(String statementId, QueryWrapper<?> wrapper) {
@@ -341,9 +385,12 @@ public class DynamicQueryTemplate {
         return list != null ? list.size() : 0L;
     }
 
-    private boolean executeExistsWithWrapper(String statementId, QueryWrapper<?> wrapper) {
+    private boolean executeExistsWithWrapper(String statementId, QueryWrapper<?> wrapper, Map<String, Object> extraParams) {
         Page<?> page = new Page<>(1, 1, false);
         Map<String, Object> paramMap = new HashMap<>();
+        if (extraParams != null && !extraParams.isEmpty()) {
+            paramMap.putAll(extraParams);
+        }
         paramMap.put("page", page);
         paramMap.put(Constants.WRAPPER, wrapper);
         paramMap.put("ew", wrapper);
@@ -375,7 +422,7 @@ public class DynamicQueryTemplate {
         }
         BaseMapper<Object> mapper = getEntityMapper((Class<Object>) entityClass);
         QueryWrapper<Object> wrapper = DynamicQueryHelper.buildWrapper(request, (Class<Object>) entityClass);
-        Page<Object> page = PageUtil.toPage(request);
+        Page<Object> page = PageUtil.toUnsortedPage(request);
         IPage<Object> resultPage = mapper.selectPage(page, wrapper);
         return PageUtil.toPageResult(resultPage, item -> JsonUtil.convertValue(item, voClass));
     }
@@ -395,7 +442,7 @@ public class DynamicQueryTemplate {
         }
         BaseMapper<T> mapper = getEntityMapper(entityClass);
         QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(request, entityClass);
-        Page<T> page = PageUtil.toPage(request);
+        Page<T> page = PageUtil.toUnsortedPage(request);
         IPage<T> resultPage = mapper.selectPage(page, wrapper);
         return PageUtil.toPageResult(resultPage);
     }
@@ -422,8 +469,8 @@ public class DynamicQueryTemplate {
         BaseMapper<Object> mapper = getEntityMapper((Class<Object>) entityClass);
         QueryWrapper<Object> wrapper = DynamicQueryHelper.buildWrapper(queryDto, (Class<Object>) entityClass);
         Page<Object> page = (queryDto instanceof io.github.atengk.boot.core.model.PageQuery pq)
-                ? PageUtil.toPage(pq)
-                : new Page<>(1, 10);
+                ? PageUtil.toUnsortedPage(pq)
+                : PageUtil.toUnsortedPage(null);
         IPage<Object> resultPage = mapper.selectPage(page, wrapper);
         return PageUtil.toPageResult(resultPage, item -> JsonUtil.convertValue(item, voClass));
     }
@@ -447,8 +494,8 @@ public class DynamicQueryTemplate {
         BaseMapper<T> mapper = getEntityMapper(entityClass);
         QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
         Page<T> page = (queryDto instanceof io.github.atengk.boot.core.model.PageQuery pq)
-                ? PageUtil.toPage(pq)
-                : new Page<>(1, 10);
+                ? PageUtil.toUnsortedPage(pq)
+                : PageUtil.toUnsortedPage(null);
         IPage<T> resultPage = mapper.selectPage(page, wrapper);
         return PageUtil.toPageResult(resultPage);
     }
@@ -817,26 +864,21 @@ public class DynamicQueryTemplate {
 
     /**
      * 创建或复用自适应动态 Statement（JSqlParser AST 自动条件追加）
+     * 采用 ReentrantLock 双重检查锁替代 synchronized，杜绝 JDK 21+ 虚拟线程 Carrier Pinning（遵循 ADR-0029）
      */
-    private synchronized String getOrCreateAdaptiveStatement(String statementId, String originalSql) {
+    private String getOrCreateAdaptiveStatement(String statementId, String originalSql) {
         String adaptiveId = statementId + "$dynamicAdaptive";
         Configuration configuration = sqlSessionTemplate.getConfiguration();
         if (configuration.hasStatement(adaptiveId)) {
             return adaptiveId;
         }
+        adaptiveStatementLock.lock();
         try {
-            MappedStatement rawMs = configuration.getMappedStatement(statementId);
-            boolean hasWhere = hasWhereClause(originalSql);
-            String adaptiveSql;
-            if (hasWhere) {
-                adaptiveSql = "<script>" + originalSql +
-                        "<choose>" +
-                        "<when test=\"ew != null and !ew.emptyOfWhere\"> AND ${ew.sqlSegment}</when>" +
-                        "<when test=\"ew != null and ew.emptyOfWhere and !ew.emptyOfNormal\"> ${ew.sqlSegment}</when>" +
-                        "</choose></script>";
-            } else {
-                adaptiveSql = "<script>" + originalSql + " ${ew.customSqlSegment}</script>";
+            if (configuration.hasStatement(adaptiveId)) {
+                return adaptiveId;
             }
+            MappedStatement rawMs = configuration.getMappedStatement(statementId);
+            String adaptiveSql = buildAdaptiveSql(statementId, originalSql);
             SqlSource sqlSource = configuration.getDefaultScriptingLanguageInstance().createSqlSource(configuration, adaptiveSql, Map.class);
             MappedStatement.Builder builder = new MappedStatement.Builder(configuration, adaptiveId, sqlSource, rawMs.getSqlCommandType())
                     .resource(rawMs.getResource())
@@ -856,7 +898,120 @@ public class DynamicQueryTemplate {
         } catch (Throwable e) {
             log.warn("自适应改写 Statement [{}] 失败，回退为原始 Statement: {}", statementId, e.getMessage());
             return statementId;
+        } finally {
+            adaptiveStatementLock.unlock();
         }
+    }
+
+    /**
+     * 构造自适应动态查询脚本：优先保留 DynamicSqlRegistry 原始 XML 标签（<where>/<if>/<choose> 等），
+     * 避免通过 getBoundSql(null) 提前求值导致 extraParams 条件片段丢失
+     */
+    private String buildAdaptiveSql(String statementId, String fallbackSql) {
+        DynamicSqlDefinition definition = (dynamicSqlRegistry != null) ? dynamicSqlRegistry.getDefinition(statementId) : null;
+        String rawScript = (definition != null && definition.getSqlScript() != null && !definition.getSqlScript().isBlank())
+                ? stripOuterScriptTags(definition.getSqlScript())
+                : fallbackSql;
+
+        java.util.regex.Matcher closeWhereMatcher = CLOSE_WHERE_PATTERN.matcher(rawScript);
+        if (closeWhereMatcher.find()) {
+            int insertPos = closeWhereMatcher.start();
+            String beforeCloseWhere = rawScript.substring(0, insertPos);
+            String fromCloseWhere = rawScript.substring(insertPos);
+            boolean hasOrderByAfterWhere = ORDER_BY_CLAUSE_PATTERN.matcher(fromCloseWhere).find();
+            // 仅将过滤条件注入 </where> 内部，避免将 Wrapper 中的 ORDER BY 混入 </where> 导致与后续 ORDER BY 冲突
+            String sortFallback = hasOrderByAfterWhere
+                    ? ""
+                    : "<if test=\"ew != null and ew.expression != null and ew.expression.orderBy != null and !ew.expression.orderBy.isEmpty()\"> ${ew.expression.orderBy.sqlSegment}</if>";
+            return "<script>" + beforeCloseWhere
+                    + "<if test=\"ew != null and ew.nonEmptyOfNormal\"> AND ${ew.expression.normal.sqlSegment}</if>"
+                    + fromCloseWhere
+                    + sortFallback
+                    + "</script>";
+        }
+
+        boolean hasWhere = hasWhereClause(rawScript);
+        int orderByPos = findTopLevelOrderByIndex(rawScript);
+        if (orderByPos >= 0) {
+            String beforeOrderBy = rawScript.substring(0, orderByPos);
+            String fromOrderBy = rawScript.substring(orderByPos);
+            String prefix = hasWhere ? " AND " : " WHERE ";
+            return "<script>" + beforeOrderBy
+                    + "<if test=\"ew != null and ew.nonEmptyOfNormal\">" + prefix + "${ew.expression.normal.sqlSegment}</if> "
+                    + fromOrderBy + "</script>";
+        }
+        if (hasWhere) {
+            return "<script>" + rawScript +
+                    "<choose>" +
+                    "<when test=\"ew != null and !ew.emptyOfWhere\"> AND ${ew.sqlSegment}</when>" +
+                    "<when test=\"ew != null and ew.expression != null and ew.expression.orderBy != null and !ew.expression.orderBy.isEmpty()\"> ${ew.expression.orderBy.sqlSegment}</when>" +
+                    "</choose></script>";
+        }
+        return "<script>" + rawScript + " ${ew.customSqlSegment}</script>";
+    }
+
+    /**
+     * 查找 SQL 最外层（括号深度为 0 且非单引号字符串内部）末次出现的 {@code ORDER BY} 起始下标
+     */
+    private static int findTopLevelOrderByIndex(String sql) {
+        if (sql == null || sql.isEmpty()) {
+            return -1;
+        }
+        int len = sql.length();
+        boolean inSingleQuote = false;
+        int parenDepth = 0;
+        int lastOrderByIndex = -1;
+        for (int i = 0; i < len; i++) {
+            char ch = sql.charAt(i);
+            if (ch == '\'') {
+                inSingleQuote = !inSingleQuote;
+                continue;
+            }
+            if (inSingleQuote) {
+                continue;
+            }
+            if (ch == '(') {
+                parenDepth++;
+                continue;
+            }
+            if (ch == ')') {
+                if (parenDepth > 0) {
+                    parenDepth--;
+                }
+                continue;
+            }
+            if (parenDepth == 0 && i + 5 <= len && sql.regionMatches(true, i, "ORDER", 0, 5)) {
+                boolean leftBoundary = i == 0 || !isSqlIdentifierChar(sql.charAt(i - 1));
+                int cursor = i + 5;
+                if (leftBoundary && cursor < len && Character.isWhitespace(sql.charAt(cursor))) {
+                    while (cursor < len && Character.isWhitespace(sql.charAt(cursor))) {
+                        cursor++;
+                    }
+                    if (cursor + 2 <= len && sql.regionMatches(true, cursor, "BY", 0, 2)) {
+                        int afterBy = cursor + 2;
+                        boolean rightBoundary = afterBy == len || !isSqlIdentifierChar(sql.charAt(afterBy));
+                        if (rightBoundary) {
+                            lastOrderByIndex = i;
+                        }
+                    }
+                }
+            }
+        }
+        return lastOrderByIndex;
+    }
+
+    private static boolean isSqlIdentifierChar(char ch) {
+        return Character.isLetterOrDigit(ch) || ch == '_';
+    }
+
+    private static String stripOuterScriptTags(String sqlScript) {
+        String trimmed = sqlScript.trim();
+        if (trimmed.length() >= 17
+                && trimmed.regionMatches(true, 0, "<script>", 0, 8)
+                && trimmed.regionMatches(true, trimmed.length() - 9, "</script>", 0, 9)) {
+            return trimmed.substring(8, trimmed.length() - 9).trim();
+        }
+        return trimmed;
     }
 
     private boolean hasWhereClause(String sql) {

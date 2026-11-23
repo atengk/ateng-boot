@@ -2,13 +2,20 @@ package io.github.atengk.boot.job.local.config;
 
 import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
 import io.github.atengk.boot.job.local.actuator.LocalJobEndpoint;
+import io.github.atengk.boot.job.local.alert.AntiStormJobAlertAggregator;
+import io.github.atengk.boot.job.local.enums.ClusterLockType;
 import io.github.atengk.boot.job.local.alert.JobAlertHandler;
 import io.github.atengk.boot.job.local.alert.LocalJobAlertListener;
 import io.github.atengk.boot.job.local.alert.LoggingJobAlertHandler;
 import io.github.atengk.boot.job.local.alert.NotificationJobAlertHandler;
+import io.github.atengk.boot.job.local.fallback.LocalJobTimeoutFallbackHandler;
+import io.github.atengk.boot.job.local.interceptor.LocalJobInterceptor;
 import io.github.atengk.boot.job.local.lifecycle.LocalJobLifecycleManager;
 import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
 import io.github.atengk.boot.job.local.lock.LocalJobClusterLockProvider;
+import io.github.atengk.boot.job.local.lock.RedisJobClusterLockProvider;
+import io.github.atengk.boot.job.local.metrics.LocalJobMetricsBinder;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.github.atengk.boot.job.local.processor.LocalJobAnnotationBeanPostProcessor;
 import io.github.atengk.boot.job.local.properties.JobLocalProperties;
 import io.github.atengk.boot.job.local.registry.LocalJobRegistry;
@@ -19,8 +26,11 @@ import io.github.atengk.boot.job.local.storage.JobMetadataRepository;
 import io.github.atengk.boot.job.local.template.DefaultLocalJobTemplate;
 import io.github.atengk.boot.job.local.template.LocalJobTemplate;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
+import io.github.atengk.boot.job.local.tenant.DefaultTenantProvider;
+import io.github.atengk.boot.job.local.tenant.TenantProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
@@ -36,6 +46,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
+import java.util.Collections;
+
 /**
  * 单机定时任务核心防御性自动装配
  *
@@ -44,6 +56,11 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
  */
 @AutoConfiguration
 @ConditionalOnClass(ThreadPoolTaskScheduler.class)
+@AutoConfigureAfter(name = {
+        "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration",
+        "org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration",
+        "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration"
+})
 @EnableConfigurationProperties(JobLocalProperties.class)
 @ConditionalOnProperty(prefix = "ateng.boot.job.local", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class AtengJobLocalAutoConfiguration {
@@ -117,14 +134,53 @@ public class AtengJobLocalAutoConfiguration {
     }
 
     /**
+     * Redis 轻量集群互斥锁自动装配（当类路径存在 StringRedisTemplate 且容器存在该 Bean，且 cluster-lock.enabled=true 时装配）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(StringRedisTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.job.local.cluster-lock", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class RedisJobClusterLockAutoConfiguration {
+
+        @Bean
+        @ConditionalOnBean(StringRedisTemplate.class)
+        @ConditionalOnMissingBean(JobClusterLockProvider.class)
+        public JobClusterLockProvider redisJobClusterLockProvider(StringRedisTemplate redisTemplate,
+                                                                   JobLocalProperties properties) {
+            JobLocalProperties.ClusterLockProperties clusterLock = properties.getClusterLock() != null
+                    ? properties.getClusterLock()
+                    : new JobLocalProperties.ClusterLockProperties();
+            if (ClusterLockType.LOCAL == clusterLock.getType()) {
+                return new LocalJobClusterLockProvider();
+            }
+            return new RedisJobClusterLockProvider(
+                    redisTemplate,
+                    clusterLock.getKeyPrefix(),
+                    null,
+                    clusterLock.getDefaultLeaseTime()
+            );
+        }
+    }
+
+    /**
      * 单机定时任务集群互斥锁 SPI 默认本地兜底实现 Bean
      *
      * @return JobClusterLockProvider
      */
     @Bean
-    @ConditionalOnMissingBean
+    @ConditionalOnMissingBean(JobClusterLockProvider.class)
     public JobClusterLockProvider jobClusterLockProvider() {
         return new LocalJobClusterLockProvider();
+    }
+
+    /**
+     * SaaS 多租户发现服务保底 Bean（当外部未声明自定义 TenantProvider 时生效）
+     *
+     * @return 默认保底租户提供者
+     */
+    @Bean
+    @ConditionalOnMissingBean(TenantProvider.class)
+    public TenantProvider tenantProvider() {
+        return new DefaultTenantProvider();
     }
 
     /**
@@ -135,7 +191,10 @@ public class AtengJobLocalAutoConfiguration {
      * @param metadataRepository     元数据存储仓储
      * @param logStorageProvider     历史日志存储提供者
      * @param clusterLockProvider    集群互斥锁提供者
-     * @param properties             配置属性
+     * @param properties                     配置属性
+     * @param tenantProviderProvider         多租户发现服务提供者
+     * @param interceptorsProvider           任务切面责任链拦截器提供者
+     * @param timeoutFallbackHandlerProvider 全局硬超时降级补偿处理器提供者
      * @return LocalJobRegistry
      */
     @Bean
@@ -146,9 +205,21 @@ public class AtengJobLocalAutoConfiguration {
             JobMetadataRepository metadataRepository,
             JobLogStorageProvider logStorageProvider,
             JobClusterLockProvider clusterLockProvider,
-            JobLocalProperties properties) {
+            JobLocalProperties properties,
+            ObjectProvider<TenantProvider> tenantProviderProvider,
+            ObjectProvider<LocalJobInterceptor> interceptorsProvider,
+            ObjectProvider<LocalJobTimeoutFallbackHandler> timeoutFallbackHandlerProvider) {
+        TenantProvider tenantProvider = tenantProviderProvider.orderedStream()
+                .filter(tp -> !(tp instanceof DefaultTenantProvider))
+                .findFirst()
+                .orElseGet(() -> tenantProviderProvider.getIfAvailable(DefaultTenantProvider::new));
         return new LocalJobRegistry(localJobTaskScheduler, workerExecutorProvider.getIfAvailable(),
-                metadataRepository, logStorageProvider, clusterLockProvider, properties);
+                metadataRepository, logStorageProvider, clusterLockProvider, properties,
+                tenantProvider,
+                () -> interceptorsProvider != null ? interceptorsProvider.orderedStream().toList() : Collections.emptyList(),
+                () -> timeoutFallbackHandlerProvider != null
+                        ? timeoutFallbackHandlerProvider.orderedStream().findFirst().orElse(null)
+                        : null);
     }
 
     /**
@@ -236,8 +307,40 @@ public class AtengJobLocalAutoConfiguration {
 
         @Bean
         @ConditionalOnMissingBean
-        public LocalJobAlertListener localJobAlertListener(JobAlertHandler jobAlertHandler) {
-            return new LocalJobAlertListener(jobAlertHandler);
+        public AntiStormJobAlertAggregator antiStormJobAlertAggregator(JobAlertHandler jobAlertHandler, JobLocalProperties properties) {
+            JobLocalProperties.AntiStormProperties antiStorm = properties.getAlert() != null ? properties.getAlert().getAntiStorm() : null;
+            if (antiStorm == null) {
+                antiStorm = new JobLocalProperties.AntiStormProperties();
+            }
+            return new AntiStormJobAlertAggregator(
+                    jobAlertHandler,
+                    antiStorm.isEnabled(),
+                    antiStorm.getSilenceWindow(),
+                    antiStorm.isRecoveryNotice()
+            );
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        public LocalJobAlertListener localJobAlertListener(JobAlertHandler jobAlertHandler,
+                                                           ObjectProvider<AntiStormJobAlertAggregator> antiStormAggregatorProvider) {
+            return new LocalJobAlertListener(jobAlertHandler, antiStormAggregatorProvider.getIfAvailable());
+        }
+    }
+
+    /**
+     * Micrometer 云原生监控指标度量导出自动装配（当类路径存在 MeterRegistry 且 metrics.enabled=true 时装配）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(MeterRegistry.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.job.local.metrics", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class LocalJobMetricsAutoConfiguration {
+
+        @Bean
+        @ConditionalOnBean(MeterRegistry.class)
+        @ConditionalOnMissingBean
+        public LocalJobMetricsBinder localJobMetricsBinder(LocalJobRegistry localJobRegistry, MeterRegistry meterRegistry) {
+            return new LocalJobMetricsBinder(localJobRegistry, meterRegistry);
         }
     }
 }

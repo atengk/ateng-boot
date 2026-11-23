@@ -113,6 +113,17 @@ public @interface LocalJob {
     String clusterLockLeaseTime() default "5m";
 
     /**
+     * 集群互斥锁的最小持有时长（支持强类型时间字符串，如 {@code 5s}，默认空表示不启用最小持有窗口）
+     * <p>
+     * 防止极短耗时任务立即释放锁后，因多节点毫秒级 NTP 时钟偏移引发同一周期重复调度；
+     * 采用非阻塞剩余租期收缩策略，不占用 Worker 线程睡眠等待。
+     * </p>
+     *
+     * @return 最小锁持有时长
+     */
+    String clusterLockMinHoldTime() default "";
+
+    /**
      * 任务的人读业务描述（用于 Actuator 运维端点与管理后台展示）
      *
      * @return 任务描述
@@ -125,4 +136,38 @@ public @interface LocalJob {
      * @return 是否启用
      */
     boolean enabled() default true;
+
+    /**
+     * 任务触发硬超时强中断后的同 Bean 降级补偿方法名（默认空，代表未声明方法级降级）
+     * <p>
+     * 支持以下任一参数签名（按优先级匹配）：
+     * {@code (JobContext, Throwable)}、{@code (JobContext)}、{@code (Throwable)} 或无参 {@code ()}。
+     * </p>
+     *
+     * @return 降级补偿方法名
+     */
+    String fallbackMethod() default "";
+
+    /**
+     * SaaS 多租户 {@code ITERATE} 全租户轮询模态下的受管并发度（默认 1 表示串行遍历）
+     * <p>
+     * 值 {@code <= 0} 时自动归一化为 {@code 1}；当大于 {@code 1} 时，通过受管 Worker 线程池与
+     * {@code Semaphore(tenantConcurrency)} 背压并发遍历各有效租户。
+     * </p>
+     *
+     * @return 多租户并发度
+     */
+    int tenantConcurrency() default 1;
+
+    /**
+     * SaaS 多租户调度模态（默认 {@link io.github.atengk.boot.job.local.enums.JobTenantMode#IGNORE} 忽略租户）
+     * <ul>
+     *   <li>{@link io.github.atengk.boot.job.local.enums.JobTenantMode#IGNORE}：系统级全局忽略租户执行</li>
+     *   <li>{@link io.github.atengk.boot.job.local.enums.JobTenantMode#PARAM}：从入参提取 tenantId，单租户隔离执行</li>
+     *   <li>{@link io.github.atengk.boot.job.local.enums.JobTenantMode#ITERATE}：自动轮询 TenantProvider 全租户 Fail-Safe 遍历执行</li>
+     * </ul>
+     *
+     * @return 租户调度模态
+     */
+    io.github.atengk.boot.job.local.enums.JobTenantMode tenantMode() default io.github.atengk.boot.job.local.enums.JobTenantMode.IGNORE;
 }

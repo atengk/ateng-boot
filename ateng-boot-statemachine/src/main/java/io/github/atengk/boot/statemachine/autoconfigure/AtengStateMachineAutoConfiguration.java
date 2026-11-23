@@ -1,6 +1,7 @@
 package io.github.atengk.boot.statemachine.autoconfigure;
 
 import io.github.atengk.boot.statemachine.core.StateMachineInterceptor;
+import io.github.atengk.boot.statemachine.core.StateTransitionAuditListener;
 import io.github.atengk.boot.statemachine.interceptor.LoggingStateMachineInterceptor;
 import io.github.atengk.boot.statemachine.interceptor.MetricsStateMachineInterceptor;
 import io.github.atengk.boot.statemachine.properties.StateMachineProperties;
@@ -55,8 +56,10 @@ public class AtengStateMachineAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(StateMachineInitializer.class)
     public StateMachineInitializer stateMachineInitializer(
-            ObjectProvider<List<StateMachineInterceptor<?, ?, ?>>> interceptorsProvider) {
+            ObjectProvider<List<StateMachineInterceptor<?, ?, ?>>> interceptorsProvider,
+            ObjectProvider<List<StateTransitionAuditListener<?, ?, ?>>> auditListenersProvider) {
         List<StateMachineInterceptor<?, ?, ?>> interceptors = interceptorsProvider.getIfAvailable(Collections::emptyList);
-        return new StateMachineInitializer(interceptors);
+        List<StateTransitionAuditListener<?, ?, ?>> auditListeners = auditListenersProvider.getIfAvailable(Collections::emptyList);
+        return new StateMachineInitializer(interceptors, auditListeners);
     }
 }

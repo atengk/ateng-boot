@@ -1,162 +1,161 @@
-# ateng-boot-sample-web Web 运行时契约与全链路追踪场景自验工程
+# ateng-boot-sample-web Web 运行时增强体验工程
 
-> 专一 `ateng-boot-web` Web 契约层与全链路追踪自验：显式强类型契约、分层参数校验防卫、因果异常脱敏、双向加签验签、自适应限流防抖、操作与接口审计、流式下载与云原生优雅停机治理。
-
----
-
-## 1. 场景痛点与功能定位
-
-`ateng-boot-web` 是面向生产就绪的 Web 运行时基底，坚守显式强类型契约与零实体泄露原则。`ateng-boot-sample-web` 专注于纯净、端到端的 HTTP 协议边界与管道自验：
-- **纯内存零 DB 依赖（Zero Database Dependency）**：零关系型数据库，完全依托内存存储与 Mock 环境自洽运行；
-- **显式契约与第一道防线校验**：坚决杜绝 `@ResponseBodyAdvice` 隐式拦截包装，验证 `Result<T>`、`ValidList<T>` 批量校验、分组校验、Long 精度防失真与时间标准化；
-- **全链路追踪与运行时观测**：验证 `TraceFilter` & `TraceUtil` MDC 链路流转、`SlowRequestFilter` 慢请求性能主动告警与长连接放行、虚拟线程执行探查；
-- **双向数据安全与加验签防重放**：验证 `@ApiSign` HMAC-SHA256 对称加签、RSA 非对称加签与国密 SM2/SM3 非对称加签、Query/Body 报文防篡改与 Nonce 防重放；
-- **高可用流量治理**：验证 `@RateLimiter` 接口/IP/用户/租户多维限流与 `@Idempotent` SpEL 防重幂等、按钮防抖与异常重试；
-- **结构化审计与环境安全**：验证 `@OperateLog` 操作审计出参动态脱敏与敏感参数排除、`OperateLogStorageProvider` SPI 内存收集、`IpUtil` 真实 IP 穿透与 RFC 6266 双重文件名流式下载。
+> 专注于演示与自验 `ateng-boot-web` 核心特性在真实业务场景下的开箱使用。
 
 ---
 
-## 2. 场景控制器架构与代码全景
+## 1. 快速启动与服务端口
 
-工程内聚五大场景控制器与专职 SPI 实现，100% 覆盖 Web 运行时核心门面与特性：
-
-| 场景控制器 / 组件 | 覆盖核心门面与注解 | 对应端到端测试 |
-| :--- | :--- | :--- |
-| `WebContractSampleController` | `Result<T>`, `ValidList<T>`, `ValidationGroups`, `GlobalExceptionHandler`, `BusinessException`, `JacksonCustomizer` | `WebContractSampleControllerTest` |
-| `WebSecuritySignSampleController` | `@ApiSign`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `Sm2Signer`, `SignCanonicalUtil`, `CachedBodyHttpServletRequest` | `WebSecuritySignSampleControllerTest`, `WebSecuritySignRsaSampleTest`, `WebSecuritySignSm2SampleTest` |
-| `WebTrafficSampleController` | `@RateLimiter`, `LimitType`, `InMemoryRateLimiterStore`, `@Idempotent`, `InMemoryIdempotentStore` | `WebTrafficSampleControllerTest` |
-| `WebAuditSampleController` | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `@WebLog`, `@FieldSensitive` | `WebAuditSampleControllerTest` |
-| `WebRuntimePipelineSampleController` | `TraceFilter`, `TraceUtil`, `ContentCachingFilter`, `SlowRequestFilter`, `SecurityHeadersFilter`, `ShallowEtagHeaderFilter`, `IpUtil`, `ServletUtil`, `/pre-stop` | `WebRuntimePipelineSampleControllerTest`, `WebSecurityHeadersAndEtagSampleTest` |
-| `WebXssSampleController` | `XssFilter`, `XssCleaner`, `XssStringDeserializer`, `@XssIgnore`, `XssHttpServletRequestWrapper` | `WebXssSampleControllerTest`, `WebXssStripModeSampleTest` |
-| `MemoryOperateLogStorageProvider` | `OperateLogStorageProvider` SPI 内存解耦实现 | 注入自验上下文 |
+- **默认 HTTP 端口**：`8080` (可在 `application.yml` 中修改)
+- **启动方式**：
+  ```bash
+  # 方式一：IDE 中运行 SampleWebApplication.java 的 main 方法
+  # 方式二：命令行启动
+  mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-web
+  ```
 
 ---
 
-## 3. 核心场景实测代码范式
+## 2. 运行环境与双模切换
 
-### 1. 显式契约与批量校验 (`ValidList` & `Result<T>`)
-```java
-@PostMapping("/users/batch")
-public Result<Integer> batchCreateUsers(@Valid @RequestBody ValidList<UserRegisterDTO> users) {
-    return Result.success(users.size());
-}
-```
-当集合中任意元素的手机号格式不合规时，快速失败并返回友好提示：
-```json
-{
-  "code": 400,
-  "msg": "手机号格式不正确",
-  "data": null,
-  "success": false,
-  "traceId": "c8a14b0365734fb4864f7bdf753b890a"
-}
-```
-
-### 2. 双向 API 加签验签与防重放 (`@ApiSign`)
-```java
-// 1. 标准下单业务接口（支持 HMAC-SHA256、RSA）
-@PostMapping("/orders")
-@ApiSign(verifyRequest = true, signResponse = true, expireSeconds = 10)
-public Result<String> createOrder(@Valid @RequestBody OrderSignDTO dto) {
-    return Result.success("ORD_SIGNED_" + dto.getOrderNo());
-}
-
-// 2. 国密 SM2/SM3 数字签名接口（政企信创高合规场景，纯 JDK 17 原生实现）
-@PostMapping("/sm2")
-@ApiSign(verifyRequest = true, signResponse = true, expireSeconds = 10)
-public Result<String> createOrderSm2(@Valid @RequestBody OrderSignDTO dto) {
-    return Result.success("SM2_SIGNED_" + dto.getOrderNo());
-}
-```
-客户端携带 `X-App-Id`、`X-Timestamp`、`X-Nonce`、`X-Signature` 发送请求；服务端验签通过后，在响应头回传 `X-Signature`。若重复提交同一 Nonce 或报文被篡改，立即拦截阻断：
-```json
-{
-  "code": 40003,
-  "msg": "请求已被处理或存在重放风险",
-  "data": null,
-  "success": false,
-  "traceId": "edf29c42e3ec4dfdfcabb67e39c1a67b"
-}
-```
-
-### 3. 操作审计与出参动态脱敏 (`@OperateLog` & SPI)
-```java
-@PostMapping("/user")
-@OperateLog(
-    module = "用户管理",
-    type = OperateTypeEnum.INSERT,
-    description = "新增系统用户",
-    excludeParams = {"password"}
-)
-public Result<UserRegisterVO> createUser(@RequestBody AuditUserDTO dto) {
-    UserRegisterVO vo = UserRegisterVO.builder()
-            .id(1846182948192841920L)
-            .name(dto.getUsername())
-            .age(25)
-            .email(dto.getEmail() != null ? dto.getEmail() : "user@example.com")
-            .phone(dto.getPhone() != null ? dto.getPhone() : "13812345678")
-            .build();
-    return Result.success(vo);
-}
-```
-- **入参敏感字段自动排除**：`operParams` 记录为 `{"username":"ateng","password":"[EXCLUDED]"}`；
-- **出参安全动态掩码**：`jsonResult` 记录为 `{"id":"1846182948192841920","name":"ateng","age":25,"email":"user@example.com","phone":"138****5678"}`；
-- **内存真明文守护**：Controller 与内存实体中手机号 100% 保持原始明文 `13812345678`。
-
-### 4. HTTP 安全响应头防御与 ETag 协商缓存 (`SecurityHeadersFilter` & `ShallowEtagHeaderFilter`)
-```java
-// 1. 字典/静态配置数据端点（支持 ETag 304 协商缓存）
-@GetMapping("/cached-dict")
-public Result<Map<String, String>> getCachedDict() {
-    Result<Map<String, String>> result = Result.success(Map.of("status", "ACTIVE", "locale", "zh_CN", "app", "ateng-boot-sample-web"));
-    result.setTimestamp(1700000000000L);
-    return result;
-}
-
-// 2. 业务自定义响应头（验证 containsHeader 守卫防覆盖机制）
-@GetMapping("/custom-security-headers")
-public Result<String> getCustomSecurityHeaders(HttpServletResponse response) {
-    response.setHeader("X-Frame-Options", "DENY"); // 保持 DENY，不被 SAMEORIGIN 覆盖
-    return Result.success("custom-headers-ok");
-}
-```
-- **等保三级基线防御**：默认自动注入 `X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、`X-XSS-Protection: 1; mode=block` 与 `Referrer-Policy: strict-origin-when-cross-origin`；
-- **容器指纹剥离**：彻底过滤与消除 `Server` 响应头（如 Tomcat 特征）；
-- **ETag 协商缓存**：开启 `ateng.boot.web.etag.enabled=true` 时，二次携带 `If-None-Match` 返回 `304 Not Modified` 且响应体为空，显著节省带宽。
-
-### 5. XSS 跨站脚本双轨无害化清洗与字段级富文本豁免 (`XssFilter` & `@XssIgnore`)
-```java
-// 1. 混合 DTO 接收：普通字段自动清洗，@XssIgnore 标注字段安全豁免放行
-@PostMapping("/article")
-public Result<ArticlePublishDTO> publishArticle(@Valid @RequestBody ArticlePublishDTO dto) {
-    return Result.success(dto);
-}
-
-// 2. 类级别整实体豁免放行
-@PostMapping("/announcement")
-public Result<AnnouncementPublishDTO> publishAnnouncement(@Valid @RequestBody AnnouncementPublishDTO dto) {
-    return Result.success(dto);
-}
-```
-- **双轨清洗**：支持 `XssMode.ESCAPE`（默认 HTML 转义）与 `XssMode.STRIP`（标签剔除），同时覆盖 Query、Form 表单与 JSON 请求体；
-- **精准豁免**：富文本正文标注 `@XssIgnore` 杜绝误伤合法 HTML 业务标签；
-- **路径白名单**：配置 `exclude-urls`（如 `/api/sample/xss/excluded/**`）全局放行特定管理发布端点。
+- **默认/CI 模式**：内置离线内存桩与自洽配置，无需启动任何外部依赖即可启动运行与跑通测试；
+- **Local 真实模式**：若需本地调优或连接真实 Redis 中间件体验 Tier 1 / Tier 2 分布式限流与防重幂等，复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml` 并按需调整配置，启动自动生效（该文件已被 Git 忽略，CI 零风险）。
 
 ---
 
-## 4. 定向集成测试准出
+## 3. 核心 Controller 接口与一键体验
+
+应用启动后，可通过以下 cURL 命令或浏览器直接发起调用体验：
+
+### 3.1 传输契约、序列化规范、异常防御与枚举字典 (`WebContractAndExceptionController` & 内置端点)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **会员实名注册 (第一道防线)** | `WebContractAndExceptionController` | `POST /sample/web/contract/user` | `curl -X POST "http://localhost:8080/sample/web/contract/user" -H "Content-Type: application/json" -d "{\"name\":\"张三\",\"age\":25,\"email\":\"zhangsan@example.com\",\"phone\":\"13812345678\"}"` |
+| **渠道商批量入驻 (ValidList 校验)** | `WebContractAndExceptionController` | `POST /sample/web/contract/users/batch` | `curl -X POST "http://localhost:8080/sample/web/contract/users/batch" -H "Content-Type: application/json" -d "[{\"name\":\"渠道商A\",\"age\":30,\"email\":\"a@example.com\",\"phone\":\"13900000001\"}]"` |
+| **会员信息更新 (分组校验)** | `WebContractAndExceptionController` | `PUT /sample/web/contract/user` | `curl -X PUT "http://localhost:8080/sample/web/contract/user" -H "Content-Type: application/json" -d "{\"id\":1846182948192841920,\"name\":\"李四\",\"age\":26,\"email\":\"lisi@example.com\",\"phone\":\"13800000002\"}"` |
+| **时间、雪花 ID 与高精度金额格式化** | `WebContractAndExceptionController` | `GET /sample/web/contract/datetime` | `curl "http://localhost:8080/sample/web/contract/datetime"` (校验 `BigDecimal("1E+7")` 输出为平原十进制 `10000000`) |
+| **枚举强类型双向反序列化** | `WebContractAndExceptionController` | `POST /sample/web/contract/enum-bind` | `curl -X POST "http://localhost:8080/sample/web/contract/enum-bind" -H "Content-Type: application/json" -d "{\"username\":\"王五\",\"statusCode\":1,\"status\":\"ACTIVE\",\"orderType\":\"normal\"}"` |
+| **单枚举字典查询 (只读端点)** | `EnumDictionaryController` (内置) | `GET /api/system/enums/userStatus` | `curl "http://localhost:8080/api/system/enums/userStatus"` |
+| **全量枚举字典索引 (只读端点)** | `EnumDictionaryController` (内置) | `GET /api/system/enums` | `curl "http://localhost:8080/api/system/enums"` |
+| **批量聚合枚举字典 (只读端点)** | `EnumDictionaryController` (内置) | `POST /api/system/enums/batch` | `curl -X POST "http://localhost:8080/api/system/enums/batch" -H "Content-Type: application/json" -d "[\"userStatus\",\"orderType\"]"` |
+| **上游自主接管枚举字典目录** | `WebContractAndExceptionController` | `GET /sample/web/contract/enums/custom-catalog` | `curl "http://localhost:8080/sample/web/contract/enums/custom-catalog?names=userStatus"` (`endpoint-enabled=false` 时禁用内置端点并由此接口接管) |
+| **受控业务异常 (轻量日志)** | `WebContractAndExceptionController` | `GET /sample/web/contract/error/business` | `curl "http://localhost:8080/sample/web/contract/error/business"` |
+| **因果链底层驱动异常 (完整堆栈)** | `WebContractAndExceptionController` | `GET /sample/web/contract/error/causal` | `curl "http://localhost:8080/sample/web/contract/error/causal"` |
+| **跨进程业务异常 traceId 透传** | `WebContractAndExceptionController` | `GET /sample/web/contract/error/remote-business` | `curl "http://localhost:8080/sample/web/contract/error/remote-business"` |
+| **未知系统异常 (生产强制脱敏)** | `WebContractAndExceptionController` | `GET /sample/web/contract/error/unexpected` | `curl "http://localhost:8080/sample/web/contract/error/unexpected"` |
+| **支付通道领域异常 (SPI 转译)** | `WebContractAndExceptionController` | `GET /sample/web/contract/error/payment` | `curl "http://localhost:8080/sample/web/contract/error/payment"` |
+| **媒体类型约束验证 (415/406)** | `WebContractAndExceptionController` | `POST /sample/web/contract/error/media-type` | `curl -X POST "http://localhost:8080/sample/web/contract/error/media-type" -H "Content-Type: text/plain" -d "invalid-type"` |
+| **分片文件上传参数缺失/正常校验** | `WebContractAndExceptionController` | `POST /sample/web/contract/error/upload` | `curl -X POST "http://localhost:8080/sample/web/contract/error/upload" -F "file=@README.md"` |
+| **大文件超限异常 (413 拦截)** | `WebContractAndExceptionController` | `GET /sample/web/contract/error/payload-too-large` | `curl "http://localhost:8080/sample/web/contract/error/payload-too-large"` |
+| **异步处理超时 (503 拦截)** | `WebContractAndExceptionController` | `GET /sample/web/contract/error/async-timeout` | `curl "http://localhost:8080/sample/web/contract/error/async-timeout"` |
+| **协议契约解包视图** | `WebContractAndExceptionController` | `GET /sample/web/contract/unpack` | `curl "http://localhost:8080/sample/web/contract/unpack"` |
+
+### 3.2 全链路追踪、请求体缓存与双向可观测审计 (`WebObservabilityAndAuditController`)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **全链路 TraceId 提取** | `WebObservabilityAndAuditController` | `GET /sample/web/observability/trace` | `curl "http://localhost:8080/sample/web/observability/trace"` |
+| **自定义 TraceId 传入** | `WebObservabilityAndAuditController` | `GET /sample/web/observability/trace` | `curl "http://localhost:8080/sample/web/observability/trace" -H "X-Trace-Id: custom-trace-888"` |
+| **虚拟线程与 Trace 状态探测** | `WebObservabilityAndAuditController` | `GET /sample/web/observability/virtual-thread` | `curl "http://localhost:8080/sample/web/observability/virtual-thread"` |
+| **请求体多次重复读取验证** | `WebObservabilityAndAuditController` | `POST /sample/web/observability/body-cache` | `curl -X POST "http://localhost:8080/sample/web/observability/body-cache" -H "Content-Type: application/json" -d "{\"action\":\"test-cache\",\"amount\":100}"` |
+| **双向报文采样与凭据掩码** | `WebObservabilityAndAuditController` | `POST /sample/web/observability/payload-echo` | `curl -X POST "http://localhost:8080/sample/web/observability/payload-echo" -H "Content-Type: application/json" -d "{\"username\":\"admin\",\"password\":\"Secret123\",\"token\":\"tok-xyz\"}"` |
+| **免采样白名单路径验证** | `WebObservabilityAndAuditController` | `POST /sample/web/observability/payload-excluded` | `curl -X POST "http://localhost:8080/sample/web/observability/payload-excluded" -H "Content-Type: application/json" -d "{\"exempt\":\"data\"}"` |
+| **新增操作员审计 (动态脱敏)** | `WebObservabilityAndAuditController` | `POST /sample/web/observability/audit/operator` | `curl -X POST "http://localhost:8080/sample/web/observability/audit/operator" -H "Content-Type: application/json" -d "{\"username\":\"operator_a\",\"password\":\"AdminPass123\",\"email\":\"op@example.com\",\"phone\":\"13812345678\"}"` |
+| **查询操作员审计记录** | `WebObservabilityAndAuditController` | `GET /sample/web/observability/audit/operator/10086` | `curl "http://localhost:8080/sample/web/observability/audit/operator/10086"` |
+| **操作异常审计状态捕获** | `WebObservabilityAndAuditController` | `GET /sample/web/observability/audit/error` | `curl "http://localhost:8080/sample/web/observability/audit/error"` |
+| **接口调用耗时日志审计** | `WebObservabilityAndAuditController` | `POST /sample/web/observability/weblog` | `curl -X POST "http://localhost:8080/sample/web/observability/weblog" -H "Content-Type: application/json" -d "{\"username\":\"audited_user\",\"password\":\"pass456\"}"` |
+| **@OperateLog 默认敏感基线脱敏** | `WebObservabilityAndAuditController` | `POST /sample/web/observability/audit/default-mask` | `curl -X POST "http://localhost:8080/sample/web/observability/audit/default-mask" -H "Content-Type: application/json" -d "{\"account\":\"sec_admin\",\"password\":\"YOUR_PASSWORD\",\"token\":\"YOUR_TOKEN\",\"authorization\":\"Bearer YOUR_JWT_TOKEN\"}"` |
+| **@WebLog 默认敏感基线脱敏** | `WebObservabilityAndAuditController` | `POST /sample/web/observability/weblog/default-mask` | `curl -X POST "http://localhost:8080/sample/web/observability/weblog/default-mask" -H "Content-Type: application/json" -d "{\"account\":\"sec_admin\",\"password\":\"YOUR_PASSWORD\",\"token\":\"YOUR_TOKEN\",\"authorization\":\"Bearer YOUR_JWT_TOKEN\"}"` |
+| **慢报表查询耗时告警模拟** | `WebObservabilityAndAuditController` | `GET /sample/web/observability/slow-query` | `curl "http://localhost:8080/sample/web/observability/slow-query?delayMs=60"` |
+| **慢请求白名单免告警放行** | `WebObservabilityAndAuditController` | `GET /sample/web/observability/slow-excluded` | `curl "http://localhost:8080/sample/web/observability/slow-excluded?delayMs=60"` |
+
+### 3.3 接口防刷限流与防重幂等治理 (`WebTrafficGovernanceController`)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **全局默认接口限流 (2次/10秒)** | `WebTrafficGovernanceController` | `GET /sample/web/traffic/ratelimit/default` | `curl "http://localhost:8080/sample/web/traffic/ratelimit/default"` |
+| **短信验证码 IP 限流防刷与 XFF 防伪造** | `WebTrafficGovernanceController` | `GET /sample/web/traffic/ratelimit/ip` | `curl -H "X-Forwarded-For: 203.0.113.50" "http://localhost:8080/sample/web/traffic/ratelimit/ip"` (非授信代理仅取直连 `remoteAddr` 限流；本机已在 `trusted-proxies` 白名单内可解析代理链) |
+| **登录用户配额限流 (2次/10秒)** | `WebTrafficGovernanceController` | `GET /sample/web/traffic/ratelimit/user` | `curl "http://localhost:8080/sample/web/traffic/ratelimit/user"` |
+| **IP 与租户复合维度限流** | `WebTrafficGovernanceController` | `GET /sample/web/traffic/ratelimit/composite` | `curl "http://localhost:8080/sample/web/traffic/ratelimit/composite?tenantId=tenant-A"` |
+| **SaaS 多租户原生隔离限流** | `WebTrafficGovernanceController` | `GET /sample/web/traffic/ratelimit/tenant` | `curl "http://localhost:8080/sample/web/traffic/ratelimit/tenant"` |
+| **电商订单支付 SpEL 防重** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/idempotent/order` | `curl -X POST "http://localhost:8080/sample/web/traffic/idempotent/order" -H "Content-Type: application/json" -d "{\"orderNo\":\"ORD_1001\",\"amount\":99.9}"` |
+| **表单特征指纹自动哈希防抖** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/idempotent/button` | `curl -X POST "http://localhost:8080/sample/web/traffic/idempotent/button?formToken=TOKEN_A1B2"` |
+| **营销优惠券领取精准防重** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/idempotent/coupon` | `curl -X POST "http://localhost:8080/sample/web/traffic/idempotent/coupon?couponCode=CPN_8888"` |
+| **业务异常幂等锁自动释放** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/idempotent/fail-retry` | `curl -X POST "http://localhost:8080/sample/web/traffic/idempotent/fail-retry?bizId=BIZ_001&fail=false"` |
+| **幂等锁定状态主动探针** | `WebTrafficGovernanceController` | `GET /sample/web/traffic/idempotent/is-locked` | `curl "http://localhost:8080/sample/web/traffic/idempotent/is-locked?key=order:pay:ORD_1001"` |
+| **限流剩余许可只读探针** | `WebTrafficGovernanceController` | `GET /sample/web/traffic/ratelimit/permits` | `curl "http://localhost:8080/sample/web/traffic/ratelimit/permits?key=rate_limit:default:/sample/web/traffic/ratelimit/default&count=2&time=10&unit=SECONDS"` |
+| **限流状态重置管理** | `WebTrafficGovernanceController` | `POST /sample/web/traffic/ratelimit/reset` | `curl -X POST "http://localhost:8080/sample/web/traffic/ratelimit/reset?key=rate_limit:default:/sample/web/traffic/ratelimit/default"` |
+
+### 3.4 传输安全防护网、双向加签与边界防火墙 (`WebSecurityAndSignController`)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **实时计算签名头 (多算法按需生成)** | `WebSecurityAndSignController` | `POST /sample/web/security/sign/prepare-headers` | `curl -X POST "http://localhost:8080/sample/web/security/sign/prepare-headers" -H "Content-Type: application/json" -d "{\"uri\":\"/sample/web/security/sign/orders\",\"algorithm\":\"HMAC_SHA256\",\"body\":\"{\\\"orderNo\\\":\\\"ORD_001\\\",\\\"amount\\\":99.9}\"}"` (可选 `algorithm`: `HMAC_SHA256` / `RSA` / `SM2`) |
+| **商户提单双向加验签 (HMAC-SHA256)** | `WebSecurityAndSignController` | `POST /sample/web/security/sign/orders` | `curl -X POST "http://localhost:8080/sample/web/security/sign/orders" -H "Content-Type: application/json" -H "X-App-Id: test-app" -H "X-Timestamp: <ts>" -H "X-Nonce: <nonce>" -H "X-Signature: <sig>" -d "{\"orderNo\":\"ORD_001\",\"amount\":99.9}"` (先调 `/prepare-headers` 生成动态签名头) |
+| **国密 SM2/SM3 双向加验签 (注解路由)** | `WebSecurityAndSignController` | `POST /sample/web/security/sign/sm2` | `curl -X POST "http://localhost:8080/sample/web/security/sign/sm2" -H "Content-Type: application/json" -H "X-App-Id: test-app" -H "X-Timestamp: <ts>" -H "X-Nonce: <nonce>" -H "X-Signature: <sig>" -d "{\"orderNo\":\"ORD_SM2_001\",\"amount\":199.0}"` (端点显式声明 `@ApiSign(algorithm = SignAlgorithm.SM2)`，支持单应用内与 HMAC/RSA 多算法共存，优先读取 `sm2-public-key`/`sm2-private-key`) |
+| **RSA 双向加验签 (注解路由)** | `WebSecurityAndSignController` | `POST /sample/web/security/sign/rsa` | `curl -X POST "http://localhost:8080/sample/web/security/sign/rsa" -H "Content-Type: application/json" -H "X-App-Id: test-app" -H "X-Timestamp: <ts>" -H "X-Nonce: <nonce>" -H "X-Signature: <sig>" -d "{\"orderNo\":\"ORD_RSA_001\",\"amount\":299.0}"` (端点显式声明 `@ApiSign(algorithm = SignAlgorithm.RSA)`，优先读取 `rsa-public-key`/`rsa-private-key`) |
+| **GET 查询参数签名验证** | `WebSecurityAndSignController` | `GET /sample/web/security/sign/query` | `curl "http://localhost:8080/sample/web/security/sign/query?code=MCH_001"` (需配合 `/prepare-headers` 携带请求签名头) |
+| **仅入站验签 (关闭响应回签)** | `WebSecurityAndSignController` | `POST /sample/web/security/sign/inbound` | `curl -X POST "http://localhost:8080/sample/web/security/sign/inbound" -H "Content-Type: application/json" -d "{\"orderNo\":\"ORD_IN_001\",\"amount\":50.0}"` (需配合签名头触发入站验签) |
+| **敏感报表出站强制加签** | `WebSecurityAndSignController` | `GET /sample/web/security/sign/outbound` | `curl "http://localhost:8080/sample/web/security/sign/outbound"` |
+| **资讯发布与富文本豁免 (XSS)** | `WebSecurityAndSignController` | `POST /sample/web/security/xss/article` | `curl -X POST "http://localhost:8080/sample/web/security/xss/article" -H "Content-Type: application/json" -d "{\"title\":\"<script>alert(1)</script>安全资讯\",\"content\":\"<p>富文本HTML内容</p>\",\"author\":\"admin\"}"` |
+| **类级 XSS 豁免公告发布** | `WebSecurityAndSignController` | `POST /sample/web/security/xss/announcement` | `curl -X POST "http://localhost:8080/sample/web/security/xss/announcement" -H "Content-Type: application/json" -d "{\"title\":\"<h1>全站系统公告</h1>\",\"content\":\"<div>全站公告富文本</div>\"}"` |
+| **Query 搜索参数 XSS 清洗** | `WebSecurityAndSignController` | `GET /sample/web/security/xss/query` | `curl "http://localhost:8080/sample/web/security/xss/query?keyword=%3Cscript%3Ealert(1)%3C/script%3E关键词"` |
+| **Form 表单参数 XSS 清洗** | `WebSecurityAndSignController` | `POST /sample/web/security/xss/form` | `curl -X POST "http://localhost:8080/sample/web/security/xss/form" -d "title=<script>alert(1)</script>标题&summary=<b>摘要</b>"` |
+| **请求头 XSS 安全清洗验证** | `WebSecurityAndSignController` | `GET /sample/web/security/xss/header` | `curl "http://localhost:8080/sample/web/security/xss/header" -H "X-Custom-Title: <script>alert(1)</script>"` |
+| **白名单 URL 排除 XSS 清洗** | `WebSecurityAndSignController` | `POST /sample/web/security/xss/excluded/article` | `curl -X POST "http://localhost:8080/sample/web/security/xss/excluded/article" -H "Content-Type: application/json" -d "{\"title\":\"<script>alert(1)</script>免洗标题\",\"content\":\"<p>原文内容</p>\",\"author\":\"admin\"}"` |
+| **方法级 IP 白名单放行** | `WebSecurityAndSignController` | `GET /sample/web/security/ip/whitelist` | `curl "http://localhost:8080/sample/web/security/ip/whitelist"` |
+| **方法级 IP 黑名单校验** | `WebSecurityAndSignController` | `GET /sample/web/security/ip/blacklist` | `curl "http://localhost:8080/sample/web/security/ip/blacklist"` |
+| **CIDR 子网掩码与 IPv6 网段** | `WebSecurityAndSignController` | `GET /sample/web/security/ip/cidr-ipv6` | `curl "http://localhost:8080/sample/web/security/ip/cidr-ipv6"` |
+| **自定义拒绝文案 (HTTP 200)** | `WebSecurityAndSignController` | `GET /sample/web/security/ip/custom-message` | `curl "http://localhost:8080/sample/web/security/ip/custom-message"` |
+| **物理 403 切断模式** | `WebSecurityAndSignController` | `GET /sample/web/security/ip/http-403` | `curl -i "http://localhost:8080/sample/web/security/ip/http-403"` |
+| **路径级 IP 过滤器受保护管理页** | `WebSecurityAndSignController` | `GET /sample/web/security/ip/filter-admin/dashboard` | `curl "http://localhost:8080/sample/web/security/ip/filter-admin/dashboard"` (需开启 `ip-access-control.filter.enabled=true`) |
+| **路径级 IP 过滤器排除放行探测** | `WebSecurityAndSignController` | `GET /sample/web/security/ip/filter-admin/public-ping` | `curl "http://localhost:8080/sample/web/security/ip/filter-admin/public-ping"` |
+| **业务安全响应头防覆盖** | `WebSecurityAndSignController` | `GET /sample/web/security/headers/custom` | `curl -i "http://localhost:8080/sample/web/security/headers/custom"` |
+| **ETag 协商缓存与 304 校验** | `WebSecurityAndSignController` | `GET /sample/web/security/etag/dict` | `curl -i "http://localhost:8080/sample/web/security/etag/dict"` |
+| **CORS 动态跨域凭证反射** | `WebSecurityAndSignController` | `GET /sample/web/security/cors/ping` | `curl -i "http://localhost:8080/sample/web/security/cors/ping" -H "Origin: http://localhost:3000"` |
+
+### 3.5 API 多版本路由分流与 Servlet 运行时工具集 (`WebRoutingAndUtilityController` & `WebVersionV1/V2Controller`)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **URL 前缀路由至 V1 版本** | `WebVersionV1Controller` | `GET /v1/sample/web/routing/member/info` | `curl "http://localhost:8080/v1/sample/web/routing/member/info"` |
+| **URL 前缀路由至 V2 版本** | `WebVersionV2Controller` | `GET /v2/sample/web/routing/member/info` | `curl "http://localhost:8080/v2/sample/web/routing/member/info"` |
+| **请求头分流至 V2 版本** | `WebVersionV2Controller` | `GET /sample/web/routing/member/info` | `curl "http://localhost:8080/sample/web/routing/member/info" -H "X-API-Version: 2"` |
+| **缺省无头路由回退默认版本** | `WebVersionV1Controller` | `GET /sample/web/routing/member/info` | `curl "http://localhost:8080/sample/web/routing/member/info"` |
+| **方法级细粒度版本覆盖 (V2.1)** | `WebVersionV2Controller` | `GET /v2.1/sample/web/routing/member/feature` | `curl "http://localhost:8080/v2.1/sample/web/routing/member/feature"` |
+| **客户端真实 IP 提取** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/client-ip` | `curl "http://localhost:8080/sample/web/routing/client-ip" -H "X-Forwarded-For: 203.0.113.195"` |
+| **可信反向代理真实 IP 逆向提取** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/client-ip/trusted` | `curl "http://localhost:8080/sample/web/routing/client-ip/trusted?trustedProxies=10.0.0.0/8" -H "X-Forwarded-For: 203.0.113.195, 10.0.0.1"` |
+| **RFC 6266 安全防乱码下载** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/download` | `curl -i "http://localhost:8080/sample/web/routing/download"` |
+| **CIDR 子网掩码范围匹配** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/ip-check` | `curl "http://localhost:8080/sample/web/routing/ip-check?ip=192.168.1.50&cidr=192.168.1.0/24"` |
+| **请求头 User-Agent 提取与零依赖解析** | `WebRoutingAndUtilityController` | `GET /sample/web/routing/user-agent` | `curl "http://localhost:8080/sample/web/routing/user-agent" -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.2592.81"` |
+
+### 3.6 云原生生命周期治理与安全防呆自检 (`WebCloudLifecycleController` & 内置端点)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **就绪探针与防呆自检聚合视图** | `WebCloudLifecycleController` | `GET /sample/web/lifecycle/ready-and-sanity` | `curl "http://localhost:8080/sample/web/lifecycle/ready-and-sanity"` |
+| **就绪状态卡片格式化视图** | `WebCloudLifecycleController` | `GET /sample/web/lifecycle/ready-card` | `curl "http://localhost:8080/sample/web/lifecycle/ready-card"` |
+| **高危配置主动防呆安全自检** | `WebCloudLifecycleController` | `GET /sample/web/lifecycle/sanity-check` | `curl "http://localhost:8080/sample/web/lifecycle/sanity-check"` |
+| **K8s 优雅停机就绪探针翻转探测 (GET)** | `PreStopController` (内置) | `GET /pre-stop` | `curl -i "http://localhost:8080/pre-stop"` (返回 `inFlightRequestsAtStart` 与 `inFlightRequestsRemaining` 在途排空计数) |
+| **K8s preStop 钩子触发流量排空 (POST)** | `PreStopController` (内置) | `POST /pre-stop` | `curl -i -X POST "http://localhost:8080/pre-stop"` (触发幂等排空并返回在途请求快照) |
+
+### 3.7 纯 JDK 原生轻量图形验证码生成与受管校验 (`WebCaptchaController`)
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **生成默认 SVG 图形验证码** | `WebCaptchaController` | `GET /sample/web/captcha/image` | `curl "http://localhost:8080/sample/web/captcha/image"` |
+| **生成简单算术图形验证码** | `WebCaptchaController` | `GET /sample/web/captcha/math` | `curl "http://localhost:8080/sample/web/captcha/math"` |
+| **账号登录并强校验验证码 (一次一密)** | `WebCaptchaController` | `POST /sample/web/captcha/login` | `curl -X POST "http://localhost:8080/sample/web/captcha/login" -H "Content-Type: application/json" -d "{\"username\":\"ateng\",\"password\":\"YOUR_PASSWORD\",\"captchaKey\":\"<key>\",\"captchaCode\":\"<code>\"}"` |
+| **独立布尔核验图形验证码** | `WebCaptchaController` | `POST /sample/web/captcha/verify` | `curl -X POST "http://localhost:8080/sample/web/captcha/verify" -H "Content-Type: application/json" -d "{\"captchaKey\":\"<key>\",\"captchaCode\":\"<code>\"}"` |
+| **主动失效指定图形验证码** | `WebCaptchaController` | `DELETE /sample/web/captcha/{captchaKey}` | `curl -X DELETE "http://localhost:8080/sample/web/captcha/<key>"` |
+
+---
+
+## 4. 全真自动化回归命令
 
 ```bash
-mvn test -pl ateng-boot-samples/ateng-boot-sample-web -am -T 1C -nsu -B
+mvn test -pl ateng-boot-web,ateng-boot-samples/ateng-boot-sample-web -am -T 1C -nsu -B
 ```
 
-所有场景测试基于 `MockMvc` 端到端全自洽执行，零物理网络与数据库依赖：
-```
-[INFO] Results:
-[INFO] 
-[INFO] Tests run: 54, Failures: 0, Errors: 0, Skipped: 0
-[INFO] 
-[INFO] ------------------------------------------------------------------------
-[INFO] BUILD SUCCESS
-[INFO] ------------------------------------------------------------------------
-```
+> 详细原理机制、配置清单与扩展定制，请参阅核心 Starter 文档：[ateng-boot-web README](../../ateng-boot-web/README.md)。

@@ -7,7 +7,7 @@
     <parent>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot-samples</artifactId>
-        <version>1.0.0</version>
+        <version>1.2.0</version>
     </parent>
 
     <artifactId>ateng-boot-sample-job-local</artifactId>
@@ -27,6 +27,12 @@
         <dependency>
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-web</artifactId>
+        </dependency>
+
+        <!-- Spring Data Redis (用于轻量集群互斥锁 RedisJobClusterLockProvider 双模联调) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
         <!-- Spring Boot Actuator 运维端点监控 -->

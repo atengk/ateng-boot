@@ -1,12 +1,19 @@
 package io.github.atengk.boot.rocketmq.autoconfigure;
 
+import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.rocketmq.checker.RocketmqTransactionChecker;
 import io.github.atengk.boot.rocketmq.consumer.DefaultPushConsumerFactory;
+import io.github.atengk.boot.rocketmq.consumer.DefaultSimpleConsumerFactory;
 import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
+import io.github.atengk.boot.rocketmq.consumer.SimpleConsumerFactory;
+import io.github.atengk.boot.rocketmq.container.RocketmqContainerManager;
 import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import io.github.atengk.boot.rocketmq.spi.RocketmqLocalTransactionChecker;
+import io.github.atengk.boot.rocketmq.spi.RocketmqPoisonPillCallback;
 import io.github.atengk.boot.rocketmq.spi.RocketmqTransactionFailureCallback;
+import io.github.atengk.boot.rocketmq.template.RocketmqDeadLetterReplayTemplate;
+import io.github.atengk.boot.rocketmq.template.RocketmqSimpleConsumerTemplate;
 import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
 import jakarta.validation.Validator;
 import lombok.extern.slf4j.Slf4j;
@@ -20,6 +27,7 @@ import org.apache.rocketmq.client.apis.producer.ProducerBuilder;
 import org.apache.rocketmq.client.apis.producer.TransactionChecker;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -29,6 +37,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.util.StringUtils;
 
 import java.time.Duration;
+import java.util.concurrent.Executor;
 
 /**
  * RocketMQ 5.x 生产级增强基础设施自动装配核心类
@@ -41,6 +50,7 @@ import java.time.Duration;
  */
 @Slf4j
 @AutoConfiguration
+@AutoConfigureAfter(AtengAsyncAutoConfiguration.class)
 @ConditionalOnClass(Producer.class)
 @ConditionalOnProperty(prefix = "ateng.boot.rocketmq", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(AtengRocketmqProperties.class)
@@ -72,7 +82,8 @@ public class AtengRocketmqAutoConfiguration {
 
         ClientConfigurationBuilder builder = ClientConfiguration.newBuilder()
                 .setEndpoints(properties.getEndpoints())
-                .setRequestTimeout(effectiveTimeout != null ? effectiveTimeout : properties.getRequestTimeout());
+                .setRequestTimeout(effectiveTimeout != null ? effectiveTimeout : properties.getRequestTimeout())
+                .enableSsl(properties.isSslEnabled());
 
         if (StringUtils.hasText(properties.getAccessKey()) && StringUtils.hasText(properties.getSecretKey())) {
             builder.setCredentialProvider(new StaticSessionCredentialsProvider(
@@ -128,8 +139,9 @@ public class AtengRocketmqAutoConfiguration {
     public RocketmqTemplate rocketmqTemplate(
             Producer producer,
             AtengRocketmqProperties properties,
-            ObjectProvider<RocketmqTransactionFailureCallback> failureCallbackProvider) {
-        return new RocketmqTemplate(producer, properties, failureCallbackProvider);
+            ObjectProvider<RocketmqTransactionFailureCallback> failureCallbackProvider,
+            ObjectProvider<Executor> taskExecutorProvider) {
+        return new RocketmqTemplate(producer, properties, failureCallbackProvider, taskExecutorProvider);
     }
 
     /**
@@ -142,6 +154,29 @@ public class AtengRocketmqAutoConfiguration {
     }
 
     /**
+     * RocketMQ SimpleConsumer 构造工厂
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SimpleConsumerFactory simpleConsumerFactory() {
+        return new DefaultSimpleConsumerFactory();
+    }
+
+    /**
+     * RocketMQ 消费端流式拉取与租约控制门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public RocketmqSimpleConsumerTemplate rocketmqSimpleConsumerTemplate(
+            AtengRocketmqProperties properties,
+            ObjectProvider<ClientConfiguration> clientConfigurationProvider,
+            SimpleConsumerFactory simpleConsumerFactory,
+            ObjectProvider<Executor> taskExecutorProvider) {
+        return new RocketmqSimpleConsumerTemplate(
+                properties, clientConfigurationProvider, simpleConsumerFactory, taskExecutorProvider);
+    }
+
+    /**
      * RocketMQ 声明式消费端监听容器与生命周期管理器
      */
     @Bean
@@ -150,11 +185,39 @@ public class AtengRocketmqAutoConfiguration {
             AtengRocketmqProperties properties,
             ObjectProvider<ClientConfiguration> clientConfigurationProvider,
             PushConsumerFactory pushConsumerFactory,
-            ObjectProvider<Validator> validatorProvider) {
+            ObjectProvider<Validator> validatorProvider,
+            ObjectProvider<Executor> taskExecutorProvider,
+            ObjectProvider<Producer> producerProvider,
+            ObjectProvider<RocketmqPoisonPillCallback> poisonPillCallbackProvider) {
         return new RocketmqConsumerContainer(
                 properties,
                 clientConfigurationProvider,
                 pushConsumerFactory,
-                validatorProvider);
+                validatorProvider,
+                taskExecutorProvider,
+                producerProvider,
+                poisonPillCallbackProvider);
+    }
+
+    /**
+     * RocketMQ 运行期消费监听容器运维与动态流控门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public RocketmqContainerManager rocketmqContainerManager(RocketmqConsumerContainer consumerContainer) {
+        return new RocketmqContainerManager(consumerContainer);
+    }
+
+    /**
+     * RocketMQ 死信队列治理与受控重放门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean({RocketmqTemplate.class, RocketmqSimpleConsumerTemplate.class})
+    public RocketmqDeadLetterReplayTemplate rocketmqDeadLetterReplayTemplate(
+            RocketmqSimpleConsumerTemplate simpleConsumerTemplate,
+            RocketmqTemplate rocketmqTemplate,
+            AtengRocketmqProperties properties) {
+        return new RocketmqDeadLetterReplayTemplate(simpleConsumerTemplate, rocketmqTemplate, properties);
     }
 }

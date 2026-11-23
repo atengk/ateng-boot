@@ -1,6 +1,9 @@
 package io.github.atengk.boot.rabbitmq.autoconfig;
 
+import io.github.atengk.boot.rabbitmq.executor.RabbitBatchExecutor;
 import io.github.atengk.boot.rabbitmq.interceptor.RabbitListenerGlobalAdvice;
+import io.github.atengk.boot.rabbitmq.manager.RabbitContainerManager;
+import io.github.atengk.boot.rabbitmq.template.RabbitDeadLetterReplayTemplate;
 import io.github.atengk.boot.rabbitmq.template.RabbitReliableTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -10,6 +13,7 @@ import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.listener.ConditionalRejectingErrorHandler;
 import org.springframework.amqp.rabbit.listener.FatalExceptionStrategy;
+import org.springframework.amqp.rabbit.listener.RabbitListenerEndpointRegistry;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.amqp.support.converter.SimpleMessageConverter;
@@ -47,11 +51,13 @@ class AtengRabbitmqAutoConfigurationTest {
             assertThat(context).hasSingleBean(FatalExceptionStrategy.class);
             assertThat(context).hasSingleBean(ConditionalRejectingErrorHandler.class);
             assertThat(context).hasSingleBean(RabbitListenerGlobalAdvice.class);
+            assertThat(context).hasSingleBean(RabbitContainerManager.class);
+            assertThat(context).hasSingleBean(RabbitBatchExecutor.class);
         });
     }
 
     @Test
-    @DisplayName("存在 RabbitTemplate 时成功装配 RabbitReliableTemplate 门面")
+    @DisplayName("存在 RabbitTemplate 时成功装配 RabbitReliableTemplate 与 RabbitDeadLetterReplayTemplate 门面")
     void testRabbitReliableTemplateAutoConfiguration() {
         contextRunner
                 .withUserConfiguration(MockRabbitTemplateConfiguration.class)
@@ -59,6 +65,34 @@ class AtengRabbitmqAutoConfigurationTest {
                     assertThat(context).hasSingleBean(RabbitReliableTemplate.class);
                     RabbitReliableTemplate template = context.getBean(RabbitReliableTemplate.class);
                     assertThat(template.getRabbitTemplate()).isNotNull();
+
+                    assertThat(context).hasSingleBean(RabbitDeadLetterReplayTemplate.class);
+                    RabbitDeadLetterReplayTemplate dlqTemplate = context.getBean(RabbitDeadLetterReplayTemplate.class);
+                    assertThat(dlqTemplate.getRabbitTemplate()).isNotNull();
+                });
+    }
+
+    @Test
+    @DisplayName("用户自定义 RabbitContainerManager 时平滑无缝覆盖 (@ConditionalOnMissingBean)")
+    void testUserCustomRabbitContainerManagerOverride() {
+        RabbitContainerManager customManager = new RabbitContainerManager((RabbitListenerEndpointRegistry) null);
+        contextRunner
+                .withBean("customRabbitContainerManager", RabbitContainerManager.class, () -> customManager)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RabbitContainerManager.class);
+                    assertThat(context.getBean(RabbitContainerManager.class)).isSameAs(customManager);
+                });
+    }
+
+    @Test
+    @DisplayName("用户自定义 RabbitBatchExecutor 时平滑无缝覆盖 (@ConditionalOnMissingBean)")
+    void testUserCustomRabbitBatchExecutorOverride() {
+        RabbitBatchExecutor customExecutor = new RabbitBatchExecutor(new SimpleMessageConverter());
+        contextRunner
+                .withBean("customRabbitBatchExecutor", RabbitBatchExecutor.class, () -> customExecutor)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RabbitBatchExecutor.class);
+                    assertThat(context.getBean(RabbitBatchExecutor.class)).isSameAs(customExecutor);
                 });
     }
 
@@ -73,9 +107,12 @@ class AtengRabbitmqAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(ContainerCustomizer.class);
                     assertThat(context).doesNotHaveBean(RabbitTemplate.ReturnsCallback.class);
                     assertThat(context).doesNotHaveBean(RabbitReliableTemplate.class);
+                    assertThat(context).doesNotHaveBean(RabbitDeadLetterReplayTemplate.class);
                     assertThat(context).doesNotHaveBean(FatalExceptionStrategy.class);
                     assertThat(context).doesNotHaveBean(ConditionalRejectingErrorHandler.class);
                     assertThat(context).doesNotHaveBean(RabbitListenerGlobalAdvice.class);
+                    assertThat(context).doesNotHaveBean(RabbitContainerManager.class);
+                    assertThat(context).doesNotHaveBean(RabbitBatchExecutor.class);
                 });
     }
 
@@ -142,6 +179,119 @@ class AtengRabbitmqAutoConfigurationTest {
                         assertThat(context).doesNotHaveBean("atengRabbitVirtualThreadCustomizer");
                     }
                 });
+    }
+
+    @Test
+    @DisplayName("consumer.batch.enabled=true 时后置增强 SimpleRabbitListenerContainerFactory 开启批量消费与超时")
+    void testConsumerBatchEnabledContainerFactoryCustomization() {
+        contextRunner
+                .withUserConfiguration(MockContainerFactoryConfiguration.class)
+                .withPropertyValues(
+                        "ateng.boot.rabbitmq.consumer.batch.enabled=true",
+                        "ateng.boot.rabbitmq.consumer.batch.size=80",
+                        "ateng.boot.rabbitmq.consumer.batch.max-wait-time=800ms"
+                )
+                .run(context -> {
+                    assertThat(context).hasSingleBean(org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory.class);
+                    org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory factory =
+                            context.getBean(org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory.class);
+
+                    Boolean consumerBatchEnabled = (Boolean) org.springframework.test.util.ReflectionTestUtils.getField(factory, "consumerBatchEnabled");
+                    Boolean batchListener = (Boolean) org.springframework.test.util.ReflectionTestUtils.getField(factory, "batchListener");
+                    Integer batchSize = (Integer) org.springframework.test.util.ReflectionTestUtils.getField(factory, "batchSize");
+                    Long batchReceiveTimeout = (Long) org.springframework.test.util.ReflectionTestUtils.getField(factory, "batchReceiveTimeout");
+
+                    assertThat(consumerBatchEnabled).isTrue();
+                    assertThat(batchListener).isTrue();
+                    assertThat(batchSize).isEqualTo(80);
+                    assertThat(batchReceiveTimeout).isEqualTo(800L);
+                });
+    }
+
+    @Test
+    @DisplayName("batchRabbitListenerContainerFactory 仅保留单一路径外层重试 + 内层全局拦截链顺序且无重复 Advice")
+    void testBatchFactoryAdviceChainOrderWithoutDuplicates() {
+        contextRunner
+                .withUserConfiguration(MockConnectionFactoryConfiguration.class)
+                .withPropertyValues("ateng.boot.rabbitmq.consumer.retry.enabled=true")
+                .run(context -> {
+                    org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory batchFactory =
+                            context.getBean("batchRabbitListenerContainerFactory",
+                                    org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory.class);
+                    org.aopalliance.aop.Advice[] chain = batchFactory.getAdviceChain();
+                    assertThat(chain).hasSize(2);
+                    assertThat(chain[0]).isInstanceOf(org.springframework.retry.interceptor.RetryOperationsInterceptor.class);
+                    assertThat(chain[1]).isInstanceOf(RabbitListenerGlobalAdvice.class);
+
+                    Object operations = org.springframework.test.util.ReflectionTestUtils.getField(chain[0], "retryOperations");
+                    Object recoverer = org.springframework.test.util.ReflectionTestUtils.getField(chain[0], "recoverer");
+                    assertThat(operations).isNotNull();
+                    assertThat(recoverer).isInstanceOf(org.springframework.retry.interceptor.MethodInvocationRecoverer.class);
+
+                    ch.qos.logback.classic.Logger logger = (ch.qos.logback.classic.Logger)
+                            org.slf4j.LoggerFactory.getLogger(AtengRabbitmqAutoConfiguration.class);
+                    ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                            new ch.qos.logback.core.read.ListAppender<>();
+                    appender.start();
+                    logger.addAppender(appender);
+                    try {
+                        org.springframework.amqp.core.MessageProperties props =
+                                new org.springframework.amqp.core.MessageProperties();
+                        props.setReceivedExchange("ex.biz");
+                        props.setReceivedRoutingKey("rk.biz");
+                        props.setConsumerQueue("q.biz");
+                        props.setHeader("X-Biz-Key", "biz-99");
+                        props.setHeader("X-Trace-Id", "trace-99");
+                        org.springframework.amqp.core.Message msg =
+                                new org.springframework.amqp.core.Message("bad".getBytes(), props);
+
+                        org.springframework.retry.interceptor.MethodInvocationRecoverer<?> methodRecoverer =
+                                (org.springframework.retry.interceptor.MethodInvocationRecoverer<?>) recoverer;
+                        org.assertj.core.api.Assertions.assertThatThrownBy(
+                                () -> methodRecoverer.recover(new Object[]{null, msg}, new IllegalStateException("重试耗尽")))
+                                .isInstanceOf(org.springframework.amqp.rabbit.support.ListenerExecutionFailedException.class)
+                                .hasCauseInstanceOf(org.springframework.amqp.AmqpRejectAndDontRequeueException.class);
+
+                        assertThat(appender.list)
+                                .anySatisfy(event -> {
+                                    assertThat(event.getLevel()).isEqualTo(ch.qos.logback.classic.Level.ERROR);
+                                    assertThat(event.getFormattedMessage())
+                                            .contains("[MQ-CONSUME-RETRY-EXHAUSTED]")
+                                            .contains("biz-99")
+                                            .contains("trace-99");
+                                });
+                    } finally {
+                        logger.detachAppender(appender);
+                    }
+                });
+
+        contextRunner
+                .withUserConfiguration(MockConnectionFactoryConfiguration.class)
+                .withPropertyValues("ateng.boot.rabbitmq.consumer.retry.enabled=false")
+                .run(context -> {
+                    org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory batchFactory =
+                            context.getBean("batchRabbitListenerContainerFactory",
+                                    org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory.class);
+                    org.aopalliance.aop.Advice[] chain = batchFactory.getAdviceChain();
+                    assertThat(chain).hasSize(1);
+                    assertThat(chain[0]).isInstanceOf(RabbitListenerGlobalAdvice.class);
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class MockConnectionFactoryConfiguration {
+        @Bean
+        public ConnectionFactory connectionFactory() {
+            return mock(ConnectionFactory.class);
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class MockContainerFactoryConfiguration {
+        @Bean
+        public org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory rabbitListenerContainerFactory() {
+            return new org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory();
+        }
     }
 
     @Configuration(proxyBeanMethods = false)

@@ -1,6 +1,6 @@
 # Search 双引擎全文检索与流批分析底座
 
-面向海量数据搜索、商品与工单组合筛选、高亮聚合查询的大数据全文检索基础设施，坚持纯原生与零臃肿依赖哲学，提供以 Elasticsearch 8.x 为主核并兼顾 OpenSearch 驱动解耦的统一操作门面 SearchTemplate、强类型 SearchHit 载荷、流式安全 DSL 构造器、多字段高亮提取、Search-After 深度分页防 OOM 治理、受管流式 BulkProcessor、地理空间/AI 向量检索与 100% 离线自洽测试沙箱。
+面向海量数据搜索、商品与工单组合筛选、高亮聚合查询的大数据全文检索基础设施，坚持纯原生与零臃肿依赖哲学，以 Elasticsearch 8.x 官方原生客户端为唯一内置内核并通过协议与 DSL 方言适配层兼容 OpenSearch 高频能力，提供统一操作门面 SearchTemplate、强类型 SearchHit 载荷、流式安全 DSL 构造器、视图级高亮回填、Search-After 深度分页防 OOM 治理、受管流式 BulkProcessor、地理空间/AI 向量检索与 100% 离线自洽测试沙箱。
 
 ## Language
 
@@ -17,7 +17,7 @@ _Avoid_: IndexManager, EsIndexUtil, DdlTemplate, SchemaService
 _Avoid_: BulkQueue, BatchWriter, AsyncFlusher, BulkManager
 
 **SearchEngineClient (搜索引擎客户端 SPI)**:
-解耦底层具体搜索引擎驱动（Elasticsearch 8.x / OpenSearch）的协议接口，为上层门面提供底层网络与请求转发支持。
+封装底层搜索引擎内核通信与生命周期管理的客户端扩展接口，以 Elasticsearch 8.x 原生客户端为主核并通过引擎类型与方言适配层兼容 OpenSearch 协议差异。
 _Avoid_: ClientWrapper, SearchDriver, EsClient, EngineAdapter
 
 **SearchHit (检索命中载荷)**:
@@ -40,6 +40,10 @@ _Avoid_: BulkError, BatchWriteException, PartialFailureException
 在宽容模式下执行批量写入返回的结构化执行统计凭据，包含成功计数、失败计数与各失败项明细列表。
 _Avoid_: BulkSummary, BatchResponse, WriteResult
 
+**OccVersion (乐观并发版本凭据)**:
+由文档序列号（`_seq_no`）与主分片世代（`_primary_term`）构成的不可变并发校验凭据，用于防止高并发更新写覆盖。
+_Avoid_: LockVersion, OptimisticVersion, ETag, CasToken
+
 **SearchVersionConflictException (乐观并发控制版本冲突异常)**:
 当基于 `_seq_no` 与 `_primary_term` 执行条件更新或带版本的写入时，若服务端当前版本与预期不符触发 HTTP 409 冲突所抛出的强类型业务异常。
 _Avoid_: VersionException, ConcurrencyException, OccConflict
@@ -52,10 +56,92 @@ _Avoid_: DocumentTable, Collection, IndexMapping, 索引表
 用于在实体字段上声明自定义物理分片哈希路由键的注解，保障 CRUD 与定向检索全生命周期路由一致性。
 _Avoid_: ShardKey, PartitionKey, RouteId, 分片键
 
+**IgnoreTenant (多租户隔离豁免标记)**:
+声明在搜索实体或方法上、用于豁免多租户行级自动过滤、写入注入与点查校验的契约注解。
+_Avoid_: SearchIgnoreTenant, SkipTenant, NoTenantFilter, BypassTenant
+
 **HighlightField (高亮字段映射)**:
-用于声明将检索结果中特定字段的高亮切片富文本自动回填至对应 VO 属性的字段级契约注解。
+用于声明将检索命中片段的高亮富文本回填至视图投影对象（VO）或独立高亮属性的字段级注解，严禁覆盖原业务实体的内存真明文。
 _Avoid_: TextHighlight, EmTagField, MarkField, 高亮切片
 
 **SearchDataScopeHelper (检索数据权限辅助器)**:
 用于快速向当前查询流式构建器注入多租户隔离与部门/个人数据范围过滤条件的上下文装配辅助器。
 _Avoid_: EsPermissionUtil, SearchFilterHelper, DataScopeAppender
+
+**NestedQuery (嵌套对象检索)**:
+针对文档内对象数组（如商品包含多个 SKU）进行独立作用域精准匹配的检索算子，有效隔离各子对象内部多字段组合条件，彻底消除跨对象多属性交叉误命中。
+_Avoid_: ObjectQuery, InnerQuery, EmbeddedFilter, 嵌入式查询
+
+**FieldCollapsing (字段折叠去重)**:
+基于文档特定字段（如 SPU ID 或品牌商）对命中结果集进行分组去重并保留最优代表文档的原生折叠机制，避免同类热门数据在首屏搜索结果中霸屏。
+_Avoid_: DistinctQuery, GroupByHit, Deduplication, 折叠展示
+
+**DeleteByQuery (条件驱动批量清理)**:
+基于 DSL 检索条件向底层搜索引擎直接下发的批量物理删除指令，自动附带多租户隔离约束并在高并发下遵循容错自愈策略。
+_Avoid_: BatchDelete, PurgeQuery, QueryRemove, 范围删除
+
+**Reindex (跨索引数据重索引)**:
+在搜索引擎服务端将指定源索引（支持可选过滤条件）全量或增量复制至目标新索引的高可用数据同步机制，与原子别名热切换共同构成零停机索引平滑重建闭环。
+_Avoid_: IndexMigrate, DataSync, CopyIndex, 索引拷贝
+
+**DateHistogram (时序时间直方图聚合)**:
+按固定日历时间间隔（如按天、按小时）对时序数据字段进行切片分桶度量统计的聚合算子，专供日志审计、业务大盘趋势与监控报表看板构建。
+_Avoid_: TimeBucket, DateAgg, TimelineStat, 时间切片
+
+**PointInTime (`PIT` / 检索快照点)**:
+用于在一致性索引时间点视图上配合 `Search-After` 执行稳定深翻页的无状态游标上下文，避免并发写入导致翻页重复或遗漏。
+_Avoid_: ScrollSnapshot, SearchCursorId, PitSession
+
+**HybridSearch (混合检索融合)**:
+将全文相关性检索（BM25）与稠密向量检索（kNN）通过 RRF 或加权归一化进行多路召回重排的检索机制。
+_Avoid_: MultiRecall, VectorTextMerge, DualSearch
+
+**TenantIsolationMode (多租户隔离模式)**:
+控制点查与单点删改是否执行强租户归属校验的策略枚举（`STRICT` / `FILTER_ONLY`）。
+_Avoid_: TenancyLevel, SecurityMode, TenantPolicy
+
+**BulkDeadLetterHandler (批量死信处理器 SPI)**:
+在 `SearchBulkProcessor` 刷盘重试耗尽或产生局部失败文档时接管失败动作与失败明细的扩展接口。
+_Avoid_: BulkErrorCallback, FailedBatchListener, RetryFallback
+
+**SearchInterceptor (检索拦截器 SPI)**:
+挂载于 `SearchTemplate` 核心数据面执行链前后的可扩展横切接口，用于统一审计、查询增强与上下文治理。
+_Avoid_: SearchFilter, QueryAspect, ClientPlugin
+
+**SearchRefreshPolicy (写入刷新策略)**:
+控制写入、更新或删除操作完成后使 Lucene 段对后续检索即时可见时机的策略枚举（`NONE` / `WAIT_UNTIL` / `IMMEDIATE`）。
+_Avoid_: FlushMode, SyncPolicy, RefreshOption
+
+**SearchTaskStatus (异步任务状态)**:
+描述异步 `reindex`、`updateByQuery` 与 `deleteByQuery` 服务端长任务执行进度、完成标识及失败明细的不可变状态载荷。
+_Avoid_: AsyncJobInfo, ReindexProgress, TaskResult
+
+**SearchEngineDialect (搜索引擎方言适配器)**:
+封装 `ELASTICSEARCH`（8.x）与 `OPENSEARCH` 协议分歧的内部方言适配组件，统一 `_pit`、`rescore`、`_msearch` 等端点请求兼容。
+_Avoid_: EsAdapter, EngineBridge, VersionHandler
+
+**SearchBucket (强类型聚合分桶模型)**:
+与底层 ES 客户端解耦的分桶聚合载体，统一承接 `terms`、`date_histogram`、`filter` 桶及其递归嵌套子聚合指标。
+_Avoid_: AggBucketWrapper, ElasticBucket, TermNode
+
+**SearchNumericStats / SearchPercentilesResult (强类型度量统计模型)**:
+封装 `stats`（count/min/max/avg/sum）与 `percentiles`（P50/P95/P99 等分位数值）的零 ES 协议依赖结果视图。
+_Avoid_: StatDto, ElasticStats, QuantileMap
+
+**SearchSuggestResult / SearchInnerHit (建议器与嵌套内部命中模型)**:
+分别封装 `Completion`/`Term`/`Phrase Suggester` 推荐候选词项及 `Nested`/`Collapse` 内部命中的强类型载体。
+_Avoid_: SuggestItem, ChildHit, InnerDoc
+
+**SearchIndexSettings / SearchIndexTemplate (运行期设置与索引模板视图)**:
+与底层客户端解耦的索引运行期 Settings（分片、副本、刷新间隔、窗口上限）与 Index Template 元数据视图模型。
+_Avoid_: EsSettings, TemplateMeta, MappingConfig
+
+**RestClientBuilderCustomizer (HTTP 客户端定制 SPI)**:
+允许外部扩展注入请求头、代理或云厂商签名器（如 AWS SigV4）的传输层定制回调接口。
+_Avoid_: HttpClientHook, RestCustomizer, ElasticAuthFilter
+
+**SearchMetrics (检索可观测度量绑定器)**:
+采集 `ateng.search.operation.time`、`ateng.search.query.time` 与 `ateng.search.bulk.time` 并遵循 `operation` / `outcome` 低基数标签防爆门禁的 Micrometer 指标组件。
+_Avoid_: EsMonitor, QueryCounter, SearchStatsBinder
+
+

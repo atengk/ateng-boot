@@ -55,6 +55,16 @@ public class PayCallbackResponse implements Serializable {
     private final RefundSuccessCallback refundCallback;
 
     /**
+     * 标准化解析后的订单关闭事件数据 (仅关单终态通知时存在)
+     */
+    private final OrderClosedCallback orderClosedCallback;
+
+    /**
+     * 标准化解析后的商家转账结果事件数据 (仅转账通知时存在)
+     */
+    private final TransferNotifyCallback transferCallback;
+
+    /**
      * 转换为 Spring MVC 标准强类型响应实体
      *
      * @return ResponseEntity 实例
@@ -67,6 +77,14 @@ public class PayCallbackResponse implements Serializable {
 
     public boolean isRefund() {
         return refundCallback != null;
+    }
+
+    public boolean isOrderClosed() {
+        return orderClosedCallback != null;
+    }
+
+    public boolean isTransfer() {
+        return transferCallback != null;
     }
 
     public boolean isSuccess() {

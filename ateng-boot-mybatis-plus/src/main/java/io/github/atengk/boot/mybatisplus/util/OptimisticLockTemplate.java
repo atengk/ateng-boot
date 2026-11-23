@@ -1,5 +1,8 @@
 package io.github.atengk.boot.mybatisplus.util;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.code.IResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.RetryUtil;
 
 import java.time.Duration;
@@ -109,10 +112,24 @@ public final class OptimisticLockTemplate {
 
     /**
      * 乐观锁版本并发冲突异常
+     * 继承 {@link BusinessException}，默认状态码为 {@link CommonResultCode#CONFLICT}
      */
-    public static class OptimisticLockConflictException extends RuntimeException {
+    public static class OptimisticLockConflictException extends BusinessException {
+
         public OptimisticLockConflictException(String message) {
-            super(message);
+            super(CommonResultCode.CONFLICT, message);
+        }
+
+        public OptimisticLockConflictException(String message, Throwable cause) {
+            super(CommonResultCode.CONFLICT, message, cause);
+        }
+
+        public OptimisticLockConflictException(IResultCode resultCode, String message) {
+            super(resultCode, message);
+        }
+
+        public OptimisticLockConflictException(IResultCode resultCode, String message, Throwable cause) {
+            super(resultCode, message, cause);
         }
     }
 }

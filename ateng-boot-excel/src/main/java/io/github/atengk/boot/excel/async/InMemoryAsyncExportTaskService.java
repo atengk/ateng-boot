@@ -86,12 +86,21 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
                 new ThreadPoolExecutor.AbortPolicy()
         );
 
-        Duration retention = props.getRetentionPeriod() != null ? props.getRetentionPeriod() : Duration.ofHours(Math.max(1, props.getRetentionHours()));
-        this.cleanerExecutor = Executors.newSingleThreadScheduledExecutor(
+        Duration retention = props.getRetentionPeriod() != null ? props.getRetentionPeriod() : Duration.ofHours(24);
+        ScheduledThreadPoolExecutor cleaner = new ScheduledThreadPoolExecutor(
+                1,
                 new NamedThreadFactory("ateng-excel-cleaner-")
         );
+        cleaner.setRemoveOnCancelPolicy(true);
+        this.cleanerExecutor = cleaner;
         this.cleanerExecutor.scheduleAtFixedRate(
-                () -> cleanExpiredTasks(retention),
+                () -> {
+                    try {
+                        cleanExpiredTasks(retention);
+                    } catch (Throwable ex) {
+                        log.warn("异步导出过期任务定时清理异常: {}", ex.getMessage());
+                    }
+                },
                 1, 1, TimeUnit.HOURS
         );
     }
@@ -144,17 +153,17 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
                     task.setFilePath(storageKey);
                     task.setDownloadUrl(fileStorage.getDownloadUrl(taskId, storageKey));
                     task.setFileSize(fileSize);
-                    task.setStatus(ExportTaskStatus.SUCCESS);
                     task.setProgress(100);
                     task.setFinishTime(LocalDateTime.now());
+                    task.setStatus(ExportTaskStatus.SUCCESS);
                     log.info("异步导出任务完成 [{}]: 文件大小 = {} 字节", taskId, task.getFileSize());
                 } catch (Throwable ex) {
                     if (task.getStatus() == ExportTaskStatus.CANCELLED) {
                         return;
                     }
-                    task.setStatus(ExportTaskStatus.FAILED);
                     task.setErrorMsg(ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName());
                     task.setFinishTime(LocalDateTime.now());
+                    task.setStatus(ExportTaskStatus.FAILED);
                     log.error("异步导出任务执行失败 [{}]: {}", taskId, ex.getMessage(), ex);
                 } finally {
                     futureMap.remove(taskId);
@@ -181,6 +190,21 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
     }
 
     @Override
+    public void updateProgress(String taskId, int progress) {
+        if (taskId == null || taskId.isBlank()) {
+            return;
+        }
+        ExportTask task = taskMap.get(taskId);
+        if (task == null) {
+            return;
+        }
+        if (AsyncExportTaskSupport.isTerminalStatus(task.getStatus())) {
+            return;
+        }
+        task.setProgress(AsyncExportTaskSupport.clampInProgressPercent(progress));
+    }
+
+    @Override
     public boolean cancel(String taskId) {
         if (taskId == null) {
             return false;
@@ -193,8 +217,8 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
             return false;
         }
 
-        task.setStatus(ExportTaskStatus.CANCELLED);
         task.setFinishTime(LocalDateTime.now());
+        task.setStatus(ExportTaskStatus.CANCELLED);
 
         Future<?> future = futureMap.remove(taskId);
         if (future != null) {
@@ -225,6 +249,9 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
         taskMap.entrySet().removeIf(entry -> {
             ExportTask task = entry.getValue();
             if (task.getFinishTime() != null && task.getFinishTime().isBefore(threshold)) {
+                if (task.getStorageKey() != null) {
+                    fileStorage.delete(entry.getKey(), task.getStorageKey());
+                }
                 if (task.getFilePath() != null) {
                     try {
                         Files.deleteIfExists(Paths.get(task.getFilePath()));
@@ -239,19 +266,7 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
 
     @Override
     public void destroy() {
-        if (cleanerExecutor != null && !cleanerExecutor.isShutdown()) {
-            cleanerExecutor.shutdownNow();
-        }
-        if (executorService != null && !executorService.isShutdown()) {
-            executorService.shutdown();
-            try {
-                if (!executorService.awaitTermination(30, TimeUnit.SECONDS)) {
-                    executorService.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                executorService.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
-        }
+        AsyncExportTaskSupport.shutdownExecutorGracefully(cleanerExecutor, 5);
+        AsyncExportTaskSupport.shutdownExecutorGracefully(executorService, 30);
     }
 }

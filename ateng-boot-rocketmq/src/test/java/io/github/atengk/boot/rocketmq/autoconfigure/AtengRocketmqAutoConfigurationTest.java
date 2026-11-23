@@ -1,25 +1,46 @@
 package io.github.atengk.boot.rocketmq.autoconfigure;
 
+import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
+import io.github.atengk.boot.rocketmq.annotation.RocketmqListener;
 import io.github.atengk.boot.rocketmq.checker.RocketmqTransactionChecker;
 import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
+import io.github.atengk.boot.rocketmq.consumer.SimpleConsumerFactory;
+import io.github.atengk.boot.rocketmq.container.RocketmqContainerManager;
 import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
+import io.github.atengk.boot.rocketmq.model.RocketmqContainerStatus;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import io.github.atengk.boot.rocketmq.spi.RocketmqLocalTransactionChecker;
+import io.github.atengk.boot.rocketmq.spi.RocketmqPoisonPillCallback;
+import io.github.atengk.boot.rocketmq.template.RocketmqDeadLetterReplayTemplate;
+import io.github.atengk.boot.rocketmq.template.RocketmqSimpleConsumerTemplate;
 import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
 import org.apache.rocketmq.client.apis.ClientConfiguration;
+import org.apache.rocketmq.client.apis.consumer.PushConsumer;
+import org.apache.rocketmq.client.apis.consumer.SimpleConsumer;
 import org.apache.rocketmq.client.apis.message.MessageView;
 import org.apache.rocketmq.client.apis.producer.Producer;
 import org.apache.rocketmq.client.apis.producer.TransactionChecker;
 import org.apache.rocketmq.client.apis.producer.TransactionResolution;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
+
+import java.time.Duration;
+import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * RocketMQ 自动装配单元测试
@@ -42,6 +63,7 @@ class AtengRocketmqAutoConfigurationTest {
             assertThat(context).doesNotHaveBean(ClientConfiguration.class);
             assertThat(context).doesNotHaveBean(Producer.class);
             assertThat(context).doesNotHaveBean(RocketmqTemplate.class);
+            assertThat(context).doesNotHaveBean(RocketmqDeadLetterReplayTemplate.class);
 
             AtengRocketmqProperties properties = context.getBean(AtengRocketmqProperties.class);
             assertThat(properties.isEnabled()).isTrue();
@@ -49,6 +71,10 @@ class AtengRocketmqAutoConfigurationTest {
             assertThat(properties.getRequestTimeout().toSeconds()).isEqualTo(3);
             assertThat(properties.getProducer().getMaxPayloadSize().toMegabytes()).isEqualTo(4);
             assertThat(properties.getConsumer().getConsumptionThreadCount()).isEqualTo(20);
+            assertThat(properties.getDeadLetter().getMaxReplayAttempts()).isEqualTo(3);
+            assertThat(properties.getDeadLetter().getDefaultBatchSize()).isEqualTo(32);
+            assertThat(properties.getDeadLetter().getMaxBatchSize()).isEqualTo(100);
+            assertThat(properties.getDeadLetter().getInvisibleDuration().toSeconds()).isEqualTo(30);
         });
     }
 
@@ -64,7 +90,10 @@ class AtengRocketmqAutoConfigurationTest {
                     assertThat(context).hasSingleBean(ClientConfiguration.class);
                     assertThat(context).hasSingleBean(RocketmqTransactionChecker.class);
                     assertThat(context).hasSingleBean(PushConsumerFactory.class);
+                    assertThat(context).hasSingleBean(SimpleConsumerFactory.class);
                     assertThat(context).hasSingleBean(RocketmqConsumerContainer.class);
+                    assertThat(context).hasSingleBean(RocketmqSimpleConsumerTemplate.class);
+                    assertThat(context).hasSingleBean(RocketmqContainerManager.class);
 
                     AtengRocketmqProperties properties = context.getBean(AtengRocketmqProperties.class);
                     assertThat(properties.getEndpoints()).isEqualTo("127.0.0.1:8081");
@@ -101,16 +130,21 @@ class AtengRocketmqAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("存在 Producer Bean 时成功自动装配 RocketmqTemplate")
+    @DisplayName("存在 Producer Bean 时成功自动装配 RocketmqTemplate 与 RocketmqDeadLetterReplayTemplate")
     void testRocketmqTemplateAutoConfigurationWithProducer() {
         contextRunner
                 .withUserConfiguration(MockProducerConfiguration.class)
                 .run(context -> {
                     assertThat(context).hasSingleBean(Producer.class);
                     assertThat(context).hasSingleBean(RocketmqTemplate.class);
+                    assertThat(context).hasSingleBean(RocketmqDeadLetterReplayTemplate.class);
 
                     RocketmqTemplate template = context.getBean(RocketmqTemplate.class);
                     assertThat(template.getProducer()).isSameAs(context.getBean(Producer.class));
+
+                    RocketmqDeadLetterReplayTemplate replayTemplate = context.getBean(RocketmqDeadLetterReplayTemplate.class);
+                    assertThat(replayTemplate.getRocketmqTemplate()).isSameAs(template);
+                    assertThat(replayTemplate.getSimpleConsumerTemplate()).isSameAs(context.getBean(RocketmqSimpleConsumerTemplate.class));
                 });
     }
 
@@ -123,6 +157,105 @@ class AtengRocketmqAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(AtengRocketmqAutoConfiguration.class);
                     assertThat(context).doesNotHaveBean(AtengRocketmqProperties.class);
                 });
+    }
+
+    @Test
+    @DisplayName("停机阶段序列：PushConsumer 优先排空，其次 SimpleConsumer 关闭，最后 Producer 关闭")
+    void testSmartLifecycleShutdownOrdering() throws Exception {
+        PushConsumer mockPushConsumer = mock(PushConsumer.class);
+        SimpleConsumer mockSimpleConsumer = mock(SimpleConsumer.class);
+        Producer mockProducer = mock(Producer.class);
+
+        PushConsumerFactory pushFactory = mock(PushConsumerFactory.class);
+        when(pushFactory.createPushConsumer(any(), any(), any(), any(), any(), anyInt(), anyInt()))
+                .thenReturn(mockPushConsumer);
+        SimpleConsumerFactory simpleFactory = mock(SimpleConsumerFactory.class);
+        when(simpleFactory.createSimpleConsumer(any(), any(), any(), any()))
+                .thenReturn(mockSimpleConsumer);
+
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.registerBean(PushConsumerFactory.class, () -> pushFactory);
+            context.registerBean(SimpleConsumerFactory.class, () -> simpleFactory);
+            context.registerBean("rocketmqProducer", Producer.class, () -> mockProducer, bd -> bd.setDestroyMethodName("close"));
+            context.registerBean(ClientConfiguration.class, () -> mock(ClientConfiguration.class));
+            context.registerBean(OrderedShutdownListenerBean.class);
+            context.register(ShutdownPropertiesImportConfig.class);
+            context.refresh();
+
+            RocketmqSimpleConsumerTemplate simpleTemplate = context.getBean(RocketmqSimpleConsumerTemplate.class);
+            RocketmqConsumerContainer container = context.getBean(RocketmqConsumerContainer.class);
+            assertThat(simpleTemplate.getPhase()).isLessThan(container.getPhase());
+
+            simpleTemplate.receive("order_topic", "order_simple_group", 1, Duration.ofSeconds(10));
+            context.close();
+
+            InOrder inOrder = inOrder(mockPushConsumer, mockSimpleConsumer, mockProducer);
+            inOrder.verify(mockPushConsumer).close();
+            inOrder.verify(mockSimpleConsumer).close();
+            inOrder.verify(mockProducer).close();
+        }
+    }
+
+    @Test
+    @DisplayName("自动装配排序与受管线程池注入：RocketmqConsumerContainer 共用 Core taskExecutor")
+    void testCoreTaskExecutorWiredIntoContainerAndTemplate() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengAsyncAutoConfiguration.class, AtengRocketmqAutoConfiguration.class))
+                .withPropertyValues("ateng.boot.rocketmq.endpoints=127.0.0.1:8081")
+                .run(context -> {
+                    assertThat(context).hasBean("taskExecutor");
+                    Executor coreExecutor = context.getBean("taskExecutor", Executor.class);
+                    RocketmqConsumerContainer container = context.getBean(RocketmqConsumerContainer.class);
+                    assertThat(container.getTaskExecutor()).isSameAs(coreExecutor);
+                });
+    }
+
+    @Test
+    @DisplayName("自动装配容器快照与 endpointId 别名：RocketmqContainerManager 暴露不可变状态视图")
+    void testAutoConfiguredContainerManagerStatusesWithEndpointIdAlias() throws Exception {
+        PushConsumerFactory pushFactory = mock(PushConsumerFactory.class);
+        when(pushFactory.createPushConsumer(any(), any(), any(), any(), any(), anyInt(), anyInt()))
+                .thenAnswer(inv -> mock(PushConsumer.class));
+
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengRocketmqAutoConfiguration.class))
+                .withPropertyValues("ateng.boot.rocketmq.endpoints=127.0.0.1:8081")
+                .withBean(PushConsumerFactory.class, () -> pushFactory)
+                .withUserConfiguration(EndpointIdAliasListenerConfig.class)
+                .run(context -> {
+                    RocketmqContainerManager manager = context.getBean(RocketmqContainerManager.class);
+                    assertThat(manager.getContainerStatuses())
+                            .extracting(RocketmqContainerStatus::endpointId)
+                            .containsExactly("auto_endpoint_alias");
+
+                    RocketmqContainerStatus status = manager.getContainerStatus("auto_endpoint_alias");
+                    assertThat(status).isNotNull();
+                    assertThat(status.topic()).isEqualTo("auto_status_topic");
+                    assertThat(status.consumerGroup()).isEqualTo("auto_status_group");
+                    assertThat(status.running()).isTrue();
+                    assertThat(status.paused()).isFalse();
+                    assertThat(status.autoStartup()).isTrue();
+                    assertThat(status.listenerMode()).isEqualTo("PUSH_CONSUMER");
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class EndpointIdAliasListenerConfig {
+        @RocketmqListener(endpointId = "auto_endpoint_alias", topic = "auto_status_topic", consumerGroup = "auto_status_group")
+        public void onMessage(String body) {
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableConfigurationProperties(AtengRocketmqProperties.class)
+    @Import(AtengRocketmqAutoConfiguration.class)
+    static class ShutdownPropertiesImportConfig {
+    }
+
+    static class OrderedShutdownListenerBean {
+        @RocketmqListener(id = "shutdown_order_listener", topic = "order_topic", consumerGroup = "order_push_group")
+        public void onMessage(String body) {
+        }
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -158,6 +291,60 @@ class AtengRocketmqAutoConfigurationTest {
                     return TransactionResolution.COMMIT;
                 }
             };
+        }
+    }
+
+    @Test
+    @DisplayName("自动装配可选 Producer 与 RocketmqPoisonPillCallback SPI 并正确透传至监听调用器")
+    void testOptionalPoisonPillCallbackAndProducerWiredIntoConsumerContainer() throws Exception {
+        PushConsumerFactory pushFactory = mock(PushConsumerFactory.class);
+        org.apache.rocketmq.client.apis.consumer.MessageListener[] listenerHolder = new org.apache.rocketmq.client.apis.consumer.MessageListener[1];
+        when(pushFactory.createPushConsumer(any(), any(), any(), any(), any(), anyInt(), anyInt()))
+                .thenAnswer(inv -> {
+                    listenerHolder[0] = inv.getArgument(4);
+                    return mock(PushConsumer.class);
+                });
+
+        Producer mockProducer = mock(Producer.class);
+        java.util.concurrent.atomic.AtomicBoolean callbackTriggered = new java.util.concurrent.atomic.AtomicBoolean(false);
+        java.util.concurrent.atomic.AtomicBoolean forwardedFlag = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengRocketmqAutoConfiguration.class))
+                .withPropertyValues("ateng.boot.rocketmq.endpoints=127.0.0.1:8081")
+                .withBean(PushConsumerFactory.class, () -> pushFactory)
+                .withBean(Producer.class, () -> mockProducer)
+                .withBean(RocketmqPoisonPillCallback.class, () -> (mv, topic, group, dlqTopic, forwarded, cause) -> {
+                    callbackTriggered.set(true);
+                    forwardedFlag.set(forwarded);
+                })
+                .withUserConfiguration(PoisonListenerConfig.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RocketmqPoisonPillCallback.class);
+                    assertThat(listenerHolder[0]).isNotNull();
+
+                    MessageView mv = mock(MessageView.class);
+                    when(mv.getBody()).thenReturn(java.nio.ByteBuffer.wrap("{bad-json".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                    when(mv.getProperties()).thenReturn(java.util.Collections.emptyMap());
+                    when(mv.getTag()).thenReturn(java.util.Optional.of("poison"));
+                    when(mv.getKeys()).thenReturn(java.util.Collections.emptyList());
+                    when(mv.getMessageGroup()).thenReturn(java.util.Optional.empty());
+                    when(mv.getDeliveryAttempt()).thenReturn(1);
+                    org.apache.rocketmq.client.apis.message.MessageId msgId = mock(org.apache.rocketmq.client.apis.message.MessageId.class);
+                    when(msgId.toString()).thenReturn("AUTO-POISON-001");
+                    when(mv.getMessageId()).thenReturn(msgId);
+
+                    org.apache.rocketmq.client.apis.consumer.ConsumeResult result = listenerHolder[0].consume(mv);
+                    assertThat(result).isEqualTo(org.apache.rocketmq.client.apis.consumer.ConsumeResult.SUCCESS);
+                    assertThat(callbackTriggered.get()).isTrue();
+                    assertThat(forwardedFlag.get()).isTrue();
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class PoisonListenerConfig {
+        @RocketmqListener(endpointId = "auto_poison_listener", topic = "auto_poison_topic", consumerGroup = "auto_poison_group")
+        public void onOrder(java.util.Map<String, Object> payload) {
         }
     }
 }

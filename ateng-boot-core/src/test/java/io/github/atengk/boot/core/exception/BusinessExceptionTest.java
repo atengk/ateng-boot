@@ -5,6 +5,12 @@ import io.github.atengk.boot.core.code.IResultCode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.lang.reflect.Modifier;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -97,5 +103,53 @@ class BusinessExceptionTest {
         // 验证调用 fillInStackTrace 返回当前对象本身且不产生额外损耗
         assertSame(exception, exception.fillInStackTrace());
         assertEquals(0, exception.getStackTrace().length);
+    }
+
+    @Test
+    @DisplayName("验证 fillInStackTrace 不声明 synchronized 以避免虚拟线程 Carrier Pinning")
+    void shouldNotSynchronizeFillInStackTrace() throws NoSuchMethodException {
+        int modifiers = BusinessException.class.getDeclaredMethod("fillInStackTrace").getModifiers();
+        assertFalse(Modifier.isSynchronized(modifiers), "fillInStackTrace 不应保留 synchronized 修饰符");
+    }
+
+    @Test
+    @DisplayName("默认构造 traceId 为 null，支持 withTraceId 链式原地绑定与空白归一化")
+    void shouldSupportOptionalTraceIdAndWithTraceId() {
+        BusinessException defaultEx = new BusinessException(CommonResultCode.BAD_REQUEST);
+        assertNull(defaultEx.getTraceId());
+
+        BusinessException chained = defaultEx.withTraceId("  remote-trace-001  ");
+        assertSame(defaultEx, chained);
+        assertEquals("remote-trace-001", defaultEx.getTraceId());
+
+        defaultEx.withTraceId("   ");
+        assertNull(defaultEx.getTraceId());
+
+        defaultEx.withTraceId(null);
+        assertNull(defaultEx.getTraceId());
+    }
+
+    @Test
+    @DisplayName("支持 Java 序列化与反序列化保持 traceId 与原有字段完整")
+    void shouldPreserveTraceIdAcrossJavaSerialization() throws Exception {
+        BusinessException original = new BusinessException(4001, "下游RPC调用失败")
+                .withTraceId("rpc-trace-9988");
+
+        byte[] bytes;
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+             ObjectOutputStream oos = new ObjectOutputStream(baos)) {
+            oos.writeObject(original);
+            bytes = baos.toByteArray();
+        }
+
+        BusinessException restored;
+        try (ByteArrayInputStream bais = new ByteArrayInputStream(bytes);
+             ObjectInputStream ois = new ObjectInputStream(bais)) {
+            restored = (BusinessException) ois.readObject();
+        }
+
+        assertEquals(4001, restored.getCode());
+        assertEquals("下游RPC调用失败", restored.getMsg());
+        assertEquals("rpc-trace-9988", restored.getTraceId());
     }
 }

@@ -1,12 +1,9 @@
 package io.github.atengk.boot.core.properties;
 
-import io.github.atengk.boot.core.id.Snowflake;
 import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
-
-import java.time.Duration;
 
 /**
  * ateng-boot-core 核心通用底座配置属性
@@ -18,16 +15,6 @@ import java.time.Duration;
 @Setter
 @ConfigurationProperties(prefix = "ateng.boot.core")
 public class CoreProperties {
-
-    /**
-     * 时钟回拨容忍阈值（顶层快捷配置，默认 5ms）
-     */
-    private Duration clockBackoffTolerance = Duration.ofMillis(Snowflake.DEFAULT_MAX_BACKWARD_MS);
-
-    /**
-     * 进程内内存缓存默认存活时间 TTL（顶层快捷配置，默认 30 分钟）
-     */
-    private Duration cacheTtl = Duration.ofMinutes(30);
 
     /**
      * Snowflake 雪花发号器专属配置
@@ -42,28 +29,26 @@ public class CoreProperties {
     private CacheProperties cache = new CacheProperties();
 
     /**
-     * 获取有效的时钟回拨容忍时长
-     * 优先采用 snowflake.clockBackoffTolerance，若未指定则回退到顶层 clockBackoffTolerance
-     *
-     * @return 有效时钟回拨容忍时长
+     * 系统基线与环境防卫配置
      */
-    public Duration getEffectiveClockBackoffTolerance() {
-        if (snowflake != null && snowflake.getClockBackoffTolerance() != null) {
-            return snowflake.getClockBackoffTolerance();
-        }
-        return clockBackoffTolerance != null ? clockBackoffTolerance : Duration.ofMillis(Snowflake.DEFAULT_MAX_BACKWARD_MS);
-    }
+    @NestedConfigurationProperty
+    private SystemProperties system = new SystemProperties();
 
     /**
-     * 获取有效的内存缓存存活时间 TTL
-     * 优先采用 cache.defaultTtl，若未指定则回退到顶层 cacheTtl
-     *
-     * @return 有效缓存 TTL
+     * 日志引擎与文件持久化配置
      */
-    public Duration getEffectiveCacheTtl() {
-        if (cache != null && cache.getDefaultTtl() != null) {
-            return cache.getDefaultTtl();
-        }
-        return cacheTtl != null ? cacheTtl : Duration.ofMinutes(30);
-    }
+    @NestedConfigurationProperty
+    private LoggingProperties logging = new LoggingProperties();
+
+    /**
+     * 方法级慢调用告警配置
+     */
+    @NestedConfigurationProperty
+    private SlowAlertProperties slowAlert = new SlowAlertProperties();
+
+    /**
+     * 网络通信与网卡探测配置
+     */
+    @NestedConfigurationProperty
+    private NetProperties net = new NetProperties();
 }

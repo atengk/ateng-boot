@@ -1,6 +1,7 @@
 package io.github.atengk.boot.search.properties;
 
 import io.github.atengk.boot.search.enums.SearchEngineType;
+import io.github.atengk.boot.search.enums.TenantIsolationMode;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
@@ -67,6 +68,11 @@ public class AtengSearchProperties {
     private Duration socketTimeout = Duration.ofSeconds(30);
 
     /**
+     * 连接池借用连接超时时间（默认 3 秒，防连接池耗尽时无界挂起）
+     */
+    private Duration connectionRequestTimeout = Duration.ofSeconds(3);
+
+    /**
      * 连接池最大并发连接数（默认 100）
      */
     private int maxConnections = 100;
@@ -105,6 +111,12 @@ public class AtengSearchProperties {
     @NestedConfigurationProperty
     private BulkProcessorProperties bulk = new BulkProcessorProperties();
 
+    /**
+     * 慢查询审计与日志脱敏可观测配置
+     */
+    @NestedConfigurationProperty
+    private ObservabilityProperties observability = new ObservabilityProperties();
+
     @Data
     public static class SslProperties {
         /**
@@ -139,6 +151,11 @@ public class AtengSearchProperties {
          * 多租户字段名（默认 tenant_id）
          */
         private String column = "tenant_id";
+
+        /**
+         * 多租户行级隔离策略模式（默认 STRICT 严格读写闭环）
+         */
+        private TenantIsolationMode isolationMode = TenantIsolationMode.STRICT;
     }
 
     @Data
@@ -147,6 +164,11 @@ public class AtengSearchProperties {
          * 浅分页最大结果窗口阈值，超过将刚性熔断（默认 10000）
          */
         private int maxResultWindow = 10000;
+
+        /**
+         * searchAfter 深度游标分页单次拉取每页大小上限（默认 1000，防 OOM）
+         */
+        private int maxSearchAfterSize = 1000;
     }
 
     @Data
@@ -185,5 +207,33 @@ public class AtengSearchProperties {
          * 优雅停机排空最大等待超时时间（默认 10 秒）
          */
         private Duration awaitCloseTimeout = Duration.ofSeconds(10);
+
+        /**
+         * 瞬态异常（429/502/503/504/网络 IOException）最大退避重试次数（默认 2 次，0 表示不重试）
+         */
+        private int maxRetries = 2;
+
+        /**
+         * 瞬态异常指数退避重试初始等待时长（默认 200ms）
+         */
+        private Duration retryBackoff = Duration.ofMillis(200);
+    }
+
+    @Data
+    public static class ObservabilityProperties {
+        /**
+         * 慢查询告警阈值（默认 1 秒，null 或 <= 0 表示关闭慢查询日志）
+         */
+        private Duration slowQueryThreshold = Duration.ofSeconds(1);
+
+        /**
+         * 触发慢查询告警时是否记录脱敏后的 DSL 摘要（默认 true）
+         */
+        private boolean logSlowQueryDsl = true;
+
+        /**
+         * 记录日志时是否自动折叠/脱敏高维浮点向量数组（默认 true，防日志打爆）
+         */
+        private boolean maskVectorInLogs = true;
     }
 }

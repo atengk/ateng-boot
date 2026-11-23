@@ -22,11 +22,13 @@ class IpUtilTest {
     @AfterEach
     void tearDown() {
         RequestContextHolder.resetRequestAttributes();
+        IpUtil.resetDefaultTrustedProxies();
     }
 
     @Test
     @DisplayName("优先从 X-Forwarded-For 提取多级代理中的首个有效客户端 IP")
     void shouldExtractIpFromXForwardedFor() {
+        IpUtil.setDefaultTrustedProxies(java.util.List.of("127.0.0.1", "::1", "10.0.0.0/8", "192.168.0.0/16"));
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.addHeader("X-Forwarded-For", "192.0.2.1, 10.0.0.1, 192.168.1.1");
         request.addHeader("X-Real-IP", "198.51.100.1");
@@ -39,6 +41,7 @@ class IpUtilTest {
     @Test
     @DisplayName("当 X-Forwarded-For 存在 unknown 时跳过并提取后续有效 IP")
     void shouldSkipUnknownInXForwardedFor() {
+        IpUtil.setDefaultTrustedProxies(java.util.List.of("127.0.0.1", "::1", "10.0.0.0/8"));
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.addHeader("X-Forwarded-For", "unknown, 192.0.2.2, 10.0.0.1");
 
@@ -49,6 +52,7 @@ class IpUtilTest {
     @Test
     @DisplayName("当 X-Forwarded-For 全为 unknown 时安全回退至下一有效头或 RemoteAddr")
     void shouldFallbackWhenXForwardedForHasMultipleUnknown() {
+        IpUtil.setDefaultTrustedProxies(java.util.List.of("127.0.0.1", "::1", "10.0.0.0/8"));
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.addHeader("X-Forwarded-For", "unknown, unknown,   ");
         request.addHeader("X-Real-IP", "198.51.100.2");
@@ -124,6 +128,7 @@ class IpUtilTest {
     @Test
     @DisplayName("当 X-Forwarded-For 包含伪造注入字符串时自动跳过并识别后续合法 IP")
     void shouldSkipMaliciousInjectionInXForwardedFor() {
+        IpUtil.setDefaultTrustedProxies(java.util.List.of("127.0.0.1", "::1", "10.0.0.0/8"));
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.addHeader("X-Forwarded-For", "<script>alert(1)</script>, 203.0.113.195, 10.0.0.1");
 
@@ -242,5 +247,124 @@ class IpUtilTest {
         assertThat(IpUtil.isInRange("::1", "192.168.1.0/24")).isFalse();
         assertThat(IpUtil.isInRange("192.168.1.1", "::/0")).isFalse();
         assertThat(IpUtil.isInRange("::1", "0.0.0.0/0")).isFalse();
+    }
+
+    @Test
+    @DisplayName("授信反向代理防伪造：直连 IP 非授信代理时直接返回直连 IP，忽略伪造转发头")
+    void shouldIgnoreForwardedHeadersWhenRemoteAddrNotTrusted() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRemoteAddr("203.0.113.50"); // 外部直连攻击者
+        request.addHeader("X-Forwarded-For", "1.2.3.4, 5.6.7.8");
+        request.addHeader("X-Real-IP", "1.2.3.4");
+
+        java.util.List<String> trustedProxies = java.util.List.of("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16");
+
+        String clientIp = IpUtil.getClientIp(request, trustedProxies);
+        assertThat(clientIp).isEqualTo("203.0.113.50");
+    }
+
+    @Test
+    @DisplayName("授信反向代理防伪造：直连 IP 为授信代理时，从右向左逆向剔除授信代理并提取真实客户端 IP")
+    void shouldExtractRealClientIpThroughTrustedProxies() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRemoteAddr("10.0.0.2"); // 直连网关反向代理
+        // 链路顺序：真实客户端 203.0.113.195 -> 边缘节点 10.0.0.1 -> 内部网关 10.0.0.2
+        request.addHeader("X-Forwarded-For", "203.0.113.195, 10.0.0.1");
+
+        java.util.List<String> trustedProxies = java.util.List.of("10.0.0.0/8");
+
+        String clientIp = IpUtil.getClientIp(request, trustedProxies);
+        assertThat(clientIp).isEqualTo("203.0.113.195");
+    }
+
+    @Test
+    @DisplayName("授信反向代理防伪造：客户端注入伪造前缀时，逆向检索精准定位于最靠近授信代理的真实客户端")
+    void shouldStopAtFirstUntrustedIpFromRight() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRemoteAddr("10.0.0.3");
+        // 攻击者伪造注入 8.8.8.8，其实真实客户端为 198.51.100.99
+        request.addHeader("X-Forwarded-For", "8.8.8.8, 198.51.100.99, 10.0.0.1");
+
+        java.util.List<String> trustedProxies = java.util.List.of("10.0.0.0/8");
+
+        String clientIp = IpUtil.getClientIp(request, trustedProxies);
+        assertThat(clientIp).isEqualTo("198.51.100.99");
+    }
+
+    @Test
+    @DisplayName("授信反向代理防伪造：当 trustedProxies 为空时保持 100% 既有提取行为向前兼容")
+    void shouldBackwardCompatibleWhenTrustedProxiesEmpty() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRemoteAddr("203.0.113.50");
+        request.addHeader("X-Forwarded-For", "192.0.2.1, 10.0.0.1");
+
+        assertThat(IpUtil.getClientIp(request, null)).isEqualTo("192.0.2.1");
+        assertThat(IpUtil.getClientIp(request, java.util.Collections.emptyList())).isEqualTo("192.0.2.1");
+    }
+
+    @Test
+    @DisplayName("授信反向代理防伪造：当链路上所有节点均为授信代理时，安全回退至最左侧起始 IP")
+    void shouldFallbackToLeftmostWhenAllTrusted() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRemoteAddr("10.0.0.1");
+        request.addHeader("X-Forwarded-For", "10.0.0.5, 10.0.0.6");
+
+        java.util.List<String> trustedProxies = java.util.List.of("10.0.0.0/8");
+
+        assertThat(IpUtil.getClientIp(request, trustedProxies)).isEqualTo("10.0.0.5");
+    }
+
+    @Test
+    @DisplayName("授信反向代理防伪造：当首个请求头全为授信代理时，继续检索后续候选头提取真实客户端 IP")
+    void shouldContinueToNextHeaderWhenSingleIpInHeaderIsTrustedProxy() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRemoteAddr("10.0.0.1");
+        // X-Forwarded-For 仅含内部授信代理跳点，真实客户端由 X-Real-IP 携带
+        request.addHeader("X-Forwarded-For", "10.0.0.2");
+        request.addHeader("X-Real-IP", "203.0.113.195");
+
+        java.util.List<String> trustedProxies = java.util.List.of("10.0.0.0/8");
+
+        String clientIp = IpUtil.getClientIp(request, trustedProxies);
+        assertThat(clientIp).isEqualTo("203.0.113.195");
+    }
+
+    @Test
+    @DisplayName("默认防伪造契约：仅授信本机环回 (127.0.0.1, ::1)，直连公网来源伪造 X-Forwarded-For 一律拒信")
+    void shouldRejectSpoofedForwardedForWhenDefaultTrustedProxiesApply() {
+        IpUtil.resetDefaultTrustedProxies();
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRemoteAddr("203.0.113.50");
+        request.addHeader("X-Forwarded-For", "1.2.3.4, 192.0.2.99");
+        request.addHeader("X-Real-IP", "8.8.8.8");
+
+        assertThat(IpUtil.getClientIp(request)).isEqualTo("203.0.113.50");
+    }
+
+    @Test
+    @DisplayName("默认防伪造契约：本地 IPv4/IPv6 环回代理转发请求可信提取真实客户端 IP")
+    void shouldTrustLoopbackByDefaultAndExtractRealClientIp() {
+        IpUtil.resetDefaultTrustedProxies();
+        MockHttpServletRequest ipv4LoopbackReq = new MockHttpServletRequest();
+        ipv4LoopbackReq.setRemoteAddr("127.0.0.1");
+        ipv4LoopbackReq.addHeader("X-Forwarded-For", "198.51.100.77");
+        assertThat(IpUtil.getClientIp(ipv4LoopbackReq)).isEqualTo("198.51.100.77");
+
+        MockHttpServletRequest ipv6LoopbackReq = new MockHttpServletRequest();
+        ipv6LoopbackReq.setRemoteAddr("0:0:0:0:0:0:0:1");
+        ipv6LoopbackReq.addHeader("X-Forwarded-For", "198.51.100.88");
+        assertThat(IpUtil.getClientIp(ipv6LoopbackReq)).isEqualTo("198.51.100.88");
+    }
+
+    @Test
+    @DisplayName("mergeTrustedProxies 去重、清洗空白项并保持配置声明顺序")
+    void shouldMergeAndDeduplicateTrustedProxies() {
+        java.util.List<String> merged = IpUtil.mergeTrustedProxies(
+                java.util.Arrays.asList(" 127.0.0.1 ", "", null, "10.0.0.0/8"),
+                java.util.Arrays.asList("10.0.0.0/8", " 192.168.0.0/16 ", "::1")
+        );
+
+        assertThat(merged).containsExactly("127.0.0.1", "10.0.0.0/8", "192.168.0.0/16", "::1");
+        assertThat(IpUtil.mergeTrustedProxies(null, null)).isEmpty();
     }
 }

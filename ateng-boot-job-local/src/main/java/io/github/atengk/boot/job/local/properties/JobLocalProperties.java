@@ -1,5 +1,6 @@
 package io.github.atengk.boot.job.local.properties;
 
+import io.github.atengk.boot.job.local.enums.ClusterLockType;
 import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -52,9 +53,14 @@ public class JobLocalProperties {
     private int inMemoryLogCapacity = 100;
 
     /**
-     * 数据库持久化模式下历史执行日志的最大保留天数（默认 7 天，定时任务每日凌晨自动清理过期日志）
+     * 单次任务执行期间 {@code JobContext.log(...)} 允许收集的最大日志行数（默认 500 行，超出自动截断防单次执行堆 OOM）
      */
-    private int logRetentionDays = 7;
+    private int maxLogLinesPerExecution = 500;
+
+    /**
+     * 历史执行日志的最大保留时长（默认 7 天，保存新执行记录时自动触发惰性清理）
+     */
+    private Duration logRetention = Duration.ofDays(7);
 
     /**
      * Actuator 运维端点配置
@@ -67,6 +73,18 @@ public class JobLocalProperties {
      */
     @NestedConfigurationProperty
     private AlertProperties alert = new AlertProperties();
+
+    /**
+     * 集群互斥锁配置
+     */
+    @NestedConfigurationProperty
+    private ClusterLockProperties clusterLock = new ClusterLockProperties();
+
+    /**
+     * Micrometer 监控指标度量配置
+     */
+    @NestedConfigurationProperty
+    private MetricsProperties metrics = new MetricsProperties();
 
     /**
      * Actuator 端点嵌套配置类
@@ -97,5 +115,80 @@ public class JobLocalProperties {
          * 协同通知通道名称（可选，缺省由协同通知组件选用默认通道）
          */
         private String channel;
+
+        /**
+         * 三阶防风暴告警聚合器配置
+         */
+        @NestedConfigurationProperty
+        private AntiStormProperties antiStorm = new AntiStormProperties();
+    }
+
+    /**
+     * 三阶防风暴告警聚合配置类
+     */
+    @Getter
+    @Setter
+    public static class AntiStormProperties {
+
+        /**
+         * 是否启用告警防风暴聚合器（默认 true，当 alert.enabled=true 时生效，防止高频失败打爆机器人）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 告警抑制滑动静默窗口时长（默认 5m，静默期间抑制重复告警并累计错误计数）
+         */
+        private Duration silenceWindow = Duration.ofMinutes(5);
+
+        /**
+         * 任务自愈成功后是否发送恢复通知（默认 true）
+         */
+        private boolean recoveryNotice = true;
+    }
+
+    /**
+     * 集群互斥锁嵌套配置类
+     */
+    @Getter
+    @Setter
+    public static class ClusterLockProperties {
+
+        /**
+         * 是否启用集群互斥锁（默认 true）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 集群锁存储类型（AUTO: 自动探测 Redis，有 Redis 用 Redis，无 Redis 自动降级为 local 单机内存；REDIS: 强制 Redis；LOCAL: 强制单机内存）
+         */
+        private ClusterLockType type = ClusterLockType.AUTO;
+
+        /**
+         * 集群互斥锁在 Redis 中的键名前缀（默认 ateng:job:lock:）
+         */
+        private String keyPrefix = "ateng:job:lock:";
+
+        /**
+         * 默认互斥锁防死锁租约超时时长（默认 5m，当任务未显式指定或指定 0 时生效）
+         */
+        private Duration defaultLeaseTime = Duration.ofMinutes(5);
+
+        /**
+         * 默认集群互斥锁最小持有时长（默认 0s，用于防御多节点毫秒级时钟漂移引发的重复调度）
+         */
+        private Duration defaultMinHoldTime = Duration.ZERO;
+    }
+
+    /**
+     * Micrometer 监控指标度量配置类
+     */
+    @Getter
+    @Setter
+    public static class MetricsProperties {
+
+        /**
+         * 是否启用 Micrometer 监控指标采集与度量导出（默认 true，当类路径存在 MeterRegistry 时生效）
+         */
+        private boolean enabled = true;
     }
 }

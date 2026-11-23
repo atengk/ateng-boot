@@ -29,6 +29,12 @@ class MailPropertiesTest {
         assertEquals(DataSize.ofMegabytes(20), properties.getMaxAttachmentSize());
         assertEquals(DataSize.ofMegabytes(50), properties.getMaxTotalSize());
         assertEquals(100, properties.getMaxDynamicAccounts());
+        assertFalse(properties.isAllowEmptyAccounts());
+        assertNotNull(properties.getBatch());
+        assertEquals(4, properties.getBatch().getConcurrency());
+        assertEquals(50, properties.getBatch().getSliceSize());
+        assertTrue(properties.getBatch().isReuseTransport());
+        assertEquals(Duration.ofMinutes(5), properties.getBatch().getTimeout());
 
         assertNotNull(properties.getAsync());
         assertTrue(properties.getAsync().isEnabled());
@@ -41,6 +47,20 @@ class MailPropertiesTest {
         assertFalse(properties.isStarttls());
         assertNotNull(properties.getProperties());
         assertNotNull(properties.getAccounts());
+
+        assertNotNull(properties.getRateLimit());
+        assertFalse(properties.getRateLimit().isEnabled());
+        assertNotNull(properties.getQuota());
+        assertFalse(properties.getQuota().isEnabled());
+        assertNotNull(properties.getIdempotent());
+        assertFalse(properties.getIdempotent().isEnabled());
+        assertTrue(properties.getIdempotent().isRequireBizId());
+
+        assertNotNull(properties.getBackupAccounts());
+        assertTrue(properties.getBackupAccounts().isEmpty());
+        assertNotNull(properties.getFailover());
+        assertTrue(properties.getFailover().isEnabled());
+        assertTrue(properties.getFailover().isOverrideFromOnSwitch());
     }
 
     @Test

@@ -46,6 +46,16 @@ public class RealtimeMessage<T> implements Serializable {
     public static final String EVENT_NOTICE = "notice";
 
     /**
+     * 常用事件名常量：错误通知
+     */
+    public static final String EVENT_ERROR = "error";
+
+    /**
+     * 常用事件名常量：群组/房间解散通知
+     */
+    public static final String EVENT_GROUP_DISMISSED = "group_dismissed";
+
+    /**
      * 常用事件名常量：流式数据 Chunk (打字机推流)
      */
     public static final String EVENT_STREAM_CHUNK = "stream:chunk";
@@ -136,6 +146,28 @@ public class RealtimeMessage<T> implements Serializable {
                 .traceId(traceId)
                 .tenantId(tenantId)
                 .build();
+    }
+
+    /**
+     * 冻结并补全消息在调用时刻的上下文元数据（id、timestamp、traceId、tenantId）
+     * 供异步延迟投递或事务提交后推送场景在脱离原始请求线程前固化追踪上下文
+     *
+     * @return 当前消息实例
+     */
+    public RealtimeMessage<T> freezeContextMetadata() {
+        if (this.id == null || this.id.isBlank()) {
+            this.id = IdUtil.nextIdStr();
+        }
+        if (this.timestamp == null) {
+            this.timestamp = System.currentTimeMillis();
+        }
+        if (this.traceId == null || this.traceId.isBlank()) {
+            this.traceId = resolveTraceId();
+        }
+        if (this.tenantId == null || this.tenantId.isBlank()) {
+            this.tenantId = resolveTenantId();
+        }
+        return this;
     }
 
     /**

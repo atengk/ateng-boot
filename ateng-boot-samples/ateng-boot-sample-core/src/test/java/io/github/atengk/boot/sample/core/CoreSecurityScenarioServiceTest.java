@@ -1,15 +1,31 @@
 package io.github.atengk.boot.sample.core;
 
+import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.id.Snowflake;
+import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 import io.github.atengk.boot.core.model.Pair;
 import io.github.atengk.boot.core.model.Triple;
+import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.sample.core.dto.PasswordCheckRequest;
+import io.github.atengk.boot.sample.core.dto.PaymentCryptoRequest;
+import io.github.atengk.boot.sample.core.dto.SecurityCryptoRequest;
+import io.github.atengk.boot.sample.core.dto.SignAndVerifyRequest;
 import io.github.atengk.boot.sample.core.model.SampleUserDTO;
 import io.github.atengk.boot.sample.core.service.CoreSecurityScenarioService;
+import io.github.atengk.boot.sample.core.vo.IdGenerateVO;
+import io.github.atengk.boot.sample.core.vo.PasswordCheckVO;
+import io.github.atengk.boot.sample.core.vo.PaymentCryptoVO;
+import io.github.atengk.boot.sample.core.vo.SecurityCryptoVO;
+import io.github.atengk.boot.sample.core.vo.SignAndVerifyVO;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
+import java.math.BigDecimal;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Core 安全、加解密与敏感脱敏场景端到端集成测试
@@ -22,6 +38,27 @@ class CoreSecurityScenarioServiceTest {
 
     @Autowired
     private CoreSecurityScenarioService securityScenarioService;
+
+    @Autowired
+    private Snowflake snowflake;
+
+    @Test
+    @DisplayName("测试容器 Snowflake Bean 与静态门面 IdUtil 同步一致")
+    void testSnowflakeAndIdUtilSynchronized() {
+        Snowflake active = IdUtil.getSnowflake();
+        assertThat(active.getWorkerId()).isEqualTo(snowflake.getWorkerId());
+        assertThat(active.getDatacenterId()).isEqualTo(snowflake.getDatacenterId());
+        assertThat(active.getEpoch()).isEqualTo(snowflake.getEpoch());
+
+        IdGenerateVO vo = securityScenarioService.generateDistributedId();
+        assertThat(vo.getWorkerId()).isEqualTo(1L);
+        assertThat(vo.getDatacenterId()).isEqualTo(1L);
+        assertThat(vo.getRestoredId()).isEqualTo(vo.getId());
+
+        SnowflakeIdInfo parsed = IdUtil.parseSnowflake(vo.getId());
+        assertThat(parsed.workerId()).isEqualTo(1L);
+        assertThat(parsed.datacenterId()).isEqualTo(1L);
+    }
 
     @Test
     @DisplayName("测试DesensitizeUtil敏感数据动态掩码")
@@ -133,5 +170,110 @@ class CoreSecurityScenarioServiceTest {
         assertThat(result.left()).isEqualTo("cbf43926");
         assertThat(result.middle()).isEqualTo("e3069283");
         assertThat(result.right()).isEqualTo("091e01de");
+    }
+
+    @Test
+    @DisplayName("测试支付安全服务国密 SM4/CBC 往返加解密与 SM3 杂凑摘要闭环")
+    void testProcessPaymentCryptoWithSm4AndSm3() {
+        String rawPayload = "orderId=20261112001&currency=CNY&amount=199.00";
+        PaymentCryptoRequest request = PaymentCryptoRequest.builder()
+                .tradeNo("TX-SM4-SM3-001")
+                .amount(new BigDecimal("199.00"))
+                .channel("ALIPAY")
+                .secretKey("merchantSecretKey2026")
+                .rawPayload(rawPayload)
+                .build();
+
+        PaymentCryptoVO first = securityScenarioService.processPaymentCryptoAndVerify(request);
+        assertThat(first.getSm4CbcCiphertext()).isNotBlank().isNotEqualTo(rawPayload);
+        assertThat(first.getSm4CbcDecrypted()).isEqualTo(rawPayload);
+        assertThat(first.getSm3Hex()).matches("^[0-9a-f]{64}$");
+
+        // 同明文二次加密因随机密钥与随机 IV 产生不同密文，但 SM3 摘要严格一致；不同明文摘要不同
+        PaymentCryptoVO second = securityScenarioService.processPaymentCryptoAndVerify(request);
+        assertThat(second.getSm4CbcCiphertext()).isNotBlank().isNotEqualTo(first.getSm4CbcCiphertext());
+        assertThat(second.getSm3Hex()).isEqualTo(first.getSm3Hex());
+
+        PaymentCryptoRequest changed = PaymentCryptoRequest.builder()
+                .tradeNo("TX-SM4-SM3-002")
+                .amount(new BigDecimal("200.00"))
+                .channel("ALIPAY")
+                .secretKey("merchantSecretKey2026")
+                .rawPayload(rawPayload + "&tampered=1")
+                .build();
+        PaymentCryptoVO third = securityScenarioService.processPaymentCryptoAndVerify(changed);
+        assertThat(third.getSm3Hex()).matches("^[0-9a-f]{64}$").isNotEqualTo(first.getSm3Hex());
+    }
+
+    @Test
+    @DisplayName("测试纯 JDK 原生国密 HmacSM3 签名与恒定时间防篡改验签闭环")
+    void testSignAndVerifyScenario() {
+        SignAndVerifyRequest request = SignAndVerifyRequest.builder()
+                .payload("bizOrderNo=ORD-20261113-949&amount=198.00")
+                .secretKey("AtengSm3SecretKey2026")
+                .build();
+
+        SignAndVerifyVO vo = securityScenarioService.signAndVerifyScenario(request);
+
+        assertThat(vo.getHmacSm3Hex()).matches("^[0-9a-f]{64}$");
+        assertThat(vo.getHmacSm3Base64()).isNotBlank();
+        assertThat(vo.isSm3HexVerified()).isTrue();
+        assertThat(vo.isSm3Base64Verified()).isTrue();
+        assertThat(vo.isSm3TamperBlocked()).isTrue();
+        assertThat(vo.getHmacSha256Hex()).matches("^[0-9a-f]{64}$");
+        assertThat(vo.getSm3DigestHex()).matches("^[0-9a-f]{64}$");
+    }
+
+    @Test
+    @DisplayName("测试 generateSm4Key() 与字符串级带 AAD 的 AES-GCM 加解密及篡改防御闭环")
+    void testProcessSymmetricCryptoScenario() {
+        SecurityCryptoRequest request = SecurityCryptoRequest.builder()
+                .plaintext("SM4+AES-GCM-AAD-机密载荷")
+                .aad("tenant=t001;channel=APP")
+                .build();
+
+        SecurityCryptoVO vo = securityScenarioService.processSymmetricCryptoScenario(request);
+
+        assertThat(vo.getSm4KeyByteLength()).isEqualTo(16);
+        assertThat(vo.getSm4CbcCiphertext()).isNotBlank().isNotEqualTo(request.getPlaintext());
+        assertThat(vo.getSm4CbcDecrypted()).isEqualTo(request.getPlaintext());
+        assertThat(vo.getGcmCiphertextWithAad()).isNotBlank().isNotEqualTo(request.getPlaintext());
+        assertThat(vo.getGcmDecryptedWithAad()).isEqualTo(request.getPlaintext());
+        assertThat(vo.isAadTamperBlocked()).isTrue();
+
+        // 验证 Service 层 BusinessAssert 第二道防线拦截空白与 null 入参
+        assertThatThrownBy(() -> securityScenarioService.signAndVerifyScenario(null))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> securityScenarioService.processSymmetricCryptoScenario(
+                SecurityCryptoRequest.builder().plaintext("data").aad("  ").build()))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    @DisplayName("测试PasswordUtil口令慢哈希、恒定时间校验与迭代升级闭环")
+    void testVerifyPasswordLifecycle() {
+        PasswordCheckRequest request = PasswordCheckRequest.builder()
+                .username("alice.chen")
+                .rawPassword("Ateng#Sec2026!")
+                .legacyIterations(20_000)
+                .build();
+
+        PasswordCheckVO vo = securityScenarioService.verifyPasswordLifecycle(request);
+
+        assertThat(vo.getUsername()).isEqualTo("alice.chen");
+        assertThat(vo.getEncodedPassword()).startsWith("$pbkdf2-sha256$310000$");
+        assertThat(vo.getSecondEncodedPassword()).startsWith("$pbkdf2-sha256$310000$");
+        assertThat(vo.isSaltUnique()).isTrue();
+        assertThat(vo.isMatched()).isTrue();
+        assertThat(vo.isWrongPasswordRejected()).isTrue();
+        assertThat(vo.isLegacyNeedsUpgrade()).isTrue();
+        assertThat(vo.getUpgradedPassword()).startsWith("$pbkdf2-sha256$310000$");
+        assertThat(vo.isCurrentNeedsUpgrade()).isFalse();
+
+        assertThatThrownBy(() -> securityScenarioService.verifyPasswordLifecycle(null))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> securityScenarioService.verifyPasswordLifecycle(
+                PasswordCheckRequest.builder().username("alice.chen").rawPassword("   ").build()))
+                .isInstanceOf(BusinessException.class);
     }
 }

@@ -143,4 +143,15 @@ class RedisSerializerFactoryTest {
         assertThat(user.getBirthDate()).isEqualTo(LocalDate.of(2026, 10, 16));
         assertThat(user.getCheckinTime()).isEqualTo(LocalTime.of(8, 0, 0));
     }
+
+    @Test
+    @DisplayName("验证 stringSerializer 门面序列化与反序列化语义正确")
+    void shouldSerializeAndDeserializeStringCorrectly() {
+        RedisSerializer<String> serializer = RedisSerializerFactory.stringSerializer();
+        assertThat(serializer).isNotNull();
+
+        byte[] bytes = serializer.serialize("test-string-key");
+        assertThat(bytes).isEqualTo("test-string-key".getBytes(StandardCharsets.UTF_8));
+        assertThat(serializer.deserialize(bytes)).isEqualTo("test-string-key");
+    }
 }

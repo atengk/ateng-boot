@@ -1,5 +1,8 @@
 package io.github.atengk.boot.mail.model;
 
+import io.github.atengk.boot.core.util.FileUtil;
+import io.github.atengk.boot.mail.exception.MailResultCode;
+import io.github.atengk.boot.mail.exception.MailSendException;
 import jakarta.activation.FileTypeMap;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -7,11 +10,14 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.InputStreamSource;
 import org.springframework.core.io.Resource;
+import org.springframework.util.unit.DataSize;
 
 import java.io.Closeable;
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.Serializable;
 import java.util.Objects;
@@ -60,6 +66,23 @@ public class MailAttachment implements AutoCloseable, Serializable {
     private transient Runnable cleanupCallback;
 
     /**
+     * 默认有界缓冲读取上限（20MB，对齐 MailProperties.maxAttachmentSize 默认值）
+     */
+    static final long DEFAULT_BUFFERED_MAX_BYTES = 20L * 1024 * 1024;
+
+    /**
+     * 是否为系统宿主隐性垃圾文件（如 .DS_Store、desktop.ini、thumbs.db 等，发送时自动跳过）
+     */
+    @Builder.Default
+    private boolean systemJunk = false;
+
+    /**
+     * 数据源是否可重复读取（File、byte[]、常规 Resource 与 ofBuffered 为 true；原始一次性 InputStream 为 false 并自动禁用重试）
+     */
+    @Builder.Default
+    private boolean repeatable = true;
+
+    /**
      * 基于本地磁盘文件构建附件
      *
      * @param filename 附件显示名称（若为空则默认取文件自身名称）
@@ -69,6 +92,7 @@ public class MailAttachment implements AutoCloseable, Serializable {
     public static MailAttachment of(String filename, File file) {
         Objects.requireNonNull(file, "file must not be null");
         String finalName = (filename != null && !filename.isBlank()) ? filename : file.getName();
+        boolean junk = FileUtil.isSystemJunkFile(finalName) || FileUtil.isSystemJunkFile(file.toPath());
         String cleaned = cleanFilename(finalName);
         String mime = resolveContentType(cleaned, null);
         return MailAttachment.builder()
@@ -76,6 +100,7 @@ public class MailAttachment implements AutoCloseable, Serializable {
                 .source(new FileSystemResource(file))
                 .contentType(mime)
                 .size(file.length())
+                .systemJunk(junk)
                 .build();
     }
 
@@ -110,6 +135,7 @@ public class MailAttachment implements AutoCloseable, Serializable {
      */
     public static MailAttachment of(String filename, byte[] bytes, String contentType) {
         Objects.requireNonNull(bytes, "bytes must not be null");
+        boolean junk = FileUtil.isSystemJunkFile(filename);
         String cleaned = cleanFilename(filename);
         String mime = resolveContentType(cleaned, contentType);
         return MailAttachment.builder()
@@ -117,6 +143,7 @@ public class MailAttachment implements AutoCloseable, Serializable {
                 .source(new ByteArrayResource(bytes))
                 .contentType(mime)
                 .size((long) bytes.length)
+                .systemJunk(junk)
                 .build();
     }
 
@@ -141,6 +168,7 @@ public class MailAttachment implements AutoCloseable, Serializable {
      */
     public static MailAttachment of(String filename, InputStreamSource source, String contentType) {
         Objects.requireNonNull(source, "source must not be null");
+        boolean junk = FileUtil.isSystemJunkFile(filename);
         String cleaned = cleanFilename(filename);
         String mime = resolveContentType(cleaned, contentType);
         Long detectedSize = null;
@@ -154,11 +182,14 @@ public class MailAttachment implements AutoCloseable, Serializable {
                 // 某些不可重复读流获取长度可能抛异常，安全降级
             }
         }
+        boolean repeatableSource = !(source instanceof InputStreamResource);
         return MailAttachment.builder()
                 .filename(cleaned)
                 .source(source)
                 .contentType(mime)
                 .size(detectedSize)
+                .systemJunk(junk)
+                .repeatable(repeatableSource)
                 .build();
     }
 
@@ -196,12 +227,15 @@ public class MailAttachment implements AutoCloseable, Serializable {
      */
     public static MailAttachment of(String filename, InputStream inputStream, String contentType) {
         Objects.requireNonNull(inputStream, "inputStream must not be null");
+        boolean junk = FileUtil.isSystemJunkFile(filename);
         String cleaned = cleanFilename(filename);
         String mime = resolveContentType(cleaned, contentType);
         return MailAttachment.builder()
                 .filename(cleaned)
                 .source(() -> inputStream)
                 .contentType(mime)
+                .systemJunk(junk)
+                .repeatable(false)
                 .cleanupCallback(() -> {
                     try {
                         inputStream.close();
@@ -209,6 +243,108 @@ public class MailAttachment implements AutoCloseable, Serializable {
                     }
                 })
                 .build();
+    }
+
+    /**
+     * 将一次性 InputStream 有界缓冲读取为可重读字节数组附件（默认最大 20MB，读取完成立即关闭原始输入流）
+     *
+     * @param filename    附件显示名称
+     * @param inputStream 原始输入流
+     * @return 可重读邮件附件模型
+     */
+    public static MailAttachment ofBuffered(String filename, InputStream inputStream) {
+        return ofBuffered(filename, inputStream, null, DEFAULT_BUFFERED_MAX_BYTES);
+    }
+
+    /**
+     * 将一次性 InputStream 按指定字节上限有界缓冲读取为可重读附件（读取完成立即关闭原始输入流）
+     *
+     * @param filename    附件显示名称
+     * @param inputStream 原始输入流
+     * @param maxBytes    允许读取的最大字节数
+     * @return 可重读邮件附件模型
+     */
+    public static MailAttachment ofBuffered(String filename, InputStream inputStream, long maxBytes) {
+        return ofBuffered(filename, inputStream, null, maxBytes);
+    }
+
+    /**
+     * 将一次性 InputStream 按指定 DataSize 上限有界缓冲读取为可重读附件
+     *
+     * @param filename    附件显示名称
+     * @param inputStream 原始输入流
+     * @param maxSize     容量上限
+     * @return 可重读邮件附件模型
+     */
+    public static MailAttachment ofBuffered(String filename, InputStream inputStream, DataSize maxSize) {
+        Objects.requireNonNull(maxSize, "maxSize must not be null");
+        return ofBuffered(filename, inputStream, null, maxSize.toBytes());
+    }
+
+    /**
+     * 将一次性 InputStream 按指定 DataSize 上限与 MIME 类型有界缓冲读取为可重读附件
+     *
+     * @param filename    附件显示名称
+     * @param inputStream 原始输入流
+     * @param contentType MIME 类型
+     * @param maxSize     容量上限
+     * @return 可重读邮件附件模型
+     */
+    public static MailAttachment ofBuffered(String filename, InputStream inputStream, String contentType, DataSize maxSize) {
+        Objects.requireNonNull(maxSize, "maxSize must not be null");
+        return ofBuffered(filename, inputStream, contentType, maxSize.toBytes());
+    }
+
+    /**
+     * 将一次性 InputStream 按指定字节上限与 MIME 类型有界缓冲读取为可重读附件（读取完成立即关闭原始输入流）
+     *
+     * @param filename    附件显示名称
+     * @param inputStream 原始输入流
+     * @param contentType MIME 类型
+     * @param maxBytes    允许读取的最大字节数
+     * @return 可重读邮件附件模型
+     */
+    public static MailAttachment ofBuffered(String filename, InputStream inputStream, String contentType, long maxBytes) {
+        Objects.requireNonNull(inputStream, "inputStream must not be null");
+        boolean junk = FileUtil.isSystemJunkFile(filename);
+        String cleaned = cleanFilename(filename);
+        String mime = resolveContentType(cleaned, contentType);
+        byte[] bytes = readBufferedBytes(inputStream, maxBytes, cleaned, "邮件附件");
+        return MailAttachment.builder()
+                .filename(cleaned)
+                .source(new ByteArrayResource(bytes))
+                .contentType(mime)
+                .size((long) bytes.length)
+                .systemJunk(junk)
+                .repeatable(true)
+                .build();
+    }
+
+    /**
+     * 包内共享的有界输入流缓冲读取工具，确保任何前置校验异常或读取超限时均确定性关闭原始输入流
+     *
+     * @param inputStream  原始输入流
+     * @param maxBytes     最大允许字节数
+     * @param displayName  资源展示名称
+     * @param resourceKind 资源类别说明（如 "邮件附件"、"邮件内联资源"）
+     * @return 缓冲后的字节数组
+     */
+    static byte[] readBufferedBytes(InputStream inputStream, long maxBytes, String displayName, String resourceKind) {
+        try (inputStream) {
+            if (maxBytes <= 0 || maxBytes > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("maxBytes 必须在 1 到 Integer.MAX_VALUE 之间: " + maxBytes);
+            }
+            return FileUtil.readNBytesSafe(inputStream, (int) maxBytes);
+        } catch (IllegalArgumentException e) {
+            if (maxBytes <= 0 || maxBytes > Integer.MAX_VALUE) {
+                throw e;
+            }
+            throw new MailSendException(MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED,
+                    resourceKind + " [" + displayName + "] 缓冲读取体积超出上限 (" + maxBytes + " 字节)", e);
+        } catch (IOException e) {
+            throw new MailSendException(MailResultCode.MAIL_SEND_ERROR,
+                    "读取" + resourceKind + "缓冲流失败: [" + displayName + "]", e);
+        }
     }
 
     /**
@@ -256,15 +392,15 @@ public class MailAttachment implements AutoCloseable, Serializable {
         if (raw == null || raw.isBlank()) {
             return "attachment.dat";
         }
-        // 宿主中立：清洗反斜杠为正斜杠，截取最后一个路径分隔符之后的部分
-        String name = raw.replace('\\', '/');
-        int slashIdx = name.lastIndexOf('/');
-        if (slashIdx >= 0) {
-            name = name.substring(slashIdx + 1);
+        String sanitized = raw.replace("\0", "")
+                .replace("\r", "")
+                .replace("\n", "")
+                .replace("\t", "")
+                .trim();
+        if (sanitized.isBlank() || FileUtil.isSystemJunkFile(sanitized)) {
+            return "attachment.dat";
         }
-        // 去除控制字符与前后空格
-        name = name.replaceAll("[\\r\\n\\t]", "").trim();
-        // 防御目录穿越
+        String name = FileUtil.cleanFilename(sanitized);
         if (name.equals(".") || name.equals("..") || name.isBlank()) {
             return "attachment.dat";
         }

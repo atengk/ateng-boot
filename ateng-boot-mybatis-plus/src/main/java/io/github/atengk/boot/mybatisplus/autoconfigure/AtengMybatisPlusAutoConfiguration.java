@@ -35,6 +35,7 @@ import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlExecutor;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlRegistry;
 import io.github.atengk.boot.mybatisplus.dynamicsql.ExternalSqlLoader;
 import io.github.atengk.boot.mybatisplus.dynamicsql.ResourceExternalSqlLoader;
+import io.github.atengk.boot.mybatisplus.util.PageUtil;
 import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate;
 import org.apache.ibatis.session.Configuration;
@@ -48,7 +49,9 @@ import org.springframework.transaction.PlatformTransactionManager;
 import io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard;
 import io.github.atengk.boot.mybatisplus.slowsql.SlowSqlAlertProvider;
 import io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor;
+import io.github.atengk.boot.mybatisplus.sqllog.DefaultSqlLogStorageProvider;
 import io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor;
+import io.github.atengk.boot.mybatisplus.sqllog.SqlLogStorageProvider;
 import io.github.atengk.boot.mybatisplus.audit.DataChangeAuditInterceptor;
 import io.github.atengk.boot.mybatisplus.audit.DataChangeAuditProvider;
 import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
@@ -94,6 +97,18 @@ public class AtengMybatisPlusAutoConfiguration {
         if (properties.getDynamicQuery() != null) {
             io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryHelper.setEnabled(
                     properties.getDynamicQuery().isEnabled());
+        }
+        if (properties.getPagination() != null && properties.getPagination().getMaxLimit() != null) {
+            PageUtil.setDefaultMaxLimit(properties.getPagination().getMaxLimit());
+        }
+        if (properties.getAudit() != null) {
+            io.github.atengk.boot.mybatisplus.util.BatchUtil.setAuditEnabled(properties.getAudit().isEnabled());
+            io.github.atengk.boot.mybatisplus.util.BatchUtil.setDefaultOperator(
+                    properties.getAudit().getDefaultOperator());
+        }
+        if (properties.getBatch() != null) {
+            io.github.atengk.boot.mybatisplus.util.BatchUtil.setDefaultBatchSize(
+                    properties.getBatch().getDefaultSize());
         }
         JacksonTypeHandler.setObjectMapper(JsonUtil.getObjectMapper());
     }
@@ -378,22 +393,48 @@ public class AtengMybatisPlusAutoConfiguration {
     }
 
     /**
+     * 注册默认物理 SQL 操作审计日志存储提供者（基于 SLF4J 输出格式化 JSON）
+     *
+     * @param objectMapperProvider Jackson ObjectMapper 提供者
+     * @return SqlLogStorageProvider 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(SqlLogStorageProvider.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.sql-log.storage", name = "enabled", havingValue = "true")
+    public SqlLogStorageProvider defaultSqlLogStorageProvider(ObjectProvider<ObjectMapper> objectMapperProvider) {
+        return new DefaultSqlLogStorageProvider(objectMapperProvider.getIfAvailable(JsonUtil::getObjectMapper));
+    }
+
+    /**
      * 注册 SQL 日志打印与可执行带参诊断拦截器
      *
+     * @param storageProvider 可选的物理 SQL 审计存储 SPI 提供者
+     * @param taskExecutorProvider 可选的受管异步任务执行器提供者
+     * @param eventPublisher Spring 事件发布器
      * @return SQL 日志拦截器实例
      */
     @Bean
     @ConditionalOnMissingBean(SqlLogInterceptor.class)
     @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.sql-log", name = "enabled", havingValue = "true")
-    public SqlLogInterceptor sqlLogInterceptor() {
-        return new SqlLogInterceptor(properties.getSqlLog());
+    public SqlLogInterceptor sqlLogInterceptor(
+            ObjectProvider<SqlLogStorageProvider> storageProvider,
+            ObjectProvider<Executor> taskExecutorProvider,
+            ApplicationEventPublisher eventPublisher) {
+        return new SqlLogInterceptor(
+                properties.getSqlLog(),
+                null,
+                storageProvider.getIfAvailable(),
+                taskExecutorProvider,
+                eventPublisher
+        );
     }
 
     /**
      * 注册慢 SQL 性能审计与告警拦截器
      *
      * @param alertProvidersProvider 可选的慢 SQL 告警通知提供者 SPI 实现集合
-     * @param eventPublisher Spring 事件发布器
+     * @param eventPublisher         Spring 事件发布器
+     * @param taskExecutorProvider   可选的受管异步任务执行器提供者
      * @return 慢 SQL 拦截器实例
      */
     @Bean
@@ -401,15 +442,19 @@ public class AtengMybatisPlusAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.slow-sql", name = "enabled", havingValue = "true", matchIfMissing = true)
     public SlowSqlInterceptor slowSqlInterceptor(
             ObjectProvider<List<SlowSqlAlertProvider>> alertProvidersProvider,
-            ApplicationEventPublisher eventPublisher) {
+            ApplicationEventPublisher eventPublisher,
+            ObjectProvider<Executor> taskExecutorProvider) {
         MybatisPlusProperties.SlowSqlProperties slowSql = properties.getSlowSql();
         List<SlowSqlAlertProvider> providers = alertProvidersProvider.getIfAvailable(List::of);
+        Executor taskExecutor = slowSql.isAsyncEnabled() ? taskExecutorProvider.getIfAvailable() : null;
         return new SlowSqlInterceptor(
                 slowSql.getThreshold(),
                 slowSql.isFormatSql(),
                 slowSql.isMaskSensitive(),
+                slowSql.isAsyncEnabled(),
                 providers,
-                eventPublisher
+                eventPublisher,
+                taskExecutor
         );
     }
 

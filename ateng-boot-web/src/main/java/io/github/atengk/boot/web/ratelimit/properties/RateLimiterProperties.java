@@ -22,6 +22,21 @@ public class RateLimiterProperties {
     private boolean enabled = true;
 
     /**
+     * 存储全局 Key 前缀（当 @RateLimiter 未显式覆写自定义 prefix 时生效）
+     */
+    private String keyPrefix = "rate_limit:";
+
+    /**
+     * 底层存储（Redis/Redisson）发生网络或驱动故障时是否降级放行（默认 false 阻断请求；true 记录告警并降级至内存存储）
+     */
+    private boolean failOpen = false;
+
+    /**
+     * 是否在 HTTP 响应中注入标准限流配额响应头（X-RateLimit-Limit、X-RateLimit-Remaining，默认 true）
+     */
+    private boolean includeHeaders = true;
+
+    /**
      * 单机内存存储配置
      */
     @NestedConfigurationProperty
@@ -34,9 +49,9 @@ public class RateLimiterProperties {
     public static class InMemory {
 
         /**
-         * 内存最大限流令牌桶元素容量软上限（防止海量 IP 导致 OOM）
+         * 内存最大限流令牌桶元素容量软上限（防止海量 IP 导致 OOM，默认 100,000）
          */
-        private int maxCapacity = 10000;
+        private int maxCapacity = 100_000;
 
         /**
          * 后台定期过期淘汰扫描周期

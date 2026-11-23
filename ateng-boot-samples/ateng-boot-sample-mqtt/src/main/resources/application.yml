@@ -4,12 +4,25 @@ server:
 spring:
   application:
     name: ateng-boot-sample-mqtt
+  config:
+    import: "optional:classpath:application-local.yml"
 
 ateng:
   boot:
     mqtt:
       enabled: true
       default-client: primary
+      consumer:
+        ack-mode: AUTO_AFTER_CONSUME
+        max-retries: 2
+        initial-backoff: 50ms
+        max-backoff: 500ms
+        backoff-multiplier: 2.0
+      dlt:
+        retained: false
+        peek-broker-fallback: true
+        max-records-per-topic: 1000
+        max-total-records: 10000
       clients:
         primary:
           server-uri: tcp://127.0.0.1:1883
@@ -23,10 +36,6 @@ ateng:
           publish-timeout: 5s
 
 management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,metrics,prometheus
   endpoint:
     health:
       show-details: always

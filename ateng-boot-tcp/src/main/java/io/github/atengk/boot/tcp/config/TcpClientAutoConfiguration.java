@@ -12,6 +12,7 @@ import io.github.atengk.boot.tcp.spi.TcpChannelCustomizer;
 import io.github.atengk.boot.tcp.spi.TcpPacketFilter;
 import io.github.atengk.boot.tcp.template.TcpClientTemplate;
 import io.netty.bootstrap.Bootstrap;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -43,7 +44,7 @@ public class TcpClientAutoConfiguration {
     @ConditionalOnMissingBean(name = "tcpClient")
     @ConditionalOnProperty(prefix = "ateng.boot.tcp.client", name = "enabled", havingValue = "true")
     public TcpClient tcpClient(AtengTcpProperties properties,
-                               TcpRequestCorrelationManager correlationManager,
+                               ObjectProvider<TcpCorrelationIdExtractor> correlationIdExtractorProvider,
                                ObjectProvider<List<TcpPacketFilter>> packetFiltersProvider,
                                ObjectProvider<List<TcpChannelCustomizer>> channelCustomizersProvider,
                                ObjectProvider<TcpDispatcher> dispatcherProvider,
@@ -51,15 +52,22 @@ public class TcpClientAutoConfiguration {
                                ApplicationEventPublisher eventPublisher) {
         List<TcpPacketFilter> filters = packetFiltersProvider.getIfAvailable(Collections::emptyList);
         List<TcpChannelCustomizer> customizers = channelCustomizersProvider.getIfAvailable(Collections::emptyList);
+        TcpMetricsCollector metricsCollector = metricsCollectorProvider.getIfAvailable();
+        // 客户端拥有独立关联命名空间，避免与同 JVM 服务端共享 TcpRequestCorrelationManager 导致回环自截断
+        TcpRequestCorrelationManager clientCorrelationManager = new TcpRequestCorrelationManager(metricsCollector);
+        TcpCorrelationIdExtractor extractor = correlationIdExtractorProvider.orderedStream().findFirst().orElse(null);
+        if (extractor != null) {
+            clientCorrelationManager.setCorrelationIdExtractor(extractor);
+        }
         return new TcpClient(
                 TcpClientRegistry.DEFAULT_CLIENT_NAME,
                 properties.getClient(),
                 filters,
                 customizers,
                 eventPublisher,
-                correlationManager,
+                clientCorrelationManager,
                 dispatcherProvider.getIfAvailable(),
-                metricsCollectorProvider.getIfAvailable()
+                metricsCollector
         );
     }
 
@@ -68,8 +76,11 @@ public class TcpClientAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.tcp.client", name = "enabled", havingValue = "true")
     public TcpClientTemplate tcpClientTemplate(TcpClient tcpClient,
                                                AtengTcpProperties properties,
-                                               TcpRequestCorrelationManager correlationManager) {
-        return new TcpClientTemplate(tcpClient, properties.getClient(), correlationManager);
+                                               ObjectProvider<TcpRequestCorrelationManager> correlationManagerProvider) {
+        TcpRequestCorrelationManager manager = tcpClient.getCorrelationManager() != null
+                ? tcpClient.getCorrelationManager()
+                : correlationManagerProvider.getIfAvailable();
+        return new TcpClientTemplate(tcpClient, properties.getClient(), manager);
     }
 
     @Bean
@@ -103,8 +114,9 @@ public class TcpClientAutoConfiguration {
                 TcpClientProperties clientProps = entry.getValue();
                 if (clientProps != null && clientProps.isEnabled()) {
                     TcpRequestCorrelationManager customCorrelationManager = new TcpRequestCorrelationManager(metricsCollector);
-                    if (correlationIdExtractorProvider.getIfAvailable() != null) {
-                        customCorrelationManager.setCorrelationIdExtractor(correlationIdExtractorProvider.getIfAvailable());
+                    TcpCorrelationIdExtractor extractor = correlationIdExtractorProvider.orderedStream().findFirst().orElse(null);
+                    if (extractor != null) {
+                        customCorrelationManager.setCorrelationIdExtractor(extractor);
                     }
                     TcpClient client = new TcpClient(
                             clientName,
@@ -123,5 +135,22 @@ public class TcpClientAutoConfiguration {
         }
 
         return registry;
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(name = "tcpClientCorrelationDisposable")
+    public DisposableBean tcpClientCorrelationDisposable(ObjectProvider<TcpClientRegistry> clientRegistryProvider) {
+        return () -> {
+            TcpClientRegistry registry = clientRegistryProvider.getIfAvailable();
+            if (registry == null) {
+                return;
+            }
+            for (TcpClient client : registry.getAllClients().values()) {
+                TcpRequestCorrelationManager cm = client.getCorrelationManager();
+                if (cm != null) {
+                    cm.close();
+                }
+            }
+        };
     }
 }

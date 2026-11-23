@@ -1,19 +1,24 @@
 package io.github.atengk.boot.observability.metrics;
 
+import io.github.atengk.boot.observability.event.ThreadPoolRejectedEvent;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.ApplicationListener;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
+import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.RejectedExecutionHandler;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
@@ -22,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * AtengThreadPoolMeterBinder 线程池度量绑定器单元测试
+ * 验证自动扫描度量注册、任务拒绝计数递增及 ThreadPoolRejectedEvent 领域事件发布联动
  *
  * @author Ateng
  * @since 2026-10-22
@@ -41,6 +47,16 @@ class AtengThreadPoolMeterBinderTest {
 
     @Configuration
     static class TestThreadPoolConfig {
+
+        @Bean
+        public List<ThreadPoolRejectedEvent> capturedRejectedEvents() {
+            return new CopyOnWriteArrayList<>();
+        }
+
+        @Bean
+        public ApplicationListener<ThreadPoolRejectedEvent> threadPoolRejectedEventListener(List<ThreadPoolRejectedEvent> capturedRejectedEvents) {
+            return capturedRejectedEvents::add;
+        }
 
         @Bean("customTaskExecutor")
         public ThreadPoolTaskExecutor customTaskExecutor() {
@@ -97,7 +113,7 @@ class AtengThreadPoolMeterBinderTest {
     }
 
     @Test
-    @DisplayName("验证并发打满队列触发任务拒绝时 rejected.tasks.total 指标准确递增")
+    @DisplayName("验证并发打满队列触发任务拒绝时 rejected.tasks.total 指标准确递增并广播发布 ThreadPoolRejectedEvent")
     void testRejectedTasksCounterIncrement() throws InterruptedException {
         context = new AnnotationConfigApplicationContext(TestThreadPoolConfig.class);
         registry = new SimpleMeterRegistry();
@@ -140,7 +156,49 @@ class AtengThreadPoolMeterBinderTest {
 
         assertThat(rejectedCount).isEqualTo(1.0);
 
+        // 验证 Spring 容器中发布并捕获到 ThreadPoolRejectedEvent
+        @SuppressWarnings("unchecked")
+        List<ThreadPoolRejectedEvent> capturedEvents = context.getBean("capturedRejectedEvents", List.class);
+        assertThat(capturedEvents).hasSize(1);
+        ThreadPoolRejectedEvent event = capturedEvents.get(0);
+        assertThat(event.getPoolName()).isEqualTo("customTaskExecutor");
+        assertThat(event.getCorePoolSize()).isEqualTo(2);
+        assertThat(event.getMaxPoolSize()).isEqualTo(4);
+        assertThat(event.getCumulativeRejectedCount()).isEqualTo(1L);
+        assertThat(event.getTimestamp()).isPositive();
+
         // 释放阻塞线程
         blockLatch.countDown();
+    }
+
+    @Test
+    @DisplayName("验证原生 ThreadPoolExecutor 触发拒绝时正确发布 ThreadPoolRejectedEvent")
+    void testRawThreadPoolExecutorRejectionPublishesEvent() {
+        context = new AnnotationConfigApplicationContext(TestThreadPoolConfig.class);
+        registry = new SimpleMeterRegistry();
+
+        AtengThreadPoolMeterBinder binder = new AtengThreadPoolMeterBinder();
+        binder.setApplicationContext(context);
+        binder.bindTo(registry);
+
+        ThreadPoolExecutor rawExecutor = context.getBean("rawThreadPoolExecutor", ThreadPoolExecutor.class);
+        RejectedExecutionHandler handler = rawExecutor.getRejectedExecutionHandler();
+        assertThat(handler).isInstanceOf(TrackingRejectedExecutionHandler.class);
+        TrackingRejectedExecutionHandler trackingHandler = (TrackingRejectedExecutionHandler) handler;
+        assertThat(trackingHandler.getPoolName()).isEqualTo("rawThreadPoolExecutor");
+
+        Runnable task = () -> {};
+        assertThatThrownBy(() -> trackingHandler.rejectedExecution(task, rawExecutor))
+                .isInstanceOf(RejectedExecutionException.class);
+
+        @SuppressWarnings("unchecked")
+        List<ThreadPoolRejectedEvent> capturedEvents = context.getBean("capturedRejectedEvents", List.class);
+        assertThat(capturedEvents).isNotEmpty();
+        ThreadPoolRejectedEvent event = capturedEvents.get(capturedEvents.size() - 1);
+        assertThat(event.getPoolName()).isEqualTo("rawThreadPoolExecutor");
+        assertThat(event.getCorePoolSize()).isEqualTo(1);
+        assertThat(event.getMaxPoolSize()).isEqualTo(2);
+        assertThat(event.getRemainingQueueCapacity()).isEqualTo(5);
+        assertThat(event.getCumulativeRejectedCount()).isEqualTo(1L);
     }
 }

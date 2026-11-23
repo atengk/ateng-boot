@@ -7,14 +7,12 @@ import io.github.atengk.boot.web.idempotent.store.IdempotentKeyStore;
 import io.github.atengk.boot.web.properties.WebProperties;
 import io.github.atengk.boot.web.sign.aspect.ApiSignAspect;
 import io.github.atengk.boot.web.sign.enums.SignAlgorithm;
-import io.github.atengk.boot.web.sign.filter.RequestBodyCachingFilter;
 import io.github.atengk.boot.web.sign.provider.DefaultSignKeyProvider;
 import io.github.atengk.boot.web.sign.signer.HmacSha256Signer;
 import io.github.atengk.boot.web.sign.signer.RsaSigner;
 import io.github.atengk.boot.web.sign.signer.Sm2Signer;
 import io.github.atengk.boot.web.sign.spi.ApiSigner;
 import io.github.atengk.boot.web.sign.spi.SignKeyProvider;
-import io.github.atengk.boot.web.trace.TraceFilter;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Aspect;
 import org.springframework.beans.factory.ObjectProvider;
@@ -24,7 +22,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 
 /**
@@ -67,23 +64,6 @@ public class AtengApiSignAutoConfiguration {
             return new RsaSigner();
         }
         return new HmacSha256Signer();
-    }
-
-    /**
-     * 注册请求体缓存与防爆过滤器 FilterRegistrationBean
-     *
-     * @param webProperties Web 配置属性
-     * @return FilterRegistrationBean 实例
-     * @deprecated 请使用 {@link AtengWebAutoConfiguration#contentCachingFilterRegistration(WebProperties)}，本方法仅保留用于独立装配时的向后兼容
-     */
-    @Bean
-    @Deprecated(since = "1.0.0", forRemoval = false)
-    @ConditionalOnMissingBean(name = {"contentCachingFilterRegistration", "requestBodyCachingFilterRegistration"})
-    public FilterRegistrationBean<RequestBodyCachingFilter> requestBodyCachingFilterRegistration(WebProperties webProperties) {
-        RequestBodyCachingFilter filter = new RequestBodyCachingFilter(webProperties.getSign().getMaxBodySize());
-        FilterRegistrationBean<RequestBodyCachingFilter> registration = new FilterRegistrationBean<>(filter);
-        registration.setOrder(io.github.atengk.boot.web.filter.ContentCachingFilter.ORDER);
-        return registration;
     }
 
     /**

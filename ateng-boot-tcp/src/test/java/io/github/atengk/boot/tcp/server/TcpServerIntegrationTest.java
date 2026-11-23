@@ -5,6 +5,7 @@ import io.github.atengk.boot.tcp.enums.FramingMode;
 import io.github.atengk.boot.tcp.event.TcpDeviceBoundEvent;
 import io.github.atengk.boot.tcp.event.TcpSessionClosedEvent;
 import io.github.atengk.boot.tcp.event.TcpSessionConnectedEvent;
+import io.github.atengk.boot.tcp.event.TcpSessionIdleEvent;
 import io.github.atengk.boot.tcp.model.TcpPayload;
 import io.github.atengk.boot.tcp.properties.TcpServerProperties;
 import io.github.atengk.boot.tcp.session.TcpSession;
@@ -23,6 +24,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -246,5 +248,31 @@ class TcpServerIntegrationTest {
 
         assertThat(tcpServer.isRunning()).isFalse();
         assertThat(sessionManager.getActiveCount()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("验证亚秒级（300ms）读空闲检测精准触发 TcpSessionIdleEvent 与自动断链")
+    void testSubSecondIdleTimeoutDetection() throws Exception {
+        TcpServerProperties properties = new TcpServerProperties();
+        properties.setHost("127.0.0.1");
+        properties.setPort(0);
+        properties.getIdle().setReaderIdleTime(Duration.ofMillis(300));
+        properties.getIdle().setAutoClose(true);
+
+        startServer(properties, null);
+        int port = tcpServer.getActualPort();
+
+        try (Socket silentClient = new Socket("127.0.0.1", port)) {
+            silentClient.setSoTimeout(2500);
+            // 若旧实现 toSeconds() 将 300ms 截断为 0，则 IdleStateHandler 永不触发，read() 将卡至超时报错
+            int eof = silentClient.getInputStream().read();
+            assertThat(eof).isEqualTo(-1);
+
+            TimeUnit.MILLISECONDS.sleep(100);
+            assertThat(publishedEvents)
+                    .filteredOn(e -> e instanceof TcpSessionIdleEvent)
+                    .isNotEmpty();
+            assertThat(sessionManager.getActiveCount()).isEqualTo(0);
+        }
     }
 }

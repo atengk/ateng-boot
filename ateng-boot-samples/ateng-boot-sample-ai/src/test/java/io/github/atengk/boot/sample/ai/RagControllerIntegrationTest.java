@@ -1,0 +1,649 @@
+package io.github.atengk.boot.sample.ai;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.store.embedding.EmbeddingStore;
+import io.github.atengk.boot.sample.ai.dto.AiRagAskRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagDocumentDeleteRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagEmbedRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagEvaluateRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagFilteredRetrieveRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagIngestPipelineRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagIngestRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagMultiModelEmbedRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagParentChildSplitRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagParseRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagRerankRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagRetrieveRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagSplitRequest;
+import io.github.atengk.boot.sample.ai.dto.AiRagTransformRequest;
+import okhttp3.mockwebserver.Dispatcher;
+import okhttp3.mockwebserver.MockResponse;
+import okhttp3.mockwebserver.MockWebServer;
+import okhttp3.mockwebserver.RecordedRequest;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.autoconfigure.web.servlet.MockMvcPrint;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/**
+ * AI RAG 企业知识库与向量检索端到端集成测试 (100% 离线自洽 MockWebServer 驱动)
+ *
+ * @author Ateng
+ * @since 2026-11-04
+ */
+@SpringBootTest
+@AutoConfigureMockMvc(print = MockMvcPrint.NONE)
+@DisplayName("AI RAG 企业知识库与向量检索端到端集成测试")
+class RagControllerIntegrationTest {
+
+    private static MockWebServer server;
+
+    private static boolean isLocalProfile() {
+        String active = System.getProperty("spring.profiles.active");
+        if (active == null) {
+            active = System.getenv("SPRING_PROFILES_ACTIVE");
+        }
+        return active != null && active.contains("local");
+    }
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Autowired(required = false)
+    private EmbeddingStore<TextSegment> embeddingStore;
+
+    @BeforeAll
+    static void startServer() throws IOException {
+        if (isLocalProfile()) {
+            return;
+        }
+        server = new MockWebServer();
+        server.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                String path = request.getPath() != null ? request.getPath() : "";
+                String body = request.getBody().readUtf8();
+
+                // 1. 向量化 Embedding 接口模拟 (/embeddings)
+                if (path.contains("/embeddings")) {
+                    String embeddingJson;
+                    if (body.contains("\"input\":[") && (body.indexOf("input\":[") != body.lastIndexOf("input\":["))) {
+                        // 批量入参
+                        embeddingJson = """
+                                {
+                                  "object": "list",
+                                  "data": [
+                                    {
+                                      "object": "embedding",
+                                      "embedding": [0.1, 0.2, 0.3, 0.4, 0.5],
+                                      "index": 0
+                                    },
+                                    {
+                                      "object": "embedding",
+                                      "embedding": [0.2, 0.3, 0.4, 0.5, 0.6],
+                                      "index": 1
+                                    }
+                                  ],
+                                  "model": "text-embedding-3-small",
+                                  "usage": {
+                                    "prompt_tokens": 10,
+                                    "total_tokens": 10
+                                  }
+                                }
+                                """;
+                    } else {
+                        // 单条入参
+                        embeddingJson = """
+                                {
+                                  "object": "list",
+                                  "data": [
+                                    {
+                                      "object": "embedding",
+                                      "embedding": [0.1, 0.2, 0.3, 0.4, 0.5],
+                                      "index": 0
+                                    }
+                                  ],
+                                  "model": "text-embedding-3-small",
+                                  "usage": {
+                                    "prompt_tokens": 5,
+                                    "total_tokens": 5
+                                  }
+                                }
+                                """;
+                    }
+                    return new MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json; charset=utf-8")
+                            .setBody(embeddingJson);
+                }
+
+                // 1.5 流式对话模拟 (当带有 stream 标识或 Accept: text/event-stream)
+                String accept = request.getHeader("Accept");
+                boolean isStream = (accept != null && accept.contains("text/event-stream"))
+                        || body.contains("\"stream\":true")
+                        || body.contains("\"stream\": true");
+                if (isStream) {
+                    String sseBody = """
+                            data: {"id":"chatcmpl-stream-1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"根据知识库资料[1]，ateng-boot 遵循纯原生架构。"},"finish_reason":null}]}
+                            
+                            data: {"id":"chatcmpl-stream-2","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+                            
+                            data: [DONE]
+                            
+                            """;
+                    return new MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "text/event-stream; charset=utf-8")
+                            .setBody(sseBody);
+                }
+
+                // 2. Chat Completions 对话与问答接口模拟
+                if (body.contains("faithfulness") && body.contains("answerRelevance")) {
+                    String evalContent = "{\\\"faithfulness\\\":0.95,\\\"answerRelevance\\\":0.91,\\\"contextRecall\\\":0.89,\\\"overallScore\\\":0.92,\\\"reasoning\\\":\\\"回答严格依据检索上下文生成，无幻觉捏造。\\\"}";
+                    String evalChatJson = String.format("""
+                            {
+                              "id": "chatcmpl-rag-eval-1",
+                              "object": "chat.completion",
+                              "created": 1700000000,
+                              "model": "gpt-4o",
+                              "choices": [
+                                {
+                                  "index": 0,
+                                  "message": {
+                                    "role": "assistant",
+                                    "content": "%s"
+                                  },
+                                  "finish_reason": "stop"
+                                }
+                              ],
+                              "usage": {
+                                "prompt_tokens": 50,
+                                "completion_tokens": 35,
+                                "total_tokens": 85
+                              }
+                            }
+                            """, evalContent);
+                    return new MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Type", "application/json; charset=utf-8")
+                            .setBody(evalChatJson);
+                }
+
+                String chatContent = body.contains("【参考资料列表】")
+                        ? "根据知识库资料[1]，ateng-boot 遵循纯原生零臃肿架构设计，严禁泄露持久化实体。"
+                        : "根据知识库资料，ateng-boot 遵循纯原生零臃肿架构设计，严禁泄露持久化实体。";
+                String chatJson = String.format("""
+                        {
+                          "id": "chatcmpl-rag-test-1",
+                          "object": "chat.completion",
+                          "created": 1700000000,
+                          "model": "gpt-4o",
+                          "choices": [
+                            {
+                              "index": 0,
+                              "message": {
+                                "role": "assistant",
+                                "content": "%s"
+                              },
+                              "finish_reason": "stop"
+                            }
+                          ],
+                          "usage": {
+                            "prompt_tokens": 40,
+                            "completion_tokens": 25,
+                            "total_tokens": 65
+                          }
+                        }
+                        """, chatContent);
+                return new MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json; charset=utf-8")
+                        .setBody(chatJson);
+            }
+        });
+        server.start();
+    }
+
+    @AfterAll
+    static void stopServer() throws IOException {
+        if (server != null) {
+            server.shutdown();
+        }
+    }
+
+    @DynamicPropertySource
+    static void registerAiProperties(DynamicPropertyRegistry registry) {
+        if (!isLocalProfile()) {
+            registry.add("ateng.boot.ai.model.base-url", () -> server.url("/v1").toString());
+            registry.add("ateng.boot.ai.model.api-key", () -> "mock-test-key-rag-ci");
+            registry.add("ateng.boot.ai.model.model-name", () -> "gpt-4o");
+            registry.add("ateng.boot.ai.rag.enabled", () -> "true");
+            registry.add("ateng.boot.ai.rag.max-results", () -> "3");
+            registry.add("ateng.boot.ai.rag.min-score", () -> "0.5");
+        }
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/embed 文本特征向量化生成成功")
+    void testEmbedSuccess() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地未部署物理 Embedding 向量模型，触发 [豁免：无可用环境] 规范");
+        AiRagEmbedRequest request = AiRagEmbedRequest.builder()
+                .text("ateng-boot 核心研发架构指南")
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/embed")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.dimension").value(5))
+                .andExpect(jsonPath("$.data.preview").isArray())
+                .andExpect(jsonPath("$.data.summary").isNotEmpty());
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/embed 空白文本参数校验防御 (JSR-303 Fail-Fast)")
+    void testEmbedValidationFail() throws Exception {
+        AiRagEmbedRequest request = AiRagEmbedRequest.builder()
+                .text("   ")
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/embed")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+    }
+
+    @Test
+    @DisplayName("端到端验证 POST /sample/ai/rag/ingest 知识入库, retrieve 检索召回与 ask 增强问答全链路")
+    void testEndToEndRagFlow() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地未部署物理 Embedding 向量模型，触发 [豁免：无可用环境] 规范");
+        // 1. 知识库切片入库
+        AiRagIngestRequest ingestRequest = AiRagIngestRequest.builder()
+                .text("ateng-boot 遵循纯原生零臃肿架构设计，Controller 传输边界 100% 严禁接收或直接返回 ORM 实体。")
+                .metadata(Map.of("category", "architecture", "author", "Ateng"))
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/ingest")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(ingestRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.id").isNotEmpty())
+                .andExpect(jsonPath("$.data.text").value(ingestRequest.getText()))
+                .andExpect(jsonPath("$.data.metadata.category").value("architecture"));
+
+        // 2. 向量相似度检索召回
+        AiRagRetrieveRequest retrieveRequest = AiRagRetrieveRequest.builder()
+                .query("Controller 传输边界设计规范")
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/retrieve")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(retrieveRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.query").value(retrieveRequest.getQuery()))
+                .andExpect(jsonPath("$.data.matches").isArray())
+                .andExpect(jsonPath("$.data.matches[0].text").value(ingestRequest.getText()));
+
+        // 3. RAG 知识库融合问答
+        AiRagAskRequest askRequest = AiRagAskRequest.builder()
+                .question("ateng-boot 的 Controller 层能直接返回 Entity 吗？")
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/ask")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(askRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.question").value(askRequest.getQuestion()))
+                .andExpect(jsonPath("$.data.answer").value("根据知识库资料，ateng-boot 遵循纯原生零臃肿架构设计，严禁泄露持久化实体。"))
+                .andExpect(jsonPath("$.data.referenceContexts[0]").value(ingestRequest.getText()));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/split 递归字符分块与 Markdown 标题切分")
+    void testSplitSuccess() throws Exception {
+        // 1. 递归字符切片策略验证
+        AiRagSplitRequest recursiveReq = AiRagSplitRequest.builder()
+                .text("ateng-boot 坚持纯原生、零臃肿依赖与显式强类型契约设计。Controller 统一显式声明返回强类型 Result<T>。数据安全遵循内存真明文不变量，持久层与传输层彻底解耦。")
+                .strategy("RECURSIVE")
+                .chunkSize(40)
+                .chunkOverlap(10)
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/split")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(recursiveReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.totalSegments").value(org.hamcrest.Matchers.greaterThanOrEqualTo(2)))
+                .andExpect(jsonPath("$.data.strategy").value("RECURSIVE"))
+                .andExpect(jsonPath("$.data.segments").isArray());
+
+        // 2. Markdown 层级标题切片策略验证
+        String mdContent = """
+                # 系统概览
+                这是系统概览核心内容。
+                ## 架构规范
+                遵循 Spring Boot 3 工业级基础设施基线。
+                """;
+        AiRagSplitRequest mdReq = AiRagSplitRequest.builder()
+                .text(mdContent)
+                .strategy("MARKDOWN")
+                .chunkSize(200)
+                .chunkOverlap(20)
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/split")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(mdReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.strategy").value("MARKDOWN"))
+                .andExpect(jsonPath("$.data.totalSegments").value(org.hamcrest.Matchers.greaterThanOrEqualTo(1)));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/rerank 候选切片两阶段交叉重排")
+    void testRerankSuccess() throws Exception {
+        AiRagRerankRequest rerankReq = AiRagRerankRequest.builder()
+                .query("Spring Boot Controller 契约")
+                .candidates(java.util.List.of(
+                        "Redis 缓存穿透防卫与分布式锁",
+                        "Spring Boot Controller 统一显式声明返回强类型 Result 契约",
+                        "MyBatis-Plus 分页插件自动分页"
+                ))
+                .topK(2)
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/rerank")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(rerankReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.topK").value(2))
+                .andExpect(jsonPath("$.data.results").isArray())
+                .andExpect(jsonPath("$.data.results[0].text").value("Spring Boot Controller 统一显式声明返回强类型 Result 契约"))
+                .andExpect(jsonPath("$.data.results[0].rank").value(1));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/transform 多轮指代消解查询改写")
+    void testTransformSuccess() throws Exception {
+        AiRagTransformRequest request = AiRagTransformRequest.builder()
+                .query("它在 Spring Boot 3 中有哪些自动装配改进？")
+                .history(java.util.List.of(
+                        "用户：什么是 LangChain4j？",
+                        "助手：LangChain4j 是 Java 生态流行的大语言模型应用开发框架。"
+                ))
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/transform")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.originalQuery").value("它在 Spring Boot 3 中有哪些自动装配改进？"))
+                .andExpect(jsonPath("$.data.transformedQuery").isNotEmpty())
+                .andExpect(jsonPath("$.data.historyCount").value(2));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/embed/models 多模型命名向量化计算与维度自省")
+    void testMultiModelEmbedSuccess() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地未部署物理 Embedding 向量模型，触发 [豁免：无可用环境] 规范");
+        AiRagMultiModelEmbedRequest request = AiRagMultiModelEmbedRequest.builder()
+                .text("ateng-boot 多模型向量化测试")
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/embed/models")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.models").isArray())
+                .andExpect(jsonPath("$.data.totalModels").value(org.hamcrest.Matchers.greaterThanOrEqualTo(0)));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/parser/parse 多源异构文档解析与结构化抽取")
+    void testDocumentParseSuccess() throws Exception {
+        AiRagParseRequest request = AiRagParseRequest.builder()
+                .filename("test-guide.md")
+                .content("# 系统架构规范\n1. 纯原生零臃肿\n2. 强类型契约自洽")
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/parser/parse")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.filename").value("test-guide.md"))
+                .andExpect(jsonPath("$.data.characterCount").value(org.hamcrest.Matchers.greaterThan(0)))
+                .andExpect(jsonPath("$.data.parserClass").isNotEmpty())
+                .andExpect(jsonPath("$.data.textPreview").isNotEmpty());
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/split/parent-child 原生父子分级切片切分")
+    void testParentChildSplitSuccess() throws Exception {
+        AiRagParentChildSplitRequest request = AiRagParentChildSplitRequest.builder()
+                .text("第一章 基础底座。ateng-boot 遵循纯原生架构。第二章 数据安全。内存真明文与落盘加密分离。")
+                .parentChunkSize(50)
+                .childChunkSize(20)
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/split/parent-child")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.parentCount").value(org.hamcrest.Matchers.greaterThan(0)))
+                .andExpect(jsonPath("$.data.childCount").value(org.hamcrest.Matchers.greaterThan(0)))
+                .andExpect(jsonPath("$.data.parents").isArray());
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/ingest/pipeline 端到端文档清洗切片向量入库流水线")
+    void testIngestPipelineSuccess() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地未部署物理 Embedding 向量模型，触发 [豁免：无可用环境] 规范");
+        AiRagIngestPipelineRequest request = AiRagIngestPipelineRequest.builder()
+                .docId("doc-pipeline-001")
+                .docName("architecture.txt")
+                .content("ateng-boot 架构规范流水线摄取测试，包含多维度元数据与父子分块切片。")
+                .tenantId("tenant-alpha")
+                .customMetadata(Map.of("category", "spec"))
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/ingest/pipeline")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.docId").value("doc-pipeline-001"))
+                .andExpect(jsonPath("$.data.chunkCount").value(org.hamcrest.Matchers.greaterThan(0)))
+                .andExpect(jsonPath("$.data.skipped").value(false));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/retrieve/filter 多维元数据过滤检索")
+    void testFilteredRetrieveSuccess() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地未部署物理 Embedding 向量模型，触发 [豁免：无可用环境] 规范");
+        AiRagFilteredRetrieveRequest request = AiRagFilteredRetrieveRequest.builder()
+                .query("架构规范流水线摄取")
+                .tenantId("tenant-alpha")
+                .category("spec")
+                .maxResults(5)
+                .minScore(0.0)
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/retrieve/filter")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.query").value("架构规范流水线摄取"))
+                .andExpect(jsonPath("$.data.effectiveTenantId").value("tenant-alpha"))
+                .andExpect(jsonPath("$.data.matches").isArray());
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/retrieve/hybrid 稠密与稀疏多路混合检索与 RRF 融合")
+    void testHybridRetrieveSuccess() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地未部署物理 Embedding 向量模型，触发 [豁免：无可用环境] 规范");
+        AiRagFilteredRetrieveRequest request = AiRagFilteredRetrieveRequest.builder()
+                .query("架构规范流水线摄取")
+                .maxResults(3)
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/retrieve/hybrid")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.query").value("架构规范流水线摄取"))
+                .andExpect(jsonPath("$.data.matches").isArray());
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/document/delete 级联删除指定文档切片")
+    void testDocumentDeleteSuccess() throws Exception {
+        AiRagDocumentDeleteRequest request = AiRagDocumentDeleteRequest.builder()
+                .docId("doc-pipeline-001")
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/document/delete")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.docId").value("doc-pipeline-001"))
+                .andExpect(jsonPath("$.data.deleted").value(true));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/ask-with-citations 可信证据溯源问答返回强类型契约")
+    void testAskWithCitationsSuccess() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地未部署物理 Embedding 向量模型，触发 [豁免：无可用环境] 规范");
+        // 先入库一条带文档元数据的测试知识切片
+        AiRagIngestRequest ingestReq = AiRagIngestRequest.builder()
+                .text("ateng-boot 遵循纯原生零臃肿依赖设计理念")
+                .metadata(Map.of("file_name", "architecture.md", "id", "seg-citation-001"))
+                .build();
+        mockMvc.perform(post("/sample/ai/rag/ingest")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(ingestReq)))
+                .andExpect(status().isOk());
+
+        AiRagAskRequest request = AiRagAskRequest.builder()
+                .question("ateng-boot 的设计理念是什么？")
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/ask-with-citations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.result").isNotEmpty())
+                .andExpect(jsonPath("$.data.citations").isArray())
+                .andExpect(jsonPath("$.data.groundingScore").isNumber());
+    }
+
+    @Test
+    @DisplayName("验证 GET /sample/ai/rag/stream-with-citations 可信证据溯源 SSE 尾包增量推流")
+    void testStreamWithCitationsSuccess() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地未部署物理 Embedding 向量模型，触发 [豁免：无可用环境] 规范");
+        MvcResult mvcResult = mockMvc.perform(get("/sample/ai/rag/stream-with-citations")
+                        .param("question", "ateng-boot 设计理念")
+                        .accept(MediaType.TEXT_EVENT_STREAM_VALUE))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mvcResult.getAsyncResult(isLocalProfile() ? 30000 : 5000);
+
+        String result = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        assertThat(result).contains("event:text");
+        assertThat(result).contains("event:citation");
+        assertThat(result).contains("event:done");
+        assertThat(result).contains("[DONE]");
+    }
+
+    @Test
+    @DisplayName("验证 GET /sample/ai/rag/stream-with-citations 空参数前置快速失败校验")
+    void testStreamWithCitationsBlankQuestionValidation() throws Exception {
+        mockMvc.perform(get("/sample/ai/rag/stream-with-citations")
+                        .param("question", "  ")
+                        .accept(MediaType.TEXT_EVENT_STREAM_VALUE, MediaType.APPLICATION_JSON_VALUE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.msg").value("提问内容 question 不能为空"));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/evaluate 显式按需 RAG 质量多维评测")
+    void testRagEvaluateEndpoint() throws Exception {
+        Assumptions.assumeTrue(!isLocalProfile(), "本地环境仅校验 MockWebServer 结构化裁判契约");
+        AiRagEvaluateRequest request = AiRagEvaluateRequest.builder()
+                .question("ateng-boot 的核心设计理念是什么？")
+                .answer("ateng-boot 遵循纯原生零臃肿架构设计，严禁泄露持久化实体。")
+                .retrievedContexts(java.util.List.of("ateng-boot 是纯原生零臃肿工业级 Starter 套件，Controller 严禁泄露 Entity。"))
+                .referenceAnswer("遵循纯原生零臃肿架构设计，严禁泄露持久化实体。")
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/evaluate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.faithfulness").value(0.95))
+                .andExpect(jsonPath("$.data.answerRelevance").value(0.91))
+                .andExpect(jsonPath("$.data.contextRecall").value(0.89))
+                .andExpect(jsonPath("$.data.overallScore").value(0.92))
+                .andExpect(jsonPath("$.data.reasoning").value("回答严格依据检索上下文生成，无幻觉捏造。"));
+    }
+
+    @Test
+    @DisplayName("验证 POST /sample/ai/rag/evaluate 缺失必填参数快速失败校验")
+    void testRagEvaluateValidationFailFast() throws Exception {
+        AiRagEvaluateRequest invalidRequest = AiRagEvaluateRequest.builder()
+                .question("  ")
+                .answer("answer")
+                .retrievedContexts(java.util.Collections.emptyList())
+                .build();
+
+        mockMvc.perform(post("/sample/ai/rag/evaluate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+    }
+}

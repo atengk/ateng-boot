@@ -7,17 +7,24 @@ import io.github.atengk.boot.core.helper.FatalExceptionClassifier;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.rocketmq.constant.RocketmqConstants;
 import io.github.atengk.boot.rocketmq.helper.RocketmqMessageHelper;
+import io.github.atengk.boot.rocketmq.spi.RocketmqPoisonPillCallback;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.Valid;
 import jakarta.validation.Validator;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.rocketmq.client.apis.ClientServiceProvider;
 import org.apache.rocketmq.client.apis.consumer.ConsumeResult;
 import org.apache.rocketmq.client.apis.consumer.MessageListener;
+import org.apache.rocketmq.client.apis.message.Message;
+import org.apache.rocketmq.client.apis.message.MessageBuilder;
 import org.apache.rocketmq.client.apis.message.MessageView;
+import org.apache.rocketmq.client.apis.producer.Producer;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.util.ReflectionUtils;
+import org.springframework.util.StringUtils;
 
 import java.io.IOException;
 import java.lang.annotation.Annotation;
@@ -25,12 +32,16 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.lang.reflect.Type;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Pattern;
 
 /**
  * RocketMQ 消费端声明式监听器反射调用与受控防卫核心执行器
@@ -51,6 +62,23 @@ import java.util.Set;
 @Slf4j
 public class RocketmqListenerInvoker implements MessageListener {
 
+    private static final int MAX_EXCEPTION_MESSAGE_LENGTH = 1024;
+    private static final Pattern CONTROL_CHAR_PATTERN = Pattern.compile("[\\x00-\\x1F\\x7F]+");
+    private static final String REASON_GZIP_DECOMPRESS_FAILED = "GZIP_DECOMPRESS_FAILED";
+    private static final String REASON_DESERIALIZATION_FAILED = "DESERIALIZATION_FAILED";
+    private static final String REASON_VALIDATION_FAILED = "VALIDATION_FAILED";
+    private static final String REASON_FATAL_EXCEPTION = "FATAL_EXCEPTION";
+    private static final Set<String> REPLACED_DIAGNOSTIC_HEADERS = Set.of(
+            RocketmqConstants.HEADER_DEAD_LETTER_ORIGINAL_TOPIC.toLowerCase(Locale.ROOT),
+            RocketmqConstants.HEADER_DEAD_LETTER_CONSUMER_GROUP.toLowerCase(Locale.ROOT),
+            RocketmqConstants.HEADER_DEAD_LETTER_ORIGINAL_MESSAGE_ID.toLowerCase(Locale.ROOT),
+            RocketmqConstants.HEADER_DEAD_LETTER_REASON.toLowerCase(Locale.ROOT),
+            RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_CLASS.toLowerCase(Locale.ROOT),
+            RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_MESSAGE.toLowerCase(Locale.ROOT),
+            RocketmqConstants.HEADER_DEAD_LETTER_TIMESTAMP.toLowerCase(Locale.ROOT),
+            RocketmqConstants.HEADER_DEAD_LETTER_DELIVERY_ATTEMPT.toLowerCase(Locale.ROOT)
+    );
+
     @Getter
     private final Object targetBean;
     @Getter
@@ -60,6 +88,13 @@ public class RocketmqListenerInvoker implements MessageListener {
     @Getter
     private final String consumerGroup;
     private final Validator validator;
+    private final boolean forwardPoisonPillToDlq;
+    private final ObjectProvider<Producer> producerProvider;
+    private final Producer producer;
+    private final ObjectProvider<RocketmqPoisonPillCallback> poisonPillCallbackProvider;
+    private final RocketmqPoisonPillCallback poisonPillCallback;
+    private final ClientServiceProvider clientServiceProvider = ClientServiceProvider.loadService();
+    private final AtomicBoolean paused = new AtomicBoolean(false);
 
     public RocketmqListenerInvoker(Object targetBean, Method method, String topic, String consumerGroup) {
         this(targetBean, method, topic, consumerGroup, null);
@@ -71,12 +106,80 @@ public class RocketmqListenerInvoker implements MessageListener {
             String topic,
             String consumerGroup,
             Validator validator) {
+        this(targetBean, method, topic, consumerGroup, validator, true, (ObjectProvider<Producer>) null, null);
+    }
+
+    public RocketmqListenerInvoker(
+            Object targetBean,
+            Method method,
+            String topic,
+            String consumerGroup,
+            Validator validator,
+            boolean forwardPoisonPillToDlq,
+            Producer producer,
+            RocketmqPoisonPillCallback poisonPillCallback) {
+        this(targetBean, method, topic, consumerGroup, validator, forwardPoisonPillToDlq, null, producer, null, poisonPillCallback);
+    }
+
+    public RocketmqListenerInvoker(
+            Object targetBean,
+            Method method,
+            String topic,
+            String consumerGroup,
+            Validator validator,
+            boolean forwardPoisonPillToDlq,
+            ObjectProvider<Producer> producerProvider,
+            ObjectProvider<RocketmqPoisonPillCallback> poisonPillCallbackProvider) {
+        this(targetBean, method, topic, consumerGroup, validator, forwardPoisonPillToDlq, producerProvider, null, poisonPillCallbackProvider, null);
+    }
+
+    private RocketmqListenerInvoker(
+            Object targetBean,
+            Method method,
+            String topic,
+            String consumerGroup,
+            Validator validator,
+            boolean forwardPoisonPillToDlq,
+            ObjectProvider<Producer> producerProvider,
+            Producer producer,
+            ObjectProvider<RocketmqPoisonPillCallback> poisonPillCallbackProvider,
+            RocketmqPoisonPillCallback poisonPillCallback) {
         this.targetBean = Objects.requireNonNull(targetBean, "targetBean 不能为空");
         this.method = Objects.requireNonNull(method, "method 不能为空");
         this.topic = Objects.requireNonNull(topic, "topic 不能为空");
         this.consumerGroup = Objects.requireNonNull(consumerGroup, "consumerGroup 不能为空");
         this.validator = validator;
+        this.forwardPoisonPillToDlq = forwardPoisonPillToDlq;
+        this.producerProvider = producerProvider;
+        this.producer = producer;
+        this.poisonPillCallbackProvider = poisonPillCallbackProvider;
+        this.poisonPillCallback = poisonPillCallback;
         ReflectionUtils.makeAccessible(this.method);
+    }
+
+    /**
+     * 判断当前监听端点是否处于暂停状态
+     *
+     * @return 若处于暂停流控状态返回 true
+     */
+    public boolean isPaused() {
+        return this.paused.get();
+    }
+
+    /**
+     * 暂停当前监听端点消费
+     */
+    public void pause() {
+        this.paused.set(true);
+        log.warn("[ateng-boot-rocketmq] 监听端点已暂停消费: topic={}, consumerGroup={}", topic, consumerGroup);
+    }
+
+    /**
+     * 恢复当前监听端点消费
+     */
+    public void resume() {
+        this.paused.set(false);
+        log.info("[ateng-boot-rocketmq] 监听端点已恢复消费: topic={}, consumerGroup={}", topic, consumerGroup);
     }
 
     @Override
@@ -98,41 +201,45 @@ public class RocketmqListenerInvoker implements MessageListener {
         try (MessageContextPropagator.ContextScope ignored = MessageContextPropagator.activate(properties)) {
             String traceId = MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY);
 
-            // 2. 提取 bizKey (优先 properties 约定 -> 原生 keys -> traceId 兜底)
+            // 2. 检查是否处于暂停流控状态
+            if (this.paused.get()) {
+                log.warn("[MQ-CONSUME-PAUSED] mq=rocketmq topic={} consumerGroup={} tag={} traceId={} messageId={} 监听端点处于暂停状态，返回 FAILURE 触发 Broker 阶梯退避重试",
+                        topic, consumerGroup, tag, traceId, messageId);
+                return ConsumeResult.FAILURE;
+            }
+
+            // 3. 提取 bizKey (优先 properties 约定 -> 原生 keys -> traceId 兜底)
             String bizKey = resolveBizKey(properties, messageView, traceId);
 
-            // 3. 提取报文并透明解压
+            // 4. 提取报文并透明解压
             byte[] bodyBytes;
             try {
                 bodyBytes = extractAndDecompressBody(messageView, properties);
             } catch (Exception ex) {
-                log.error("[MQ-FATAL-POISON-PILL] mq=rocketmq topic={} consumerGroup={} tag={} bizKey={} traceId={} messageId={} 消息体 GZIP 解压缩失败，丢弃毒丸: {}",
-                        topic, consumerGroup, tag, bizKey, traceId, messageId, ex.getMessage(), ex);
-                return ConsumeResult.SUCCESS;
+                return handlePoisonPill(messageView, properties, tag, bizKey, traceId, messageId,
+                        REASON_GZIP_DECOMPRESS_FAILED, "消息体 GZIP 解压缩失败", ex);
             }
 
             int bodySize = bodyBytes.length;
 
-            // 4. 解析监听方法实参 (依据入参声明强类型与泛型集合推断反序列化)
+            // 5. 解析监听方法实参 (依据入参声明强类型与泛型集合推断反序列化)
             Object[] args;
             try {
                 args = resolveArguments(messageView, bodyBytes);
             } catch (Throwable t) {
-                log.error("[MQ-FATAL-POISON-PILL] mq=rocketmq topic={} consumerGroup={} tag={} bizKey={} traceId={} messageId={} 消息推断反序列化失败，丢弃毒丸: {}",
-                        topic, consumerGroup, tag, bizKey, traceId, messageId, t.getMessage(), t);
-                return ConsumeResult.SUCCESS;
+                return handlePoisonPill(messageView, properties, tag, bizKey, traceId, messageId,
+                        REASON_DESERIALIZATION_FAILED, "消息推断反序列化失败", t);
             }
 
-            // 5. 执行 JSR-303 参数校验
+            // 6. 执行 JSR-303 参数校验
             try {
                 validateArguments(args);
             } catch (Throwable t) {
-                log.error("[MQ-FATAL-POISON-PILL] mq=rocketmq topic={} consumerGroup={} tag={} bizKey={} traceId={} messageId={} 消息参数 JSR-303 校验失败，丢弃毒丸: {}",
-                        topic, consumerGroup, tag, bizKey, traceId, messageId, t.getMessage(), t);
-                return ConsumeResult.SUCCESS;
+                return handlePoisonPill(messageView, properties, tag, bizKey, traceId, messageId,
+                        REASON_VALIDATION_FAILED, "消息参数 JSR-303 校验失败", t);
             }
 
-            // 6. 反射执行业务监听方法
+            // 7. 反射执行业务监听方法
             try {
                 method.invoke(targetBean, args);
                 long cost = System.currentTimeMillis() - startTime;
@@ -141,14 +248,16 @@ public class RocketmqListenerInvoker implements MessageListener {
                 return ConsumeResult.SUCCESS;
             } catch (InvocationTargetException ite) {
                 Throwable targetEx = ite.getTargetException();
-                return handleException(targetEx, tag, bizKey, traceId, messageId, bodySize, startTime);
+                return handleException(messageView, properties, targetEx, tag, bizKey, traceId, messageId, bodySize, startTime);
             } catch (Throwable t) {
-                return handleException(t, tag, bizKey, traceId, messageId, bodySize, startTime);
+                return handleException(messageView, properties, t, tag, bizKey, traceId, messageId, bodySize, startTime);
             }
         }
     }
 
     private ConsumeResult handleException(
+            MessageView messageView,
+            Map<String, String> properties,
             Throwable ex,
             String tag,
             String bizKey,
@@ -167,15 +276,206 @@ public class RocketmqListenerInvoker implements MessageListener {
 
         // 2. 检查是否为不可自愈致命毒丸异常
         if (FatalExceptionClassifier.isFatal(ex)) {
-            log.error("[MQ-FATAL-POISON-PILL] mq=rocketmq topic={} consumerGroup={} tag={} bizKey={} traceId={} messageId={} 业务执行抛出不可自愈致命异常，丢弃毒丸: {}",
-                    topic, consumerGroup, tag, bizKey, traceId, messageId, ex.getMessage(), ex);
-            return ConsumeResult.SUCCESS;
+            return handlePoisonPill(messageView, properties, tag, bizKey, traceId, messageId,
+                    REASON_FATAL_EXCEPTION, "业务执行抛出不可自愈致命异常", ex);
         }
 
         // 3. 常规瞬态业务异常，触发 Broker 服务端重试
         log.error("[MQ-CONSUME] mq=rocketmq topic={} consumerGroup={} tag={} bizKey={} traceId={} size={}B status=FAILED cost={}ms error={}",
                 topic, consumerGroup, tag, bizKey, traceId, bodySize, cost, ex.getMessage(), ex);
         return ConsumeResult.FAILURE;
+    }
+
+    private ConsumeResult handlePoisonPill(
+            MessageView messageView,
+            Map<String, String> properties,
+            String tag,
+            String bizKey,
+            String traceId,
+            String messageId,
+            String reason,
+            String description,
+            Throwable cause) {
+        String dlqTopic = RocketmqConstants.DLQ_TOPIC_PREFIX + consumerGroup.trim();
+        log.error("[MQ-FATAL-POISON-PILL] mq=rocketmq topic={} consumerGroup={} dlqTopic={} tag={} bizKey={} traceId={} messageId={} reason={} {}，阻断重试: {}",
+                topic, consumerGroup, dlqTopic, tag, bizKey, traceId, messageId, reason, description,
+                cause != null ? cause.getMessage() : "", cause);
+
+        boolean forwardedToDlq = false;
+        if (this.forwardPoisonPillToDlq) {
+            forwardedToDlq = tryForwardPoisonPillToDlq(messageView, properties, tag, bizKey, messageId, dlqTopic, reason, cause);
+        } else {
+            log.warn("[MQ-POISON-PILL-DLQ-DISABLED] mq=rocketmq topic={} consumerGroup={} dlqTopic={} messageId={} reason={} forwardPoisonPillToDlq=false，跳过转储并直接确认",
+                    topic, consumerGroup, dlqTopic, messageId, reason);
+        }
+
+        invokePoisonPillCallbackSafely(messageView, dlqTopic, forwardedToDlq, cause);
+        return ConsumeResult.SUCCESS;
+    }
+
+    private boolean tryForwardPoisonPillToDlq(
+            MessageView messageView,
+            Map<String, String> properties,
+            String tag,
+            String bizKey,
+            String messageId,
+            String dlqTopic,
+            String reason,
+            Throwable cause) {
+        Producer activeProducer = resolveProducer();
+        if (activeProducer == null) {
+            log.warn("[MQ-POISON-PILL-DLQ-SKIP] mq=rocketmq topic={} consumerGroup={} dlqTopic={} messageId={} reason={} 未检测到可选 Producer，跳过死信转储并安全确认",
+                    topic, consumerGroup, dlqTopic, messageId, reason);
+            return false;
+        }
+
+        try {
+            Message dlqMessage = buildDlqMessage(messageView, properties, tag, bizKey, messageId, dlqTopic, reason, cause);
+            activeProducer.send(dlqMessage);
+            log.warn("[MQ-POISON-PILL-DLQ-FORWARDED] mq=rocketmq topic={} consumerGroup={} dlqTopic={} tag={} bizKey={} messageId={} reason={} 毒丸消息已附加诊断头归档至死信主题",
+                    topic, consumerGroup, dlqTopic, tag, bizKey, messageId, reason);
+            return true;
+        } catch (Exception ex) {
+            log.error("[MQ-POISON-PILL-DLQ-FAILED] mq=rocketmq topic={} consumerGroup={} dlqTopic={} messageId={} reason={} 毒丸消息转发死信主题失败，已安全确认避免陷入死循环自旋: {}",
+                    topic, consumerGroup, dlqTopic, messageId, reason, ex.getMessage(), ex);
+            return false;
+        }
+    }
+
+    private Message buildDlqMessage(
+            MessageView messageView,
+            Map<String, String> properties,
+            String tag,
+            String bizKey,
+            String messageId,
+            String dlqTopic,
+            String reason,
+            Throwable cause) {
+        MessageBuilder builder = clientServiceProvider.newMessageBuilder();
+        builder.setTopic(dlqTopic);
+        if (StringUtils.hasText(tag)) {
+            builder.setTag(tag.trim());
+        }
+
+        List<String> keysToKeep = new ArrayList<>();
+        if (messageView.getKeys() != null) {
+            for (String key : messageView.getKeys()) {
+                if (StringUtils.hasText(key)) {
+                    keysToKeep.add(key.trim());
+                }
+            }
+        }
+        if (keysToKeep.isEmpty() && StringUtils.hasText(bizKey)) {
+            keysToKeep.add(bizKey.trim());
+        }
+        if (!keysToKeep.isEmpty()) {
+            builder.setKeys(keysToKeep.toArray(String[]::new));
+        }
+
+        if (messageView.getMessageGroup() != null) {
+            messageView.getMessageGroup()
+                    .filter(StringUtils::hasText)
+                    .ifPresent(group -> builder.setMessageGroup(group.trim()));
+        }
+
+        builder.setBody(RocketmqMessageHelper.readRawBody(messageView.getBody()));
+
+        if (properties != null) {
+            for (Map.Entry<String, String> entry : properties.entrySet()) {
+                String key = entry.getKey();
+                String val = entry.getValue();
+                if (!StringUtils.hasText(key) || val == null) {
+                    continue;
+                }
+                String trimmedKey = key.trim();
+                String lowerKey = trimmedKey.toLowerCase(Locale.ROOT);
+                if (lowerKey.startsWith("__") || lowerKey.startsWith("%retry%") || lowerKey.startsWith("%dlq%")) {
+                    continue;
+                }
+                if (REPLACED_DIAGNOSTIC_HEADERS.contains(lowerKey)) {
+                    continue;
+                }
+                builder.addProperty(trimmedKey, sanitizeControlCharacters(val));
+            }
+        }
+
+        builder.addProperty(RocketmqConstants.HEADER_DEAD_LETTER_ORIGINAL_TOPIC, topic);
+        builder.addProperty(RocketmqConstants.HEADER_DEAD_LETTER_CONSUMER_GROUP, consumerGroup);
+        builder.addProperty(RocketmqConstants.HEADER_DEAD_LETTER_ORIGINAL_MESSAGE_ID, messageId);
+        builder.addProperty(RocketmqConstants.HEADER_DEAD_LETTER_REASON, reason);
+        builder.addProperty(RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_CLASS,
+                cause != null ? cause.getClass().getName() : "");
+        builder.addProperty(RocketmqConstants.HEADER_DEAD_LETTER_EXCEPTION_MESSAGE,
+                truncateExceptionMessage(cause));
+        builder.addProperty(RocketmqConstants.HEADER_DEAD_LETTER_TIMESTAMP,
+                String.valueOf(System.currentTimeMillis()));
+        builder.addProperty(RocketmqConstants.HEADER_DEAD_LETTER_DELIVERY_ATTEMPT,
+                String.valueOf(Math.max(1, messageView.getDeliveryAttempt())));
+
+        return builder.build();
+    }
+
+    private void invokePoisonPillCallbackSafely(
+            MessageView messageView,
+            String dlqTopic,
+            boolean forwardedToDlq,
+            Throwable cause) {
+        RocketmqPoisonPillCallback callback = resolvePoisonPillCallback();
+        if (callback == null) {
+            return;
+        }
+        try {
+            callback.onPoisonPill(messageView, topic, consumerGroup, dlqTopic, forwardedToDlq, cause);
+        } catch (Exception callbackEx) {
+            log.error("[MQ-POISON-PILL-CALLBACK-FAILED] mq=rocketmq topic={} consumerGroup={} dlqTopic={} 毒丸回调 SPI 执行异常已被隔离: {}",
+                    topic, consumerGroup, dlqTopic, callbackEx.getMessage(), callbackEx);
+        }
+    }
+
+    private Producer resolveProducer() {
+        if (producerProvider != null) {
+            Producer provided = producerProvider.getIfAvailable();
+            if (provided != null) {
+                return provided;
+            }
+        }
+        return producer;
+    }
+
+    private RocketmqPoisonPillCallback resolvePoisonPillCallback() {
+        if (poisonPillCallbackProvider != null) {
+            RocketmqPoisonPillCallback provided = poisonPillCallbackProvider.getIfAvailable();
+            if (provided != null) {
+                return provided;
+            }
+        }
+        return poisonPillCallback;
+    }
+
+    private String truncateExceptionMessage(Throwable cause) {
+        if (cause == null) {
+            return "";
+        }
+        String msg = cause.getMessage();
+        if (!StringUtils.hasText(msg)) {
+            msg = cause.getClass().getSimpleName();
+        }
+        // RocketMQ 5.x 协议严禁消息属性含 ASCII 控制字符（如 Jackson 多行异常中的 \r/\n），清洗为空格防止 DLQ 转储被 40007 拒绝
+        String sanitized = sanitizeControlCharacters(msg).trim();
+        if (!StringUtils.hasText(sanitized)) {
+            sanitized = cause.getClass().getSimpleName();
+        }
+        if (sanitized.length() > MAX_EXCEPTION_MESSAGE_LENGTH) {
+            return sanitized.substring(0, MAX_EXCEPTION_MESSAGE_LENGTH);
+        }
+        return sanitized;
+    }
+
+    private String sanitizeControlCharacters(String value) {
+        if (value == null) {
+            return "";
+        }
+        return CONTROL_CHAR_PATTERN.matcher(value).replaceAll(" ");
     }
 
     private String resolveBizKey(Map<String, String> properties, MessageView messageView, String traceId) {
@@ -197,9 +497,7 @@ public class RocketmqListenerInvoker implements MessageListener {
     }
 
     private byte[] extractAndDecompressBody(MessageView messageView, Map<String, String> properties) throws IOException {
-        ByteBuffer byteBuffer = messageView.getBody();
-        byte[] bodyBytes = new byte[byteBuffer.remaining()];
-        byteBuffer.slice().get(bodyBytes);
+        byte[] bodyBytes = RocketmqMessageHelper.readRawBody(messageView.getBody());
 
         String compression = properties.get(RocketmqConstants.HEADER_COMPRESSION);
         if (RocketmqConstants.COMPRESSION_GZIP.equalsIgnoreCase(compression)) {

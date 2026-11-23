@@ -28,7 +28,8 @@ public class OrderFifoConsumer {
     @RocketmqListener(
             topic = "sample_fifo_topic",
             consumerGroup = "sample_fifo_group",
-            tag = "fifo"
+            tag = "fifo",
+            consumptionThreadCount = 1
     )
     public void onFifoOrder(OrderMessage order, MessageView messageView) {
         String messageGroup = messageView.getMessageGroup().orElse("");

@@ -1,5 +1,7 @@
 package io.github.atengk.boot.rocketmq.annotation;
 
+import org.springframework.core.annotation.AliasFor;
+
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -21,6 +23,24 @@ import java.lang.annotation.Target;
 @Retention(RetentionPolicy.RUNTIME)
 @Documented
 public @interface RocketmqListener {
+
+    /**
+     * 监听端点唯一标识（与 {@link #endpointId()} 互为 Spring {@link AliasFor} 双向别名；默认空，若为空则自动回退为 "consumerGroup#topic"）
+     * 支持 Spring 属性占位符表达式，例如 "${ateng.mq.consumer.id:order-listener}"
+     *
+     * @return 监听端点唯一标识或占位符
+     */
+    @AliasFor("endpointId")
+    String id() default "";
+
+    /**
+     * 监听端点唯一标识（与 {@link #id()} 互为 Spring {@link AliasFor} 双向别名；默认空，若为空则自动回退为 "consumerGroup#topic"）
+     * 支持 Spring 属性占位符表达式，例如 "${ateng.mq.consumer.endpoint-id:order-listener}"
+     *
+     * @return 监听端点唯一标识或占位符
+     */
+    @AliasFor("id")
+    String endpointId() default "";
 
     /**
      * 监听的 RocketMQ Topic 主题名称

@@ -31,9 +31,10 @@ class NotificationSignUtilTest {
         // 幂等性与确定性
         assertThat(sign1).isEqualTo(sign2);
 
-        // 验证 URLDecoder 可正常反解
+        // 验证 URLDecoder 可正常反解，且遵循 RFC 3986（HMAC-SHA256 32字节 Base64 末尾必含 =，编码为 %3D，无空格 + 与 *）
+        assertThat(sign1).endsWith("%3D").doesNotContain("+").doesNotContain("*").doesNotContain("%7E");
         String decoded = URLDecoder.decode(sign1, StandardCharsets.UTF_8);
-        assertThat(decoded).isNotBlank();
+        assertThat(decoded).isNotBlank().endsWith("=");
 
         // 空 Secret 保护
         assertThat(NotificationSignUtil.signDingTalk(null, timestamp)).isNull();
@@ -73,5 +74,33 @@ class NotificationSignUtilTest {
         // 空值校验
         assertThat(NotificationSignUtil.signHmacSha256Hex(null, content)).isNull();
         assertThat(NotificationSignUtil.signHmacSha256Base64(null, content)).isNull();
+        assertThat(NotificationSignUtil.verifyHmacSha256Hex(secret, content, hexSign)).isTrue();
+        assertThat(NotificationSignUtil.verifyHmacSha256Hex(secret, content, hexSign.toUpperCase())).isTrue();
+        assertThat(NotificationSignUtil.verifyHmacSha256Hex(secret, "{\"msg\":\"tampered\"}", hexSign)).isFalse();
+        assertThat(NotificationSignUtil.verifyHmacSha256Hex(null, content, hexSign)).isFalse();
+        assertThat(NotificationSignUtil.verifyHmacSha256Hex(secret, content, null)).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试通用 Webhook 防重放加签与常量时间对称验签")
+    void testSignAndVerifyGenericWebhook() {
+        String secret = "generic-webhook-secret";
+        long timestamp = 1700000000000L;
+        String payload = "{\"event\":\"alert\",\"level\":\"P0\"}";
+
+        String sig = NotificationSignUtil.signGenericWebhook(secret, timestamp, payload);
+        assertThat(sig).isNotNull().hasSize(64).matches("[0-9a-f]{64}");
+
+        // 对称验签通过（兼容大小写十六进制签名）
+        assertThat(NotificationSignUtil.verifyGenericWebhook(secret, timestamp, payload, sig)).isTrue();
+        assertThat(NotificationSignUtil.verifyGenericWebhook(secret, timestamp, payload, sig.toUpperCase())).isTrue();
+
+        // 防重放与防篡改校验：时间戳错位、报文被篡改、密钥不匹配或签名长度错误均返回 false
+        assertThat(NotificationSignUtil.verifyGenericWebhook(secret, timestamp + 1L, payload, sig)).isFalse();
+        assertThat(NotificationSignUtil.verifyGenericWebhook(secret, timestamp, "{\"event\":\"alert\",\"level\":\"P1\"}", sig)).isFalse();
+        assertThat(NotificationSignUtil.verifyGenericWebhook("wrong-secret", timestamp, payload, sig)).isFalse();
+        assertThat(NotificationSignUtil.verifyGenericWebhook(secret, timestamp, payload, "invalid-sig")).isFalse();
+        assertThat(NotificationSignUtil.verifyGenericWebhook(null, timestamp, payload, sig)).isFalse();
+        assertThat(NotificationSignUtil.verifyGenericWebhook(secret, timestamp, payload, null)).isFalse();
     }
 }

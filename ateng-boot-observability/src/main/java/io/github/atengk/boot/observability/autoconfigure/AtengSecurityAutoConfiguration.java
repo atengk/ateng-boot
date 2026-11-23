@@ -2,12 +2,14 @@ package io.github.atengk.boot.observability.autoconfigure;
 
 import io.github.atengk.boot.observability.properties.ObservabilityProperties;
 import io.github.atengk.boot.observability.security.ActuatorEndpointSecurityFilter;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.Environment;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -36,8 +38,9 @@ public class AtengSecurityAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.observability.security", name = "lockdown-enabled", havingValue = "true", matchIfMissing = true)
     public ActuatorEndpointSecurityFilter actuatorEndpointSecurityFilter(
             ObservabilityProperties properties,
-            Environment environment) {
+            Environment environment,
+            ObjectProvider<ApplicationEventPublisher> eventPublisherProvider) {
         String basePath = environment.getProperty("management.endpoints.web.base-path", ActuatorEndpointSecurityFilter.DEFAULT_BASE_PATH);
-        return new ActuatorEndpointSecurityFilter(properties, basePath);
+        return new ActuatorEndpointSecurityFilter(properties, basePath, eventPublisherProvider.getIfAvailable());
     }
 }

@@ -1,23 +1,32 @@
 package io.github.atengk.boot.sample.openapi;
 
+import cn.dev33.satoken.stp.StpInterface;
+import cn.dev33.satoken.stp.StpUtil;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.List;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * OpenAPI 生产安全访问守卫集成测试
+ * OpenAPI 生产安全访问守卫端到端集成测试
  *
  * @author Ateng
  * @since 2026-10-22
@@ -57,6 +66,26 @@ class OpenApiGuardIntegrationTest {
         void testDocsRedirectNotFound() throws Exception {
             mockMvc.perform(get("/docs"))
                     .andExpect(status().isNotFound());
+        }
+
+        @Test
+        @DisplayName("测试禁用时离线导出端点 /docs/export/json 响应 404")
+        void testExportEndpointNotFound() throws Exception {
+            mockMvc.perform(get("/docs/export/json"))
+                    .andExpect(status().isNotFound());
+        }
+
+        @Test
+        @DisplayName("测试禁用时治理控制器延迟装配兼容：/preview 返回 503，/result-codes 仍可用")
+        void testGovernanceGracefulDegradationWhenDisabled() throws Exception {
+            mockMvc.perform(get("/sample/openapi/governance/preview").param("group", "admin"))
+                    .andExpect(status().isOk())
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.code").value(503));
+
+            mockMvc.perform(get("/sample/openapi/governance/result-codes").param("keyword", "8001"))
+                    .andExpect(status().isOk())
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.code").value(200))
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data[0].code").value(8001));
         }
     }
 
@@ -104,8 +133,276 @@ class OpenApiGuardIntegrationTest {
         @DisplayName("测试静态资源在 Basic 守卫模式下白名单安全放行")
         void testStaticResourcesWhitelisted() throws Exception {
             mockMvc.perform(get("/swagger-ui/swagger-ui.css"))
-                    // 只要不是 401 拦截即代表通过守卫白名单放行
                     .andExpect(status().isOk());
+        }
+    }
+
+    @Nested
+    @SpringBootTest
+    @AutoConfigureMockMvc
+    @TestPropertySource(properties = {
+            "ateng.boot.openapi.guard.mode=TOKEN",
+            "ateng.boot.openapi.guard.token.secret=sample-token-secret",
+            "ateng.boot.openapi.guard.token.header-name=X-Doc-Token",
+            "ateng.boot.openapi.guard.token.allow-query-param=true",
+            "ateng.boot.openapi.guard.token.query-param-name=doc-token",
+            "ateng.boot.web.shutdown.drain-timeout=0s"
+    })
+    @DisplayName("场景 3：静态令牌 (TOKEN) 标头与 Query 参数访问守卫")
+    class TokenAuthGuardTest {
+
+        @Autowired
+        private MockMvc mockMvc;
+
+        @Test
+        @DisplayName("测试未携带 Token 访问 /docs 响应 401")
+        void testMissingTokenRejected() throws Exception {
+            mockMvc.perform(get("/docs"))
+                    .andExpect(status().isUnauthorized());
+        }
+
+        @Test
+        @DisplayName("测试携带错误 Token 访问 /docs 响应 401")
+        void testWrongTokenRejected() throws Exception {
+            mockMvc.perform(get("/docs").header("X-Doc-Token", "wrong-secret"))
+                    .andExpect(status().isUnauthorized());
+        }
+
+        @Test
+        @DisplayName("测试通过 Header X-Doc-Token 携带正确令牌放行并重定向")
+        void testValidHeaderTokenAllowed() throws Exception {
+            mockMvc.perform(get("/docs").header("X-Doc-Token", "sample-token-secret"))
+                    .andExpect(status().isFound())
+                    .andExpect(header().string("Location", "/swagger-ui/index.html"));
+        }
+
+        @Test
+        @DisplayName("测试通过 Query 参数 ?doc-token=xxx 携带正确令牌放行")
+        void testValidQueryTokenAllowed() throws Exception {
+            mockMvc.perform(get("/docs").param("doc-token", "sample-token-secret"))
+                    .andExpect(status().isFound())
+                    .andExpect(header().string("Location", "/swagger-ui/index.html"));
+        }
+
+        @Test
+        @DisplayName("测试离线导出端点同样受 Token 守卫管辖")
+        void testExportGuardedByToken() throws Exception {
+            // 无 Token -> 401
+            mockMvc.perform(get("/docs/export/json"))
+                    .andExpect(status().isUnauthorized());
+
+            // 有 Token -> 200
+            mockMvc.perform(get("/docs/export/json").header("X-Doc-Token", "sample-token-secret"))
+                    .andExpect(status().isOk());
+        }
+    }
+
+    @Nested
+    @SpringBootTest
+    @AutoConfigureMockMvc
+    @TestPropertySource(properties = {
+            "ateng.boot.openapi.guard.mode=IP_WHITELIST",
+            "ateng.boot.openapi.guard.ip-whitelist.cidrs=10.0.0.0/8,127.0.0.1",
+            "ateng.boot.openapi.guard.ip-whitelist.trusted-header=X-Forwarded-For",
+            "ateng.boot.web.shutdown.drain-timeout=0s"
+    })
+    @DisplayName("场景 4：CIDR 白名单与受信任反代标头网络防火墙")
+    class IpWhitelistGuardTest {
+
+        @Autowired
+        private MockMvc mockMvc;
+
+        @Test
+        @DisplayName("测试直接物理 IP 为 127.0.0.1 时允许访问")
+        void testLocalhostIpAllowed() throws Exception {
+            mockMvc.perform(get("/docs").with(req -> {
+                req.setRemoteAddr("127.0.0.1");
+                return req;
+            })).andExpect(status().isFound());
+        }
+
+        @Test
+        @DisplayName("测试未授权 IP (192.168.1.50) 访问被 403 Forbidden 拦截")
+        void testUnauthorizedIpRejected() throws Exception {
+            mockMvc.perform(get("/docs").with(req -> {
+                req.setRemoteAddr("192.168.1.50");
+                return req;
+            })).andExpect(status().isForbidden());
+        }
+
+        @Test
+        @DisplayName("测试受信任反代标头 X-Forwarded-For 携带内网 CIDR IP (10.10.1.2) 放行")
+        void testTrustedHeaderCidrAllowed() throws Exception {
+            mockMvc.perform(get("/docs")
+                    .header("X-Forwarded-For", "10.10.1.2, 192.168.1.1")
+                    .with(req -> {
+                        req.setRemoteAddr("192.168.1.1");
+                        return req;
+                    })).andExpect(status().isFound());
+        }
+
+        @Test
+        @DisplayName("测试受信任反代标头 X-Forwarded-For 客户端伪造外网 IP (172.16.0.1) 拦截 403")
+        void testTrustedHeaderNonWhitelistedRejected() throws Exception {
+            mockMvc.perform(get("/docs")
+                    .header("X-Forwarded-For", "172.16.0.1")
+                    .with(req -> {
+                        req.setRemoteAddr("127.0.0.1");
+                        return req;
+                    })).andExpect(status().isForbidden());
+        }
+    }
+
+    @Nested
+    @SpringBootTest
+    @AutoConfigureMockMvc
+    @TestPropertySource(properties = {
+            "ateng.boot.openapi.guard.mode=IP_WHITELIST",
+            "ateng.boot.openapi.guard.ip-whitelist.cidrs=10.0.0.0/8",
+            "ateng.boot.openapi.guard.ip-whitelist.trusted-header=X-Forwarded-For",
+            "ateng.boot.openapi.guard.ip-whitelist.trusted-proxies=127.0.0.1,172.16.0.0/12",
+            "ateng.boot.web.shutdown.drain-timeout=0s"
+    })
+    @DisplayName("场景 5：授信反向代理节点校验防伪造 X-Forwarded-For")
+    class TrustedProxyGuardTest {
+
+        @Autowired
+        private MockMvc mockMvc;
+
+        @Test
+        @DisplayName("测试非授信节点 (192.168.1.99) 伪造 X-Forwarded-For=10.10.1.2 被 403 拒绝")
+        void testUntrustedProxySpoofRejected() throws Exception {
+            mockMvc.perform(get("/docs")
+                    .header("X-Forwarded-For", "10.10.1.2")
+                    .with(req -> {
+                        req.setRemoteAddr("192.168.1.99");
+                        return req;
+                    })).andExpect(status().isForbidden());
+        }
+
+        @Test
+        @DisplayName("测试授信反代节点 (172.16.0.10) 携带白名单客户端 X-Forwarded-For=10.10.1.2 放行")
+        void testTrustedProxyAllowedClientAccepted() throws Exception {
+            mockMvc.perform(get("/docs")
+                    .header("X-Forwarded-For", "10.10.1.2, 172.16.0.10")
+                    .with(req -> {
+                        req.setRemoteAddr("172.16.0.10");
+                        return req;
+                    })).andExpect(status().isFound());
+        }
+
+        @Test
+        @DisplayName("测试授信反代节点 (127.0.0.1) 携带非白名单客户端 X-Forwarded-For=203.0.113.5 被 403 拒绝")
+        void testTrustedProxyUnlistedClientRejected() throws Exception {
+            mockMvc.perform(get("/docs")
+                    .header("X-Forwarded-For", "203.0.113.5")
+                    .with(req -> {
+                        req.setRemoteAddr("127.0.0.1");
+                        return req;
+                    })).andExpect(status().isForbidden());
+        }
+    }
+
+    @Nested
+    @SpringBootTest
+    @AutoConfigureMockMvc
+    @Import(SaTokenRolePermissionGuardTest.TestStpConfig.class)
+    @TestPropertySource(properties = {
+            "ateng.boot.openapi.guard.mode=SATOKEN",
+            "ateng.boot.openapi.guard.satoken.roles=doc-admin",
+            "ateng.boot.openapi.guard.satoken.permissions=openapi:view",
+            "ateng.boot.web.shutdown.drain-timeout=0s"
+    })
+    @DisplayName("场景 6：Sa-Token 会话与角色/权限分级守卫")
+    class SaTokenRolePermissionGuardTest {
+
+        @Autowired
+        private MockMvc mockMvc;
+
+        private final List<String> createdTokens = new ArrayList<>();
+
+        @AfterEach
+        void cleanUpTokens() {
+            try {
+                for (String token : createdTokens) {
+                    StpUtil.logoutByTokenValue(token);
+                }
+            } finally {
+                createdTokens.clear();
+            }
+        }
+
+        @Test
+        @DisplayName("测试未登录请求拦截 401 Unauthorized")
+        void testUnauthenticatedRejected401() throws Exception {
+            mockMvc.perform(get("/docs"))
+                    .andExpect(status().isUnauthorized());
+            mockMvc.perform(get("/docs/export/json"))
+                    .andExpect(status().isUnauthorized());
+        }
+
+        @Test
+        @DisplayName("测试已登录但无目标角色与权限的普通用户访问 /docs 和 /docs/export/json 返回 403 Forbidden")
+        void testPlainUserForbidden403() throws Exception {
+            String token = issueToken("plain-user");
+            mockMvc.perform(get("/docs")
+                    .header(StpUtil.getTokenName(), token))
+                    .andExpect(status().isForbidden());
+            mockMvc.perform(get("/docs/export/json")
+                    .header(StpUtil.getTokenName(), token))
+                    .andExpect(status().isForbidden());
+        }
+
+        @Test
+        @DisplayName("测试仅持有配置角色 doc-admin 的用户放行 (OR 语义)")
+        void testRoleHolderAllowed() throws Exception {
+            String token = issueToken("role-user");
+            mockMvc.perform(get("/docs")
+                    .header(StpUtil.getTokenName(), token))
+                    .andExpect(status().isFound());
+        }
+
+        @Test
+        @DisplayName("测试仅持有配置权限 openapi:view 的用户访问 /docs 与 /docs/export/json 放行 (OR 语义)")
+        void testPermissionHolderAllowed() throws Exception {
+            String token = issueToken("perm-user");
+            mockMvc.perform(get("/docs")
+                    .header(StpUtil.getTokenName(), token))
+                    .andExpect(status().isFound());
+            mockMvc.perform(get("/docs/export/json")
+                    .header(StpUtil.getTokenName(), token))
+                    .andExpect(status().isOk());
+        }
+
+        private String issueToken(String loginId) {
+            String token = StpUtil.createLoginSession(loginId);
+            createdTokens.add(token);
+            return token;
+        }
+
+        @TestConfiguration(proxyBeanMethods = false)
+        static class TestStpConfig {
+
+            @Bean
+            public StpInterface stpInterface() {
+                return new StpInterface() {
+                    @Override
+                    public List<String> getPermissionList(Object loginId, String loginType) {
+                        if ("perm-user".equals(String.valueOf(loginId))) {
+                            return List.of("openapi:view");
+                        }
+                        return Collections.emptyList();
+                    }
+
+                    @Override
+                    public List<String> getRoleList(Object loginId, String loginType) {
+                        if ("role-user".equals(String.valueOf(loginId))) {
+                            return List.of("doc-admin");
+                        }
+                        return Collections.emptyList();
+                    }
+                };
+            }
         }
     }
 }

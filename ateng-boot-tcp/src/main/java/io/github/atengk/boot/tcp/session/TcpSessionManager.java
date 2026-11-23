@@ -84,9 +84,9 @@ public class TcpSessionManager implements ApplicationEventPublisherAware {
             deviceToSession.remove(deviceId, sessionId);
         }
 
-        // 清理分组映射
-        for (Set<String> set : groupSessions.values()) {
-            set.remove(sessionId);
+        // 清理分组映射并原子回收变空的分组键
+        for (String group : new ArrayList<>(groupSessions.keySet())) {
+            removeFromGroup(group, sessionId);
         }
 
         log.debug("TCP 会话已注销: sessionId={}, deviceId={}, reason={}", sessionId, deviceId, reason);
@@ -216,11 +216,15 @@ public class TcpSessionManager implements ApplicationEventPublisherAware {
         if (group == null || sessionId == null) {
             return;
         }
-        groupSessions.computeIfAbsent(group, k -> ConcurrentHashMap.newKeySet()).add(sessionId);
+        groupSessions.compute(group, (k, set) -> {
+            Set<String> target = set != null ? set : ConcurrentHashMap.newKeySet();
+            target.add(sessionId);
+            return target;
+        });
     }
 
     /**
-     * 将指定会话从业务逻辑分组移除
+     * 将指定会话从业务逻辑分组移除（若移除后分组变空则原子清理空分组键）
      *
      * @param group     分组名称
      * @param sessionId 会话 ID
@@ -229,10 +233,47 @@ public class TcpSessionManager implements ApplicationEventPublisherAware {
         if (group == null || sessionId == null) {
             return;
         }
-        Set<String> set = groupSessions.get(group);
-        if (set != null) {
+        groupSessions.computeIfPresent(group, (k, set) -> {
             set.remove(sessionId);
+            return set.isEmpty() ? null : set;
+        });
+    }
+
+    /**
+     * 逆向查询指定会话当前所属的所有业务逻辑分组名称
+     *
+     * @param sessionId 会话 ID
+     * @return 所属分组名称集合（保底非空不可变集合）
+     */
+    public Set<String> getGroupsBySession(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return Collections.emptySet();
         }
+        Set<String> result = new LinkedHashSet<>();
+        for (Map.Entry<String, Set<String>> entry : groupSessions.entrySet()) {
+            if (entry.getValue().contains(sessionId)) {
+                result.add(entry.getKey());
+            }
+        }
+        return Collections.unmodifiableSet(result);
+    }
+
+    /**
+     * 获取当前所有非空业务逻辑分组名称集合
+     *
+     * @return 活跃分组名称集合（保底非空不可变集合）
+     */
+    public Set<String> getAllGroups() {
+        if (groupSessions.isEmpty()) {
+            return Collections.emptySet();
+        }
+        Set<String> result = new LinkedHashSet<>();
+        for (Map.Entry<String, Set<String>> entry : groupSessions.entrySet()) {
+            if (!entry.getValue().isEmpty()) {
+                result.add(entry.getKey());
+            }
+        }
+        return Collections.unmodifiableSet(result);
     }
 
     /**
@@ -241,7 +282,7 @@ public class TcpSessionManager implements ApplicationEventPublisherAware {
      * @param group 分组名称
      * @return 活跃会话集合（保底非空集合）
      */
-    public Set<TcpSession> getGroupSessions(String group) {
+    public Set<TcpSession> getSessionsByGroup(String group) {
         if (group == null) {
             return Collections.emptySet();
         }
@@ -290,7 +331,51 @@ public class TcpSessionManager implements ApplicationEventPublisherAware {
     }
 
     /**
-     * 优雅注销并关闭所有活跃会话（用于停机排空）
+     * 获取归属指定服务端实例的所有活跃会话集合
+     *
+     * @param serverName 服务端逻辑名称（如 "default"、"jt808"）
+     * @return 活跃会话集合（保底非空不可变集合）
+     */
+    public Set<TcpSession> getSessionsByServer(String serverName) {
+        if (serverName == null || serverName.isBlank()) {
+            return Collections.emptySet();
+        }
+        String target = serverName.trim();
+        Set<TcpSession> result = new LinkedHashSet<>();
+        for (TcpSession session : sessions.values()) {
+            String owner = (session.getServerName() != null && !session.getServerName().isBlank())
+                    ? session.getServerName()
+                    : "default";
+            if (target.equals(owner) && session.isActive()) {
+                result.add(session);
+            }
+        }
+        return Collections.unmodifiableSet(result);
+    }
+
+    /**
+     * 优雅注销并关闭归属指定服务端实例的活跃会话（按端口精准隔离排空）
+     *
+     * @param serverName 服务端逻辑名称
+     * @param reason     关闭原因
+     */
+    public void closeSessionsByServer(String serverName, CloseReason reason) {
+        if (serverName == null || serverName.isBlank()) {
+            return;
+        }
+        CloseReason effectiveReason = reason != null ? reason : CloseReason.NORMAL;
+        for (TcpSession session : getSessionsByServer(serverName)) {
+            try {
+                session.close(effectiveReason);
+                unregister(session.getSessionId(), effectiveReason);
+            } catch (Exception ex) {
+                log.warn("按服务端 [{}] 关闭会话时发生异常: sessionId={}", serverName, session.getSessionId(), ex);
+            }
+        }
+    }
+
+    /**
+     * 优雅注销并关闭所有活跃会话（用于全局停机排空）
      *
      * @param reason 关闭原因
      */

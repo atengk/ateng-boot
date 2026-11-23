@@ -54,6 +54,9 @@ class AtengJobLocalAutoConfigurationTest {
             assertThat(properties.getThreadNamePrefix()).isEqualTo("ateng-job-local-");
             assertThat(properties.isPreferDatabaseConfig()).isTrue();
             assertThat(properties.getInMemoryLogCapacity()).isEqualTo(100);
+            assertThat(properties.getMaxLogLinesPerExecution()).isEqualTo(500);
+            assertThat(properties.getLogRetention()).isEqualTo(java.time.Duration.ofDays(7));
+            assertThat(properties.getClusterLock().getDefaultMinHoldTime()).isEqualTo(java.time.Duration.ZERO);
 
             LocalJobLifecycleManager lifecycleManager = context.getBean(LocalJobLifecycleManager.class);
             assertThat(lifecycleManager.getPhase()).isEqualTo(Integer.MAX_VALUE - 100);
@@ -107,7 +110,9 @@ class AtengJobLocalAutoConfigurationTest {
                 "ateng.boot.job.local.thread-name-prefix=custom-job-",
                 "ateng.boot.job.local.shutdown-await-termination-period=45s",
                 "ateng.boot.job.local.in-memory-log-capacity=200",
-                "ateng.boot.job.local.log-retention-days=14",
+                "ateng.boot.job.local.max-log-lines-per-execution=25",
+                "ateng.boot.job.local.log-retention=14d",
+                "ateng.boot.job.local.cluster-lock.default-min-hold-time=3s",
                 "ateng.boot.job.local.alert.enabled=true"
         ).run(context -> {
             JobLocalProperties properties = context.getBean(JobLocalProperties.class);
@@ -115,7 +120,9 @@ class AtengJobLocalAutoConfigurationTest {
             assertThat(properties.getThreadNamePrefix()).isEqualTo("custom-job-");
             assertThat(properties.getShutdownAwaitTerminationPeriod().toSeconds()).isEqualTo(45);
             assertThat(properties.getInMemoryLogCapacity()).isEqualTo(200);
-            assertThat(properties.getLogRetentionDays()).isEqualTo(14);
+            assertThat(properties.getMaxLogLinesPerExecution()).isEqualTo(25);
+            assertThat(properties.getLogRetention()).isEqualTo(java.time.Duration.ofDays(14));
+            assertThat(properties.getClusterLock().getDefaultMinHoldTime()).isEqualTo(java.time.Duration.ofSeconds(3));
             assertThat(properties.getAlert().isEnabled()).isTrue();
         });
     }

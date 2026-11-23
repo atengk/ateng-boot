@@ -45,6 +45,14 @@ public class MqttTopicPattern {
 
         for (int i = 0; i < patternSegments.length; i++) {
             String segment = patternSegments[i];
+            if (segment.contains("#") && (!"#".equals(segment) || i != patternSegments.length - 1)) {
+                throw new IllegalArgumentException(
+                        "Invalid MQTT multi-level wildcard '#' position in topic pattern [" + rawPattern + "]: '#' must occupy the final segment alone");
+            }
+            if (segment.contains("+") && !"+".equals(segment)) {
+                throw new IllegalArgumentException(
+                        "Invalid MQTT single-level wildcard '+' in topic pattern [" + rawPattern + "]: '+' must occupy an entire segment");
+            }
             if (i > 0) {
                 mqttFilterBuilder.append("/");
             }

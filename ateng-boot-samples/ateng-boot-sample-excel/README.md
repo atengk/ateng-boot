@@ -1,180 +1,89 @@
-# ateng-boot-sample-excel 轻量流式 Excel 处理自验工程
+# ateng-boot-sample-excel 流式电子表格场景体验工程
 
-> 基于 Apache Fesod 的大批量流式导出、多 Sheet 链式编排、纵向单元格合并、导出动态脱敏、防呆模板生成、双向枚举/字典转义、导入行级校验与错题集标红批注回写示范。
-
----
-
-## 1. 场景痛点与功能定位
-
-传统 Excel 处理框架（如 EasyExcel 或原生 POI）容易引发以下痛点：
-1. **内存泄漏与 OOM**：大数据量导出时一次性在堆内存创建庞大对象树导致服务崩溃；
-2. **脱敏脏写污染**：在 Service 业务逻辑中直接对实体打星号，极易引发带掩码的脏数据回写数据库；
-3. **导入排错成本高**：校验失败时仅返回一个干瘪的行号，业务人员难以定位具体出错单元格与修改指南；
-4. **模板防呆缺失**：手工制作模板易敲错枚举与字典代号，维护成本极高；
-5. **多工作表与复杂排版困难**：多 Sheet 导出样板代码长达几十行，单元格合并与多主题切换极其繁琐。
-
-`ateng-boot-sample-excel` 提供专一、纯粹的轻量流式解决方案：
-- **零数据库依赖（Zero DB Dependency）**：纯 Web 容器模式，无需配置任何数据库，开箱即用；
-- **Apache Fesod 极低内存开销**：流式行级写入，百万级数据平稳导出，支持大文件后台异步受管任务；
-- **内存真明文不变量（`@ExcelSensitive`）**：严格践行 ADR-0012 规范，业务实体在 JVM 内存中 100% 保持原始明文，仅在写出 Excel 时流式拦截掩码；
-- **防呆模板智能生成（`@ExcelDropdown` & `@ExcelPrompt`）**：支持静态候选与动态 `DropdownProvider` SPI 下拉菜单，表头自动嵌入操作指南批注；
-- **双向业务转义（`@ExcelEnum` & `@ExcelDict`）**：导出时自动转义为中文描述，导入时双向反向解析还原为强类型枚举与字典原始代码；
-- **Fluent 多工作表链式构建器（`ExcelBuilder`）**：支持在单个工作簿内连续编排实体 Sheet、动态表头 Sheet，自由定制不同主题色系与斑马纹；
-- **声明式相邻行纵向合并（`@ExcelMerge`）**：自动将部门、类别等相邻相同值的单元格执行纵向合并；
-- **JSR-303 导入校验与错题集标红批注回写**：`BatchValidationListener` 自动拦截行级校验错误，`ExcelFeedbackUtil` 将单元格背景标红并挂载错误提示浮动批注回写给客户端。
+> 专注于演示与自验 `ateng-boot-excel` 核心特性在六大企业级业务场景（员工花名册流式导出/列裁剪/主题与合并、入职防呆模板/超长隐藏下拉与错题集反馈、多 Sheet 加密编排/图文画册与模板填充、薪酬脱敏/公式防注入/暗水印/AES-256 加密、海量订单分页/游标跨表轮转、分布式异步导出与实时进度跟踪）下的开箱使用。
 
 ---
 
-## 2. 演示场景清单
+## 1. 快速启动与服务端口
 
-| 演示场景 | 核心门面 / 注解 | 业务类与端点 | 核心特性与行为 |
-| :--- | :--- | :--- | :--- |
-| **基础流式脱敏导出** | `ExcelUtil.export`<br>`@ExcelSensitive` | `GET /api/excel/export` | 手机号、邮箱写出时动态掩码，内存保持真明文；RFC 5987 / 6266 标准防乱码响应头 |
-| **多 Sheet 链式编排** | `ExcelBuilder`<br>`@ExcelTheme` | `GET /api/excel/export-multi-sheet` | Fluent 编排 Sheet 1（用户清单/商务蓝）与 Sheet 2（销售汇总/极简白），自由切换主题与斑马纹 |
-| **纵向单元格合并** | `@ExcelMerge` | `GET /api/excel/export-merge` | 相邻行相同部门名称纵向自动合并，消除冗余重叠文字 |
-| **智能防呆模板下载** | `@ExcelDropdown`<br>`@ExcelPrompt` | `GET /api/excel/template` | 性别静态下拉、部门动态 `SampleDepartmentDropdownProvider` 下拉约束与表头悬浮批注 |
-| **双向枚举与字典解析** | `@ExcelEnum`<br>`@ExcelDict` | `POST /api/excel/import` | 导入时将表格中的“女”和“停用”双向反向还原为枚举 `SampleGenderEnum.FEMALE` 与字典代码 `"1"` |
-| **行级校验与结构化返回** | `BatchValidationListener`<br>JSR-303 | `POST /api/excel/import` | 姓名、手机号正则、邮箱格式校验，全量聚合错误行并返回 HTTP 200 + 400 业务 Result |
-| **错题集单元格标红回写** | `ExcelFeedbackUtil` | `POST /api/excel/import-feedback` | 校验失败时将出错单元格浅粉色高亮并嵌入浮动批注回写；合规时返回强类型成功 Result |
-| **无实体动态表头导出** | `ExcelUtil.exportDynamic` | `GET /api/excel/export-dynamic` | 动态 `List<List<String>>` 表头与二维列表数据直接流式写出 |
-| **受管异步导出任务中心** | `AsyncExportTaskService` | `POST /api/excel/async-export`<br>`GET /api/excel/async-task/{taskId}` | 受管线程池异步生成大文件、进度感知、防重复队列拦截与文件落地 |
-
----
-
-## 3. 本地启动与端点自验
-
-### 本地启动
-```bash
-mvn -pl ateng-boot-samples/ateng-boot-sample-excel spring-boot:run
-```
-
-### 3.1 验证基础流式脱敏导出
-```bash
-curl -i http://localhost:8080/api/excel/export -o 用户列表.xlsx
-```
-**预期效果**：
-- 响应头自动配置：
-  ```http
-  Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=utf-8
-  Content-Disposition: attachment; filename="用户列表.xlsx"; filename*=UTF-8''%E7%94%A8%E6%88%B7%E5%88%97%E8%A1%A8.xlsx
+- **默认 HTTP 端口**：`8080` (可在 `application.yml` 中修改)
+- **启动方式**：
+  ```bash
+  # 方式一：IDE 中运行 SampleExcelApplication.java 的 main 方法
+  # 方式二：命令行启动
+  mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-excel
   ```
-- 手机号自动掩码为 `138****8000`，邮箱脱敏掩码，性别枚举转义为 `男`，状态代码转义为 `正常`。
-
-### 3.2 验证 Fluent 多 Sheet 复杂流式导出
-```bash
-curl -i http://localhost:8080/api/excel/export-multi-sheet -o 综合多工作表报表.xlsx
-```
-**控制台日志**：
-```text
-2026-10-19 16:27:23.420 INFO [main] [adaf7dbfbbdecb7c85547daa584b9117] i.g.a.b.s.e.service.ExcelSampleService : 成功流式写出多 Sheet 报表: sheets=[用户清单, 销售汇总]
-```
-**预期工作簿效果**：
-- 包含 2 个工作表：Sheet 1 `用户清单`（商务蓝主题 + 斑马纹交替底色）、Sheet 2 `销售汇总`（动态大区季度销售指标）。
-
-### 3.3 验证纵向单元格合并导出
-```bash
-curl -i http://localhost:8080/api/excel/export-merge -o 部门员工合并报表.xlsx
-```
-**预期效果**：第 0 列相同部门（研发部、市场部）相邻行自动纵向合并为跨行大单元格。
-
-### 3.4 验证防呆模板下载
-```bash
-curl -i http://localhost:8080/api/excel/template -o 用户导入模板.xlsx
-```
-**预期效果**：
-- 用户姓名与所属部门表头单元格右上角标红，悬浮浮现操作指南批注；
-- 点击性别列弹出 `男/女/未知` 下拉选单；
-- 点击部门列弹出 `研发部/市场部/财务部/运营部/人力资源部` 动态提供者下拉选单。
-
-### 3.5 验证 JSR-303 导入校验与双向枚举/字典解析
-```bash
-curl -X POST "http://localhost:8080/api/excel/import" -F "file=@reverse_mapping.xlsx"
-```
-**合规导入与反向解析预期响应**：
-```json
-{
-  "code": 200,
-  "msg": "操作成功",
-  "data": [
-    {
-      "userId": "2002",
-      "username": "孙俪",
-      "phone": "13700137000",
-      "email": "sunli@example.com",
-      "gender": "FEMALE",
-      "department": "财务部",
-      "status": "1"
-    }
-  ],
-  "traceId": "c8d2467e1eea09fd726f725d6f0d4f57",
-  "success": true
-}
-```
-
-### 3.6 验证错题集单元格标红批注回写
-```bash
-curl -X POST "http://localhost:8080/api/excel/import-feedback" -F "file=@invalid_users.xlsx" -o 导入错误反馈.xlsx
-```
-**预期效果**：未通过校验的姓名单元格填充浅粉色背景，并挂载悬浮批注：`用户姓名不能为空`。
-
-### 3.7 验证受管异步导出任务中心
-```bash
-# 1. 提交异步导出任务
-curl -X POST "http://localhost:8080/api/excel/async-export?taskName=全量用户导出"
-```
-**返回响应**：
-```json
-{
-  "code": 200,
-  "msg": "操作成功",
-  "data": "399aa0f9cad0453c8ec49212ef9b48b4",
-  "traceId": "d4eb59b05a176ac02873355c2a480044",
-  "success": true
-}
-```
-```bash
-# 2. 查询异步任务状态
-curl "http://localhost:8080/api/excel/async-task/399aa0f9cad0453c8ec49212ef9b48b4"
-```
-**完成状态响应**：
-```json
-{
-  "code": 200,
-  "msg": "操作成功",
-  "data": {
-    "taskId": "399aa0f9cad0453c8ec49212ef9b48b4",
-    "taskName": "全量用户导出",
-    "status": "SUCCESS",
-    "progress": 100,
-    "fileSize": "4024"
-  },
-  "traceId": "d4eb59b05a176ac02873355c2a480044",
-  "success": true
-}
-```
 
 ---
 
-## 4. 定向集成测试
+## 2. 运行环境与双模切换
 
-本工程集成测试通过 JUnit 5 原生 `@TempDir` 实现临时文件自动隔离与物理销毁，**100% 离线自洽独立运行**：
+- **默认/CI 模式**（未激活 `local` Profile）：内置内存自洽存储与自洽配置，无需启动任何外部依赖即可启动运行与跑通全套自动化测试；
+- **Local 真实模式**（激活 `local` Profile）：若需连接本地或远程物理中间件（如 Redis 异步导出任务中心），复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml` 并填入真实连接串，启动应用时添加 `--spring.profiles.active=local` 自动生效（该文件已被 `.gitignore` 严格忽略，保证 CI 零风险与凭据安全）；
+- **自定义对象存储 SPI 扩展模式**：启动时附加配置 `--ateng.boot.excel.sample.custom-storage.enabled=true`，即可激活 `CustomOssExportFileStorage` 替换默认本地存储，验证自定义云分发 URL 前缀（`https://oss.example.com/excel-exports/`）接管能力。
+
+---
+
+## 3. 核心 Controller 接口与一键体验
+
+应用启动后，可通过以下 cURL 命令或浏览器直接发起调用体验：
+
+| 功能领域 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **花名册流式导出 (`ResponseEntity` 回调)** | `EmployeeRosterController` | `GET /sample/excel/roster/export-response-entity` | `curl -i "http://localhost:8080/sample/excel/roster/export-response-entity?includeColumns=name,phone,email" -o 花名册_裁剪列.xlsx` |
+| **花名册快捷导出 (`ResponseEntity` 实体)** | `EmployeeRosterController` | `GET /sample/excel/roster/export-entity-shortcut` | `curl -i "http://localhost:8080/sample/excel/roster/export-entity-shortcut?includeColumns=name,phone" -o 花名册_快捷实体.xlsx` |
+| **花名册同步流式导出 (脱敏+枚举)** | `EmployeeRosterController` | `GET /sample/excel/roster/export-servlet-response` | `curl -i "http://localhost:8080/sample/excel/roster/export-servlet-response" -o 员工花名册_同步流式.xlsx` |
+| **花名册企业主题渲染导出** | `EmployeeRosterController` | `GET /sample/excel/roster/export-theme` | `curl -i "http://localhost:8080/sample/excel/roster/export-theme?theme=WARM_ORANGE" -o 花名册_暖阳橙.xlsx` |
+| **花名册国际化动态表头导出** | `EmployeeRosterController` | `GET /sample/excel/roster/export-i18n` | `curl -i -H "Accept-Language: en-US" "http://localhost:8080/sample/excel/roster/export-i18n" -o 员工花名册_英文表头.xlsx` |
+| **部门考勤纵向单元格合并导出** | `EmployeeRosterController` | `GET /sample/excel/roster/export-merge` | `curl -i "http://localhost:8080/sample/excel/roster/export-merge" -o 部门考勤纵向合并统计表.xlsx` |
+| **入职防呆导入模板下载** | `OnboardingImportController` | `GET /sample/excel/onboarding/template` | `curl -i "http://localhost:8080/sample/excel/onboarding/template" -o 入职防呆导入模板.xlsx` |
+| **超长动态下拉导入模板下载 (>200 字符)** | `OnboardingImportController` | `GET /sample/excel/onboarding/template-long-dropdown` | `curl -i "http://localhost:8080/sample/excel/onboarding/template-long-dropdown" -o 入职防呆导入模板_超长下拉.xlsx` |
+| **下载合规入职测试样本** | `OnboardingImportController` | `GET /sample/excel/onboarding/sample-valid` | `curl -i "http://localhost:8080/sample/excel/onboarding/sample-valid" -o 入职合规测试样本.xlsx` |
+| **下载含错入职测试样本** | `OnboardingImportController` | `GET /sample/excel/onboarding/sample-dirty` | `curl -i "http://localhost:8080/sample/excel/onboarding/sample-dirty" -o 入职含错测试样本.xlsx` |
+| **前置表头契约静态校验** | `OnboardingImportController` | `POST /sample/excel/onboarding/validate-header` | `curl -X POST "http://localhost:8080/sample/excel/onboarding/validate-header" -F "file=@入职防呆导入模板.xlsx" -F "strategy=STRICT"` |
+| **强类型同步读取与行级校验** | `OnboardingImportController` | `POST /sample/excel/onboarding/import-result` | `curl -X POST "http://localhost:8080/sample/excel/onboarding/import-result" -F "file=@入职含错测试样本.xlsx"` |
+| **导入差错数据独立剥离导出** | `OnboardingImportController` | `POST /sample/excel/onboarding/export-failed-rows` | `curl -X POST "http://localhost:8080/sample/excel/onboarding/export-failed-rows" -F "file=@入职含错测试样本.xlsx" -o 入职导入失败明细.xlsx` |
+| **导入错误原样标红批注回写反馈** | `OnboardingImportController` | `POST /sample/excel/onboarding/export-feedback` | `curl -X POST "http://localhost:8080/sample/excel/onboarding/export-feedback" -F "file=@入职含错测试样本.xlsx" -o 入职导入错误反馈_标红批注.xlsx` |
+| **导入差错剥离导出 (`ResponseEntity`)** | `OnboardingImportController` | `POST /sample/excel/onboarding/export-failed-rows-entity` | `curl -X POST "http://localhost:8080/sample/excel/onboarding/export-failed-rows-entity" -F "file=@入职含错测试样本.xlsx" -o 入职失败明细_ResponseEntity.xlsx` |
+| **错误原样标红回写 (`ResponseEntity`)** | `OnboardingImportController` | `POST /sample/excel/onboarding/export-feedback-entity` | `curl -X POST "http://localhost:8080/sample/excel/onboarding/export-feedback-entity" -F "file=@入职含错测试样本.xlsx" -o 入职错误反馈_ResponseEntity.xlsx` |
+| **两阶段校验(物理行号追踪+精确标红)** | `OnboardingImportController` | `POST /sample/excel/onboarding/import-two-phase-feedback` | `curl -X POST "http://localhost:8080/sample/excel/onboarding/import-two-phase-feedback" -F "file=@入职含错测试样本.xlsx" -o 入职两阶段校验反馈.xlsx` |
+| **海量入职数据流式分批校验消费** | `OnboardingImportController` | `POST /sample/excel/onboarding/import-batch` | `curl -X POST "http://localhost:8080/sample/excel/onboarding/import-batch?batchSize=100" -F "file=@入职合规测试样本.xlsx"` |
+| **异构多 Sheet 联合报表写出** | `WorkbookReportController` | `GET /sample/excel/report/multi-sheet` | `curl -i "http://localhost:8080/sample/excel/report/multi-sheet" -o 经营综合分析多表报表.xlsx` |
+| **异构多 Sheet AES-256 加密写出** | `WorkbookReportController` | `GET /sample/excel/report/multi-sheet-encrypt` | `curl -i "http://localhost:8080/sample/excel/report/multi-sheet-encrypt?password=YOUR_REPORT_PASSWORD" -o 经营综合分析多表报表_AES256.xlsx` |
+| **多 Sheet 解密读取与分 Sheet 校验** | `WorkbookReportController` | `POST /sample/excel/report/multi-sheet-validate` | `curl -X POST "http://localhost:8080/sample/excel/report/multi-sheet-validate?password=YOUR_REPORT_PASSWORD&headerStrategy=STRICT&maxErrorRows=10" -F "file=@经营综合分析多表报表_AES256.xlsx"` |
+| **异构多 Sheet 联合动态解析** | `WorkbookReportController` | `POST /sample/excel/report/multi-sheet-parse` | `curl -X POST "http://localhost:8080/sample/excel/report/multi-sheet-parse" -F "file=@经营综合分析多表报表.xlsx"` |
+| **动态表头与键值对 Map 导出** | `WorkbookReportController` | `GET /sample/excel/report/dynamic` | `curl -i "http://localhost:8080/sample/excel/report/dynamic" -o 动态扩展属性报表.xlsx` |
+| **动态表头导出 (`ResponseEntity` + 可选加密)** | `WorkbookReportController` | `GET /sample/excel/report/dynamic-response-entity` | `curl -i "http://localhost:8080/sample/excel/report/dynamic-response-entity?password=YOUR_REPORT_PASSWORD" -o 动态扩展属性报表_Entity.xlsx` |
+| **商品图文画册图文混排导出** | `WorkbookReportController` | `GET /sample/excel/report/image-catalog` | `curl -i "http://localhost:8080/sample/excel/report/image-catalog" -o 企业商品图文画册.xlsx` |
+| **空白差旅报销单模板下载** | `WorkbookReportController` | `GET /sample/excel/report/template-blank` | `curl -i "http://localhost:8080/sample/excel/report/template-blank" -o 差旅报销结算单_空白模板.xlsx` |
+| **报销单占位符与列表循环填充** | `WorkbookReportController` | `GET /sample/excel/report/fill` | `curl -i "http://localhost:8080/sample/excel/report/fill" -o 差旅报销结算单_已填充.xlsx` |
+| **模板填充导出 (`ResponseEntity` + 可选加密)** | `WorkbookReportController` | `GET /sample/excel/report/fill-response-entity` | `curl -i "http://localhost:8080/sample/excel/report/fill-response-entity?password=YOUR_REPORT_PASSWORD" -o 差旅报销结算单_Entity.xlsx` |
+| **脱敏与公式防注入对照导出** | `PayrollSecurityController` | `GET /sample/excel/security/export-contrast` | `curl -i "http://localhost:8080/sample/excel/security/export-contrast" -o 薪酬敏感信息与公式防护对照表.xlsx` |
+| **-30° 暗水印与工作表只读保护导出** | `PayrollSecurityController` | `GET /sample/excel/security/export-watermark` | `curl -i "http://localhost:8080/sample/excel/security/export-watermark" -o 薪酬机密_防拍照暗水印锁定.xlsx` |
+| **整工作簿 AES-256 强加密导出** | `PayrollSecurityController` | `GET /sample/excel/security/export-encrypt` | `curl -i "http://localhost:8080/sample/excel/security/export-encrypt?password=YOUR_EXCEL_PASSWORD" -o 薪酬机密_AES256加密.xlsx` |
+| **整工作簿加密导出 (`ResponseEntity`)** | `PayrollSecurityController` | `GET /sample/excel/security/export-encrypt-entity` | `curl -i "http://localhost:8080/sample/excel/security/export-encrypt-entity?password=YOUR_EXCEL_PASSWORD" -o 薪酬机密_Entity加密.xlsx` |
+| **暗水印保护导出 (`ResponseEntity`)** | `PayrollSecurityController` | `GET /sample/excel/security/export-watermark-entity` | `curl -i "http://localhost:8080/sample/excel/security/export-watermark-entity?watermarkText=Ateng内部机密" -o 薪酬机密_Entity水印.xlsx` |
+| **下载加密测试样本工作簿** | `PayrollSecurityController` | `GET /sample/excel/security/sample-encrypted` | `curl -i "http://localhost:8080/sample/excel/security/sample-encrypted" -o 薪酬机密_样本加密.xlsx` |
+| **密文工作簿透明对称解密导入** | `PayrollSecurityController` | `POST /sample/excel/security/import-decrypt` | `curl -X POST "http://localhost:8080/sample/excel/security/import-decrypt?password=YOUR_EXCEL_PASSWORD" -F "file=@薪酬机密_样本加密.xlsx"` |
+| **`PageResult` 流式跨表轮转导出** | `OrderStreamingController` | `GET /sample/excel/streaming/export-page` | `curl -i "http://localhost:8080/sample/excel/streaming/export-page?totalRows=250&pageSize=100&maxRowsPerSheet=100" -o 订单流水_分页跨表分片导出.xlsx` |
+| **主键游标流式分页跨表导出** | `OrderStreamingController` | `GET /sample/excel/streaming/export-cursor` | `curl -i "http://localhost:8080/sample/excel/streaming/export-cursor?totalRows=250&pageSize=100&maxRowsPerSheet=100" -o 订单流水_游标分片导出.xlsx` |
+| **流式分页跨表导出 (`ResponseEntity`)** | `OrderStreamingController` | `GET /sample/excel/streaming/export-page-entity` | `curl -i "http://localhost:8080/sample/excel/streaming/export-page-entity?totalRows=250&pageSize=100" -o 订单流水_分页ResponseEntity.xlsx` |
+| **主键游标流式导出 (`ResponseEntity`)** | `OrderStreamingController` | `GET /sample/excel/streaming/export-cursor-entity` | `curl -i "http://localhost:8080/sample/excel/streaming/export-cursor-entity?totalRows=250&pageSize=100" -o 订单流水_游标ResponseEntity.xlsx` |
+| **流式分页模板显式写控制导出 (支持加密)** | `OrderStreamingController` | `GET /sample/excel/streaming/export-template` | `curl -i "http://localhost:8080/sample/excel/streaming/export-template?password=YOUR_STREAM_PASSWORD" -o 订单流水_模板显式写.xlsx` |
+| **下载海量交易订单测试样本** | `OrderStreamingController` | `GET /sample/excel/streaming/sample-order-bill` | `curl -i "http://localhost:8080/sample/excel/streaming/sample-order-bill?count=300" -o 海量订单交易账单样本.xlsx` |
+| **大文件常量内存分批流式解析消费** | `OrderStreamingController` | `POST /sample/excel/streaming/import-batch` | `curl -X POST "http://localhost:8080/sample/excel/streaming/import-batch?batchSize=100" -F "file=@海量订单交易账单样本.xlsx"` |
+| **异步海量大账单任务提交 (含实时进度)** | `ExcelAsyncExportController` | `POST /sample/excel/async/submit` | `curl -X POST "http://localhost:8080/sample/excel/async/submit?taskName=季度财务大账单&count=500" -H "X-Trace-Id: trace-async-demo-001"` |
+| **异步任务完整状态与结果查询** | `ExcelAsyncExportController` | `GET /sample/excel/async/status` | `curl -i "http://localhost:8080/sample/excel/async/status?taskId=YOUR_TASK_ID"` |
+| **异步任务实时进度百分比轮询** | `ExcelAsyncExportController` | `GET /sample/excel/async/progress` | `curl -i "http://localhost:8080/sample/excel/async/progress?taskId=YOUR_TASK_ID"` |
+| **取消排队或执行中的异步任务** | `ExcelAsyncExportController` | `POST /sample/excel/async/cancel` | `curl -X POST "http://localhost:8080/sample/excel/async/cancel?taskId=YOUR_TASK_ID"` |
+| **异步导出完成文件受管流式下载** | `ExcelAsyncExportController` | `GET /sample/excel/async/download` | `curl -i "http://localhost:8080/sample/excel/async/download?taskId=YOUR_TASK_ID" -o 异步导出大账单.xlsx` |
+
+---
+
+## 4. 全真自动化回归命令
 
 ```bash
-mvn test -pl ateng-boot-samples/ateng-boot-sample-excel -am -T 1C -nsu -B
+mvn test -pl ateng-boot-excel,ateng-boot-samples/ateng-boot-sample-excel -am -T 1C -nsu -B
 ```
 
-测试集（共 14 项端到端集成用例）全面覆盖：
-1. 基础流式导出用户列表：HTTP 响应头、动态脱敏掩码与枚举/字典转义验证
-2. Fluent 多 Sheet 复杂流式导出：多工作表创建、表名识别与数据流式写出验证
-3. 纵向相邻单元格合并导出：`@ExcelMerge` 区域与合并单元格数量验证
-4. 防呆导入模板下载：表头批注指南与静态/动态下拉选单数据约束验证
-5. 合规用户数据导入：JSR-303 语法校验通过并返回强类型 Result 验证
-6. 双向业务枚举与字典 SPI 反向解析：中文字面量精确还原为强类型枚举与业务代码验证
-7. 导入数据校验失败：结构化错误行数与业务提示聚合验证
-8. 导入失败错题集回写：错误单元格浅粉色高亮与悬浮批注验证
-9. 导入反馈端点合规场景：写回强类型成功 Result 验证
-10. 无实体动态多列导出：动态表头与二维数据流式写出验证
-11. 5 套企业级内置主题生成：`minimal-clean`、`business-blue`、`classic-grey`、`fresh-green`、`warm-orange` 验证
-12. 防拍照全屏暗水印与工作表密码锁定验证
-13. 异步导出任务中心 Controller 端点：任务提交、进度轮询与文件落盘全流程验证
-14. 万级大数据量流式读写与内存有界分批消费仿真（5000 行分批流式验证）
+> 详细原理机制、配置清单与扩展定制，请参阅核心 Starter 文档：[ateng-boot-excel README](../../ateng-boot-excel/README.md)。

@@ -3,8 +3,11 @@ package io.github.atengk.boot.http.interceptor;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.http.constant.HttpConstants;
+import io.github.atengk.boot.http.context.HttpRequestContextHolder;
 import io.github.atengk.boot.http.properties.HttpClientItemProperties;
+import io.github.atengk.boot.http.properties.HttpLoggingLevel;
 import io.github.atengk.boot.http.properties.HttpProperties;
+import io.github.atengk.boot.http.properties.HttpRetryProperties;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -12,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.client.ClientHttpRequestExecution;
 import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.mock.http.client.MockClientHttpRequest;
@@ -19,6 +23,8 @@ import org.springframework.mock.http.client.MockClientHttpResponse;
 
 import java.io.IOException;
 import java.net.URI;
+import java.time.Duration;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -58,6 +64,7 @@ class TraceContextInterceptorTest {
         MDC.clear();
         TenantContextHolder.clear();
         UserContextHolder.clear();
+        HttpRequestContextHolder.clear();
     }
 
     @Test
@@ -259,5 +266,130 @@ class TraceContextInterceptorTest {
         assertNull(headers.getFirst("X-Tenant-Id"));
         assertNull(headers.getFirst(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE), "关闭追踪时内部透传控制头必须被严格剥离");
         assertNull(headers.getFirst(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE), "关闭追踪时内部客户端控制头必须被严格剥离");
+    }
+
+    @Test
+    @DisplayName("纯头部治理方法：支持无流缓冲直通路径执行受信域名判定、四维头注入/剥离与内部控制头全净空")
+    void shouldGovernHeadersDirectlyWithoutBuffering() {
+        MDC.put("traceId", "trace-direct-001");
+        TenantContextHolder.setTenantId("tenant-direct");
+        UserContextHolder.setUserId("user-direct");
+
+        // 1. 内部信任域场景：注入四维头并清空全量 X-Ateng-Internal-* 控制头
+        HttpHeaders internalHeaders = new HttpHeaders();
+        internalHeaders.set(HttpConstants.HEADER_STREAM_TRANSFER, "true");
+        internalHeaders.set(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE, "user-service");
+        internalHeaders.set(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE, "true");
+
+        TenantContextHolder.runWithoutTenant(() -> {
+            interceptor.applyContextHeaders(internalHeaders, URI.create("http://192.168.1.100:8080/upload"));
+        });
+
+        assertEquals("trace-direct-001", internalHeaders.getFirst("X-Trace-Id"));
+        assertEquals("tenant-direct", internalHeaders.getFirst("X-Tenant-Id"));
+        assertEquals("user-direct", internalHeaders.getFirst("X-User-Id"));
+        assertEquals("true", internalHeaders.getFirst("X-Ignore-Tenant"));
+        assertNull(internalHeaders.getFirst(HttpConstants.HEADER_STREAM_TRANSFER));
+        assertNull(internalHeaders.getFirst(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE));
+        assertNull(internalHeaders.getFirst(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE));
+
+        // 2. 外部非信任客户端场景（clientName 绑定 wechat-pay）：剥离敏感业务头及全量内部控制头
+        HttpHeaders untrustedHeaders = new HttpHeaders();
+        untrustedHeaders.set("X-Tenant-Id", "tenant-leak");
+        untrustedHeaders.set("X-User-Id", "user-leak");
+        untrustedHeaders.set("X-Ignore-Tenant", "true");
+        untrustedHeaders.set(HttpConstants.HEADER_STREAM_TRANSFER, "true");
+        untrustedHeaders.set(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE, "wechat-pay");
+
+        interceptor.applyContextHeaders(untrustedHeaders, URI.create("https://custom.gateway.com/upload"));
+
+        assertEquals("trace-direct-001", untrustedHeaders.getFirst("X-Trace-Id"));
+        assertNull(untrustedHeaders.getFirst("X-Tenant-Id"));
+        assertNull(untrustedHeaders.getFirst("X-User-Id"));
+        assertNull(untrustedHeaders.getFirst("X-Ignore-Tenant"));
+        assertNull(untrustedHeaders.getFirst(HttpConstants.HEADER_STREAM_TRANSFER));
+        assertNull(untrustedHeaders.getFirst(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE));
+        assertNull(untrustedHeaders.getFirst(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE));
+
+        // 3. tracing 关闭时仍须清空全量内部控制头
+        properties.getTracing().setEnabled(false);
+        HttpHeaders disabledHeaders = new HttpHeaders();
+        disabledHeaders.set(HttpConstants.HEADER_STREAM_TRANSFER, "true");
+        disabledHeaders.set(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE, "user-service");
+        disabledHeaders.set(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE, "false");
+        interceptor.applyContextHeaders(disabledHeaders, URI.create("http://192.168.1.100:8080/upload"));
+
+        assertNull(disabledHeaders.getFirst("X-Trace-Id"));
+        assertNull(disabledHeaders.getFirst(HttpConstants.HEADER_STREAM_TRANSFER));
+        assertNull(disabledHeaders.getFirst(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE));
+        assertNull(disabledHeaders.getFirst(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE));
+    }
+
+    @Test
+    @DisplayName("跨拦截器桥接链路：Trace 提取剥离 clientName 后写入上下文驱动 Retry，cURL 无内部头，结束后还原快照")
+    void shouldBridgeClientNameToRetryStripInternalHeadersBeforeCurlAndRestoreOnCompletion() throws IOException {
+        HttpClientItemProperties clientA = new HttpClientItemProperties();
+        clientA.setBaseUrl("https://shared.gateway.com");
+        HttpRetryProperties retryA = new HttpRetryProperties();
+        retryA.setEnabled(true);
+        retryA.setMaxAttempts(2);
+        retryA.setDelay(Duration.ofMillis(5));
+        clientA.setRetry(retryA);
+        properties.getClients().put("shared-a", clientA);
+
+        HttpClientItemProperties clientB = new HttpClientItemProperties();
+        clientB.setBaseUrl("https://shared.gateway.com");
+        clientB.setPropagateContext(false);
+        HttpRetryProperties retryB = new HttpRetryProperties();
+        retryB.setEnabled(true);
+        retryB.setMaxAttempts(4);
+        retryB.setDelay(Duration.ofMillis(5));
+        clientB.setRetry(retryB);
+        properties.getClients().put("shared-b", clientB);
+
+        properties.getLogging().setEnabled(true);
+        properties.getLogging().setLevel(HttpLoggingLevel.FULL);
+        HttpLoggingInterceptor loggingInterceptor = new HttpLoggingInterceptor(properties);
+        HttpRetryInterceptor retryInterceptor = new HttpRetryInterceptor(properties, loggingInterceptor);
+
+        HttpRequestContextHolder.setClientName("outer-client");
+
+        // 场景 1：正常完成重试命中 shared-b (4 次)，cURL 与下游请求头均无 X-Ateng-Internal-*
+        MockClientHttpRequest req1 = new MockClientHttpRequest(HttpMethod.GET, URI.create("https://shared.gateway.com/api/data"));
+        req1.getHeaders().add(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE, "shared-b");
+        req1.getHeaders().add(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE, "false");
+        req1.getHeaders().add(HttpConstants.HEADER_STREAM_TRANSFER, "true");
+
+        AtomicInteger attempts1 = new AtomicInteger(0);
+        AtomicReference<String> generatedCurl = new AtomicReference<>();
+        AtomicReference<HttpHeaders> downstreamHeaders = new AtomicReference<>();
+
+        ClientHttpRequestExecution chain = (req, body) -> retryInterceptor.intercept(req, body, (r, b) -> {
+            attempts1.incrementAndGet();
+            downstreamHeaders.set(r.getHeaders());
+            generatedCurl.set(loggingInterceptor.generateCurlCommand(r, b, properties.getLogging()));
+            return new MockClientHttpResponse(new byte[0], HttpStatus.SERVICE_UNAVAILABLE);
+        });
+
+        ClientHttpResponse resp = interceptor.intercept(req1, new byte[0], chain);
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, resp.getStatusCode());
+        assertEquals(4, attempts1.get(), "TraceContextInterceptor 桥接后的 HttpRetryInterceptor 应命中 shared-b 的 maxAttempts=4");
+        assertNotNull(generatedCurl.get());
+        assertFalse(generatedCurl.get().contains("X-Ateng-Internal-"), "cURL 重放命令中不得出现任何 X-Ateng-Internal-* 内部控制头");
+        assertNull(downstreamHeaders.get().getFirst(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE));
+        assertNull(downstreamHeaders.get().getFirst(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE));
+        assertNull(downstreamHeaders.get().getFirst(HttpConstants.HEADER_STREAM_TRANSFER));
+        assertEquals("outer-client", HttpRequestContextHolder.getClientName(), "请求完成后须精准还原进入前的 clientName 快照");
+
+        // 场景 2：底层持续抛出 IOException 耗尽重试并向外抛出异常时，依然还原 clientName 快照
+        HttpRequestContextHolder.clear();
+        MockClientHttpRequest req2 = new MockClientHttpRequest(HttpMethod.GET, URI.create("https://shared.gateway.com/api/down"));
+        req2.getHeaders().add(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE, "shared-b");
+
+        assertThrows(IOException.class, () -> interceptor.intercept(req2, new byte[0],
+                (req, body) -> retryInterceptor.intercept(req, body, (r, b) -> {
+                    throw new IOException("connection reset");
+                })));
+        assertNull(HttpRequestContextHolder.getClientName(), "异常结束路径后 clientName 上下文必须清空无残留");
     }
 }

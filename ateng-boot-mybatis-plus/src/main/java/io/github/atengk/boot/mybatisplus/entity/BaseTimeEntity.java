@@ -18,7 +18,7 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 @ToString(callSuper = true)
-public abstract class BaseTimeEntity extends BaseIdEntity {
+public abstract class BaseTimeEntity extends BaseIdEntity implements TimeAuditable {
 
     private static final long serialVersionUID = 1L;
 

@@ -411,6 +411,88 @@ class PayTemplateTest {
         assertEquals("202610232200140088", barResp.getTransactionId());
     }
 
+    @Test
+    @DisplayName("支付宝小程序收单 payJsapi: 智能推导与买家参数透传验证")
+    void testPay_alipay_jsapi_smartDeduction() {
+        PayResponse expected = PayResponse.builder()
+                .channel(PayChannel.ALIPAY)
+                .tradeType(PayTradeType.JSAPI)
+                .outTradeNo("ALI_JSAPI_3001")
+                .transactionId("202610232200140099")
+                .tradeNo("202610232200140099")
+                .tradeState(PayTradeState.NOTPAY)
+                .success(true)
+                .build();
+        when(alipayTemplate.payJsapi(any(AlipayPayRequest.class))).thenReturn(expected);
+
+        // 1. 显式传递 buyerId
+        UnifiedPayRequest reqBuyerId = UnifiedPayRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .tradeType(PayTradeType.JSAPI)
+                .outTradeNo("ALI_JSAPI_3001")
+                .subject("支付宝小程序订单")
+                .amount(new BigDecimal("99.00"))
+                .buyerId("2088102123456789")
+                .build();
+        PayResponse resp1 = payTemplate.pay(reqBuyerId);
+        assertNotNull(resp1);
+        assertEquals("202610232200140099", resp1.getTradeNo());
+
+        ArgumentCaptor<AlipayPayRequest> captor1 = ArgumentCaptor.forClass(AlipayPayRequest.class);
+        verify(alipayTemplate).payJsapi(captor1.capture());
+        assertEquals("2088102123456789", captor1.getValue().getBuyerId());
+        assertNull(captor1.getValue().getBuyerOpenId());
+
+        // 2. openid 智能推导为 buyerId (2088 开头且 16 位数字)
+        UnifiedPayRequest reqDeduceBuyerId = UnifiedPayRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .tradeType(PayTradeType.JSAPI)
+                .outTradeNo("ALI_JSAPI_3002")
+                .subject("支付宝小程序订单推导")
+                .amount(new BigDecimal("19.90"))
+                .openid("2088555566667777")
+                .build();
+        payTemplate.pay(reqDeduceBuyerId);
+
+        ArgumentCaptor<AlipayPayRequest> captor2 = ArgumentCaptor.forClass(AlipayPayRequest.class);
+        verify(alipayTemplate, times(2)).payJsapi(captor2.capture());
+        assertEquals("2088555566667777", captor2.getValue().getBuyerId());
+        assertNull(captor2.getValue().getBuyerOpenId());
+
+        // 3. openid 智能推导为 buyerOpenId (非 2088 或非 16 位)
+        UnifiedPayRequest reqDeduceOpenId = UnifiedPayRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .tradeType(PayTradeType.JSAPI)
+                .outTradeNo("ALI_JSAPI_3003")
+                .subject("支付宝小程序订单OpenID")
+                .amount(new BigDecimal("39.90"))
+                .openid("074nrx277A50ak9LDg7gKaqzQ0WPt0HnoXqTnoYkn5i1111")
+                .build();
+        payTemplate.pay(reqDeduceOpenId);
+
+        ArgumentCaptor<AlipayPayRequest> captor3 = ArgumentCaptor.forClass(AlipayPayRequest.class);
+        verify(alipayTemplate, times(3)).payJsapi(captor3.capture());
+        assertNull(captor3.getValue().getBuyerId());
+        assertEquals("074nrx277A50ak9LDg7gKaqzQ0WPt0HnoXqTnoYkn5i1111", captor3.getValue().getBuyerOpenId());
+
+        // 4. 显式 buyerId 优先于 openid
+        UnifiedPayRequest reqPrecedence = UnifiedPayRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .tradeType(PayTradeType.JSAPI)
+                .outTradeNo("ALI_JSAPI_3004")
+                .subject("显式优先级")
+                .amount(new BigDecimal("59.90"))
+                .buyerId("2088999988887777")
+                .openid("074otherOpenId")
+                .build();
+        payTemplate.pay(reqPrecedence);
+
+        ArgumentCaptor<AlipayPayRequest> captor4 = ArgumentCaptor.forClass(AlipayPayRequest.class);
+        verify(alipayTemplate, times(4)).payJsapi(captor4.capture());
+        assertEquals("2088999988887777", captor4.getValue().getBuyerId());
+        assertNull(captor4.getValue().getBuyerOpenId());
+    }
+
     // =========================================================================
     // 3. 统一查单 (queryOrder) 与 统一关单 (closeOrder)
     // =========================================================================
@@ -630,14 +712,14 @@ class PayTemplateTest {
         assertEquals(PayTradeState.REVOKED, respAli.getTradeState());
         assertTrue(respAli.isSuccess());
 
-        // 2. 微信关单冲正
+        // 2. 微信撤销冲正
         PayResponse wxResp = PayResponse.builder()
                 .channel(PayChannel.WECHAT_PAY)
                 .outTradeNo("WX_CANCEL_001")
-                .tradeState(PayTradeState.CLOSED)
+                .tradeState(PayTradeState.REVOKED)
                 .success(true)
                 .build();
-        when(wechatPayTemplate.closeOrder(any(WechatPayRequest.class))).thenReturn(wxResp);
+        when(wechatPayTemplate.cancelOrder(any(WechatPayRequest.class))).thenReturn(wxResp);
 
         PayResponse respWx = payTemplate.cancelOrder(PayChannel.WECHAT_PAY, "WX_CANCEL_001");
         assertNotNull(respWx);
@@ -981,7 +1063,7 @@ class PayTemplateTest {
     @DisplayName("queryTransfer: 统一转账查询路由与单标识符重载")
     void testQueryTransfer_routing() {
         PayTransferResponse mockWechat = PayTransferResponse.builder().channel(PayChannel.WECHAT_PAY).status(PayTransferState.SUCCESS).build();
-        when(wechatPayTemplate.queryTransferDetail(eq("wechat_key"), eq("W_001"), eq("W_001"))).thenReturn(mockWechat);
+        when(wechatPayTemplate.queryTransfer(eq("wechat_key"), eq("W_001"), isNull())).thenReturn(mockWechat);
 
         PayTransferResponse resp1 = payTemplate.queryTransfer(UnifiedTransferQueryRequest.builder()
                 .channel(PayChannel.WECHAT_PAY)
@@ -990,6 +1072,7 @@ class PayTemplateTest {
                 .build());
         assertNotNull(resp1);
         assertEquals(PayChannel.WECHAT_PAY, resp1.getChannel());
+        verify(wechatPayTemplate).queryTransfer("wechat_key", "W_001", null);
 
         PayTransferResponse mockAlipay = PayTransferResponse.builder().channel(PayChannel.ALIPAY).status(PayTransferState.SUCCESS).build();
         when(alipayTemplate.queryTransfer(eq("alipay_key"), eq("A_001"), eq("ORD_001"))).thenReturn(mockAlipay);
@@ -997,6 +1080,23 @@ class PayTemplateTest {
         PayTransferResponse resp2 = payTemplate.queryTransfer(PayChannel.ALIPAY, "alipay_key", "A_001", "ORD_001");
         assertNotNull(resp2);
         assertEquals(PayChannel.ALIPAY, resp2.getChannel());
+
+        PayTransferResponse mockLegacy = PayTransferResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outBizNo("BATCH_LEG_01")
+                .status(PayTransferState.SUCCESS)
+                .build();
+        when(wechatPayTemplate.queryTransferDetail(eq("wechat_key"), eq("BATCH_LEG_01"), eq("DET_LEG_01")))
+                .thenReturn(mockLegacy);
+        PayTransferResponse legacyResp = payTemplate.queryTransfer(UnifiedTransferQueryRequest.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .merchantKey("wechat_key")
+                .outBizNo("BATCH_LEG_01")
+                .payFundOrderId("DET_LEG_01")
+                .legacyBatchMode(Boolean.TRUE)
+                .build());
+        assertEquals("BATCH_LEG_01", legacyResp.getOutBizNo());
+        verify(wechatPayTemplate).queryTransferDetail("wechat_key", "BATCH_LEG_01", "DET_LEG_01");
     }
 
     @Test
@@ -1044,6 +1144,89 @@ class PayTemplateTest {
     }
 
     @Test
+    @DisplayName("transfer: 新版商家转账状态机 (WAIT_USER_CONFIRM / CANCELLED) 与领域模型扩展校验")
+    void testUserConfirmTransferDomainModels() {
+        assertFalse(PayTransferState.WAIT_USER_CONFIRM.isFinal());
+        assertTrue(PayTransferState.WAIT_USER_CONFIRM.isWaitUserConfirm());
+        assertTrue(PayTransferState.CANCELLED.isFinal());
+
+        var reportInfo = io.github.atengk.boot.pay.model.request.TransferSceneReportInfo.builder()
+                .infoType("活动名称")
+                .infoContent("会员拉新返现")
+                .build();
+        assertEquals("活动名称", reportInfo.getInfoType());
+        assertEquals("会员拉新返现", reportInfo.getInfoContent());
+
+        PayTransferResponse waitResp = PayTransferResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .status(PayTransferState.WAIT_USER_CONFIRM)
+                .packageInfo("MOCK_PACKAGE_CONFIRM_01")
+                .build();
+        assertEquals("MOCK_PACKAGE_CONFIRM_01", waitResp.getPackageInfo());
+    }
+
+    @Test
+    @DisplayName("transfer/cancelTransfer: 微信场景字段透传与统一撤销转账路由与防御")
+    void testTransferSceneForwardingAndCancelTransferRouting() {
+        var reportInfo = io.github.atengk.boot.pay.model.request.TransferSceneReportInfo.builder()
+                .infoType("活动名称")
+                .infoContent("会员拉新返现")
+                .build();
+        PayTransferResponse waitResp = PayTransferResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outBizNo("WX_TRANS_SCENE_01")
+                .orderId("133000001")
+                .status(PayTransferState.WAIT_USER_CONFIRM)
+                .packageInfo("MOCK_PKG_INFO")
+                .build();
+        when(wechatPayTemplate.transfer(eq("mch_a"), any(WechatTransferRequest.class))).thenReturn(waitResp);
+
+        UnifiedTransferRequest unifiedReq = UnifiedTransferRequest.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .merchantKey("mch_a")
+                .outBizNo("WX_TRANS_SCENE_01")
+                .amount(new BigDecimal("18.88"))
+                .title("会员活动奖励")
+                .remark("拉新返现")
+                .payeeAccount("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o")
+                .payeeRealName("赵六")
+                .transferSceneId("1005")
+                .transferSceneReportInfos(java.util.List.of(reportInfo))
+                .legacyBatchMode(Boolean.TRUE)
+                .build();
+
+        PayTransferResponse resp = payTemplate.transfer(unifiedReq);
+        assertEquals(PayTransferState.WAIT_USER_CONFIRM, resp.getStatus());
+        assertEquals("MOCK_PKG_INFO", resp.getPackageInfo());
+
+        ArgumentCaptor<WechatTransferRequest> captor = ArgumentCaptor.forClass(WechatTransferRequest.class);
+        verify(wechatPayTemplate).transfer(eq("mch_a"), captor.capture());
+        WechatTransferRequest forwarded = captor.getValue();
+        assertEquals("1005", forwarded.getTransferSceneId());
+        assertEquals(Boolean.TRUE, forwarded.getLegacyBatchMode());
+        assertNotNull(forwarded.getTransferSceneReportInfos());
+        assertEquals(1, forwarded.getTransferSceneReportInfos().size());
+        assertEquals("活动名称", forwarded.getTransferSceneReportInfos().get(0).getInfoType());
+
+        PayTransferResponse cancelledResp = PayTransferResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outBizNo("WX_TRANS_SCENE_01")
+                .status(PayTransferState.CANCELLED)
+                .build();
+        when(wechatPayTemplate.cancelTransfer("mch_a", "WX_TRANS_SCENE_01")).thenReturn(cancelledResp);
+        PayTransferResponse cancelResult = payTemplate.cancelTransfer(PayChannel.WECHAT_PAY, "mch_a", "WX_TRANS_SCENE_01");
+        assertEquals(PayTransferState.CANCELLED, cancelResult.getStatus());
+
+        PayException aliEx = assertThrows(PayException.class,
+                () -> payTemplate.cancelTransfer(PayChannel.ALIPAY, "ALI_NOT_SUPPORT_01"));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, aliEx.getResultCode());
+
+        PayException blankEx = assertThrows(PayException.class,
+                () -> payTemplate.cancelTransfer(PayChannel.WECHAT_PAY, "   "));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, blankEx.getResultCode());
+    }
+
+    @Test
     @DisplayName("downloadBill: 微信对账单下载路由与流式直达")
     void testDownloadBill_wechat() throws Exception {
         byte[] mockBytes = "mock,wechat,bill,stream".getBytes();
@@ -1057,9 +1240,11 @@ class PayTemplateTest {
 
         PayBillDownloadRequest request = PayBillDownloadRequest.builder()
                 .channel(PayChannel.WECHAT_PAY)
+                .merchantKey("partner_tenant")
                 .billDate("2026-10-24")
                 .billType("ALL")
                 .tarType("GZIP")
+                .subMchid("1900000002")
                 .build();
 
         PayBillDownloadResponse response = payTemplate.downloadBill(request);
@@ -1067,6 +1252,11 @@ class PayTemplateTest {
         assertEquals(PayChannel.WECHAT_PAY, response.getChannel());
         assertEquals("2026-10-24", response.getBillDate());
         assertNotNull(response.getFileStream());
+
+        org.mockito.ArgumentCaptor<com.wechat.pay.java.service.billdownload.model.GetTradeBillRequest> billCaptor =
+                org.mockito.ArgumentCaptor.forClass(com.wechat.pay.java.service.billdownload.model.GetTradeBillRequest.class);
+        verify(wechatPayTemplate).downloadTradeBill(eq("partner_tenant"), billCaptor.capture());
+        assertEquals("1900000002", billCaptor.getValue().getSubMchid());
 
         InputStream directStream = payTemplate.downloadBillStream(request);
         assertNotNull(directStream);

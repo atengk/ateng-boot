@@ -1,0 +1,467 @@
+package io.github.atengk.boot.ai.tool.approval;
+
+import io.github.atengk.boot.ai.annotation.RiskLevel;
+import io.github.atengk.boot.ai.exception.AiException;
+import io.github.atengk.boot.ai.exception.AiResultCode;
+import io.github.atengk.boot.ai.memory.ChatMemoryManager;
+import io.github.atengk.boot.ai.properties.ToolApprovalProperties;
+import io.github.atengk.boot.ai.template.AiTemplate;
+import io.github.atengk.boot.ai.tool.approval.store.InMemoryToolApprovalStore;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.ai.memory.store.InMemoryChatMemoryStore;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
+
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Optional;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * 高危工具审批统一门面单元测试 (ToolApprovalTemplateTest)
+ *
+ * @author Ateng
+ * @since 2026-11-06
+ */
+class ToolApprovalTemplateTest {
+
+    private InMemoryToolApprovalStore store;
+    private ToolApprovalTemplate template;
+    private MockFinanceService mockFinanceService;
+
+    @BeforeEach
+    void setUp() {
+        store = new InMemoryToolApprovalStore();
+        ToolApprovalProperties properties = new ToolApprovalProperties();
+        template = new ToolApprovalTemplate(store, properties, null);
+
+        mockFinanceService = new MockFinanceService();
+        template.registerTargetBean(mockFinanceService);
+    }
+
+    @AfterEach
+    void tearDown() {
+        MDC.clear();
+        TenantContextHolder.clear();
+        UserContextHolder.clear();
+    }
+
+    @Test
+    @DisplayName("测试提交工单与待审批列表查询")
+    void testSubmitAndList() {
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_100")
+                .toolName("transferFunds")
+                .methodName("transfer")
+                .targetClassName(MockFinanceService.class.getName())
+                .argumentsJson("{\"fromAccount\":\"A100\",\"toAccount\":\"B200\",\"amount\":500.0}")
+                .riskLevel(RiskLevel.HIGH)
+                .approvalType("TRANSFER")
+                .build();
+
+        template.submit(ticket, Duration.ofMinutes(10));
+
+        Optional<ToolApprovalTicket> retrieved = template.getTicket("TICKET_100");
+        assertThat(retrieved).isPresent();
+        assertThat(retrieved.get().getStatus()).isEqualTo(ToolApprovalStatus.PENDING);
+        assertThat(template.listPending()).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("测试审批通过与受管反射重放执行")
+    void testApproveAndReplayExecution() {
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_101")
+                .toolName("transferFunds")
+                .methodName("transfer")
+                .targetClassName(MockFinanceService.class.getName())
+                .argumentsJson("{\"fromAccount\":\"ACC_001\",\"toAccount\":\"ACC_002\",\"amount\":888.88}")
+                .riskLevel(RiskLevel.HIGH)
+                .approvalType("TRANSFER")
+                .tenantId("TENANT_CORP_01")
+                .callerUserId("USER_OPERATOR_99")
+                .traceId("trace-hitl-test-101")
+                .build();
+
+        template.submit(ticket, Duration.ofMinutes(10));
+
+        // 模拟当前操作员环境并设置调用线程初始上下文
+        UserContextHolder.setUserId("ADMIN_APPROVER");
+        TenantContextHolder.setTenantId("ADMIN_TENANT");
+        MDC.put("traceId", "trace-admin");
+
+        // 模拟管理员审批通过
+        ToolApprovalResult result = template.approve("TICKET_101", "财务总监审批核准通过");
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getStatus()).isEqualTo(ToolApprovalStatus.APPROVED);
+        assertThat(result.getResult()).isEqualTo("转账成功: ACC_001 -> ACC_002, 金额: 888.88");
+
+        // 验证目标业务服务被真实调用，且捕获到了工单原始的四维上下文
+        assertThat(mockFinanceService.getExecutedCount()).isEqualTo(1);
+        assertThat(mockFinanceService.getLastCapturedTenantId()).isEqualTo("TENANT_CORP_01");
+        assertThat(mockFinanceService.getLastCapturedUserId()).isEqualTo("USER_OPERATOR_99");
+        assertThat(mockFinanceService.getLastCapturedTraceId()).isEqualTo("trace-hitl-test-101");
+
+        // 验证调用线程在审批完成后，现场被准确恢复为原始状态
+        assertThat(UserContextHolder.getUserId()).isEqualTo("ADMIN_APPROVER");
+        assertThat(TenantContextHolder.getTenantId()).isEqualTo("ADMIN_TENANT");
+        assertThat(MDC.get("traceId")).isEqualTo("trace-admin");
+
+        // 验证工单状态已跃迁为 APPROVED
+        ToolApprovalTicket updatedTicket = template.getTicket("TICKET_101").orElseThrow();
+        assertThat(updatedTicket.getStatus()).isEqualTo(ToolApprovalStatus.APPROVED);
+        assertThat(updatedTicket.getReviewComment()).isEqualTo("财务总监审批核准通过");
+        assertThat(updatedTicket.getExecutionResultJson()).contains("转账成功");
+    }
+
+    @Test
+    @DisplayName("测试审批重放时防重复执行：并发双击时仅允许单次物理重放")
+    void testAntiConcurrentDuplicateApprove() {
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_CONCURRENT")
+                .toolName("transferFunds")
+                .methodName("transfer")
+                .targetClassName(MockFinanceService.class.getName())
+                .argumentsJson("{\"fromAccount\":\"ACC_001\",\"toAccount\":\"ACC_002\",\"amount\":100.0}")
+                .riskLevel(RiskLevel.HIGH)
+                .build();
+        template.submit(ticket, Duration.ofMinutes(10));
+
+        ToolApprovalResult firstResult = template.approve("TICKET_CONCURRENT", "第一次审批");
+        assertThat(firstResult.isSuccess()).isTrue();
+        assertThat(mockFinanceService.getExecutedCount()).isEqualTo(1);
+
+        // 第二次审批应该被 CAS 拦截并抛出无效状态异常
+        assertThatThrownBy(() -> template.approve("TICKET_CONCURRENT", "第二次审批双击"))
+                .isInstanceOf(AiException.class)
+                .hasMessageContaining("处于非待审批状态");
+
+        // 确保目标真实业务方法绝未被调用第二次
+        assertThat(mockFinanceService.getExecutedCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("测试审批拒绝不执行目标方法")
+    void testReject() {
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_102")
+                .toolName("transferFunds")
+                .methodName("transfer")
+                .targetClassName(MockFinanceService.class.getName())
+                .argumentsJson("{\"fromAccount\":\"A\",\"toAccount\":\"B\",\"amount\":100.0}")
+                .riskLevel(RiskLevel.CRITICAL)
+                .build();
+
+        template.submit(ticket, Duration.ofMinutes(10));
+
+        ToolApprovalResult result = template.reject("TICKET_102", "风控拦截，疑似非本人操作");
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getStatus()).isEqualTo(ToolApprovalStatus.REJECTED);
+        assertThat(result.getErrorMessage()).isEqualTo("风控拦截，疑似非本人操作");
+
+        // 确保目标方法未被调用
+        assertThat(mockFinanceService.getExecutedCount()).isZero();
+
+        ToolApprovalTicket updatedTicket = template.getTicket("TICKET_102").orElseThrow();
+        assertThat(updatedTicket.getStatus()).isEqualTo(ToolApprovalStatus.REJECTED);
+    }
+
+    @Test
+    @DisplayName("测试对不存在或已处理工单重复审批抛出受管异常")
+    void testApproveInvalidStatus() {
+        assertThatThrownBy(() -> template.approve("NON_EXIST_ID", "comment"))
+                .isInstanceOf(AiException.class)
+                .matches(e -> ((AiException) e).getCode() == AiResultCode.AI_TOOL_APPROVAL_NOT_FOUND.getCode());
+
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_103")
+                .toolName("transferFunds")
+                .methodName("transfer")
+                .targetClassName(MockFinanceService.class.getName())
+                .build();
+        template.submit(ticket, Duration.ofMinutes(10));
+        template.reject("TICKET_103", "先拒绝");
+
+        assertThatThrownBy(() -> template.approve("TICKET_103", "再次批准"))
+                .isInstanceOf(AiException.class)
+                .matches(e -> ((AiException) e).getCode() == AiResultCode.AI_TOOL_APPROVAL_INVALID_STATUS.getCode());
+    }
+
+    @Test
+    @DisplayName("测试目标方法抛出业务异常时的错误记录与结果返回")
+    void testTargetMethodThrowsException() {
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_FAIL")
+                .toolName("throwErrorMethod")
+                .methodName("failMethod")
+                .targetClassName(MockFinanceService.class.getName())
+                .argumentsJson("{}")
+                .build();
+
+        template.submit(ticket, Duration.ofMinutes(10));
+
+        ToolApprovalResult result = template.approve("TICKET_FAIL", "批准执行但方法会报错");
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getErrorMessage()).contains("模拟业务故障: 账户余额不足");
+    }
+
+    @Test
+    @DisplayName("测试审批通过并成功驱动智能体续跑完成作答（验证四维上下文透传与现场恢复）")
+    void testApproveAndResumeAgent_Completed() {
+        MockAgent agent = new MockAgent("最终回答：已确认转账成功，交易入账正常。");
+        template.registerAgentBean("financeAdvisorAgent", agent);
+
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_RESUME_01")
+                .toolName("transferFunds")
+                .methodName("transfer")
+                .targetClassName(MockFinanceService.class.getName())
+                .agentBeanName("financeAdvisorAgent")
+                .agentInterfaceName(MockAgent.class.getName())
+                .memoryId("SESSION_USER_01")
+                .tenantId("TENANT_CORP_RESUME")
+                .callerUserId("USER_OPERATOR_RESUME")
+                .traceId("trace-resume-01")
+                .argumentsJson("{\"fromAccount\":\"ACC_001\",\"toAccount\":\"ACC_002\",\"amount\":999.0}")
+                .riskLevel(RiskLevel.HIGH)
+                .approvalType("TRANSFER")
+                .build();
+
+        template.submit(ticket, Duration.ofMinutes(10));
+
+        // 设置当前调用者上下文 (例如管理员)
+        UserContextHolder.setUserId("ADMIN_CALLER");
+        TenantContextHolder.setTenantId("ADMIN_TENANT");
+        MDC.put("traceId", "trace-caller-admin");
+
+        AgentResumeResult resumeResult = template.approveAndResumeAgent("TICKET_RESUME_01", "财务经理核准通过");
+
+        assertThat(resumeResult.isSuccess()).isTrue();
+        assertThat(resumeResult.isCompleted()).isTrue();
+        assertThat(resumeResult.getFinalResponse()).contains("最终回答：已确认转账成功");
+        assertThat(resumeResult.getToolExecutionResult()).isNotNull();
+        assertThat(resumeResult.getToolExecutionResult().toString()).contains("转账成功");
+        assertThat(agent.getLastMemoryId()).isEqualTo("SESSION_USER_01");
+        assertThat(agent.getLastPrompt()).contains("【系统通知：人工审批已通过】");
+
+        // 验证 MockAgent 续跑时接收到了工单的 4D 上下文
+        assertThat(agent.getLastCapturedTenantId()).isEqualTo("TENANT_CORP_RESUME");
+        assertThat(agent.getLastCapturedUserId()).isEqualTo("USER_OPERATOR_RESUME");
+        assertThat(agent.getLastCapturedTraceId()).isEqualTo("trace-resume-01");
+
+        // 验证调用完成后当前线程现场恢复为管理员调用者
+        assertThat(UserContextHolder.getUserId()).isEqualTo("ADMIN_CALLER");
+        assertThat(TenantContextHolder.getTenantId()).isEqualTo("ADMIN_TENANT");
+        assertThat(MDC.get("traceId")).isEqualTo("trace-caller-admin");
+    }
+
+    @Test
+    @DisplayName("测试审批重放时成功注入 @MemoryId 形参")
+    void testApproveReplayWithMemoryIdInjection() {
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_MEM_01")
+                .toolName("transferFundsWithMemory")
+                .methodName("transferWithMemory")
+                .targetClassName(MockFinanceService.class.getName())
+                .memoryId("MEM_SESSION_888")
+                .argumentsJson("{\"fromAccount\":\"A\",\"toAccount\":\"B\",\"amount\":100.0}")
+                .riskLevel(RiskLevel.HIGH)
+                .build();
+        template.submit(ticket, Duration.ofMinutes(10));
+
+        ToolApprovalResult result = template.approve("TICKET_MEM_01", "通过");
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(mockFinanceService.getLastCapturedMemoryId()).isEqualTo("MEM_SESSION_888");
+    }
+
+    @Test
+    @DisplayName("测试智能体续跑时存在 toolExecutionId 则向 ChatMemoryManager 压入 ToolExecutionResultMessage")
+    void testApproveAndResumeWithToolExecutionResultMessage() {
+        InMemoryChatMemoryStore chatStore = new InMemoryChatMemoryStore();
+        ChatMemoryManager memoryManager = new ChatMemoryManager(chatStore, 20);
+        template.setChatMemoryManager(memoryManager);
+
+        // 初始化会话历史：用户提问
+        memoryManager.appendMessage("SESSION_TOOL_01", dev.langchain4j.data.message.UserMessage.from("帮我转账 100 元"));
+
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_TOOL_EXEC_01")
+                .toolName("transfer")
+                .methodName("transfer")
+                .targetClassName(MockFinanceService.class.getName())
+                .memoryId("SESSION_TOOL_01")
+                .toolExecutionId("call_exec_999")
+                .argumentsJson("{\"fromAccount\":\"A\",\"toAccount\":\"B\",\"amount\":100.0}")
+                .riskLevel(RiskLevel.HIGH)
+                .build();
+        template.submit(ticket, Duration.ofMinutes(10));
+
+        // 模拟外部 AiTemplate 注入用于续跑
+        AiTemplate mockAiTemplate = org.mockito.Mockito.mock(AiTemplate.class);
+        org.mockito.Mockito.when(mockAiTemplate.chat(org.mockito.ArgumentMatchers.anyList()))
+                .thenReturn("已为您完成转账操作！");
+        template.setAiTemplate(mockAiTemplate);
+
+        AgentResumeResult resumeResult = template.approveAndResumeAgent("TICKET_TOOL_EXEC_01", "核准");
+        assertThat(resumeResult.isSuccess()).isTrue();
+        assertThat(resumeResult.getFinalResponse()).isEqualTo("已为您完成转账操作！");
+
+        // 验证 ChatMemoryManager 中压入了 ToolExecutionResultMessage 且 toolExecutionId 对齐
+        List<dev.langchain4j.data.message.ChatMessage> messages = memoryManager.getMessages("SESSION_TOOL_01");
+        assertThat(messages).hasSize(3); // UserMessage, ToolExecutionResultMessage, AiMessage
+        assertThat(messages.get(1)).isInstanceOf(dev.langchain4j.data.message.ToolExecutionResultMessage.class);
+        dev.langchain4j.data.message.ToolExecutionResultMessage toolMsg = (dev.langchain4j.data.message.ToolExecutionResultMessage) messages.get(1);
+        assertThat(toolMsg.id()).isEqualTo("call_exec_999");
+        assertThat(toolMsg.toolName()).isEqualTo("transfer");
+        assertThat(toolMsg.text()).contains("转账成功");
+    }
+
+    @Test
+    @DisplayName("测试审批通过后智能体续跑触发级联二次高危工具拦截挂起")
+    void testApproveAndResumeAgent_PendingNext() {
+        String cascadingIntercept = "[APPROVAL_REQUIRED] 该操作被标记为高危工具 [riskLevel=HIGH, type=CLEAR_CACHE]，已自动拦截并生成审批工单 [ticketId=TICKET_NEXT_999]。";
+        MockAgent agent = new MockAgent(cascadingIntercept);
+        template.registerAgentBean("cascadingAgent", agent);
+
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_RESUME_02")
+                .toolName("transferFunds")
+                .methodName("transfer")
+                .targetClassName(MockFinanceService.class.getName())
+                .agentBeanName("cascadingAgent")
+                .agentInterfaceName(MockAgent.class.getName())
+                .memoryId("SESSION_USER_02")
+                .argumentsJson("{\"fromAccount\":\"ACC_A\",\"toAccount\":\"ACC_B\",\"amount\":100.0}")
+                .riskLevel(RiskLevel.HIGH)
+                .approvalType("TRANSFER")
+                .build();
+
+        template.submit(ticket, Duration.ofMinutes(10));
+
+        AgentResumeResult resumeResult = template.approveAndResumeAgent("TICKET_RESUME_02", "核准转账");
+
+        assertThat(resumeResult.isSuccess()).isTrue();
+        assertThat(resumeResult.isCompleted()).isFalse();
+        assertThat(resumeResult.getNextPendingTicketId()).isEqualTo("TICKET_NEXT_999");
+        assertThat(resumeResult.getToolExecutionResult()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("测试目标工具执行失败时智能体续跑直接返回失败结果")
+    void testApproveAndResumeAgent_ToolExecutionFailed() {
+        ToolApprovalTicket ticket = ToolApprovalTicket.builder()
+                .ticketId("TICKET_RESUME_FAIL")
+                .toolName("failMethod")
+                .methodName("failMethod")
+                .targetClassName(MockFinanceService.class.getName())
+                .argumentsJson("{}")
+                .riskLevel(RiskLevel.HIGH)
+                .build();
+
+        template.submit(ticket, Duration.ofMinutes(10));
+
+        AgentResumeResult resumeResult = template.approveAndResumeAgent("TICKET_RESUME_FAIL", "核准");
+
+        assertThat(resumeResult.isSuccess()).isFalse();
+        assertThat(resumeResult.isCompleted()).isFalse();
+        assertThat(resumeResult.getErrorMessage()).contains("模拟业务故障: 账户余额不足");
+    }
+
+    public static class MockAgent {
+        private final String answer;
+        private String lastMemoryId;
+        private String lastPrompt;
+        private String lastCapturedTenantId;
+        private String lastCapturedUserId;
+        private String lastCapturedTraceId;
+
+        public MockAgent(String answer) {
+            this.answer = answer;
+        }
+
+        public String chat(String memoryId, String prompt) {
+            this.lastMemoryId = memoryId;
+            this.lastPrompt = prompt;
+            this.lastCapturedTenantId = TenantContextHolder.getTenantId();
+            this.lastCapturedUserId = UserContextHolder.getUserId();
+            this.lastCapturedTraceId = MDC.get("traceId");
+            return answer;
+        }
+
+        public String getLastCapturedTenantId() {
+            return lastCapturedTenantId;
+        }
+
+        public String getLastCapturedUserId() {
+            return lastCapturedUserId;
+        }
+
+        public String getLastCapturedTraceId() {
+            return lastCapturedTraceId;
+        }
+
+        public String getLastMemoryId() {
+            return lastMemoryId;
+        }
+
+        public String getLastPrompt() {
+            return lastPrompt;
+        }
+    }
+
+    public static class MockFinanceService {
+        private int executedCount = 0;
+        private String lastCapturedTenantId;
+        private String lastCapturedUserId;
+        private String lastCapturedTraceId;
+        private Object lastCapturedMemoryId;
+
+        public String transfer(String fromAccount, String toAccount, Double amount) {
+            this.executedCount++;
+            this.lastCapturedTenantId = TenantContextHolder.getTenantId();
+            this.lastCapturedUserId = UserContextHolder.getUserId();
+            this.lastCapturedTraceId = MDC.get("traceId");
+            return String.format("转账成功: %s -> %s, 金额: %.2f", fromAccount, toAccount, amount);
+        }
+
+        public String transferWithMemory(@dev.langchain4j.agent.tool.ToolMemoryId Object memoryId, String fromAccount, String toAccount, Double amount) {
+            this.executedCount++;
+            this.lastCapturedMemoryId = memoryId;
+            return String.format("转账成功(memory=%s): %s -> %s", memoryId, fromAccount, toAccount);
+        }
+
+        public String failMethod() {
+            throw new IllegalArgumentException("模拟业务故障: 账户余额不足");
+        }
+
+        public int getExecutedCount() {
+            return executedCount;
+        }
+
+        public String getLastCapturedTenantId() {
+            return lastCapturedTenantId;
+        }
+
+        public String getLastCapturedUserId() {
+            return lastCapturedUserId;
+        }
+
+        public String getLastCapturedTraceId() {
+            return lastCapturedTraceId;
+        }
+
+        public Object getLastCapturedMemoryId() {
+            return lastCapturedMemoryId;
+        }
+    }
+}

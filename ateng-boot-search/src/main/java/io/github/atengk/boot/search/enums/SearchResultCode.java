@@ -72,7 +72,32 @@ public enum SearchResultCode implements IResultCode {
     /**
      * 搜索文档删除失败
      */
-    SEARCH_DOCUMENT_DELETE_ERROR(60012, "搜索文档删除失败");
+    SEARCH_DOCUMENT_DELETE_ERROR(60012, "搜索文档删除失败"),
+
+    /**
+     * 搜索请求参数或 DSL 语法非法
+     */
+    SEARCH_BAD_REQUEST(60013, "搜索请求参数或 DSL 语法非法"),
+
+    /**
+     * 搜索引擎认证或权限校验失败
+     */
+    SEARCH_AUTH_ERROR(60014, "搜索引擎认证或权限校验失败"),
+
+    /**
+     * 搜索引擎请求被限流或触发熔断背压
+     */
+    SEARCH_RATE_LIMITED(60015, "搜索引擎请求被限流或触发熔断背压"),
+
+    /**
+     * 搜索引擎操作超时
+     */
+    SEARCH_TIMEOUT_ERROR(60016, "搜索引擎操作超时"),
+
+    /**
+     * 跨租户越权访问或租户标识篡改被拒绝
+     */
+    SEARCH_TENANT_ACCESS_DENIED(60017, "跨租户越权访问或租户标识篡改被拒绝");
 
     private final Integer code;
     private final String msg;

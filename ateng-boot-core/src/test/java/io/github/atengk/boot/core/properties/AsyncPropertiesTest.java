@@ -25,8 +25,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AsyncPropertiesTest {
 
     @Test
-    @DisplayName("验证 AsyncProperties 默认值与向后兼容适配方法")
-    void testDefaultValuesAndBackwardCompatibility() {
+    @DisplayName("验证 AsyncProperties 强类型 Duration 默认值与参数配置")
+    void testDefaultValuesAndStrongTypedConfiguration() {
         AsyncProperties properties = new AsyncProperties();
 
         assertThat(properties.isEnabled()).isTrue();
@@ -34,25 +34,20 @@ class AsyncPropertiesTest {
         assertThat(properties.getMaxPoolSize()).isGreaterThanOrEqualTo(properties.getCorePoolSize());
         assertThat(properties.getQueueCapacity()).isEqualTo(1000);
         assertThat(properties.getKeepAlive()).isEqualTo(Duration.ofSeconds(60));
-        assertThat(properties.getKeepAliveSeconds()).isEqualTo(60);
         assertThat(properties.getThreadNamePrefix()).isEqualTo("ateng-async-");
         assertThat(properties.getVirtualThreadNamePrefix()).isEqualTo("ateng-vt-async-");
         assertThat(properties.getConcurrencyLimit()).isEqualTo(-1);
         assertThat(properties.isWaitForTasksToCompleteOnShutdown()).isTrue();
         assertThat(properties.getAwaitTermination()).isEqualTo(Duration.ofSeconds(60));
-        assertThat(properties.getAwaitTerminationSeconds()).isEqualTo(60);
         assertThat(properties.getMode()).isEqualTo(AsyncExecutionMode.AUTO);
         assertThat(properties.getRejectedPolicy()).isEqualTo(AsyncRejectedPolicy.CALLER_RUNS);
         assertThat(properties.getPools()).isNotNull().isEmpty();
 
-        // 验证向后兼容 Setter
-        properties.setKeepAliveSeconds(30);
+        properties.setKeepAlive(Duration.ofSeconds(30));
         assertThat(properties.getKeepAlive()).isEqualTo(Duration.ofSeconds(30));
-        assertThat(properties.getKeepAliveSeconds()).isEqualTo(30);
 
-        properties.setAwaitTerminationSeconds(120);
+        properties.setAwaitTermination(Duration.ofSeconds(120));
         assertThat(properties.getAwaitTermination()).isEqualTo(Duration.ofSeconds(120));
-        assertThat(properties.getAwaitTerminationSeconds()).isEqualTo(120);
     }
 
     @Test

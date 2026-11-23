@@ -1,12 +1,28 @@
 # RabbitMQ Context
 
-`ateng-boot-rabbitmq` 负责提供基于 Spring AMQP 官方起步基线的工业级消息通信与可靠投递底座，支持双重确认保障（Publisher Confirms/Returns）、事务感知延迟发信（sendAfterCommit + 补偿 SPI）、泛型推断反序列化解耦、消费端幂等静默确认、毒丸快速隔离、死信终点不变量强校验及声明式流式拓扑构建。
+`ateng-boot-rabbitmq` 负责提供基于 Spring AMQP 官方起步基线的工业级消息通信与可靠投递底座，支持双重确认保障（Publisher Confirms/Returns）、事务感知延迟发信（sendAfterCommit / sendBatchAfterCommit + 补偿 SPI）、运行期消费容器动态运维（RabbitContainerManager）、批量消费多租户上下文隔离（RabbitBatchExecutor）、泛型推断反序列化解耦、消费端幂等静默确认、毒丸快速隔离、死信终点不变量强校验及声明式流式拓扑构建。
 
 ## Language
 
 **RabbitReliableTemplate**:
-RabbitMQ 生产端高可靠投递与事务感知增强门面，提供同步等待 Broker 确认的 `sendReliable`、异步非阻塞 `sendReliableAsync`、延迟投递 `sendDelayed`、本地事务提交感知发信 `sendAfterCommit`，内置四维上下文自动注入、大报文超限 Fail-Fast 与透明 GZIP 压缩。
+RabbitMQ 生产端高可靠投递与事务感知增强门面，提供同步等待 Broker 确认的 `sendReliable`、异步非阻塞 `sendReliableAsync`、批量可靠投递 `sendBatchReliable` 与异步批量 `sendBatchReliableAsync`、插件延迟投递 `sendDelayed`、原生消息级 TTL 投递 `sendWithExpiration` 与 `sendAsyncWithExpiration`、本地事务提交感知发信 `sendAfterCommit` 与批量事务发信 `sendBatchAfterCommit`，内置四维上下文自动注入、单批上限防卫 (1000条)、大报文超限 Fail-Fast 与透明 GZIP 压缩。
 _Avoid_: RabbitSender, MqProducer, ReliableAmqpTemplate, RabbitHelper
+
+**RabbitContainerManager**:
+RabbitMQ 运行期消费监听容器动态流控与队列积压探测门面，封装 `RabbitListenerEndpointRegistry` 与可选 `RabbitAdmin`，提供按监听端点 ID 或队列名称（`idOrQueue`）及全局维度的启停流控（`stop` / `start` / `stopAll` / `startAll` / `isRunning`）、运行期动态并发与预取数热调优（`scaleConcurrency` / `updatePrefetchCount`）、容器状态不可变快照查询（`getContainerStatuses`）及队列实时积压探测（`getQueueStatus`）。
+_Avoid_: RabbitListenerManager, ContainerHelper, AmqpEndpointManager
+
+**RabbitContainerStatus**:
+RabbitMQ 消费监听容器运行期状态不可变快照模型，由 `RabbitContainerManager.getContainerStatuses` 产出，包含监听端点标识（`listenerId`）、绑定队列名列表（`queueNames`）、运行状态（`running`）、自动启动标志（`autoStartup`）、活跃消费者数（`activeConsumerCount`）、预取数（`prefetchCount`）与容器实现类型（`containerType`）。
+_Avoid_: ContainerInfo, ListenerState, RabbitEndpointView
+
+**RabbitQueueStatus**:
+RabbitMQ 队列实时积压与消费者诊断不可变快照模型，由 `RabbitContainerManager.getQueueStatus` 产出，包含队列名称（`queueName`）、待消费积压消息数（`messageCount`）、在线消费者数（`consumerCount`）及队列物理存在标志（`exists`）。
+_Avoid_: QueueInfoDto, RabbitQueueLag, AmqpQueueMetrics
+
+**RabbitBatchExecutor**:
+RabbitMQ 批量消费多租户上下文安全隔离与容错执行器，提供单条消息四维上下文原子闭包（`runInContext` / `callInContext`）与容错遍历执行（`processBatchSafely`），支持逐条还原并确定性清理 `TraceId`/`TenantId`/`UserId`、基于容器 `MessageConverter` 逐条强类型反序列化、单条 `IdempotentException` 自动静默跳过及单条异常 `failureHandler` 隔离回调，彻底杜绝多租户数据串门与整批回滚死锁。
+_Avoid_: BatchConsumeHelper, RabbitRecordProcessor, TenantAmqpUtil
 
 **RabbitTopologyBuilder**:
 RabbitMQ 声明式流式拓扑构建器（Fluent API），用于链式声明 Direct、Topic、Fanout 及 Delayed 插件交换机与队列路由，原生支持 Raft Quorum 仲裁队列（`.quorum()`）、单活独占消费者（`.singleActiveConsumer()`）、死信终点不变量强校验的死信拓扑（`.deadLetter(...)`）及纯原生 TTL+DLX 双模延迟队列，返回 Spring 原生 `Declarables` 集合。
@@ -16,8 +32,20 @@ _Avoid_: AmqpTopologyHelper, QueueExchangeBuilder, MqTopologyManager
 RabbitMQ 死信元数据只读诊断助手工具类，从 AMQP 消息属性复杂的嵌套 `x-death` 头中安全提取原死信队列名、原交换机、死信原因（`rejected` / `expired` / `maxlen`）与流转计数值，宽容兼容 String、byte[] 与 LongString 等底层异构驱动类型。
 _Avoid_: DeadLetterUtil, XDeathExtractor, DlqDiagnosticHelper
 
+**RabbitDeadLetterReplayTemplate**:
+RabbitMQ 死信受控重放与治理门面，提供死信重新入队 `replay`、头部只读探查 `peek` 与队列清空 `purge`，内置单批上限保护与 `X-Dead-Letter-Replayed` 防二次死信雪崩标记。
+_Avoid_: DlqReplayer, DeadLetterManager, RabbitDlqService
+
+**OverflowStrategy**:
+RabbitMQ 队列溢出策略强类型枚举，定义队列到达最大长度或最大容量时的丢弃与拒绝行为（`DROP_HEAD`、`REJECT_PUBLISH`、`REJECT_PUBLISH_DLX`）。
+_Avoid_: QueueOverflowMode, MqOverflowType
+
+**DeadLetterStrategy**:
+RabbitMQ Quorum 仲裁队列死信流转策略强类型枚举，对应 `x-dead-letter-strategy` 参数，支持 `AT_LEAST_ONCE`（至少一次死信可靠流转标准）。
+_Avoid_: DlqStrategyEnum, QuorumDeadLetterMode
+
 **RabbitListenerGlobalAdvice**:
-消费端全局统一环绕拦截通知链，位于消费容器最外层，负责在调用业务消费方法前激活四维消息上下文（TraceId、TenantId、UserId）与 MDC，耗时度量，并在捕获 `IdempotentException` 时执行静默确认（Silent ACK）阻断重试风暴，在 `finally` 块中执行确定性现场清理。
+消费端全局统一环绕拦截通知链，位于本地重试拦截器内层紧贴业务消费方法，确保每次消费及重试均独立激活并确定性清理四维消息上下文（TraceId、TenantId、UserId）与 MDC（针对 `List<POJO>` 批量监听自动生成 `batch-<UUID>` 批次追踪标识），记录耗时度量，并在捕获 `IdempotentException` 时执行静默确认（Silent ACK）阻断重试风暴。
 _Avoid_: ConsumeAspect, RabbitInterceptor, MqConsumeAdvice
 
 **RabbitFatalExceptionStrategy**:
@@ -25,15 +53,15 @@ _Avoid_: ConsumeAspect, RabbitInterceptor, MqConsumeAdvice
 _Avoid_: ErrorClassifier, PoisonPillHandler, FatalDetector
 
 **RabbitRetryPolicy**:
-容器内本地指数退避重试策略，在消费容器内存中执行受控重试（默认 3 次），抗击瞬态网络抖动，与底层 Broker Requeue 严格解耦，彻底避免消费端死循环自旋。
+容器内本地指数退避重试策略，在消费容器内存中执行受控重试（默认 3 次），抗击瞬态网络抖动，重试耗尽后由受管恢复器输出 `[MQ-CONSUME-RETRY-EXHAUSTED]` 告警并拒绝入死信，与底层 Broker Requeue 严格解耦，彻底避免消费端死循环自旋。
 _Avoid_: MqRetryPolicy, RabbitBackoffRule
 
 **RabbitUnroutableMessageCallback**:
-不可路由退回消息处理 SPI 扩展点，当发送端将消息投递至 Exchange 但未命中任何绑定队列（Broker 触发 Basic.Return）时，经由全局 `ReturnsCallback` 回调此扩展点，供业务扩展告警推送或数据落库补偿。
+不可路由退回消息处理 SPI 扩展点，当发送端将消息投递至 Exchange 但未命中任何绑定队列（Broker 触发 Basic.Return）时，经由全局 `ReturnsCallback` 回调 `onUnroutableMessage(ReturnedMessage)`，供业务扩展告警推送或数据落库补偿。
 _Avoid_: ReturnCallbackSpi, UnroutableHandler, DeadMessageListener
 
 **RabbitTransactionFailureCallback**:
-本地事务提交后发信失败兜底补偿 SPI 扩展点，当 `sendAfterCommit` 在数据库事务物理 Commit 成功后因网络抖动导致发信失败时被触发，供业务落库本地消息表或触发死信补偿告警，杜绝发信丢失。
+本地事务提交后发信失败兜底补偿 SPI 扩展点，当 `sendAfterCommit` 或 `sendBatchAfterCommit` 在数据库事务物理 Commit 成功后因网络抖动导致发信失败时回调 `onFailure(...)`，供业务落库本地消息表或触发死信补偿告警，杜绝发信丢失。
 _Avoid_: TxCompensationSpi, PostCommitFailureListener, RollbackMessageCallback
 
 **RabbitmqProperties**:
@@ -41,5 +69,21 @@ RabbitMQ 增强底座强类型配置属性类，纳管于 `ateng.boot.rabbitmq.*
 _Avoid_: AmqpConfig, MqSettings, RabbitProperties
 
 **AtengRabbitmqAutoConfiguration**:
-RabbitMQ 增强底座自动装配核心类，统一注册于 Spring Boot 3 标准 `AutoConfiguration.imports`，装配开启 INFERRED 泛型推断的 Jackson 消息转换器、RabbitTemplateCustomizer、优雅停机排空及生命周期后置增强。
+RabbitMQ 增强底座自动装配核心类，统一注册于 Spring Boot 3 标准 `AutoConfiguration.imports`，装配开启 INFERRED 泛型推断的 Jackson 消息转换器、RabbitTemplateCustomizer、RabbitContainerManager、RabbitBatchExecutor、优雅停机排空及生命周期后置增强。
 _Avoid_: RabbitConfiguration, AmqpConfigRegistry
+
+**Silent ACK**:
+RabbitMQ 消费端幂等静默确认机制，当消费逻辑检测到业务唯一键已处理（抛出 `IdempotentException`）时，由 `RabbitListenerGlobalAdvice` 自动拦截并向 Broker 发送 Basic.Ack 确认消息消费完成，阻断重复重试风暴与死信堆积。
+_Avoid_: QuietAck, SilentConsume, DropDuplicateAck
+
+**Terminal DLQ Invariant**:
+RabbitMQ 死信拓扑终点不变量强校验规则，死信队列（DLQ）自身严禁再次配置 `x-dead-letter-exchange`，防止毒丸消息在死信流转中形成死循环乒乓风暴导致 Broker 内存撑爆。
+_Avoid_: EndDlqRule, DlqNoLoopCheck, TerminalQueueConstraint
+
+**Replay Avalanche Defense**:
+RabbitMQ 死信受控重放防二次雪崩治理机制，在重放死信消息时剥离原消息中嵌套堆积的 `x-death` 异构头、注入 `X-Dead-Letter-Replayed` 与 `X-Replay-Count` 重放计数标记，当重放尝试次数达到上限（`max-replay-count`，默认 1 次）时主动熔断并执行 `basicNack(requeue=true)`，杜绝无限制重放导致集群雪崩。
+_Avoid_: DlqAntiAvalanche, ReplayCircuitBreaker, ReplayThrottle
+
+**Inferred Deserialization**:
+RabbitMQ 泛型推断反序列化解耦机制，利用 Spring AMQP `Jackson2JsonMessageConverter` 的 `TypePrecedence.INFERRED` 特性，使消费端基于 `@RabbitListener` 目标方法签名强类型推断消息对象类型，彻底摆脱发送端 `__TypeId__` 全限定类名硬编码耦合，支持跨微服务异构包结构安全通信。
+_Avoid_: TypeInferenceConverter, HeaderTypeIdDeserializer, GenericMessageDecoder

@@ -42,7 +42,7 @@ import java.util.Objects;
  * 抹平微信支付与支付宝渠道底层协议差异，提供高直觉统一收单入口（{@link #pay}、{@link #queryOrder}、{@link #closeOrder}、{@link #cancelOrder}）：
  * <ol>
  *     <li><b>双渠道智能路由</b>：依据入参 {@code channel} 或上下文 {@link PayContextHolder#getChannel()} 自动分发至专有底层门面；</li>
- *     <li><b>扁平直达凭据出参</b>：统一返回扁平化 {@link PayResponse}，场景凭据（{@code qrCode}、{@code payUrl}、{@code formHtml}、{@code wechatJsapi}、{@code orderString}）直接消费，杜绝 {@code instanceof} 强转；</li>
+ *     <li><b>扁平直达凭据出参</b>：统一返回扁平化 {@link PayResponse}，场景凭据（{@code qrCode}、{@code payUrl}、{@code formHtml}、{@code wechatJsapi}、{@code orderString}、{@code tradeNo}）直接消费，杜绝 {@code instanceof} 强转；</li>
  *     <li><b>严格货币与元精度治理</b>：全域强制校验 {@link BigDecimal}（元）精度（小数位严禁超过 2 位），确保分/元转换数学绝对精确；</li>
  *     <li><b>官方专有门面与客户端逃生舱</b>：随时可通过 {@link #getWechatPayTemplate()}、{@link #getAlipayTemplate()} 或直接通过 {@link #getWechatClient()}、{@link #getAlipayClient()} 下沉至专有渠道执行深度定制能力。</li>
  * </ol>
@@ -54,6 +54,16 @@ import java.util.Objects;
 public class PayTemplate {
 
     private static final Logger log = LoggerFactory.getLogger(PayTemplate.class);
+
+    /**
+     * 支付宝买家会员 ID (UID) 标准前缀 (2088)
+     */
+    private static final String ALIPAY_BUYER_ID_PREFIX = "2088";
+
+    /**
+     * 支付宝买家会员 ID (UID) 标准长度 (16 位纯数字)
+     */
+    private static final int ALIPAY_BUYER_ID_LENGTH = 16;
 
     private final WechatPayTemplate wechatPayTemplate;
     private final AlipayTemplate alipayTemplate;
@@ -128,6 +138,8 @@ public class PayTemplate {
                         .notifyUrl(request.getNotifyUrl())
                         .returnUrl(request.getReturnUrl())
                         .authCode(request.getAuthCode())
+                        .buyerId(request.getBuyerId())
+                        .buyerOpenId(request.getBuyerOpenId())
                         .body(request.getBody() != null ? request.getBody() : request.getAttach())
                         .timeExpire(request.getTimeExpire())
                         .timeoutExpress(request.getTimeoutExpress())
@@ -141,8 +153,22 @@ public class PayTemplate {
                     case APP -> alipayTemplate.payApp(alipayReq);
                     case BARCODE -> alipayTemplate.payBarcode(alipayReq);
                     case NATIVE -> alipayTemplate.payQr(alipayReq);
-                    case JSAPI -> throw new PayException(PayResultCode.PAY_PARAM_INVALID,
-                            "支付宝 JSAPI 小程序收单暂请使用专有接口或选用当面付扫码/条码场景");
+                    case JSAPI -> {
+                        String buyerId = alipayReq.getBuyerId();
+                        String buyerOpenId = alipayReq.getBuyerOpenId();
+                        if ((buyerId == null || buyerId.isBlank()) && (buyerOpenId == null || buyerOpenId.isBlank())
+                                && request.getOpenid() != null && !request.getOpenid().isBlank()) {
+                            String openid = request.getOpenid().trim();
+                            if (isAlipayBuyerId(openid)) {
+                                buyerId = openid;
+                            } else {
+                                buyerOpenId = openid;
+                            }
+                        }
+                        alipayReq.setBuyerId(buyerId);
+                        alipayReq.setBuyerOpenId(buyerOpenId);
+                        yield alipayTemplate.payJsapi(alipayReq);
+                    }
                 };
             }
         };
@@ -315,22 +341,14 @@ public class PayTemplate {
                     throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付模块未装配或未启用");
                 }
                 if (!hasOutTradeNo) {
-                    throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信支付撤销/关单必须提供商户订单号 [outTradeNo]");
+                    throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信支付撤销冲正必须提供商户订单号 [outTradeNo]");
                 }
                 WechatPayRequest wechatReq = WechatPayRequest.builder()
                         .merchantKey(request.getMerchantKey())
                         .outTradeNo(request.getOutTradeNo())
                         .subMchId(request.getSubMchId())
                         .build();
-                PayResponse closeResp = wechatPayTemplate.closeOrder(wechatReq);
-                yield PayResponse.builder()
-                        .channel(PayChannel.WECHAT_PAY)
-                        .outTradeNo(request.getOutTradeNo())
-                        .tradeState(PayTradeState.REVOKED)
-                        .tradeStateDesc("微信订单已撤销关闭")
-                        .success(closeResp.isSuccess())
-                        .rawResponse(closeResp.getRawResponse())
-                        .build();
+                yield wechatPayTemplate.cancelOrder(wechatReq);
             }
             case ALIPAY -> {
                 if (alipayTemplate == null) {
@@ -528,6 +546,9 @@ public class PayTemplate {
                         .openid(request.getPayeeAccount())
                         .userName(request.getPayeeRealName())
                         .notifyUrl(request.getNotifyUrl())
+                        .transferSceneId(request.getTransferSceneId())
+                        .transferSceneReportInfos(request.getTransferSceneReportInfos())
+                        .legacyBatchMode(request.getLegacyBatchMode())
                         .build();
                 yield wechatPayTemplate.transfer(request.getMerchantKey(), wechatReq);
             }
@@ -569,7 +590,11 @@ public class PayTemplate {
                 if (wechatPayTemplate == null) {
                     throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付模块未装配或未启用");
                 }
-                yield wechatPayTemplate.queryTransferDetail(request.getMerchantKey(), request.getOutBizNo(), request.getOutBizNo());
+                if (Boolean.TRUE.equals(request.getLegacyBatchMode())) {
+                    yield wechatPayTemplate.queryTransferDetail(
+                            request.getMerchantKey(), request.getOutBizNo(), request.getPayFundOrderId());
+                }
+                yield wechatPayTemplate.queryTransfer(request.getMerchantKey(), request.getOutBizNo(), request.getOrderId());
             }
             case ALIPAY -> {
                 if (alipayTemplate == null) {
@@ -621,6 +646,52 @@ public class PayTemplate {
      */
     public PayTransferResponse queryTransfer(PayChannel channel, String merchantKey, String outBizNo, String orderId) {
         return queryTransfer(UnifiedTransferQueryRequest.builder().channel(channel).merchantKey(merchantKey).outBizNo(outBizNo).orderId(orderId).build());
+    }
+
+    /**
+     * 撤销待确认单笔转账（默认渠道）
+     *
+     * @param outBizNo 商户转账单号
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse cancelTransfer(String outBizNo) {
+        return cancelTransfer(null, null, outBizNo);
+    }
+
+    /**
+     * 撤销待确认单笔转账（指定渠道）
+     *
+     * @param channel  支付渠道
+     * @param outBizNo 商户转账单号
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse cancelTransfer(PayChannel channel, String outBizNo) {
+        return cancelTransfer(channel, null, outBizNo);
+    }
+
+    /**
+     * 撤销待确认单笔转账（指定渠道与商户路由键）
+     *
+     * @param channel     支付渠道
+     * @param merchantKey 商户别名或应用别名
+     * @param outBizNo    商户转账单号
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse cancelTransfer(PayChannel channel, String merchantKey, String outBizNo) {
+        if (outBizNo == null || outBizNo.isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "撤销单笔转账必须提供商户转账单号 [outBizNo]");
+        }
+        PayChannel resolved = resolveChannel(channel);
+        return switch (resolved) {
+            case WECHAT_PAY -> {
+                if (wechatPayTemplate == null) {
+                    throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付模块未装配或未启用");
+                }
+                yield wechatPayTemplate.cancelTransfer(merchantKey, outBizNo);
+            }
+            case ALIPAY -> throw new PayException(PayResultCode.PAY_PARAM_INVALID,
+                    "支付宝渠道暂不支持撤销单笔转账，请通过后续状态查询确认最终结果");
+        };
     }
 
     // =========================================================================
@@ -780,6 +851,16 @@ public class PayTemplate {
         if (request.getTradeType() == null) {
             throw new PayException(PayResultCode.PAY_PARAM_INVALID, "交易场景类型 [tradeType] 不能为空");
         }
+    }
+
+    /**
+     * 判断 openid 是否为支付宝旧版 2088 会员 ID (UID)
+     *
+     * @param openid 标识符
+     * @return true 若为 2088 开头的 16 位数字 UID
+     */
+    private static boolean isAlipayBuyerId(String openid) {
+        return openid != null && openid.startsWith(ALIPAY_BUYER_ID_PREFIX) && openid.length() == ALIPAY_BUYER_ID_LENGTH;
     }
 
     private PayChannel resolveChannel(PayChannel explicitChannel) {

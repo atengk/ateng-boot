@@ -3,11 +3,17 @@ package io.github.atengk.boot.ssh.template;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.ssh.context.SshContextHolder;
 import io.github.atengk.boot.ssh.core.SshCommandExecutor;
+import io.github.atengk.boot.ssh.enums.TunnelMode;
 import io.github.atengk.boot.ssh.exception.SshOperationException;
 import io.github.atengk.boot.ssh.exception.SshResultCode;
+import io.github.atengk.boot.ssh.interceptor.HighRiskCommandInterceptor;
+import io.github.atengk.boot.ssh.interceptor.SshCommandInterceptor;
 import io.github.atengk.boot.ssh.lifecycle.SshLifecycleManager;
+import io.github.atengk.boot.ssh.model.SshBatchExecResult;
+import io.github.atengk.boot.ssh.model.SshBatchOptions;
 import io.github.atengk.boot.ssh.model.SshExecOptions;
 import io.github.atengk.boot.ssh.model.SshExecResult;
+import io.github.atengk.boot.ssh.model.SshPoolStats;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.model.SshShellOptions;
 import io.github.atengk.boot.ssh.pool.SshSessionAction;
@@ -19,10 +25,12 @@ import io.github.atengk.boot.ssh.shell.SshShellHandle;
 import io.github.atengk.boot.ssh.tunnel.SshTunnelHandle;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.sshd.client.SshClient;
 import org.apache.sshd.client.channel.ChannelShell;
 import org.apache.sshd.client.session.ClientSession;
 import org.apache.sshd.client.session.forward.ExplicitPortForwardingTracker;
 import org.apache.sshd.common.util.net.SshdSocketAddress;
+import org.apache.sshd.server.forward.RejectAllForwardingFilter;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.util.Assert;
@@ -30,25 +38,36 @@ import org.springframework.util.Assert;
 import java.io.IOException;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
  * SSH 核心操作门面 (SshTemplate)
  * <p>
  * 1. 深度融通四位一体路由：透明支持缺省节点、YAML 命名注册表、线程上下文 (SshContextHolder) 与 CMDB 动态直连描述符 (SshServerInfo)；<br>
- * 2. 对称涵盖同步短命令 (exec)、长任务实时按行流式消费 (execStream)、多行复杂脚本管道 (execScript) 与瞬态单次任务隔离 (execOnce)；<br>
+ * 2. 对称涵盖同步短命令 (exec)、异步非阻塞命令 (execAsync)、长任务实时按行流式消费 (execStream)、多行复杂脚本管道 (execScript/execScriptAsync) 与瞬态单次任务隔离 (execOnce)；<br>
  * 3. 创新落地原生 Sudo 提权安全管道 (execSudo) 与密码即时内存擦除抹零 (In-Memory Scrubbing)；<br>
  * 4. 深度联动 Core 受管线程池 (ThreadPoolTaskExecutor) 与四维上下文快照 (MDC/User/Tenant) 实现集群多节点高并发批量巡检 (execBatch)；<br>
- * 5. 开箱即用支持本地端口转发受管隧道 (openLocalTunnel) 与跳板机中继穿透；<br>
+ * 5. 开箱即用支持本地与远程端口转发受管隧道 (openLocalTunnel / openRemoteTunnel) 与跳板机中继穿透；<br>
  * 6. 深度支持交互式 PTY 伪终端受管句柄 (openShell)，与 WebSSH / xterm.js 协同并联动生命周期自动停机排空；<br>
- * 7. 底层依托受管会话池 (SshSessionPool) 与孤儿进程信号主动防卫机制，保障高并发生产环境下的极致性能与资源确定性释放。
+ * 7. 底层依托受管会话池 (SshSessionPool) 与孤儿进程信号主动防卫机制，保障高并发生产环境下的极致性能与资源确定性释放；<br>
+ * 8. 提供轻量无害连通性自验健康探针 (testConnection/testConnectionOrThrow)，仅完成 TCP 三次握手与 SSH 凭据身份验证，100% 绝不开辟任何业务 Channel，安全无副作用。
  * </p>
  *
  * @author Ateng
@@ -71,7 +90,13 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
     @Getter
     private final SshLifecycleManager lifecycleManager;
 
+    private final List<SshCommandInterceptor> interceptors;
+
     private volatile ThreadPoolTaskExecutor internalExecutor;
+    private final ReentrantLock executorLock = new ReentrantLock();
+
+    private record BatchTaskTarget(String name, SshServerInfo server) {}
+    private record BatchTaskItem(int index, BatchTaskTarget target, CompletableFuture<SshExecResult> future) {}
 
     public SshTemplate(SshSessionPool sessionPool,
                        SshClientRegistry clientRegistry,
@@ -91,6 +116,25 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                        SshProperties properties,
                        Executor executor,
                        SshLifecycleManager lifecycleManager) {
+        this(sessionPool, clientRegistry, properties, executor, lifecycleManager, defaultInterceptors(properties));
+    }
+
+    /**
+     * 构造 SSH 核心操作门面（支持注入有序命令执行拦截器链）
+     *
+     * @param sessionPool      受管会话缓存池
+     * @param clientRegistry   命名多主机注册表
+     * @param properties       全局配置属性
+     * @param executor         受管异步执行器（可为 null）
+     * @param lifecycleManager 生命周期协调器（可为 null）
+     * @param interceptors     命令执行拦截器列表（可为 null）
+     */
+    public SshTemplate(SshSessionPool sessionPool,
+                       SshClientRegistry clientRegistry,
+                       SshProperties properties,
+                       Executor executor,
+                       SshLifecycleManager lifecycleManager,
+                       List<SshCommandInterceptor> interceptors) {
         Assert.notNull(sessionPool, "SshSessionPool must not be null");
         Assert.notNull(clientRegistry, "SshClientRegistry must not be null");
         this.sessionPool = sessionPool;
@@ -98,6 +142,14 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
         this.properties = properties != null ? properties : new SshProperties();
         this.executor = executor;
         this.lifecycleManager = lifecycleManager;
+        this.interceptors = interceptors != null ? List.copyOf(interceptors) : Collections.emptyList();
+    }
+
+    private static List<SshCommandInterceptor> defaultInterceptors(SshProperties properties) {
+        if (properties == null || properties.isDangerousCommandGuardEnabled()) {
+            return List.of(new HighRiskCommandInterceptor(properties));
+        }
+        return Collections.emptyList();
     }
 
     // ==========================================
@@ -170,8 +222,84 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
     public SshExecResult exec(SshServerInfo serverInfo, String command, SshExecOptions options) {
         SshServerInfo target = resolveServerInfo(serverInfo);
         Duration timeout = resolveDefaultTimeout(target);
-        return sessionPool.execute(target, session ->
-                SshCommandExecutor.executeSync(session, command, options, timeout));
+        return executeSyncWithInterceptors(target, command, options, () ->
+                sessionPool.execute(target, session ->
+                        SshCommandExecutor.executeSync(session, command, options, timeout, properties.getMaxOutputSize())));
+    }
+
+    // ==========================================
+    // 1.1 异步非阻塞命令执行契约 (execAsync)
+    // ==========================================
+
+    /**
+     * 在上下文解析的目标服务器上异步非阻塞执行命令（默认选项，全链路透传四维上下文）
+     *
+     * @param command 待执行命令
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execAsync(String command) {
+        return execAsync(command, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在上下文解析的目标服务器上异步非阻塞执行命令（携带扩展配置）
+     *
+     * @param command 待执行命令
+     * @param options 参数配置选项
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execAsync(String command, SshExecOptions options) {
+        return execAsync((SshServerInfo) null, command, options);
+    }
+
+    /**
+     * 在指定具名服务器节点上异步非阻塞执行命令
+     *
+     * @param serverName 节点名称
+     * @param command    待执行命令
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execAsync(String serverName, String command) {
+        return execAsync(serverName, command, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在指定具名服务器节点上异步非阻塞执行命令（携带扩展配置）
+     *
+     * @param serverName 节点名称
+     * @param command    待执行命令
+     * @param options    参数配置选项
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execAsync(String serverName, String command, SshExecOptions options) {
+        return execAsync(resolveServerInfo(serverName), command, options);
+    }
+
+    /**
+     * 在指定目标服务器描述符上异步非阻塞执行命令
+     *
+     * @param serverInfo 目标描述符
+     * @param command    待执行命令
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execAsync(SshServerInfo serverInfo, String command) {
+        return execAsync(serverInfo, command, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在指定目标服务器描述符上异步非阻塞执行命令（携带扩展配置，联动 Core 受管线程池）
+     *
+     * @param serverInfo 目标描述符
+     * @param command    待执行命令
+     * @param options    参数配置选项
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execAsync(SshServerInfo serverInfo, String command, SshExecOptions options) {
+        SshServerInfo target = resolveServerInfo(serverInfo);
+        SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
+        Executor targetExecutor = getEffectiveExecutor();
+        Supplier<SshExecResult> task = AsyncContext.wrapSupplier(() -> exec(target, command, effectiveOptions));
+        return CompletableFuture.supplyAsync(task, targetExecutor);
     }
 
     // ==========================================
@@ -252,8 +380,14 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                           SshExecOptions options) {
         SshServerInfo target = resolveServerInfo(serverInfo);
         Duration timeout = resolveDefaultTimeout(target);
-        return sessionPool.execute(target, session ->
-                SshCommandExecutor.executeStream(session, command, stdoutConsumer, stderrConsumer, options, timeout));
+        return executeWithInterceptors(
+                target,
+                command,
+                options,
+                () -> sessionPool.execute(target, session ->
+                        SshCommandExecutor.executeStream(session, command, stdoutConsumer, stderrConsumer, options, timeout)),
+                exitCode -> SshExecResult.builder().exitCode(exitCode).build()
+        );
     }
 
     // ==========================================
@@ -331,6 +465,81 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
     }
 
     // ==========================================
+    // 3.1 异步多行脚本执行契约 (execScriptAsync)
+    // ==========================================
+
+    /**
+     * 在上下文解析的目标服务器上异步执行多行脚本
+     *
+     * @param script 多行 Shell 脚本
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execScriptAsync(String script) {
+        return execScriptAsync(script, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在上下文解析的目标服务器上异步执行多行脚本（携带扩展配置）
+     *
+     * @param script  多行 Shell 脚本
+     * @param options 扩展配置选项
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execScriptAsync(String script, SshExecOptions options) {
+        return execScriptAsync((SshServerInfo) null, script, options);
+    }
+
+    /**
+     * 在指定具名服务器节点上异步执行多行脚本
+     *
+     * @param serverName 节点名称
+     * @param script     多行 Shell 脚本
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execScriptAsync(String serverName, String script) {
+        return execScriptAsync(serverName, script, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在指定具名服务器节点上异步执行多行脚本（携带扩展配置）
+     *
+     * @param serverName 节点名称
+     * @param script     多行 Shell 脚本
+     * @param options    扩展配置选项
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execScriptAsync(String serverName, String script, SshExecOptions options) {
+        return execScriptAsync(resolveServerInfo(serverName), script, options);
+    }
+
+    /**
+     * 在指定目标描述符服务器上异步执行多行脚本
+     *
+     * @param serverInfo 目标描述符
+     * @param script     多行 Shell 脚本
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execScriptAsync(SshServerInfo serverInfo, String script) {
+        return execScriptAsync(serverInfo, script, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在指定目标描述符服务器上异步执行多行脚本（携带扩展配置，联动 Core 受管线程池）
+     *
+     * @param serverInfo 目标描述符
+     * @param script     多行 Shell 脚本
+     * @param options    扩展配置选项
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execScriptAsync(SshServerInfo serverInfo, String script, SshExecOptions options) {
+        SshServerInfo target = resolveServerInfo(serverInfo);
+        SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
+        Executor targetExecutor = getEffectiveExecutor();
+        Supplier<SshExecResult> task = AsyncContext.wrapSupplier(() -> execScript(target, script, effectiveOptions));
+        return CompletableFuture.supplyAsync(task, targetExecutor);
+    }
+
+    // ==========================================
     // 4. 瞬态单次任务隔离执行 (execOnce)
     // ==========================================
 
@@ -356,8 +565,9 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
     public SshExecResult execOnce(SshServerInfo serverInfo, String command, SshExecOptions options) {
         SshServerInfo target = resolveServerInfo(serverInfo);
         Duration timeout = resolveDefaultTimeout(target);
-        return sessionPool.executeOnce(target, session ->
-                SshCommandExecutor.executeSync(session, command, options, timeout));
+        return executeSyncWithInterceptors(target, command, options, () ->
+                sessionPool.executeOnce(target, session ->
+                        SshCommandExecutor.executeSync(session, command, options, timeout, properties.getMaxOutputSize())));
     }
 
     // ==========================================
@@ -545,10 +755,7 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
      * @return 强类型命令执行结果
      */
     public SshExecResult execSudo(SshServerInfo serverInfo, String command, char[] sudoPassword, SshExecOptions options) {
-        SshServerInfo target = resolveServerInfo(serverInfo);
-        Duration timeout = resolveDefaultTimeout(target);
-        return sessionPool.execute(target, session ->
-                SshCommandExecutor.executeSudo(session, command, sudoPassword, options, timeout));
+        return executeSudoInternal(serverInfo, command, sudoPassword, options, false);
     }
 
     /**
@@ -599,15 +806,101 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
      * @return 强类型命令执行结果
      */
     public SshExecResult execSudoOnce(SshServerInfo serverInfo, String command, char[] sudoPassword, SshExecOptions options) {
+        return executeSudoInternal(serverInfo, command, sudoPassword, options, true);
+    }
+
+    private SshExecResult executeSudoInternal(SshServerInfo serverInfo,
+                                              String command,
+                                              char[] sudoPassword,
+                                              SshExecOptions options,
+                                              boolean transientSession) {
         SshServerInfo target = resolveServerInfo(serverInfo);
         Duration timeout = resolveDefaultTimeout(target);
-        return sessionPool.executeOnce(target, session ->
-                SshCommandExecutor.executeSudo(session, command, sudoPassword, options, timeout));
+        try {
+            return executeSyncWithInterceptors(target, command, options, () -> transientSession
+                    ? sessionPool.executeOnce(target, session ->
+                            SshCommandExecutor.executeSudo(session, command, sudoPassword, options, timeout, properties.getMaxOutputSize()))
+                    : sessionPool.execute(target, session ->
+                            SshCommandExecutor.executeSudo(session, command, sudoPassword, options, timeout, properties.getMaxOutputSize())));
+        } finally {
+            if (sudoPassword != null) {
+                java.util.Arrays.fill(sudoPassword, '\0');
+            }
+        }
     }
 
     // ==========================================
-    // 7. 集群批量并发巡检契约 (execBatch)
+    // 7. 集群批量并发巡检与聚合契约 (execBatch / execBatchAdvanced)
     // ==========================================
+
+    /**
+     * 在多个目标服务器上并发执行命令并返回强类型聚合回执（开箱即用，透传四维快照）
+     *
+     * @param servers 目标服务器集合
+     * @param command 待巡检执行命令
+     * @return 强类型批量聚合回执（包含总数、成功数、失败数、耗时、结果与异常字典）
+     */
+    public SshBatchExecResult execBatchAdvanced(Collection<SshServerInfo> servers, String command) {
+        return execBatchAdvanced(servers, command, SshBatchOptions.defaults());
+    }
+
+    /**
+     * 在多个目标服务器上并发执行命令并返回强类型聚合回执（支持并发度限流、快速失败与全局超时）
+     *
+     * @param servers 目标服务器集合
+     * @param command 待巡检执行命令
+     * @param options 批量控制选项
+     * @return 强类型批量聚合回执
+     */
+    public SshBatchExecResult execBatchAdvanced(Collection<SshServerInfo> servers,
+                                               String command,
+                                               SshBatchOptions options) {
+        SshBatchOptions effectiveBatchOptions = options != null ? options : SshBatchOptions.defaults();
+        SshExecOptions effectiveExecOptions = effectiveBatchOptions.getExecOptions() != null
+                ? effectiveBatchOptions.getExecOptions()
+                : SshExecOptions.defaults();
+        return executeBatchInternal(servers, command, "执行", effectiveBatchOptions,
+                server -> exec(server, command, effectiveExecOptions));
+    }
+
+    /**
+     * 在多个具名节点上并发执行命令并返回强类型聚合回执
+     *
+     * @param serverNames 节点名称集合
+     * @param command     待巡检执行命令
+     * @return 强类型批量聚合回执
+     */
+    public SshBatchExecResult execBatchAdvancedNamed(Collection<String> serverNames, String command) {
+        return execBatchAdvancedNamed(serverNames, command, SshBatchOptions.defaults());
+    }
+
+    /**
+     * 在多个具名节点上并发执行命令并返回强类型聚合回执（支持批量控制选项）
+     *
+     * @param serverNames 节点名称集合
+     * @param command     待巡检执行命令
+     * @param options     批量控制选项
+     * @return 强类型批量聚合回执
+     */
+    public SshBatchExecResult execBatchAdvancedNamed(Collection<String> serverNames,
+                                                    String command,
+                                                    SshBatchOptions options) {
+        if (serverNames == null || serverNames.isEmpty()) {
+            return SshBatchExecResult.builder().totalCount(0).successCount(0).failureCount(0).build();
+        }
+        List<BatchTaskTarget> targets = new ArrayList<>(serverNames.size());
+        for (String name : serverNames) {
+            if (name != null && !name.isBlank()) {
+                targets.add(new BatchTaskTarget(name, resolveServerInfo(name)));
+            }
+        }
+        SshBatchOptions effectiveBatchOptions = options != null ? options : SshBatchOptions.defaults();
+        SshExecOptions effectiveExecOptions = effectiveBatchOptions.getExecOptions() != null
+                ? effectiveBatchOptions.getExecOptions()
+                : SshExecOptions.defaults();
+        return executeBatchTargetsInternal(targets, command, "执行", effectiveBatchOptions,
+                server -> exec(server, command, effectiveExecOptions));
+    }
 
     /**
      * 在多个目标服务器上并发执行命令（开箱即用，透传四维上下文）
@@ -631,8 +924,10 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
     public Map<SshServerInfo, SshExecResult> execBatch(Collection<SshServerInfo> servers,
                                                        String command,
                                                        SshExecOptions options) {
-        SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
-        return executeBatchInternal(servers, command, "执行", server -> exec(server, command, effectiveOptions));
+        SshBatchOptions batchOptions = SshBatchOptions.builder()
+                .execOptions(options)
+                .build();
+        return execBatchAdvanced(servers, command, batchOptions).getResults();
     }
 
     /**
@@ -701,8 +996,8 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                                                            String command,
                                                            String sudoPassword,
                                                            SshExecOptions options) {
-        SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
-        return executeBatchInternal(servers, command, "Sudo", server -> execSudo(server, command, sudoPassword, effectiveOptions));
+        char[] passwordChars = sudoPassword != null ? sudoPassword.toCharArray() : null;
+        return execSudoBatch(servers, command, passwordChars, options);
     }
 
     /**
@@ -733,11 +1028,12 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                                                            char[] sudoPassword,
                                                            SshExecOptions options) {
         SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
+        SshBatchOptions batchOptions = SshBatchOptions.builder().execOptions(effectiveOptions).build();
         try {
-            return executeBatchInternal(servers, command, "Sudo", server -> {
+            return executeBatchInternal(servers, command, "Sudo提权执行", batchOptions, server -> {
                 char[] copy = sudoPassword != null ? sudoPassword.clone() : null;
                 return execSudo(server, command, copy, effectiveOptions);
-            });
+            }).getResults();
         } finally {
             if (sudoPassword != null) {
                 java.util.Arrays.fill(sudoPassword, '\0');
@@ -745,28 +1041,118 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
         }
     }
 
-    private Map<SshServerInfo, SshExecResult> executeBatchInternal(
+    private SshBatchExecResult executeBatchInternal(
             Collection<SshServerInfo> servers,
             String command,
             String operationName,
+            SshBatchOptions options,
             java.util.function.Function<SshServerInfo, SshExecResult> taskFunction) {
         if (servers == null || servers.isEmpty()) {
-            return Collections.emptyMap();
+            return SshBatchExecResult.builder()
+                    .totalCount(0)
+                    .successCount(0)
+                    .failureCount(0)
+                    .duration(Duration.ZERO)
+                    .results(Collections.emptyMap())
+                    .errors(Collections.emptyMap())
+                    .build();
+        }
+        List<BatchTaskTarget> targets = new ArrayList<>(servers.size());
+        for (SshServerInfo server : servers) {
+            if (server != null) {
+                targets.add(new BatchTaskTarget(null, server));
+            }
+        }
+        return executeBatchTargetsInternal(targets, command, operationName, options, taskFunction);
+    }
+
+    private SshBatchExecResult executeBatchTargetsInternal(
+            List<BatchTaskTarget> targets,
+            String command,
+            String operationName,
+            SshBatchOptions options,
+            java.util.function.Function<SshServerInfo, SshExecResult> taskFunction) {
+        if (targets == null || targets.isEmpty()) {
+            return SshBatchExecResult.builder()
+                    .totalCount(0)
+                    .successCount(0)
+                    .failureCount(0)
+                    .duration(Duration.ZERO)
+                    .results(Collections.emptyMap())
+                    .errors(Collections.emptyMap())
+                    .build();
         }
         Assert.hasText(command, "command must not be blank");
 
-        Executor targetExecutor = getEffectiveExecutor();
-        Map<SshServerInfo, CompletableFuture<SshExecResult>> futures = new LinkedHashMap<>();
+        SshBatchOptions effectiveOptions = options != null ? options : SshBatchOptions.defaults();
+        int concurrency = effectiveOptions.getConcurrency() > 0 ? effectiveOptions.getConcurrency() : SshBatchOptions.DEFAULT_CONCURRENCY;
+        boolean failFast = effectiveOptions.isFailFast();
+        Duration timeout = effectiveOptions.getTimeout();
 
-        for (SshServerInfo server : servers) {
-            if (server == null) {
-                continue;
+        List<BatchTaskTarget> validTargets = new ArrayList<>();
+        for (BatchTaskTarget t : targets) {
+            if (t != null && t.server() != null) {
+                validTargets.add(t);
             }
+        }
+        int total = validTargets.size();
+        if (total == 0) {
+            return SshBatchExecResult.builder()
+                    .totalCount(0)
+                    .successCount(0)
+                    .failureCount(0)
+                    .duration(Duration.ZERO)
+                    .results(Collections.emptyMap())
+                    .errors(Collections.emptyMap())
+                    .build();
+        }
+
+        long batchStart = System.currentTimeMillis();
+        Executor targetExecutor = getEffectiveExecutor();
+        Semaphore semaphore = new Semaphore(concurrency);
+        AtomicBoolean aborted = new AtomicBoolean(false);
+        AtomicReference<Throwable> firstError = new AtomicReference<>();
+        List<BatchTaskItem> taskItems = new ArrayList<>(total);
+        List<CompletableFuture<SshExecResult>> futureList = new ArrayList<>(total);
+        Map<Integer, Throwable> taskErrorMap = new ConcurrentHashMap<>();
+
+        for (int i = 0; i < total; i++) {
+            final int taskIndex = i;
+            final BatchTaskTarget target = validTargets.get(i);
+            final SshServerInfo server = target.server();
             Supplier<SshExecResult> task = AsyncContext.wrapSupplier(() -> {
+                if (failFast && aborted.get()) {
+                    return null;
+                }
+                try {
+                    semaphore.acquire();
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new SshOperationException(SshResultCode.OPERATION_FAILED, "批量并发获取许可被中断", ie);
+                }
                 long start = System.currentTimeMillis();
                 try {
-                    return taskFunction.apply(server);
-                } catch (Exception e) {
+                    if (failFast && aborted.get()) {
+                        return null;
+                    }
+                    SshExecResult result = taskFunction.apply(server);
+                    if (result == null) {
+                        result = SshExecResult.builder().exitCode(-1).stderr("Null result returned").build();
+                    }
+                    if (failFast && !result.isSuccess()) {
+                        if (aborted.compareAndSet(false, true)) {
+                            firstError.set(new SshOperationException(SshResultCode.BATCH_EXEC_FAILED,
+                                    "节点执行返回非零退出码 [" + result.getExitCode() + "]: " + result.getStderr()));
+                        }
+                    }
+                    return result;
+                } catch (Throwable e) {
+                    taskErrorMap.put(taskIndex, e);
+                    if (failFast) {
+                        if (aborted.compareAndSet(false, true)) {
+                            firstError.set(e);
+                        }
+                    }
                     log.warn("ateng-boot-ssh: 批量 {} 节点异常隔离 [{}]: {}", operationName, server.toSessionKey(), e.getMessage());
                     Duration duration = Duration.ofMillis(System.currentTimeMillis() - start);
                     String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
@@ -775,26 +1161,119 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                             .stderr(errorMsg)
                             .duration(duration)
                             .build();
+                } finally {
+                    semaphore.release();
                 }
             });
 
-            futures.put(server, CompletableFuture.supplyAsync(task, targetExecutor));
+            CompletableFuture<SshExecResult> future = CompletableFuture.supplyAsync(task, targetExecutor);
+            futureList.add(future);
+            taskItems.add(new BatchTaskItem(taskIndex, target, future));
         }
 
-        CompletableFuture.allOf(futures.values().toArray(new CompletableFuture[0])).join();
+        CompletableFuture<Void> allFutures = CompletableFuture.allOf(futureList.toArray(new CompletableFuture[0]));
 
-        Map<SshServerInfo, SshExecResult> resultMap = new LinkedHashMap<>();
-        for (Map.Entry<SshServerInfo, CompletableFuture<SshExecResult>> entry : futures.entrySet()) {
+        if (timeout != null && !timeout.isZero() && !timeout.isNegative()) {
             try {
-                resultMap.put(entry.getKey(), entry.getValue().join());
+                allFutures.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            } catch (TimeoutException te) {
+                aborted.set(true);
+                cancelUnfinishedFutures(futureList);
+                if (failFast) {
+                    throw new SshOperationException(SshResultCode.COMMAND_TIMEOUT,
+                            "SSH集群批量命令执行整体超时 [" + timeout + "]", te);
+                } else {
+                    log.warn("ateng-boot-ssh: SSH集群批量命令执行整体超时 [{}]", timeout);
+                    for (BatchTaskItem item : taskItems) {
+                        if (!item.future().isDone()) {
+                            taskErrorMap.put(item.index(), new SshOperationException(SshResultCode.COMMAND_TIMEOUT,
+                                    "节点批量执行超时未完成", te));
+                        }
+                    }
+                }
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                aborted.set(true);
+                cancelUnfinishedFutures(futureList);
+                log.warn("ateng-boot-ssh: SSH集群批量命令执行等待被中断", ie);
             } catch (Exception e) {
-                resultMap.put(entry.getKey(), SshExecResult.builder()
-                        .exitCode(-1)
-                        .stderr(e.getMessage() != null ? e.getMessage() : "Unknown execution error")
-                        .build());
+                log.debug("ateng-boot-ssh: 批量等待任务完成时捕获异常: {}", e.getMessage());
+            }
+        } else {
+            try {
+                allFutures.join();
+            } catch (Exception e) {
+                log.debug("ateng-boot-ssh: 批量巡检并发等待完成: {}", e.getMessage());
             }
         }
-        return resultMap;
+
+        if (failFast && (aborted.get() || !taskErrorMap.isEmpty())) {
+            cancelUnfinishedFutures(futureList);
+            Throwable cause = firstError.get();
+            if (cause == null && !taskErrorMap.isEmpty()) {
+                cause = taskErrorMap.values().iterator().next();
+            }
+            String causeMsg = cause != null ? cause.getMessage() : "未知异常";
+            throw new SshOperationException(SshResultCode.BATCH_EXEC_FAILED,
+                    "SSH集群批量巡检快速熔断: " + causeMsg, cause);
+        }
+
+        Map<SshServerInfo, SshExecResult> resultMap = new LinkedHashMap<>();
+        Map<String, SshExecResult> namedMap = new LinkedHashMap<>();
+        Map<SshServerInfo, Throwable> errorMap = new LinkedHashMap<>();
+        int successCount = 0;
+        int failureCount = 0;
+
+        for (BatchTaskItem item : taskItems) {
+            BatchTaskTarget target = item.target();
+            SshServerInfo server = target.server();
+            CompletableFuture<SshExecResult> future = item.future();
+            SshExecResult result = null;
+            try {
+                if (future.isDone() && !future.isCancelled() && !future.isCompletedExceptionally()) {
+                    result = future.join();
+                }
+            } catch (Exception e) {
+                taskErrorMap.put(item.index(), e);
+            }
+            Throwable err = taskErrorMap.get(item.index());
+            if (result == null) {
+                String errMsg = err != null ? err.getMessage() : "Execution cancelled or interrupted";
+                result = SshExecResult.builder().exitCode(-1).stderr(errMsg).build();
+            }
+            if (err != null) {
+                errorMap.put(server, err);
+            }
+            resultMap.put(server, result);
+            if (target.name() != null) {
+                namedMap.put(target.name(), result);
+            }
+            if (result.isSuccess() && err == null) {
+                successCount++;
+            } else {
+                failureCount++;
+            }
+        }
+
+        Duration totalDuration = Duration.ofMillis(System.currentTimeMillis() - batchStart);
+
+        return SshBatchExecResult.builder()
+                .totalCount(total)
+                .successCount(successCount)
+                .failureCount(failureCount)
+                .duration(totalDuration)
+                .results(Collections.unmodifiableMap(resultMap))
+                .namedResults(namedMap.isEmpty() ? Collections.emptyMap() : Collections.unmodifiableMap(namedMap))
+                .errors(Collections.unmodifiableMap(errorMap))
+                .build();
+    }
+
+    private void cancelUnfinishedFutures(Collection<CompletableFuture<SshExecResult>> futures) {
+        for (CompletableFuture<SshExecResult> f : futures) {
+            if (!f.isDone()) {
+                f.cancel(true);
+            }
+        }
     }
 
     @Override
@@ -878,32 +1357,164 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
             int boundPort = bound.getPort();
             String boundHost = bound.getHostName();
 
-            SshTunnelHandle handle = new SshTunnelHandle(
+            return registerTunnelHandle(
+                    TunnelMode.LOCAL,
                     target,
                     tracker,
                     boundHost,
                     boundPort,
                     remote.getHostName(),
-                    remote.getPort(),
+                    remote.getPort()
+            );
+        } catch (IOException e) {
+            throw new SshOperationException(SshResultCode.TUNNEL_FAILED,
+                    "开启本地端口转发失败 [" + local + " -> " + remote + " via " + target.toSessionKey() + "]: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 在上下文解析的目标服务器上开启远程端口转发隧道（ssh -R）
+     *
+     * @param remotePort 远端 SSH 服务端监听绑定端口（传 0 由服务端动态分配可用端口）
+     * @param localHost  本地目标服务主机名或 IP
+     * @param localPort  本地目标服务端口
+     * @return 实现了 AutoCloseable 的受管隧道句柄（{@link TunnelMode#REMOTE}）
+     */
+    public SshTunnelHandle openRemoteTunnel(int remotePort, String localHost, int localPort) {
+        return openRemoteTunnel((SshServerInfo) null, remotePort, localHost, localPort);
+    }
+
+    /**
+     * 在指定具名服务器节点上开启远程端口转发隧道（ssh -R）
+     *
+     * @param serverName 节点名称
+     * @param remotePort 远端 SSH 服务端监听绑定端口（传 0 由服务端动态分配可用端口）
+     * @param localHost  本地目标服务主机名或 IP
+     * @param localPort  本地目标服务端口
+     * @return 实现了 AutoCloseable 的受管隧道句柄（{@link TunnelMode#REMOTE}）
+     */
+    public SshTunnelHandle openRemoteTunnel(String serverName, int remotePort, String localHost, int localPort) {
+        return openRemoteTunnel(resolveServerInfo(serverName), remotePort, localHost, localPort);
+    }
+
+    /**
+     * 在指定的目标服务器描述符上开启远程端口转发隧道（ssh -R）
+     *
+     * @param serverInfo 目标描述符（作为远端监听侧 SSH 服务端节点）
+     * @param remotePort 远端 SSH 服务端监听绑定端口（传 0 由服务端动态分配可用端口）
+     * @param localHost  本地目标服务主机名或 IP
+     * @param localPort  本地目标服务端口
+     * @return 实现了 AutoCloseable 的受管隧道句柄（{@link TunnelMode#REMOTE}）
+     */
+    public SshTunnelHandle openRemoteTunnel(SshServerInfo serverInfo, int remotePort, String localHost, int localPort) {
+        Assert.isTrue(remotePort >= 0 && remotePort <= 65535, "remotePort must be between 0 and 65535");
+        Assert.hasText(localHost, "localHost must not be blank");
+        Assert.isTrue(localPort > 0 && localPort <= 65535, "localPort must be between 1 and 65535");
+
+        SshdSocketAddress remoteBind = new SshdSocketAddress("127.0.0.1", remotePort);
+        SshdSocketAddress localTarget = new SshdSocketAddress(localHost.trim(), localPort);
+        return openRemoteTunnel(serverInfo, remoteBind, localTarget);
+    }
+
+    /**
+     * 在指定的目标服务器描述符上开启远程端口转发隧道（支持指定远端绑定地址与本地目标套接字）
+     *
+     * @param serverInfo  目标描述符
+     * @param remoteBind  远端 SSH 服务端监听绑定地址
+     * @param localTarget 本地被代理目标服务地址
+     * @return 实现了 AutoCloseable 的受管隧道句柄（{@link TunnelMode#REMOTE}）
+     */
+    public SshTunnelHandle openRemoteTunnel(SshServerInfo serverInfo, SshdSocketAddress remoteBind, SshdSocketAddress localTarget) {
+        Assert.notNull(remoteBind, "Remote socket address must not be null");
+        Assert.notNull(localTarget, "Local socket address must not be null");
+        Assert.isTrue(remoteBind.getPort() >= 0 && remoteBind.getPort() <= 65535, "remotePort must be between 0 and 65535");
+        Assert.hasText(localTarget.getHostName(), "localHost must not be blank");
+        Assert.isTrue(localTarget.getPort() > 0 && localTarget.getPort() <= 65535, "localPort must be between 1 and 65535");
+
+        SshServerInfo target = resolveServerInfo(serverInfo);
+        ClientSession session = sessionPool.acquire(target);
+        if (session.getFactoryManager() instanceof SshClient client
+                && (client.getForwardingFilter() == null || client.getForwardingFilter() == RejectAllForwardingFilter.INSTANCE)) {
+            log.warn("ateng-boot-ssh: 当前 SshClient 未配置允许 forwarded-tcpip 的 ForwardingFilter，" +
+                    "远程端口转发入站流量将被拒绝；请在装配 SshClient 时设置 SshTunnelHandle.REMOTE_FORWARDED_ONLY_FILTER");
+        }
+
+        try {
+            ExplicitPortForwardingTracker tracker = session.createRemotePortForwardingTracker(remoteBind, localTarget);
+            SshdSocketAddress bound = tracker.getBoundAddress();
+            int boundRemotePort = (bound != null) ? bound.getPort() : remoteBind.getPort();
+            String boundRemoteHost = resolveBoundHost(bound != null ? bound.getHostName() : null, remoteBind.getHostName());
+
+            return registerTunnelHandle(
+                    TunnelMode.REMOTE,
+                    target,
+                    tracker,
+                    localTarget.getHostName(),
+                    localTarget.getPort(),
+                    boundRemoteHost,
+                    boundRemotePort
+            );
+        } catch (IOException e) {
+            throw new SshOperationException(SshResultCode.TUNNEL_FAILED,
+                    "开启远程端口转发失败 [" + remoteBind + " -> " + localTarget + " via " + target.toSessionKey() + "]: " + e.getMessage(), e);
+        }
+    }
+
+    private SshTunnelHandle registerTunnelHandle(TunnelMode mode,
+                                               SshServerInfo target,
+                                               ExplicitPortForwardingTracker tracker,
+                                               String localHost,
+                                               int localPort,
+                                               String remoteHost,
+                                               int remotePort) {
+        SshTunnelHandle handle;
+        try {
+            handle = new SshTunnelHandle(
+                    mode,
+                    target,
+                    tracker,
+                    localHost,
+                    localPort,
+                    remoteHost,
+                    remotePort,
                     tunnel -> {
                         if (lifecycleManager != null) {
                             lifecycleManager.unregisterTunnel(tunnel);
                         }
                     }
             );
-
-            // 注册到生命周期管理器，保障停机时优先自动注销
-            if (lifecycleManager != null) {
-                lifecycleManager.registerTunnel(handle);
+        } catch (RuntimeException ex) {
+            try {
+                tracker.close();
+            } catch (IOException closeEx) {
+                ex.addSuppressed(closeEx);
             }
-
-            log.info("ateng-boot-ssh: 本地端口转发隧道已开启 [{}:{} -> {}:{} via {}]",
-                    boundHost, boundPort, remote.getHostName(), remote.getPort(), target.toSessionKey());
-            return handle;
-        } catch (IOException e) {
-            throw new SshOperationException(SshResultCode.TUNNEL_FAILED,
-                    "开启本地端口转发失败 [" + local + " -> " + remote + " via " + target.toSessionKey() + "]: " + e.getMessage(), e);
+            throw ex;
         }
+
+        // 注册到生命周期管理器，保障停机时优先自动注销
+        if (lifecycleManager != null) {
+            lifecycleManager.registerTunnel(handle);
+        }
+
+        if (mode == TunnelMode.REMOTE) {
+            log.info("ateng-boot-ssh: 远程端口转发隧道已开启 [{}:{} -> {}:{} via {}]",
+                    remoteHost, remotePort, localHost, localPort, target.toSessionKey());
+        } else {
+            log.info("ateng-boot-ssh: 本地端口转发隧道已开启 [{}:{} -> {}:{} via {}]",
+                    localHost, localPort, remoteHost, remotePort, target.toSessionKey());
+        }
+        return handle;
+    }
+
+    private static String resolveBoundHost(String primaryHost, String fallbackHost) {
+        if (primaryHost != null && !primaryHost.isBlank()) {
+            return primaryHost;
+        }
+        if (fallbackHost != null && !fallbackHost.isBlank()) {
+            return fallbackHost;
+        }
+        return "0.0.0.0";
     }
 
     // ==========================================
@@ -1011,12 +1622,178 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
         }
     }
 
+    // ==========================================
+    // 10. 轻量无害连通性健康探测契约 (testConnection)
+    // ==========================================
+
+    /**
+     * 探测当前上下文或缺省服务器节点的网络与身份认证连通性
+     * <p>
+     * 仅在底层完成 TCP 三次握手与 SSH 凭据身份鉴权握手，100% 绝不开辟任何 Exec/Shell/SFTP 业务通道。
+     * 瞬态验证完毕后立即确定性释放底层网络连接，安全无副作用。
+     * </p>
+     *
+     * @return 节点是否连通可用
+     */
+    public boolean testConnection() {
+        return testConnection((SshServerInfo) null, (Duration) null);
+    }
+
+    /**
+     * 探测当前上下文或缺省服务器节点的网络与身份认证连通性（指定超时阈值）
+     *
+     * @param timeout 探测超时时间
+     * @return 节点是否连通可用
+     */
+    public boolean testConnection(Duration timeout) {
+        return testConnection((SshServerInfo) null, timeout);
+    }
+
+    /**
+     * 探测指定具名服务器节点的网络与身份认证连通性
+     *
+     * @param serverName 节点名称
+     * @return 节点是否连通可用
+     */
+    public boolean testConnection(String serverName) {
+        return testConnection(serverName, (Duration) null);
+    }
+
+    /**
+     * 探测指定具名服务器节点的网络与身份认证连通性（指定超时阈值）
+     *
+     * @param serverName 节点名称
+     * @param timeout    探测超时时间
+     * @return 节点是否连通可用
+     */
+    public boolean testConnection(String serverName, Duration timeout) {
+        return testConnection(resolveServerInfo(serverName), timeout);
+    }
+
+    /**
+     * 探测指定目标服务器描述符的网络与身份认证连通性
+     *
+     * @param serverInfo 目标描述符
+     * @return 节点是否连通可用
+     */
+    public boolean testConnection(SshServerInfo serverInfo) {
+        return testConnection(serverInfo, (Duration) null);
+    }
+
+    /**
+     * 探测指定目标服务器描述符的网络与身份认证连通性（指定超时阈值）
+     *
+     * @param serverInfo 目标描述符
+     * @param timeout    探测超时时间
+     * @return 节点是否连通可用
+     */
+    public boolean testConnection(SshServerInfo serverInfo, Duration timeout) {
+        try {
+            testConnectionOrThrow(serverInfo, timeout);
+            return true;
+        } catch (Exception e) {
+            log.debug("ateng-boot-ssh: 连通性健康探测失败: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 探测当前上下文或缺省服务器节点的网络与身份认证连通性，不可达时抛出异常
+     *
+     * @throws SshOperationException 节点不可达或凭据认证失败
+     */
+    public void testConnectionOrThrow() {
+        testConnectionOrThrow((SshServerInfo) null, (Duration) null);
+    }
+
+    /**
+     * 探测当前上下文或缺省服务器节点的网络与身份认证连通性（指定超时阈值），不可达时抛出异常
+     *
+     * @param timeout 探测超时时间
+     * @throws SshOperationException 节点不可达或凭据认证失败
+     */
+    public void testConnectionOrThrow(Duration timeout) {
+        testConnectionOrThrow((SshServerInfo) null, timeout);
+    }
+
+    /**
+     * 探测指定具名服务器节点的网络与身份认证连通性，不可达时抛出异常
+     *
+     * @param serverName 节点名称
+     * @throws SshOperationException 节点不可达或凭据认证失败
+     */
+    public void testConnectionOrThrow(String serverName) {
+        testConnectionOrThrow(serverName, (Duration) null);
+    }
+
+    /**
+     * 探测指定具名服务器节点的网络与身份认证连通性（指定超时阈值），不可达时抛出异常
+     *
+     * @param serverName 节点名称
+     * @param timeout    探测超时时间
+     * @throws SshOperationException 节点不可达或凭据认证失败
+     */
+    public void testConnectionOrThrow(String serverName, Duration timeout) {
+        testConnectionOrThrow(resolveServerInfo(serverName), timeout);
+    }
+
+    /**
+     * 探测指定目标服务器描述符的网络与身份认证连通性，不可达时抛出异常
+     *
+     * @param serverInfo 目标描述符
+     * @throws SshOperationException 节点不可达或凭据认证失败
+     */
+    public void testConnectionOrThrow(SshServerInfo serverInfo) {
+        testConnectionOrThrow(serverInfo, (Duration) null);
+    }
+
+    /**
+     * 探测指定目标服务器描述符的网络与身份认证连通性（指定超时阈值），不可达时抛出异常
+     *
+     * @param serverInfo 目标描述符
+     * @param timeout    探测超时时间
+     * @throws SshOperationException 节点不可达或凭据认证失败
+     */
+    public void testConnectionOrThrow(SshServerInfo serverInfo, Duration timeout) {
+        SshServerInfo target = resolveServerInfo(serverInfo);
+        if (timeout != null && !timeout.isZero() && !timeout.isNegative()) {
+            target = target.toBuilder().connectTimeout(timeout).authTimeout(timeout).build();
+        }
+        SshServerInfo effectiveTarget = target;
+        try {
+            sessionPool.executeOnce(effectiveTarget, session -> {
+                if (!session.isOpen()) {
+                    throw new SshOperationException(SshResultCode.PROBE_FAILED,
+                            "SSH 探测会话未能开启就绪 [" + effectiveTarget.toSessionKey() + "]");
+                }
+                return true;
+            });
+        } catch (Exception e) {
+            throw new SshOperationException(SshResultCode.PROBE_FAILED,
+                    "SSH 节点连通性探测失败 [" + effectiveTarget.toSessionKey() + "]: " + e.getMessage(), e);
+        }
+    }
+
+    // ==========================================
+    // 11. 会话缓存池运行态统计快照契约 (getPoolStats)
+    // ==========================================
+
+    /**
+     * 获取受管会话缓存池当前运行态统计快照
+     *
+     * @return 不可变会话池运行态统计快照
+     */
+    public SshPoolStats getPoolStats() {
+        return sessionPool.getStats();
+    }
+
     private Executor getEffectiveExecutor() {
         if (this.executor != null) {
             return this.executor;
         }
         if (this.internalExecutor == null) {
-            synchronized (this) {
+            executorLock.lock();
+            try {
                 if (this.internalExecutor == null) {
                     ThreadPoolTaskExecutor exec = new ThreadPoolTaskExecutor();
                     exec.setCorePoolSize(Math.max(2, Runtime.getRuntime().availableProcessors()));
@@ -1027,6 +1804,10 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                     exec.setAwaitTerminationSeconds(5);
                     exec.initialize();
                     this.internalExecutor = exec;
+                }
+            } finally {
+                if (executorLock.isHeldByCurrentThread()) {
+                    executorLock.unlock();
                 }
             }
         }
@@ -1086,5 +1867,61 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
             return properties.getCommandTimeout();
         }
         return Duration.ofSeconds(60);
+    }
+
+    private SshExecResult executeSyncWithInterceptors(SshServerInfo target,
+                                                      String command,
+                                                      SshExecOptions options,
+                                                      Supplier<SshExecResult> action) {
+        return executeWithInterceptors(target, command, options, action, Function.identity());
+    }
+
+    private <T> T executeWithInterceptors(SshServerInfo target,
+                                          String command,
+                                          SshExecOptions options,
+                                          Supplier<T> action,
+                                          Function<T, SshExecResult> resultMapper) {
+        if (interceptors.isEmpty()) {
+            return action.get();
+        }
+        SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
+        try {
+            notifyInterceptorsBefore(target, command, effectiveOptions);
+            T outcome = action.get();
+            notifyInterceptorsAfter(target, command, effectiveOptions, resultMapper.apply(outcome));
+            return outcome;
+        } catch (Throwable error) {
+            notifyInterceptorsOnError(target, command, effectiveOptions, error);
+            throw error;
+        }
+    }
+
+    private void notifyInterceptorsBefore(SshServerInfo target, String command, SshExecOptions options) {
+        for (SshCommandInterceptor interceptor : interceptors) {
+            interceptor.beforeExecute(target, command, options);
+        }
+    }
+
+    private void notifyInterceptorsAfter(SshServerInfo target,
+                                         String command,
+                                         SshExecOptions options,
+                                         SshExecResult result) {
+        for (SshCommandInterceptor interceptor : interceptors) {
+            interceptor.afterExecute(target, command, options, result);
+        }
+    }
+
+    private void notifyInterceptorsOnError(SshServerInfo target,
+                                           String command,
+                                           SshExecOptions options,
+                                           Throwable error) {
+        for (SshCommandInterceptor interceptor : interceptors) {
+            try {
+                interceptor.onError(target, command, options, error);
+            } catch (Exception ex) {
+                log.warn("ateng-boot-ssh: 执行命令拦截器 onError 回调异常 [{}]: {}",
+                        interceptor.getClass().getSimpleName(), ex.getMessage());
+            }
+        }
     }
 }

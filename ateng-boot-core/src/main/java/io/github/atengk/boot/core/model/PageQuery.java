@@ -1,5 +1,7 @@
 package io.github.atengk.boot.core.model;
 
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import io.github.atengk.boot.core.jackson.NumericLongSerializer;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -29,6 +31,7 @@ public class PageQuery implements Serializable {
      * 当前页码（从 1 开始，默认 1）
      */
     @Min(value = 1, message = "当前页码必须大于或等于 1")
+    @JsonSerialize(using = NumericLongSerializer.class)
     private long current = 1L;
 
     /**
@@ -36,6 +39,7 @@ public class PageQuery implements Serializable {
      */
     @Min(value = 1, message = "单页条数必须大于或等于 1")
     @Max(value = 1000, message = "单页条数最大不能超过 1000")
+    @JsonSerialize(using = NumericLongSerializer.class)
     private long size = 10L;
 
     /**
@@ -135,6 +139,60 @@ public class PageQuery implements Serializable {
      */
     public PageQuery addDesc(String property) {
         return addSort(SortItem.desc(property));
+    }
+
+    /**
+     * 获取安全纠偏后的当前页码
+     * 若当前 current 小于 1，纠偏并返回 1L；否则返回原值
+     *
+     * @return 安全页码（>= 1）
+     */
+    public long safeCurrent() {
+        return Math.max(1L, this.current);
+    }
+
+    /**
+     * 获取安全纠偏后的单页容量
+     * 若当前 size 小于 1，纠偏并返回默认值 10L；若超过上限 1000，截断并返回 1000L；否则返回原值
+     *
+     * @return 安全容量（1 <= size <= 1000）
+     */
+    public long safeSize() {
+        if (this.size < 1L) {
+            return 10L;
+        }
+        if (this.size > 1000L) {
+            return 1000L;
+        }
+        return this.size;
+    }
+
+    /**
+     * 原地将 current 与 size 修正为合法的安全区间值（支持链式调用）
+     * current 纠偏为 safeCurrent()，size 纠偏为 safeSize()
+     *
+     * @return 当前 PageQuery 实例
+     */
+    public PageQuery normalize() {
+        this.current = safeCurrent();
+        this.size = safeSize();
+        return this;
+    }
+
+    /**
+     * 基于安全纠偏后的页码与单页容量计算分页偏移量（offset = (safeCurrent - 1) * safeSize）
+     * 具备长整型乘法溢出防御，若相乘溢出则保底返回 Long.MAX_VALUE
+     *
+     * @return 分页起始偏移量记录行数（>= 0）
+     */
+    public long offset() {
+        long c = safeCurrent();
+        long s = safeSize();
+        try {
+            return Math.multiplyExact(c - 1L, s);
+        } catch (ArithmeticException e) {
+            return Long.MAX_VALUE;
+        }
     }
 
     /**

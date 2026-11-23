@@ -179,4 +179,170 @@ class CiphertextParserTest {
         assertThrows(IllegalArgumentException.class, () ->
                 CiphertextParser.formatToken("db", EncryptAlgorithm.AES_GCM, null));
     }
+
+    @Test
+    @DisplayName("测试 Spring Cloud {cipher} 默认关闭时保真放行")
+    void testSpringCloudCipherDisabledByDefault() {
+        String input = "{cipher}my_legacy_ciphertext_123";
+        assertFalse(parser.isCompatibleCipherPrefix());
+        assertFalse(parser.hasEncrypted(input));
+        assertEquals(input, parser.replaceTokens(input, token -> "should_not_be_called"));
+    }
+
+    @Test
+    @DisplayName("测试 Spring Cloud {cipher} 开启时标准解密")
+    void testSpringCloudCipherEnabledStandard() {
+        CiphertextParser cipherParser = new CiphertextParser(true);
+        assertTrue(cipherParser.isCompatibleCipherPrefix());
+        String input = "{cipher}my_legacy_ciphertext_123";
+        assertTrue(cipherParser.hasEncrypted(input));
+
+        String replaced = cipherParser.replaceTokens(input, token -> {
+            assertNull(token.getKeyId());
+            assertNull(token.getAlgorithm());
+            assertEquals("my_legacy_ciphertext_123", token.getCiphertext());
+            return "decrypted_legacy_value";
+        });
+        assertEquals("decrypted_legacy_value", replaced);
+    }
+
+    @Test
+    @DisplayName("测试 Spring Cloud {cipher} 内嵌连接串精准替换")
+    void testSpringCloudCipherEmbeddedInConnectionString() {
+        CiphertextParser cipherParser = new CiphertextParser(true);
+        String input = "jdbc:mysql://localhost:3306/mydb?user=root&password={cipher}abc123xyz&useSSL=false";
+        assertTrue(cipherParser.hasEncrypted(input));
+
+        String replaced = cipherParser.replaceTokens(input, token -> {
+            assertEquals("abc123xyz", token.getCiphertext());
+            return "plain_pass";
+        });
+        assertEquals("jdbc:mysql://localhost:3306/mydb?user=root&password=plain_pass&useSSL=false", replaced);
+    }
+
+    @Test
+    @DisplayName("测试 Spring Cloud {cipher} 多个内嵌密文连续替换")
+    void testSpringCloudCipherMultipleTokens() {
+        CiphertextParser cipherParser = new CiphertextParser(true);
+        String input = "auth: user={cipher}user_cipher, pass={cipher}pass_cipher";
+        assertTrue(cipherParser.hasEncrypted(input));
+
+        String replaced = cipherParser.replaceTokens(input, token -> "decrypted_" + token.getCiphertext());
+        assertEquals("auth: user=decrypted_user_cipher, pass=decrypted_pass_cipher", replaced);
+    }
+
+    @Test
+    @DisplayName("测试 Spring Cloud {cipher} 带有显式算法前缀")
+    void testSpringCloudCipherWithAlgorithmPrefix() {
+        CiphertextParser cipherParser = new CiphertextParser(true);
+        String input = "{cipher}SM4@sm4_cipher_content";
+        assertTrue(cipherParser.hasEncrypted(input));
+
+        String replaced = cipherParser.replaceTokens(input, token -> {
+            assertEquals(EncryptAlgorithm.SM4_CBC, token.getAlgorithm());
+            assertEquals("sm4_cipher_content", token.getCiphertext());
+            return "sm4_plain";
+        });
+        assertEquals("sm4_plain", replaced);
+    }
+
+    @Test
+    @DisplayName("测试 Spring Cloud {cipher} 多行折行密文自动清洗")
+    void testSpringCloudCipherMultilineYaml() {
+        CiphertextParser cipherParser = new CiphertextParser(true);
+        String input = "{cipher}\n"
+                + "  MIIEvgIBADANBgkqhkiG9w0BAQEFAASC\r\n"
+                + "  BKgwggSkAgEAAoIBAQC7+abcdef\t\n"
+                + "  1234567890==\n";
+        assertTrue(cipherParser.hasEncrypted(input));
+
+        String replaced = cipherParser.replaceTokens(input, token -> {
+            assertEquals("MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7+abcdef1234567890==", token.getCiphertext());
+            return "cleaned_multiline_plain";
+        });
+        assertEquals("cleaned_multiline_plain", replaced);
+    }
+
+    @Test
+    @DisplayName("测试自定义开括号结尾前缀支持可选 [keyId] 与算法声明解析 (CIPHER(/MY_ENC[/SEC{)")
+    void testCustomBracketPrefixWithKeyIdAndAlgorithm() {
+        CiphertextParser parenParser = new CiphertextParser("CIPHER(", ")");
+        String parenToken = "CIPHER[redis-cluster](SM4-CBC@paren_cipher)";
+        assertTrue(parenParser.hasEncrypted(parenToken));
+        String parenPlain = parenParser.replaceTokens(parenToken, token -> {
+            assertEquals("redis-cluster", token.getKeyId());
+            assertEquals(EncryptAlgorithm.SM4_CBC, token.getAlgorithm());
+            assertEquals("paren_cipher", token.getCiphertext());
+            return "ok-paren";
+        });
+        assertEquals("ok-paren", parenPlain);
+
+        CiphertextParser squareParser = new CiphertextParser("MY_ENC[", "]");
+        String squareToken = "a=MY_ENC[plain_no_key], b=MY_ENC[redis-cluster][SM4-CBC@square_cipher]";
+        assertTrue(squareParser.hasEncrypted(squareToken));
+        List<String> capturedKeys = new ArrayList<>();
+        String squarePlain = squareParser.replaceTokens(squareToken, token -> {
+            capturedKeys.add(token.getKeyId());
+            return token.getKeyId() == null ? "p1" : "p2";
+        });
+        assertEquals(List.of("p1", "p2").size(), capturedKeys.size());
+        assertNull(capturedKeys.get(0));
+        assertEquals("redis-cluster", capturedKeys.get(1));
+        assertEquals("a=p1, b=p2", squarePlain);
+
+        CiphertextParser braceParser = new CiphertextParser("SEC{", "}");
+        String braceToken = "SEC[finance]{RSA@brace_cipher}";
+        assertTrue(braceParser.hasEncrypted(braceToken));
+        String bracePlain = braceParser.replaceTokens(braceToken, token -> {
+            assertEquals("finance", token.getKeyId());
+            assertEquals(EncryptAlgorithm.RSA, token.getAlgorithm());
+            assertEquals("brace_cipher", token.getCiphertext());
+            return "ok-brace";
+        });
+        assertEquals("ok-brace", bracePlain);
+    }
+
+    @Test
+    @DisplayName("测试自定义非括号前缀支持可选 [keyId] 与实例级 formatToken 双向往返")
+    void testCustomNonBracketPrefixAndInstanceFormatToken() {
+        CiphertextParser colonParser = new CiphertextParser("CIPHER:", ";");
+        String formattedDefault = colonParser.formatToken("cipher_val");
+        assertEquals("CIPHER:cipher_val;", formattedDefault);
+        assertTrue(colonParser.hasEncrypted(formattedDefault));
+
+        String formattedRouted = colonParser.formatToken(
+                EncryptAlgorithm.AES_GCM, "redis-cluster", EncryptAlgorithm.SM4_CBC, "routed_cipher");
+        assertEquals("CIPHER:[redis-cluster]SM4-CBC@routed_cipher;", formattedRouted);
+        assertTrue(colonParser.hasEncrypted(formattedRouted));
+
+        String decrypted = colonParser.replaceTokens(formattedRouted, token -> {
+            assertEquals("redis-cluster", token.getKeyId());
+            assertEquals(EncryptAlgorithm.SM4_CBC, token.getAlgorithm());
+            assertEquals("routed_cipher", token.getCiphertext());
+            return "restored";
+        });
+        assertEquals("restored", decrypted);
+    }
+
+    @Test
+    @DisplayName("测试实例级 formatToken 在默认及各类自定义前后缀下的输出规范")
+    void testInstanceFormatToken() {
+        assertEquals("ENC(c1)", parser.formatToken("c1"));
+        assertEquals("ENC[db](c2)", parser.formatToken("db", "c2"));
+        assertEquals("ENC[db](SM4-CBC@c3)",
+                parser.formatToken(EncryptAlgorithm.AES_GCM, "db", EncryptAlgorithm.SM4_CBC, "c3"));
+
+        CiphertextParser cipherParen = new CiphertextParser("CIPHER(", ")");
+        assertEquals("CIPHER(c1)", cipherParen.formatToken("c1"));
+        assertEquals("CIPHER[redis-cluster](c2)", cipherParen.formatToken("redis-cluster", "c2"));
+        assertEquals("CIPHER[redis-cluster](SM4-CBC@c3)",
+                cipherParen.formatToken(EncryptAlgorithm.AES_GCM, "redis-cluster", EncryptAlgorithm.SM4_CBC, "c3"));
+        assertEquals("CIPHER(c4)",
+                cipherParen.formatToken(EncryptAlgorithm.SM4_CBC, "default", EncryptAlgorithm.SM4_CBC, "c4"));
+
+        CiphertextParser myEncBracket = new CiphertextParser("MY_ENC[", "]");
+        assertEquals("MY_ENC[c1]", myEncBracket.formatToken("c1"));
+        assertEquals("MY_ENC[redis-cluster][SM4-CBC@c3]",
+                myEncBracket.formatToken(EncryptAlgorithm.AES_GCM, "redis-cluster", EncryptAlgorithm.SM4_CBC, "c3"));
+    }
 }

@@ -1,0 +1,36 @@
+# 本地联调真实外部支付服务模板（按需重命名为 application-local.yml 并激活 local profile 生效）
+# 核心体验端点速览：
+#   - 条码收银/主动撤销: POST /sample/pay/barcode/cashier | /sample/pay/barcode/cancel
+#   - 商家转账/新版撤销: POST /sample/pay/transfer/apply   | /sample/pay/transfer/query | /sample/pay/transfer/cancel
+#   - 微信分账/支付宝分账: POST /sample/pay/profit-sharing/{orders,return-orders,amounts,merchant-ratios} | /alipay/*
+#   - 对账单解析/流消费: POST /sample/pay/bill/download/parse-memory | /stream-consume
+ateng:
+  boot:
+    pay:
+      wechat:
+        default-transfer-scene-id: "1000"
+        http:
+          connect-timeout: 5s
+          read-timeout: 15s
+        merchants:
+          default:
+            app-id: YOUR_WECHAT_APP_ID
+            mch-id: YOUR_WECHAT_MCH_ID
+            api-v3-key: YOUR_WECHAT_API_V3_KEY
+            merchant-serial-number: YOUR_MERCHANT_SERIAL_NUMBER
+            private-key-path: classpath:certs/wechat_apiclient_key.pem
+            wechat-pay-public-key-path: classpath:certs/wechat_pub_key.pem
+            wechat-pay-public-key-id: YOUR_WECHAT_PUBLIC_KEY_ID
+            notify-url: "http://127.0.0.1:8080/ateng-pay/callback/wechat"
+      alipay:
+        http:
+          connect-timeout: 5s
+          read-timeout: 15s
+        apps:
+          default:
+            app-id: YOUR_ALIPAY_APP_ID
+            private-key: YOUR_ALIPAY_PRIVATE_KEY
+            alipay-public-key: YOUR_ALIPAY_PUBLIC_KEY
+            server-url: "https://openapi-sandbox.dl.alipaydev.com/gateway.do"
+            notify-url: "http://127.0.0.1:8080/ateng-pay/callback/alipay"
+            return-url: "http://127.0.0.1:8080/pay/return"

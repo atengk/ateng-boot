@@ -9,9 +9,9 @@ import io.github.atengk.boot.redis.delay.model.DeadLetterMessage;
 import io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler;
 import io.github.atengk.boot.redis.delay.spi.LoggingDelayedQueueFailureHandler;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
+import io.github.atengk.boot.redis.util.RedisConsumptionContext;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RBlockingQueue;
-import org.redisson.api.RedissonClient;
 import org.slf4j.MDC;
 import org.springframework.aop.framework.autoproxy.AutoProxyUtils;
 import org.springframework.aop.scope.ScopedProxyUtils;
@@ -22,6 +22,7 @@ import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.EmbeddedValueResolverAware;
+import org.springframework.context.SmartLifecycle;
 import org.springframework.core.MethodIntrospector;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -52,7 +53,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @since 2026-10-16
  */
 @Slf4j
-public class DelayedQueueBootstrap implements SmartInitializingSingleton, DisposableBean,
+public class DelayedQueueBootstrap implements SmartInitializingSingleton, SmartLifecycle, DisposableBean,
         EmbeddedValueResolverAware, ApplicationContextAware {
 
     public static final String MDC_TRACE_ID_KEY = "traceId";
@@ -86,14 +87,6 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
         this.objectMapper = objectMapper != null ? objectMapper : RedisSerializerFactory.createSafeObjectMapper();
         this.redisProperties = redisProperties;
         this.failureHandler = failureHandler != null ? failureHandler : new LoggingDelayedQueueFailureHandler();
-    }
-
-    @Deprecated
-    public DelayedQueueBootstrap(RedissonClient redissonClient,
-                                 RedisDelayedQueue redisDelayedQueue,
-                                 ObjectMapper objectMapper,
-                                 io.github.atengk.boot.redis.properties.RedisProperties redisProperties) {
-        this(redisDelayedQueue, objectMapper, redisProperties);
     }
 
     @Override
@@ -200,32 +193,38 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
      * 消费者主循环逻辑
      */
     private void consumeLoop(Object bean, Method method, RBlockingQueue<Object> blockingQueue, String queueName) {
-        while (running && !Thread.currentThread().isInterrupted()) {
-            try {
-                // 采用 1 秒超时轮询，保障优雅停机时迅速退出
-                Object rawMessage = blockingQueue.poll(1, TimeUnit.SECONDS);
-                if (rawMessage != null) {
-                    String traceId = IdUtil.fastSimpleUUID();
-                    MDC.put(MDC_TRACE_ID_KEY, traceId);
-                    try {
-                        processMessageWithRetry(bean, method, rawMessage, queueName);
-                    } finally {
-                        MDC.remove(MDC_TRACE_ID_KEY);
-                    }
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            } catch (Throwable e) {
-                log.error("Redis 延时队列 [{}] 消费发生未捕获异常: {}", queueName, e.getMessage(), e);
+        // 清理线程池启动瞬间从主线程复制的初始上下文，避免长轮询后台线程携带启动期污染
+        RedisConsumptionContext.clearAll();
+        try {
+            while (running && !Thread.currentThread().isInterrupted()) {
                 try {
-                    // 消费异常防抖休眠 500ms，避免持续异常造成 CPU 空转
-                    TimeUnit.MILLISECONDS.sleep(500);
-                } catch (InterruptedException ie) {
+                    // 采用 1 秒超时轮询，保障优雅停机时迅速退出
+                    Object rawMessage = blockingQueue.poll(1, TimeUnit.SECONDS);
+                    if (rawMessage != null) {
+                        String traceId = IdUtil.fastSimpleUUID();
+                        MDC.put(MDC_TRACE_ID_KEY, traceId);
+                        try {
+                            processMessageWithRetry(bean, method, rawMessage, queueName);
+                        } finally {
+                            RedisConsumptionContext.clearAll();
+                        }
+                    }
+                } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
+                } catch (Throwable e) {
+                    log.error("Redis 延时队列 [{}] 消费发生未捕获异常: {}", queueName, e.getMessage(), e);
+                    try {
+                        // 消费异常防抖休眠 500ms，避免持续异常造成 CPU 空转
+                        TimeUnit.MILLISECONDS.sleep(500);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
                 }
             }
+        } finally {
+            RedisConsumptionContext.clearAll();
         }
         log.debug("Redis 延时队列消费者正常退出 [queue={}, thread={}]", queueName, Thread.currentThread().getName());
     }
@@ -268,13 +267,18 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
      * 重试耗尽处理死信流转与 SPI 回调
      */
     private void handleDeadLetter(Object rawMessage, String queueName, int retryCount, Throwable cause) {
+        DeadLetterMessage<?> dlm = unwrapDeadLetter(rawMessage);
+        int replayCount = dlm != null ? dlm.replayCount() : 0;
+        Object payload = dlm != null ? dlm.payload() : rawMessage;
+
         DeadLetterMessage<Object> deadLetter = new DeadLetterMessage<>(
                 queueName,
-                rawMessage,
+                payload,
                 retryCount,
                 cause != null ? cause.getMessage() : "Unknown error",
                 cause != null ? cause.getClass().getName() : "UnknownException",
-                LocalDateTime.now()
+                LocalDateTime.now(),
+                replayCount
         );
 
         boolean dlqEnabled = (redisProperties == null || redisProperties.getDelayQueue() == null)
@@ -333,6 +337,14 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
         if (rawMessage == null) {
             return null;
         }
+        DeadLetterMessage<?> dlm = unwrapDeadLetter(rawMessage);
+        if (dlm != null) {
+            rawMessage = dlm.payload();
+            if (rawMessage == null) {
+                return null;
+            }
+        }
+
         Class<?> targetType = parameter.getType();
         if (targetType.isInstance(rawMessage)) {
             return rawMessage;
@@ -347,6 +359,57 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
         }
 
         return objectMapper.convertValue(rawMessage, objectMapper.constructType(parameter.getParameterizedType()));
+    }
+
+    /**
+     * 探测并解构死信包装消息（支持强类型实例与反序列化 Map 兼容探测）
+     */
+    private DeadLetterMessage<?> unwrapDeadLetter(Object rawMessage) {
+        if (rawMessage instanceof DeadLetterMessage<?> dlm) {
+            return dlm;
+        }
+        if (rawMessage instanceof Map<?, ?> map && map.containsKey("originalQueue") && map.containsKey("payload") && map.containsKey("replayCount")) {
+            try {
+                return objectMapper.convertValue(rawMessage, DeadLetterMessage.class);
+            } catch (Exception ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    @Override
+    public boolean isAutoStartup() {
+        return true;
+    }
+
+    @Override
+    public void start() {
+        this.running = true;
+    }
+
+    @Override
+    public void stop() {
+        this.running = false;
+        destroy();
+    }
+
+    @Override
+    public void stop(Runnable callback) {
+        stop();
+        if (callback != null) {
+            callback.run();
+        }
+    }
+
+    @Override
+    public boolean isRunning() {
+        return this.running;
+    }
+
+    @Override
+    public int getPhase() {
+        return Integer.MAX_VALUE - 1000;
     }
 
     @Override

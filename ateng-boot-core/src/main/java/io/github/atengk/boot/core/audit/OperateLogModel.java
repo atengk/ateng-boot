@@ -2,6 +2,8 @@ package io.github.atengk.boot.core.audit;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import io.github.atengk.boot.core.jackson.NumericLongSerializer;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -84,6 +86,21 @@ public class OperateLogModel implements Serializable {
     private String clientIp;
 
     /**
+     * 客户端原始 User-Agent 请求头（已过滤控制字符并受最大长度约束）
+     */
+    private String userAgent;
+
+    /**
+     * 解析出的客户端浏览器或工具名称（如 Chrome、Edge、curl、Unknown）
+     */
+    private String browser;
+
+    /**
+     * 解析出的客户端操作系统名称（如 Windows、macOS、Android、iOS、Unknown）
+     */
+    private String os;
+
+    /**
      * 操作地理位置/归属地（如“中国北京北京”）
      */
     private String operateLocation;
@@ -106,6 +123,7 @@ public class OperateLogModel implements Serializable {
     /**
      * 执行消耗时长（毫秒）
      */
+    @JsonSerialize(using = NumericLongSerializer.class)
     private Long costTime;
 
     /**

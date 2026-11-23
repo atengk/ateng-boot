@@ -25,31 +25,42 @@ import io.github.atengk.boot.satoken.defense.LoginFailureLockService;
 import io.github.atengk.boot.satoken.event.SaTokenEventPublisher;
 import io.github.atengk.boot.satoken.handler.SaTokenExceptionHandler;
 import io.github.atengk.boot.satoken.interceptor.AtengSaTokenInterceptor;
+import io.github.atengk.boot.satoken.interceptor.SameTokenClientHttpRequestInterceptor;
 import io.github.atengk.boot.satoken.openapi.SaTokenOpenApiCustomizer;
 import io.github.atengk.boot.satoken.processor.AnonymousUrlProcessor;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
 import io.github.atengk.boot.satoken.provider.SaTokenCurrentTenantProvider;
 import io.github.atengk.boot.satoken.provider.SaTokenCurrentUserProvider;
+import io.github.atengk.boot.satoken.spi.DataPermissionBridge;
+import io.github.atengk.boot.satoken.spi.DynamicPathPermissionProvider;
+import io.github.atengk.boot.satoken.spi.MyBatisPlusDataPermissionBridge;
 import io.github.atengk.boot.satoken.spi.SaTokenWhitelistProvider;
+import io.github.atengk.boot.satoken.spi.TenantHeaderSwitchValidator;
 import io.github.atengk.boot.satoken.stp.DefaultStpInterface;
+import io.github.atengk.boot.satoken.strategy.SaTokenAnnotationAutoRouteRegistrar;
 import io.github.atengk.boot.satoken.util.LoginHelper;
+import java.time.Duration;
+import java.util.List;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springdoc.core.customizers.GlobalOpenApiCustomizer;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.core.env.Environment;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager;
 import io.github.atengk.boot.satoken.cluster.broadcaster.SaTokenClusterBroadcaster;
 import io.github.atengk.boot.satoken.cluster.listener.SaTokenClusterSyncListener;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
@@ -57,6 +68,9 @@ import io.github.atengk.boot.satoken.cluster.listener.SaTokenClusterRedisMessage
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
+import org.springframework.boot.web.client.RestClientCustomizer;
+import org.springframework.boot.web.client.RestTemplateCustomizer;
+import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
@@ -85,9 +99,29 @@ public class AtengSaTokenAutoConfiguration {
      */
     @PostConstruct
     public void initFirewallStrategy() {
+        // 自动桥接 TokenProperties 强类型配置至 SaManager.getConfig()
+        applyTokenProperties(properties.getToken());
+
+        // 同步配置的主账号体系类型及超级管理员判定集合至 LoginHelper 门面
+        LoginHelper.setPrimaryLoginType(properties.getPrimaryLoginType());
+        LoginHelper.setSuperAdminRoles(properties.getSuperAdminRoles());
+        LoginHelper.setSuperAdminPermissions(properties.getSuperAdminPermissions());
+        if (properties.getOnlineSession() != null) {
+            LoginHelper.setOnlineSessionMaxScanLimit(properties.getOnlineSession().getMaxScanLimit());
+        } else {
+            LoginHelper.resetOnlineSessionConfig();
+        }
+
+        // 根据配置注册或恢复 Sa-Token 鉴权注解多账号自动路由策略
+        if (properties.getInterceptor() != null && properties.getInterceptor().isAutoRouteAnnotationType()) {
+            SaTokenAnnotationAutoRouteRegistrar.register();
+        } else {
+            SaTokenAnnotationAutoRouteRegistrar.restoreDefaultsIfManaged();
+        }
+
         // 自动挂载 Sa-Token 当前操作人与当前租户提取 SPI 至 Core 核心底座
-        UserContextHolder.setUserProvider(new SaTokenCurrentUserProvider());
-        TenantContextHolder.setTenantProvider(LoginHelper::getTenantId);
+        UserContextHolder.setUserProvider(new SaTokenCurrentUserProvider(properties));
+        TenantContextHolder.setTenantProvider(new SaTokenCurrentTenantProvider(properties));
 
         SaFirewallStrategy.instance.checkFailHandle = (e, req, res, extArg) -> {
             log.warn("Sa-Token 安全防火墙拦截异常: message={}", e.getMessage());
@@ -108,6 +142,41 @@ public class AtengSaTokenAutoConfiguration {
         };
     }
 
+    /**
+     * 将强类型 TokenProperties 配置桥接写入底层 SaManager.getConfig()
+     *
+     * @param tokenProps 强类型配置
+     */
+    private void applyTokenProperties(SaTokenProperties.TokenProperties tokenProps) {
+        if (tokenProps == null) {
+            return;
+        }
+        cn.dev33.satoken.config.SaTokenConfig config = cn.dev33.satoken.SaManager.getConfig();
+        if (config == null) {
+            config = new cn.dev33.satoken.config.SaTokenConfig();
+            cn.dev33.satoken.SaManager.setConfig(config);
+        }
+        if (tokenProps.getTimeout() != null) {
+            config.setTimeout(tokenProps.getTimeout().toSeconds());
+        } else if (config.getTimeout() > 0) {
+            tokenProps.setTimeout(Duration.ofSeconds(config.getTimeout()));
+        }
+        if (tokenProps.getActiveTimeout() != null) {
+            config.setActiveTimeout(tokenProps.getActiveTimeout().toSeconds());
+        } else if (config.getActiveTimeout() > 0) {
+            tokenProps.setActiveTimeout(Duration.ofSeconds(config.getActiveTimeout()));
+        }
+        config.setIsConcurrent(tokenProps.isConcurrent());
+        config.setIsShare(tokenProps.isShare());
+        config.setMaxLoginCount(tokenProps.getMaxLoginCount());
+        if (tokenProps.getTokenStyle() != null && !tokenProps.getTokenStyle().isBlank()) {
+            config.setTokenStyle(tokenProps.getTokenStyle());
+        } else if (config.getTokenStyle() != null && !config.getTokenStyle().isBlank()) {
+            tokenProps.setTokenStyle(config.getTokenStyle());
+        }
+        log.debug("Sa-Token 强类型配置已成功双向桥接至 SaManager.getConfig(): timeout={}s, activeTimeout={}s, maxLoginCount={}",
+                config.getTimeout(), config.getActiveTimeout(), config.getMaxLoginCount());
+    }
 
     /**
      * 注册 Sa-Token 全局统一异常处理器
@@ -135,19 +204,49 @@ public class AtengSaTokenAutoConfiguration {
         return registration;
     }
 
+    private static boolean isRedisEnabled(Environment environment) {
+        return environment == null || Boolean.parseBoolean(environment.getProperty("ateng.boot.redis.enabled", "true"));
+    }
+
     /**
-     * 注册两级权限与角色缓存管理门面服务
-     *
-     * @param redisTemplateProvider RedisTemplate 可选提供者
-     * @param broadcasterProvider   集群同步广播器可选提供者
-     * @return 缓存管理服务实例
+     * 具备 ateng-boot-redis 类路径时的自适应两级权限缓存自动装配
      */
-    @Bean
-    @ConditionalOnMissingBean
-    public PermissionCacheService permissionCacheService(
-            ObjectProvider<StringRedisTemplate> redisTemplateProvider,
-            ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider) {
-        return new PermissionCacheService(redisTemplateProvider, broadcasterProvider);
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager")
+    static class TwoLevelCachePermissionConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean
+        public PermissionCacheService permissionCacheService(
+                Environment environment,
+                ObjectProvider<TwoLevelCacheManager> twoLevelCacheManagerProvider,
+                ObjectProvider<StringRedisTemplate> redisTemplateProvider,
+                ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider) {
+            if (!isRedisEnabled(environment)) {
+                return new PermissionCacheService();
+            }
+            return new PermissionCacheService(twoLevelCacheManagerProvider, redisTemplateProvider, broadcasterProvider);
+        }
+    }
+
+    /**
+     * 未引入 ateng-boot-redis 时的兜底常规单层 / 内存权限缓存自动装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnMissingClass("io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager")
+    static class FallbackPermissionConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean
+        public PermissionCacheService permissionCacheService(
+                Environment environment,
+                ObjectProvider<StringRedisTemplate> redisTemplateProvider,
+                ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider) {
+            if (!isRedisEnabled(environment)) {
+                return new PermissionCacheService();
+            }
+            return new PermissionCacheService(redisTemplateProvider, broadcasterProvider);
+        }
     }
 
     /**
@@ -159,7 +258,12 @@ public class AtengSaTokenAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.satoken.cluster-sync", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public SaTokenClusterBroadcaster saTokenClusterBroadcaster(ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+    public SaTokenClusterBroadcaster saTokenClusterBroadcaster(
+            Environment environment,
+            ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+        if (!isRedisEnabled(environment)) {
+            return new SaTokenClusterBroadcaster(null, properties);
+        }
         return new SaTokenClusterBroadcaster(redisTemplateProvider, properties);
     }
 
@@ -188,7 +292,12 @@ public class AtengSaTokenAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.satoken.login-defense", name = "enabled", havingValue = "true", matchIfMissing = false)
-    public LoginFailureLockService loginFailureLockService(ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+    public LoginFailureLockService loginFailureLockService(
+            Environment environment,
+            ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+        if (!isRedisEnabled(environment)) {
+            return new LoginFailureLockService(null, properties);
+        }
         return new LoginFailureLockService(redisTemplateProvider, properties);
     }
 
@@ -257,20 +366,49 @@ public class AtengSaTokenAutoConfiguration {
     }
 
     /**
+     * 存在 ateng-boot-mybatis-plus 类路径时自动注册数据权限超管上下文桥接 SPI
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder")
+    static class DataPermissionBridgeConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(DataPermissionBridge.class)
+        public DataPermissionBridge dataPermissionBridge() {
+            return MyBatisPlusDataPermissionBridge.getInstance();
+        }
+    }
+
+    /**
+     * 注册默认的请求头租户切换校验 SPI（默认通过前置格式校验即放行，业务侧可自定义 Bean 校验租户存在性与启用状态）
+     *
+     * @return TenantHeaderSwitchValidator 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(TenantHeaderSwitchValidator.class)
+    public TenantHeaderSwitchValidator tenantHeaderSwitchValidator() {
+        return (targetTenantId, currentTenantId, loginType, anonymous) -> true;
+    }
+
+    /**
      * 注册 Sa-Token 增强路由拦截器实例
      *
+     * @param dynamicPathPermissionProvider      动态路径权限提供者 ObjectProvider
+     * @param dataPermissionBridgeProvider       数据权限超管上下文桥接器 ObjectProvider
+     * @param tenantHeaderSwitchValidatorProvider 请求头租户切换校验器 ObjectProvider
      * @return AtengSaTokenInterceptor 拦截器实例
      */
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.satoken.interceptor", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public AtengSaTokenInterceptor atengSaTokenInterceptor() {
-        AtengSaTokenInterceptor saInterceptor = new AtengSaTokenInterceptor();
+    public AtengSaTokenInterceptor atengSaTokenInterceptor(
+            ObjectProvider<DynamicPathPermissionProvider> dynamicPathPermissionProvider,
+            ObjectProvider<DataPermissionBridge> dataPermissionBridgeProvider,
+            ObjectProvider<TenantHeaderSwitchValidator> tenantHeaderSwitchValidatorProvider) {
+        AtengSaTokenInterceptor saInterceptor = new AtengSaTokenInterceptor(properties, dynamicPathPermissionProvider);
         saInterceptor.isAnnotation(false);
-        if (properties.getInterceptor().isCheckLogin()) {
-            log.info("Sa-Token 开启全域路由强制登录校验模式 (check-login=true)");
-            saInterceptor.setAuth(handler -> StpUtil.checkLogin());
-        }
+        dataPermissionBridgeProvider.ifAvailable(saInterceptor::setDataPermissionBridge);
+        tenantHeaderSwitchValidatorProvider.ifAvailable(saInterceptor::setTenantHeaderSwitchValidator);
         return saInterceptor;
     }
 
@@ -316,7 +454,7 @@ public class AtengSaTokenAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(CurrentUserProvider.class)
     public CurrentUserProvider saTokenCurrentUserProvider() {
-        return new SaTokenCurrentUserProvider();
+        return new SaTokenCurrentUserProvider(properties);
     }
 
     /**
@@ -328,7 +466,7 @@ public class AtengSaTokenAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(CurrentTenantProvider.class)
     public CurrentTenantProvider saTokenCurrentTenantProvider() {
-        return new SaTokenCurrentTenantProvider();
+        return new SaTokenCurrentTenantProvider(properties);
     }
 
     /**
@@ -354,6 +492,56 @@ public class AtengSaTokenAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.satoken.same-token", name = "enabled", havingValue = "true", matchIfMissing = true)
     public SaCheckSameTokenAspect saCheckSameTokenAspect(SaTokenProperties properties) {
         return new SaCheckSameTokenAspect(properties);
+    }
+
+    /**
+     * 微服务内部 Same-Token 客户端出站拦截与自动注入配置
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(ClientHttpRequestInterceptor.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.same-token", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class SameTokenClientConfiguration {
+
+        /**
+         * 注册微服务内部 Same-Token 客户端出站请求拦截器
+         *
+         * @param properties Sa-Token 配置属性
+         * @return SameTokenClientHttpRequestInterceptor 实例
+         */
+        @Bean
+        @ConditionalOnMissingBean
+        public SameTokenClientHttpRequestInterceptor sameTokenClientHttpRequestInterceptor(SaTokenProperties properties) {
+            return new SameTokenClientHttpRequestInterceptor(properties);
+        }
+
+        /**
+         * 为 Spring 受管的 RestClient.Builder 自动挂载 Same-Token 拦截器
+         */
+        @Bean
+        @ConditionalOnMissingBean(name = "sameTokenRestClientCustomizer")
+        @ConditionalOnClass(RestClientCustomizer.class)
+        @ConditionalOnProperty(prefix = "ateng.boot.satoken.same-token", name = "auto-inject-client", havingValue = "true", matchIfMissing = true)
+        public RestClientCustomizer sameTokenRestClientCustomizer(SameTokenClientHttpRequestInterceptor interceptor) {
+            return restClientBuilder -> restClientBuilder.requestInterceptor(interceptor);
+        }
+
+        /**
+         * 为 Spring 受管的 RestTemplate 自动挂载 Same-Token 拦截器
+         */
+        @Bean
+        @ConditionalOnMissingBean(name = "sameTokenRestTemplateCustomizer")
+        @ConditionalOnClass(RestTemplateCustomizer.class)
+        @ConditionalOnProperty(prefix = "ateng.boot.satoken.same-token", name = "auto-inject-client", havingValue = "true", matchIfMissing = true)
+        public RestTemplateCustomizer sameTokenRestTemplateCustomizer(SameTokenClientHttpRequestInterceptor interceptor) {
+            return restTemplate -> {
+                List<ClientHttpRequestInterceptor> interceptors = restTemplate.getInterceptors();
+                if (!interceptors.contains(interceptor)) {
+                    List<ClientHttpRequestInterceptor> copy = new java.util.ArrayList<>(interceptors);
+                    copy.add(interceptor);
+                    restTemplate.setInterceptors(copy);
+                }
+            };
+        }
     }
 
     /**
@@ -407,6 +595,7 @@ public class AtengSaTokenAutoConfiguration {
          */
         @Bean
         @ConditionalOnMissingBean
+        @ConditionalOnProperty(prefix = "ateng.boot.redis", name = "enabled", havingValue = "true", matchIfMissing = true)
         public SaTokenClusterRedisMessageSubscriber saTokenClusterRedisMessageSubscriber(SaTokenClusterSyncListener listener) {
             return new SaTokenClusterRedisMessageSubscriber(listener);
         }
@@ -423,6 +612,7 @@ public class AtengSaTokenAutoConfiguration {
         @Bean
         @ConditionalOnBean(RedisConnectionFactory.class)
         @ConditionalOnMissingBean(name = "saTokenClusterRedisMessageListenerContainer")
+        @ConditionalOnProperty(prefix = "ateng.boot.redis", name = "enabled", havingValue = "true", matchIfMissing = true)
         public RedisMessageListenerContainer saTokenClusterRedisMessageListenerContainer(
                 RedisConnectionFactory connectionFactory,
                 SaTokenClusterRedisMessageSubscriber subscriber,

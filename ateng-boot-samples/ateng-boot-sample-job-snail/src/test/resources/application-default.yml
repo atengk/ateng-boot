@@ -1,0 +1,4 @@
+# 离线默认测试环境显式关闭原生 SnailJob 客户端自动建连，使无外部服务端场景保持 100% 离线自洽；
+# 激活 spring.profiles.active=local 时本文件不生效，将由 SnailJobEnvironmentPostProcessor 自动桥接激活真实客户端。
+snail-job:
+  enabled: false

@@ -160,6 +160,84 @@ class NotifyAlertAspectTest {
         assertThat(context.getDesensitizedArgs()).contains("\"******\"");
     }
 
+    @Test
+    @DisplayName("验证 @NotifyAlert(detailUrl) 优先级高于全局配置并支持 ${traceId} 插值及汇总上下文还原")
+    void testDetailUrlPriorityAndEndToEndStormContextRestore() throws InterruptedException {
+        alertProperties.setDetailUrl("https://global-trace.example.com/view/${traceId}");
+
+        // 1. 注解显式配置 detailUrl 优先覆盖全局配置并替换 ${traceId}
+        assertThatThrownBy(() -> proxy.withDetailUrl())
+                .isInstanceOf(RuntimeException.class);
+        ArgumentCaptor<AlertContext> explicitCaptor = ArgumentCaptor.forClass(AlertContext.class);
+        verify(mockSuppressor, times(1)).processAlert(explicitCaptor.capture());
+        assertEquals("https://custom-apm.example.com/trace/trace-aspect-8888",
+                explicitCaptor.getValue().getDetailUrl());
+
+        // 2. 注解未配置 detailUrl 时平滑回退全局配置并插值 ${traceId}
+        assertThatThrownBy(() -> proxy.placeOrder("ORD-2", "pwd", 10.0))
+                .isInstanceOf(IllegalStateException.class);
+        ArgumentCaptor<AlertContext> fallbackCaptor = ArgumentCaptor.forClass(AlertContext.class);
+        verify(mockSuppressor, times(2)).processAlert(fallbackCaptor.capture());
+        assertEquals("https://global-trace.example.com/view/trace-aspect-8888",
+                fallbackCaptor.getValue().getDetailUrl());
+
+        // 3. 串联真实 AlertStormSuppressor（受管 TaskScheduler）端到端验证阶段三汇总卡片携带详情按钮及四维上下文
+        io.github.atengk.boot.notification.template.NotificationTemplate mockTemplate =
+                mock(io.github.atengk.boot.notification.template.NotificationTemplate.class);
+        java.util.List<io.github.atengk.boot.notification.model.CardMessage> dispatchedCards =
+                new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.concurrent.atomic.AtomicReference<String> summaryMdcTrace = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<String> summaryUserId = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.CountDownLatch summaryLatch = new java.util.concurrent.CountDownLatch(1);
+
+        when(mockTemplate.send(any(), any())).thenAnswer(inv -> {
+            dispatchedCards.add((io.github.atengk.boot.notification.model.CardMessage) inv.getArgument(1));
+            return io.github.atengk.boot.notification.model.NotificationSendResult.success(
+                    "m1", "order-channel", io.github.atengk.boot.notification.model.Platform.DINGTALK, Duration.ofMillis(1), "ok");
+        });
+        when(mockTemplate.sendAsync(any(), any())).thenAnswer(inv -> {
+            summaryMdcTrace.set(MDC.get("traceId"));
+            summaryUserId.set(UserContextHolder.get());
+            dispatchedCards.add((io.github.atengk.boot.notification.model.CardMessage) inv.getArgument(1));
+            summaryLatch.countDown();
+            return java.util.concurrent.CompletableFuture.completedFuture(null);
+        });
+
+        org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler realScheduler =
+                new org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler();
+        realScheduler.setPoolSize(1);
+        realScheduler.setThreadNamePrefix("ateng-notif-alert-");
+        realScheduler.initialize();
+        NotificationAlertProperties shortWindowProps = new NotificationAlertProperties();
+        shortWindowProps.setSuppressWindow(Duration.ofMillis(80));
+        shortWindowProps.setDetailUrl("https://global-trace.example.com/view/${traceId}");
+        AlertStormSuppressor realSuppressor = new AlertStormSuppressor(mockTemplate, shortWindowProps, realScheduler);
+        try {
+            TestAlertService target = new TestAlertService();
+            AspectJProxyFactory factory = new AspectJProxyFactory(target);
+            factory.addAspect(new NotifyAlertAspect(realSuppressor, shortWindowProps));
+            TestAlertService realProxy = factory.getProxy();
+
+            // 连续触发 2 次相同异常，立即清空主线程上下文模拟请求结束
+            assertThatThrownBy(realProxy::withDetailUrl).isInstanceOf(RuntimeException.class);
+            assertThatThrownBy(realProxy::withDetailUrl).isInstanceOf(RuntimeException.class);
+            MDC.clear();
+            UserContextHolder.clear();
+
+            assertTrue(summaryLatch.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals("trace-aspect-8888", summaryMdcTrace.get());
+            assertEquals("operator-user-1", summaryUserId.get());
+            assertEquals(2, dispatchedCards.size());
+            assertEquals("查看链路详情", dispatchedCards.get(0).getSingleActionText());
+            assertEquals("https://custom-apm.example.com/trace/trace-aspect-8888", dispatchedCards.get(0).getSingleActionUrl());
+            assertEquals("查看链路详情", dispatchedCards.get(1).getSingleActionText());
+            assertEquals("https://custom-apm.example.com/trace/trace-aspect-8888", dispatchedCards.get(1).getSingleActionUrl());
+        } finally {
+            realSuppressor.destroy();
+            realScheduler.destroy();
+        }
+    }
+
     static class TestAlertService {
 
         @NotifyAlert(title = "用户下单异常", channel = "order-channel")
@@ -191,6 +269,11 @@ class NotifyAlertAspectTest {
         @NotifyAlert(title = "复杂 Map 入参测试")
         public void withComplexMap(java.util.Map<String, Object> params) {
             throw new RuntimeException("Map 入参异常测试");
+        }
+
+        @NotifyAlert(title = "带链路跳转告警", detailUrl = "https://custom-apm.example.com/trace/${traceId}", suppressWindow = 1)
+        public void withDetailUrl() {
+            throw new RuntimeException("链路跳转测试异常");
         }
     }
 }

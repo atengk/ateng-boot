@@ -1,5 +1,7 @@
 # 47. 工业物联网与车联网双向通信底座架构决策 (MQTT IoT Communication and Edge Control Architecture)
 
+> **[演进注记 / Superseding Note (ADR-0074 / ADR-0099 / ADR-0108)]**：本文档确立了 `ateng-boot-mqtt` 的初始协议、上下文透传与离线测试架构基准。后续演进已由 [ADR-0074](./0074-mqtt-full-scenario-hardening-dead-letter-replay-and-connection-governance-architecture.md)（批量发信/死信重放/容器启停/生命周期 SPI）、[ADR-0099](./0099-mqtt-sample-web-experience-and-documentation-specification-architecture.md)（8 大领域 Controller Sample 体验化演进）及 [ADR-0108](./0108-mqtt-reliability-dead-letter-store-and-virtual-thread-architecture.md)（全模块 `ReentrantLock` 虚拟线程对齐、Paho `manualAcks=true` 与 `AckMode.MANUAL`、受管非阻塞指数退避重试、`@MqttReply` 声明式应答、`MqttDeadLetterStore`、`OfflineBufferPolicy`、`MqttTemplate.use()`、动态凭据 SPI 与低基数指标防爆）接续加固与部分修订，最新全量能力与配置契约请以 `ADR-0108` 及模块 `README.md` 为准。
+
 ## 背景与痛点
 
 在现代智能制造、智慧园区、工业能源、车联网（TSP 平台）以及各种边缘 IoT 硬件网关场景中，MQTT（Message Queuing Telemetry Transport）凭借极轻量的协议标头开销（最小仅 2 字节）、发布/订阅解耦模式及原生 QoS 传输质量保障，已成为端云双向实时通信的事实工业标准。然而，在以 Spring Boot 3 与微服务为底座的企业级中后台开发中，团队自研或直接集成裸 Paho 客户端普遍面临以下七大深水区生产痛点：

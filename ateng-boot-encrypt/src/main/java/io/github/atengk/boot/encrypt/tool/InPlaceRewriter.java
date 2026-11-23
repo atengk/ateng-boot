@@ -8,6 +8,7 @@ import io.github.atengk.boot.encrypt.decryptor.ConfigEncryptor;
 import io.github.atengk.boot.encrypt.decryptor.RsaConfigDecryptor;
 import io.github.atengk.boot.encrypt.decryptor.Sm2ConfigDecryptor;
 import io.github.atengk.boot.encrypt.decryptor.Sm4ConfigDecryptor;
+import io.github.atengk.boot.encrypt.exception.ConfigDecryptionException;
 import io.github.atengk.boot.encrypt.key.MultiKeyRegistry;
 import io.github.atengk.boot.encrypt.parser.CiphertextParser;
 import org.slf4j.Logger;
@@ -21,6 +22,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -43,25 +45,53 @@ public class InPlaceRewriter {
     public static final String DEFAULT_SENSITIVE_KEY_PATTERN = ".*password.*|.*secret.*|.*token.*|.*private-key.*";
 
     /**
-     * 显式标记正则匹配模式：匹配 # @encrypt, # @encrypt[keyId], # @encrypt(ALGO), # @encrypt[keyId](ALGO)
+     * 显式标记正则匹配模式：匹配 # @encrypt, ! @encrypt, [#!] @encrypt[keyId], [#!] @encrypt(ALGO), [#!] @encrypt[keyId](ALGO)
      */
     private static final Pattern ENCRYPT_DIRECTIVE_PATTERN = Pattern.compile(
-            "#\\s*@encrypt(?:\\[([^\\]]+)\\])?(?:\\(([^\\)]+)\\))?", Pattern.CASE_INSENSITIVE);
+            "[#!]\\s*@encrypt(?:\\[([^\\]]+)\\])?(?:\\(([^\\)]+)\\))?", Pattern.CASE_INSENSITIVE);
 
     /**
-     * YAML 键值行基础正则：提取前导缩进、键名、分隔符、值以及行尾注释
+     * 带引号值的 YAML / Properties 键值行正则：提取前导缩进、键名、分隔符、带引号值以及行尾注释
      */
-    private static final Pattern YAML_LINE_PATTERN = Pattern.compile(
-            "^(\\s*)([a-zA-Z0-9_.-]+)(\\s*:\\s*)([^#\\r\\n]+?)?(\\s*#.*)?$");
+    private static final Pattern QUOTED_LINE_PATTERN = Pattern.compile(
+            "^(\\s*)([a-zA-Z0-9_.\\[\\]-]+)(\\s*[:=]\\s*)(\"[^\"]*\"|'[^']*')(\\s*[#!].*)?$");
+
+    /**
+     * 标准无引号 YAML / Properties 键值行正则：提取前导缩进、键名、分隔符、无引号值以及行尾注释
+     */
+    private static final Pattern STANDARD_LINE_PATTERN = Pattern.compile(
+            "^(\\s*)([a-zA-Z0-9_.\\[\\]-]+)(\\s*[:=]\\s*)([^#!\\r\\n]+?)?(\\s*[#!].*)?$");
+
+    /**
+     * 动态占位符正则：匹配 ${...} 环境变量与 #{...} SpEL 表达式
+     */
+    private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile(
+            "(\\$\\{[^\\r\\n]*?\\}|#\\{[^\\r\\n]*?\\})");
 
     private final MultiKeyRegistry keyRegistry;
     private final EncryptAlgorithm defaultAlgorithm;
     private final Pattern sensitivePattern;
     private final boolean autoDetectSensitiveKeys;
     private final CiphertextParser parser;
+    private final String defaultKeyId;
 
     public InPlaceRewriter(MultiKeyRegistry keyRegistry, EncryptAlgorithm defaultAlgorithm,
                            String sensitiveKeyPattern, boolean autoDetectSensitiveKeys) {
+        this(keyRegistry, defaultAlgorithm, sensitiveKeyPattern, autoDetectSensitiveKeys, null);
+    }
+
+    /**
+     * 构造支持指定默认密钥别名的配置文件就地回写器
+     *
+     * @param keyRegistry             多密钥命名注册表
+     * @param defaultAlgorithm        默认加解密算法
+     * @param sensitiveKeyPattern     敏感属性正则模式
+     * @param autoDetectSensitiveKeys 是否自动识别敏感字段
+     * @param defaultKeyId            可选默认密钥别名（未声明行级指令时生效）
+     */
+    public InPlaceRewriter(MultiKeyRegistry keyRegistry, EncryptAlgorithm defaultAlgorithm,
+                           String sensitiveKeyPattern, boolean autoDetectSensitiveKeys,
+                           String defaultKeyId) {
         this.keyRegistry = keyRegistry != null ? keyRegistry : new MultiKeyRegistry();
         this.defaultAlgorithm = defaultAlgorithm != null ? defaultAlgorithm : EncryptAlgorithm.AES_GCM;
         String pattern = (sensitiveKeyPattern != null && !sensitiveKeyPattern.trim().isEmpty())
@@ -69,6 +99,7 @@ public class InPlaceRewriter {
         this.sensitivePattern = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE);
         this.autoDetectSensitiveKeys = autoDetectSensitiveKeys;
         this.parser = new CiphertextParser();
+        this.defaultKeyId = (defaultKeyId != null && !defaultKeyId.trim().isEmpty()) ? defaultKeyId.trim() : null;
     }
 
     public InPlaceRewriter(String defaultPassword, EncryptAlgorithm defaultAlgorithm) {
@@ -79,6 +110,28 @@ public class InPlaceRewriter {
         this(new MultiKeyRegistry(defaultPassword), EncryptAlgorithm.AES_GCM, DEFAULT_SENSITIVE_KEY_PATTERN, true);
     }
 
+    private record PreparedRewrite(Path targetFile, Path backupFile, List<String> lines, String eol, boolean endsWithEol) {
+    }
+
+    private PreparedRewrite prepareRewrite(Path targetFile, String operation) throws IOException {
+        Objects.requireNonNull(targetFile, "targetFile 不能为空");
+        if (!Files.exists(targetFile) || Files.isDirectory(targetFile)) {
+            throw new IllegalArgumentException("目标配置文件不存在或为目录: " + targetFile);
+        }
+
+        // 1. 生成 .bak 备份文件
+        Path backupFile = createBackup(targetFile);
+        log.info("[ateng-boot-encrypt] 正在执行就地{}，已生成源文件备份: {}", operation, backupFile);
+
+        // 2. 读取原始内容并探测换行符规范
+        String rawContent = Files.readString(targetFile, StandardCharsets.UTF_8);
+        String eol = rawContent.contains("\r\n") ? "\r\n" : "\n";
+        boolean endsWithEol = rawContent.endsWith("\n") || rawContent.endsWith("\r");
+
+        List<String> lines = Files.readAllLines(targetFile, StandardCharsets.UTF_8);
+        return new PreparedRewrite(targetFile, backupFile, lines, eol, endsWithEol);
+    }
+
     /**
      * 对指定文件执行就地加密重写，并生成 .bak 备份文件
      *
@@ -87,31 +140,26 @@ public class InPlaceRewriter {
      * @throws IOException 文件读写或备份异常
      */
     public int rewriteEncrypt(Path targetFile) throws IOException {
-        Objects.requireNonNull(targetFile, "targetFile 不能为空");
-        if (!Files.exists(targetFile) || Files.isDirectory(targetFile)) {
-            throw new IllegalArgumentException("目标配置文件不存在或为目录: " + targetFile);
-        }
-
-        // 1. 生成 .bak 备份文件
-        Path backupFile = createBackup(targetFile);
-        log.info("[ateng-boot-encrypt] 正在执行就地加密，已生成源文件备份: {}", backupFile);
-
-        // 2. 读取原始内容并探测换行符规范
-        String rawContent = Files.readString(targetFile, StandardCharsets.UTF_8);
-        String eol = rawContent.contains("\r\n") ? "\r\n" : "\n";
-        boolean endsWithEol = rawContent.endsWith("\n") || rawContent.endsWith("\r");
-
-        // 3. 逐行扫描与智能识别替换
-        List<String> lines = Files.readAllLines(targetFile, StandardCharsets.UTF_8);
+        PreparedRewrite prep = prepareRewrite(targetFile, "加密");
+        List<String> lines = prep.lines();
         List<String> rewrittenLines = new ArrayList<>(lines.size());
         int encryptedCount = 0;
         Directive previousDirective = null;
 
-        for (String line : lines) {
+        for (int lineIdx = 0; lineIdx < lines.size(); lineIdx++) {
+            String line = lines.get(lineIdx);
             String trimmed = line.trim();
 
-            // 处理独立一行的指令注释，如 "# @encrypt[key1]"
-            if (trimmed.startsWith("#")) {
+            // 1. 处理 YAML 多文档分隔符 "---" 或 "..."
+            if (trimmed.equals("---") || trimmed.startsWith("--- ") || trimmed.startsWith("---#")
+                    || trimmed.equals("...") || trimmed.startsWith("... ") || trimmed.startsWith("...#")) {
+                previousDirective = null;
+                rewrittenLines.add(line);
+                continue;
+            }
+
+            // 2. 处理独立一行的指令注释或全行注释（以 # 或 ! 开头）
+            if (trimmed.startsWith("#") || trimmed.startsWith("!")) {
                 Matcher directiveMatcher = ENCRYPT_DIRECTIVE_PATTERN.matcher(trimmed);
                 if (directiveMatcher.find()) {
                     previousDirective = new Directive(directiveMatcher.group(1), directiveMatcher.group(2));
@@ -120,8 +168,16 @@ public class InPlaceRewriter {
                 continue;
             }
 
-            Matcher matcher = YAML_LINE_PATTERN.matcher(line);
-            if (matcher.matches()) {
+            // 3. 空白行直接保留
+            if (trimmed.isEmpty()) {
+                rewrittenLines.add(line);
+                previousDirective = null;
+                continue;
+            }
+
+            // 4. 解析 YAML / Properties 键值行
+            Matcher matcher = matchKeyValueLine(line);
+            if (matcher != null) {
                 String indent = matcher.group(1);
                 String key = matcher.group(2);
                 String separator = matcher.group(3);
@@ -144,7 +200,7 @@ public class InPlaceRewriter {
                     continue;
                 }
 
-                // 检查行尾是否存在显式指令
+                // 检查行尾是否存在显式指令（支持 # 或 ! 开头的注释）
                 Directive inlineDirective = null;
                 if (!comment.isEmpty()) {
                     Matcher inlineMatcher = ENCRYPT_DIRECTIVE_PATTERN.matcher(comment);
@@ -154,27 +210,59 @@ public class InPlaceRewriter {
                 }
 
                 Directive effectiveDirective = (inlineDirective != null) ? inlineDirective : previousDirective;
-                boolean shouldEncrypt = (effectiveDirective != null)
-                        || (autoDetectSensitiveKeys && sensitivePattern.matcher(key).matches());
+                boolean hasPlaceholder = isPlaceholder(cleanValue);
+                boolean isBlockScalar = isYamlBlockScalarIndicator(cleanValue);
+
+                boolean shouldEncrypt;
+                boolean shouldEncryptBlockScalar = false;
+                if (effectiveDirective != null) {
+                    if (isBlockScalar) {
+                        shouldEncrypt = false;
+                        shouldEncryptBlockScalar = true;
+                    } else {
+                        shouldEncrypt = true;
+                    }
+                } else if (hasPlaceholder || isBlockScalar) {
+                    // 占位符绝对免疫与多行块标量保护：检测到 ${...}、#{...} 或 |/> 标量头时，无显式指令严格豁免就地加密
+                    shouldEncrypt = false;
+                } else {
+                    shouldEncrypt = autoDetectSensitiveKeys && sensitivePattern.matcher(key).matches();
+                }
+
+                if (shouldEncryptBlockScalar) {
+                    // 提取后续隶属于该块标量的所有多行内容（缩进深度大于当前键行的缩进）
+                    int baseIndent = countLeadingSpaces(indent);
+                    StringBuilder blockContent = new StringBuilder();
+                    int nextIdx = lineIdx + 1;
+                    while (nextIdx < lines.size()) {
+                        String nextLine = lines.get(nextIdx);
+                        String nextTrimmed = nextLine.trim();
+                        int nextIndent = countLeadingSpaces(nextLine);
+                        if (nextTrimmed.isEmpty()) {
+                            blockContent.append("\n");
+                            nextIdx++;
+                        } else if (nextIndent > baseIndent) {
+                            if (blockContent.length() > 0) {
+                                blockContent.append("\n");
+                            }
+                            blockContent.append(nextTrimmed);
+                            nextIdx++;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    String plainValue = blockContent.toString().trim();
+                    rewrittenLines.add(encryptAndReconstructLine(indent, key, separator, comment, plainValue, effectiveDirective));
+                    encryptedCount++;
+                    previousDirective = null;
+                    lineIdx = nextIdx - 1;
+                    continue;
+                }
 
                 if (shouldEncrypt) {
                     String plainValue = unquote(cleanValue);
-                    String keyId = (effectiveDirective != null) ? effectiveDirective.keyId() : null;
-                    EncryptAlgorithm algorithm = (effectiveDirective != null && effectiveDirective.algorithmCode() != null)
-                            ? resolveAlgorithm(effectiveDirective.algorithmCode()) : defaultAlgorithm;
-
-                    String password = keyRegistry.getKeyOrDefault(keyId);
-                    if (password == null || password.trim().isEmpty()) {
-                        throw new IllegalStateException(String.format(
-                                "就地加密失败：字段 '%s' 缺失解密密钥 [KeyId: '%s']", key, keyId != null ? keyId : "default"));
-                    }
-
-                    String ciphertext = ConfigEncryptor.encrypt(plainValue, password, algorithm);
-                    String encToken = buildEncToken(keyId, algorithm, ciphertext);
-
-                    // 保持前导缩进、冒号后空格、行尾注释完全一致
-                    String reconstructed = indent + key + separator + encToken + comment;
-                    rewrittenLines.add(reconstructed);
+                    rewrittenLines.add(encryptAndReconstructLine(indent, key, separator, comment, plainValue, effectiveDirective));
                     encryptedCount++;
                     previousDirective = null;
                     continue;
@@ -186,9 +274,28 @@ public class InPlaceRewriter {
         }
 
         // 4. 安全覆写目标文件（保真原始换行符）
-        writeLinesPreservingEol(targetFile, rewrittenLines, eol, endsWithEol);
+        writeLinesPreservingEol(targetFile, rewrittenLines, prep.eol(), prep.endsWithEol());
         log.info("[ateng-boot-encrypt] 就地加密回写完成，共加密 {} 个敏感字段", encryptedCount);
         return encryptedCount;
+    }
+
+    private String encryptAndReconstructLine(String indent, String key, String separator, String comment,
+                                            String plainValue, Directive effectiveDirective) {
+        String keyId = (effectiveDirective != null && effectiveDirective.keyId() != null)
+                ? effectiveDirective.keyId()
+                : defaultKeyId;
+        EncryptAlgorithm algorithm = (effectiveDirective != null && effectiveDirective.algorithmCode() != null)
+                ? resolveAlgorithm(effectiveDirective.algorithmCode()) : defaultAlgorithm;
+
+        String password = keyRegistry.getKeyOrDefault(keyId);
+        if (password == null || password.trim().isEmpty()) {
+            throw new ConfigDecryptionException(String.format(
+                    "就地加密失败：字段 '%s' 缺失解密密钥 [KeyId: '%s']", key, keyId != null ? keyId : "default"));
+        }
+
+        String ciphertext = ConfigEncryptor.encrypt(plainValue, password, algorithm);
+        String encToken = buildEncToken(keyId, algorithm, ciphertext);
+        return indent + key + separator + encToken + comment;
     }
 
     /**
@@ -199,21 +306,11 @@ public class InPlaceRewriter {
      * @throws IOException 文件读写或备份异常
      */
     public int rewriteDecrypt(Path targetFile) throws IOException {
-        Objects.requireNonNull(targetFile, "targetFile 不能为空");
-        if (!Files.exists(targetFile) || Files.isDirectory(targetFile)) {
-            throw new IllegalArgumentException("目标配置文件不存在或为目录: " + targetFile);
-        }
-
-        Path backupFile = createBackup(targetFile);
-        log.info("[ateng-boot-encrypt] 正在执行就地解密还原，已生成源文件备份: {}", backupFile);
-
-        String rawContent = Files.readString(targetFile, StandardCharsets.UTF_8);
-        String eol = rawContent.contains("\r\n") ? "\r\n" : "\n";
-        boolean endsWithEol = rawContent.endsWith("\n") || rawContent.endsWith("\r");
-
-        List<String> lines = Files.readAllLines(targetFile, StandardCharsets.UTF_8);
+        PreparedRewrite prep = prepareRewrite(targetFile, "解密还原");
+        List<String> lines = prep.lines();
         List<String> rewrittenLines = new ArrayList<>(lines.size());
         int decryptedCount = 0;
+        boolean isPropertiesFile = targetFile.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".properties");
 
         for (String line : lines) {
             if (!parser.hasEncrypted(line)) {
@@ -221,30 +318,71 @@ public class InPlaceRewriter {
                 continue;
             }
 
-            // 替换该行中包含的所有 ENC(...) 密文为明文
-            String decryptedLine = parser.replaceTokens(line, token -> {
-                String keyId = token.getKeyId();
-                String password = keyRegistry.getKeyOrDefault(keyId);
-                if (password == null || password.trim().isEmpty()) {
-                    throw new IllegalStateException(String.format("缺失解密主密钥 [KeyId: '%s']",
-                            keyId != null ? keyId : "default"));
-                }
-                EncryptAlgorithm algo = token.getAlgorithm() != null ? token.getAlgorithm() : defaultAlgorithm;
-                ConfigDecryptor decryptor = resolveDecryptor(algo);
-                try {
-                    return decryptor.decrypt(token.getCiphertext(), password);
-                } catch (Exception e) {
-                    throw new IllegalStateException("解密失败: " + e.getMessage(), e);
-                }
-            });
+            if (!isPropertiesFile && tryAppendYamlBlockScalar(line, rewrittenLines)) {
+                decryptedCount++;
+                continue;
+            }
 
-            rewrittenLines.add(decryptedLine);
+            // 替换该行中包含的所有 ENC(...) 密文为明文
+            rewrittenLines.add(decryptTokensInText(line));
             decryptedCount++;
         }
 
-        writeLinesPreservingEol(targetFile, rewrittenLines, eol, endsWithEol);
+        writeLinesPreservingEol(targetFile, rewrittenLines, prep.eol(), prep.endsWithEol());
         log.info("[ateng-boot-encrypt] 就地解密还原完成，共还原 {} 行密文字段", decryptedCount);
         return decryptedCount;
+    }
+
+    private boolean tryAppendYamlBlockScalar(String line, List<String> rewrittenLines) {
+        Matcher matcher = matchKeyValueLine(line);
+        if (matcher == null) {
+            return false;
+        }
+        String separator = matcher.group(3);
+        String rawValue = matcher.group(4);
+        if (separator == null || separator.contains("=") || rawValue == null || !parser.hasEncrypted(rawValue)) {
+            return false;
+        }
+
+        String decryptedValue = decryptTokensInText(unquote(rawValue.trim()));
+        if (!decryptedValue.contains("\n") && !decryptedValue.contains("\r")) {
+            return false;
+        }
+
+        String indent = matcher.group(1);
+        String key = matcher.group(2);
+        String comment = matcher.group(5) != null ? matcher.group(5) : "";
+        rewrittenLines.add(indent + key + separator + "|" + comment);
+
+        String normalized = decryptedValue.replace("\r\n", "\n").replace("\r", "\n");
+        if (normalized.endsWith("\n")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        String childIndent = indent + "  ";
+        for (String contentLine : normalized.split("\n", -1)) {
+            rewrittenLines.add(contentLine.isEmpty() ? "" : childIndent + contentLine);
+        }
+        return true;
+    }
+
+    private String decryptTokensInText(String text) {
+        return parser.replaceTokens(text, token -> {
+            String keyId = (token.getKeyId() != null && !token.getKeyId().trim().isEmpty())
+                    ? token.getKeyId()
+                    : defaultKeyId;
+            String password = keyRegistry.getKeyOrDefault(keyId);
+            if (password == null || password.trim().isEmpty()) {
+                throw new ConfigDecryptionException(String.format("缺失解密主密钥 [KeyId: '%s']",
+                        keyId != null ? keyId : "default"));
+            }
+            EncryptAlgorithm algo = token.getAlgorithm() != null ? token.getAlgorithm() : defaultAlgorithm;
+            ConfigDecryptor decryptor = resolveDecryptor(algo);
+            try {
+                return decryptor.decrypt(token.getCiphertext(), password);
+            } catch (Exception e) {
+                throw new ConfigDecryptionException("解密失败: " + e.getMessage(), e);
+            }
+        });
     }
 
     private void writeLinesPreservingEol(Path targetFile, List<String> lines, String eol, boolean endsWithEol) throws IOException {
@@ -272,9 +410,29 @@ public class InPlaceRewriter {
         return new InPlaceRewriter(password).rewriteDecrypt(file.toPath());
     }
 
-    private Path createBackup(Path targetFile) throws IOException {
+    /**
+     * 解析目标配置文件对应的 .bak 备份文件路径
+     *
+     * @param targetFile 目标配置文件路径
+     * @return 备份文件路径
+     */
+    public static Path resolveBackupPath(Path targetFile) {
+        Objects.requireNonNull(targetFile, "targetFile 不能为空");
         String fileName = targetFile.getFileName().toString();
-        Path backupFile = targetFile.resolveSibling(fileName + ".bak");
+        return targetFile.resolveSibling(fileName + ".bak");
+    }
+
+    private Matcher matchKeyValueLine(String line) {
+        Matcher quoted = QUOTED_LINE_PATTERN.matcher(line);
+        if (quoted.matches()) {
+            return quoted;
+        }
+        Matcher standard = STANDARD_LINE_PATTERN.matcher(line);
+        return standard.matches() ? standard : null;
+    }
+
+    private Path createBackup(Path targetFile) throws IOException {
+        Path backupFile = resolveBackupPath(targetFile);
         Files.copy(targetFile, backupFile, StandardCopyOption.REPLACE_EXISTING);
         return backupFile;
     }
@@ -293,6 +451,36 @@ public class InPlaceRewriter {
         return str;
     }
 
+    /**
+     * 判断值是否包含 ${...} 环境变量占位符或 #{...} SpEL 表达式
+     *
+     * @param value 原始文本值
+     * @return 若包含占位符返回 true
+     */
+    public static boolean isPlaceholder(String value) {
+        if (value == null || value.isEmpty()) {
+            return false;
+        }
+        String unquoted = unquote(value.trim());
+        return PLACEHOLDER_PATTERN.matcher(unquoted).find();
+    }
+
+    /**
+     * 判断值是否为 YAML 多行块标量符号（如 |、>、|-、|+ 等）
+     *
+     * @param value 原始文本值
+     * @return 若为多行块标量指示符返回 true
+     */
+    public static boolean isYamlBlockScalarIndicator(String value) {
+        if (value == null) {
+            return false;
+        }
+        String trimmed = value.trim();
+        return trimmed.equals("|") || trimmed.equals(">")
+                || trimmed.equals("|-") || trimmed.equals("|+")
+                || trimmed.equals(">-") || trimmed.equals(">+");
+    }
+
     private EncryptAlgorithm resolveAlgorithm(String algoCode) {
         EncryptAlgorithm algo = EncryptAlgorithm.fromCode(algoCode);
         return algo != null ? algo : defaultAlgorithm;
@@ -307,6 +495,17 @@ public class InPlaceRewriter {
             case SM2 -> new Sm2ConfigDecryptor();
             default -> throw new UnsupportedOperationException("不支持解密的算法: " + algorithm);
         };
+    }
+
+    private static int countLeadingSpaces(String str) {
+        if (str == null) {
+            return 0;
+        }
+        int count = 0;
+        while (count < str.length() && (str.charAt(count) == ' ' || str.charAt(count) == '\t')) {
+            count++;
+        }
+        return count;
     }
 
     private record Directive(String keyId, String algorithmCode) {

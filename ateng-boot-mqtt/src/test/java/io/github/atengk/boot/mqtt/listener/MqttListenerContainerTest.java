@@ -2,16 +2,23 @@ package io.github.atengk.boot.mqtt.listener;
 
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.exception.IdempotentException;
 import io.github.atengk.boot.mqtt.annotation.MqttHeader;
 import io.github.atengk.boot.mqtt.annotation.MqttListener;
 import io.github.atengk.boot.mqtt.annotation.MqttTopic;
 import io.github.atengk.boot.mqtt.annotation.MqttVariable;
 import io.github.atengk.boot.mqtt.context.MqttContextHolder;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
+import io.github.atengk.boot.mqtt.exception.SilentAckException;
+import io.github.atengk.boot.mqtt.properties.AckMode;
 import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
 import io.github.atengk.boot.mqtt.properties.ClientIdStrategy;
 import io.github.atengk.boot.mqtt.properties.MqttClientProperties;
+import io.github.atengk.boot.mqtt.properties.MqttConsumerProperties;
 import io.github.atengk.boot.mqtt.properties.PersistenceType;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.template.MqttTemplate;
 import io.github.atengk.boot.mqtt.test.EmbeddedMqttBroker;
@@ -27,6 +34,7 @@ import org.springframework.util.unit.DataSize;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +45,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 声明式 @MqttListener 容器、共享订阅与受管线程池隔离调度测试
@@ -53,6 +62,7 @@ class MqttListenerContainerTest {
     private MqttTemplate mqttTemplate;
     private MqttListenerEndpointRegistry endpointRegistry;
     private MqttListenerAnnotationBeanPostProcessor postProcessor;
+    private MqttContainerManager containerManager;
 
     public record DeviceMetricPayload(double value, String unit) {}
 
@@ -145,8 +155,9 @@ class MqttListenerContainerTest {
         payloadGuard = new PayloadGuard();
         mqttTemplate = new MqttTemplate(clientRegistry, payloadGuard, null, taskExecutor);
 
-        // 5. 初始化 EndpointRegistry 与 BeanPostProcessor
+        // 5. 初始化 EndpointRegistry、ContainerManager 与 BeanPostProcessor
         endpointRegistry = new MqttListenerEndpointRegistry(clientRegistry, payloadGuard, taskExecutor);
+        containerManager = new MqttContainerManager(endpointRegistry);
         postProcessor = new MqttListenerAnnotationBeanPostProcessor(endpointRegistry);
 
         // 6. 注册业务监听器 Bean
@@ -256,6 +267,7 @@ class MqttListenerContainerTest {
         boolean completed = dynamicLatch.await(3, TimeUnit.SECONDS);
         assertThat(completed).isTrue();
         assertThat(dynamicMessages).containsExactly("dynamic-temp-1");
+        Thread.sleep(100);
 
         // 3. 动态退订
         mqttTemplate.unsubscribe("dynamic/sensor/+");
@@ -265,5 +277,700 @@ class MqttListenerContainerTest {
         mqttTemplate.publish("dynamic/sensor/temp", "dynamic-temp-2");
         Thread.sleep(250);
         assertThat(dynamicMessages).hasSize(1); // 仍旧只有 1 条
+    }
+
+    @Test
+    @DisplayName("动态流控运维：MqttContainerManager 暂停与恢复指定端点消费调度")
+    void shouldPauseAndResumeEndpointViaContainerManager() throws Exception {
+        String endpointId = "sampleListenerBean#onWildcardMessage";
+
+        // 1. 验证初始状态为未暂停
+        assertThat(containerManager.isPaused(endpointId)).isFalse();
+
+        // 2. 暂停端点消费
+        containerManager.pause(endpointId);
+        assertThat(containerManager.isPaused(endpointId)).isTrue();
+
+        // 3. 发送消息，验证被暂停忽略，未进入接收列表
+        mqttTemplate.publish("sensor/living-room/temperature", "PAUSED_VALUE_99");
+        Thread.sleep(300);
+        assertThat(listenerBean.receivedWildcard).doesNotContain("PAUSED_VALUE_99");
+
+        // 4. 恢复端点消费
+        containerManager.resume(endpointId);
+        assertThat(containerManager.isPaused(endpointId)).isFalse();
+
+        // 5. 再次发送消息，验证正常恢复消费
+        mqttTemplate.publish("sensor/living-room/temperature", "RESUMED_VALUE_100");
+        boolean completed = listenerBean.wildcardLatch.await(3, TimeUnit.SECONDS);
+        assertThat(completed).isTrue();
+        assertThat(listenerBean.receivedWildcard).contains("RESUMED_VALUE_100");
+
+        // 6. 验证非法入参与不存在端点的快速失败防卫 (Fail-Fast)
+        assertThatThrownBy(() -> containerManager.pause(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("endpointId must not be blank");
+        assertThatThrownBy(() -> containerManager.pause("nonExistingEndpoint"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("MQTT listener endpoint not found");
+        assertThatThrownBy(() -> containerManager.resume(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("endpointId must not be blank");
+        assertThatThrownBy(() -> containerManager.resume("nonExistingEndpoint"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("MQTT listener endpoint not found");
+    }
+
+    @Test
+    @DisplayName("端点运行态巡检：MqttContainerManager 查询订阅主题拓扑与端点健康状态")
+    void shouldInspectEndpointsAndSubscribedTopicsViaContainerManager() {
+        // 1. 查询端点状态快照
+        List<MqttEndpointStatus> statuses = containerManager.getEndpointStatuses();
+        assertThat(statuses).isNotEmpty();
+
+        MqttEndpointStatus wildcardStatus = containerManager.getEndpointStatus("sampleListenerBean#onWildcardMessage");
+        assertThat(wildcardStatus).isNotNull();
+        assertThat(wildcardStatus.endpointId()).isEqualTo("sampleListenerBean#onWildcardMessage");
+        assertThat(wildcardStatus.clientName()).isEqualTo("primary");
+        assertThat(wildcardStatus.topics()).containsExactly("sensor/+/temperature");
+        assertThat(wildcardStatus.qos()).isEqualTo(1);
+        assertThat(wildcardStatus.paused()).isFalse();
+        assertThat(wildcardStatus.running()).isTrue();
+        assertThat(wildcardStatus.targetMethod()).contains("SampleListenerBean#onWildcardMessage");
+
+        // 2. 查询客户端订阅主题列表
+        List<String> primaryTopics = containerManager.getSubscribedTopics("primary");
+        assertThat(primaryTopics).contains("sensor/+/temperature");
+
+        Map<String, List<String>> allTopics = containerManager.getAllSubscribedTopics();
+        assertThat(allTopics).containsKey("primary");
+        assertThat(allTopics.get("primary")).contains("sensor/+/temperature");
+
+        assertThat(containerManager.containsEndpoint("sampleListenerBean#onWildcardMessage")).isTrue();
+        assertThat(containerManager.containsEndpoint("nonExistingEndpoint")).isFalse();
+    }
+
+    @Test
+    @DisplayName("断网重连全自愈：MqttListenerEndpointRegistry 自动恢复 Broker 订阅拓扑")
+    void shouldResubscribeEndpointsOnClientReconnect() throws Exception {
+        // 1. 验证重连自愈能够正常被触发且订阅不丢失
+        List<String> topicsBefore = containerManager.getSubscribedTopics("primary");
+        assertThat(topicsBefore).isNotEmpty();
+
+        // 2. 模拟断网重连通知 (reconnect = true)
+        MqttClientHandle handle = clientRegistry.getClientHandle("primary");
+        endpointRegistry.handleConnectComplete(handle, true, broker.getServerUri());
+
+        // 3. 验证重连后订阅列表自愈且不重复膨胀
+        List<String> topicsAfter = containerManager.getSubscribedTopics("primary");
+        assertThat(topicsAfter).containsExactlyInAnyOrderElementsOf(topicsBefore);
+
+        // 4. 验证重连后消息依然能够顺利推入端点
+        mqttTemplate.publish("sensor/balcony/temperature", "HEALED_TEMP_28");
+        Thread.sleep(300);
+        assertThat(listenerBean.receivedWildcard).contains("HEALED_TEMP_28");
+    }
+
+    static class SlowDrainListenerBean {
+        final CountDownLatch started = new CountDownLatch(1);
+        final AtomicBoolean finished = new AtomicBoolean(false);
+
+        @MqttListener(topics = "drain/virtual/test", qos = 1)
+        public void onSlowMessage(String payload) throws InterruptedException {
+            started.countDown();
+            Thread.sleep(250);
+            finished.set(true);
+        }
+    }
+
+    @Test
+    @DisplayName("执行器无关停机排空：SimpleAsyncTaskExecutor 虚拟线程执行器下 stop() 仍阻塞等待在途任务完成")
+    void shouldDrainInFlightTasksWithSimpleAsyncTaskExecutor() throws Exception {
+        AtengMqttProperties props = new AtengMqttProperties();
+        props.setDefaultClient("drain");
+        MqttClientProperties clientProps = new MqttClientProperties();
+        clientProps.setServerUri(broker.getServerUri());
+        clientProps.setClientId("drain-virtual-client");
+        clientProps.setClientIdStrategy(ClientIdStrategy.STATIC);
+        clientProps.setShutdownTimeout(Duration.ofSeconds(3));
+        props.getClients().put("drain", clientProps);
+
+        NamedMqttClientRegistry drainClientRegistry = new NamedMqttClientRegistry(props);
+        drainClientRegistry.initClients();
+
+        org.springframework.core.task.SimpleAsyncTaskExecutor virtualLikeExecutor =
+                new org.springframework.core.task.SimpleAsyncTaskExecutor("ateng-vt-");
+        MqttListenerEndpointRegistry drainEndpointRegistry =
+                new MqttListenerEndpointRegistry(drainClientRegistry, new PayloadGuard(), virtualLikeExecutor);
+        SlowDrainListenerBean slowBean = new SlowDrainListenerBean();
+        new MqttListenerAnnotationBeanPostProcessor(drainEndpointRegistry)
+                .postProcessAfterInitialization(slowBean, "slowDrainListenerBean");
+        drainEndpointRegistry.start();
+
+        try {
+            MqttTemplate template = new MqttTemplate(drainClientRegistry, new PayloadGuard());
+            template.publish("drain/virtual/test", "slow-payload", 1);
+
+            assertThat(slowBean.started.await(3, TimeUnit.SECONDS)).isTrue();
+            drainEndpointRegistry.stop();
+            assertThat(slowBean.finished.get()).isTrue();
+        } finally {
+            drainEndpointRegistry.stop();
+            drainClientRegistry.destroy();
+        }
+    }
+
+    static class EdgeListenerBean {
+        @MqttListener(topics = "edge/guard/test", client = "edge", qos = 1)
+        public void onEdgeMessage(String payload) {}
+    }
+
+    @Test
+    @DisplayName("动态注销守卫：仍被活跃 @MqttListener 绑定的命名客户端默认拒绝注销，暂停或 force=true 后可安全注销")
+    void shouldGuardUnregisterWhenActiveListenerBound() {
+        MqttClientProperties edgeProps = new MqttClientProperties();
+        edgeProps.setServerUri(broker.getServerUri());
+        edgeProps.setClientId("edge-bound-client");
+        edgeProps.setClientIdStrategy(ClientIdStrategy.STATIC);
+        clientRegistry.registerClient("edge", edgeProps);
+
+        EdgeListenerBean edgeBean = new EdgeListenerBean();
+        postProcessor.postProcessAfterInitialization(edgeBean, "edgeListenerBean");
+
+        assertThatThrownBy(() -> clientRegistry.unregisterClient("edge"))
+                .isInstanceOf(io.github.atengk.boot.core.exception.BusinessException.class)
+                .hasMessageContaining("active listener");
+
+        containerManager.pause("edgeListenerBean#onEdgeMessage");
+        clientRegistry.unregisterClient("edge");
+        assertThat(clientRegistry.containsClient("edge")).isFalse();
+    }
+
+    public record ValidDeviceCommand(@NotBlank(message = "deviceId不能为空") String deviceId) {}
+
+    static class ReliabilityListenerBean {
+        final List<String> trace = new CopyOnWriteArrayList<>();
+        final CountDownLatch orderedDone = new CountDownLatch(4); // msg-1#0, #1, #2 + msg-2#0
+        final AtomicInteger msg1Failures = new AtomicInteger(0);
+        final AtomicInteger exhaustCount = new AtomicInteger(0);
+        final CountDownLatch exhaustDone = new CountDownLatch(3);
+        final AtomicInteger validInvoked = new AtomicInteger(0);
+        final AtomicInteger silentCount = new AtomicInteger(0);
+        final CountDownLatch silentDone = new CountDownLatch(2);
+
+        @MqttListener(topics = "retry/order", qos = 1, concurrency = 1, dltTopic = "retry/order/DLT")
+        public void onOrderedMessage(String payload) {
+            if ("msg-1".equals(payload)) {
+                int attempt = msg1Failures.getAndIncrement();
+                trace.add("msg-1#" + attempt);
+                orderedDone.countDown();
+                if (attempt < 2) {
+                    throw new RuntimeException("transient error on attempt " + attempt);
+                }
+                return;
+            }
+            if ("msg-exhaust".equals(payload)) {
+                int attempt = exhaustCount.getAndIncrement();
+                trace.add("msg-exhaust#" + attempt);
+                exhaustDone.countDown();
+                throw new RuntimeException("persistent transient failure");
+            }
+            trace.add(payload + "#0");
+            orderedDone.countDown();
+        }
+
+        @MqttListener(topics = "valid/check", qos = 1, maxRetries = 3, dltTopic = "valid/check/DLT")
+        public void onValidCommand(@Valid ValidDeviceCommand command) {
+            validInvoked.incrementAndGet();
+        }
+
+        @MqttListener(topics = "silent/check", qos = 1, maxRetries = 2, dltTopic = "silent/check/DLT")
+        public void onSilent(String payload) {
+            silentCount.incrementAndGet();
+            silentDone.countDown();
+            if ("silent".equals(payload)) {
+                throw new SilentAckException("already processed");
+            }
+            throw new IdempotentException("duplicate idempotent event");
+        }
+    }
+
+    @Test
+    @DisplayName("消费状态机：指数退避重试保序、@Valid 零重试转死信及 SilentAck/Idempotent 静默确认")
+    void shouldRetryWithBackoffKeepingStrictOrderingAndRouteValidOrSilentAck() throws Exception {
+        MqttConsumerProperties consumerProps = new MqttConsumerProperties();
+        consumerProps.setMaxRetries(2);
+        consumerProps.setInitialBackoff(Duration.ofMillis(80));
+        consumerProps.setBackoffMultiplier(2.0);
+        consumerProps.setMaxBackoff(Duration.ofMillis(500));
+
+        ThreadPoolTaskExecutor isolatedExecutor = new ThreadPoolTaskExecutor();
+        isolatedExecutor.setCorePoolSize(4);
+        isolatedExecutor.setMaxPoolSize(8);
+        isolatedExecutor.setThreadNamePrefix("ateng-retry-test-");
+        isolatedExecutor.initialize();
+
+        MqttListenerEndpointRegistry retryRegistry = new MqttListenerEndpointRegistry(
+                clientRegistry, new PayloadGuard(), isolatedExecutor, null, null, Collections.emptyList(), consumerProps, null);
+        ReliabilityListenerBean bean = new ReliabilityListenerBean();
+        new MqttListenerAnnotationBeanPostProcessor(retryRegistry).postProcessAfterInitialization(bean, "reliabilityBean");
+        retryRegistry.start();
+
+        try {
+            // 1. msg-1 失败 2 次并在第 3 次成功，紧跟发送 msg-2 必须在 msg-1 重试全部完成前被信号量保序阻塞
+            mqttTemplate.publish("retry/order", "msg-1", 1);
+            Thread.sleep(20);
+            mqttTemplate.publish("retry/order", "msg-2", 1);
+
+            assertThat(bean.orderedDone.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(bean.trace).containsExactly("msg-1#0", "msg-1#1", "msg-1#2", "msg-2#0");
+
+            // 2. msg-exhaust 耗尽 2 次重试（共 3 次尝试）后转入 DLT
+            mqttTemplate.publish("retry/order", "msg-exhaust", 1);
+            assertThat(bean.exhaustDone.await(5, TimeUnit.SECONDS)).isTrue();
+            long dltDeadline = System.currentTimeMillis() + 3000;
+            while (System.currentTimeMillis() < dltDeadline
+                    && broker.getReceivedMessages().stream().noneMatch(m -> "retry/order/DLT".equals(m.getTopic()))) {
+                Thread.sleep(30);
+            }
+            assertThat(broker.getReceivedMessages()).anyMatch(m -> "retry/order/DLT".equals(m.getTopic()));
+
+            // 3. @Valid 校验失败 0 次重试直接转入 DLT
+            mqttTemplate.publish("valid/check", "{\"deviceId\":\"\"}", 1);
+            long validDltDeadline = System.currentTimeMillis() + 3000;
+            while (System.currentTimeMillis() < validDltDeadline
+                    && broker.getReceivedMessages().stream().noneMatch(m -> "valid/check/DLT".equals(m.getTopic()))) {
+                Thread.sleep(30);
+            }
+            assertThat(bean.validInvoked.get()).isZero();
+            assertThat(broker.getReceivedMessages()).anyMatch(m -> "valid/check/DLT".equals(m.getTopic()));
+
+            // 4. SilentAckException 与 IdempotentException 0 重试且不转死信
+            mqttTemplate.publish("silent/check", "silent", 1);
+            mqttTemplate.publish("silent/check", "idempotent", 1);
+            assertThat(bean.silentDone.await(3, TimeUnit.SECONDS)).isTrue();
+            Thread.sleep(200);
+            assertThat(bean.silentCount.get()).isEqualTo(2);
+            assertThat(broker.getReceivedMessages()).noneMatch(m -> "silent/check/DLT".equals(m.getTopic()));
+        } finally {
+            retryRegistry.stop();
+            isolatedExecutor.shutdown();
+        }
+    }
+
+    static class ManualAckListenerBean {
+        final List<String> states = new CopyOnWriteArrayList<>();
+        final CountDownLatch latch = new CountDownLatch(3);
+
+        @MqttListener(topics = "manual/ack/test", qos = 1, ackMode = AckMode.MANUAL, dltTopic = "manual/ack/DLT")
+        public void onManualMessage(String cmd, MqttAcknowledgment ack) {
+            if ("ack".equals(cmd)) {
+                ack.ack();
+                ack.ack();
+                ack.nackToDlt();
+                states.add("ack:" + ack.isAcknowledged());
+            } else if ("nack".equals(cmd)) {
+                ack.nackToDlt();
+                ack.ack();
+                states.add("nack:" + ack.isAcknowledged());
+            } else if ("abandon".equals(cmd)) {
+                ack.abandonWithoutAck();
+                ack.ack();
+                states.add("abandon:" + ack.isAcknowledged());
+            }
+            latch.countDown();
+        }
+    }
+
+    @Test
+    @DisplayName("MANUAL 确认模式：MqttAcknowledgment.ack/nackToDlt/abandonWithoutAck 严格单次幂等生效")
+    void shouldSupportManualAckModeWithStrictIdempotency() throws Exception {
+        ManualAckListenerBean manualBean = new ManualAckListenerBean();
+        postProcessor.postProcessAfterInitialization(manualBean, "manualAckBean");
+        // 注册并立即触发端点订阅
+        endpointRegistry.resume("manualAckBean#onManualMessage");
+
+        mqttTemplate.publish("manual/ack/test", "ack", 1);
+        mqttTemplate.publish("manual/ack/test", "nack", 1);
+        mqttTemplate.publish("manual/ack/test", "abandon", 1);
+
+        assertThat(manualBean.latch.await(4, TimeUnit.SECONDS)).isTrue();
+        Thread.sleep(250);
+
+        assertThat(manualBean.states).containsExactlyInAnyOrder("ack:true", "nack:true", "abandon:false");
+        long dltCount = broker.getReceivedMessages().stream()
+                .filter(m -> "manual/ack/DLT".equals(m.getTopic()))
+                .count();
+        assertThat(dltCount).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("主题通配符防呆：MqttTopicPattern 对非法位置的 '#' 多级通配符前置快速失败")
+    void shouldRejectIllegalHashWildcardPositionInTopicPattern() {
+        assertThatThrownBy(() -> new io.github.atengk.boot.mqtt.routing.MqttTopicPattern("devices/#/data"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new io.github.atengk.boot.mqtt.routing.MqttTopicPattern("devices/dev#"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new io.github.atengk.boot.mqtt.routing.MqttTopicPattern("devices/#sub/data"))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        io.github.atengk.boot.mqtt.routing.MqttTopicPattern validRoot =
+                new io.github.atengk.boot.mqtt.routing.MqttTopicPattern("devices/#");
+        assertThat(validRoot.matches("devices/a/b")).isTrue();
+    }
+
+    static class OptionFilteredListenerBean {
+        final List<String> received = new CopyOnWriteArrayList<>();
+        final CountDownLatch peerLatch = new CountDownLatch(1);
+
+        @MqttListener(topics = "nolocal/loop/test", qos = 1, noLocal = true, retainHandling = 2)
+        public void onNoLocalMessage(String payload) {
+            received.add(payload);
+            if ("from-peer".equals(payload)) {
+                peerLatch.countDown();
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("MQTT 5.0 订阅选项：noLocal=true 过滤同连接自发回环与 retainHandling=2 抑制历史保留重推")
+    void shouldEnforceNoLocalAndRetainHandlingOptionsEndToEnd() throws Exception {
+        // 1. 先发送历史保留消息，随后订阅 retainHandling=2 端点，应抑制历史保留消息推送
+        mqttTemplate.publishRetained("nolocal/loop/test", "pre-retained", 1);
+        Thread.sleep(100);
+
+        MqttClientProperties peerProps = new MqttClientProperties();
+        peerProps.setServerUri(broker.getServerUri());
+        peerProps.setClientId("nolocal-peer");
+        peerProps.setClientIdStrategy(ClientIdStrategy.STATIC);
+        clientRegistry.registerClient("peer", peerProps);
+
+        OptionFilteredListenerBean optionBean = new OptionFilteredListenerBean();
+        postProcessor.postProcessAfterInitialization(optionBean, "optionFilteredBean");
+
+        try {
+            // 2. 同连接 primary 自发消息因 noLocal=true 不应回环给自身
+            mqttTemplate.publish("nolocal/loop/test", "self-echo", 1);
+            Thread.sleep(200);
+            assertThat(optionBean.received).doesNotContain("pre-retained", "self-echo");
+
+            // 3. 对端连接 peer 发布消息，应正常被 primary 接收
+            mqttTemplate.use("peer").publish("nolocal/loop/test", "from-peer", 1, false);
+            assertThat(optionBean.peerLatch.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(optionBean.received).containsExactly("from-peer");
+        } finally {
+            clientRegistry.unregisterClient("peer");
+        }
+    }
+
+    static class FlowControlListenerBean {
+        final List<String> autoStartMsgs = new CopyOnWriteArrayList<>();
+        final List<String> sharedAMsgs = new CopyOnWriteArrayList<>();
+        final List<String> sharedBMsgs = new CopyOnWriteArrayList<>();
+        final CountDownLatch autoStartLatch = new CountDownLatch(1);
+        final CountDownLatch sharedBLatch = new CountDownLatch(1);
+        final CountDownLatch sharedALatch = new CountDownLatch(1);
+
+        @MqttListener(topics = "flow/autostart/test", qos = 1, autoStartup = false)
+        public void onAutoStartFalse(String payload) {
+            autoStartMsgs.add(payload);
+            autoStartLatch.countDown();
+        }
+
+        @MqttListener(topics = "flow/shared/test", sharedGroup = "grp", qos = 1)
+        public void onSharedA(String payload) {
+            sharedAMsgs.add(payload);
+            sharedALatch.countDown();
+        }
+
+        @MqttListener(topics = "flow/shared/test", sharedGroup = "grp", qos = 1)
+        public void onSharedB(String payload) {
+            sharedBMsgs.add(payload);
+            sharedBLatch.countDown();
+        }
+    }
+
+    @Test
+    @DisplayName("引用计数 Broker 真实流控与 autoStartup=false：暂停归零退订、重连不误订阅、恢复重订阅")
+    void shouldPerformReferenceCountedBrokerFlowControlAndRespectAutoStartup() throws Exception {
+        ThreadPoolTaskExecutor flowExecutor = new ThreadPoolTaskExecutor();
+        flowExecutor.setCorePoolSize(2);
+        flowExecutor.setMaxPoolSize(4);
+        flowExecutor.setThreadNamePrefix("ateng-flow-");
+        flowExecutor.initialize();
+
+        MqttListenerEndpointRegistry flowRegistry =
+                new MqttListenerEndpointRegistry(clientRegistry, new PayloadGuard(), flowExecutor);
+        MqttContainerManager flowManager = new MqttContainerManager(flowRegistry);
+        FlowControlListenerBean flowBean = new FlowControlListenerBean();
+        new MqttListenerAnnotationBeanPostProcessor(flowRegistry).postProcessAfterInitialization(flowBean, "flowBean");
+        flowRegistry.start();
+
+        String autoId = "flowBean#onAutoStartFalse";
+        String sharedAId = "flowBean#onSharedA";
+        String sharedBId = "flowBean#onSharedB";
+        String sharedFilter = "$share/grp/flow/shared/test";
+
+        try {
+            // 1. autoStartup=false 初始处于暂停态且不向 Broker 订阅
+            assertThat(flowManager.isPaused(autoId)).isTrue();
+            assertThat(flowManager.getSubscribedTopics("primary")).doesNotContain("flow/autostart/test");
+            assertThat(flowManager.getSubscribedTopics("primary")).contains(sharedFilter);
+
+            mqttTemplate.publish("flow/autostart/test", "ignored-before-resume", 1);
+            Thread.sleep(150);
+            assertThat(flowBean.autoStartMsgs).isEmpty();
+
+            // 2. 暂停共享过滤器其中一个端点 (refCount: 2 -> 1)，Broker 订阅应继续保持
+            flowManager.pause(sharedAId);
+            assertThat(flowManager.getSubscribedTopics("primary")).contains(sharedFilter);
+
+            mqttTemplate.publish("flow/shared/test", "to-b-only", 1);
+            assertThat(flowBean.sharedBLatch.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(flowBean.sharedAMsgs).isEmpty();
+            assertThat(flowBean.sharedBMsgs).contains("to-b-only");
+
+            // 3. 暂停最后一个共享端点 (refCount: 1 -> 0)，向 Broker 真实退订
+            flowManager.pause(sharedBId);
+            assertThat(flowManager.getSubscribedTopics("primary")).doesNotContain(sharedFilter);
+
+            // 4. 模拟重连自愈：已暂停端点绝不误订阅
+            MqttClientHandle handle = clientRegistry.getClientHandle("primary");
+            flowRegistry.handleConnectComplete(handle, true, broker.getServerUri());
+            assertThat(flowManager.getSubscribedTopics("primary")).doesNotContain(sharedFilter);
+            assertThat(flowManager.getSubscribedTopics("primary")).doesNotContain("flow/autostart/test");
+
+            // 5. 恢复端点后真实重新订阅并接收消息
+            flowManager.resume(sharedAId);
+            flowManager.resume(autoId);
+            assertThat(flowManager.isPaused(autoId)).isFalse();
+            assertThat(flowManager.getSubscribedTopics("primary")).contains(sharedFilter, "flow/autostart/test");
+
+            mqttTemplate.publish("flow/autostart/test", "delivered-after-resume", 1);
+            mqttTemplate.publish("flow/shared/test", "back-to-a", 1);
+            assertThat(flowBean.autoStartLatch.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(flowBean.sharedALatch.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(flowBean.autoStartMsgs).containsExactly("delivered-after-resume");
+            assertThat(flowBean.sharedAMsgs).contains("back-to-a");
+        } finally {
+            flowRegistry.stop();
+            flowExecutor.shutdown();
+        }
+    }
+
+    static class InvalidAutoAckWithParamBean {
+        @MqttListener(topics = "invalid/auto/ack", ackMode = AckMode.AUTO_AFTER_CONSUME)
+        public void onMessage(String payload, MqttAcknowledgment ack) {
+        }
+    }
+
+    static class ManualTerminalAckBean {
+        final AtomicInteger exhaustCount = new AtomicInteger();
+
+        @MqttListener(topics = "manual/valid/fail", qos = 1, ackMode = AckMode.MANUAL, dltTopic = "manual/valid/DLT")
+        public void onValidFail(@Valid ValidDeviceCommand command, MqttAcknowledgment ack) {
+            // @Valid 校验失败前不会进入方法体，应由框架强制转 DLT 并提交 PUBACK
+        }
+
+        @MqttListener(topics = "manual/exhaust/fail", qos = 1, ackMode = AckMode.MANUAL, maxRetries = 1, dltTopic = "manual/exhaust/DLT")
+        public void onExhaustFail(String payload, MqttAcknowledgment ack) {
+            exhaustCount.incrementAndGet();
+            throw new RuntimeException("transient-exhaust");
+        }
+    }
+
+    static class RestartableRetryBean {
+        final AtomicInteger attempts = new AtomicInteger();
+        final List<String> delivered = new CopyOnWriteArrayList<>();
+        final CountDownLatch recoveredLatch = new CountDownLatch(1);
+
+        @MqttListener(topics = "lifecycle/restart/retry", qos = 1, concurrency = 1, maxRetries = 2)
+        public void onMessage(String payload) {
+            if ("fail-once".equals(payload) && attempts.incrementAndGet() == 1) {
+                throw new RuntimeException("wait-in-retry");
+            }
+            delivered.add(payload);
+            if ("healthy".equals(payload)) {
+                recoveredLatch.countDown();
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("MANUAL 终结路径兜底确认、Fail-Fast 注解校验与停机取消退避任务释放许可并支持重启")
+    void shouldEnforceManualTerminalAckFailFastValidationAndRestartLifecycle() throws Exception {
+        ThreadPoolTaskExecutor testExec = new ThreadPoolTaskExecutor();
+        testExec.setCorePoolSize(2);
+        testExec.setMaxPoolSize(4);
+        testExec.setThreadNamePrefix("ateng-hardening-");
+        testExec.initialize();
+
+        // 1. AUTO_AFTER_CONSUME 模式声明 MqttAcknowledgment 参数应 Fail-Fast 拒绝注册
+        MqttListenerEndpointRegistry invalidRegistry = new MqttListenerEndpointRegistry(clientRegistry, new PayloadGuard(), testExec);
+        assertThatThrownBy(() -> new MqttListenerAnnotationBeanPostProcessor(invalidRegistry)
+                .postProcessAfterInitialization(new InvalidAutoAckWithParamBean(), "invalidAutoAck"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("AUTO_AFTER_CONSUME");
+
+        // 2. MANUAL 模式下 @Valid 失败与重试耗尽均强制转 DLT 且向 Broker 提交 PUBACK，避免重投死循环
+        MqttConsumerProperties fastConsumerProps = new MqttConsumerProperties();
+        fastConsumerProps.setInitialBackoff(Duration.ofMillis(30));
+        fastConsumerProps.setMaxBackoff(Duration.ofMillis(60));
+        MqttListenerEndpointRegistry manualRegistry = new MqttListenerEndpointRegistry(
+                clientRegistry, new PayloadGuard(), testExec, null, null, List.of(), fastConsumerProps, null);
+        ManualTerminalAckBean manualBean = new ManualTerminalAckBean();
+        new MqttListenerAnnotationBeanPostProcessor(manualRegistry).postProcessAfterInitialization(manualBean, "manualTerminalBean");
+        manualRegistry.start();
+
+        try {
+            mqttTemplate.publish("manual/valid/fail", "{\"orderId\":\"\",\"amount\":-5}", 1);
+            mqttTemplate.publish("manual/exhaust/fail", "exhaust-payload", 1);
+
+            long deadline = System.currentTimeMillis() + 4000;
+            while (System.currentTimeMillis() < deadline
+                    && (broker.getReceivedMessages().stream().noneMatch(m -> "manual/valid/DLT".equals(m.getTopic()))
+                    || broker.getReceivedMessages().stream().noneMatch(m -> "manual/exhaust/DLT".equals(m.getTopic())))) {
+                Thread.sleep(40);
+            }
+            assertThat(broker.getReceivedMessages()).anyMatch(m -> "manual/valid/DLT".equals(m.getTopic()));
+            assertThat(broker.getReceivedMessages()).anyMatch(m -> "manual/exhaust/DLT".equals(m.getTopic()));
+            assertThat(manualBean.exhaustCount.get()).isEqualTo(2);
+        } finally {
+            manualRegistry.stop();
+        }
+
+        // 3. 退避等待期间触发 stop()：应立即取消未决退避任务并归还 concurrency=1 信号量，且再次 start() 可正常调度重试恢复
+        MqttConsumerProperties slowBackoffProps = new MqttConsumerProperties();
+        slowBackoffProps.setInitialBackoff(Duration.ofMillis(1500));
+        slowBackoffProps.setMaxBackoff(Duration.ofMillis(2000));
+        MqttListenerEndpointRegistry restartRegistry = new MqttListenerEndpointRegistry(
+                clientRegistry, new PayloadGuard(), testExec, null, null, List.of(), slowBackoffProps, null);
+        RestartableRetryBean restartBean = new RestartableRetryBean();
+        new MqttListenerAnnotationBeanPostProcessor(restartRegistry).postProcessAfterInitialization(restartBean, "restartBean");
+        restartRegistry.start();
+
+        try {
+            mqttTemplate.publish("lifecycle/restart/retry", "fail-once", 1);
+            long attemptDeadline = System.currentTimeMillis() + 3000;
+            while (System.currentTimeMillis() < attemptDeadline && restartBean.attempts.get() < 1) {
+                Thread.sleep(20);
+            }
+            assertThat(restartBean.attempts.get()).isEqualTo(1);
+
+            // 在 1500ms 退避等待窗口内触发 stop()：不应卡顿也不应泄漏信号量许可
+            restartRegistry.stop();
+            assertThat(restartRegistry.getEndpointStatuses()).singleElement();
+
+            // 二次启动应重建调度器并正常接收新消息
+            restartRegistry.start();
+            mqttTemplate.publish("lifecycle/restart/retry", "healthy", 1);
+            assertThat(restartBean.recoveredLatch.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(restartBean.delivered).contains("healthy");
+        } finally {
+            restartRegistry.stop();
+            testExec.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("容器二次启停幂等防重：多次 start/stop 不重复注册客户端回调钩子与重连监听器，并正确取消外部定时任务")
+    void shouldAvoidDuplicateListenerHooksAcrossRestartCycles() {
+        NamedMqttClientRegistry spyClientRegistry = org.mockito.Mockito.spy(clientRegistry);
+        MqttClientHandle handle = clientRegistry.getDefaultClientHandle();
+
+        ThreadPoolTaskExecutor testExec = new ThreadPoolTaskExecutor();
+        testExec.setCorePoolSize(2);
+        testExec.setMaxPoolSize(4);
+        testExec.setThreadNamePrefix("ateng-idempotent-restart-");
+        testExec.initialize();
+
+        org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler externalScheduler =
+                new org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler();
+        externalScheduler.setPoolSize(1);
+        externalScheduler.setThreadNamePrefix("ateng-external-rr-");
+        externalScheduler.setRemoveOnCancelPolicy(true);
+        externalScheduler.initialize();
+
+        io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager spyRrManager = org.mockito.Mockito.spy(
+                new io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager(
+                        spyClientRegistry, new PayloadGuard(), testExec, externalScheduler.getScheduledExecutor()));
+        MqttListenerEndpointRegistry spyEndpointRegistry = org.mockito.Mockito.spy(
+                new MqttListenerEndpointRegistry(spyClientRegistry, new PayloadGuard(), testExec, null, spyRrManager));
+
+        try {
+            // 第一轮 start -> stop -> 第二轮 start
+            spyRrManager.start();
+            spyEndpointRegistry.start();
+            spyEndpointRegistry.stop();
+            spyRrManager.stop();
+
+            // 外部调度器下的定时任务应已被取消（活动任务数为 0）
+            assertThat(externalScheduler.getScheduledThreadPoolExecutor().getQueue()).isEmpty();
+
+            spyRrManager.start();
+            spyEndpointRegistry.start();
+
+            // 向 clientRegistry 注册钩子的方法均应严格仅调用 1 次（MqttListenerEndpointRegistry + MqttRequestReplyManager 各 1 次）
+            org.mockito.Mockito.verify(spyClientRegistry, org.mockito.Mockito.times(2))
+                    .addClientRegisteredListener(org.mockito.ArgumentMatchers.any());
+            org.mockito.Mockito.verify(spyClientRegistry, org.mockito.Mockito.times(2))
+                    .addClientUnregisterListener(org.mockito.ArgumentMatchers.any());
+            org.mockito.Mockito.verify(spyClientRegistry, org.mockito.Mockito.times(1))
+                    .addActiveBindingPredicate(org.mockito.ArgumentMatchers.any());
+
+            // 模拟一次重连事件：handleConnectComplete 应仅触发 1 次（且由它联动 1 次 handleReconnect，加上 handle 自身绑定总共不随启停次数倍增）
+            handle.notifyConnectComplete(true, broker.getServerUri());
+            org.mockito.Mockito.verify(spyEndpointRegistry, org.mockito.Mockito.times(1))
+                    .handleConnectComplete(handle, true, broker.getServerUri());
+            org.mockito.Mockito.verify(spyRrManager, org.mockito.Mockito.times(2))
+                    .handleReconnect(handle.getClientName());
+        } finally {
+            spyEndpointRegistry.stop();
+            spyRrManager.stop();
+            externalScheduler.shutdown();
+            testExec.shutdown();
+        }
+    }
+
+    static class StrictBurstOrderBean {
+        final List<String> received = new CopyOnWriteArrayList<>();
+        final CountDownLatch done = new CountDownLatch(20);
+
+        @MqttListener(topics = "order/burst/fifo", qos = 1, concurrency = 1)
+        public void onMessage(String payload) {
+            received.add(payload);
+            done.countDown();
+        }
+    }
+
+    @Test
+    @DisplayName("并发度为 1 的端点在多线程执行器下连发报文应严格保持到达 FIFO 顺序")
+    void shouldPreserveStrictFifoOrderForConcurrencyOneUnderMultiThreadedExecutor() throws Exception {
+        ThreadPoolTaskExecutor multiExec = new ThreadPoolTaskExecutor();
+        multiExec.setCorePoolSize(8);
+        multiExec.setMaxPoolSize(16);
+        multiExec.setThreadNamePrefix("ateng-fifo-burst-");
+        multiExec.initialize();
+
+        MqttListenerEndpointRegistry fifoRegistry = new MqttListenerEndpointRegistry(
+                clientRegistry, new PayloadGuard(), multiExec);
+        StrictBurstOrderBean orderBean = new StrictBurstOrderBean();
+        new MqttListenerAnnotationBeanPostProcessor(fifoRegistry)
+                .postProcessAfterInitialization(orderBean, "strictBurstOrderBean");
+        fifoRegistry.start();
+
+        try {
+            List<String> expected = new java.util.ArrayList<>(20);
+            for (int i = 0; i < 20; i++) {
+                String msg = "seq-" + i;
+                expected.add(msg);
+                mqttTemplate.publish("order/burst/fifo", msg, 1);
+            }
+            assertThat(orderBean.done.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(orderBean.received).containsExactlyElementsOf(expected);
+        } finally {
+            fifoRegistry.stop();
+            multiExec.shutdown();
+        }
     }
 }

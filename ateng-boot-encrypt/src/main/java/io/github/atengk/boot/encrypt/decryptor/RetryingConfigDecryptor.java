@@ -2,6 +2,7 @@ package io.github.atengk.boot.encrypt.decryptor;
 
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
+import io.github.atengk.boot.encrypt.config.EncryptRetryProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -65,6 +66,10 @@ public class RetryingConfigDecryptor implements ConfigDecryptor {
 
     public RetryingConfigDecryptor(ConfigDecryptor delegate) {
         this(delegate, DEFAULT_RETRY_CONFIG);
+    }
+
+    public RetryingConfigDecryptor(ConfigDecryptor delegate, EncryptRetryProperties retryProperties) {
+        this(delegate, retryProperties != null ? retryProperties.toRetryConfig() : DEFAULT_RETRY_CONFIG);
     }
 
     public RetryingConfigDecryptor(ConfigDecryptor delegate, RetryUtil.RetryConfig retryConfig) {

@@ -1,10 +1,15 @@
 package io.github.atengk.boot.storage.resource;
 
 import io.github.atengk.boot.storage.driver.LocalDriver;
+import io.github.atengk.boot.storage.exception.StorageException;
+import io.github.atengk.boot.storage.exception.StorageResultCode;
+import io.github.atengk.boot.storage.guard.StorageGuard;
+import io.github.atengk.boot.storage.properties.StorageGuardProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.util.unit.DataSize;
 
 import java.io.ByteArrayInputStream;
 import java.io.FileNotFoundException;
@@ -18,6 +23,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 /**
  * StorageResource Spring 原生资源契约适配测试
@@ -88,5 +99,63 @@ class StorageResourceTest {
         assertThrows(FileNotFoundException.class, resource::getInputStream);
         assertThrows(FileNotFoundException.class, resource::contentLength);
         assertThrows(FileNotFoundException.class, resource::lastModified);
+    }
+
+    @Test
+    @DisplayName("多次调用 getOutputStream().close() 具备严格幂等性，仅执行一次落盘上传")
+    void testWriteResourceCloseIdempotent() throws Exception {
+        LocalDriver spiedDriver = spy(driver);
+        String path = "output/idempotent.txt";
+        StorageResource resource = new StorageResource(path, spiedDriver);
+
+        byte[] writtenBytes = "Idempotent Close Content".getBytes(StandardCharsets.UTF_8);
+        try (OutputStream out = resource.getOutputStream()) {
+            out.write(writtenBytes);
+            out.close();
+            out.close();
+        }
+
+        verify(spiedDriver, times(1)).upload(eq(path), any(InputStream.class), any(), anyLong());
+        assertEquals(writtenBytes.length, resource.contentLength());
+        try (InputStream in = resource.getInputStream()) {
+            assertArrayEquals(writtenBytes, in.readAllBytes());
+        }
+    }
+
+    @Test
+    @DisplayName("开启 StorageGuard 且配置 maxFileSize 时，getOutputStream 写入超限拦截 40020 且不触发落盘上传")
+    void testWriteResourceExceedsMaxFileSizeThrows40020() throws Exception {
+        StorageGuardProperties guardProps = new StorageGuardProperties();
+        guardProps.setEnabled(true);
+        guardProps.setMaxFileSize(DataSize.ofBytes(16));
+        StorageGuard guard = new StorageGuard(guardProps);
+
+        LocalDriver spiedDriver = spy(driver);
+        java.util.concurrent.atomic.AtomicInteger callbackCount = new java.util.concurrent.atomic.AtomicInteger(0);
+        String overLimitPath = "output/too-large.txt";
+        StorageResource overLimitResource = new StorageResource(
+                overLimitPath, spiedDriver, guard, meta -> callbackCount.incrementAndGet());
+
+        byte[] oversized = "0123456789ABCDEFG".getBytes(StandardCharsets.UTF_8); // 17 bytes > 16
+        StorageException ex = assertThrows(StorageException.class, () -> {
+            try (OutputStream out = overLimitResource.getOutputStream()) {
+                out.write(oversized);
+            }
+        });
+        assertEquals(StorageResultCode.STORAGE_SIZE_EXCEEDED, ex.getResultCode());
+        assertFalse(driver.exists(overLimitPath));
+        assertEquals(0, callbackCount.get());
+        verify(spiedDriver, org.mockito.Mockito.never()).upload(eq(overLimitPath), any(InputStream.class), any(), anyLong());
+
+        // 未超限字节正常写入落盘并触发单次上传与事件回调
+        String okPath = "output/within-limit.txt";
+        StorageResource okResource = new StorageResource(
+                okPath, spiedDriver, guard, meta -> callbackCount.incrementAndGet());
+        byte[] validBytes = "0123456789ABCDEF".getBytes(StandardCharsets.UTF_8); // 16 bytes
+        try (OutputStream out = okResource.getOutputStream()) {
+            out.write(validBytes);
+        }
+        assertTrue(driver.exists(okPath));
+        assertEquals(1, callbackCount.get());
     }
 }

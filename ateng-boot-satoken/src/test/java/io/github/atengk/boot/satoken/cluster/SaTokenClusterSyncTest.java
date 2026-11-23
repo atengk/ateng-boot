@@ -237,4 +237,53 @@ class SaTokenClusterSyncTest {
         assertThat(payloadCaptor.getAllValues().get(3)).contains("DISABLE").contains("user_40");
         assertThat(payloadCaptor.getAllValues().get(4)).contains("UNTIE_DISABLE").contains("user_50");
     }
+
+    @Test
+    @DisplayName("onMessage: 非默认账号体系消息定向清理目标体系本地缓存，不误伤其他体系")
+    void testRemoteMultiAccountTargetedInvalidation() {
+        when(redisTemplateProvider.getIfAvailable()).thenReturn(stringRedisTemplate);
+
+        // 1. 带 loginType 的集群消息序列化与发送
+        broadcaster.broadcast(SaTokenClusterEventType.USER_PERMISSION_REFRESH, "admin", "user_777");
+        ArgumentCaptor<String> payloadCaptor = ArgumentCaptor.forClass(String.class);
+        verify(stringRedisTemplate).convertAndSend(eq("ateng:satoken:cluster-sync"), payloadCaptor.capture());
+
+        SaTokenClusterMessage sent = JsonUtil.parseObject(payloadCaptor.getValue(), SaTokenClusterMessage.class);
+        assertThat(sent.getLoginType()).isEqualTo("admin");
+        assertThat(sent.getTargetKey()).isEqualTo("user_777");
+
+        // 2. 异地节点收到非默认 loginType 消息时定向调用双参本地淘汰
+        SaTokenClusterMessage remoteUserMsg = SaTokenClusterMessage.of("remote-node-9999", SaTokenClusterEventType.USER_PERMISSION_REFRESH, "admin", "user_777");
+        subscriber.onMessage(new DefaultMessage("ateng:satoken:cluster-sync".getBytes(StandardCharsets.UTF_8),
+                JsonUtil.toJsonString(remoteUserMsg).getBytes(StandardCharsets.UTF_8)), null);
+        verify(cacheService).clearLocalUserCache("admin", "user_777");
+
+        SaTokenClusterMessage remoteRoleMsg = SaTokenClusterMessage.of("remote-node-9999", SaTokenClusterEventType.ROLE_PERMISSION_REFRESH, "member", "vip");
+        subscriber.onMessage(new DefaultMessage("ateng:satoken:cluster-sync".getBytes(StandardCharsets.UTF_8),
+                JsonUtil.toJsonString(remoteRoleMsg).getBytes(StandardCharsets.UTF_8)), null);
+        verify(cacheService).clearLocalRoleCache("member", "vip");
+
+        // 3. Spring 非默认账号体系生命周期事件同样携带 loginType 广播
+        listener.onLogout(new SaLogoutEvent(this, "member", "user_88", "token_m"));
+        verify(stringRedisTemplate, times(2)).convertAndSend(eq("ateng:satoken:cluster-sync"), payloadCaptor.capture());
+        SaTokenClusterMessage logoutBroadcast = JsonUtil.parseObject(payloadCaptor.getValue(), SaTokenClusterMessage.class);
+        assertThat(logoutBroadcast.getLoginType()).isEqualTo("member");
+        assertThat(logoutBroadcast.getTargetKey()).isEqualTo("user_88");
+    }
+
+    @Test
+    @DisplayName("onMessage: 携带 tenantId 的用户刷新与下线事件定向清理目标租户用户本地缓存")
+    void testRemoteTenantScopedUserInvalidation() {
+        SaTokenClusterMessage remoteUserMsg = SaTokenClusterMessage.of("remote-node-9999", SaTokenClusterEventType.USER_PERMISSION_REFRESH, "admin", "88001");
+        remoteUserMsg.setTenantId("tenant_B");
+        subscriber.onMessage(new DefaultMessage("ateng:satoken:cluster-sync".getBytes(StandardCharsets.UTF_8),
+                JsonUtil.toJsonString(remoteUserMsg).getBytes(StandardCharsets.UTF_8)), null);
+        verify(cacheService).clearLocalUserCache("admin", "tenant_B", "88001");
+
+        SaTokenClusterMessage remoteLogoutMsg = SaTokenClusterMessage.of("remote-node-9999", SaTokenClusterEventType.LOGOUT, null, "operator_88001");
+        remoteLogoutMsg.setTenantId("tenant_B");
+        subscriber.onMessage(new DefaultMessage("ateng:satoken:cluster-sync".getBytes(StandardCharsets.UTF_8),
+                JsonUtil.toJsonString(remoteLogoutMsg).getBytes(StandardCharsets.UTF_8)), null);
+        verify(cacheService).clearLocalUserCache(null, "tenant_B", "operator_88001");
+    }
 }

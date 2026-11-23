@@ -114,4 +114,49 @@ class PageQueryTest {
         );
         assertTrue(ex.getMessage().contains("排序属性名称不能为空"));
     }
+
+    @Test
+    @DisplayName("安全纠偏与偏移量计算：safeCurrent, safeSize, offset 与长整型溢出防御")
+    void shouldSafelyCalculateOffsetAndNormalize() {
+        // 1. 默认值与正向计算
+        PageQuery query = new PageQuery(1L, 10L);
+        assertEquals(1L, query.safeCurrent());
+        assertEquals(10L, query.safeSize());
+        assertEquals(0L, query.offset());
+
+        // 2. 正常第 3 页，每页 20 条
+        query.setCurrent(3L);
+        query.setSize(20L);
+        assertEquals(3L, query.safeCurrent());
+        assertEquals(20L, query.safeSize());
+        assertEquals(40L, query.offset());
+
+        // 3. 负数与非法下限纠偏防御
+        query.setCurrent(-5L);
+        query.setSize(-100L);
+        assertEquals(1L, query.safeCurrent());
+        assertEquals(10L, query.safeSize());
+        assertEquals(0L, query.offset());
+        // 确认既有 getter 依然返回原始值（不改变字段本身，保证 JSR-303 正常拦截）
+        assertEquals(-5L, query.getCurrent());
+        assertEquals(-100L, query.getSize());
+
+        // 4. 超大容量上限截断 (max 1000)
+        query.setCurrent(2L);
+        query.setSize(5000L);
+        assertEquals(2L, query.safeCurrent());
+        assertEquals(1000L, query.safeSize());
+        assertEquals(1000L, query.offset());
+
+        // 5. normalize 原地修正
+        PageQuery normalized = query.normalize();
+        assertSame(query, normalized);
+        assertEquals(2L, query.getCurrent());
+        assertEquals(1000L, query.getSize());
+
+        // 6. 极端大数长整型乘法溢出保底返回 Long.MAX_VALUE
+        query.setCurrent(Long.MAX_VALUE);
+        query.setSize(1000L);
+        assertEquals(Long.MAX_VALUE, query.offset());
+    }
 }

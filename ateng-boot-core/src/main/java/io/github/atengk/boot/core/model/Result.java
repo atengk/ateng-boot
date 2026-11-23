@@ -4,9 +4,11 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.code.IResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.jackson.NumericLongSerializer;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.Setter;
@@ -53,6 +55,7 @@ public class Result<T> implements Serializable {
     /**
      * 响应时间戳（毫秒）
      */
+    @JsonSerialize(using = NumericLongSerializer.class)
     private long timestamp;
 
     /**
@@ -131,7 +134,7 @@ public class Result<T> implements Serializable {
     @JsonIgnore
     public T getOrThrow() {
         if (!isSuccess()) {
-            throw new BusinessException(this.code, this.msg);
+            throw new BusinessException(this.code, this.msg).withTraceId(this.traceId);
         }
         return this.data;
     }

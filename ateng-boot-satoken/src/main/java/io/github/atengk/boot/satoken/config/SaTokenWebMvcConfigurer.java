@@ -1,6 +1,5 @@
 package io.github.atengk.boot.satoken.config;
 
-import cn.dev33.satoken.stp.StpUtil;
 import io.github.atengk.boot.satoken.interceptor.AtengSaTokenInterceptor;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
 import lombok.extern.slf4j.Slf4j;
@@ -26,12 +25,12 @@ public class SaTokenWebMvcConfigurer implements WebMvcConfigurer {
     private final AtengSaTokenInterceptor saInterceptor;
 
     public SaTokenWebMvcConfigurer(SaTokenProperties properties) {
-        this(properties, new AtengSaTokenInterceptor());
+        this(properties, new AtengSaTokenInterceptor(properties));
     }
 
     public SaTokenWebMvcConfigurer(SaTokenProperties properties, AtengSaTokenInterceptor saInterceptor) {
         this.properties = properties;
-        this.saInterceptor = saInterceptor != null ? saInterceptor : new AtengSaTokenInterceptor();
+        this.saInterceptor = saInterceptor != null ? saInterceptor : new AtengSaTokenInterceptor(properties);
     }
 
     @Override
@@ -45,10 +44,10 @@ public class SaTokenWebMvcConfigurer implements WebMvcConfigurer {
         // 1. 关闭注解校验（双轨正交设计：AOP 切面统一承接注解，拦截器专精路由与租户治理）
         saInterceptor.isAnnotation(false);
 
-        // 2. 检查是否开启全局严格路由登录校验（若尚未配置则挂载）
-        if (interceptorProps.isCheckLogin() && saInterceptor.auth == null) {
-            log.info("Sa-Token 开启全域路由强制登录校验模式 (check-login=true)");
-            saInterceptor.setAuth(handler -> StpUtil.checkLogin());
+        // 2. 记录全域强制登录校验状态（实际校验逻辑由 AtengSaTokenInterceptor 统一承接多账号路由与 primary-login-type 兜底）
+        if (interceptorProps.isCheckLogin() && !saInterceptor.isCustomAuthConfigured()) {
+            log.info("Sa-Token 开启全域路由强制登录校验模式 (check-login=true, primaryLoginType={}, loginTypeRoutes={})",
+                    properties.getPrimaryLoginType(), interceptorProps.getLoginTypeRoutes());
         }
 
         // 3. 聚合去重路由排除白名单列表（静态部分预置进拦截器）
@@ -66,11 +65,11 @@ public class SaTokenWebMvcConfigurer implements WebMvcConfigurer {
                 ? interceptorProps.getIncludes()
                 : List.of("/**");
 
-        log.info("Sa-Token 注册全局路由拦截器: includes={}, excludes={}", includes, finalExcludes);
+        log.info("Sa-Token 注册全局路由拦截器: includes={}, whitelist={}", includes, finalExcludes);
 
-        // 4. 注册并挂载拦截规则
+        // 4. 注册并挂载拦截规则（静态白名单统一由 AtengSaTokenInterceptor.isWhitelisted 短路放行，
+        //    以保障白名单请求同样进入路由上下文、匿名租户头解析及 afterCompletion 清理闭环）
         registry.addInterceptor(saInterceptor)
-                .addPathPatterns(includes)
-                .excludePathPatterns(finalExcludes);
+                .addPathPatterns(includes);
     }
 }

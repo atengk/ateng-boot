@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.tcp.client.TcpClient;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
+import io.github.atengk.boot.tcp.exception.TcpBackpressureException;
 import io.github.atengk.boot.tcp.exception.TcpException;
 import io.github.atengk.boot.tcp.exception.TcpTimeoutException;
 import io.github.atengk.boot.tcp.model.TcpPacket;
@@ -11,6 +12,7 @@ import io.github.atengk.boot.tcp.model.TcpPayload;
 import io.github.atengk.boot.tcp.properties.TcpClientProperties;
 import io.github.atengk.boot.tcp.session.TcpSession;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -60,7 +62,18 @@ public class TcpClientTemplate {
             throw new IllegalStateException("TCP 客户端尚未建立活跃连接，无法发送消息");
         }
         Object msg = wrapPayload(payload);
-        client.getChannel().writeAndFlush(msg);
+        TcpSession session = client.getSession();
+        if (session != null) {
+            session.send(msg);
+        } else {
+            Channel channel = client.getChannel();
+            if (channel != null && !channel.isWritable()) {
+                throw new TcpBackpressureException("TCP 客户端出站缓冲区已达高水位且通道不可写，触发背压快速失败");
+            }
+            if (channel != null) {
+                channel.writeAndFlush(msg);
+            }
+        }
     }
 
     /**
@@ -124,6 +137,19 @@ public class TcpClientTemplate {
      * @return 对端响应对象
      */
     public <T> T request(Object payload, Class<T> responseType, Duration timeout) {
+        return request(payload, timeout, responseType);
+    }
+
+    /**
+     * 发起全双工同步请求并在指定超时窗口内等待强类型对端应答（与 {@link TcpServerTemplate} 参数顺序对称）
+     *
+     * @param payload      请求报文
+     * @param timeout      超时时长
+     * @param responseType 响应目标类型
+     * @param <T>          响应强类型
+     * @return 对端响应对象
+     */
+    public <T> T request(Object payload, Duration timeout, Class<T> responseType) {
         Objects.requireNonNull(responseType, "responseType 不能为空");
         TcpPacket responsePacket = timeout != null ? request(payload, timeout) : request(payload);
         return castResponse(responsePacket, responseType);
@@ -197,13 +223,59 @@ public class TcpClientTemplate {
 
         CompletableFuture<TcpPacket> future = correlationManager.register(requestId, timeout);
 
-        client.getChannel().writeAndFlush(packet).addListener(f -> {
-            if (!f.isSuccess()) {
-                correlationManager.completeExceptionally(requestId, f.cause());
+        try {
+            TcpSession session = client.getSession();
+            ChannelFuture channelFuture;
+            if (session != null) {
+                channelFuture = session.send(packet);
+            } else {
+                Channel channel = client.getChannel();
+                if (channel != null && !channel.isWritable()) {
+                    throw new TcpBackpressureException("TCP 客户端出站缓冲区已达高水位且通道不可写，触发背压快速失败: requestId=" + requestId);
+                }
+                channelFuture = channel != null ? channel.writeAndFlush(packet) : null;
+                if (channelFuture == null) {
+                    throw new IllegalStateException("TCP 客户端通道不存在，无法发送请求: requestId=" + requestId);
+                }
             }
-        });
+            channelFuture.addListener(f -> {
+                if (!f.isSuccess()) {
+                    correlationManager.completeExceptionally(requestId, f.cause());
+                }
+            });
+        } catch (Exception ex) {
+            correlationManager.completeExceptionally(requestId, ex);
+            throw ex;
+        }
 
         return future;
+    }
+
+    /**
+     * 发起全双工异步强类型 RPC 请求（使用默认 requestTimeout）
+     *
+     * @param payload      请求报文
+     * @param responseType 响应目标类型
+     * @param <T>          响应强类型
+     * @return 强类型响应 Future
+     */
+    public <T> CompletableFuture<T> requestAsync(Object payload, Class<T> responseType) {
+        Objects.requireNonNull(responseType, "responseType 不能为空");
+        return requestAsync(payload).thenApply(responsePacket -> castResponse(responsePacket, responseType));
+    }
+
+    /**
+     * 发起全双工异步强类型 RPC 请求并在指定超时窗口内等待响应
+     *
+     * @param payload      请求报文
+     * @param timeout      超时时长
+     * @param responseType 响应目标类型
+     * @param <T>          响应强类型
+     * @return 强类型响应 Future
+     */
+    public <T> CompletableFuture<T> requestAsync(Object payload, Duration timeout, Class<T> responseType) {
+        Objects.requireNonNull(responseType, "responseType 不能为空");
+        return requestAsync(payload, timeout).thenApply(responsePacket -> castResponse(responsePacket, responseType));
     }
 
     /**

@@ -16,6 +16,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import javax.sql.DataSource;
 import java.util.*;
@@ -67,6 +68,10 @@ class DynamicDatasourceTemplateTest {
 
     @AfterEach
     void tearDown() {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+        TransactionSynchronizationManager.clear();
         TenantContextHolder.clear();
         DynamicDataSourceContextHolder.clear();
     }
@@ -346,5 +351,186 @@ class DynamicDatasourceTemplateTest {
     @SuppressWarnings("unchecked")
     private static <E extends Throwable> void sneakyThrow(Throwable t) throws E {
         throw (E) t;
+    }
+
+    @Test
+    @DisplayName("测试编程式主从快捷切源 callInMaster/runInMaster 与 callInSlave/runInSlave 栈安全语义")
+    void testCallAndRunInMasterAndSlave() {
+        DataSource slaveDs = mock(DataSource.class);
+        routingDataSource.addDataSource("slave", slaveDs);
+
+        String masterRes = template.callInMaster(() -> {
+            assertThat(template.getCurrentDataSourceKey()).isEqualTo("master");
+            return "from_master";
+        });
+        assertThat(masterRes).isEqualTo("from_master");
+        assertThat(template.getCurrentDataSourceKey()).isNull();
+
+        AtomicBoolean masterRan = new AtomicBoolean(false);
+        template.runInMaster(() -> {
+            assertThat(template.getCurrentDataSourceKey()).isEqualTo("master");
+            masterRan.set(true);
+        });
+        assertThat(masterRan.get()).isTrue();
+        assertThat(template.getCurrentDataSourceKey()).isNull();
+
+        String slaveRes = template.callInSlave(() -> {
+            assertThat(template.getCurrentDataSourceKey()).isEqualTo("slave");
+            return "from_slave";
+        });
+        assertThat(slaveRes).isEqualTo("from_slave");
+        assertThat(template.getCurrentDataSourceKey()).isNull();
+
+        // 异常发生后栈依然严格恢复
+        template.runInMaster(() -> {
+            assertThatThrownBy(() -> template.runInSlave(() -> {
+                assertThat(template.getCurrentDataSourceKey()).isEqualTo("slave");
+                throw new IllegalStateException("slave error");
+            })).isInstanceOf(IllegalStateException.class);
+            assertThat(template.getCurrentDataSourceKey()).isEqualTo("master");
+        });
+        assertThat(template.getCurrentDataSourceKey()).isNull();
+
+        // 配置缺失前置快速失败
+        properties.getReadWriteSplit().setSlaveDataSource(" ");
+        assertThatThrownBy(() -> template.callInSlave(() -> "fail"))
+                .isInstanceOf(IllegalArgumentException.class);
+        properties.getReadWriteSplit().setMasterDataSource("");
+        assertThatThrownBy(() -> template.runInMaster(() -> {}))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("测试分组节点对称摘除 removeGroupMember 与未知分组/成员安全返回")
+    void testRemoveGroupMemberSymmetricBehavior() {
+        DataSource slave1 = mock(DataSource.class);
+        DataSource slave2 = mock(DataSource.class);
+        routingDataSource.addDataSource("slave_1", slave1);
+        routingDataSource.addDataSource("slave_2", slave2);
+
+        template.addGroupMember("slave", "slave_1");
+        template.addGroupMember("slave", "slave_2");
+        assertThat(routingDataSource.getGroupDataSources().get("slave").getDataSourceMap())
+                .containsKeys("slave_1", "slave_2");
+
+        // 成功摘除节点（保留其余节点）
+        assertThat(template.removeGroupMember("slave", "slave_1")).isTrue();
+        assertThat(routingDataSource.getGroupDataSources().get("slave").getDataSourceMap())
+                .containsOnlyKeys("slave_2");
+        assertThat(template.containsDataSource("slave")).isTrue();
+
+        // 摘除最后一个节点后同步清理空分组，避免 containsDataSource 误判
+        assertThat(template.removeGroupMember("slave", "slave_2")).isTrue();
+        assertThat(routingDataSource.getGroupDataSources()).doesNotContainKey("slave");
+        assertThat(template.containsDataSource("slave")).isFalse();
+
+        // 重复移除或移除不存在成员/分组安全返回 false
+        assertThat(template.removeGroupMember("slave", "slave_1")).isFalse();
+        assertThat(template.removeGroupMember("non_existent_group", "slave_2")).isFalse();
+
+        // 非法空入参快速失败
+        assertThatThrownBy(() -> template.removeGroupMember(" ", "slave_2"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.removeGroupMember("slave", ""))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("测试带返回值全库批处理聚合 forEachDataSourceWithResult (含 null 保真、FAIL_SAFE 与 FAIL_FAST)")
+    void testForEachDataSourceWithResult() {
+        List<String> targets = List.of("master", "tenant_1001", "tenant_1002");
+
+        // 1. FAIL_SAFE: 聚合返回值（含合法 null 值）并隔离单库异常
+        BatchExecutionResult<String> failSafeResult = template.forEachDataSourceWithResult(targets, dsKey -> {
+            if ("tenant_1001".equals(dsKey)) {
+                throw new IllegalStateException("tenant_1001 查询异常");
+            }
+            if ("tenant_1002".equals(dsKey)) {
+                return null;
+            }
+            return "OK:" + dsKey;
+        });
+
+        assertThat(failSafeResult.getTotalCount()).isEqualTo(3);
+        assertThat(failSafeResult.getSuccessCount()).isEqualTo(2);
+        assertThat(failSafeResult.getFailureCount()).isEqualTo(1);
+        assertThat(failSafeResult.isAllSuccess()).isFalse();
+        assertThat(failSafeResult.getFailedTargets()).containsExactly("tenant_1001");
+        assertThat(failSafeResult.getResult("master")).isEqualTo("OK:master");
+        assertThat(failSafeResult.getResults()).containsKey("tenant_1002");
+        assertThat(failSafeResult.getResult("tenant_1002")).isNull();
+        assertThat(failSafeResult.getResults()).doesNotContainKey("tenant_1001");
+        assertThat(template.getCurrentDataSourceKey()).isNull();
+
+        // 2. 全量默认重载全成功场景
+        BatchExecutionResult<String> fullResult = template.forEachDataSourceWithResult(dsKey -> "LEN:" + dsKey.length());
+        assertThat(fullResult.isAllSuccess()).isTrue();
+        assertThat(fullResult.getResults()).containsKeys("master", "tenant_1001", "tenant_1002");
+
+        // 3. FAIL_FAST: 受检异常转译保留 cause 链并立即中断
+        Exception checkedEx = new Exception("底层受检聚合异常");
+        assertThatThrownBy(() -> template.forEachDataSourceWithResult(
+                targets, BatchExecutionPolicy.FAIL_FAST, dsKey -> {
+                    if ("tenant_1001".equals(dsKey)) {
+                        sneakyThrow(checkedEx);
+                    }
+                    return dsKey;
+                }))
+                .isInstanceOf(DataSourceSwitchException.class)
+                .hasCause(checkedEx);
+        assertThat(template.getCurrentDataSourceKey()).isNull();
+    }
+
+    @Test
+    @DisplayName("测试带返回值全租户批处理聚合 forEachTenantWithResult (FAIL_SAFE 与 FAIL_FAST)")
+    void testForEachTenantWithResult() {
+        // 1. 全租户默认自动探测 (FAIL_SAFE)
+        BatchExecutionResult<String> autoResult = template.forEachTenantWithResult((tenantId, dsKey) -> {
+            assertThat(TenantContextHolder.getTenantId()).isEqualTo(tenantId);
+            assertThat(template.getCurrentDataSourceKey()).isEqualTo(dsKey);
+            if ("1001".equals(tenantId)) {
+                throw new IllegalArgumentException("租户 1001 巡检失败");
+            }
+            return tenantId + "->" + dsKey;
+        });
+
+        assertThat(autoResult.getTotalCount()).isEqualTo(2);
+        assertThat(autoResult.getSuccessCount()).isEqualTo(1);
+        assertThat(autoResult.getFailureCount()).isEqualTo(1);
+        assertThat(autoResult.getFailedTargets()).containsExactly("1001");
+        assertThat(autoResult.getResult("1002")).isEqualTo("1002->tenant_1002");
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+        assertThat(template.getCurrentDataSourceKey()).isNull();
+
+        // 2. 指定租户集合 + FAIL_FAST
+        assertThatThrownBy(() -> template.forEachTenantWithResult(
+                List.of("1001", "1002"),
+                BatchExecutionPolicy.FAIL_FAST,
+                (tenantId, dsKey) -> {
+                    if ("1001".equals(tenantId)) {
+                        throw new RuntimeException("租户 FAIL_FAST 阻断");
+                    }
+                    return tenantId;
+                }))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("租户 FAIL_FAST 阻断");
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+        assertThat(template.getCurrentDataSourceKey()).isNull();
+    }
+
+    @Test
+    @DisplayName("测试 BatchFailure.cause 标注 @JsonIgnore，Jackson 序列化绝不泄露原始异常堆栈")
+    void testBatchFailureCauseJsonIgnored() throws Exception {
+        java.lang.reflect.Field causeField = BatchFailure.class.getDeclaredField("cause");
+        assertThat(causeField.getAnnotation(com.fasterxml.jackson.annotation.JsonIgnore.class)).isNotNull();
+
+        BatchFailure failure = new BatchFailure(
+                "tenant_9999",
+                "查询失败",
+                new IllegalStateException("SECRET_SQL_INTERNAL_DETAIL")
+        );
+        String json = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(failure);
+        assertThat(json).contains("tenant_9999").contains("查询失败");
+        assertThat(json).doesNotContain("cause").doesNotContain("SECRET_SQL_INTERNAL_DETAIL").doesNotContain("stackTrace");
     }
 }

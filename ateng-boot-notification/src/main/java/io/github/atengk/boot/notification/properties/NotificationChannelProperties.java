@@ -5,6 +5,8 @@ import io.github.atengk.boot.notification.util.NotificationDesensitizeUtil;
 import lombok.Data;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 协同通知单个渠道配置属性
@@ -26,7 +28,7 @@ public class NotificationChannelProperties {
     private String webhook;
 
     /**
-     * 加签签名密钥（钉钉 / 飞书必填加签参数）
+     * 加签签名密钥（钉钉 / 飞书加签参数；企业微信官方 Webhook 机器人仅依赖 URL 中的 key 鉴权，无 secret 机制）
      */
     private String secret;
 
@@ -45,6 +47,16 @@ public class NotificationChannelProperties {
      */
     private Integer permitsPerMinute;
 
+    /**
+     * 当前渠道专属每秒突发频控配额阈值（条/秒，可选，未设置时飞书等特定平台采用全局默认突发配置）
+     */
+    private Integer burstPermitsPerSecond;
+
+    /**
+     * 备用通知渠道名称列表（当主渠道遭遇网络超时、HTTP 429 频控或 HTTP 5xx 故障等瞬态外部异常时，按序尝试备用渠道重试）
+     */
+    private List<String> backupChannels = new ArrayList<>();
+
     @Override
     public String toString() {
         return "NotificationChannelProperties{" +
@@ -54,6 +66,8 @@ public class NotificationChannelProperties {
                 ", connectTimeout=" + connectTimeout +
                 ", readTimeout=" + readTimeout +
                 ", permitsPerMinute=" + permitsPerMinute +
+                ", burstPermitsPerSecond=" + burstPermitsPerSecond +
+                ", backupChannels=" + backupChannels +
                 '}';
     }
 }

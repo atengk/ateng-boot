@@ -4,6 +4,8 @@ server:
 spring:
   application:
     name: ateng-boot-sample-observability
+  config:
+    import: "optional:classpath:application-local.yml"
   datasource:
     driver-class-name: org.h2.Driver
     url: jdbc:h2:mem:sample_obs;DB_CLOSE_DELAY=-1;MODE=MySQL
@@ -33,6 +35,13 @@ ateng:
       security:
         lockdown-enabled: true
         token: "obs-admin-secret-token"
+        allowed-ip-ranges:
+          - "10.0.0.0/8"
+          - "192.168.1.100"
+        basic-auth:
+          enabled: true
+          username: "admin"
+          password: "obs-admin-pass-123"
 
     # 存储底座配置（本地目录模式）
     storage:

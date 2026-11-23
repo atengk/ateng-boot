@@ -1,96 +1,75 @@
-# ateng-boot-sample-mqtt 物联网 MQTT 5.0 / 3.1.1 端到端自验工程
+# ateng-boot-sample-mqtt 物联网 MQTT 5.0 / 3.1.1 场景体验工程
 
-> 专一通配符路径变量提取、四维上下文 TraceId 透传与还原、集群共享订阅负载均衡、MQTT 5.0 同步 RPC 请求-响应、本地事务发信对齐、工业国标/车联网 HexPayload 强类型转译、Actuator 生产探针与 Micrometer 黄金度量 100% 端到端实测沙箱。
-
----
-
-## 1. 场景定位与功能矩阵
-
-物联网与边缘计算场景在接入 MQTT 时通常面临以下核心痛点：
-1. **多主题通配符提取繁琐**：单层 `+` 与多层 `#` 订阅后，业务代码需反复手工 `split("/")` 解析设备 ID，易出错且代码臃肿；
-2. **全链路追踪断链**：消息在异步网络队列中流转，日志缺少统一的 TraceId 贯通，生产排查宛如大海捞针；
-3. **集群横向扩容重复消费**：多个微服务 Pod 实例订阅同一主题时，缺少原生分组负载均衡机制，导致重复消费；
-4. **RPC 交互实现复杂**：向设备下发指令并等待结果回传时，需人工拼装 Correlation ID 并维护高并发超时的状态机；
-5. **本地事务与发信竞态**：本地数据库写事务尚未完成，消息已被下游消费者提前读取引发分布式脏读；
-6. **工业二进制与国标报文转换繁重**：电力 DL/T 645、车联网 GB/T 32960 等十六进制定长报文需反复手写编解码样板；
-7. **Paho 官方底层并发 Bug 与吞吐陷阱**：数组批量订阅并发竞争 NPE、默认 10 飞行窗口引发 `32202` 吞吐雪崩；
-8. **心跳阻塞假死断连**：业务耗时操作挤占 Paho 事件循环线程，导致 Ping 报文发送延迟被 Broker 掐断。
-
-`ateng-boot-sample-mqtt` 提供生产级、纯内存自洽的端到端验证方案：
-- **纯内存离线自洽（Zero External Broker）**：内置 Netty In-Memory MQTT 5.0/3.1.1 Broker 测试桩，无需外部物理 EMQX / Mosquitto，秒级全绿准出；
-- **REST 风格主题通配变量**：形如 `iot/devices/{deviceId}/telemetry` 模式，自动编译并在方法形参 `@MqttVariable("deviceId")` 强类型提取；
-- **四维上下文全链路透传**：`X-Trace-Id` 自动写入 MQTT 5.0 User Properties，监听方法在沙箱内自动还原 MDC `traceId`；
-- **集群 `$share` 共享订阅**：声明 `sharedGroup = "telemetry-worker"` 自动编译为 `$share` 过滤器，集群多节点无锁均衡轮询；
-- **MQTT 5.0 同步 RPC 门面**：`sendAndReceive` 原生基于 `ResponseTopic` 与 `CorrelationData` 实现高并发独立响应路由与超时扫描；
-- **本地事务对齐发信**：`sendAfterCommit` 严格在 Spring 本地事务提交后投递，事务回滚自动取消，保障数据绝对一致；
-- **工业国标十六进制报文转译**：`HexPayload` 强类型承载十六进制字符串与字节数组双向自适应互转；
-- **可观测性闭环**：深度接入 Spring Boot Actuator `/actuator/health` 探针与 Micrometer `/actuator/prometheus` 黄金指标。
+> 专注于演示与自验 `ateng-boot-mqtt` 核心特性在真实业务场景下的开箱使用。
 
 ---
 
-## 2. 7 项端到端自验场景全景表
+## 1. 快速启动与服务端口
 
-| 序号 | 自验场景 | 覆盖核心机制 / API | 验证端点 / 动作 | 预期响应 / 校验点 |
-| :--- | :--- | :--- | :--- | :--- |
-| **01** | 设备遥测上行与通配消费 | `MqttTemplate.publish`<br>`@MqttListener` + `@MqttVariable` + `@MqttHeader` | `POST /api/mqtt/publish/telemetry` | HTTP 200 成功，监听器提取 `deviceId` 与 `X-Trace-Id`，反查 `GET /api/mqtt/telemetries` 数据匹配 |
-| **02** | 工业国标 Hex 报文转译 | `HexPayload`<br>`HexMqttMessageConverter` | `POST /api/mqtt/publish/hex` | 强类型接收并转译 `68AAAAAAAAAAAA6811043333333316`，十六进制与字节长度无损解析 |
-| **03** | `$share` 共享订阅均衡消费 | `@MqttListener(sharedGroup = "...")` | `POST /api/mqtt/publish/cluster-metric` | 自动添加 `$share/telemetry-worker/` 前缀订阅，多节点分组轮询消费成功 |
-| **04** | MQTT 5.0 同步 RPC 指令响应 | `MqttTemplate.sendAndReceive`<br>`MqttRequestReplyManager` | `POST /api/mqtt/rpc/control` | 阻塞等待边缘端基于 `ResponseTopic` 与 `CorrelationData` 回传回执，返回统一结果状态 |
-| **05** | 本地事务对齐发信防脏读 | `MqttTemplate.sendAfterCommit`<br>`@Transactional` | `POST /api/mqtt/tx/telemetry` | 事务提交后投递成功，消费者接收到带有事务一致性的订单遥测记录 |
-| **06** | Actuator 生产健康感知探针 | `MqttHealthIndicator` + Actuator | `GET /actuator/health` | 实时感知底层 MQTT 客户端连接状态，输出 `UP` 与详细 Broker 地址、ClientId、协议版本 |
-| **07** | Micrometer 核心度量采集 | `MqttMetrics` + Prometheus Registry | 模拟发信与消费 | 统计 `mqtt.client.status`、`mqtt.message.published`、`mqtt.publish.latency` 等指标全覆盖 |
+- **默认 HTTP 端口**：`8080`（可在 `application.yml` 中修改）
+- **启动方式**：
+  ```bash
+  # 方式一：IDE 中运行 SampleMqttApplication.java 的 main 方法
+  # 方式二：命令行启动
+  mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-mqtt
+  ```
 
 ---
 
-## 3. 本地启动与实测体验
+## 2. 运行环境与双模切换
 
-### 1. 启动服务
-
-```bash
-# 启动样例工程（需本地已运行 MQTT Broker，如 EMQX / Mosquitto，或启动嵌入式测试）
-mvn -pl ateng-boot-samples/ateng-boot-sample-mqtt spring-boot:run
-```
-
-### 2. 发布设备遥测数据 (HTTP POST)
-
-```bash
-curl -X POST "http://localhost:8080/api/mqtt/publish/telemetry?deviceId=sensor-001&temp=26.8&humidity=55.4"
-```
-
-### 3. 查询监听器聚合接收结果 (HTTP GET)
-
-```bash
-curl "http://localhost:8080/api/mqtt/telemetries"
-```
-
-### 4. 发起同步 RPC 设备控制指令
-
-```bash
-curl -X POST "http://localhost:8080/api/mqtt/rpc/control?action=reboot&speed=50"
-```
-
-### 5. 发布本地事务协同遥测数据 (HTTP POST)
-
-```bash
-curl -X POST "http://localhost:8080/api/mqtt/tx/telemetry?deviceId=tx-device-01&temp=31.2&humidity=48.0"
-```
-
-### 6. 查看 Actuator 健康探针与度量
-
-```bash
-# 查看健康状态
-curl "http://localhost:8080/actuator/health"
-
-# 查看 Prometheus 格式度量
-curl "http://localhost:8080/actuator/prometheus"
-```
+- **默认 / CI 模式**：自测套件内置纯内存 MQTT Broker 测试桩（`EmbeddedMqttBroker`），无需安装外部 EMQX / Mosquitto 服务即可直接跑通全量测试；
+- **Local 真实模式**：若需连接真实 MQTT Broker，复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml` 并配置实际 Broker 连接信息（已被 `.gitignore` 忽略，安全无泄漏风险），激活 `local` Profile 启动即可直连调试：
+  ```bash
+  # 命令行激活 local profile
+  mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-mqtt -Dspring-boot.run.profiles=local
+  ```
 
 ---
 
-## 4. 自动化回归测试命令
+## 3. 核心 Controller 接口与一键体验
 
-无需启动外部真实 MQTT Broker，直接执行以下命令即可触发纯内存 100% 离线自洽集成测试：
+工程按物联网通信业务领域拆分为 8 大独立 `@RestController`，对外暴露统一的强类型 `Result<T>` 接口，支持通过标准 cURL 或 Postman 一键发起交互体验：
+
+| 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
+| :--- | :--- | :--- | :--- |
+| **设备遥测上报与 4D 上下文回显** | `MqttTelemetryController` | `POST /sample/mqtt/telemetry/publish` | `curl -X POST "http://localhost:8080/sample/mqtt/telemetry/publish" -H "Content-Type: application/json" -H "X-Trace-Id: trace-web-1001" -d '{"deviceId":"DEV-WEB-1001","temp":28.4,"humidity":65.2,"qos":1}'` |
+| **最新遥测快照查询** | `MqttTelemetryController` | `GET /sample/mqtt/telemetry/latest` | `curl -X GET "http://localhost:8080/sample/mqtt/telemetry/latest?deviceId=DEV-WEB-1001"` |
+| **集群共享订阅指标上报** | `MqttTelemetryController` | `POST /sample/mqtt/telemetry/cluster-metric` | `curl -X POST "http://localhost:8080/sample/mqtt/telemetry/cluster-metric?metric=cpu_load_85"` |
+| **同步阻塞 RPC 控制指令** | `MqttRpcController` | `POST /sample/mqtt/rpc/control-sync` | `curl -X POST "http://localhost:8080/sample/mqtt/rpc/control-sync" -H "Content-Type: application/json" -d '{"action":"REBOOT","speed":50,"timeoutSeconds":3}'` |
+| **异步非阻塞 RPC 控制指令** | `MqttRpcController` | `POST /sample/mqtt/rpc/control-async` | `curl -X POST "http://localhost:8080/sample/mqtt/rpc/control-async" -H "Content-Type: application/json" -d '{"action":"START_FAN","speed":80,"timeoutSeconds":3}'` |
+| **声明式 `@MqttReply` 同步自动应答** | `MqttRpcController` | `POST /sample/mqtt/rpc/declarative-reply` | `curl -X POST "http://localhost:8080/sample/mqtt/rpc/declarative-reply" -H "Content-Type: application/json" -d '{"action":"SYNC_STATUS","speed":1600,"timeoutSeconds":5}'` |
+| **声明式 `@MqttReply` 异步自动应答** | `MqttRpcController` | `POST /sample/mqtt/rpc/declarative-reply-async` | `curl -X POST "http://localhost:8080/sample/mqtt/rpc/declarative-reply-async" -H "Content-Type: application/json" -d '{"action":"ASYNC_CALIBRATE","speed":1800,"timeoutSeconds":5}'` |
+| **工业国标十六进制报文双向转译** | `MqttIndustrialHexController` | `POST /sample/mqtt/hex/publish` | `curl -X POST "http://localhost:8080/sample/mqtt/hex/publish" -H "Content-Type: application/json" -d '{"deviceId":"DEV-HEX-001","hexData":"68AAAAAAAAAAAA6811043333333316"}'` |
+| **批量并发原子下发** | `MqttBatchAndRetainedController` | `POST /sample/mqtt/batch/publish` | `curl -X POST "http://localhost:8080/sample/mqtt/batch/publish" -H "Content-Type: application/json" -d '{"records":[{"topic":"iot/devices/DEV-01/cmd","payload":"CMD_START","qos":1}]}'` |
+| **设备保留消息（影子状态）发布** | `MqttBatchAndRetainedController` | `POST /sample/mqtt/batch/retained-status` | `curl -X POST "http://localhost:8080/sample/mqtt/batch/retained-status" -H "Content-Type: application/json" -d '{"deviceId":"DEV-ONLINE-01","status":"ONLINE"}'` |
+| **对称清理设备保留消息** | `MqttBatchAndRetainedController` | `DELETE /sample/mqtt/batch/clear-retained` | `curl -X DELETE "http://localhost:8080/sample/mqtt/batch/clear-retained?deviceId=DEV-ONLINE-01"` |
+| **死信 DLT 毒丸消息注入** | `MqttDeadLetterController` | `POST /sample/mqtt/dead-letter/trigger-poison` | `curl -X POST "http://localhost:8080/sample/mqtt/dead-letter/trigger-poison?payload=POISON_PAYLOAD"` |
+| **消费端 `@Valid` 校验失败直入 DLT** | `MqttDeadLetterController` | `POST /sample/mqtt/dead-letter/trigger-valid-fail` | `curl -X POST "http://localhost:8080/sample/mqtt/dead-letter/trigger-valid-fail" -H "Content-Type: application/json" -d '{"gatewayId":"gw-south-01","orderNo":"","targetTemp":-5}'` |
+| **批量连续毒丸有序入库演示** | `MqttDeadLetterController` | `POST /sample/mqtt/dead-letter/trigger-multi-poison` | `curl -X POST "http://localhost:8080/sample/mqtt/dead-letter/trigger-multi-poison" -H "Content-Type: application/json" -d '{"payloads":["POISON_SEQ_1","POISON_SEQ_2"]}'` |
+| **死信队列只读窥探** | `MqttDeadLetterController` | `GET /sample/mqtt/dead-letter/peek` | `curl -X GET "http://localhost:8080/sample/mqtt/dead-letter/peek?topic=iot/devices/poison-test/DLT&count=5&timeoutSeconds=2"` |
+| **死信受控安全重放至恢复主题** | `MqttDeadLetterController` | `POST /sample/mqtt/dead-letter/replay` | `curl -X POST "http://localhost:8080/sample/mqtt/dead-letter/replay" -H "Content-Type: application/json" -d '{"sourceTopic":"iot/devices/poison-test/DLT","targetTopic":"iot/devices/poison-recovered","count":5,"timeoutSeconds":2}'` |
+| **彻底清空死信队列** | `MqttDeadLetterController` | `DELETE /sample/mqtt/dead-letter/purge` | `curl -X DELETE "http://localhost:8080/sample/mqtt/dead-letter/purge?topic=iot/devices/poison-test/DLT"` |
+| **查询消费端点实时运行状态** | `MqttContainerController` | `GET /sample/mqtt/container/endpoints` | `curl -X GET "http://localhost:8080/sample/mqtt/container/endpoints"` |
+| **查询容器可靠性与订阅汇总快照** | `MqttContainerController` | `GET /sample/mqtt/container/summary` | `curl -X GET "http://localhost:8080/sample/mqtt/container/summary"` |
+| **动态暂停指定监听端点** | `MqttContainerController` | `POST /sample/mqtt/container/pause` | `curl -X POST "http://localhost:8080/sample/mqtt/container/pause?endpointId=mqttContainerGovernanceScenarioService%23onGovernanceMessage"` |
+| **暂停期间投送测试消息** | `MqttContainerController` | `POST /sample/mqtt/container/publish-test` | `curl -X POST "http://localhost:8080/sample/mqtt/container/publish-test?message=HELLO_CONTAINER"` |
+| **动态恢复指定监听端点** | `MqttContainerController` | `POST /sample/mqtt/container/resume` | `curl -X POST "http://localhost:8080/sample/mqtt/container/resume?endpointId=mqttContainerGovernanceScenarioService%23onGovernanceMessage"` |
+| **`MANUAL` 手动确认与 `nackToDlt` 触发** | `MqttContainerController` | `POST /sample/mqtt/container/publish-manual` | `curl -X POST "http://localhost:8080/sample/mqtt/container/publish-manual?payload=MANUAL_OK_1"` |
+| **可恢复瞬态异常退避重试触发** | `MqttContainerController` | `POST /sample/mqtt/container/publish-retry` | `curl -X POST "http://localhost:8080/sample/mqtt/container/publish-retry?payload=TRANSIENT:JOB-77"` |
+| **动态注册命名 MQTT 客户端** | `MqttClientGovernanceController` | `POST /sample/mqtt/clients/register` | `curl -X POST "http://localhost:8080/sample/mqtt/clients/register" -H "Content-Type: application/json" -d '{"clientName":"park-north","cleanStart":true,"connectionTimeoutSeconds":5}'` |
+| **通过 `MqttTemplate.use()` 定向发布** | `MqttClientGovernanceController` | `POST /sample/mqtt/clients/publish` | `curl -X POST "http://localhost:8080/sample/mqtt/clients/publish" -H "Content-Type: application/json" -d '{"clientName":"park-north","topic":"iot/clients/park-north/command","payload":"OPEN_GATE","qos":1}'` |
+| **查询受管客户端列表与健康快照** | `MqttClientGovernanceController` | `GET /sample/mqtt/clients` | `curl -X GET "http://localhost:8080/sample/mqtt/clients"` |
+| **查询动态客户端绑定消费历史** | `MqttClientGovernanceController` | `GET /sample/mqtt/clients/consumed` | `curl -X GET "http://localhost:8080/sample/mqtt/clients/consumed?clientName=park-north"` |
+| **安全注销动态命名客户端** | `MqttClientGovernanceController` | `DELETE /sample/mqtt/clients/{clientName}` | `curl -X DELETE "http://localhost:8080/sample/mqtt/clients/park-north"` |
+| **事务感知遥测发信（提交 / 回滚防脏读）** | `MqttTransactionController` | `POST /sample/mqtt/transaction/record-telemetry` | `curl -X POST "http://localhost:8080/sample/mqtt/transaction/record-telemetry" -H "Content-Type: application/json" -d '{"deviceId":"DEV-TX-1001","temp":26.8,"humidity":55.2,"shouldRollback":false}'` |
+
+---
+
+## 4. 全真自动化回归命令
 
 ```bash
 mvn test -pl ateng-boot-mqtt,ateng-boot-samples/ateng-boot-sample-mqtt -am -T 1C -nsu -B
 ```
+
+> 详细原理机制、配置清单与扩展定制，请参阅核心 Starter 文档：[ateng-boot-mqtt README](../../ateng-boot-mqtt/README.md)。

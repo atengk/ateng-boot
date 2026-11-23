@@ -1,8 +1,10 @@
 package io.github.atengk.boot.sample.pay.listener;
 
+import io.github.atengk.boot.pay.model.callback.OrderClosedCallback;
 import io.github.atengk.boot.pay.model.callback.PayCallbackResult;
 import io.github.atengk.boot.pay.model.callback.PaymentSuccessCallback;
 import io.github.atengk.boot.pay.model.callback.RefundSuccessCallback;
+import io.github.atengk.boot.pay.model.callback.TransferNotifyCallback;
 import io.github.atengk.boot.pay.spi.PayCallbackListener;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -34,6 +36,16 @@ public class OrderPaymentCallbackListener implements PayCallbackListener {
      * 模拟业务已处理退款单号集合 (用于退款防重幂等校验)
      */
     private final Set<String> processedRefunds = ConcurrentHashMap.newKeySet();
+
+    /**
+     * 模拟业务已处理关单/撤销订单号集合 (用于关单事件防重幂等校验)
+     */
+    private final Set<String> processedClosedOrders = ConcurrentHashMap.newKeySet();
+
+    /**
+     * 模拟业务已处理转账单号集合 (用于商家转账回调防重幂等校验)
+     */
+    private final Set<String> processedTransfers = ConcurrentHashMap.newKeySet();
 
     @Override
     public boolean supports(PaymentSuccessCallback callback) {
@@ -97,11 +109,65 @@ public class OrderPaymentCallbackListener implements PayCallbackListener {
         return Collections.unmodifiableSet(processedOrders);
     }
 
+    @Override
+    public boolean supports(OrderClosedCallback callback) {
+        return callback != null && callback.getOutTradeNo() != null;
+    }
+
+    @Override
+    public PayCallbackResult onOrderClosed(OrderClosedCallback callback) {
+        String outTradeNo = callback.getOutTradeNo();
+        if (!processedClosedOrders.add(outTradeNo)) {
+            log.warn("订单 [{}] 关单通知已处理过，触发幂等防重忽略", outTradeNo);
+            return PayCallbackResult.ignore("订单关单已处理，忽略重复通知");
+        }
+        log.info("==> 业务收到订单关闭通知: channel={}, outTradeNo={}, tradeState={}, closeReason={}",
+                callback.getChannel(), outTradeNo, callback.getTradeState(), callback.getCloseReason());
+        return PayCallbackResult.success("订单关单同步关闭成功");
+    }
+
+    @Override
+    public boolean supports(TransferNotifyCallback callback) {
+        return callback != null && callback.getOutBizNo() != null;
+    }
+
+    @Override
+    public PayCallbackResult onTransferNotify(TransferNotifyCallback callback) {
+        String outBizNo = callback.getOutBizNo();
+        if (!processedTransfers.add(outBizNo)) {
+            log.warn("商家转账单 [{}] 回调已处理过，触发幂等防重忽略", outBizNo);
+            return PayCallbackResult.ignore("转账通知已处理，忽略重复通知");
+        }
+        log.info("==> 业务收到商家转账终态通知: channel={}, outBizNo={}, orderId={}, status={}, amount={}",
+                callback.getChannel(), outBizNo, callback.getOrderId(), callback.getStatus(), callback.getAmount());
+        return PayCallbackResult.success("商家转账终态入账成功");
+    }
+
+    /**
+     * 获取已处理完成的关单订单号集合
+     *
+     * @return 不可变已处理关单订单号集合
+     */
+    public Set<String> getProcessedClosedOrders() {
+        return Collections.unmodifiableSet(processedClosedOrders);
+    }
+
+    /**
+     * 获取已处理完成的商家转账单号集合
+     *
+     * @return 不可变已处理商家转账单号集合
+     */
+    public Set<String> getProcessedTransfers() {
+        return Collections.unmodifiableSet(processedTransfers);
+    }
+
     /**
      * 清空已处理订单状态（供单元测试在用例之间安全清理）
      */
     public void reset() {
         processedOrders.clear();
         processedRefunds.clear();
+        processedClosedOrders.clear();
+        processedTransfers.clear();
     }
 }

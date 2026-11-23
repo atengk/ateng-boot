@@ -1,0 +1,405 @@
+package io.github.atengk.boot.job.xxl.helper;
+
+import com.xxl.job.core.context.XxlJobContext;
+import com.xxl.job.core.executor.XxlJobExecutor;
+import com.xxl.job.core.handler.IJobHandler;
+import com.xxl.job.core.handler.annotation.XxlJob;
+import com.xxl.job.core.handler.impl.MethodJobHandler;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.TenantContextHolder.TenantSnapshot;
+import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.job.xxl.annotation.AtengXxlJob;
+import io.github.atengk.boot.job.xxl.model.ShardingContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.BeansException;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationContextAware;
+import org.springframework.core.MethodIntrospector;
+import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.util.Assert;
+import org.springframework.util.ReflectionUtils;
+import org.springframework.util.StringUtils;
+
+import java.lang.reflect.Method;
+import java.util.Collections;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.locks.ReentrantLock;
+
+/**
+ * XXL-Job 脱网本地调试与端到端测试辅助门面
+ *
+ * <p>用于在无调度中心 (Admin) 运行的离线自洽单测与本地开发环境下，一键手动模拟触发执行任意已注册的 {@link XxlJob} 任务：
+ * <ul>
+ *     <li><b>双模 Handler 探测</b>：优先从 {@link XxlJobExecutor} 运行库提取，未就绪时自动穿透 Spring 容器内省探测；</li>
+ *     <li><b>四维上下文自动装配</b>：自动在当前工作线程注入合法的 {@link XxlJobContext} 分片、参数与追踪快照；</li>
+ *     <li><b>确定性清理恢复</b>：无论执行成功还是抛出异常，在 {@code finally} 中严格执行上下文清理与现场还原。</li>
+ * </ul></p>
+ *
+ * @author Ateng
+ * @since 2026-10-31
+ */
+public class XxlJobTestHelper implements ApplicationContextAware {
+
+    private static final Logger log = LoggerFactory.getLogger(XxlJobTestHelper.class);
+
+    private static volatile ApplicationContext applicationContext;
+    private static final ConcurrentMap<String, IJobHandler> FALLBACK_HANDLER_REPOSITORY = new ConcurrentHashMap<>();
+    private static final ReentrantLock REPOSITORY_LOCK = new ReentrantLock();
+
+    @Override
+    public void setApplicationContext(ApplicationContext context) throws BeansException {
+        REPOSITORY_LOCK.lock();
+        try {
+            applicationContext = context;
+            FALLBACK_HANDLER_REPOSITORY.clear();
+            scanAndRegisterSpringHandlers(context);
+        } finally {
+            if (REPOSITORY_LOCK.isHeldByCurrentThread()) {
+                REPOSITORY_LOCK.unlock();
+            }
+        }
+    }
+
+    /**
+     * 清理所有缓存的 Handler 与上下文引用 (常用于单测结束重置环境)
+     */
+    public static void clear() {
+        REPOSITORY_LOCK.lock();
+        try {
+            FALLBACK_HANDLER_REPOSITORY.clear();
+            applicationContext = null;
+        } finally {
+            if (REPOSITORY_LOCK.isHeldByCurrentThread()) {
+                REPOSITORY_LOCK.unlock();
+            }
+        }
+    }
+
+    /**
+     * 根据名称获取已加载的 JobHandler 实例
+     *
+     * @param jobHandler 任务 Handler 名称
+     * @return 对应的 Handler 实例，未找到返回 null
+     */
+    public static IJobHandler getHandler(String jobHandler) {
+        return loadHandler(jobHandler);
+    }
+
+    /**
+     * 触发执行任务 (仅指定 handler)
+     *
+     * @param jobHandler 任务 Handler 名称
+     * @return 执行诊断报告
+     */
+    public static XxlJobTestResult trigger(String jobHandler) {
+        return trigger(jobHandler, (String) null, 0, 1, null);
+    }
+
+    /**
+     * 触发执行任务 (指定 handler 与字符串入参)
+     *
+     * @param jobHandler 任务 Handler 名称
+     * @param param      执行入参字符串
+     * @return 执行诊断报告
+     */
+    public static XxlJobTestResult trigger(String jobHandler, String param) {
+        return trigger(jobHandler, param, 0, 1, null);
+    }
+
+    /**
+     * 触发执行任务 (指定 handler 与 POJO/DTO 对象入参，自动序列化为 JSON)
+     *
+     * @param jobHandler  任务 Handler 名称
+     * @param paramObject 执行入参对象 (非 String 对象将自动序列化为 JSON 字符串)
+     * @return 执行诊断报告
+     */
+    public static XxlJobTestResult trigger(String jobHandler, Object paramObject) {
+        return trigger(jobHandler, serializeParam(paramObject), 0, 1, null);
+    }
+
+    /**
+     * 触发执行任务 (指定分片广播参数与字符串入参)
+     *
+     * @param jobHandler 任务 Handler 名称
+     * @param param      执行入参字符串
+     * @param shardIndex 当前分片索引 (从 0 开始)
+     * @param shardTotal 分片总数
+     * @return 执行诊断报告
+     */
+    public static XxlJobTestResult trigger(String jobHandler, String param, int shardIndex, int shardTotal) {
+        return trigger(jobHandler, param, shardIndex, shardTotal, null);
+    }
+
+    /**
+     * 触发执行任务 (指定分片广播参数与 POJO/DTO 对象入参，自动序列化为 JSON)
+     *
+     * @param jobHandler  任务 Handler 名称
+     * @param paramObject 执行入参对象 (非 String 对象将自动序列化为 JSON 字符串)
+     * @param shardIndex  当前分片索引 (从 0 开始)
+     * @param shardTotal  分片总数
+     * @return 执行诊断报告
+     */
+    public static XxlJobTestResult trigger(String jobHandler, Object paramObject, int shardIndex, int shardTotal) {
+        return trigger(jobHandler, serializeParam(paramObject), shardIndex, shardTotal, null);
+    }
+
+    /**
+     * 触发执行任务 (全维参数与 POJO/DTO 对象入参，自动序列化为 JSON)
+     *
+     * @param jobHandler  任务 Handler 名称
+     * @param paramObject 执行入参对象 (非 String 对象将自动序列化为 JSON 字符串)
+     * @param shardIndex  当前分片索引 (从 0 开始)
+     * @param shardTotal  分片总数
+     * @param tenantId    显式指定的租户标识 (可为 null)
+     * @return 执行诊断报告
+     */
+    public static XxlJobTestResult trigger(String jobHandler, Object paramObject, int shardIndex, int shardTotal, String tenantId) {
+        return trigger(jobHandler, serializeParam(paramObject), shardIndex, shardTotal, tenantId);
+    }
+
+    /**
+     * 触发执行任务 (基于 ShardingContext 分片上下文与参数对象)
+     *
+     * @param jobHandler      任务 Handler 名称
+     * @param paramObject     执行入参对象 (非 String 对象将自动序列化为 JSON 字符串)
+     * @param shardingContext 分片广播上下文 (为 null 时采用单机 0/1)
+     * @return 执行诊断报告
+     */
+    public static XxlJobTestResult trigger(String jobHandler, Object paramObject, ShardingContext shardingContext) {
+        return trigger(jobHandler, paramObject, shardingContext, null);
+    }
+
+    /**
+     * 触发执行任务 (基于 ShardingContext 分片上下文与指定租户)
+     *
+     * @param jobHandler      任务 Handler 名称
+     * @param paramObject     执行入参对象
+     * @param shardingContext 分片广播上下文 (为 null 时采用单机 0/1)
+     * @param tenantId        显式指定的租户标识
+     * @return 执行诊断报告
+     */
+    public static XxlJobTestResult trigger(String jobHandler, Object paramObject, ShardingContext shardingContext, String tenantId) {
+        int shardIndex = shardingContext != null ? shardingContext.getShardIndex() : 0;
+        int shardTotal = shardingContext != null ? shardingContext.getShardTotal() : 1;
+        return trigger(jobHandler, paramObject, shardIndex, shardTotal, tenantId);
+    }
+
+    /**
+     * 序列化入参对象 (String 原样返回，非 String 通过 JsonUtil 序列化为 JSON)
+     */
+    private static String serializeParam(Object paramObject) {
+        if (paramObject == null) {
+            return null;
+        }
+        if (paramObject instanceof String str) {
+            return str;
+        }
+        return JsonUtil.toJsonString(paramObject);
+    }
+
+    /**
+     * 触发执行任务 (全维参数与字符串入参)
+     *
+     * @param jobHandler 任务 Handler 名称
+     * @param param      执行入参字符串
+     * @param shardIndex 当前分片索引 (从 0 开始)
+     * @param shardTotal 分片总数
+     * @param tenantId   显式指定的租户标识 (可为 null)
+     * @return 执行诊断报告
+     */
+    public static XxlJobTestResult trigger(String jobHandler, String param, int shardIndex, int shardTotal, String tenantId) {
+        Assert.hasText(jobHandler, "jobHandler 不能为空");
+
+        IJobHandler handler = loadHandler(jobHandler);
+        if (handler == null) {
+            throw new BusinessException("未找到名称为 [" + jobHandler + "] 的 XXL-Job Handler，请确认任务是否声明了 @XxlJob(\"" + jobHandler + "\")");
+        }
+
+        long startNs = System.nanoTime();
+        long now = System.currentTimeMillis();
+
+        // 备份当前上下文
+        XxlJobContext previousContext = XxlJobContext.getXxlJobContext();
+        TenantSnapshot previousTenantSnapshot = TenantContextHolder.capturePrevious();
+
+        XxlJobContext testContext = new XxlJobContext(
+                1L,
+                param != null ? param : "",
+                now,
+                now,
+                "test-" + jobHandler + ".log",
+                Math.max(0, shardIndex),
+                Math.max(1, shardTotal)
+        );
+
+        if (StringUtils.hasText(tenantId)) {
+            TenantContextHolder.setTenantId(tenantId);
+        }
+
+        try {
+            XxlJobContext.setXxlJobContext(testContext);
+            log.info(">>>>>> [脱网调试] 开始手动触发 XXL-Job 任务 [handler: {}, param: {}, shard: {}/{}]",
+                    jobHandler, param, shardIndex, shardTotal);
+
+            handler.execute();
+
+            long durationMs = (System.nanoTime() - startNs) / 1_000_000;
+            int handleCode = testContext.getHandleCode() > 0 ? testContext.getHandleCode() : XxlJobContext.HANDLE_CODE_SUCCESS;
+            String handleMsg = testContext.getHandleMsg();
+
+            log.info("<<<<<< [脱网调试] XXL-Job 任务 [{}] 执行成功 (耗时: {}ms, code: {})", jobHandler, durationMs, handleCode);
+            return new XxlJobTestResult(true, handleCode, handleMsg, durationMs, null);
+        } catch (Throwable t) {
+            Throwable root = (t instanceof java.lang.reflect.InvocationTargetException ite && ite.getTargetException() != null)
+                    ? ite.getTargetException()
+                    : t;
+            long durationMs = (System.nanoTime() - startNs) / 1_000_000;
+            log.error("<<<<<< [脱网调试] XXL-Job 任务 [{}] 执行失败 (耗时: {}ms): {}", jobHandler, durationMs, root.getMessage(), root);
+            return new XxlJobTestResult(false, XxlJobContext.HANDLE_CODE_FAIL, root.getMessage(), durationMs, root);
+        } finally {
+            XxlJobContext.setXxlJobContext(previousContext);
+            TenantContextHolder.restore(previousTenantSnapshot);
+        }
+    }
+
+    /**
+     * 获取所有已发现注册的 JobHandler 名称列表
+     */
+    public static Map<String, IJobHandler> getLoadedHandlers() {
+        Map<String, IJobHandler> map = new ConcurrentHashMap<>(FALLBACK_HANDLER_REPOSITORY);
+        try {
+            XxlJobExecutor executor = XxlJobExecutor.getInstance();
+            if (executor != null) {
+                // 通过内省补充
+            }
+        } catch (Throwable ignored) {
+            // XxlJobExecutor 实例未初始化，忽略
+        }
+        return Collections.unmodifiableMap(map);
+    }
+
+    private static IJobHandler loadHandler(String jobHandler) {
+        // 1. 优先从官方 XxlJobExecutor 实例查找
+        try {
+            XxlJobExecutor executor = XxlJobExecutor.getInstance();
+            if (executor != null) {
+                IJobHandler handler = executor.loadJobHandler(jobHandler);
+                if (handler != null) {
+                    return handler;
+                }
+            }
+        } catch (Throwable ignored) {
+            // XxlJobExecutor 实例未初始化，平滑降级至 Spring 容器查找
+        }
+
+        // 2. 从本地降级仓库查找
+        IJobHandler fallback = FALLBACK_HANDLER_REPOSITORY.get(jobHandler);
+        if (fallback != null) {
+            return fallback;
+        }
+
+        // 3. 在锁保护下双重检查并从 Spring 容器即时内省，避免与 setApplicationContext/clear 交错出现空窗
+        REPOSITORY_LOCK.lock();
+        try {
+            IJobHandler rechecked = FALLBACK_HANDLER_REPOSITORY.get(jobHandler);
+            if (rechecked != null) {
+                return rechecked;
+            }
+            ApplicationContext currentContext = applicationContext;
+            if (currentContext != null) {
+                scanAndRegisterSpringHandlers(currentContext);
+                return FALLBACK_HANDLER_REPOSITORY.get(jobHandler);
+            }
+            return null;
+        } finally {
+            if (REPOSITORY_LOCK.isHeldByCurrentThread()) {
+                REPOSITORY_LOCK.unlock();
+            }
+        }
+    }
+
+    private static void scanAndRegisterSpringHandlers(ApplicationContext context) {
+        if (context == null) {
+            return;
+        }
+        REPOSITORY_LOCK.lock();
+        try {
+            String[] beanNames = context.getBeanNamesForType(Object.class);
+            for (String beanName : beanNames) {
+                Object bean;
+                try {
+                    bean = context.getBean(beanName);
+                } catch (Exception e) {
+                    continue;
+                }
+                Map<Method, XxlJob> annotatedMethods = MethodIntrospector.selectMethods(
+                        bean.getClass(),
+                        (MethodIntrospector.MetadataLookup<XxlJob>) method -> AnnotatedElementUtils.findMergedAnnotation(method, XxlJob.class)
+                );
+
+                for (Map.Entry<Method, XxlJob> entry : annotatedMethods.entrySet()) {
+                    XxlJob xxlJob = entry.getValue();
+                    registerJobHandler(bean, entry.getKey(), xxlJob.value(), xxlJob.init(), xxlJob.destroy());
+                }
+
+                Map<Method, AtengXxlJob> atengAnnotatedMethods = MethodIntrospector.selectMethods(
+                        bean.getClass(),
+                        (MethodIntrospector.MetadataLookup<AtengXxlJob>) method -> AnnotatedElementUtils.findMergedAnnotation(method, AtengXxlJob.class)
+                );
+
+                for (Map.Entry<Method, AtengXxlJob> entry : atengAnnotatedMethods.entrySet()) {
+                    Method method = entry.getKey();
+                    AtengXxlJob atengJob = entry.getValue();
+                    if (!AtengXxlJobAnnotationHelper.shouldRegisterAtengHandler(method, atengJob)) {
+                        continue;
+                    }
+                    String handlerName = AtengXxlJobAnnotationHelper.resolveHandlerName(method, atengJob);
+                    registerJobHandler(bean, method, handlerName, atengJob.init(), atengJob.destroy());
+                }
+            }
+        } finally {
+            if (REPOSITORY_LOCK.isHeldByCurrentThread()) {
+                REPOSITORY_LOCK.unlock();
+            }
+        }
+    }
+
+    /**
+     * 注册任务 Handler 至本地运行备选库
+     */
+    private static void registerJobHandler(Object bean, Method method, String name, String init, String destroy) {
+        if (!StringUtils.hasText(name) || FALLBACK_HANDLER_REPOSITORY.containsKey(name)) {
+            return;
+        }
+        ReflectionUtils.makeAccessible(method);
+        Method initMethod = AtengXxlJobAnnotationHelper.resolveLifecycleMethod(bean, init, method, "init", false);
+        Method destroyMethod = AtengXxlJobAnnotationHelper.resolveLifecycleMethod(bean, destroy, method, "destroy", false);
+        MethodJobHandler handler = new MethodJobHandler(bean, method, initMethod, destroyMethod);
+        FALLBACK_HANDLER_REPOSITORY.putIfAbsent(name, handler);
+    }
+
+    /**
+     * 任务脱网执行诊断结果记录
+     *
+     * @param success    是否成功执行
+     * @param handleCode 响应码 (200 为成功，500 为失败)
+     * @param handleMsg  响应文案
+     * @param durationMs 执行耗时 (毫秒)
+     * @param throwable  执行异常 (若有)
+     */
+    public record XxlJobTestResult(
+            boolean success,
+            int handleCode,
+            String handleMsg,
+            long durationMs,
+            Throwable throwable
+    ) {
+        public boolean isSuccess() {
+            return success;
+        }
+    }
+}

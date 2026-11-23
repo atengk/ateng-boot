@@ -41,8 +41,10 @@ class Sm2SignerTest {
         // 3. 篡改数据验签失败
         assertThat(signer.verify(data + "tampered", signature, keyPair.publicKeyHex())).isFalse();
 
-        // 4. 篡改签名串验签失败
-        String tamperedSig = signature.substring(0, signature.length() - 4) + "AAAA";
+        // 4. 篡改签名串验签失败 (翻转有效 Base64 字符保证签名值变化)
+        char originalChar = signature.charAt(10);
+        char flippedChar = (originalChar == 'A') ? 'B' : 'A';
+        String tamperedSig = signature.substring(0, 10) + flippedChar + signature.substring(11);
         assertThat(signer.verify(data, tamperedSig, keyPair.publicKeyHex())).isFalse();
 
         // 5. 换用其他公钥验签失败

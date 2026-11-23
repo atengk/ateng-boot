@@ -1,6 +1,9 @@
 package io.github.atengk.boot.document.word;
 
+import io.github.atengk.boot.document.exception.DocumentResultCode;
 import io.github.atengk.boot.document.exception.WordRenderException;
+import io.github.atengk.boot.document.word.model.StitchOptions;
+import org.apache.poi.poifs.filesystem.FileMagic;
 import org.apache.poi.xwpf.usermodel.ParagraphAlignment;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
@@ -165,6 +168,117 @@ class WordTemplateStitchAndProtectTest {
         // 3. 校验不存在的文件路径
         assertThatThrownBy(() -> wordTemplate.protect("not/exist/file.docx", new ByteArrayOutputStream(), "123"))
                 .isInstanceOf(WordRenderException.class);
+    }
+
+    @Test
+    @DisplayName("双轨安全：Agile AES-256 文件级加密、解密与 isEncrypted 状态精准判定")
+    void testAgileAes256EncryptDecryptAndIsEncrypted(@TempDir Path tempDir) throws Exception {
+        byte[] plainBytes = createSimpleDoc("绝密战略协议", "本协议文本受 Agile AES-256 加密信封保护。");
+        String password = "OpenSecret#2026";
+
+        assertThat(wordTemplate.isEncrypted(plainBytes)).isFalse();
+
+        // 1. AES-256 加密落盘与二进制校验
+        Path encryptedPath = tempDir.resolve("encrypted.docx");
+        wordTemplate.encrypt(plainBytes, encryptedPath, password);
+        byte[] encryptedBytes = Files.readAllBytes(encryptedPath);
+
+        assertThat(FileMagic.valueOf(encryptedBytes)).isEqualTo(FileMagic.OLE2);
+        assertThat(wordTemplate.isEncrypted(encryptedPath)).isTrue();
+        assertThat(wordTemplate.isEncrypted(encryptedBytes)).isTrue();
+
+        // 无密码直接按明文 XWPFDocument 打开必须失败
+        assertThatThrownBy(() -> new XWPFDocument(new ByteArrayInputStream(encryptedBytes)))
+                .isInstanceOf(Exception.class);
+
+        // 2. 错误密码或非加密流快速失败
+        assertThatThrownBy(() -> wordTemplate.decryptToBytes(encryptedBytes, "Wrong#Pass"))
+                .isInstanceOf(WordRenderException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.PASSWORD_ERROR);
+
+        assertThatThrownBy(() -> wordTemplate.decryptToBytes(plainBytes, password))
+                .isInstanceOf(WordRenderException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.ENCRYPTION_ERROR);
+
+        assertThatThrownBy(() -> wordTemplate.encryptToBytes(plainBytes, "   "))
+                .isInstanceOf(WordRenderException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.ENCRYPTION_ERROR);
+
+        assertThatThrownBy(() -> wordTemplate.decryptToBytes(encryptedBytes, ""))
+                .isInstanceOf(WordRenderException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.ENCRYPTION_ERROR);
+
+        // 3. 正确密码解密还原并可继续文本提取
+        byte[] decryptedBytes = wordTemplate.decryptToBytes(encryptedBytes, password);
+        assertThat(FileMagic.valueOf(decryptedBytes)).isEqualTo(FileMagic.OOXML);
+        assertThat(wordTemplate.isEncrypted(decryptedBytes)).isFalse();
+        assertThat(wordTemplate.extractText(decryptedBytes)).contains("绝密战略协议").contains("Agile AES-256");
+
+        Path decryptedPath = tempDir.resolve("decrypted.docx");
+        wordTemplate.decrypt(encryptedPath, decryptedPath, password);
+        assertThat(Files.exists(decryptedPath)).isTrue();
+        assertThat(wordTemplate.isEncrypted(decryptedPath)).isFalse();
+
+        // 4. 损坏二进制探测快速失败（不吞咽异常）
+        assertThatThrownBy(() -> wordTemplate.isEncrypted(new byte[]{0x01, 0x02, 0x03, 0x04}))
+                .isInstanceOf(WordRenderException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.ENCRYPTION_ERROR);
+    }
+
+    @Test
+    @DisplayName("分页拼装：StitchOptions(pageBreakBetween=true) 在合并文档之间注入显式分页符")
+    void testStitchWithPageBreakBetween() throws Exception {
+        byte[] part1 = createSimpleDoc("第一部分", "第一页正文内容。");
+        byte[] part2 = createSimpleDoc("第二部分", "第二页正文内容。");
+        byte[] part3 = createSimpleDoc("第三部分", "第三页正文内容。");
+
+        byte[] stitched = wordTemplate.stitchToBytes(
+                List.of(part1, part2, part3),
+                StitchOptions.builder().pageBreakBetween(true).build()
+        );
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(stitched))) {
+            String fullText = extractText(doc);
+            assertThat(fullText).contains("第一部分", "第二部分", "第三部分");
+
+            long pageBreakCount = doc.getParagraphs().stream()
+                    .flatMap(p -> p.getRuns().stream())
+                    .mapToLong(r -> r.getCTR().getBrList().stream()
+                            .filter(br -> org.openxmlformats.schemas.wordprocessingml.x2006.main.STBrType.PAGE.equals(br.getType()))
+                            .count())
+                    .sum();
+            assertThat(pageBreakCount).isEqualTo(2);
+        }
+    }
+
+    @Test
+    @DisplayName("分页与页眉页脚拼装控制：StitchOptions 前置重载与 keepHeaderFooter=false 剥离页眉页脚")
+    void testStitchOptionsPrecedingOverloadsAndKeepHeaderFooter(@TempDir Path tempDir) throws Exception {
+        byte[] mainWithHeader = wordTemplate.addWatermarkToBytes(
+                createSimpleDoc("主文档含页眉水印", "主体内容段落"), "CONFIDENTIAL-HDR");
+        byte[] annexDoc = createSimpleDoc("附件二", "附加补充条款");
+        assertThat(wordTemplate.inspectMetadata(mainWithHeader).isHasHeadersOrFooters()).isTrue();
+
+        // 1. 默认 keepHeaderFooter=true 保留主文档页眉页脚（选项前置 List 重载）
+        Path keptPath = tempDir.resolve("kept-hdr.docx");
+        wordTemplate.stitch(keptPath, StitchOptions.builder().pageBreakBetween(true).build(), List.of(mainWithHeader, annexDoc));
+        assertThat(wordTemplate.inspectMetadata(keptPath).isHasHeadersOrFooters()).isTrue();
+
+        // 2. keepHeaderFooter=false 剥离页眉页脚（选项前置可变参数与字节数组重载）
+        StitchOptions stripOpts = StitchOptions.builder()
+                .pageBreakBetween(true)
+                .keepHeaderFooter(false)
+                .build();
+        byte[] strippedBytes = wordTemplate.stitchToBytes(stripOpts, mainWithHeader, annexDoc);
+        assertThat(wordTemplate.inspectMetadata(strippedBytes).isHasHeadersOrFooters()).isFalse();
+        assertThat(wordTemplate.extractText(strippedBytes)).contains("主文档含页眉水印", "附件二");
+
+        Path strippedPath = tempDir.resolve("stripped-hdr.docx");
+        wordTemplate.stitch(strippedPath, stripOpts, mainWithHeader, annexDoc);
+        assertThat(wordTemplate.inspectMetadata(strippedPath).isHasHeadersOrFooters()).isFalse();
+
+        byte[] strippedListBytes = wordTemplate.stitchToBytes(stripOpts, List.of(mainWithHeader, annexDoc));
+        assertThat(wordTemplate.inspectMetadata(strippedListBytes).isHasHeadersOrFooters()).isFalse();
     }
 
     private static byte[] createSimpleDoc(String title, String content) throws IOException {

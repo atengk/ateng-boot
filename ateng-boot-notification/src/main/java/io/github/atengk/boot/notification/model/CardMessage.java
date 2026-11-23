@@ -43,6 +43,11 @@ public class CardMessage extends NotificationMessage {
     private CardColor headerColor = CardColor.BLUE;
 
     /**
+     * 按钮排版方向，默认竖向排列 (VERTICAL)
+     */
+    private CardButtonOrientation btnOrientation = CardButtonOrientation.VERTICAL;
+
+    /**
      * 卡片封面主图完整 URL（可选）
      */
     private String mainImageUrl;
@@ -83,6 +88,11 @@ public class CardMessage extends NotificationMessage {
 
     public CardMessage headerColor(CardColor headerColor) {
         this.headerColor = headerColor != null ? headerColor : CardColor.BLUE;
+        return this;
+    }
+
+    public CardMessage btnOrientation(CardButtonOrientation btnOrientation) {
+        this.btnOrientation = btnOrientation != null ? btnOrientation : CardButtonOrientation.VERTICAL;
         return this;
     }
 

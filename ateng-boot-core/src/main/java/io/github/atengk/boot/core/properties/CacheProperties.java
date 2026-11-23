@@ -21,7 +21,7 @@ public class CacheProperties {
     private int defaultMaxCapacity = 1024;
 
     /**
-     * 进程内内存 LRU 缓存默认存活时间 TTL（未配置时沿用顶层 cacheTtl，默认 30 分钟）
+     * 进程内内存 LRU 缓存默认存活时间 TTL（强类型 Duration，默认 30 分钟）
      */
-    private Duration defaultTtl;
+    private Duration defaultTtl = Duration.ofMinutes(30);
 }

@@ -2,11 +2,12 @@ package io.github.atengk.boot.mail.template.renderer;
 
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -20,15 +21,46 @@ import java.util.regex.Pattern;
  */
 public class SimpleMailTemplateRenderer implements MailTemplateRenderer {
 
-    private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\$\\{\\s*([a-zA-Z0-9_.-]+)\\s*\\}");
+    private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\$(!?)\\{\\s*([a-zA-Z0-9_.-]+)\\s*\\}");
+
+    private final boolean htmlEscape;
+
+    public SimpleMailTemplateRenderer() {
+        this(false);
+    }
+
+    public SimpleMailTemplateRenderer(boolean htmlEscape) {
+        this.htmlEscape = htmlEscape;
+    }
+
+    /**
+     * 是否默认开启 HTML 特殊字符转义
+     *
+     * @return true 表示开启
+     */
+    public boolean isHtmlEscape() {
+        return htmlEscape;
+    }
 
     @Override
     public String render(String templateName, Map<String, Object> model) {
+        return render(templateName, model, null);
+    }
+
+    @Override
+    public String render(String templateName, Map<String, Object> model, Locale locale) {
         if (templateName == null || templateName.isBlank()) {
             throw new MailSendException(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR, "模板名称不能为空");
         }
+        if (templateName.indexOf('\0') >= 0
+                || templateName.contains("../")
+                || templateName.contains("..\\")
+                || "..".equals(templateName.trim())) {
+            throw new MailSendException(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR,
+                    "模板名称包含非法路径穿越或空字符: [" + templateName + "]");
+        }
 
-        String templateContent = loadTemplate(templateName);
+        String templateContent = loadTemplate(templateName, locale);
         if (model == null || model.isEmpty()) {
             return templateContent;
         }
@@ -36,46 +68,63 @@ public class SimpleMailTemplateRenderer implements MailTemplateRenderer {
         Matcher matcher = PLACEHOLDER_PATTERN.matcher(templateContent);
         StringBuilder sb = new StringBuilder();
         while (matcher.find()) {
-            String placeholder = matcher.group(1);
+            boolean rawOutput = "!".equals(matcher.group(1));
+            String placeholder = matcher.group(2);
             Object value = resolveValue(placeholder, model);
-            String replacement = value != null ? Matcher.quoteReplacement(String.valueOf(value)) : "";
-            matcher.appendReplacement(sb, replacement);
+            String rendered = value != null ? String.valueOf(value) : "";
+            if (htmlEscape && !rawOutput) {
+                rendered = escapeHtml(rendered);
+            }
+            matcher.appendReplacement(sb, Matcher.quoteReplacement(rendered));
         }
         matcher.appendTail(sb);
         return sb.toString();
     }
 
-    private String loadTemplate(String templateName) {
-        // 1. 若字符串直接包含 HTML 标签、换行符或 ${ 占位符且不以常见模板文件后缀结尾，可直接作为内联模板内容解析
-        if ((templateName.contains("${") || templateName.contains("<") || templateName.contains("\n"))
+    private static String escapeHtml(String input) {
+        if (input == null || input.isEmpty()) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder(input.length() + 16);
+        for (int i = 0; i < input.length(); i++) {
+            char c = input.charAt(i);
+            switch (c) {
+                case '&' -> out.append("&amp;");
+                case '<' -> out.append("&lt;");
+                case '>' -> out.append("&gt;");
+                case '"' -> out.append("&quot;");
+                case '\'' -> out.append("&#39;");
+                default -> out.append(c);
+            }
+        }
+        return out.toString();
+    }
+
+    private String loadTemplate(String templateName, Locale locale) {
+        // 1. 若字符串直接包含 HTML 标签、换行符或 ${ / $!{ 占位符且不以常见模板文件后缀结尾，可直接作为内联模板内容解析
+        boolean hasPlaceholder = templateName.contains("${") || templateName.contains("$!{");
+        if ((hasPlaceholder || templateName.contains("<") || templateName.contains("\n"))
                 && !templateName.endsWith(".html") && !templateName.endsWith(".htm") && !templateName.endsWith(".ftl")) {
             return templateName;
         }
 
-        // 2. 依次尝试查找类路径下的模板资源
-        String suffix = templateName.endsWith(".html") || templateName.endsWith(".htm") ? "" : ".html";
-        String[] candidatePaths = new String[]{
-                templateName,
-                templateName + suffix,
-                "templates/mail/" + templateName + suffix,
-                "templates/" + templateName + suffix,
-                "mail/" + templateName + suffix
-        };
+        // 2. 依次尝试查找类路径下的模板资源（支持国际化级联探测：template_en_US.html -> template_en.html -> template.html）
+        List<String> candidateNames = MailTemplateResourceUtil.buildPhysicalCandidateFileNames(templateName, locale, ".html");
 
-        for (String path : candidatePaths) {
-            Resource resource = new ClassPathResource(path);
-            if (resource.exists()) {
+        for (String candidate : candidateNames) {
+            Resource resource = MailTemplateResourceUtil.resolveClasspathResource(candidate);
+            if (resource != null) {
                 try (InputStream in = resource.getInputStream()) {
                     return new String(in.readAllBytes(), StandardCharsets.UTF_8);
                 } catch (Exception e) {
                     throw new MailSendException(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR,
-                            "读取类路径邮件模板失败: [" + path + "]", e);
+                            "读取类路径邮件模板失败: [" + candidate + "]", e);
                 }
             }
         }
 
         // 3. 若类路径未找到但包含占位符，支持纯字符串模板
-        if (templateName.contains("${")) {
+        if (hasPlaceholder) {
             return templateName;
         }
 

@@ -20,4 +20,14 @@ import java.lang.annotation.Target;
 @Retention(RetentionPolicy.RUNTIME)
 @Documented
 public @interface FieldEncrypt {
+
+    /**
+     * 是否启用确定性加密模式
+     * 启用后将基于 HMAC-SHA256 合成初始化向量（SIV）执行确定性 AES-CBC 加密，
+     * 相同明文始终生成一致密文，支持通过 DynamicQueryHelper 执行 EQ、NE、IN、NOT_IN 等精确等值检索。
+     * 默认 false 为概率性随机 IV 加密（不可检索，抵御词频分析）。
+     *
+     * @return true 若为确定性加密；否则 false
+     */
+    boolean deterministic() default false;
 }

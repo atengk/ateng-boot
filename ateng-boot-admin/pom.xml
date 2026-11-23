@@ -7,7 +7,7 @@
     <parent>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot</artifactId>
-        <version>1.0.0</version>
+        <version>1.2.0</version>
     </parent>
 
     <artifactId>ateng-boot-admin</artifactId>
@@ -51,6 +51,13 @@
         <dependency>
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-notification</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：Spring Data Redis（用于多副本 Fail-Open 分布式防脑裂协调） -->
+        <dependency>
+            <groupId>org.springframework.data</groupId>
+            <artifactId>spring-data-redis</artifactId>
             <optional>true</optional>
         </dependency>
 

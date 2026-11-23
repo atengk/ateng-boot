@@ -137,6 +137,62 @@ class PdfWebUtilTest {
                 .hasMessageContaining("filename 不能为空");
     }
 
+    @Test
+    @DisplayName("安全防护：文件名路径穿越与空字节清洗与拦截")
+    void testFilenamePathTraversalSanitization() throws Exception {
+        byte[] samplePdf = createSimplePdf();
+
+        MockHttpServletResponse cleanedResp = new MockHttpServletResponse();
+        PdfWebUtil.writeToResponse(cleanedResp, "../../evil/月度报告", samplePdf);
+        String disposition = cleanedResp.getHeader(HttpHeaders.CONTENT_DISPOSITION);
+        assertThat(disposition).doesNotContain("..");
+        assertThat(disposition).contains(".pdf");
+
+        MockHttpServletResponse rejectedResp = new MockHttpServletResponse();
+        assertThatThrownBy(() -> PdfWebUtil.writeToResponse(rejectedResp, "../../..", samplePdf))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> PdfWebUtil.writeToResponse(rejectedResp, "\0", samplePdf))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("渲染图片浏览器流式输出：previewImage/downloadImage/writeImageToResponse MIME 自识别与安全头")
+    void testPreviewAndDownloadImageStreaming() {
+        byte[] fakePng = new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47, 1, 2};
+        byte[] fakeJpg = new byte[]{(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, 3, 4};
+
+        // 1. 默认无后缀时自动补齐 .png 与 image/png，inline 预览
+        MockHttpServletResponse previewResp = new MockHttpServletResponse();
+        PdfWebUtil.previewImage(previewResp, "contract_page_1", fakePng);
+        assertThat(previewResp.getStatus()).isEqualTo(200);
+        assertThat(previewResp.getContentType()).contains("image/png");
+        assertThat(previewResp.getHeader(HttpHeaders.CACHE_CONTROL)).isEqualTo("no-cache, no-store, must-revalidate");
+        assertThat(previewResp.getHeader(HttpHeaders.CONTENT_DISPOSITION))
+                .startsWith("inline")
+                .contains(".png");
+        assertThat(previewResp.getContentAsByteArray()).isEqualTo(fakePng);
+
+        // 2. .jpg 文件名自动识别 image/jpeg，清洗路径穿越并保留单后缀，attachment 下载
+        MockHttpServletResponse downloadResp = new MockHttpServletResponse();
+        PdfWebUtil.downloadImage(downloadResp, "../../evil/photo.jpg", fakeJpg);
+        assertThat(downloadResp.getStatus()).isEqualTo(200);
+        assertThat(downloadResp.getContentType()).contains("image/jpeg");
+        String disposition = downloadResp.getHeader(HttpHeaders.CONTENT_DISPOSITION);
+        assertThat(disposition)
+                .startsWith("attachment")
+                .doesNotContain("..")
+                .doesNotContain(".jpg.png")
+                .contains(".jpg");
+        assertThat(downloadResp.getContentAsByteArray()).isEqualTo(fakeJpg);
+
+        // 3. 回调流式写入 writeImageToResponse
+        MockHttpServletResponse writerResp = new MockHttpServletResponse();
+        PdfWebUtil.writeImageToResponse(writerResp, "rendered.jpeg", out -> out.write(fakeJpg), true);
+        assertThat(writerResp.getContentType()).contains("image/jpeg");
+        assertThat(writerResp.getHeader(HttpHeaders.CONTENT_DISPOSITION)).startsWith("inline");
+        assertThat(writerResp.getContentAsByteArray()).isEqualTo(fakeJpg);
+    }
+
     private static byte[] createSimplePdf() throws IOException {
         try (PDDocument doc = new PDDocument()) {
             doc.addPage(new PDPage(PDRectangle.A4));

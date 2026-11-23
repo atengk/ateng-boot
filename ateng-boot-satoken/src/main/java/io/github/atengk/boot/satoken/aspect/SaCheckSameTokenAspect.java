@@ -2,12 +2,16 @@ package io.github.atengk.boot.satoken.aspect;
 
 import cn.dev33.satoken.context.SaHolder;
 import cn.dev33.satoken.context.model.SaRequest;
+import cn.dev33.satoken.exception.SameTokenInvalidException;
 import cn.dev33.satoken.same.SaSameUtil;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.annotation.Before;
 import org.aspectj.lang.annotation.Pointcut;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 
 /**
  * 微服务内部 Same-Token 零信任切面
@@ -42,6 +46,18 @@ public class SaCheckSameTokenAspect {
         log.debug("执行微服务内部 Same-Token 零信任安全校验");
         if (properties != null && properties.getSameToken() != null) {
             String customHeader = properties.getSameToken().getHeaderName();
+            String configuredToken = properties.getSameToken().getTokenValue();
+            if (configuredToken != null && !configuredToken.isBlank()) {
+                String headerName = (customHeader != null && !customHeader.isBlank()) ? customHeader.trim() : SaSameUtil.SAME_TOKEN;
+                SaRequest request = SaHolder.getRequest();
+                String actualToken = request != null ? request.getHeader(headerName) : null;
+                if (actualToken == null || actualToken.isBlank() || !MessageDigest.isEqual(
+                        configuredToken.trim().getBytes(StandardCharsets.UTF_8),
+                        actualToken.trim().getBytes(StandardCharsets.UTF_8))) {
+                    throw new SameTokenInvalidException("无效的 Same-Token 凭据: " + actualToken);
+                }
+                return;
+            }
             if (customHeader != null && !customHeader.isBlank() && !customHeader.equalsIgnoreCase(SaSameUtil.SAME_TOKEN)) {
                 try {
                     SaRequest request = SaHolder.getRequest();
@@ -52,7 +68,7 @@ public class SaCheckSameTokenAspect {
                             return;
                         }
                     }
-                } catch (cn.dev33.satoken.exception.SameTokenInvalidException e) {
+                } catch (SameTokenInvalidException e) {
                     throw e;
                 } catch (Exception e) {
                     log.warn("读取自定义 Same-Token 请求头失败，回退默认校验: header={}, error={}", customHeader, e.getMessage());

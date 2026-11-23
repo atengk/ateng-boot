@@ -5,12 +5,36 @@
 ## Language
 
 **AtengSaTokenInterceptor**:
-企业级双轨路由拦截器，深度承接 Sa-Token 路由匹配与白名单过滤，更关键地负责全链路双维上下文的生命周期镜像管理：在 `preHandle` 将认证上下文无感对称注入 `UserContextHolder` 与 `TenantContextHolder`，在 `afterCompletion` 强制执行双清空，从源头杜绝 Web 容器工作线程池复用造成的跨请求上下文串染与数据越权。
+企业级双轨路由拦截器，深度承接 Sa-Token 路由匹配与白名单过滤（静态 YAML 白名单统一经由 `isWhitelisted` 短路放行，确保全量路径纳入拦截生命周期闭环），支持 `check-login=true` 严格模式下的多账号体系按路径路由（`interceptor.login-type-routes` 最精确 AntPath 优先）、多账号共享路径活跃体系探测（`interceptor.shared-login-type-paths`）与 `primary-login-type` 兜底校验（按 `自定义 auth > 规则 loginType > YAML 路由映射 > 共享路径探测/primary-login-type` 优先级解析），支持 YAML 静态路径权限规则（`interceptor.path-permissions`）优先回退 `DynamicPathPermissionProvider`；负责全链路请求级安全上下文生命周期管理：在 `preHandle`（含白名单分支）写入命中路由 `loginType`（`SaTokenRouteContextHolder`）、同步 `UserContextHolder`、执行安全可控的 `X-Tenant-Id` 请求头解析（普通用户严格防越权锁定会话租户，平台超管受控切换与匿名请求头解析均经格式校验与 `TenantHeaderSwitchValidator` SPI 门禁），并弱依赖同步 `DataPermissionBridge` 超管标记，在 `afterCompletion` 与异常退出路径确定性清空全部线程上下文，杜绝容器线程池复用串染。
 _Avoid_: SaRouteInterceptor, SecurityFilter, AuthInterceptor
 
+**SaTokenRouteContextHolder**:
+当前 Web 请求命中的多账号路由体系（`loginType`）线程上下文持有者，由 `AtengSaTokenInterceptor` 在 `preHandle`（含白名单分支）写入并在 `afterCompletion` 与异常路径确定性清理，驱动无 `type` 注解及 `@CheckDataOwner` 在同一请求链路下自动对齐对应账号体系。
+_Avoid_: LoginTypeThreadLocal, RequestAuthContext
+
+**SaTokenAnnotationAutoRouteRegistrar**:
+Sa-Token 鉴权注解多账号自动路由注册器，受控于 `interceptor.auto-route-annotation-type`（默认 `true`），替换 `SaAnnotationStrategy.instance` 的 5 个核心鉴权注解处理器（`@SaCheckPermission`、`@SaCheckRole`、`@SaCheckLogin`、`@SaCheckSafe`、`@SaCheckDisable`，天然覆盖 `@SaCheckOr`），未显式声明 `type()` 时按 `路由命中 loginType > primary-login-type > "login"` 顺序通过 `LoginHelper.getStpLogic` 懒加载并路由鉴权。
+_Avoid_: AnnotationAspectOverride, StpAnnotationRouter
+
+**TenantHeaderSwitchValidator**:
+请求头租户解析与平台超管切换租户校验 SPI（`@ConditionalOnMissingBean` 默认放行），供业务层验证 `X-Tenant-Id` 目标租户存在性与启用状态，校验失败时阻断请求。
+_Avoid_: TenantSwitchFilter, TenantValidator
+
+**DataPermissionBridge**:
+持久层数据权限超管上下文弱依赖桥接 SPI（默认实现 `MyBatisPlusDataPermissionBridge` 通过类路径存在性隔离加载 `DataPermissionContextHolder`），确保 `ateng-boot-satoken` 对 `ateng-boot-mybatis-plus` 零强制编译与运行时依赖。
+_Avoid_: DataScopeSync, MyBatisPlusBridge
+
 **LoginHelper**:
-基于 Sa-Token 强类型扩展的高级登录与上下文门面工具类，提供开箱即用的登录会话构建、多终端会话隔离、强类型会话载荷读写（`LoginUser`）、二级安全认证治理（`openSafe`/`checkSafe`/`closeSafe`）、数据所有权校验断言（`checkSelf`/`checkBelongsToTenant`）、身份模拟（`switchTo`/`runAs`）与上下文清理。内置对多租户复合主键模式（`{tenantId}_{userId}`）的双向对称解析与剥离，确保 `getUserId()` 始终返回纯净的业务主键。彻底杜绝将未类型化的裸 Map 或易失性散落数据写入底层 Session。
+基于 Sa-Token 强类型扩展的高级登录与上下文门面工具类，提供开箱即用的登录会话构建（自动嗅探并固化终端 `loginIp`）、多账号体系解耦（多 `loginType` 重载路由与 `registerStpLogic` 显式注册）、多终端会话隔离、强类型会话载荷读写（`LoginUser`）、Token 与会话有效期续签（`renewTimeout` / `renewTimeoutByToken`）、二级安全认证治理（`openSafe`/`checkSafe`/`closeSafe`）、可配置超管角色/权限判定（`isSuperAdmin` 支持 `super-admin-roles`/`super-admin-permissions`）、数据所有权校验断言（`checkSelf`/`checkBelongsToTenant`）、身份模拟（`switchTo`/`runAs`）、条件分页在线会话治理（`searchOnlineUserPage` + `OnlineUserQuery`、`getOnlineUserByToken`、`isTokenBelongsToTenant`、`kickoutByTokenForTenant`/`logoutByTokenValueForTenant`）与上下文清理。内置对多租户复合主键模式（`{tenantId}_{userId}`）的双向对称解析与剥离（公开 `ParsedLoginId` / `parseCompositeLoginId`，结合会话 `LoginUser.tenantId` 精确前缀消除 `_` 歧义），确保 `getUserId()` 始终返回纯净的业务主键。彻底杜绝将未类型化的裸 Map 或易失性散落数据写入底层 Session。
 _Avoid_: AuthHelper, SessionManager, SecurityUtils, TokenHelper
+
+**ParsedLoginId**:
+不可变多租户复合登录标识拆解载体（含 `tenantId`、`userId` 与 `rawLoginId`），统一支撑 `LoginHelper`、`CachedStpInterface`、`PermissionCacheService` 与 `SaTokenClusterSyncListener` 对 `{tenantId}_{userId}` 的一致拆解与向后兼容解析。
+_Avoid_: CompositeIdParts, LoginIdTuple, TenantUserId
+
+**TempTokenHelper**:
+面向短效一次性或限时业务凭据场景（如大文件私有下载短链、跨系统回调 Ticket、敏感操作扫码确认、密码重置凭据）的强类型临时令牌对称门面。底层基于 `SaTempUtil` 与 `JsonUtil` 纯净 JSON 封包构建，提供 `createTempToken`（支持 `Duration` 与任意强类型载荷，零 `@class` 污染）、`parseTempToken`、`getTempTokenTimeout` 与 `deleteTempToken` 完整读写销毁闭环。
+_Avoid_: SaTempUtil, TicketHelper, ShortTokenUtil, OneTimeTokenManager
 
 **LoginUser**:
 企业级强类型会话载荷标准模型，封装 `userId`、`userAccount`、`userName`、`userType`、`deptId`、`tenantId`、`roles`（角色编码集）、`permissions`（细粒度权限码集）及安全扩展字典 `extraData`。在会话持久化与网络传输中始终保持规范自洽。
@@ -21,19 +45,23 @@ _Avoid_: UserSession, PrincipalVO, AuthUser, SessionUser
 _Avoid_: RedisDao, SaRedisTemplate, RedisSessionStore
 
 **CachedStpInterface**:
-高性能两级角色与权限数据源切片适配器，构建 `[用户ID -> 角色编码集]` 与 `[角色编码 -> 权限码集]` 两级缓存切片，大幅降低重复权限计算开销；内置 `__EMPTY__` 短 TTL 哨兵防穿透机制与 10%~20% 动态 Jitter 随机抖动防雪崩机制，杜绝鉴权对底层数据库的周期性风暴冲击。
+高性能两级角色与权限数据源切片适配器，先经由 `LoginHelper.parseCompositeLoginId` 拆解出纯净 `userId` 与归属 `tenantId` 传入 `UserRolePermissionLoader`，并在 DB 回源期间通过 `TenantContextHolder.runWithTenant(ownerTenantId, ...)` 压栈保护主体归属租户（`finally` 精准恢复切租户视角下的工作租户上下文）；构建 `[loginType : (可选 tenantId :) userId -> 角色编码/直属权限集]` 与 `[loginType : (可选 tenantId :) 角色编码 -> 权限码集]` 对称两级隔离缓存切片；内置 `__EMPTY__` 短 TTL 哨兵防穿透机制与 10%~20% 动态 Jitter 随机抖动防雪崩机制，杜绝跨账号/跨租户权限串染。
 _Avoid_: StpInterfaceImpl, PermissionDataSource, SaPermissionProvider
 
+**UserRolePermissionLoader**:
+用户角色、角色权限与直属权限数据库回源 SPI 接口，统一以剥离租户前缀的纯净 `userId`、`loginType` 与可选主体归属 `tenantId` 作为契约入参，提供默认委托旧两参签名的 `default` 扩展重载；默认开箱实现 `DefaultUserRolePermissionLoader` 兼容纯净与 `{tenantId}_{userId}` 复合 `SaSession` 会话回退查询。
+_Avoid_: PermissionLoader, RoleDao, AuthLoaderSpi
+
 **PermissionCacheService**:
-两级权限与角色即时热刷新治理服务，提供面向用户维度（`refreshUserPermissions`）、角色维度（`refreshRolePermissions`）及全域游标增量清空（`clearAll`）的极简门面，自适应支持 Redis 分布式模式与 JVM 进程内静态内存降级模式，并在刷新时自动联动 `SaTokenClusterBroadcaster` 触发全网集群广播。
+高性能两级级联权限与角色即时热刷新治理服务，构建 L1（JVM 进程内微缓存，带防 OOM 边界与极短 TTL）+ L2（Redis 分布式缓存）级联架构。提供与 `CachedStpInterface` 键格式 100% 对称的默认体系、多账号体系（`loginType`）及显式租户维度（`(loginType, tenantId, userId)` 与 `roleCode`）刷新/淘汰门面及全域游标增量清空（`clearAll`），既有无 `tenantId` 签名兼容自动/当前上下文清理；本地更新即时淘汰 L1+L2，并通过 `SaTokenClusterBroadcaster` 透传 `tenantId` 触发 Redis Pub/Sub 全集群广播以秒级驱逐异地节点 L1 微缓存。
 _Avoid_: CacheCleaner, PermissionCacheManager, RefreshService
 
 **@CheckDataOwner**:
-水平越权（BOLA / IDOR）声明式防卫注解，配合 AOP 切面 `SaCheckDataOwnerAspect`。支持通过 SpEL 表达式提取业务入参目标用户/实体归属标识，并支持挂载 `DataOwnerProvider` SPI 进行数据所有权反查校验，内置超级管理员自动豁免机制。未通过时快速失败阻断并返回统一 HTTP 200 + 403 业务响应。
+水平越权（BOLA / IDOR）声明式防卫注解，配合 AOP 切面 `SaCheckDataOwnerAspect`。支持通过 SpEL 表达式提取业务入参目标用户/实体归属标识，支持显式指定 `type`（`loginType`）或按 `SaTokenRouteContextHolder` -> `LoginHelper.getActiveLoginType()` 顺序自动对齐当前账号体系，并支持挂载 `DataOwnerProvider` SPI 进行数据所有权反查校验，内置超级管理员自动豁免机制。未通过时快速失败阻断并返回统一 HTTP 200 + 403 业务响应。
 _Avoid_: @DataOwner, @CheckOwner, @VerifyOwner, @ResourceOwner
 
 **DataOwnerProvider**:
-数据所有权校验与反查泛型 SPI 接口（`DataOwnerProvider<T>`），当入参为复杂实体主键（如 `orderId`）或非当前用户直接主键时，允许业务层注入自定义校验逻辑反查数据实际归属人；内置提供 `DefaultDataOwnerProvider` 实施直等断言。
+数据所有权校验与反查泛型 SPI 接口（`DataOwnerProvider<T>`），当入参为复杂实体主键（如 `orderId`）或非当前用户直接主键时，允许业务层注入自定义校验逻辑（支持感知 `loginType`）反查数据实际归属人；内置提供 `DefaultDataOwnerProvider` 实施直等断言。
 _Avoid_: DataOwnerChecker, OwnerService, OwnerResolver, OwnerVerifier
 
 **@Anonymous**:
@@ -44,21 +72,53 @@ _Avoid_: @Public, @PermitAll, @IgnoreAuth, @NoLogin, @Uncheck
 动态白名单提供者 SPI 接口，支持业务模块、插件 Starter 或配置中心在运行时动态向安全拦截器注册免鉴权 URL 路径集合，实现松耦合的白名单扩展机制。
 _Avoid_: DynamicWhitelist, WhitelistService, WhitelistProvider, PathFilterSPI
 
-**RunAs / Impersonate**:
-双维身份模拟机制，区分跨请求会话级持久模拟（`LoginHelper.switchTo` / `endSwitch`）与代码块瞬态安全模拟（`LoginHelper.runAs`）。内部自动固化记录最初源头 `originalUserId`，确保多次连续切换源头不漂移；瞬态模式采用 ThreadLocal 栈式保护并在 `finally` 块确定性恢复；业务层 `LoginHelper.getUserId()` 自动对齐被模拟人，同时向 Core/Web `@OperateLog` 切面提供双维身份（真实运维人与被模拟人）审计穿透。
-_Avoid_: SwitchUser, MockUser, FakeLogin, ImpersonationHelper
+**DynamicPathPermissionProvider**:
+数据库驱动的动态 URL 路径权限匹配 SPI 接口，支持业务层从数据库或配置中心动态加载“HTTP Method + AntPath 路径 + 可选 `loginType` -> 权限码”映射规则（`PathPermissionRule`），并在 `AtengSaTokenInterceptor` 中自动执行动态匹配校验，免去在 Controller 方法硬编码注解。
+_Avoid_: PathPermissionChecker, UrlAuthService, DynamicRbacSPI
+
+**OnlineUser**:
+企业级在线会话聚合模型，封装在线用户 `userId`、`userAccount`、`userName`、`tenantId`、`loginType`、`tokenValue`、`loginDevice`、`loginIp`、`loginTime` 及当前 Token 剩余有效时间（`tokenTimeout`），专供管理后台在线用户列表监控与强退治理。
+_Avoid_: OnlineSessionVO, ActiveUser, SessionDetail
+
+**OnlineUserQuery**:
+强类型在线会话条件分页检索条件模型，封装可选 `tenantId` 精确过滤、综合关键词（匹配 `userId`/`userAccount`/`userName`/`tokenValue`）、单列细化条件（`userId`/`userAccount`/`userName`/`loginDevice`）、`loginIp` 精确及复用 Core `CidrMatcher` 的网段匹配，以及单次扫描上限覆盖（`maxScanLimit`）。
+_Avoid_: OnlineSessionQuery, SessionFilterDTO, ActiveUserCriteria
+
+**OnlineSessionProperties**:
+定义于 `SaTokenProperties.OnlineSessionProperties`（前缀 `ateng.boot.satoken.online-session`）的在线会话检索治理配置属性组，统管条件分页检索的最大扫描令牌上限（`maxScanLimit`，默认 `2000`），替代早期硬编码 500 截断限制。
+_Avoid_: SessionScanProperties, OnlineQueryConfig
+
+**Multi-Account Isolation (loginType)**:
+企业级多账号体系隔离机制。通过在同一进程内显式指定 `loginType`（如 `admin` 运营后台、`member` 商城会员），实现多端会话 Cookie/Header 隔离、独立 Token 密钥空间以及独立的 `StpInterface` 角色与权限隔离加载，杜绝多端用户串号越权。
+_Avoid_: MultiLogin, DualAccount, AccountIsolation
+
+**Multi-Source Whitelist Convergence**:
+多源免鉴权白名单自动汇聚机制。支持通过静态 YAML 配置、声明式注解（`@Anonymous` 及类级放行下的 `@Anonymous(false)` 反向方法保护）以及动态 SPI（`SaTokenWhitelistProvider`）多源提供免检路径，由 `AnonymousUrlProcessor` 在应用就绪时自动标准化转译并去重汇聚至拦截器，免除多处手工拼装。
+_Avoid_: WhitelistMerger, UrlAggregation, PublicPathCollector
+
+**Session Switch (switchTo / endSwitch)**:
+跨请求会话级持久身份模拟。客服或平台管理员在排查客诉问题时，将当前会话主体临时切换为目标用户，内部自动固化记录最初真实操作人 `originalUserId`；连续多次切换时源头不漂移，调用 `endSwitch()` 时精准还原为最初操作人身份。
+_Avoid_: SwitchUser, UserSwitching, SessionImpersonation
+
+**Transient RunAs (runAs)**:
+函数式代码块瞬态安全模拟。采用 ThreadLocal 栈式快照机制与 `Supplier` / `Runnable` 函数式接口，在代码块执行期间以目标被模拟人身份运行（自动对齐 `LoginHelper.getUserId()` 与租户上下文），在 `finally` 块中绝对可靠地确定性恢复，杜绝异常退出导致的线程上下文污染。
+_Avoid_: RunAsHelper, FakeRun, TemporaryLogin
 
 **SaTokenClusterBroadcaster**:
 基于 Redis Pub/Sub 的分布式集群即时同步广播器。每个节点启动时通过 `fastSimpleUUID()` 生成不可变节点实例标识 `instanceId`；在权限热刷新或安全注销事件触发时，向指定 Topic 广播强类型 `SaTokenClusterMessage`，无 Redis 时自动安全静默降级。
 _Avoid_: ClusterSyncService, RedisBroadcaster, SecurityClusterSender, ClusterEventBus
 
 **SaTokenClusterSyncListener**:
-集群安全同步监听器与自消费防卫守卫（Self-Consumption Guard）。监听 Spring 原生安全事件自动触发集群广播；接收异地节点广播时比对 `instanceId`，若为本机广播则直接静默丢弃，杜绝二次清理风暴与广播回环；异地广播则秒级精准失效本地两级权限缓存。
+集群安全同步监听器与自消费防卫守卫（Self-Consumption Guard）。监听 Spring 原生安全事件自动触发集群广播；接收异地节点广播时比对 `instanceId`，若为本机广播则直接静默丢弃，杜绝二次清理风暴与广播回环；异地广播则按 `loginType` 与可选 `tenantId` 秒级精准失效本地两级权限缓存。
 _Avoid_: ClusterReceiver, SecurityClusterConsumer, SyncHandler
 
 **LoginFailureLockService**:
-登录防暴力破解策略服务，提供失败原子累计（`recordFailure`）、成功对称清零（`clearFailure`）、剩余次数与锁定状态查询及 `checkLocked` Fail-Fast 防卫。采用 Redis（带滑动窗口 TTL）与进程内线程安全内存容器（带时间戳惰性淘汰与容量超限淘汰）双模自适应存储，连续输错达到上限自动联动 `LoginHelper.disable` 接入框架原生封禁底座。
+登录防暴力破解策略服务，支持“账号锁定 + IP 限流熔断”双轨防卫。提供默认账号及多租户/多账号体系作用域 `(tenantId, loginType, account, ...)` 全量对称重载方法（采用长度前缀防碰撞定界编码），覆盖失败原子累计（`recordFailure`）、成功对称清零（`clearFailure` / `clearAllFailure`）、剩余次数与锁定状态查询及 `checkLocked` Fail-Fast 防卫。采用 Redis（带滑动窗口 TTL）与进程内线程安全内存容器（带时间戳惰性淘汰与容量超限淘汰）双模自适应存储，连续输错达到上限自动联动 `LoginHelper.disable` / `disableByLoginType` 接入框架原生封禁底座。
 _Avoid_: LoginDefenseService, BruteForceLocker, LoginAttemptService, FailureCounter
+
+**SameTokenClientHttpRequestInterceptor**:
+微服务内部零信任调用客户端请求拦截器（基于 Spring 6 `ClientHttpRequestInterceptor`）。在服务发起跨服务 HTTP 调用时，自动从底层 `SaSameUtil.getToken()` 提取当前微服务内网防伪凭据并注入请求头，与服务端 `@CheckSameToken` 切面构成全闭环防伪壁垒。
+_Avoid_: SameTokenFilter, FeignSameTokenInterceptor, InternalTokenInjector
 
 **SaTokenEventPublisher**:
 Sa-Token 全生命周期底层监听器与 Spring 原生 `ApplicationEvent` 总线桥接发布器，将登录、注销、被踢、被顶、封禁、解封及二级认证开启/关闭等动作发布为标准 Spring 事件（`SaLoginEvent`、`SaKickoutEvent` 等），支持业务通过 `@EventListener` 零侵入异步解耦消费。
@@ -73,15 +133,13 @@ _Avoid_: SwaggerSecurityCustomizer, Knife4jAuthInjector, OpenApiDocCustomizer
 _Avoid_: @InternalOnly, @RequireSameToken, @VerifyServiceToken
 
 **SaTokenCurrentUserProvider**:
-对接 `ateng-boot-core` 的 `CurrentUserProvider` 与 `CurrentTenantProvider` SPI 适配机制，在 `AtengSaTokenAutoConfiguration` 初始化时自动完成 `UserContextHolder.setUserProvider(LoginHelper::getUserId)` 与 `TenantContextHolder.setTenantProvider(LoginHelper::getTenantId)` 双向挂载，无缝透传至 MyBatis-Plus 审计自动填充引擎（自动写入 `createBy`、`updateBy`）与行级多租户隔离上下文（`TenantContextHolder`）。
-_Avoid_: UserAuditorProvider, SecurityContextAdapter
+对接 `ateng-boot-core` 的 `CurrentUserProvider` SPI 适配机制，在 `AtengSaTokenAutoConfiguration` 初始化时自动完成 `UserContextHolder.setUserProvider(new SaTokenCurrentUserProvider(properties))` 挂载，在无 Web 请求或离线调用时安全防卫并提供用户上下文，无缝透传至 MyBatis-Plus 审计自动填充引擎（自动写入 `createBy`、`updateBy`）。
+_Avoid_: UserAuditorProvider, SecurityUserAdapter
 
-## Dependencies
+**SaTokenCurrentTenantProvider**:
+对接 `ateng-boot-core` 的 `CurrentTenantProvider` SPI 适配机制，在 `AtengSaTokenAutoConfiguration` 初始化时自动完成 `TenantContextHolder.setTenantProvider(new SaTokenCurrentTenantProvider(properties))` 挂载，无缝透传至 MyBatis-Plus 多租户行级与列级数据隔离引擎。
+_Avoid_: TenantAuditorProvider, SecurityTenantAdapter
 
-- **ateng-boot-core**: 核心基础异常体系、`CommonResultCode`、`Result<T>` 显式契约、`JsonUtil` 序列化门面、`UserContextHolder` 与 `TenantContextHolder` 双维上下文 SPI 及 `DesensitizeUtil` 基础工具
-- **ateng-boot-web** (Optional): 驱动声明式 `@Anonymous` 动态端点提取与转译、`@CheckDataOwner` AOP 切面及 `@OperateLog` 双维操作日志穿透
-- **cn.dev33:sa-token-spring-boot3-starter**: Sa-Token 官方 Spring Boot 3 核心鉴权依赖
-- **cn.dev33:sa-token-spring-aop**: Sa-Token 官方 Spring AOP 穿透切面（覆盖 Controller 与 Service 业务层注解鉴权）
-- **org.springframework.data:spring-data-redis** (Optional): 驱动 `SaTokenRedisDao`、分布式权限缓存、`SaTokenClusterBroadcaster` 集群广播与 `LoginFailureLockService` 分布式防爆破计数
-- **io.github.atengk:ateng-boot-mybatis-plus** (Optional): 驱动自动审计填充与多租户上下文生命周期自动对齐
-- **org.springdoc:springdoc-openapi-starter-webmvc-ui** (Optional): 驱动 Knife4j / OpenAPI 自动鉴权弹窗
+**Zero-Trust Same-Token Defense**:
+微服务内网零信任防穿透壁垒。在服务端通过 `@CheckSameToken` 切面强制校验内部受信签名，阻断绕过网关直连内部微服务暴露端口的非法探测；原生客户端通过 `SameTokenClientHttpRequestInterceptor` 自动注入出站标头；微服务跨服务 RPC 治理（Feign / Dubbo）与响应式网关（WebFlux Gateway）统一由 `ateng-cloud` 套件正交承接。
+_Avoid_: 内部令牌, 网关白名单, 服务鉴权头

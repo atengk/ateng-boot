@@ -52,7 +52,27 @@ public enum MailResultCode implements IResultCode {
     /**
      * 邮件总容量超出上限
      */
-    MAIL_TOTAL_SIZE_EXCEEDED(40005, "邮件总容量超出上限");
+    MAIL_TOTAL_SIZE_EXCEEDED(40005, "邮件总容量超出上限"),
+
+    /**
+     * 邮件地址格式非法
+     */
+    MAIL_INVALID_ADDRESS(40006, "邮件地址格式非法"),
+
+    /**
+     * 邮件发送触发频率限制
+     */
+    MAIL_RATE_LIMITED(40007, "邮件发送触发频率限制"),
+
+    /**
+     * 邮件单日发送配额已用尽
+     */
+    MAIL_QUOTA_EXCEEDED(40008, "邮件单日发送配额已用尽"),
+
+    /**
+     * 重复的邮件发送请求已被幂等拦截
+     */
+    MAIL_IDEMPOTENT_REJECTED(40009, "重复的邮件发送请求已被幂等拦截");
 
     private final Integer code;
     private final String msg;

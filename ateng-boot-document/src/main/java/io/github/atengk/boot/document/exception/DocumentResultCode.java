@@ -52,7 +52,42 @@ public enum DocumentResultCode implements IResultCode {
     /**
      * PDF 表单域处理异常
      */
-    FORM_ERROR(57007, "PDF表单域处理异常");
+    FORM_ERROR(57007, "PDF表单域处理异常"),
+
+    /**
+     * 不支持动态 XFA 格式表单
+     */
+    PDF_XFA_UNSUPPORTED(57008, "不支持动态 XFA 格式表单，请先在 Adobe Acrobat 中转换为标准静态 AcroForm 格式"),
+
+    /**
+     * PDF 页面索引越界
+     */
+    PDF_PAGE_INDEX_OUT_OF_BOUNDS(57009, "PDF 页面索引越界"),
+
+    /**
+     * PDF 页面渲染超出最大页数安全上限
+     */
+    PDF_RENDER_EXCEEDED_MAX_PAGES(57010, "PDF 页面渲染超出最大页数安全上限"),
+
+    /**
+     * 文档大小超出允许的安全容量上限
+     */
+    DOCUMENT_SIZE_EXCEEDED(57011, "文档大小超出允许的安全容量上限"),
+
+    /**
+     * 文档中未定位到目标关键字锚点
+     */
+    KEYWORD_NOT_FOUND(57012, "文档中未定位到目标关键字锚点"),
+
+    /**
+     * 文档跨格式转换失败
+     */
+    CONVERSION_FAILED(57013, "文档跨格式转换失败"),
+
+    /**
+     * 文档加密保护或密码校验异常
+     */
+    ENCRYPTION_ERROR(57014, "文档加密保护或密码校验异常");
 
     private final Integer code;
     private final String msg;

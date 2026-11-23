@@ -1,8 +1,12 @@
 package io.github.atengk.boot.ftp.properties;
 
-import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
+import lombok.ToString;
 
 import java.time.Duration;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * FTP 客户端连接池配置属性
@@ -10,8 +14,14 @@ import java.time.Duration;
  * @author Ateng
  * @since 2026-10-22
  */
-@Data
+@Getter
+@EqualsAndHashCode
+@ToString
 public class FtpPoolProperties {
+
+    @EqualsAndHashCode.Exclude
+    @ToString.Exclude
+    private final Set<String> configuredFields = new HashSet<>();
 
     /**
      * 连接池最大总连接数
@@ -57,4 +67,89 @@ public class FtpPoolProperties {
      * 连接在池中保持空闲而不被驱逐的最小存活时间
      */
     private Duration minEvictableIdleTime = Duration.ofMinutes(5);
+
+    public void setMaxTotal(int maxTotal) {
+        this.maxTotal = maxTotal;
+        this.configuredFields.add("maxTotal");
+    }
+
+    public void setMaxIdle(int maxIdle) {
+        this.maxIdle = maxIdle;
+        this.configuredFields.add("maxIdle");
+    }
+
+    public void setMinIdle(int minIdle) {
+        this.minIdle = minIdle;
+        this.configuredFields.add("minIdle");
+    }
+
+    public void setMaxWait(Duration maxWait) {
+        this.maxWait = maxWait;
+        this.configuredFields.add("maxWait");
+    }
+
+    public void setTestOnBorrow(boolean testOnBorrow) {
+        this.testOnBorrow = testOnBorrow;
+        this.configuredFields.add("testOnBorrow");
+    }
+
+    public void setTestOnReturn(boolean testOnReturn) {
+        this.testOnReturn = testOnReturn;
+        this.configuredFields.add("testOnReturn");
+    }
+
+    public void setTestWhileIdle(boolean testWhileIdle) {
+        this.testWhileIdle = testWhileIdle;
+        this.configuredFields.add("testWhileIdle");
+    }
+
+    public void setTimeBetweenEvictionRuns(Duration timeBetweenEvictionRuns) {
+        this.timeBetweenEvictionRuns = timeBetweenEvictionRuns;
+        this.configuredFields.add("timeBetweenEvictionRuns");
+    }
+
+    public void setMinEvictableIdleTime(Duration minEvictableIdleTime) {
+        this.minEvictableIdleTime = minEvictableIdleTime;
+        this.configuredFields.add("minEvictableIdleTime");
+    }
+
+    /**
+     * 创建当前连接池配置的深拷贝（隔离可变状态）
+     *
+     * @return 独立拷贝实例
+     */
+    public FtpPoolProperties copy() {
+        FtpPoolProperties copy = new FtpPoolProperties();
+        copy.maxTotal = this.maxTotal;
+        copy.maxIdle = this.maxIdle;
+        copy.minIdle = this.minIdle;
+        copy.maxWait = this.maxWait;
+        copy.testOnBorrow = this.testOnBorrow;
+        copy.testOnReturn = this.testOnReturn;
+        copy.testWhileIdle = this.testWhileIdle;
+        copy.timeBetweenEvictionRuns = this.timeBetweenEvictionRuns;
+        copy.minEvictableIdleTime = this.minEvictableIdleTime;
+        copy.configuredFields.addAll(this.configuredFields);
+        return copy;
+    }
+
+    /**
+     * 从父级默认连接池配置继承当前实例未显式设置的属性（绝不覆盖显式配置）
+     *
+     * @param defaults 父级默认连接池配置
+     */
+    public void mergeFrom(FtpPoolProperties defaults) {
+        if (defaults == null) {
+            return;
+        }
+        this.maxTotal = FtpProperties.pickConfigured(this.configuredFields, "maxTotal", this.maxTotal, defaults.maxTotal);
+        this.maxIdle = FtpProperties.pickConfigured(this.configuredFields, "maxIdle", this.maxIdle, defaults.maxIdle);
+        this.minIdle = FtpProperties.pickConfigured(this.configuredFields, "minIdle", this.minIdle, defaults.minIdle);
+        this.maxWait = FtpProperties.pickConfigured(this.configuredFields, "maxWait", this.maxWait, defaults.maxWait);
+        this.testOnBorrow = FtpProperties.pickConfigured(this.configuredFields, "testOnBorrow", this.testOnBorrow, defaults.testOnBorrow);
+        this.testOnReturn = FtpProperties.pickConfigured(this.configuredFields, "testOnReturn", this.testOnReturn, defaults.testOnReturn);
+        this.testWhileIdle = FtpProperties.pickConfigured(this.configuredFields, "testWhileIdle", this.testWhileIdle, defaults.testWhileIdle);
+        this.timeBetweenEvictionRuns = FtpProperties.pickConfigured(this.configuredFields, "timeBetweenEvictionRuns", this.timeBetweenEvictionRuns, defaults.timeBetweenEvictionRuns);
+        this.minEvictableIdleTime = FtpProperties.pickConfigured(this.configuredFields, "minEvictableIdleTime", this.minEvictableIdleTime, defaults.minEvictableIdleTime);
+    }
 }

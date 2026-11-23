@@ -7,9 +7,9 @@
 然而，在基于 Spring Boot 与传统多数据源框架（如单纯使用 AbstractRoutingDataSource 或直接引入未经验证的第三方组件）进行多数据源开发时，团队普遍面临以下五大核心架构痛点：
 
 1. **Spring 事务假切源导致的静默数据串库漏洞 (False DataSource Switch & Silent Cross-Database Mutation)**：
-   Spring 官方的 `DataSourceTransactionManager` 本地事务管理器在事务开启时即从当前数据源获取物理连接并绑定至线程上下文（`TransactionSynchronizationManager`）。若在带 `@Transactional` 的方法内部或者嵌套调用的下层方法中使用切源注解（如 `@DS`）或编程式切源，该切源指令会被 Spring 本地事务静默忽略，所有后续 SQL 依然在原物理连接上执行。这种“伪切源”破坏了开发者的心理预期，极易导致原本应写入租户 B 或从库的数据被静默写入主库或租户 A，造成严重的生产数据串库事故。
-2. **SaaS 物理多租户与行级租户割裂，缺乏透明自适应路由 (Fractured Multi-Tenancy & Hardcoded Routing)**：
-   中大客户通常要求数据物理隔离（独享数据库实例或独享 Schema），而普通小微客户则共享单库通过行级租户字段（`tenant_id`）隔离。业界方案往往在代码层硬编码分流逻辑，导致业务代码充斥大量的 `if-else` 分支与手工切源模板，业务与存储拓扑强耦合，缺乏统一透明的“上下文驱动切库 + 优雅回退”底座支撑。
+   Spring 官方的 `DataSourceTransactionManager` 本地事务管理器在事务开启时即从当前数据源获取物理连接并绑定至线程上下文（`TransactionSynchronizationManager`）。若在带 `@Transactional` 的方法内部或者嵌套调用的下层方法中使用切源注解（如 `@DS`）或编程式切源，该切源指令会被 Spring 本地事务静默忽略，所有后续 SQL 依然在原物理连接上执行。这种“假切源”破坏了开发者的心理预期，极易导致原本应写入租户 B 或从库的数据被静默写入主库或租户 A，造成严重的生产数据串库事故。
+2. **SaaS 物理多租户与共享库多租户割裂，缺乏透明自适应路由 (Fractured Multi-Tenancy & Hardcoded Routing)**：
+   中大客户通常要求数据物理隔离（独享数据库实例或独享 Schema），而普通小微客户则共享单库通过租户列（`tenant_id`）隔离。业界方案往往在代码层硬编码分流逻辑，导致业务代码充斥大量的 `if-else` 分支与手工切源模板，业务与存储拓扑强耦合，缺乏统一透明的“上下文驱动切库 + 优雅回退”底座支撑。
 3. **主从读写分离延迟与从库宕机缺乏自愈弹性 (Replication Delay & Brittle Failover)**：
    读写分离是数据库横向扩展的标准手段，但在高频写后即读场景下（如用户下单后立刻跳转订单详情页、修改密码后立刻拉取个人资料），从库由于主从复制物理毫秒级延迟，极易读取到旧数据，引发业务流程错乱；同时，从库网络抖动或临时宕机时，若缺乏自适应健康感知与快速熔断隔离机制，将导致正常的只读请求持续报错甚至拖垮应用线程池。
 4. **全库批量巡检门面缺失与底层 SPI 泄露 (Asymmetric Facades & Leak of Low-Level SPI)**：
@@ -63,7 +63,8 @@ flowchart TD
 
 ### 1. 事务假切源刚性拦截防卫机制 (DynamicDatasourceGuard)
 
-为了彻底根绝 Spring 本地事务与切源注解冲突导致的静默数据串库致命风险，框架引入 `DynamicDatasourceGuard`：
+为了彻底根绝 Spring 本地事务与切源注解冲突导致的静默数据串库致命风险，框架引入 `DynamicDatasourceGuard` 与 `AtengTransactionExecutionListener`：
+- **事务启动感知与双保险绑定**：通过 `AtengTransactionExecutionListener` 配合 `TransactionRoutingContext` 在 `beforeBegin` 至 `afterBegin` 窗口内透传真实事务的活跃态与只读标志，解决 `DataSourceTransactionManager.doBegin()` 早于 `prepareSynchronization()` 取连接时的路由盲区；当活动 Spring 事务首次经由 `AtengDynamicRoutingDataSource` 解析出目标物理数据源 Key（包括未声明 `@DS` 但由 `TenantContextHolder` 透明路由至租户库或读写分离路由至主从库的场景），于 `afterBegin` 完成同步初始化后将该真实物理数据源 Key 绑定至 `TransactionSynchronizationManager` 的事务资源表，且 `DynamicDatasourceGuard.resolveDefaultDataSourceKey()` 同步对齐租户上下文与写后即读状态，彻底消除“租户事务内漏拦 `@DS("master")`”与“误杀同租户库合法重入”的盲区；
 - 在切源拦截器（`AtengDynamicDataSourceAnnotationInterceptor`）及路由解析时，探测当前线程的 Spring 事务状态（`TransactionSynchronizationManager.isActualTransactionActive()`）；
 - 若检测到当前事务已经绑定了物理数据源，且目标数据源与当前事务数据源不同，且未声明 `@Transactional(propagation = Propagation.REQUIRES_NEW)` 或多源分布式事务协调器时，依据 `ateng.boot.datasource.guard.fail-on-false-switch=true` 立即抛出 `DataSourceSwitchException` 刚性阻断本次执行，杜绝隐性串库；
 - 若目标数据源为同物理库重入，或者目标方法显式标注 `REQUIRES_NEW` 挂起外层事务开启新事务，则安全放行。
@@ -74,18 +75,18 @@ flowchart TD
 - **透明感知**：自动提取 Core 模块 `TenantContextHolder.getTenantId()`，通过 `tenant_` 前缀或可插拔 `TenantDataSourceProvider` SPI 动态计算目标租户数据源 Key；
 - **三级隔离模式 (MultiTenancyMode)**：
   1. `STRICT`（严格模式）：要求目标租户物理库必须存在，若不存在立即抛出 `TenantDataSourceNotFoundException` 快速失败，坚决杜绝静默降级；
-  2. `FALLBACK_MASTER`（混合回退模式）：若租户未配置独立物理库，平滑回退至主库，自动无缝承接行级租户隔离；
+  2. `FALLBACK_MASTER`（混合回退模式）：若租户未配置独立物理库，平滑回退至主库，自动无缝承接共享库多租户列过滤隔离；
   3. `IGNORE`（忽略模式）：无论上下文是否存在租户，均强制路由主库（用于全局系统任务与公共元数据维护）；
 - **免租户穿透**：支持 `TenantContextHolder.isIgnoreTenant()` 动态穿透至主库。
 
 ### 3. 高可用主从读写分离与写后即读（Read-After-Write）防延迟
 
 - **事务感知路由**：
-  - 自动识别 Spring `@Transactional(readOnly = true)` 只读事务并路由至从库组（`slave`）；
-  - 普通写事务 `@Transactional` 自动绑定主库并触发写操作标记。
+  - 自动识别 Spring `@Transactional(readOnly = true)` 只读事务并路由至从库组（`slave`）或租户专属从库分组；
+  - 普通写事务 `@Transactional`（含显式 `@DS("master")` 或租户主库写事务）自动绑定主库并触发写后即读一致性保护标记。
 - **写后即读一致性保障**：
-  - 支持单请求作用域（`REQUEST`）与时间窗口作用域（`WINDOW`，默认 TTL 3 秒）；
-  - 当某个用户/请求触发写操作后，后续只读查询在窗口期内自动拦截并强制回退路由至主库（Master），彻底杜绝从库复制延迟导致的脏读。
+  - 支持单请求作用域（`REQUEST`）与时间窗口作用域（`WINDOW`，默认 TTL 3 秒）；`DefaultWriteOccurredResolver` 在 `WINDOW` 模式下按 `TENANT:<tenantId>:...` / `GLOBAL:...` 复合键隔离写窗口状态，杜绝多租户串扰；
+  - 当某个用户/租户触发写操作后，后续只读查询在窗口期内自动拦截并强制回退路由至主库（Master/租户主库），彻底杜绝从库复制延迟导致的脏读。
 - **从库自愈熔断**：
   - 采用 `HealthAwareDynamicDataSourceStrategy`，实时捕获底层物理连接异常；
   - 故障从库自动进入隔离冷却窗口（默认 30 秒），负载均衡自动剔除故障节点；当从库集群全挂时，自动保底降级路由至主库，保障应用可用性。
@@ -93,9 +94,9 @@ flowchart TD
 ### 4. 编程式对称完备门面 (DynamicDatasourceTemplate)
 
 针对高阶批处理与动态交互场景，提供对称操作门面：
-- **切源执行**：`execute(dsKey, action)`、`executeMaster`、`executeSlave`、`executeTenant(tenantId, action)`；
-- **全库巡检**：`forEachDataSource`、`forEachDataSourceWithResult`、`forEachTenant`、`forEachTenantWithResult`，内置对单个库执行异常的受控隔离与结果聚合（`BatchExecutionResult`），避免单个坏库阻断全量批处理；
-- **动态生命周期**：`addDataSource(dsKey, property)` 前置网络探活与元数据校验，`removeDataSource(dsKey, timeout)` 支持超时等待在途事务连接归还的优雅排空，避免暴力关闭连接池引发次生业务报错。
+- **切源执行**：`callInDataSource(dsKey, action)` / `runInDataSource(dsKey, action)`、`callInMaster` / `runInMaster`、`callInSlave` / `runInSlave`、`callInTenantDataSource(tenantId, action)` / `runInTenantDataSource(tenantId, action)`；
+- **全库巡检与结果聚合**：`forEachDataSource`、`forEachDataSourceWithResult`、`forEachTenant`、`forEachTenantWithResult`，内置对单个库执行异常的受控隔离（`FAIL_SAFE` / `FAIL_FAST`）与泛型结果聚合（`BatchExecutionResult<T>` 承载 `results` 与 `failures`），避免单个坏库阻断全量批处理；
+- **分组与动态生命周期对称治理**：提供 `addGroupMember` / `removeGroupMember` 分组节点对称挂载与摘除，`addDataSource(dsKey, property)` 前置网络探活与元数据校验，`reloadDataSource(dsKey, newProperty, preWarm, preWarmConnections, graceful)` 无损热重载，以及 `removeDataSource(dsKey)` / `removeDataSource(dsKey, graceful)` 超时等待在途事务连接归还的优雅排空，并在注销或热重载时自动联动清理熔断黑名单与分组残余引用。
 
 ### 5. 零明文凭据安全与全链路异步透传
 

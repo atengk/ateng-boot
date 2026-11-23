@@ -20,7 +20,7 @@ import org.slf4j.LoggerFactory;
 /**
  * 工作表半透明防拍照暗水印与只读保护拦截器
  * <p>
- * 在工作表创建完毕后（{@code afterSheetCreate}），将包含指定文字的半透明 45° 倾斜防伪切片注入为工作表底层背景图（Background Picture），
+ * 在工作表创建完毕后（{@code afterSheetCreate}），将包含指定文字的半透明 -30° 倾斜防伪切片注入为工作表底层背景图（Background Picture），
  * 屏幕浏览与纸质打印全屏平铺呈现，且 100% 不遮挡单元格点击与公式输入；同时支持配置密码对工作表实施只读防篡改保护。
  * </p>
  *

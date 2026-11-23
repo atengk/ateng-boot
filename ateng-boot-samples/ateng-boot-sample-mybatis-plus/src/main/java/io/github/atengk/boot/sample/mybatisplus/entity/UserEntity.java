@@ -3,7 +3,9 @@ package io.github.atengk.boot.sample.mybatisplus.entity;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 import io.github.atengk.boot.mybatisplus.annotation.FieldEncrypt;
+import io.github.atengk.boot.mybatisplus.dynamicquery.annotation.DynamicQueryIgnore;
 import io.github.atengk.boot.mybatisplus.entity.BaseFullEntity;
+import io.github.atengk.boot.mybatisplus.handler.DeterministicEncryptTypeHandler;
 import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -12,7 +14,7 @@ import lombok.ToString;
 
 /**
  * 系统用户实体对象
- * 继承全要素受管业务实体基类 BaseFullEntity（覆盖五级阶梯体系最高阶、乐观锁、逻辑删除与字段透明加解密）
+ * 继承全要素受管业务实体基类 BaseFullEntity（组合乐观锁、ID 占位软删除与字段透明加解密）
  *
  * @author Ateng
  * @since 2026-10-19
@@ -37,10 +39,10 @@ public class UserEntity extends BaseFullEntity {
     private Integer age;
 
     /**
-     * 电子邮箱（数据库透明加密存储）
+     * 电子邮箱（数据库确定性透明加密存储，支持精确等值检索）
      */
-    @FieldEncrypt
-    @TableField(typeHandler = EncryptTypeHandler.class)
+    @FieldEncrypt(deterministic = true)
+    @TableField(typeHandler = DeterministicEncryptTypeHandler.class)
     private String email;
 
     /**
@@ -54,6 +56,12 @@ public class UserEntity extends BaseFullEntity {
      * 所属部门 ID（用于细粒度数据权限过滤）
      */
     private Long deptId;
+
+    /**
+     * 内部风控备注（标注 @DynamicQueryIgnore 禁止外部动态查询与排序越权探测）
+     */
+    @DynamicQueryIgnore
+    private String internalRemark;
 
     public UserEntity(String name, Integer age, String email, String phone, Long deptId) {
         this.name = name;

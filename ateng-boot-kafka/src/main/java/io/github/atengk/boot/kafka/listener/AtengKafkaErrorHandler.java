@@ -93,8 +93,8 @@ public class AtengKafkaErrorHandler extends DefaultErrorHandler {
         if (properties != null) {
             backOff.setInitialInterval(properties.getConsumer().getRetryInterval().toMillis());
             backOff.setMultiplier(properties.getConsumer().getRetryMultiplier());
-            // 最大退避上限 30s，防止溢出
-            backOff.setMaxInterval(30000L);
+            // 最大退避上限由 ateng.boot.kafka.consumer.max-retry-interval 驱动，防止长退避溢出
+            backOff.setMaxInterval(properties.getConsumer().getMaxRetryInterval().toMillis());
         }
         return backOff;
     }

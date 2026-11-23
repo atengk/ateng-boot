@@ -5,16 +5,24 @@ import co.elastic.clients.elasticsearch._types.KnnSearch;
 import co.elastic.clients.elasticsearch._types.SortOptions;
 import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.aggregations.Aggregation;
+import co.elastic.clients.elasticsearch._types.aggregations.CalendarInterval;
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
+import co.elastic.clients.elasticsearch._types.query_dsl.ChildScoreMode;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
+import co.elastic.clients.elasticsearch.core.search.FieldCollapse;
+import co.elastic.clients.elasticsearch.core.search.FieldSuggester;
 import co.elastic.clients.elasticsearch.core.search.Highlight;
 import co.elastic.clients.elasticsearch.core.search.HighlightField;
+import co.elastic.clients.elasticsearch.core.search.InnerHits;
+import co.elastic.clients.elasticsearch.core.search.Rescore;
+import co.elastic.clients.elasticsearch.core.search.ScoreMode;
 import co.elastic.clients.json.JsonData;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -23,6 +31,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * 链式流式搜索查询构建器
@@ -51,8 +60,11 @@ public class SearchQueryBuilder {
     private String minimumShouldMatch;
 
     private final List<SortOptions> sorts = new ArrayList<>();
-    private final Map<String, Aggregation> aggregations = new LinkedHashMap<>();
+    private final Map<String, Function<Map<String, Aggregation>, Aggregation>> aggFactories = new LinkedHashMap<>();
+    private final Map<String, Map<String, Aggregation>> subAggregations = new LinkedHashMap<>();
     private final List<KnnSearch> knnSearches = new ArrayList<>();
+    private final List<Rescore> rescores = new ArrayList<>();
+    private final Map<String, FieldSuggester> suggesters = new LinkedHashMap<>();
     private final Set<String> highlightFields = new LinkedHashSet<>();
     private String highlightPreTag = "<em>";
     private String highlightPostTag = "</em>";
@@ -64,6 +76,10 @@ public class SearchQueryBuilder {
     private final List<String> searchAfter = new ArrayList<>();
     private final List<String> indices = new ArrayList<>();
     private boolean trackTotalHits = true;
+    private FieldCollapse collapse;
+    private final Set<String> sourceIncludes = new LinkedHashSet<>();
+    private final Set<String> sourceExcludes = new LinkedHashSet<>();
+    private Boolean fetchSource;
 
     // ==================== 1. 精确与分词匹配 ====================
 
@@ -131,6 +147,109 @@ public class SearchQueryBuilder {
             return this;
         }
         mustQueries.add(Query.of(q -> q.multiMatch(mm -> mm.query(query.toString()).fields(Arrays.asList(fields)))));
+        return this;
+    }
+
+    /**
+     * MatchPhrase 短语精准保序检索（织入 must 分支）
+     * <p>
+     * 匹配词条顺序与相对位置完全一致的短语文本。
+     *
+     * @param field 字段名
+     * @param query 查询关键词或短语
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder matchPhrase(String field, Object query) {
+        return matchPhrase(field, query, null);
+    }
+
+    /**
+     * MatchPhrase 短语精准保序检索（支持指定 slop 容差跨度）
+     *
+     * @param field 字段名
+     * @param query 查询关键词或短语
+     * @param slop  词条允许的最大间隙跨度（可为 null）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder matchPhrase(String field, Object query, Integer slop) {
+        if (!StringUtils.hasText(field) || query == null || !StringUtils.hasText(query.toString())) {
+            return this;
+        }
+        mustQueries.add(Query.of(q -> q.matchPhrase(mp -> {
+            mp.field(field).query(query.toString());
+            if (slop != null && slop >= 0) {
+                mp.slop(slop);
+            }
+            return mp;
+        })));
+        return this;
+    }
+
+    /**
+     * MatchPhrasePrefix 搜索联想自动补全（织入 must 分支）
+     * <p>
+     * 专为搜索输入框实时联想设计，最后一个词条作为前缀展开匹配。
+     *
+     * @param field 字段名
+     * @param query 查询短语前缀
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder matchPhrasePrefix(String field, Object query) {
+        return matchPhrasePrefix(field, query, null);
+    }
+
+    /**
+     * MatchPhrasePrefix 搜索联想自动补全（支持控制最大展开词条数）
+     *
+     * @param field         字段名
+     * @param query         查询短语前缀
+     * @param maxExpansions 控制前缀展开的后缀词项上限
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder matchPhrasePrefix(String field, Object query, Integer maxExpansions) {
+        if (!StringUtils.hasText(field) || query == null || !StringUtils.hasText(query.toString())) {
+            return this;
+        }
+        mustQueries.add(Query.of(q -> q.matchPhrasePrefix(mpp -> {
+            mpp.field(field).query(query.toString());
+            if (maxExpansions != null && maxExpansions > 0) {
+                mpp.maxExpansions(maxExpansions);
+            }
+            return mpp;
+        })));
+        return this;
+    }
+
+    /**
+     * Fuzzy 拼写纠错与容错召回（织入 must 分支）
+     *
+     * @param field 字段名
+     * @param value 匹配值（支持包含拼写误差的文本）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder fuzzy(String field, String value) {
+        return fuzzy(field, value, null);
+    }
+
+    /**
+     * Fuzzy 拼写纠错与容错召回（支持自定义编辑距离参数）
+     *
+     * @param field     字段名
+     * @param value     匹配值
+     * @param fuzziness 编辑距离（如 "AUTO"、"1"、"2"，可为 null）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder fuzzy(String field, String value, String fuzziness) {
+        if (!StringUtils.hasText(field) || !StringUtils.hasText(value)) {
+            return this;
+        }
+        mustQueries.add(Query.of(q -> q.fuzzy(f -> {
+            f.field(field).value(toFieldValue(value));
+            if (StringUtils.hasText(fuzziness)) {
+                f.fuzziness(fuzziness);
+            }
+            return f;
+        })));
         return this;
     }
 
@@ -381,6 +500,89 @@ public class SearchQueryBuilder {
         return this;
     }
 
+    /**
+     * Nested 嵌套对象独立作用域匹配（织入 must 分支）
+     * <p>
+     * 解决对象数组跨元素多属性交叉误判（例如避免同一商品中不同 SKU 属性交叉命中）。
+     *
+     * @param path           嵌套对象路径（如 "skus"、"items"）
+     * @param nestedConsumer 嵌套作用域查询闭包
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder nested(String path, Consumer<SearchQueryBuilder> nestedConsumer) {
+        return nested(path, null, nestedConsumer);
+    }
+
+    /**
+     * Nested 嵌套对象独立作用域匹配（织入 must 分支，支持指定子对象评分模式）
+     *
+     * @param path           嵌套对象路径（如 "skus"、"items"）
+     * @param scoreMode      子对象评分模式（如 Avg, Max, None 等，可为 null）
+     * @param nestedConsumer 嵌套作用域查询闭包
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder nested(String path, ChildScoreMode scoreMode, Consumer<SearchQueryBuilder> nestedConsumer) {
+        return nested(path, scoreMode, nestedConsumer, null, 0);
+    }
+
+    /**
+     * Nested 嵌套对象匹配并携带 InnerHits 召回具体命中的子文档列表
+     *
+     * @param path           嵌套对象路径（如 "skus"）
+     * @param nestedConsumer 嵌套作用域查询闭包
+     * @param innerHitsName  inner_hits 返回键名（为空时使用路径默认名）
+     * @param innerHitsSize  每个父文档最多召回的子文档数（需 >= 0）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder nested(String path,
+                                     Consumer<SearchQueryBuilder> nestedConsumer,
+                                     String innerHitsName,
+                                     int innerHitsSize) {
+        return nested(path, null, nestedConsumer, innerHitsName, innerHitsSize);
+    }
+
+    /**
+     * Nested 嵌套对象匹配（支持子对象评分模式与 InnerHits 子文档召回）
+     *
+     * @param path           嵌套对象路径（如 "skus"）
+     * @param scoreMode      子对象评分模式（可为 null）
+     * @param nestedConsumer 嵌套作用域查询闭包
+     * @param innerHitsName  inner_hits 返回键名（非空或 size > 0 时启用）
+     * @param innerHitsSize  每个父文档最多召回的子文档数
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder nested(String path,
+                                     ChildScoreMode scoreMode,
+                                     Consumer<SearchQueryBuilder> nestedConsumer,
+                                     String innerHitsName,
+                                     int innerHitsSize) {
+        if (innerHitsSize < 0) {
+            throw new IllegalArgumentException("innerHitsSize must not be negative: " + innerHitsSize);
+        }
+        if (!StringUtils.hasText(path) || nestedConsumer == null) {
+            return this;
+        }
+        SearchQueryBuilder sub = new SearchQueryBuilder();
+        nestedConsumer.accept(sub);
+        Query subQuery = sub.buildQuery();
+        if (subQuery != null) {
+            InnerHits innerHits = (StringUtils.hasText(innerHitsName) || innerHitsSize > 0)
+                    ? buildInnerHits(innerHitsName, innerHitsSize)
+                    : null;
+            mustQueries.add(Query.of(q -> q.nested(n -> {
+                n.path(path).query(subQuery);
+                if (scoreMode != null) {
+                    n.scoreMode(scoreMode);
+                }
+                if (innerHits != null) {
+                    n.innerHits(innerHits);
+                }
+                return n;
+            })));
+        }
+        return this;
+    }
+
     // ==================== 4. 空间与向量算子 ====================
 
     /**
@@ -434,15 +636,77 @@ public class SearchQueryBuilder {
      * @return 当前构建器
      */
     public SearchQueryBuilder knn(String field, List<Float> vector, int k, int numCandidates) {
+        return knn(field, vector, k, numCandidates, null);
+    }
+
+    /**
+     * AI 稠密向量相似度检索 (kNN，支持前置布尔过滤条件)
+     *
+     * @param field          稠密向量字段名 (dense_vector)
+     * @param vector         查询向量数组
+     * @param k              召回 TopK 数量
+     * @param numCandidates  每个分片候选集大小 (通常 >= k)
+     * @param filterConsumer kNN 预过滤条件构建器（可为 null）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder knn(String field, float[] vector, int k, int numCandidates,
+                                  Consumer<SearchQueryBuilder> filterConsumer) {
+        if (!StringUtils.hasText(field) || vector == null || vector.length == 0) {
+            return this;
+        }
+        List<Float> floatList = new ArrayList<>(vector.length);
+        for (float v : vector) {
+            floatList.add(v);
+        }
+        return knn(field, floatList, k, numCandidates, filterConsumer);
+    }
+
+    /**
+     * 声明式 KNN 向量近邻检索（支持 List<Float> 集合与前置过滤条件）
+     *
+     * @param field          稠密向量字段名 (dense_vector)
+     * @param vector         查询向量集合
+     * @param k              召回 TopK 数量
+     * @param numCandidates  每个分片候选集大小 (通常 >= k)
+     * @param filterConsumer kNN 预过滤条件构建器（可为 null）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder knn(String field, List<Float> vector, int k, int numCandidates,
+                                  Consumer<SearchQueryBuilder> filterConsumer) {
         if (!StringUtils.hasText(field) || vector == null || vector.isEmpty()) {
             return this;
         }
-        knnSearches.add(KnnSearch.of(builder -> builder
-                .field(field)
-                .queryVector(new ArrayList<>(vector))
-                .k((long) k)
-                .numCandidates((long) numCandidates)
-        ));
+        Query filterQuery = null;
+        if (filterConsumer != null) {
+            SearchQueryBuilder filterBuilder = new SearchQueryBuilder();
+            filterConsumer.accept(filterBuilder);
+            filterQuery = filterBuilder.buildQuery();
+        }
+        final Query resolvedFilter = filterQuery;
+        knnSearches.add(KnnSearch.of(builder -> {
+            builder.field(field)
+                    .queryVector(new ArrayList<>(vector))
+                    .k((long) k)
+                    .numCandidates((long) numCandidates);
+            if (resolvedFilter != null) {
+                builder.filter(resolvedFilter);
+            }
+            return builder;
+        }));
+        return this;
+    }
+
+    /**
+     * 条件式流式查询构造语法糖（当 {@code condition} 为 {@code true} 时才执行构建逻辑）
+     *
+     * @param condition 布尔开关条件
+     * @param consumer  条件成立时对当前构建器的消费逻辑
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder when(boolean condition, Consumer<SearchQueryBuilder> consumer) {
+        if (condition && consumer != null) {
+            consumer.accept(this);
+        }
         return this;
     }
 
@@ -578,7 +842,7 @@ public class SearchQueryBuilder {
         return highlight(fields);
     }
 
-    // ==================== 8. 聚合算子 ====================
+    // ==================== 8. 聚合与建议/精排算子 ====================
 
     /**
      * Terms 分组词条聚合快捷算子
@@ -589,10 +853,25 @@ public class SearchQueryBuilder {
      * @return 当前构建器
      */
     public SearchQueryBuilder termsAggregation(String name, String field, int size) {
-        if (StringUtils.hasText(name) && StringUtils.hasText(field)) {
-            aggregations.put(name, Aggregation.of(a -> a.terms(t -> t.field(field).size(size))));
+        if (size <= 0) {
+            throw new IllegalArgumentException("termsAggregation size must be greater than 0: " + size);
         }
-        return this;
+        return putSimpleAggregation(name, field, a -> a.terms(t -> t.field(field).size(size)));
+    }
+
+    /**
+     * Terms 分组词条聚合（支持嵌套子聚合闭环定义）
+     *
+     * @param name           聚合名称
+     * @param field          聚合字段名
+     * @param size           返回桶大小
+     * @param subAggConsumer 子聚合构建闭包
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder termsAggregation(String name, String field, int size,
+                                               Consumer<SearchQueryBuilder> subAggConsumer) {
+        termsAggregation(name, field, size);
+        return subAggregation(name, subAggConsumer);
     }
 
     /**
@@ -603,10 +882,7 @@ public class SearchQueryBuilder {
      * @return 当前构建器
      */
     public SearchQueryBuilder sumAggregation(String name, String field) {
-        if (StringUtils.hasText(name) && StringUtils.hasText(field)) {
-            aggregations.put(name, Aggregation.of(a -> a.sum(s -> s.field(field))));
-        }
-        return this;
+        return putSimpleAggregation(name, field, a -> a.sum(s -> s.field(field)));
     }
 
     /**
@@ -617,8 +893,336 @@ public class SearchQueryBuilder {
      * @return 当前构建器
      */
     public SearchQueryBuilder avgAggregation(String name, String field) {
+        return putSimpleAggregation(name, field, a -> a.avg(av -> av.field(field)));
+    }
+
+    /**
+     * Min 数值极小值聚合快捷算子
+     *
+     * @param name  聚合名称
+     * @param field 目标数值或日期字段名
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder minAggregation(String name, String field) {
+        return putSimpleAggregation(name, field, a -> a.min(m -> m.field(field)));
+    }
+
+    /**
+     * Max 数值极大值聚合快捷算子
+     *
+     * @param name  聚合名称
+     * @param field 目标数值或日期字段名
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder maxAggregation(String name, String field) {
+        return putSimpleAggregation(name, field, a -> a.max(m -> m.field(field)));
+    }
+
+    /**
+     * Cardinality 去重基数统计聚合算子
+     *
+     * @param name  聚合名称
+     * @param field 目标去重字段（如 userId.keyword）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder cardinalityAggregation(String name, String field) {
+        return putSimpleAggregation(name, field, a -> a.cardinality(c -> c.field(field)));
+    }
+
+    /**
+     * Stats 数值全景统计聚合算子 (count / min / max / avg / sum)
+     *
+     * @param name  聚合名称
+     * @param field 数值字段名
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder statsAggregation(String name, String field) {
+        return putSimpleAggregation(name, field, a -> a.stats(s -> s.field(field)));
+    }
+
+    /**
+     * Percentiles 分位数统计聚合算子（如 50.0, 95.0, 99.0）
+     *
+     * @param name     聚合名称
+     * @param field    数值字段名
+     * @param percents 期望计算的分位点百分比列表（为空时使用引擎默认分位点）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder percentilesAggregation(String name, String field, double... percents) {
         if (StringUtils.hasText(name) && StringUtils.hasText(field)) {
-            aggregations.put(name, Aggregation.of(a -> a.avg(av -> av.field(field))));
+            List<Double> percentList = (percents != null && percents.length > 0)
+                    ? Arrays.stream(percents).boxed().toList()
+                    : Collections.emptyList();
+            return putSimpleAggregation(name, field, a -> a.percentiles(p -> {
+                p.field(field).keyed(true);
+                if (!percentList.isEmpty()) {
+                    p.percents(percentList);
+                }
+                return p;
+            }));
+        }
+        return this;
+    }
+
+    /**
+     * DateHistogram 时序直方图分桶聚合算子（支持字符串日历间隔表达式）
+     * <p>
+     * 支持传入如 "1d", "1h", "1M", "day", "month" 等标准日历间隔，自动映射至原生 {@link CalendarInterval}。
+     *
+     * @param name             聚合名称
+     * @param field            时序时间字段名
+     * @param calendarInterval 日历间隔表达式（如 "1d", "1h", "1M" 等）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder dateHistogramAggregation(String name, String field, String calendarInterval) {
+        if (StringUtils.hasText(name) && StringUtils.hasText(field) && StringUtils.hasText(calendarInterval)) {
+            CalendarInterval interval = parseCalendarInterval(calendarInterval);
+            return dateHistogramAggregation(name, field, interval);
+        }
+        return this;
+    }
+
+    /**
+     * DateHistogram 时序直方图分桶聚合算子（支持字符串日历间隔与嵌套子聚合）
+     *
+     * @param name             聚合名称
+     * @param field            时序时间字段名
+     * @param calendarInterval 日历间隔表达式
+     * @param subAggConsumer   子聚合构建闭包
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder dateHistogramAggregation(String name, String field, String calendarInterval,
+                                                       Consumer<SearchQueryBuilder> subAggConsumer) {
+        dateHistogramAggregation(name, field, calendarInterval);
+        return subAggregation(name, subAggConsumer);
+    }
+
+    /**
+     * DateHistogram 时序直方图分桶聚合算子（强类型 CalendarInterval 枚举）
+     *
+     * @param name             聚合名称
+     * @param field            时序时间字段名
+     * @param calendarInterval 强类型日历间隔枚举
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder dateHistogramAggregation(String name, String field, CalendarInterval calendarInterval) {
+        if (StringUtils.hasText(name) && StringUtils.hasText(field) && calendarInterval != null) {
+            return putSimpleAggregation(name, field, a -> a.dateHistogram(dh -> dh.field(field).calendarInterval(calendarInterval)));
+        }
+        return this;
+    }
+
+    /**
+     * DateHistogram 时序直方图分桶聚合算子（强类型枚举并支持嵌套子聚合）
+     *
+     * @param name             聚合名称
+     * @param field            时序时间字段名
+     * @param calendarInterval 强类型日历间隔枚举
+     * @param subAggConsumer   子聚合构建闭包
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder dateHistogramAggregation(String name, String field, CalendarInterval calendarInterval,
+                                                       Consumer<SearchQueryBuilder> subAggConsumer) {
+        dateHistogramAggregation(name, field, calendarInterval);
+        return subAggregation(name, subAggConsumer);
+    }
+
+    /**
+     * Filter 过滤单桶聚合算子
+     *
+     * @param name           聚合名称
+     * @param filterConsumer 过滤条件闭包
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder filterAggregation(String name, Consumer<SearchQueryBuilder> filterConsumer) {
+        return filterAggregation(name, filterConsumer, null);
+    }
+
+    /**
+     * Filter 过滤单桶聚合算子（支持在过滤桶下挂接嵌套子聚合）
+     *
+     * @param name           聚合名称
+     * @param filterConsumer 过滤条件闭包
+     * @param subAggConsumer 子聚合构建闭包（可为 null）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder filterAggregation(String name,
+                                                Consumer<SearchQueryBuilder> filterConsumer,
+                                                Consumer<SearchQueryBuilder> subAggConsumer) {
+        if (StringUtils.hasText(name) && filterConsumer != null) {
+            SearchQueryBuilder filterBuilder = new SearchQueryBuilder();
+            filterConsumer.accept(filterBuilder);
+            Query filterQuery = filterBuilder.buildQuery();
+            Query effectiveFilter = filterQuery != null ? filterQuery : Query.of(q -> q.matchAll(m -> m));
+            aggFactories.put(name, subs -> Aggregation.of(a -> {
+                Aggregation.Builder.ContainerBuilder container = a.filter(effectiveFilter);
+                if (!subs.isEmpty()) {
+                    container.aggregations(subs);
+                }
+                return container;
+            }));
+            if (subAggConsumer != null) {
+                subAggregation(name, subAggConsumer);
+            }
+        }
+        return this;
+    }
+
+    /**
+     * 为指定已声明的桶聚合附加嵌套子聚合
+     *
+     * @param parentName     父级聚合名称
+     * @param subAggConsumer 子聚合构建闭包
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder subAggregation(String parentName, Consumer<SearchQueryBuilder> subAggConsumer) {
+        if (StringUtils.hasText(parentName) && subAggConsumer != null) {
+            SearchQueryBuilder sub = new SearchQueryBuilder();
+            subAggConsumer.accept(sub);
+            Map<String, Aggregation> builtSubs = sub.buildAggregations();
+            if (!builtSubs.isEmpty()) {
+                subAggregations.computeIfAbsent(parentName, k -> new LinkedHashMap<>()).putAll(builtSubs);
+            }
+        }
+        return this;
+    }
+
+    private SearchQueryBuilder putSimpleAggregation(String name, String field,
+                                                    Function<Aggregation.Builder, Aggregation.Builder.ContainerBuilder> configurer) {
+        if (StringUtils.hasText(name) && StringUtils.hasText(field)) {
+            aggFactories.put(name, subs -> Aggregation.of(a -> {
+                Aggregation.Builder.ContainerBuilder container = configurer.apply(a);
+                if (!subs.isEmpty()) {
+                    container.aggregations(subs);
+                }
+                return container;
+            }));
+        }
+        return this;
+    }
+
+    /**
+     * 配置二阶段重打分精排规则 (Rescore，默认权重与求和模式)
+     *
+     * @param windowSize      重打分候选窗口大小（每分片取 Top N 文档，需 &gt; 0）
+     * @param rescoreConsumer 重打分查询闭包
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder rescore(int windowSize, Consumer<SearchQueryBuilder> rescoreConsumer) {
+        return rescore(windowSize, rescoreConsumer, null, null, null);
+    }
+
+    /**
+     * 配置二阶段重打分精排规则 (Rescore)
+     *
+     * @param windowSize         重打分候选窗口大小（需 &gt; 0）
+     * @param rescoreConsumer    重打分查询闭包
+     * @param queryWeight        一阶段原始查询得分权重（可为 null）
+     * @param rescoreQueryWeight 二阶段精排查询得分权重（可为 null）
+     * @param scoreMode          两阶段得分融合模式（可为 null）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder rescore(int windowSize,
+                                      Consumer<SearchQueryBuilder> rescoreConsumer,
+                                      Double queryWeight,
+                                      Double rescoreQueryWeight,
+                                      ScoreMode scoreMode) {
+        if (windowSize <= 0) {
+            throw new IllegalArgumentException("rescore windowSize must be greater than 0: " + windowSize);
+        }
+        if (rescoreConsumer == null) {
+            return this;
+        }
+        SearchQueryBuilder sub = new SearchQueryBuilder();
+        rescoreConsumer.accept(sub);
+        Query rescoreQuery = sub.buildQuery();
+        if (rescoreQuery != null) {
+            rescores.add(Rescore.of(r -> r.windowSize(windowSize).query(rq -> {
+                rq.query(rescoreQuery);
+                if (queryWeight != null) {
+                    rq.queryWeight(queryWeight);
+                }
+                if (rescoreQueryWeight != null) {
+                    rq.rescoreQueryWeight(rescoreQueryWeight);
+                }
+                if (scoreMode != null) {
+                    rq.scoreMode(scoreMode);
+                }
+                return rq;
+            })));
+        }
+        return this;
+    }
+
+    /**
+     * 添加 Completion Suggester 前缀自动补全建议器
+     *
+     * @param name   Suggester 名称
+     * @param field  completion 类型映射字段名
+     * @param prefix 输入前缀
+     * @param size   返回候选项上限
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder completionSuggest(String name, String field, String prefix, int size) {
+        return completionSuggest(name, field, prefix, size, false);
+    }
+
+    /**
+     * 添加 Completion Suggester 前缀自动补全建议器
+     *
+     * @param name           Suggester 名称
+     * @param field          completion 类型映射字段名
+     * @param prefix         输入前缀
+     * @param size           返回候选项上限
+     * @param skipDuplicates 是否跳过重复候选项
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder completionSuggest(String name, String field, String prefix, int size, boolean skipDuplicates) {
+        if (StringUtils.hasText(name) && StringUtils.hasText(field) && StringUtils.hasText(prefix)) {
+            int resolvedSize = Math.max(1, size);
+            suggesters.put(name, FieldSuggester.of(fs -> fs
+                    .prefix(prefix)
+                    .completion(c -> c.field(field).size(resolvedSize).skipDuplicates(skipDuplicates))));
+        }
+        return this;
+    }
+
+    /**
+     * 添加 Term Suggester 拼写纠错建议器
+     *
+     * @param name  Suggester 名称
+     * @param field 文本字段名
+     * @param text  待纠错词项文本
+     * @param size  返回候选项上限
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder termSuggest(String name, String field, String text, int size) {
+        if (StringUtils.hasText(name) && StringUtils.hasText(field) && StringUtils.hasText(text)) {
+            int resolvedSize = Math.max(1, size);
+            suggesters.put(name, FieldSuggester.of(fs -> fs
+                    .text(text)
+                    .term(t -> t.field(field).size(resolvedSize))));
+        }
+        return this;
+    }
+
+    /**
+     * 添加 Phrase Suggester 短语级纠错建议器
+     *
+     * @param name  Suggester 名称
+     * @param field 文本字段名
+     * @param text  待纠错短语文本
+     * @param size  返回候选项上限
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder phraseSuggest(String name, String field, String text, int size) {
+        if (StringUtils.hasText(name) && StringUtils.hasText(field) && StringUtils.hasText(text)) {
+            int resolvedSize = Math.max(1, size);
+            suggesters.put(name, FieldSuggester.of(fs -> fs
+                    .text(text)
+                    .phrase(p -> p.field(field)
+                            .size(resolvedSize)
+                            .directGenerator(dg -> dg.field(field)))));
         }
         return this;
     }
@@ -645,7 +1249,10 @@ public class SearchQueryBuilder {
     }
 
     public SearchQueryBuilder size(int size) {
-        this.size = Math.max(1, size);
+        if (size < 0) {
+            throw new IllegalArgumentException("Search size must not be negative: " + size);
+        }
+        this.size = size;
         return this;
     }
 
@@ -687,8 +1294,147 @@ public class SearchQueryBuilder {
         return this;
     }
 
+    public SearchQueryBuilder indices(Collection<String> indices) {
+        if (indices != null) {
+            for (String idx : indices) {
+                if (StringUtils.hasText(idx)) {
+                    this.indices.add(idx);
+                }
+            }
+        }
+        return this;
+    }
+
     public SearchQueryBuilder trackTotalHits(boolean trackTotalHits) {
         this.trackTotalHits = trackTotalHits;
+        return this;
+    }
+
+    /**
+     * 检索结果字段折叠去重 (Field Collapsing)
+     * <p>
+     * 基于指定字段（如 brand.keyword 或 spuId）对命中结果进行分组折叠，每个分组默认仅展示匹配度最高的顶层文档，
+     * 有效防止单一实体垄断检索结果首屏。
+     *
+     * @param field 折叠字段名
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder collapse(String field) {
+        if (StringUtils.hasText(field)) {
+            this.collapse = FieldCollapse.of(fc -> fc.field(field));
+        }
+        return this;
+    }
+
+    /**
+     * 检索结果字段折叠去重 (Field Collapsing) 并携带 InnerHits 返回同组内 Top N 文档
+     *
+     * @param field         折叠字段名
+     * @param innerHitsName inner_hits 返回键名
+     * @param innerHitsSize 每组最多召回的内部文档数
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder collapse(String field, String innerHitsName, int innerHitsSize) {
+        if (StringUtils.hasText(field)) {
+            InnerHits innerHits = buildInnerHits(innerHitsName, innerHitsSize);
+            this.collapse = FieldCollapse.of(fc -> fc.field(field).innerHits(innerHits));
+        }
+        return this;
+    }
+
+    private static InnerHits buildInnerHits(String innerHitsName, int innerHitsSize) {
+        if (innerHitsSize < 0) {
+            throw new IllegalArgumentException("innerHitsSize must not be negative: " + innerHitsSize);
+        }
+        return InnerHits.of(ih -> {
+            if (StringUtils.hasText(innerHitsName)) {
+                ih.name(innerHitsName.trim());
+            }
+            if (innerHitsSize > 0) {
+                ih.size(innerHitsSize);
+            }
+            return ih;
+        });
+    }
+
+    /**
+     * 检索结果字段折叠去重 (Field Collapsing)
+     *
+     * @param collapse 原生 FieldCollapse 配置
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder collapse(FieldCollapse collapse) {
+        this.collapse = collapse;
+        return this;
+    }
+
+    /**
+     * 指定 {@code _source} 仅返回的字段白名单（避免拉取 1536 维向量数组等大字段）
+     *
+     * @param fields 保留字段名列表
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder includes(String... fields) {
+        if (fields != null) {
+            addNonBlankFields(this.sourceIncludes, Arrays.asList(fields));
+        }
+        return this;
+    }
+
+    /**
+     * 指定 {@code _source} 仅返回的字段白名单集合
+     *
+     * @param fields 保留字段名集合
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder includes(Collection<String> fields) {
+        addNonBlankFields(this.sourceIncludes, fields);
+        return this;
+    }
+
+    /**
+     * 指定 {@code _source} 需要剔除的字段黑名单（如剔除 {@code embedding} 向量载荷）
+     *
+     * @param fields 剔除字段名列表
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder excludes(String... fields) {
+        if (fields != null) {
+            addNonBlankFields(this.sourceExcludes, Arrays.asList(fields));
+        }
+        return this;
+    }
+
+    /**
+     * 指定 {@code _source} 需要剔除的字段黑名单集合
+     *
+     * @param fields 剔除字段名集合
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder excludes(Collection<String> fields) {
+        addNonBlankFields(this.sourceExcludes, fields);
+        return this;
+    }
+
+    private static void addNonBlankFields(Set<String> target, Collection<String> fields) {
+        if (fields == null || fields.isEmpty()) {
+            return;
+        }
+        for (String f : fields) {
+            if (StringUtils.hasText(f)) {
+                target.add(f.trim());
+            }
+        }
+    }
+
+    /**
+     * 控制是否返回 {@code _source} 原始文档（设为 {@code false} 可仅返回文档 ID 与得分/聚合）
+     *
+     * @param fetchSource 是否拉取 _source
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder fetchSource(boolean fetchSource) {
+        this.fetchSource = fetchSource;
         return this;
     }
 
@@ -753,20 +1499,82 @@ public class SearchQueryBuilder {
             );
         }
 
+        int resolvedPageNum = this.size > 0 ? (this.from / this.size) + 1 : 1;
+
         return new SearchQuery(
                 new ArrayList<>(indices),
                 finalQuery,
                 new ArrayList<>(sorts),
                 highlight,
-                new LinkedHashMap<>(aggregations),
+                buildAggregations(),
                 new ArrayList<>(knnSearches),
                 from,
                 size,
-                pageNum,
+                resolvedPageNum,
                 routing,
                 new ArrayList<>(searchAfter),
-                trackTotalHits
+                trackTotalHits,
+                collapse,
+                new ArrayList<>(sourceIncludes),
+                new ArrayList<>(sourceExcludes),
+                fetchSource,
+                new ArrayList<>(rescores),
+                new LinkedHashMap<>(suggesters)
         );
+    }
+
+    private Map<String, Aggregation> buildAggregations() {
+        if (aggFactories.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, Aggregation> resolved = new LinkedHashMap<>(aggFactories.size());
+        aggFactories.forEach((name, factory) -> {
+            Map<String, Aggregation> subs = subAggregations.getOrDefault(name, Collections.emptyMap());
+            resolved.put(name, factory.apply(subs));
+        });
+        return resolved;
+    }
+
+    /**
+     * 将字符串表达式解析为标准 CalendarInterval 枚举
+     *
+     * @param interval 日历间隔表达式（如 "1d", "day", "1M", "month", "1h", "hour" 等）
+     * @return 对应的 CalendarInterval 枚举
+     * @throws IllegalArgumentException 当传入非法或不支持的日历间隔时抛出
+     */
+    private static CalendarInterval parseCalendarInterval(String interval) {
+        if (!StringUtils.hasText(interval)) {
+            throw new IllegalArgumentException("calendarInterval must not be blank");
+        }
+        String trimmed = interval.trim();
+        // 1. 优先精准匹配 aliases（区分大小写，如 "1M" 为月，"1m" 为分钟）
+        for (CalendarInterval ci : CalendarInterval.values()) {
+            if (ci.aliases() != null) {
+                for (String alias : ci.aliases()) {
+                    if (alias.equals(trimmed)) {
+                        return ci;
+                    }
+                }
+            }
+        }
+        // 2. 忽略大小写匹配枚举名与 jsonValue
+        for (CalendarInterval ci : CalendarInterval.values()) {
+            if (ci.name().equalsIgnoreCase(trimmed) || ci.jsonValue().equalsIgnoreCase(trimmed)) {
+                return ci;
+            }
+        }
+        // 3. 常见复数或扩展缩写兜底支持
+        return switch (trimmed.toLowerCase()) {
+            case "s", "second", "seconds" -> CalendarInterval.Second;
+            case "m", "minute", "minutes" -> CalendarInterval.Minute;
+            case "h", "hour", "hours" -> CalendarInterval.Hour;
+            case "d", "day", "days" -> CalendarInterval.Day;
+            case "w", "week", "weeks" -> CalendarInterval.Week;
+            case "month", "months" -> CalendarInterval.Month;
+            case "q", "quarter", "quarters" -> CalendarInterval.Quarter;
+            case "y", "year", "years" -> CalendarInterval.Year;
+            default -> throw new IllegalArgumentException("Unsupported calendar interval: " + interval);
+        };
     }
 
     private static FieldValue toFieldValue(Object value) {

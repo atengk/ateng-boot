@@ -1,0 +1,131 @@
+server:
+  port: 8080
+
+spring:
+  config:
+    import: "optional:classpath:application-local.yml"
+  application:
+    name: ateng-boot-sample-flyway
+  datasource:
+    dynamic:
+      primary: master
+      strict: false
+      datasource:
+        master:
+          url: jdbc:h2:mem:flyway_sample_master;DB_CLOSE_DELAY=-1;MODE=MySQL
+          username: sa
+          password: ""
+          driver-class-name: org.h2.Driver
+        slave:
+          url: jdbc:h2:mem:flyway_sample_slave;DB_CLOSE_DELAY=-1;MODE=MySQL
+          username: sa
+          password: ""
+          driver-class-name: org.h2.Driver
+        log_db:
+          url: jdbc:h2:mem:flyway_sample_log_db;DB_CLOSE_DELAY=-1;MODE=MySQL
+          username: sa
+          password: ""
+          driver-class-name: org.h2.Driver
+        tenant_1001:
+          url: jdbc:h2:mem:flyway_sample_tenant_1001;DB_CLOSE_DELAY=-1;MODE=MySQL
+          username: sa
+          password: ""
+          driver-class-name: org.h2.Driver
+        tenant_1002:
+          url: jdbc:h2:mem:flyway_sample_tenant_1002;DB_CLOSE_DELAY=-1;MODE=MySQL
+          username: sa
+          password: ""
+          driver-class-name: org.h2.Driver
+  flyway:
+    locations: classpath:db/migration/master
+    baseline-on-migrate: false
+    validate-on-migrate: true
+    out-of-order: false
+    clean-disabled: true
+
+ateng:
+  boot:
+    web:
+      enabled: true
+    datasource:
+      enabled: true
+      multi-tenancy:
+        enabled: true
+        mode: STRICT
+        default-data-source: master
+        data-source-prefix: "tenant_"
+      read-write-split:
+        enabled: true
+        master-data-source: master
+        slave-data-source: slave
+      dynamic-load:
+        enabled: true
+        probe-timeout: 2s
+        drain-timeout: 5s
+    flyway:
+      enabled: true
+      mode: MIGRATE
+      static-failure-policy: FAIL_FAST
+      lock-wait-timeout: 30s
+      guard:
+        enabled: true
+        protected-profiles:
+          - prod
+          - production
+          - prd
+        forbid-clean-in-protected-profiles: true
+        forbid-clean-on-validation-error: true
+      placeholder:
+        enabled: true
+        ds-key-name: ateng_ds_key
+        tenant-id-name: ateng_tenant_id
+      routing:
+        skip-slave: true
+        skip-read-only-group: true
+      datasources:
+        log_db:
+          enabled: true
+          locations:
+            - classpath:db/migration/log_db
+          table: log_flyway_schema_history
+          target: "2"
+          ignore-migration-patterns:
+            - "*:ignored"
+          installed-by: "platform-bot"
+          execute-in-transaction: true
+          group: false
+          mixed: false
+          placeholders:
+            auditScope: platform-audit
+      tenant:
+        enabled: true
+        migrate-on-startup: true
+        migrate-on-dynamic-add: true
+        async-startup: false
+        concurrency: 2
+        batch-timeout: 5m
+        failure-policy: FAIL_SAFE
+        dynamic-mount-failure-policy: KEEP_AND_REPORT
+        locations:
+          - classpath:db/migration/tenant
+      observability:
+        health-enabled: true
+        health-cache-ttl: 5s
+        metrics-enabled: true
+        target-scope: PRIMARY_AND_STATIC
+        fail-on-pending: false
+        aggregate-tenant-metrics: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    io.github.atengk.boot.flyway: INFO
+    io.github.atengk.boot.sample.flyway: DEBUG

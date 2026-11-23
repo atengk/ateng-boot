@@ -32,9 +32,9 @@ public @interface DistributedLock {
     String[] keys() default {};
 
     /**
-     * 锁键统一命名前缀
+     * 锁键统一命名前缀（默认空字符串表示自动继承全局 ateng.boot.redis.lock.prefix 配置）
      */
-    String prefix() default "lock:";
+    String prefix() default "";
 
     /**
      * 分布式锁模式，默认可重入锁

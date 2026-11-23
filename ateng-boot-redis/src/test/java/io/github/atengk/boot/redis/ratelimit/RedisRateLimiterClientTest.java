@@ -103,6 +103,24 @@ class RedisRateLimiterClientTest {
     }
 
     @Test
+    @DisplayName("测试全局 key-prefix 前缀挂载与兼容性")
+    void testKeyPrefixBehavior() {
+        io.github.atengk.boot.redis.properties.RedisProperties properties = new io.github.atengk.boot.redis.properties.RedisProperties();
+        properties.setKeyPrefix("sample:");
+        RedisRateLimiterClient clientWithPrefix = new RedisRateLimiterClient(redissonClient, properties);
+
+        when(redissonClient.getRateLimiter("sample:api:prefix")).thenReturn(rateLimiter);
+        when(rateLimiter.tryAcquire(1L)).thenReturn(true);
+        when(rateLimiter.availablePermits()).thenReturn(5L);
+        when(rateLimiter.delete()).thenReturn(true);
+
+        assertThat(clientWithPrefix.tryAcquire("api:prefix", 10L, Duration.ofSeconds(1))).isTrue();
+        assertThat(clientWithPrefix.getAvailablePermits("api:prefix")).isEqualTo(5L);
+        assertThat(clientWithPrefix.delete("api:prefix")).isTrue();
+        verify(redissonClient, org.mockito.Mockito.times(3)).getRateLimiter("sample:api:prefix");
+    }
+
+    @Test
     @DisplayName("测试入参防御性校验")
     void testValidation() {
         assertThatThrownBy(() -> rateLimiterClient.tryAcquire("", 10, Duration.ofSeconds(1)))
@@ -113,5 +131,20 @@ class RedisRateLimiterClientTest {
 
         assertThatThrownBy(() -> rateLimiterClient.tryAcquire("key", 10, null))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("测试限流键名无冒号前缀规范化与幂等防重")
+    void testKeyPrefixIdempotentNormalization() {
+        io.github.atengk.boot.redis.properties.RedisProperties props = new io.github.atengk.boot.redis.properties.RedisProperties();
+        props.setKeyPrefix("prod");
+        RedisRateLimiterClient clientWithNoColon = new RedisRateLimiterClient(redissonClient, props);
+
+        when(redissonClient.getRateLimiter("prod:api:limit")).thenReturn(rateLimiter);
+        when(rateLimiter.tryAcquire(1L)).thenReturn(true);
+
+        assertThat(clientWithNoColon.tryAcquire("api:limit", 10L, Duration.ofSeconds(1))).isTrue();
+        assertThat(clientWithNoColon.tryAcquire("prod:api:limit", 10L, Duration.ofSeconds(1))).isTrue();
+        verify(redissonClient, org.mockito.Mockito.times(2)).getRateLimiter("prod:api:limit");
     }
 }

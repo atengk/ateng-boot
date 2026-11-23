@@ -68,6 +68,7 @@ class TransactionUtilTest {
             context.close();
         }
         SpringUtil.clear();
+        AsyncUtil.resetFallbackExecutor();
         MDC.clear();
         UserContextHolder.clear();
         TenantContextHolder.clear();
@@ -379,5 +380,46 @@ class TransactionUtilTest {
         AtomicReference<TransactionCompletionStatus> directStatus = new AtomicReference<>();
         TransactionUtil.executeAfterCompletion(directStatus::set);
         assertEquals(TransactionCompletionStatus.COMMITTED, directStatus.get(), "非事务降级应透传 COMMITTED");
+    }
+
+    @Test
+    @DisplayName("无 Spring 容器环境: executeAfterCommitAsync 委托 AsyncUtil.getExecutor() 受管保底线程池并透传四维上下文")
+    void shouldDelegateToAsyncUtilFallbackExecutorWhenNoSpringContext() throws Exception {
+        context.close();
+        context = null;
+        SpringUtil.clear();
+        AsyncUtil.resetFallbackExecutor();
+
+        MDC.put("traceId", "trace-tx-fallback-001");
+        UserContextHolder.set(7001L);
+        TenantContextHolder.setTenantId(8001L);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<String> threadName = new AtomicReference<>();
+        AtomicReference<String> workerTraceId = new AtomicReference<>();
+        AtomicReference<Long> workerUserId = new AtomicReference<>();
+        AtomicReference<Long> workerTenantId = new AtomicReference<>();
+        AtomicReference<Boolean> workerIgnoreTenant = new AtomicReference<>();
+
+        TenantContextHolder.runWithoutTenant(() -> TransactionUtil.executeAfterCommitAsync(() -> {
+            try {
+                threadName.set(Thread.currentThread().getName());
+                workerTraceId.set(MDC.get("traceId"));
+                workerUserId.set(UserContextHolder.getUserIdAsLong());
+                workerTenantId.set(TenantContextHolder.getTenantIdAsLong());
+                workerIgnoreTenant.set(TenantContextHolder.isIgnoreTenant());
+            } finally {
+                latch.countDown();
+            }
+        }));
+
+        assertTrue(latch.await(3, TimeUnit.SECONDS), "无容器保底受管异步任务应在超时内完成");
+        assertNotNull(threadName.get());
+        assertTrue(threadName.get().startsWith("ateng-fallback-async-"),
+                "无 Spring 容器时应统一复用 AsyncUtil 保底受管线程池（实际线程名: " + threadName.get() + "）");
+        assertEquals("trace-tx-fallback-001", workerTraceId.get());
+        assertEquals(7001L, workerUserId.get());
+        assertEquals(8001L, workerTenantId.get());
+        assertTrue(Boolean.TRUE.equals(workerIgnoreTenant.get()));
     }
 }

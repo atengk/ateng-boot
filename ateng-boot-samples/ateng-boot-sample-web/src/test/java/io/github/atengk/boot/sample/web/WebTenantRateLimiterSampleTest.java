@@ -46,18 +46,18 @@ class WebTenantRateLimiterSampleTest {
     void shouldEnforceTenantRateLimitingAndIsolate() throws Exception {
         // 1. 租户 tenant_A 连续请求 2 次均成功放行
         TenantContextHolder.setTenantId("tenant_A");
-        mockMvc.perform(get("/api/sample/ratelimit/tenant/data"))
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/tenant"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("tenant=tenant_A"));
 
-        mockMvc.perform(get("/api/sample/ratelimit/tenant/data"))
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/tenant"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("tenant=tenant_A"));
 
         // 租户 tenant_A 第 3 次触发超限熔断（HTTP 200，业务码 429）
-        mockMvc.perform(get("/api/sample/ratelimit/tenant/data"))
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/tenant"))
                 .andExpect(status().isOk())
                 .andExpect(header().exists("Retry-After"))
                 .andExpect(jsonPath("$.code").value(429))
@@ -66,7 +66,7 @@ class WebTenantRateLimiterSampleTest {
 
         // 2. 切换至租户 tenant_B，验证流量完全隔离，不受 tenant_A 超限影响
         TenantContextHolder.setTenantId("tenant_B");
-        mockMvc.perform(get("/api/sample/ratelimit/tenant/data"))
+        mockMvc.perform(get("/sample/web/traffic/ratelimit/tenant"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("tenant=tenant_B"));

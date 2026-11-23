@@ -127,6 +127,22 @@ class RedisIdempotentTemplateTest {
     }
 
     @Test
+    @DisplayName("测试全局配置 deleteOnFailure=false 时默认重载继承该配置：业务异常保留 Key 并更新状态为 FAILED")
+    void testExecuteExceptionInheritsGlobalDeleteOnFailureFalse() {
+        properties.getIdempotent().setDeleteOnFailure(false);
+        when(bucket.setIfAbsent(eq(IdempotentStatus.TRYING.name()), any())).thenReturn(true);
+
+        assertThatThrownBy(() -> template.execute("order:1001", Duration.ofMinutes(2), () -> {
+            throw new IllegalStateException("全局防重异常");
+        })).isInstanceOf(IllegalStateException.class)
+                .hasMessage("全局防重异常");
+
+        verify(bucket).set(eq(IdempotentStatus.FAILED.name()), eq(Duration.ofMinutes(2)));
+        verify(bucket, never()).delete();
+        verify(bucket, never()).set(eq(IdempotentStatus.SUCCESS.name()), any());
+    }
+
+    @Test
     @DisplayName("测试无返回值 Action 执行与失败自动释放")
     void testExecuteVoidAction() throws Exception {
         when(bucket.setIfAbsent(eq(IdempotentStatus.TRYING.name()), any())).thenReturn(true);
@@ -231,5 +247,20 @@ class RedisIdempotentTemplateTest {
                 .isInstanceOf(BusinessException.class)
                 .hasCause(rootCause)
                 .hasMessageContaining("Redis 获取幂等状态底层异常");
+    }
+
+    @Test
+    @DisplayName("测试 formatKey 全局与模块前缀无冒号规范化、空 customPrefix 继承与幂等去重")
+    void testFormatKeyIdempotentNormalization() {
+        io.github.atengk.boot.redis.properties.RedisProperties props = new io.github.atengk.boot.redis.properties.RedisProperties();
+        props.setKeyPrefix("prod");
+        props.getIdempotent().setPrefix("idemp");
+        RedisIdempotentTemplate prefixedTemplate = new RedisIdempotentTemplate(redissonClient, props);
+
+        assertThat(prefixedTemplate.formatKey(null, "pay:1")).isEqualTo("prod:idemp:pay:1");
+        assertThat(prefixedTemplate.formatKey("", "pay:2")).isEqualTo("prod:idemp:pay:2");
+        assertThat(prefixedTemplate.formatKey("custom", "custom:pay:3")).isEqualTo("prod:custom:pay:3");
+        assertThat(prefixedTemplate.formatKey("idemp:", "prod:idemp:pay:4")).isEqualTo("prod:idemp:pay:4");
+        assertThat(prefixedTemplate.formatKey("idemp", "prod:pay:5")).isEqualTo("prod:idemp:pay:5");
     }
 }

@@ -34,11 +34,35 @@ ateng:
       headers:
         trace-id: true
         tenant-id: true
+        custom:
+          - name: "X-App-Version"
+            description: "客户端应用版本号"
+            required: false
+            example: "1.2.0"
+      security-schemes:
+        - name: "bearerAuth"
+          type: "http"
+          scheme: "bearer"
+          bearer-format: "JWT"
+          description: "通用 JWT 认证方案"
+      export:
+        enabled: true
       guard:
         mode: NONE
         basic:
           username: "admin"
           password: "admin123"
+        token:
+          secret: "sample-doc-token"
+          header-name: "X-Doc-Token"
+          allow-query-param: true
+          query-param-name: "doc-token"
+        ip-whitelist:
+          enabled: false
+          trusted-header: "X-Forwarded-For"
+          cidrs:
+            - "127.0.0.1"
+            - "10.0.0.0/8"
       show-result-codes: true
       standard-responses: true
       redirect-docs: true
@@ -46,12 +70,22 @@ ateng:
         - group: "admin"
           display-name: "运营管理端 (Admin API)"
           paths-to-match:
-            - "/api/admin/**"
+            - "/sample/openapi/admin/**"
+          paths-to-exclude:
+            - "/sample/openapi/admin/auth/ping"
           packages-to-scan:
             - "io.github.atengk.boot.sample.openapi.controller.admin"
+          packages-to-exclude:
+            - "io.github.atengk.boot.sample.openapi.controller.admin.internal"
         - group: "app"
           display-name: "移动端服务 (App API)"
           paths-to-match:
-            - "/api/app/**"
+            - "/sample/openapi/app/**"
           packages-to-scan:
             - "io.github.atengk.boot.sample.openapi.controller.app"
+        - group: "governance"
+          display-name: "契约治理与导出 (Governance API)"
+          paths-to-match:
+            - "/sample/openapi/governance/**"
+          packages-to-scan:
+            - "io.github.atengk.boot.sample.openapi.controller.governance"

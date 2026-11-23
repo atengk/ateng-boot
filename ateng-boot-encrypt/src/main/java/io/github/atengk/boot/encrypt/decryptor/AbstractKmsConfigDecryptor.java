@@ -2,6 +2,7 @@ package io.github.atengk.boot.encrypt.decryptor;
 
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
+import io.github.atengk.boot.encrypt.config.EncryptRetryProperties;
 
 import java.util.Objects;
 
@@ -15,14 +16,22 @@ import java.util.Objects;
  */
 public abstract class AbstractKmsConfigDecryptor implements ConfigDecryptor {
 
-    private final RetryUtil.RetryConfig retryConfig;
+    private volatile RetryUtil.RetryConfig retryConfig;
+    private final boolean explicitRetryConfig;
 
     protected AbstractKmsConfigDecryptor() {
-        this(RetryingConfigDecryptor.DEFAULT_RETRY_CONFIG);
+        this.retryConfig = RetryingConfigDecryptor.DEFAULT_RETRY_CONFIG;
+        this.explicitRetryConfig = false;
+    }
+
+    protected AbstractKmsConfigDecryptor(EncryptRetryProperties retryProperties) {
+        this.retryConfig = retryProperties != null ? retryProperties.toRetryConfig() : RetryingConfigDecryptor.DEFAULT_RETRY_CONFIG;
+        this.explicitRetryConfig = retryProperties != null;
     }
 
     protected AbstractKmsConfigDecryptor(RetryUtil.RetryConfig retryConfig) {
         this.retryConfig = Objects.requireNonNull(retryConfig, "retryConfig 不能为空");
+        this.explicitRetryConfig = true;
     }
 
     @Override
@@ -63,6 +72,33 @@ public abstract class AbstractKmsConfigDecryptor implements ConfigDecryptor {
 
     public RetryUtil.RetryConfig getRetryConfig() {
         return retryConfig;
+    }
+
+    /**
+     * 判断实例构造时是否已显式指定自定义重试配置
+     */
+    public boolean hasExplicitRetryConfig() {
+        return explicitRetryConfig;
+    }
+
+    /**
+     * 运行时更新弹性退避重试配置属性（供自动装配与工厂统一同步容器配置）
+     *
+     * @param retryProperties 重试配置属性（为 null 时忽略）
+     */
+    public void updateRetryProperties(EncryptRetryProperties retryProperties) {
+        if (retryProperties != null) {
+            this.retryConfig = retryProperties.toRetryConfig();
+        }
+    }
+
+    /**
+     * 运行时更新弹性退避重试策略
+     *
+     * @param retryConfig 重试策略配置（不可为 null）
+     */
+    public void updateRetryConfig(RetryUtil.RetryConfig retryConfig) {
+        this.retryConfig = Objects.requireNonNull(retryConfig, "retryConfig 不能为空");
     }
 
     /**

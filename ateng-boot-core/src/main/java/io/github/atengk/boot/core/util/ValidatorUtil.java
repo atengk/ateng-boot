@@ -1,6 +1,7 @@
 package io.github.atengk.boot.core.util;
 
 import java.time.LocalDate;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Pattern;
 
 /**
@@ -275,6 +276,7 @@ public final class ValidatorUtil {
     }
 
     private static volatile jakarta.validation.Validator defaultValidator;
+    private static final ReentrantLock LOCK = new ReentrantLock();
 
     /**
      * 获取受管或默认的 Jakarta Validator 实例
@@ -292,7 +294,8 @@ public final class ValidatorUtil {
             // SpringUtil 未初始化或容器中无 Validator，回退至单例工厂
         }
         if (defaultValidator == null) {
-            synchronized (ValidatorUtil.class) {
+            LOCK.lock();
+            try {
                 if (defaultValidator == null) {
                     try {
                         jakarta.validation.ValidatorFactory factory = jakarta.validation.Validation.buildDefaultValidatorFactory();
@@ -309,6 +312,10 @@ public final class ValidatorUtil {
                             throw ex;
                         }
                     }
+                }
+            } finally {
+                if (LOCK.isHeldByCurrentThread()) {
+                    LOCK.unlock();
                 }
             }
         }

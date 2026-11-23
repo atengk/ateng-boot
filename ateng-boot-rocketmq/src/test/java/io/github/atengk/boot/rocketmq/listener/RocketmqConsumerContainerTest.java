@@ -15,11 +15,19 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.support.GenericApplicationContext;
 import org.springframework.context.support.PropertySourcesPlaceholderConfigurer;
+import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.core.annotation.AnnotationConfigurationException;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.util.StringValueResolver;
 
+import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -213,6 +221,173 @@ class RocketmqConsumerContainerTest {
         verifyNoInteractions(consumerFactory);
     }
 
+    @Test
+    @DisplayName("受管线程池停机排空：stop(Runnable) 通过注入的 Executor 执行排空并在超时后保护性放行")
+    void testStopDelegatesToInjectedExecutorAndHandlesTimeout() throws Exception {
+        AtengRocketmqProperties properties = new AtengRocketmqProperties();
+        properties.getConsumer().setCloseTimeout(Duration.ofMillis(120));
+
+        ClientConfiguration clientConfiguration = mock(ClientConfiguration.class);
+        ObjectProvider<ClientConfiguration> clientConfigProvider = mock(ObjectProvider.class);
+        when(clientConfigProvider.getIfAvailable()).thenReturn(clientConfiguration);
+
+        PushConsumer slowConsumer = mock(PushConsumer.class);
+        doAnswer(inv -> {
+            Thread.sleep(600);
+            return null;
+        }).when(slowConsumer).close();
+
+        PushConsumerFactory consumerFactory = mock(PushConsumerFactory.class);
+        when(consumerFactory.createPushConsumer(any(), any(), any(), any(), any(), anyInt(), anyInt()))
+                .thenReturn(slowConsumer);
+
+        ThreadPoolTaskExecutor managedExecutor = new ThreadPoolTaskExecutor();
+        managedExecutor.setCorePoolSize(2);
+        managedExecutor.setThreadNamePrefix("test-core-exec-");
+        managedExecutor.initialize();
+
+        try {
+            AtomicInteger executeCalls = new AtomicInteger(0);
+            Executor spyExecutor = command -> {
+                executeCalls.incrementAndGet();
+                managedExecutor.execute(command);
+            };
+
+            RocketmqConsumerContainer container = new RocketmqConsumerContainer(
+                    properties,
+                    clientConfigProvider,
+                    consumerFactory,
+                    null,
+                    spyExecutor);
+
+            GenericApplicationContext context = new GenericApplicationContext();
+            context.registerBean("singleListenerBean", SingleListenerBean.class);
+            context.refresh();
+            container.setApplicationContext(context);
+            container.setEmbeddedValueResolver(str -> str
+                    .replace("${app.topic:order_topic}", "order_topic")
+                    .replace("${app.group:order_group}", "order_group"));
+            container.afterSingletonsInstantiated();
+            container.start();
+
+            AtomicBoolean callbackRan = new AtomicBoolean(false);
+            long start = System.nanoTime();
+            container.stop(() -> callbackRan.set(true));
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+
+            assertThat(executeCalls.get()).isEqualTo(1);
+            assertThat(container.isRunning()).isFalse();
+            assertThat(callbackRan.get()).isTrue();
+            assertThat(container.getActiveConsumers()).isEmpty();
+            assertThat(elapsedMs).isLessThan(500L);
+        } finally {
+            managedExecutor.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("并发控制：ReentrantLock 下并发启停端点安全无死锁")
+    void testConcurrentStartAndStopEndpointsWithoutDeadlock() throws Exception {
+        AtengRocketmqProperties properties = new AtengRocketmqProperties();
+        ClientConfiguration clientConfiguration = mock(ClientConfiguration.class);
+        ObjectProvider<ClientConfiguration> clientConfigProvider = mock(ObjectProvider.class);
+        when(clientConfigProvider.getIfAvailable()).thenReturn(clientConfiguration);
+
+        PushConsumerFactory consumerFactory = mock(PushConsumerFactory.class);
+        when(consumerFactory.createPushConsumer(any(), any(), any(), any(), any(), anyInt(), anyInt()))
+                .thenAnswer(inv -> mock(PushConsumer.class));
+
+        ThreadPoolTaskExecutor managedExecutor = new ThreadPoolTaskExecutor();
+        managedExecutor.setCorePoolSize(4);
+        managedExecutor.initialize();
+
+        try {
+            RocketmqConsumerContainer container = new RocketmqConsumerContainer(
+                    properties,
+                    clientConfigProvider,
+                    consumerFactory,
+                    null,
+                    managedExecutor);
+
+            GenericApplicationContext context = new GenericApplicationContext();
+            context.registerBean("singleListenerBean", SingleListenerBean.class);
+            context.refresh();
+            container.setApplicationContext(context);
+            container.setEmbeddedValueResolver(str -> str
+                    .replace("${app.topic:order_topic}", "order_topic")
+                    .replace("${app.group:order_group}", "order_group"));
+            container.afterSingletonsInstantiated();
+
+            String endpointId = container.getEndpoints().get(0).getId();
+            int workers = 8;
+            CountDownLatch gate = new CountDownLatch(1);
+            CountDownLatch done = new CountDownLatch(workers);
+            for (int i = 0; i < workers; i++) {
+                final int idx = i;
+                managedExecutor.execute(() -> {
+                    try {
+                        gate.await(5, TimeUnit.SECONDS);
+                        if (idx % 2 == 0) {
+                            container.startEndpoint(endpointId);
+                        } else {
+                            container.stopEndpoint(endpointId);
+                        }
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                    } finally {
+                        done.countDown();
+                    }
+                });
+            }
+
+            gate.countDown();
+            assertThat(done.await(5, TimeUnit.SECONDS)).isTrue();
+            container.stop();
+            assertThat(container.isRunning()).isFalse();
+        } finally {
+            managedExecutor.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("销毁兜底：未调用 container.start 仅单独 startEndpoint 后调用 destroy 仍关闭活跃消费者")
+    void testDestroyStopsIndividuallyStartedEndpointWhenContainerNotStarted() throws Exception {
+        AtengRocketmqProperties properties = new AtengRocketmqProperties();
+        ClientConfiguration clientConfiguration = mock(ClientConfiguration.class);
+        ObjectProvider<ClientConfiguration> clientConfigProvider = mock(ObjectProvider.class);
+        when(clientConfigProvider.getIfAvailable()).thenReturn(clientConfiguration);
+
+        PushConsumer pushConsumer = mock(PushConsumer.class);
+        PushConsumerFactory consumerFactory = mock(PushConsumerFactory.class);
+        when(consumerFactory.createPushConsumer(any(), any(), any(), any(), any(), anyInt(), anyInt()))
+                .thenReturn(pushConsumer);
+
+        RocketmqConsumerContainer container = new RocketmqConsumerContainer(
+                properties,
+                clientConfigProvider,
+                consumerFactory,
+                null);
+
+        GenericApplicationContext context = new GenericApplicationContext();
+        context.registerBean("singleListenerBean", SingleListenerBean.class);
+        context.refresh();
+        container.setApplicationContext(context);
+        container.setEmbeddedValueResolver(str -> str
+                .replace("${app.topic:order_topic}", "order_topic")
+                .replace("${app.group:order_group}", "order_group"));
+        container.afterSingletonsInstantiated();
+
+        String endpointId = container.getEndpoints().get(0).getId();
+        assertThat(container.isRunning()).isFalse();
+        assertThat(container.startEndpoint(endpointId)).isTrue();
+        assertThat(container.getActiveConsumers()).containsExactly(pushConsumer);
+
+        container.destroy();
+
+        verify(pushConsumer, times(1)).close();
+        assertThat(container.getActiveConsumers()).isEmpty();
+    }
+
     // =========================================================================
     // 测试辅助 Bean
     // =========================================================================
@@ -233,5 +408,83 @@ class RocketmqConsumerContainerTest {
     public static class InvalidTopicBean {
         @RocketmqListener(topic = "invalid.order.topic", consumerGroup = "group1")
         public void onMessage(String message) {}
+    }
+
+    @Test
+    @DisplayName("双向别名：@RocketmqListener 通过 endpointId 或相同 id/endpointId 均可正常注册并互认")
+    void testEndpointIdAliasForBidirectionalSymmetry() throws Exception {
+        AtengRocketmqProperties properties = new AtengRocketmqProperties();
+        ObjectProvider<ClientConfiguration> clientConfigProvider = mock(ObjectProvider.class);
+        PushConsumerFactory consumerFactory = mock(PushConsumerFactory.class);
+
+        RocketmqConsumerContainer container = new RocketmqConsumerContainer(
+                properties,
+                clientConfigProvider,
+                consumerFactory,
+                null);
+
+        GenericApplicationContext context = new GenericApplicationContext();
+        context.registerBean("aliasListenerBean", AliasListenerBean.class);
+        context.refresh();
+
+        container.setApplicationContext(context);
+        container.setEmbeddedValueResolver(str -> "${app.endpoint.id:alias_endpoint_resolved}".equals(str)
+                ? "alias_endpoint_resolved"
+                : str);
+        container.afterSingletonsInstantiated();
+
+        assertThat(container.getEndpointIds())
+                .containsExactlyInAnyOrder("alias_endpoint_resolved", "id_only_endpoint", "same_alias_endpoint");
+
+        RocketmqListener mergedByEndpointId = AnnotatedElementUtils.findMergedAnnotation(
+                AliasListenerBean.class.getMethod("onByEndpointId", String.class), RocketmqListener.class);
+        assertThat(mergedByEndpointId).isNotNull();
+        assertThat(mergedByEndpointId.id()).isEqualTo("${app.endpoint.id:alias_endpoint_resolved}");
+        assertThat(mergedByEndpointId.endpointId()).isEqualTo("${app.endpoint.id:alias_endpoint_resolved}");
+
+        RocketmqListener mergedById = AnnotatedElementUtils.findMergedAnnotation(
+                AliasListenerBean.class.getMethod("onById", String.class), RocketmqListener.class);
+        assertThat(mergedById).isNotNull();
+        assertThat(mergedById.id()).isEqualTo("id_only_endpoint");
+        assertThat(mergedById.endpointId()).isEqualTo("id_only_endpoint");
+    }
+
+    @Test
+    @DisplayName("双向别名冲突：@RocketmqListener 同时声明互斥不同的 id 与 endpointId 时按 Spring 语义快速失败")
+    void testConflictingIdAndEndpointIdThrowsFastFail() {
+        AtengRocketmqProperties properties = new AtengRocketmqProperties();
+        ObjectProvider<ClientConfiguration> clientConfigProvider = mock(ObjectProvider.class);
+        PushConsumerFactory consumerFactory = mock(PushConsumerFactory.class);
+
+        RocketmqConsumerContainer container = new RocketmqConsumerContainer(
+                properties,
+                clientConfigProvider,
+                consumerFactory,
+                null);
+
+        GenericApplicationContext context = new GenericApplicationContext();
+        context.registerBean("conflictingAliasBean", ConflictingAliasListenerBean.class);
+        context.refresh();
+
+        container.setApplicationContext(context);
+
+        assertThatThrownBy(container::afterSingletonsInstantiated)
+                .isInstanceOf(AnnotationConfigurationException.class);
+    }
+
+    public static class AliasListenerBean {
+        @RocketmqListener(endpointId = "${app.endpoint.id:alias_endpoint_resolved}", topic = "alias_topic_1", consumerGroup = "alias_group_1")
+        public void onByEndpointId(String message) {}
+
+        @RocketmqListener(id = "id_only_endpoint", topic = "alias_topic_2", consumerGroup = "alias_group_2")
+        public void onById(String message) {}
+
+        @RocketmqListener(id = "same_alias_endpoint", endpointId = "same_alias_endpoint", topic = "alias_topic_3", consumerGroup = "alias_group_3")
+        public void onBySameAlias(String message) {}
+    }
+
+    public static class ConflictingAliasListenerBean {
+        @RocketmqListener(id = "left_id", endpointId = "right_id", topic = "conflict_topic", consumerGroup = "conflict_group")
+        public void onConflict(String message) {}
     }
 }

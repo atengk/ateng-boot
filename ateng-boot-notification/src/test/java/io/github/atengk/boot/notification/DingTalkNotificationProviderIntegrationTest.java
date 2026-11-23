@@ -86,7 +86,9 @@ class DingTalkNotificationProviderIntegrationTest {
         assertThat(request.getPath())
                 .contains("access_token=test_token")
                 .contains("&timestamp=")
-                .contains("&sign=");
+                .contains("&sign=")
+                .endsWith("%3D")
+                .doesNotContain("%25");
 
         String requestBody = request.getBody().readUtf8();
         assertThat(requestBody)
@@ -200,5 +202,34 @@ class DingTalkNotificationProviderIntegrationTest {
                     NotificationSendException sex = (NotificationSendException) ex;
                     assertThat(sex.getResultCode()).isEqualTo(NotificationResultCode.NOTIFICATION_SEND_ERROR);
                 });
+    }
+
+    @Test
+    @DisplayName("测试钉钉 310000 签名/关键词安全拦截转译为认证错误与 430103 转译为发送错误")
+    void testSecurityAndContentErrorMapping() {
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setBody("{\"errcode\":310000,\"errmsg\":\"sign not match\"}")
+                .addHeader("Content-Type", "application/json"));
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setBody("{\"errcode\":430103,\"errmsg\":\"inappropriate picture\"}")
+                .addHeader("Content-Type", "application/json"));
+
+        NotificationChannel channel = NotificationChannel.builder()
+                .name("dingtalk-sec-err")
+                .platform(Platform.DINGTALK)
+                .webhook(server.url("/robot/send?access_token=test_token").toString())
+                .build();
+
+        assertThatThrownBy(() -> provider.send(channel, TextMessage.of("测试消息"), restClient))
+                .isInstanceOf(NotificationSendException.class)
+                .satisfies(ex -> assertThat(((NotificationSendException) ex).getResultCode())
+                        .isEqualTo(NotificationResultCode.NOTIFICATION_AUTHENTICATION_ERROR));
+
+        assertThatThrownBy(() -> provider.send(channel, TextMessage.of("测试消息"), restClient))
+                .isInstanceOf(NotificationSendException.class)
+                .satisfies(ex -> assertThat(((NotificationSendException) ex).getResultCode())
+                        .isEqualTo(NotificationResultCode.NOTIFICATION_SEND_ERROR));
     }
 }

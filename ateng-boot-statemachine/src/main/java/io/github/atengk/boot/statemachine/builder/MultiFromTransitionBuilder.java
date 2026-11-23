@@ -85,5 +85,53 @@ public interface MultiFromTransitionBuilder<S, E, C> {
             }
             return perform((from, to, event, context) -> consumer.accept(context));
         }
+
+        /**
+         * 添加事务提交后执行动作（在 Spring 事务 commit 成功后触发；若无活跃事务则降级就地同步执行）
+         *
+         * @param action 事务提交后动作
+         * @return 当前构建阶段
+         */
+        WhenOrPerform<S, E, C> performAfterCommit(Action<S, E, C> action);
+
+        /**
+         * 便捷添加仅消费上下文的事务提交后动作
+         *
+         * @param consumer 上下文消费函数
+         * @return 当前构建阶段
+         */
+        default WhenOrPerform<S, E, C> performAfterCommit(Consumer<C> consumer) {
+            if (consumer == null) {
+                throw new IllegalArgumentException("Action consumer must not be null");
+            }
+            return performAfterCommit((from, to, event, context) -> consumer.accept(context));
+        }
+
+        /**
+         * 声明当前跃迁终态幂等放行策略模型
+         *
+         * @param strategy 幂等策略
+         * @return 当前构建阶段
+         */
+        WhenOrPerform<S, E, C> idempotent(io.github.atengk.boot.statemachine.enums.IdempotentStrategy strategy);
+
+        /**
+         * 声明当前跃迁具备终态幂等放行能力
+         *
+         * @param idempotent 是否开启幂等放行
+         * @return 当前构建阶段
+         */
+        default WhenOrPerform<S, E, C> idempotent(boolean idempotent) {
+            return idempotent(idempotent ? io.github.atengk.boot.statemachine.enums.IdempotentStrategy.ACCEPT : io.github.atengk.boot.statemachine.enums.IdempotentStrategy.NONE);
+        }
+
+        /**
+         * 声明当前跃迁开启终态幂等放行能力
+         *
+         * @return 当前构建阶段
+         */
+        default WhenOrPerform<S, E, C> idempotent() {
+            return idempotent(true);
+        }
     }
 }

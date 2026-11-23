@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicLong;
 @Slf4j
 @Validated
 @RestController
-@RequestMapping("/pay/bill")
+@RequestMapping("/sample/pay/bill")
 public class PayBillController {
 
     private final PayTemplate payTemplate;
@@ -42,18 +42,12 @@ public class PayBillController {
     /**
      * 内存全量模式：下载并解析为完整对账结果列表
      */
-    @PostMapping("/parse-memory")
+    @PostMapping("/download/parse-memory")
     public Result<PayBillResult> parseMemory(@Valid @RequestBody PayBillQueryDTO dto) throws Exception {
         log.info("Processing bill parse (memory mode): channel={}, date={}, type={}",
                 dto.getChannel(), dto.getBillDate(), dto.getBillType());
 
-        PayBillDownloadRequest request = PayBillDownloadRequest.builder()
-                .channel(dto.getChannel())
-                .merchantKey(dto.getMerchantKey())
-                .billDate(dto.getBillDate())
-                .billType(dto.getBillType())
-                .tarType(dto.getTarType())
-                .build();
+        PayBillDownloadRequest request = buildDownloadRequest(dto);
 
         try (InputStream stream = payTemplate.downloadBillStream(request)) {
             PayBillResult result = payBillParser.parse(stream);
@@ -64,18 +58,12 @@ public class PayBillController {
     /**
      * 零 OOM 模式：边流式解压边逐行回调处理，常驻 O(1) 内存
      */
-    @PostMapping("/stream-reconcile")
+    @PostMapping("/download/stream-consume")
     public Result<PayBillSummary> streamReconcile(@Valid @RequestBody PayBillQueryDTO dto) throws Exception {
         log.info("Processing bill parse (zero-OOM streaming mode): channel={}, date={}",
                 dto.getChannel(), dto.getBillDate());
 
-        PayBillDownloadRequest request = PayBillDownloadRequest.builder()
-                .channel(dto.getChannel())
-                .merchantKey(dto.getMerchantKey())
-                .billDate(dto.getBillDate())
-                .billType(dto.getBillType())
-                .tarType(dto.getTarType())
-                .build();
+        PayBillDownloadRequest request = buildDownloadRequest(dto);
 
         AtomicLong counter = new AtomicLong();
         try (InputStream stream = payTemplate.downloadBillStream(request)) {
@@ -86,5 +74,17 @@ public class PayBillController {
             log.info("Finished streaming reconciliation, total streamed entries: {}", counter.get());
             return Result.success(summary);
         }
+    }
+
+    private PayBillDownloadRequest buildDownloadRequest(PayBillQueryDTO dto) {
+        return PayBillDownloadRequest.builder()
+                .channel(dto.getChannel())
+                .merchantKey(dto.getMerchantKey())
+                .billDate(dto.getBillDate())
+                .billType(dto.getBillType())
+                .tarType(dto.getTarType())
+                .subMchid(dto.getSubMchid())
+                .smid(dto.getSmid())
+                .build();
     }
 }

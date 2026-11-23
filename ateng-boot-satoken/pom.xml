@@ -7,7 +7,7 @@
     <parent>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot</artifactId>
-        <version>1.0.0</version>
+        <version>1.2.0</version>
     </parent>
 
     <artifactId>ateng-boot-satoken</artifactId>
@@ -61,10 +61,24 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Web 客户端 IP 提取协同 (可选依赖) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- MyBatis-Plus 多租户与持久层审计协同 (可选依赖) -->
         <dependency>
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-mybatis-plus</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- ateng-boot-redis 两级缓存底座协同 (可选依赖) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-redis</artifactId>
             <optional>true</optional>
         </dependency>
 

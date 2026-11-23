@@ -72,6 +72,30 @@ class DynamicGroupedOpenApiRegistrarTest {
     }
 
     @Test
+    @DisplayName("测试分组对称排除：透传 paths-to-exclude 与 packages-to-exclude 规则并过滤空白条目")
+    void testGroupPathsAndPackagesExclusion() {
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.openapi.groups[0].group=admin",
+                        "ateng.boot.openapi.groups[0].display-name=管理端接口",
+                        "ateng.boot.openapi.groups[0].paths-to-match[0]=/admin/**",
+                        "ateng.boot.openapi.groups[0].paths-to-exclude[0]=  /admin/internal/**  ",
+                        "ateng.boot.openapi.groups[0].paths-to-exclude[1]=   ",
+                        "ateng.boot.openapi.groups[0].paths-to-exclude[2]=/admin/health/**",
+                        "ateng.boot.openapi.groups[0].packages-to-scan[0]=io.github.atengk.sample.admin",
+                        "ateng.boot.openapi.groups[0].packages-to-exclude[0]=",
+                        "ateng.boot.openapi.groups[0].packages-to-exclude[1]=  io.github.atengk.sample.admin.internal  "
+                )
+                .run(context -> {
+                    Map<String, GroupedOpenApi> groupBeans = context.getBeansOfType(GroupedOpenApi.class);
+                    GroupedOpenApi adminGroup = groupBeans.get("groupedOpenApi_admin");
+                    assertThat(adminGroup).isNotNull();
+                    assertThat(adminGroup.getPathsToExclude()).containsExactly("/admin/internal/**", "/admin/health/**");
+                    assertThat(adminGroup.getPackagesToExclude()).containsExactly("io.github.atengk.sample.admin.internal");
+                });
+    }
+
+    @Test
     @DisplayName("测试当 enabled=false 时不注册任何 GroupedOpenApi 分组")
     void testDisabledGroupsRegistration() {
         contextRunner

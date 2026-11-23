@@ -236,4 +236,70 @@ class PageUtilTest {
         assertEquals("valid_column", page.orders().get(0).getColumn());
         assertTrue(page.orders().get(0).isAsc());
     }
+
+    @Test
+    @DisplayName("toUnsortedPage: 仅提取页码与容量，不填充任何排序项以防与 DynamicQueryHelper 冲突")
+    void shouldNotIncludeOrdersWhenUsingToUnsortedPage() {
+        PageQuery query = new PageQuery(2L, 20L)
+                .addAsc("createTime")
+                .addDesc("userName");
+
+        Page<Object> page = PageUtil.toUnsortedPage(query);
+
+        assertEquals(2L, page.getCurrent());
+        assertEquals(20L, page.getSize());
+        assertTrue(page.searchCount());
+        assertTrue(page.orders() == null || page.orders().isEmpty(), "toUnsortedPage 严禁携带任何 OrderItem");
+
+        // 带 searchCount 参数重载
+        Page<Object> pageWithoutCount = PageUtil.toUnsortedPage(query, false);
+        assertEquals(2L, pageWithoutCount.getCurrent());
+        assertEquals(20L, pageWithoutCount.getSize());
+        assertFalse(pageWithoutCount.searchCount());
+        assertTrue(pageWithoutCount.orders() == null || pageWithoutCount.orders().isEmpty());
+
+        // null 入参防御
+        Page<Object> nullPage = PageUtil.toUnsortedPage(null);
+        assertEquals(1L, nullPage.getCurrent());
+        assertEquals(10L, nullPage.getSize());
+        assertTrue(nullPage.orders() == null || nullPage.orders().isEmpty());
+    }
+
+    @Test
+    @DisplayName("toUnsortedPage: 超大页容量截断与自定义 maxLimit")
+    void shouldTruncateExcessivePageSizeInToUnsortedPage() {
+        PageQuery query = new PageQuery(1L, 1000000L);
+
+        Page<Object> page = PageUtil.toUnsortedPage(query);
+        assertEquals(PageUtil.getDefaultMaxLimit(), page.getSize());
+
+        Page<Object> customLimitPage = PageUtil.toUnsortedPage(query, true, 200L);
+        assertEquals(200L, customLimitPage.getSize());
+    }
+
+    @Test
+    @DisplayName("setDefaultMaxLimit: 全局最大页容量动态配置与异常值回退")
+    void shouldSupportConfigurableDefaultMaxLimit() {
+        long originalLimit = PageUtil.getDefaultMaxLimit();
+        try {
+            PageUtil.setDefaultMaxLimit(2000L);
+            assertEquals(2000L, PageUtil.getDefaultMaxLimit());
+
+            PageQuery query = new PageQuery(1L, 1500L);
+            Page<Object> page = PageUtil.toPage(query);
+            assertEquals(1500L, page.getSize());
+
+            Page<Object> unsortedPage = PageUtil.toUnsortedPage(query);
+            assertEquals(1500L, unsortedPage.getSize());
+
+            // 非法非正数回退为 DEFAULT_MAX_LIMIT (500L)
+            PageUtil.setDefaultMaxLimit(0L);
+            assertEquals(PageUtil.DEFAULT_MAX_LIMIT, PageUtil.getDefaultMaxLimit());
+
+            PageUtil.setDefaultMaxLimit(-100L);
+            assertEquals(PageUtil.DEFAULT_MAX_LIMIT, PageUtil.getDefaultMaxLimit());
+        } finally {
+            PageUtil.setDefaultMaxLimit(originalLimit);
+        }
+    }
 }

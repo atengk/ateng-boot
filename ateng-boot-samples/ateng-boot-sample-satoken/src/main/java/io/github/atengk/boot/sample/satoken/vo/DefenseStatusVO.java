@@ -44,6 +44,16 @@ public class DefenseStatusVO implements Serializable {
     private Long disableTime;
 
     /**
+     * 当前客户端 IP 是否已被熔断锁定
+     */
+    private Boolean isIpLocked;
+
+    /**
+     * 当前客户端 IP 累计失败次数
+     */
+    private Integer ipFailureCount;
+
+    /**
      * 防爆破策略组件是否启用
      */
     private Boolean enabled;

@@ -51,6 +51,11 @@ public class PayResponse implements Serializable {
     private String transactionId;
 
     /**
+     * 支付宝交易号 (trade_no，专用于支付宝小程序 my.tradePay({ tradeNO: res.data.tradeNo }))
+     */
+    private String tradeNo;
+
+    /**
      * 预支付交易会话标识 (prepay_id)
      */
     private String prepayId;

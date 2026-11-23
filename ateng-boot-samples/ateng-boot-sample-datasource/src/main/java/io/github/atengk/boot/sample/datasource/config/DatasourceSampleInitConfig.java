@@ -48,7 +48,8 @@ public class DatasourceSampleInitConfig implements CommandLineRunner {
             try (Connection conn = ds.getConnection();
                  Statement stmt = conn.createStatement()) {
                 stmt.execute(ddl);
-                log.info("[DatasourceSampleInit] 成功向数据源 [{}] 初始化 t_order 表结构", key);
+                stmt.execute("DELETE FROM t_order");
+                log.info("[DatasourceSampleInit] 成功向数据源 [{}] 初始化 t_order 表结构并清空残留数据", key);
             } catch (Exception e) {
                 log.error("[DatasourceSampleInit] 初始化数据源 [{}] 失败: {}", key, e.getMessage(), e);
             }

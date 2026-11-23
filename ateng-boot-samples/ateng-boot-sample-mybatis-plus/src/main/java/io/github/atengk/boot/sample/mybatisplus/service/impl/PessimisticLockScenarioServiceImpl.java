@@ -6,6 +6,7 @@ import io.github.atengk.boot.mybatisplus.enums.LockMode;
 import io.github.atengk.boot.mybatisplus.service.impl.AtengServiceImpl;
 import io.github.atengk.boot.sample.mybatisplus.entity.TaskQueueEntity;
 import io.github.atengk.boot.sample.mybatisplus.mapper.TaskQueueMapper;
+import io.github.atengk.boot.sample.mybatisplus.model.TaskQueueVO;
 import io.github.atengk.boot.sample.mybatisplus.service.PessimisticLockScenarioService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -46,5 +47,31 @@ public class PessimisticLockScenarioServiceImpl extends AtengServiceImpl<TaskQue
             updateById(task);
         }
         return task;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public TaskQueueVO getOneTaskForUpdate(String taskName) {
+        return getOneForUpdate(
+                Wrappers.lambdaQuery(TaskQueueEntity.class).eq(TaskQueueEntity::getTaskName, taskName),
+                LockMode.FOR_UPDATE,
+                TaskQueueVO.class
+        );
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public TaskQueueVO getTaskByIdForUpdate(Long taskId) {
+        return getByIdForUpdate(taskId, TaskQueueVO.class);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public List<TaskQueueVO> listTasksForUpdate(String status, int limit) {
+        LambdaQueryWrapper<TaskQueueEntity> wrapper = Wrappers.lambdaQuery(TaskQueueEntity.class)
+                .eq(status != null && !status.isBlank(), TaskQueueEntity::getStatus, status)
+                .orderByAsc(TaskQueueEntity::getId)
+                .last(limit > 0 ? "LIMIT " + limit : "");
+        return listForUpdate(wrapper, LockMode.SKIP_LOCKED, TaskQueueVO.class);
     }
 }

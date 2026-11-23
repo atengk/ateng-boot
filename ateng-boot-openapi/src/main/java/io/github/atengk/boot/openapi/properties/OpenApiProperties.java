@@ -92,6 +92,23 @@ public class OpenApiProperties {
      */
     private boolean standardResponses = true;
 
+    /**
+     * 是否自动内省 Sa-Token 与 Web 治理注解并注入治理契约说明（默认 true）
+     */
+    private boolean operationGovernanceNotes = true;
+
+    /**
+     * 通用 SecurityScheme 认证方案配置列表（如 HTTP Bearer、ApiKey 等）
+     */
+    @NestedConfigurationProperty
+    private List<SecuritySchemeConfig> securitySchemes = new ArrayList<>();
+
+    /**
+     * OpenAPI 契约离线导出配置
+     */
+    @NestedConfigurationProperty
+    private Export export = new Export();
+
     public boolean isEnabled() {
         return enabled;
     }
@@ -202,6 +219,30 @@ public class OpenApiProperties {
 
     public void setStandardResponses(boolean standardResponses) {
         this.standardResponses = standardResponses;
+    }
+
+    public boolean isOperationGovernanceNotes() {
+        return operationGovernanceNotes;
+    }
+
+    public void setOperationGovernanceNotes(boolean operationGovernanceNotes) {
+        this.operationGovernanceNotes = operationGovernanceNotes;
+    }
+
+    public List<SecuritySchemeConfig> getSecuritySchemes() {
+        return securitySchemes != null ? securitySchemes : Collections.emptyList();
+    }
+
+    public void setSecuritySchemes(List<SecuritySchemeConfig> securitySchemes) {
+        this.securitySchemes = securitySchemes != null ? securitySchemes : new ArrayList<>();
+    }
+
+    public Export getExport() {
+        return export != null ? export : new Export();
+    }
+
+    public void setExport(Export export) {
+        this.export = export != null ? export : new Export();
     }
 
     /**
@@ -332,6 +373,12 @@ public class OpenApiProperties {
          */
         private boolean tenantId = true;
 
+        /**
+         * 自定义全局请求头列表
+         */
+        @NestedConfigurationProperty
+        private List<HeaderParam> custom = new ArrayList<>();
+
         public boolean isTraceId() {
             return traceId;
         }
@@ -347,6 +394,14 @@ public class OpenApiProperties {
         public void setTenantId(boolean tenantId) {
             this.tenantId = tenantId;
         }
+
+        public List<HeaderParam> getCustom() {
+            return custom != null ? custom : Collections.emptyList();
+        }
+
+        public void setCustom(List<HeaderParam> custom) {
+            this.custom = custom != null ? custom : new ArrayList<>();
+        }
     }
 
     /**
@@ -354,7 +409,7 @@ public class OpenApiProperties {
      */
     public static class Guard {
         /**
-         * 访问守卫模式（NONE 免密公开，BASIC 浏览器弹窗，SATOKEN 桥接会话）
+         * 访问守卫模式（NONE 免密公开，BASIC 浏览器弹窗，SATOKEN 桥接会话，IP_WHITELIST 白名单，TOKEN 静态令牌）
          */
         private GuardMode mode = GuardMode.NONE;
 
@@ -363,6 +418,24 @@ public class OpenApiProperties {
          */
         @NestedConfigurationProperty
         private Basic basic = new Basic();
+
+        /**
+         * CIDR / IP 白名单网络防火墙配置
+         */
+        @NestedConfigurationProperty
+        private IpWhitelist ipWhitelist = new IpWhitelist();
+
+        /**
+         * 静态令牌认证配置
+         */
+        @NestedConfigurationProperty
+        private Token token = new Token();
+
+        /**
+         * Sa-Token 会话与角色/权限分级守卫配置
+         */
+        @NestedConfigurationProperty
+        private SaTokenGuard satoken = new SaTokenGuard();
 
         public GuardMode getMode() {
             return mode;
@@ -378,6 +451,180 @@ public class OpenApiProperties {
 
         public void setBasic(Basic basic) {
             this.basic = basic != null ? basic : new Basic();
+        }
+
+        public IpWhitelist getIpWhitelist() {
+            return ipWhitelist;
+        }
+
+        public void setIpWhitelist(IpWhitelist ipWhitelist) {
+            this.ipWhitelist = ipWhitelist != null ? ipWhitelist : new IpWhitelist();
+        }
+
+        public Token getToken() {
+            return token;
+        }
+
+        public void setToken(Token token) {
+            this.token = token != null ? token : new Token();
+        }
+
+        public SaTokenGuard getSatoken() {
+            return satoken;
+        }
+
+        public void setSatoken(SaTokenGuard satoken) {
+            this.satoken = satoken != null ? satoken : new SaTokenGuard();
+        }
+    }
+
+    /**
+     * Sa-Token 会话与角色/权限分级守卫配置
+     */
+    public static class SaTokenGuard {
+        /**
+         * 允许访问 OpenAPI 文档的 Sa-Token 角色标识列表（OR 语义：满足任一角色或权限即可放行；均为空时仅校验已登录）
+         */
+        private List<String> roles = new ArrayList<>();
+
+        /**
+         * 允许访问 OpenAPI 文档的 Sa-Token 权限码列表（OR 语义：满足任一角色或权限即可放行；均为空时仅校验已登录）
+         */
+        private List<String> permissions = new ArrayList<>();
+
+        public List<String> getRoles() {
+            return roles != null ? roles : Collections.emptyList();
+        }
+
+        public void setRoles(List<String> roles) {
+            this.roles = roles != null ? roles : new ArrayList<>();
+        }
+
+        public List<String> getPermissions() {
+            return permissions != null ? permissions : Collections.emptyList();
+        }
+
+        public void setPermissions(List<String> permissions) {
+            this.permissions = permissions != null ? permissions : new ArrayList<>();
+        }
+    }
+
+    /**
+     * CIDR / IP 白名单网络防火墙配置
+     */
+    public static class IpWhitelist {
+        /**
+         * 是否启用 IP 白名单校验（默认 false；若设置为 true 或配置了非空 cidrs 列表且启用，将执行白名单强校验）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 允许访问的 IP 或 CIDR 网段列表（例如 127.0.0.1, 10.0.0.0/8, 192.168.1.0/24, ::1）
+         */
+        private List<String> cidrs = new ArrayList<>();
+
+        /**
+         * 受信任的反向代理标头（例如 X-Forwarded-For, X-Real-IP）。
+         * 若配置，则从该标头提取首个合法客户端真实 IP；若未配置，严格读取物理连接 IP（request.getRemoteAddr()），防御客户端伪造 Header 越权。
+         */
+        private String trustedHeader;
+
+        /**
+         * 受信任的反向代理节点 IP 或 CIDR 列表（例如 127.0.0.1, 10.0.0.0/8, fe80::/10）。
+         * <p>
+         * 若显式配置了非空列表，仅当物理连接地址（request.getRemoteAddr()）命中该列表时才采信 {@code trustedHeader}；
+         * 若未配置（默认空），为保障既有配置向后兼容，直接采信配置的 {@code trustedHeader}。
+         * </p>
+         */
+        private List<String> trustedProxies = new ArrayList<>();
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public List<String> getCidrs() {
+            return cidrs != null ? cidrs : Collections.emptyList();
+        }
+
+        public void setCidrs(List<String> cidrs) {
+            this.cidrs = cidrs != null ? cidrs : new ArrayList<>();
+        }
+
+        public String getTrustedHeader() {
+            return trustedHeader;
+        }
+
+        public void setTrustedHeader(String trustedHeader) {
+            this.trustedHeader = trustedHeader;
+        }
+
+        public List<String> getTrustedProxies() {
+            return trustedProxies != null ? trustedProxies : Collections.emptyList();
+        }
+
+        public void setTrustedProxies(List<String> trustedProxies) {
+            this.trustedProxies = trustedProxies != null ? trustedProxies : new ArrayList<>();
+        }
+    }
+
+    /**
+     * 静态令牌认证配置
+     */
+    public static class Token {
+        /**
+         * 静态令牌请求头名称（默认 X-Doc-Token）
+         */
+        private String headerName = "X-Doc-Token";
+
+        /**
+         * 静态令牌秘钥字符串（生产请配置高强度随机字符串）
+         */
+        private String secret;
+
+        /**
+         * 是否允许通过 URL Query 参数传入令牌（例如 ?doc-token=xxx，默认 true，方便浏览器地址栏直接输入调试）
+         */
+        private boolean allowQueryParam = true;
+
+        /**
+         * URL Query 参数名称（默认 doc-token）
+         */
+        private String queryParamName = "doc-token";
+
+        public String getHeaderName() {
+            return headerName != null && !headerName.isBlank() ? headerName : "X-Doc-Token";
+        }
+
+        public void setHeaderName(String headerName) {
+            this.headerName = headerName;
+        }
+
+        public String getSecret() {
+            return secret;
+        }
+
+        public void setSecret(String secret) {
+            this.secret = secret;
+        }
+
+        public boolean isAllowQueryParam() {
+            return allowQueryParam;
+        }
+
+        public void setAllowQueryParam(boolean allowQueryParam) {
+            this.allowQueryParam = allowQueryParam;
+        }
+
+        public String getQueryParamName() {
+            return queryParamName != null && !queryParamName.isBlank() ? queryParamName : "doc-token";
+        }
+
+        public void setQueryParamName(String queryParamName) {
+            this.queryParamName = queryParamName;
         }
     }
 
@@ -432,9 +679,19 @@ public class OpenApiProperties {
         private List<String> pathsToMatch = new ArrayList<>();
 
         /**
+         * 排除的 URL 路径模式列表（AntPathMatcher 表达式，如 /admin/internal/**）
+         */
+        private List<String> pathsToExclude = new ArrayList<>();
+
+        /**
          * 扫描的 Controller 包名列表（如 io.github.atengk.sample.admin）
          */
         private List<String> packagesToScan = new ArrayList<>();
+
+        /**
+         * 排除的 Controller 包名列表（如 io.github.atengk.sample.admin.internal）
+         */
+        private List<String> packagesToExclude = new ArrayList<>();
 
         public String getGroup() {
             return group;
@@ -460,12 +717,253 @@ public class OpenApiProperties {
             this.pathsToMatch = pathsToMatch != null ? pathsToMatch : new ArrayList<>();
         }
 
+        public List<String> getPathsToExclude() {
+            return pathsToExclude != null ? pathsToExclude : Collections.emptyList();
+        }
+
+        public void setPathsToExclude(List<String> pathsToExclude) {
+            this.pathsToExclude = pathsToExclude != null ? pathsToExclude : new ArrayList<>();
+        }
+
         public List<String> getPackagesToScan() {
             return packagesToScan != null ? packagesToScan : Collections.emptyList();
         }
 
         public void setPackagesToScan(List<String> packagesToScan) {
             this.packagesToScan = packagesToScan != null ? packagesToScan : new ArrayList<>();
+        }
+
+        public List<String> getPackagesToExclude() {
+            return packagesToExclude != null ? packagesToExclude : Collections.emptyList();
+        }
+
+        public void setPackagesToExclude(List<String> packagesToExclude) {
+            this.packagesToExclude = packagesToExclude != null ? packagesToExclude : new ArrayList<>();
+        }
+    }
+
+    /**
+     * 自定义全局请求头参数配置
+     */
+    public static class HeaderParam {
+        /**
+         * 请求头参数名称（如 X-Custom-Header）
+         */
+        private String name;
+
+        /**
+         * 请求头描述说明
+         */
+        private String description;
+
+        /**
+         * 是否必填（默认 false）
+         */
+        private boolean required = false;
+
+        /**
+         * 默认值
+         */
+        private String defaultValue;
+
+        /**
+         * 示例值（优先于 defaultValue 用于文档示例展示）
+         */
+        private String example;
+
+        public HeaderParam() {
+        }
+
+        public HeaderParam(String name, String description, boolean required, String defaultValue) {
+            this(name, description, required, defaultValue, null);
+        }
+
+        public HeaderParam(String name, String description, boolean required, String defaultValue, String example) {
+            this.name = name;
+            this.description = description;
+            this.required = required;
+            this.defaultValue = defaultValue;
+            this.example = example;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public String getDescription() {
+            return description;
+        }
+
+        public void setDescription(String description) {
+            this.description = description;
+        }
+
+        public boolean isRequired() {
+            return required;
+        }
+
+        public void setRequired(boolean required) {
+            this.required = required;
+        }
+
+        public String getDefaultValue() {
+            return defaultValue;
+        }
+
+        public void setDefaultValue(String defaultValue) {
+            this.defaultValue = defaultValue;
+        }
+
+        public String getExample() {
+            return example;
+        }
+
+        public void setExample(String example) {
+            this.example = example;
+        }
+    }
+
+    /**
+     * 通用 SecurityScheme 认证方案配置
+     */
+    public static class SecuritySchemeConfig {
+        /**
+         * 鉴权方案唯一标识键（若未配置，默认回退使用 name）
+         */
+        private String key;
+
+        /**
+         * 鉴权方案名称/参数名（例如 Authorization、X-Api-Key）
+         */
+        private String name;
+
+        /**
+         * 鉴权类型（例如 http, apiKey, oauth2, openIdConnect；默认为 http）
+         */
+        private String type = "http";
+
+        /**
+         * HTTP 认证方案（例如 bearer, basic；当 type 为 http 时有效，默认 bearer）
+         */
+        private String scheme = "bearer";
+
+        /**
+         * Bearer 令牌格式（例如 JWT）
+         */
+        private String bearerFormat;
+
+        /**
+         * 参数传递位置（例如 header, query, cookie；当 type 为 apiKey 时必填，默认 header）
+         */
+        private String in = "header";
+
+        /**
+         * 鉴权方案描述说明
+         */
+        private String description;
+
+        /**
+         * 是否全局挂载 SecurityRequirement 锁头（默认 true；设置为 false 时仅注册 scheme 但不全局强制激活锁头）
+         */
+        private boolean global = true;
+
+        public SecuritySchemeConfig() {
+        }
+
+        public SecuritySchemeConfig(String name, String type, String scheme, String bearerFormat, String in, String description) {
+            this.name = name;
+            this.type = type;
+            this.scheme = scheme;
+            this.bearerFormat = bearerFormat;
+            this.in = in;
+            this.description = description;
+        }
+
+        public String getKey() {
+            return key != null && !key.isBlank() ? key : name;
+        }
+
+        public void setKey(String key) {
+            this.key = key;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public String getType() {
+            return type != null && !type.isBlank() ? type : "http";
+        }
+
+        public void setType(String type) {
+            this.type = type;
+        }
+
+        public String getScheme() {
+            return scheme != null && !scheme.isBlank() ? scheme : "bearer";
+        }
+
+        public void setScheme(String scheme) {
+            this.scheme = scheme;
+        }
+
+        public String getBearerFormat() {
+            return bearerFormat;
+        }
+
+        public void setBearerFormat(String bearerFormat) {
+            this.bearerFormat = bearerFormat;
+        }
+
+        public String getIn() {
+            return in != null && !in.isBlank() ? in : "header";
+        }
+
+        public void setIn(String in) {
+            this.in = in;
+        }
+
+        public String getDescription() {
+            return description;
+        }
+
+        public void setDescription(String description) {
+            this.description = description;
+        }
+
+        public boolean isGlobal() {
+            return global;
+        }
+
+        public void setGlobal(boolean global) {
+            this.global = global;
+        }
+    }
+
+    /**
+     * OpenAPI 契约离线导出配置属性
+     */
+    public static class Export {
+
+        /**
+         * 是否启用离线契约导出端点（默认 false）
+         */
+        private boolean enabled = false;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
         }
     }
 }

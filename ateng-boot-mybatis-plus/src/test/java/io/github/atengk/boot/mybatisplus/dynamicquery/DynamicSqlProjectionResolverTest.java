@@ -195,4 +195,50 @@ class DynamicSqlProjectionResolverTest {
         assertEquals("id", DynamicSqlProjectionResolver.underlineToCamel("id"));
         assertEquals("", DynamicSqlProjectionResolver.underlineToCamel(null));
     }
+
+    @Test
+    @DisplayName("测试 convertValueWithCamelSupport 将含 java.sql.Timestamp 的 Map 转换至 LocalDateTime VO")
+    void testConvertValueWithCamelSupportAndJdbcTimestamp() {
+        java.time.LocalDateTime now = java.time.LocalDateTime.of(2026, 11, 8, 9, 10, 0);
+        Map<String, Object> rawRow = Map.of(
+                "user_id", 1001L,
+                "user_name", "张三",
+                "update_time", java.sql.Timestamp.valueOf(now)
+        );
+        SampleTimeVO vo = DynamicSqlProjectionResolver.convertValueWithCamelSupport(rawRow, SampleTimeVO.class);
+        assertNotNull(vo);
+        assertEquals(1001L, vo.getUserId());
+        assertEquals("张三", vo.getUserName());
+        assertEquals(now, vo.getUpdateTime());
+    }
+
+    public static class SampleTimeVO {
+        private Long userId;
+        private String userName;
+        private java.time.LocalDateTime updateTime;
+
+        public Long getUserId() {
+            return userId;
+        }
+
+        public void setUserId(Long userId) {
+            this.userId = userId;
+        }
+
+        public String getUserName() {
+            return userName;
+        }
+
+        public void setUserName(String userName) {
+            this.userName = userName;
+        }
+
+        public java.time.LocalDateTime getUpdateTime() {
+            return updateTime;
+        }
+
+        public void setUpdateTime(java.time.LocalDateTime updateTime) {
+            this.updateTime = updateTime;
+        }
+    }
 }

@@ -1,18 +1,18 @@
 package io.github.atengk.boot.storage.cleaner;
 
-import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.factory.StorageDriverFactory;
 import io.github.atengk.boot.storage.properties.StorageProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.scheduling.TaskScheduler;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ScheduledFuture;
 
 /**
  * 孤儿分片碎片生命周期治理受管守护组件
@@ -27,18 +27,55 @@ public class StorageChunkCleaner implements DisposableBean {
     private final StorageProperties properties;
     private final ObjectProvider<StorageDriverFactory> driverFactoryProvider;
     private final ObjectProvider<StorageDriver> defaultDriverProvider;
-    private final ScheduledExecutorService executor;
+    private final TaskScheduler taskScheduler;
+    private final ThreadPoolTaskScheduler ownedTaskScheduler;
+    private final ScheduledFuture<?> scheduledFuture;
 
+    /**
+     * 构造孤儿分片清理器（缺省创建 Spring 受管单线程调度器）
+     *
+     * @param properties            存储配置属性
+     * @param driverFactoryProvider 存储驱动工厂提供者
+     * @param defaultDriverProvider 默认存储驱动提供者
+     */
     public StorageChunkCleaner(
             StorageProperties properties,
             ObjectProvider<StorageDriverFactory> driverFactoryProvider,
             ObjectProvider<StorageDriver> defaultDriverProvider) {
+        this(properties, driverFactoryProvider, defaultDriverProvider, null);
+    }
+
+    /**
+     * 构造孤儿分片清理器（优先复用 Spring 容器受管 TaskScheduler）
+     *
+     * @param properties            存储配置属性
+     * @param driverFactoryProvider 存储驱动工厂提供者
+     * @param defaultDriverProvider 默认存储驱动提供者
+     * @param taskSchedulerProvider Spring 任务调度器提供者
+     */
+    public StorageChunkCleaner(
+            StorageProperties properties,
+            ObjectProvider<StorageDriverFactory> driverFactoryProvider,
+            ObjectProvider<StorageDriver> defaultDriverProvider,
+            ObjectProvider<TaskScheduler> taskSchedulerProvider) {
         this.properties = properties;
         this.driverFactoryProvider = driverFactoryProvider;
         this.defaultDriverProvider = defaultDriverProvider;
 
-        this.executor = Executors.newSingleThreadScheduledExecutor(
-                new NamedThreadFactory("storage-chunk-cleaner", true));
+        TaskScheduler externalScheduler = taskSchedulerProvider != null ? taskSchedulerProvider.getIfAvailable() : null;
+        if (externalScheduler != null) {
+            this.taskScheduler = externalScheduler;
+            this.ownedTaskScheduler = null;
+        } else {
+            ThreadPoolTaskScheduler fallback = new ThreadPoolTaskScheduler();
+            fallback.setPoolSize(1);
+            fallback.setThreadNamePrefix("storage-chunk-cleaner-");
+            fallback.setDaemon(true);
+            fallback.setWaitForTasksToCompleteOnShutdown(false);
+            fallback.initialize();
+            this.taskScheduler = fallback;
+            this.ownedTaskScheduler = fallback;
+        }
 
         Duration interval = (properties != null && properties.getChunkCleaner() != null && properties.getChunkCleaner().getInterval() != null)
                 ? properties.getChunkCleaner().getInterval()
@@ -47,8 +84,11 @@ public class StorageChunkCleaner implements DisposableBean {
         long initialDelaySeconds = Math.max(10, Math.min(300, interval.toSeconds()));
         long periodSeconds = Math.max(60, interval.toSeconds());
 
-        this.executor.scheduleWithFixedDelay(this::cleanAllSafely, initialDelaySeconds, periodSeconds, TimeUnit.SECONDS);
-        log.info("存储孤儿分片定时清理器启动成功: initialDelay={}s, period={}s", initialDelaySeconds, periodSeconds);
+        Instant startTime = Instant.now().plusSeconds(initialDelaySeconds);
+        Duration delay = Duration.ofSeconds(periodSeconds);
+        this.scheduledFuture = this.taskScheduler.scheduleWithFixedDelay(this::cleanAllSafely, startTime, delay);
+        log.info("存储孤儿分片定时清理器启动成功: initialDelay={}s, period={}s, managedScheduler={}",
+                initialDelaySeconds, periodSeconds, externalScheduler != null ? "external" : "internal-ThreadPoolTaskScheduler");
     }
 
     /**
@@ -101,16 +141,11 @@ public class StorageChunkCleaner implements DisposableBean {
 
     @Override
     public void destroy() {
-        if (this.executor != null) {
-            this.executor.shutdown();
-            try {
-                if (!this.executor.awaitTermination(3, TimeUnit.SECONDS)) {
-                    this.executor.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                this.executor.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
+        if (this.scheduledFuture != null) {
+            this.scheduledFuture.cancel(false);
+        }
+        if (this.ownedTaskScheduler != null) {
+            this.ownedTaskScheduler.shutdown();
         }
     }
 }

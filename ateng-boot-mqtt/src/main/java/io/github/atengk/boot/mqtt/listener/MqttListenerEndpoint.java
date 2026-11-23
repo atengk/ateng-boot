@@ -1,8 +1,10 @@
 package io.github.atengk.boot.mqtt.listener;
 
 import io.github.atengk.boot.mqtt.annotation.MqttListener;
+import io.github.atengk.boot.mqtt.annotation.MqttReply;
 import io.github.atengk.boot.mqtt.codec.MqttMessageConverter;
 import io.github.atengk.boot.mqtt.routing.MqttTopicPattern;
+import org.springframework.core.annotation.AnnotatedElementUtils;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -22,6 +24,7 @@ public class MqttListenerEndpoint {
     private final Object bean;
     private final Method method;
     private final MqttListener annotation;
+    private final MqttReply replyAnnotation;
     private final MqttListenerMethodAdapter adapter;
     private final List<MqttTopicPattern> patterns;
     private final Semaphore concurrencySemaphore;
@@ -31,10 +34,21 @@ public class MqttListenerEndpoint {
     }
 
     public MqttListenerEndpoint(String id, Object bean, Method method, MqttListener annotation, MqttMessageConverter messageConverter) {
+        validateQos(annotation.qos(), "@MqttListener qos");
+        if (annotation.retainHandling() < 0 || annotation.retainHandling() > 2) {
+            throw new IllegalArgumentException(
+                    "Invalid @MqttListener retainHandling [" + annotation.retainHandling() + "] on endpoint [" + id + "]: must be 0, 1, or 2");
+        }
+        MqttReply resolvedReply = method != null ? AnnotatedElementUtils.findMergedAnnotation(method, MqttReply.class) : null;
+        if (resolvedReply != null) {
+            validateQos(resolvedReply.qos(), "@MqttReply qos");
+        }
+
         this.id = id;
         this.bean = bean;
         this.method = method;
         this.annotation = annotation;
+        this.replyAnnotation = resolvedReply;
         this.adapter = new MqttListenerMethodAdapter(bean, method, messageConverter);
 
         List<MqttTopicPattern> list = new ArrayList<>();
@@ -43,6 +57,12 @@ public class MqttListenerEndpoint {
         }
         this.patterns = Collections.unmodifiableList(list);
         this.concurrencySemaphore = annotation.concurrency() > 0 ? new Semaphore(annotation.concurrency()) : null;
+    }
+
+    private static void validateQos(int qos, String label) {
+        if (qos < 0 || qos > 2) {
+            throw new IllegalArgumentException("Invalid " + label + " [" + qos + "]: must be 0, 1, or 2");
+        }
     }
 
     public String getId() {
@@ -59,6 +79,15 @@ public class MqttListenerEndpoint {
 
     public MqttListener getAnnotation() {
         return annotation;
+    }
+
+    /**
+     * 获取方法上的声明式应答注解元数据（支持元注解组合解析）
+     *
+     * @return @MqttReply 元数据，未标注则返回 null
+     */
+    public MqttReply getReplyAnnotation() {
+        return replyAnnotation;
     }
 
     public MqttListenerMethodAdapter getAdapter() {

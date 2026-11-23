@@ -51,7 +51,7 @@ class RealtimeAuthScenarioTest {
     private String doLogin(String userId) throws Exception {
         HttpClient client = HttpClient.newHttpClient();
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create("http://127.0.0.1:" + port + "/api/realtime/login?userId=" + userId))
+                .uri(URI.create("http://127.0.0.1:" + port + "/sample/realtime/auth/login?userId=" + userId))
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build();
         HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());

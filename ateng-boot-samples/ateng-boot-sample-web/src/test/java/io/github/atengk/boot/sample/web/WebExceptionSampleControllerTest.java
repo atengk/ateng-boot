@@ -46,7 +46,7 @@ class WebExceptionSampleControllerTest {
     @Test
     @DisplayName("1. SPI 自定义异常转译：第三方支付异常经由 PaymentExceptionCustomizer 转译为领域错误码 40020")
     void shouldHandlePaymentExceptionViaCustomizerSpi() throws Exception {
-        mockMvc.perform(get("/api/sample/exception/payment"))
+        mockMvc.perform(get("/sample/web/contract/error/payment"))
                 .andExpect(status().isOk())
                 .andExpect(header().exists("X-Trace-Id"))
                 .andExpect(jsonPath("$.code").value(40020))
@@ -59,7 +59,7 @@ class WebExceptionSampleControllerTest {
     @Test
     @DisplayName("2. 415 媒体类型不支持：发送 text/plain 请求 Content-Type 转译为 HTTP 200 业务码 415")
     void shouldTranslateHttpMediaTypeNotSupportedException() throws Exception {
-        mockMvc.perform(post("/api/sample/exception/media-type")
+        mockMvc.perform(post("/sample/web/contract/error/media-type")
                         .contentType(MediaType.TEXT_PLAIN)
                         .content("hello world"))
                 .andExpect(status().isOk())
@@ -73,7 +73,7 @@ class WebExceptionSampleControllerTest {
     @Test
     @DisplayName("3. 406 媒体类型不接受：客户端仅接受 application/xml 时转译为 HTTP 200 业务码 406")
     void shouldTranslateHttpMediaTypeNotAcceptableException() throws Exception {
-        mockMvc.perform(post("/api/sample/exception/media-type")
+        mockMvc.perform(post("/sample/web/contract/error/media-type")
                         .contentType(MediaType.APPLICATION_JSON)
                         .accept(MediaType.APPLICATION_XML)
                         .content("{\"key\":\"value\"}"))
@@ -88,7 +88,7 @@ class WebExceptionSampleControllerTest {
     @Test
     @DisplayName("4. 413 大文件超限：MaxUploadSizeExceededException 统一优雅转译为业务码 413")
     void shouldTranslateMaxUploadSizeExceededException() throws Exception {
-        mockMvc.perform(get("/api/sample/exception/payload-too-large"))
+        mockMvc.perform(get("/sample/web/contract/error/payload-too-large"))
                 .andExpect(status().isOk())
                 .andExpect(header().exists("X-Trace-Id"))
                 .andExpect(jsonPath("$.code").value(413))
@@ -100,7 +100,7 @@ class WebExceptionSampleControllerTest {
     @Test
     @DisplayName("5. 503 异步超时：AsyncRequestTimeoutException 转译为业务码 503")
     void shouldTranslateAsyncRequestTimeoutException() throws Exception {
-        mockMvc.perform(get("/api/sample/exception/async-timeout"))
+        mockMvc.perform(get("/sample/web/contract/error/async-timeout"))
                 .andExpect(status().isOk())
                 .andExpect(header().exists("X-Trace-Id"))
                 .andExpect(jsonPath("$.code").value(503))
@@ -114,7 +114,7 @@ class WebExceptionSampleControllerTest {
     void shouldTranslateMissingServletRequestPartException() throws Exception {
         // multipart 请求携带 other 分片，但缺少必须的 file 分片
         MockMultipartFile otherPart = new MockMultipartFile("other", "other.txt", "text/plain", "content".getBytes());
-        mockMvc.perform(multipart("/api/sample/exception/upload").file(otherPart))
+        mockMvc.perform(multipart("/sample/web/contract/error/upload").file(otherPart))
                 .andExpect(status().isOk())
                 .andExpect(header().exists("X-Trace-Id"))
                 .andExpect(jsonPath("$.code").value(400))
@@ -127,10 +127,21 @@ class WebExceptionSampleControllerTest {
     @DisplayName("7. 正常文件上传：携带合法 file 分片正常通过并返回文件名")
     void shouldUploadFileSuccessfully() throws Exception {
         MockMultipartFile file = new MockMultipartFile("file", "test.txt", "text/plain", "hello".getBytes());
-        mockMvc.perform(multipart("/api/sample/exception/upload").file(file))
+        mockMvc.perform(multipart("/sample/web/contract/error/upload").file(file))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data").value("test.txt"));
+    }
+
+    @Test
+    @DisplayName("8. 新规范路由端到端异常转译验证：GET /sample/web/contract/error/payment")
+    void shouldHandlePaymentExceptionOnNewSampleWebRoute() throws Exception {
+        mockMvc.perform(get("/sample/web/contract/error/payment"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("X-Trace-Id"))
+                .andExpect(jsonPath("$.code").value(40020))
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.msg").value(containsString("支付通道异常 [ALIPAY]: 通道账户可用余额不足")));
     }
 }

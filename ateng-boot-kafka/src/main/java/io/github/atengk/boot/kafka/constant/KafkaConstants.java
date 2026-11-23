@@ -1,5 +1,10 @@
 package io.github.atengk.boot.kafka.constant;
 
+import io.github.atengk.boot.core.constant.MessageHeaderConstants;
+
+import java.util.Locale;
+import java.util.Set;
+
 /**
  * Kafka 基础设施专用常量表
  *
@@ -9,6 +14,29 @@ package io.github.atengk.boot.kafka.constant;
 public final class KafkaConstants {
 
     private KafkaConstants() {
+    }
+
+    /**
+     * 框架保留的系统上下文与幂等消息头集合（小写归一化，禁止业务自定义头覆盖或作为扩展头误识别）
+     */
+    public static final Set<String> RESERVED_SYSTEM_HEADER_KEYS = Set.of(
+            MessageHeaderConstants.TRACE_ID.toLowerCase(Locale.ROOT),
+            MessageHeaderConstants.TENANT_ID.toLowerCase(Locale.ROOT),
+            MessageHeaderConstants.USER_ID.toLowerCase(Locale.ROOT),
+            MessageHeaderConstants.IGNORE_TENANT.toLowerCase(Locale.ROOT),
+            MessageHeaderConstants.SEND_TIMESTAMP.toLowerCase(Locale.ROOT),
+            MessageHeaderConstants.BIZ_KEY.toLowerCase(Locale.ROOT)
+    );
+
+    /**
+     * 判断消息头键名是否为框架保留的系统上下文与幂等头（忽略大小写）
+     *
+     * @param headerKey 消息头键名
+     * @return 属于系统保留头返回 true
+     */
+    public static boolean isReservedSystemHeader(String headerKey) {
+        return headerKey != null && !headerKey.isBlank()
+                && RESERVED_SYSTEM_HEADER_KEYS.contains(headerKey.trim().toLowerCase(Locale.ROOT));
     }
 
     /**

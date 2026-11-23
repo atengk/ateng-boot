@@ -1,6 +1,6 @@
 # Pay 企业级专有多渠道支付与资金底座
 
-面向企业电商收单、SaaS 订阅缴费、政企在线服务及资金清结算的专有支付基础设施，基于微信支付 V3 与支付宝官方权威 SDK 构建，提供双规专有独立门面、顶层轻量统一收单门面、四模自适应证书加载、微信平台证书自动轮换、自动化 Webhook 验签解密、双轨分布式防重锁与全域 BigDecimal 元契约治理。
+面向企业电商收单、SaaS 订阅缴费、政企在线服务及资金清结算的专有支付基础设施，基于微信支付 V3 与支付宝官方权威 SDK 构建，提供双轨专有独立门面、顶层轻量统一收单门面、四模自适应证书加载、微信平台证书自动轮换、自动化 Webhook 验签解密、双轨分布式防重锁与全域 BigDecimal 元契约治理。
 
 ## Language
 
@@ -29,7 +29,7 @@ _Avoid_: 退款ID, 售后单号, refundOrderId
 _Avoid_: 平台退款单号, 退款凭据
 
 **Pay Trade Type (交易场景类型)**:
-第三方支付平台定义的标准化收单交互终端场景枚举（NATIVE, JSAPI, H5, APP, BARCODE）。
+第三方支付平台定义的标准化收单交互终端场景枚举（NATIVE, JSAPI, H5, APP, BARCODE, PAGE）。
 _Avoid_: 支付终端, 支付途径, 交易模式, SceneType
 
 **Pay Trade State (交易状态机)**:
@@ -49,7 +49,7 @@ _Avoid_: WxPayService, WxPayClient, WechatPayHelper
 _Avoid_: AliPayService, AliPayClient, AlipayHelper
 
 **Pay Callback Listener (回调业务监听器)**:
-用于接收框架验签解密并防重拦截后的标准化强类型支付/退款成功事件的业务 SPI 契约。
+用于接收框架验签解密并防重拦截后的标准化强类型支付成功、退款成功、订单关闭及商家转账异步回调事件的业务 SPI 契约。
 _Avoid_: PayCallbackConsumer, WebhookHandler, PayEventListener
 
 **Pay Callback Handler (回调处理门面)**:
@@ -123,3 +123,67 @@ _Avoid_: 平台转账单号, 支付流水, 提现凭据
 **Pay Refund State (退款状态机)**:
 抹平各渠道退款状态差异的标准统一生命周期枚举（PROCESSING, SUCCESS, CLOSED, ABNORMAL）。
 _Avoid_: 退款标记, 退款结果, 售后状态
+
+**Wechat Pay Public Key (微信支付平台公钥)**:
+微信支付 2024 年官方全面推行的用于逐步替代平台证书自动轮换的静态 RSA 公钥（公钥ID格式为 `PUB_KEY_ID_...`），在 `wechatpay-java` 中由 `RSAPublicKeyConfig` 纳管，用于回调验签与敏感信息加密。
+_Avoid_: 微信平台证书, 静态证书, 渠道公钥
+
+**Trade Reverse (交易撤销 / 冲正)**:
+针对线下付款码（条码付）支付在网络超时或用户输密超时未决时发起的终态安全处置操作（微信 `/reverse`、支付宝 `alipay.trade.cancel`）。官方定义为：若订单未支付则直接关单，若订单已支付则自动原路退还资金。
+_Avoid_: 订单关闭, 取消订单, 撤回交易
+
+**Alipay Trade Create (统一收单交易创建 / 小程序支付)**:
+支付宝小程序调起收银台（`my.tradePay`）所需的前置服务端收单创建接口（`alipay.trade.create`），通过传入买家标识换取支付宝交易流水号（`trade_no`）。
+_Avoid_: 网页支付, 预下单, 支付宝JSAPI
+
+**Buyer Identifier (买家身份标识)**:
+第三方支付渠道（如支付宝小程序）收单场景下的付款人身份凭证，包含旧版 16 位数字 UID（`buyer_id`，以 2088 开头）与新版 16 位开放标识（`buyer_open_id`，以 0 开头）。
+_Avoid_: 买家账号, openid, 支付宝账号
+
+**Named Merchant Registry (多商户多应用命名注册表)**:
+在运行时管理和提供动态注册、热更新及多级降级查找（显式键 -> 默认键 -> 首个已注册）多商户/多应用配置的命名注册中心。
+_Avoid_: 商户工厂, 商户缓存, 多账号管理器, MerchantService
+
+**Pay Context Holder (支付上下文持有者)**:
+基于 ThreadLocal 维护当前线程级商户与支付宝应用路由键（MerchantKey），为多租户与微服务环境提供透明请求级商户切源与隔离支持的上下文持有者。
+_Avoid_: 租户切源器, 商户上下文, PayThreadLocal, MerchantHolder
+
+**Merchant Key (商户路由键)**:
+商户注册表中用于标识、路由和热切换不同渠道账号配置的逻辑别名或兼容商户/应用标识，区别于第三方渠道原生清算主号（MchId / SpMchId / SubMchId / AppId）。
+_Avoid_: 商户密钥键, 路由Tag, 账号别名
+
+**Pay Certificate Provider (支付证书扩展提供器)**:
+用于对接外部 KMS、HashiCorp Vault、加密数据库或云存储以动态解密和加载商户私钥与证书的 SPI 扩展契约。
+_Avoid_: 证书加载器, 私钥解密器, 证书SPI, KeyStoreHelper
+
+**Pay Lock Manager (双轨并发防重排队锁管理器)**:
+在 Webhook 回调入站时基于交易流水号与退款单号提供并发排队锁的门面组件，优先装配 Redis 分布式锁并在无 Redis 时无感以本地内存并发锁保底，并在回调完成后于 `finally` 块防御性安全释放。
+_Avoid_: 回调锁, 防并发组件, 支付互斥锁, LockHelper
+
+**Public Key Grayscale Migration (微信平台证书公钥灰度切换)**:
+微信商户由 5 年周期平台证书向静态微信支付平台公钥平滑过渡期间的混合运行阶段，该阶段回调验签可能同时接收平台证书序列号与公钥标识签名，需要支持双模并发校验。
+_Avoid_: 证书迁移, 公钥替换期, 混合签名
+
+**Alipay Royalty Profit Sharing (支付宝交易分账)**:
+支付宝收单体系下基于前置分账冻结声明、分账接收方关系绑定、确认结算与订单多方分账结算实现平台佣金与合作方分账的资金分润生命周期能力。
+_Avoid_: 支付宝转账, 余额分润, 商家打款
+
+**User-Confirm Merchant Transfer (微信新版用户确认模式商家转账)**:
+微信支付 2025 年全面推行的单笔商家转账主链路（`/v3/fund-app/mch-transfer/transfer-bills`），发起后返回 `WAIT_USER_CONFIRM` 状态与 `package_info` 调起凭据供用户确认收款，并支持在终态前主动撤销转账单（`/cancel`）。
+_Avoid_: 新版批次转账, 微信红包打款, 旧版明细单
+
+**Transfer Scene Report Info (转账场景报备信息)**:
+新版商家转账按营销活动、劳务报酬、企业赔付等固定场景ID（`transfer_scene_id`）强制附带的报备键值对集合（`info_type` + `info_content`），用于渠道风控合规核验。
+_Avoid_: 转账附言, 批次备注, 拓展参数
+
+**Transfer Notify Callback (商家转账异步回调事件)**:
+微信新版商家转账单据进入终态（`SUCCESS`、`FAIL`、`CANCELLED`）后由 `MCHTRANSFER.BILL.FINISHED` Webhook 通知经验签与 AES-256-GCM 解密映射的标准化转账结果回调事件。
+_Avoid_: 打款通知, 提现回调, BatchTransferCallback
+
+**Order Closed Callback (订单关闭异步回调事件)**:
+由渠道明确通知交易已关闭或已撤销（如微信 `CLOSED`/`REVOKED`、无退款语义的支付宝 `TRADE_CLOSED`）且经终态守卫分流至 `onOrderClosed` 的标准化关单回调事件。
+_Avoid_: 取消通知, 超时事件, CloseNotifyDTO
+
+**Pay HTTP Properties (全通道网络超时配置)**:
+统一纳管微信支付与支付宝底层 HTTP 客户端连接、读取与写入超时时长（`Duration`）的强类型配置对象，执行非正数与整型毫秒溢出前置 Fail-Fast 防卫。
+_Avoid_: HttpTimeoutConfig, NetTimeoutProps, 连接池参数

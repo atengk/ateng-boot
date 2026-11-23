@@ -7,6 +7,10 @@ import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.util.StringUtils;
 
+import javax.crypto.Cipher;
+import javax.crypto.EncryptedPrivateKeyInfo;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
@@ -20,6 +24,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.Key;
 import java.security.KeyFactory;
 import java.security.KeyStore;
 import java.security.PrivateKey;
@@ -135,7 +140,7 @@ public final class MqttSslSocketFactoryBuilder {
 
             PrivateKey privateKey;
             try (InputStream is = openStream(props.getClientKey())) {
-                privateKey = parsePrivateKey(is);
+                privateKey = parsePrivateKey(is, props.getClientKeyPassword());
             }
 
             KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
@@ -151,15 +156,35 @@ public final class MqttSslSocketFactoryBuilder {
         return null;
     }
 
-    private static PrivateKey parsePrivateKey(InputStream is) throws Exception {
+    private static PrivateKey parsePrivateKey(InputStream is, String keyPassword) throws Exception {
         String text = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+        boolean isEncryptedPkcs8 = text.contains("-----BEGIN ENCRYPTED PRIVATE KEY-----");
         String base64 = text
                 .replaceAll("-----BEGIN [A-Z0-9 ]+-----", "")
                 .replaceAll("-----END [A-Z0-9 ]+-----", "")
                 .replaceAll("\\s+", "");
         byte[] decoded = Base64.getDecoder().decode(base64);
 
-        PKCS8EncodedKeySpec keySpec = new PKCS8EncodedKeySpec(decoded);
+        PKCS8EncodedKeySpec keySpec;
+        if (isEncryptedPkcs8) {
+            if (!StringUtils.hasText(keyPassword)) {
+                throw new IllegalArgumentException("Encrypted PKCS#8 private key requires clientKeyPassword");
+            }
+            try {
+                EncryptedPrivateKeyInfo epki = new EncryptedPrivateKeyInfo(decoded);
+                String algName = epki.getAlgName();
+                SecretKeyFactory skf = SecretKeyFactory.getInstance(algName);
+                Key pbeKey = skf.generateSecret(new PBEKeySpec(keyPassword.toCharArray()));
+                Cipher cipher = Cipher.getInstance(algName);
+                cipher.init(Cipher.DECRYPT_MODE, pbeKey, epki.getAlgParameters());
+                keySpec = epki.getKeySpec(cipher);
+            } catch (Exception e) {
+                throw new IllegalArgumentException("Failed to decrypt encrypted PKCS#8 private key, please check clientKeyPassword", e);
+            }
+        } else {
+            keySpec = new PKCS8EncodedKeySpec(decoded);
+        }
+
         try {
             KeyFactory kf = KeyFactory.getInstance("RSA");
             return kf.generatePrivate(keySpec);

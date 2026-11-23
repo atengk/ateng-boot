@@ -1,5 +1,6 @@
 package io.github.atengk.boot.document.enums;
 
+import io.github.atengk.boot.core.enums.IBaseEnum;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 
@@ -11,7 +12,7 @@ import lombok.Getter;
  */
 @Getter
 @AllArgsConstructor
-public enum WatermarkLayer {
+public enum WatermarkLayer implements IBaseEnum<String> {
 
     /**
      * 前置覆盖模式（置于正文上方，半透明覆盖，防截图拍照与修图抹除）
@@ -25,4 +26,9 @@ public enum WatermarkLayer {
 
     private final String code;
     private final String desc;
+
+    @Override
+    public String getLabel() {
+        return desc;
+    }
 }

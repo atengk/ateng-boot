@@ -1,0 +1,46 @@
+# 本地真实数据库双模联调模板文件（复制为 application-local.yml 并通过 -Dspring-boot.run.profiles=local 激活）
+# 严禁将真实凭据填入本 example 文件，真实配置文件 application-local.yml 已被 .gitignore 忽略
+spring:
+  datasource:
+    dynamic:
+      datasource:
+        master:
+          url: jdbc:mysql://YOUR_MYSQL_HOST:YOUR_MYSQL_PORT/sample_flyway_master?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+          username: YOUR_MYSQL_USERNAME
+          password: YOUR_MYSQL_PASSWORD
+          driver-class-name: com.mysql.cj.jdbc.Driver
+        slave:
+          url: jdbc:mysql://YOUR_MYSQL_HOST:YOUR_MYSQL_PORT/sample_flyway_slave?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+          username: YOUR_MYSQL_USERNAME
+          password: YOUR_MYSQL_PASSWORD
+          driver-class-name: com.mysql.cj.jdbc.Driver
+        log_db:
+          url: jdbc:mysql://YOUR_MYSQL_HOST:YOUR_MYSQL_PORT/sample_flyway_log?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+          username: YOUR_MYSQL_USERNAME
+          password: YOUR_MYSQL_PASSWORD
+          driver-class-name: com.mysql.cj.jdbc.Driver
+        tenant_1001:
+          url: jdbc:mysql://YOUR_MYSQL_HOST:YOUR_MYSQL_PORT/sample_flyway_tenant_1001?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+          username: YOUR_MYSQL_USERNAME
+          password: YOUR_MYSQL_PASSWORD
+          driver-class-name: com.mysql.cj.jdbc.Driver
+        tenant_1002:
+          url: jdbc:mysql://YOUR_MYSQL_HOST:YOUR_MYSQL_PORT/sample_flyway_tenant_1002?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+          username: YOUR_MYSQL_USERNAME
+          password: YOUR_MYSQL_PASSWORD
+          driver-class-name: com.mysql.cj.jdbc.Driver
+
+# 如需切换至 PostgreSQL，请将上述数据源驱动与 URL 替换为如下格式（已内置 flyway-database-postgresql）：
+#           url: jdbc:postgresql://YOUR_PG_HOST:YOUR_PG_PORT/sample_flyway_master
+#           username: YOUR_PG_USERNAME
+#           password: YOUR_PG_PASSWORD
+#           driver-class-name: org.postgresql.Driver
+
+# 如需演示独立高权限 DDL 加密账号，可按需开启以下配置（支持 enc:sm4: / enc:aes: 密文）：
+# ateng:
+#   boot:
+#     flyway:
+#       credential:
+#         enabled: true
+#         username: YOUR_DDL_ADMIN_USERNAME
+#         password: "enc:sm4:YOUR_SM4_KEY_BASE64:YOUR_SM4_IV_BASE64:YOUR_CIPHERTEXT_BASE64"

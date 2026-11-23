@@ -173,6 +173,54 @@ public class RealtimeGroupManager implements RealtimeSessionListener {
     }
 
     /**
+     * 解散指定群组/房间，移出本节点名下所有成员会话
+     *
+     * @param groupId 群组标识
+     * @return 被移出的群组成员会话坐标集合（空安全防御，绝不返回 null）
+     */
+    public Set<SessionKey> dismissGroup(String groupId) {
+        if (groupId == null || groupId.isBlank()) {
+            return Collections.emptySet();
+        }
+        String cleanGroupId = groupId.trim();
+        Set<SessionKey> members = groupSessions.remove(cleanGroupId);
+        if (members == null || members.isEmpty()) {
+            return Collections.emptySet();
+        }
+        for (SessionKey sessionKey : members) {
+            Set<String> groups = sessionGroups.get(sessionKey);
+            if (groups != null) {
+                groups.remove(cleanGroupId);
+                if (groups.isEmpty()) {
+                    sessionGroups.remove(sessionKey, Collections.emptySet());
+                }
+            }
+        }
+        log.debug("[Realtime] 本地解散分组: groupId={}, memberCount={}", cleanGroupId, members.size());
+        return Collections.unmodifiableSet(new HashSet<>(members));
+    }
+
+    /**
+     * 获取全集群指定群组的在线成员总数（单机保底实现，返回当前单机节点数量）
+     *
+     * @param groupId 群组标识
+     * @return 成员连接总数
+     */
+    public int getClusterGroupMemberCount(String groupId) {
+        return getGroupMemberCount(groupId);
+    }
+
+    /**
+     * 获取全集群指定群组名下的所有会话坐标集合（单机保底实现，返回当前单机节点成员）
+     *
+     * @param groupId 群组标识
+     * @return 会话坐标集合（空安全防御，绝不返回 null）
+     */
+    public Set<SessionKey> getClusterGroupMembers(String groupId) {
+        return getGroupSessions(groupId);
+    }
+
+    /**
      * 清空全量分组信息
      */
     public void clear() {

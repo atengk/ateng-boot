@@ -38,6 +38,19 @@ public class HttpLoggingProperties {
     ));
 
     /**
+     * 出站 URL 查询参数敏感脱敏黑名单列表（不区分大小写匹配，匹配成功自动打星号掩码）
+     */
+    private List<String> maskParams = new ArrayList<>(List.of(
+            "secret",
+            "password",
+            "token",
+            "apiKey",
+            "api_key",
+            "key",
+            "access_token"
+    ));
+
+    /**
      * FULL 级别下请求体与响应体最大打印字符长度（超过上限安全截断并追加省略标识，默认：1024 字符）
      */
     private int maxBodyLength = 1024;

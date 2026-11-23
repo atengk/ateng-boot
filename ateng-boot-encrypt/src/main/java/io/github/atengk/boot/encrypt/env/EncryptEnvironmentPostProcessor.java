@@ -50,26 +50,33 @@ public class EncryptEnvironmentPostProcessor implements EnvironmentPostProcessor
             return;
         }
 
+        // 0. 全局开关短路：显式禁用时不执行主密钥探测、属性源装饰及强制门禁
+        if (!EncryptEnvironmentSupport.resolveBooleanProperty(
+                environment, EncryptEnvironmentSupport.PROPERTY_ENABLED, EncryptEnvironmentSupport.ENV_ENABLED, true)) {
+            unwrapExistingWrappers(environment);
+            log.debug("[ateng-boot-encrypt] 已配置 {}=false，跳过配置加解密处理与安全门禁",
+                    EncryptEnvironmentSupport.PROPERTY_ENABLED);
+            return;
+        }
+
         // 1. 级联探测主密钥与命名多密钥，并触发本地自加密风险刚性拦截
         KeyDetector keyDetector = KeyDetector.detect(environment);
 
-        // 2. 动态读取配置的环境默认算法，未配置时保底为 AES_GCM
-        String algoCode = environment.getProperty("ateng.boot.encrypt.algorithm");
-        EncryptAlgorithm configuredAlgorithm = EncryptAlgorithm.fromCode(algoCode);
-        EncryptAlgorithm defaultAlgorithm = configuredAlgorithm != null ? configuredAlgorithm : EncryptAlgorithm.AES_GCM;
+        // 2. 动态读取配置的环境默认算法、容错策略与前后缀，未配置时采用生产默认基线
+        EncryptAlgorithm defaultAlgorithm = EncryptEnvironmentSupport.resolveDefaultAlgorithm(
+                environment, null, EncryptAlgorithm.AES_GCM);
+        boolean failOnError = EncryptEnvironmentSupport.resolveBooleanProperty(
+                environment, EncryptEnvironmentSupport.PROPERTY_FAIL_ON_ERROR,
+                EncryptEnvironmentSupport.ENV_FAIL_ON_ERROR, true);
+        CiphertextParser parser = EncryptEnvironmentSupport.resolveCiphertextParser(environment, null);
 
-        // 3. 动态读取密文前后缀配置，支持自定义前后缀
-        String prefix = environment.getProperty("ateng.boot.encrypt.prefix");
-        String suffix = environment.getProperty("ateng.boot.encrypt.suffix");
-        CiphertextParser parser = new CiphertextParser(prefix, suffix);
-
-        // 4. 扫描并无差别装饰所有尚未被包装的属性源，并同步更新早期包装器的最新 keyDetector
+        // 3. 扫描并无差别装饰所有尚未被包装的属性源，并向第一阶段已有包装器同步最新运行时配置 (Two-Phase Wrapper Sync)
         MutablePropertySources propertySources = environment.getPropertySources();
         List<PropertySource<?>> toWrap = new ArrayList<>();
 
         for (PropertySource<?> source : propertySources) {
             if (source instanceof EncryptPropertySourceWrapper wrapper) {
-                wrapper.updateKeyDetector(keyDetector);
+                wrapper.updateRuntimeConfig(parser, keyDetector, null, defaultAlgorithm, failOnError);
             } else if (shouldWrap(source)) {
                 toWrap.add(source);
             }
@@ -77,21 +84,41 @@ public class EncryptEnvironmentPostProcessor implements EnvironmentPostProcessor
 
         for (PropertySource<?> source : toWrap) {
             EncryptPropertySourceWrapper wrapper = new EncryptPropertySourceWrapper(
-                    source, parser, keyDetector, null, defaultAlgorithm, true);
+                    source, parser, keyDetector, null, defaultAlgorithm, failOnError);
             propertySources.replace(source.getName(), wrapper);
             log.trace("[ateng-boot-encrypt] 属性源已装配解密代理: {}", source.getName());
         }
 
-        // 5. 重新挂载 ConfigurationPropertySources，确保 @ConfigurationProperties Binder 能够感知代理包装
+        // 4. 重新挂载 ConfigurationPropertySources，确保 @ConfigurationProperties Binder 能够感知代理包装
         ConfigurationPropertySources.attach(environment);
 
-        // 6. 若开启生产明文强制门禁 (enforce-encrypted: true)，前置扫描并阻断未加密的裸明文敏感属性
-        String enforceStr = environment.getProperty("ateng.boot.encrypt.enforce-encrypted");
-        if (Boolean.parseBoolean(enforceStr)) {
+        // 5. 若开启生产明文强制门禁 (enforce-encrypted: true)，前置扫描并阻断未加密的裸明文敏感属性
+        if (EncryptEnvironmentSupport.resolveBooleanProperty(
+                environment, "ateng.boot.encrypt.enforce-encrypted", null, false)) {
             String pattern = environment.getProperty("ateng.boot.encrypt.sensitive-key-pattern",
                     EnforceEncryptionPolicy.DEFAULT_SENSITIVE_KEY_PATTERN);
             EnforceEncryptionPolicy.enforce(environment, pattern, parser);
         }
+    }
+
+    /**
+     * 将已被早期阶段包裹的包装器还原为原始属性源（用于禁用开关生效时的安全兜底）
+     */
+    private void unwrapExistingWrappers(ConfigurableEnvironment environment) {
+        MutablePropertySources propertySources = environment.getPropertySources();
+        List<EncryptPropertySourceWrapper> wrappers = new ArrayList<>();
+        for (PropertySource<?> source : propertySources) {
+            if (source instanceof EncryptPropertySourceWrapper wrapper) {
+                wrappers.add(wrapper);
+            }
+        }
+        if (wrappers.isEmpty()) {
+            return;
+        }
+        for (EncryptPropertySourceWrapper wrapper : wrappers) {
+            propertySources.replace(wrapper.getName(), wrapper.getDelegate());
+        }
+        ConfigurationPropertySources.attach(environment);
     }
 
     /**

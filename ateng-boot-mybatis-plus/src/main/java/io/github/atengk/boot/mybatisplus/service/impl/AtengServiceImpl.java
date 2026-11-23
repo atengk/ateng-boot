@@ -9,6 +9,8 @@ import com.baomidou.mybatisplus.core.metadata.TableInfo;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.spi.CurrentUserProvider;
+import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.mybatisplus.context.LogicDeleteContextHolder;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate;
 import io.github.atengk.boot.mybatisplus.enums.LockMode;
@@ -21,6 +23,7 @@ import io.github.atengk.boot.mybatisplus.util.PessimisticLockUtil;
 import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,6 +54,17 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
     private MybatisPlusProperties properties;
     private DynamicQueryTemplate dynamicQueryTemplate;
     private StreamingQueryTemplate streamingQueryTemplate;
+    private ObjectProvider<CurrentUserProvider> currentUserProviderProvider;
+
+    /**
+     * 注入当前用户提供者 SPI 对象提供器
+     *
+     * @param currentUserProviderProvider 当前用户 SPI
+     */
+    @Autowired(required = false)
+    public void setCurrentUserProviderProvider(ObjectProvider<CurrentUserProvider> currentUserProviderProvider) {
+        this.currentUserProviderProvider = currentUserProviderProvider;
+    }
 
     /**
      * 注入持久层配置属性（Setter 注入规避字段反射注入）
@@ -162,7 +176,7 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
         if (properties != null && properties.getBatch() != null && properties.getBatch().getDefaultSize() > 0) {
             return properties.getBatch().getDefaultSize();
         }
-        return BatchUtil.DEFAULT_BATCH_SIZE;
+        return BatchUtil.getDefaultBatchSize();
     }
 
     @Override
@@ -235,19 +249,36 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
     @Override
     public List<T> listForUpdate(Wrapper<T> queryWrapper, LockMode lockMode) {
         Objects.requireNonNull(lockMode, "lockMode 不能为 null");
-        final Wrapper<T> effectiveWrapper;
+        Wrapper<T> effectiveWrapper = applyLockMode(queryWrapper, lockMode);
+        List<T> list = list(effectiveWrapper);
+        return list != null ? list : java.util.Collections.emptyList();
+    }
+
+    @Override
+    public T getOneForUpdate(Wrapper<T> queryWrapper, LockMode lockMode) {
+        Objects.requireNonNull(lockMode, "lockMode 不能为 null");
+        Wrapper<T> effectiveWrapper = applyLockMode(queryWrapper, lockMode);
+        return getOne(effectiveWrapper, false);
+    }
+
+    /**
+     * 针对条件构造器安全适配并应用悲观锁语法
+     *
+     * @param queryWrapper 原始条件构造器（可为 null）
+     * @param lockMode     悲观锁模式
+     * @return 注入悲观锁语法后的有效 Wrapper
+     */
+    private Wrapper<T> applyLockMode(Wrapper<T> queryWrapper, LockMode lockMode) {
         if (queryWrapper instanceof AbstractWrapper<?, ?, ?> abstractWrapper) {
             PessimisticLockUtil.apply(abstractWrapper, lockMode);
-            effectiveWrapper = queryWrapper;
+            return queryWrapper;
         } else if (queryWrapper == null) {
             QueryWrapper<T> wrapper = new QueryWrapper<>();
             PessimisticLockUtil.apply(wrapper, lockMode);
-            effectiveWrapper = wrapper;
+            return wrapper;
         } else {
             throw new IllegalArgumentException("queryWrapper 必须为 AbstractWrapper 的子类以支持悲观锁追加");
         }
-        List<T> list = list(effectiveWrapper);
-        return list != null ? list : java.util.Collections.emptyList();
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -256,13 +287,7 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
         if (id == null) {
             return false;
         }
-        TableInfo tableInfo = TableInfoHelper.getTableInfo(getEntityClass());
-        if (tableInfo == null) {
-            throw new IllegalStateException("未能解析到实体 [" + getEntityClass().getName() + "] 的 TableInfo 元数据");
-        }
-        if (!tableInfo.isWithLogicDelete()) {
-            throw new UnsupportedOperationException("实体 [" + getEntityClass().getName() + "] 未配置 @TableLogic 逻辑删除，无法执行 restoreById 操作");
-        }
+        TableInfo tableInfo = resolveLogicDeleteTableInfo("restoreById");
 
         String keyColumn = tableInfo.getKeyColumn();
         TableFieldInfo logicField = tableInfo.getLogicDeleteFieldInfo();
@@ -278,6 +303,41 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
 
     @Transactional(rollbackFor = Exception.class)
     @Override
+    public boolean restoreByIds(Collection<? extends Serializable> idList) {
+        if (idList == null || idList.isEmpty()) {
+            return false;
+        }
+        List<Serializable> validIds = idList.stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .map(Serializable.class::cast)
+                .toList();
+        if (validIds.isEmpty()) {
+            return false;
+        }
+
+        TableInfo tableInfo = resolveLogicDeleteTableInfo("restoreByIds");
+        String keyColumn = tableInfo.getKeyColumn();
+        TableFieldInfo logicField = tableInfo.getLogicDeleteFieldInfo();
+        Object notDeleteValue = parseLogicValue(logicField.getLogicNotDeleteValue(), logicField.getPropertyType());
+        int batchSize = getDefaultBatchSize();
+
+        int totalRestored = LogicDeleteContextHolder.callWithDeleted(() -> {
+            int updated = 0;
+            for (List<Serializable> batchIds : CollectionUtil.partition(validIds, batchSize)) {
+                UpdateWrapper<T> updateWrapper = new UpdateWrapper<>();
+                updateWrapper.in(keyColumn, batchIds);
+                updateWrapper.set(logicField.getColumn(), notDeleteValue);
+                applyAuditFieldsOnRestore(updateWrapper, tableInfo);
+                updated += baseMapper.update(null, updateWrapper);
+            }
+            return updated;
+        });
+        return totalRestored > 0;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
     public int restore(Wrapper<T> queryWrapper) {
         if (queryWrapper == null) {
             throw new IllegalArgumentException("恢复条件 queryWrapper 不能为 null，防御全表误删恢复");
@@ -285,13 +345,7 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
         if (queryWrapper.isEmptyOfWhere()) {
             throw new IllegalArgumentException("恢复条件 queryWrapper 必须包含有效 WHERE 条件，防御全表误删恢复");
         }
-        TableInfo tableInfo = TableInfoHelper.getTableInfo(getEntityClass());
-        if (tableInfo == null) {
-            throw new IllegalStateException("未能解析到实体 [" + getEntityClass().getName() + "] 的 TableInfo 元数据");
-        }
-        if (!tableInfo.isWithLogicDelete()) {
-            throw new UnsupportedOperationException("实体 [" + getEntityClass().getName() + "] 未配置 @TableLogic 逻辑删除，无法执行 restore 操作");
-        }
+        TableInfo tableInfo = resolveLogicDeleteTableInfo("restore");
 
         TableFieldInfo logicField = tableInfo.getLogicDeleteFieldInfo();
         Object notDeleteValue = parseLogicValue(logicField.getLogicNotDeleteValue(), logicField.getPropertyType());
@@ -331,7 +385,32 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
         return LogicDeleteContextHolder.callWithDeleted(() -> baseMapper.update(null, updateWrapper));
     }
 
+    /**
+     * 解析并校验实体的 @TableLogic 逻辑删除元数据（共享于 restoreById / restoreByIds / restore）
+     *
+     * @param operation 调用方方法名（用于构造明确错误诊断信息）
+     * @return 已开启 @TableLogic 的实体元数据
+     */
+    private TableInfo resolveLogicDeleteTableInfo(String operation) {
+        TableInfo tableInfo = TableInfoHelper.getTableInfo(getEntityClass());
+        if (tableInfo == null) {
+            throw new IllegalStateException("未能解析到实体 [" + getEntityClass().getName() + "] 的 TableInfo 元数据");
+        }
+        if (!tableInfo.isWithLogicDelete()) {
+            throw new UnsupportedOperationException(
+                    "实体 [" + getEntityClass().getName() + "] 未配置 @TableLogic 逻辑删除，无法执行 " + operation + " 操作"
+            );
+        }
+        return tableInfo;
+    }
+
     private void applyAuditFieldsOnRestore(UpdateWrapper<T> updateWrapper, TableInfo tableInfo) {
+        boolean auditEnabled = (properties != null && properties.getAudit() != null)
+                ? properties.getAudit().isEnabled()
+                : BatchUtil.isAuditEnabled();
+        if (!auditEnabled) {
+            return;
+        }
         LocalDateTime now = LocalDateTime.now();
         for (TableFieldInfo fieldInfo : tableInfo.getFieldList()) {
             String prop = fieldInfo.getProperty();
@@ -361,14 +440,63 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
         return clean;
     }
 
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public boolean removePhysicallyById(Serializable id) {
+        if (id == null) {
+            throw new IllegalArgumentException("物理删除主键 id 不能为 null");
+        }
+        return baseMapper.deletePhysicallyById(id) > 0;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public boolean removePhysicallyByIds(Collection<?> idList) {
+        if (idList == null || idList.isEmpty()) {
+            throw new IllegalArgumentException("物理删除主键集合 idList 不能为空");
+        }
+        return baseMapper.deletePhysicallyBatchByIds(idList) > 0;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public boolean removePhysicallyBatchByIds(Collection<?> idList) {
+        return removePhysicallyByIds(idList);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public boolean removePhysically(Wrapper<T> queryWrapper) {
+        if (queryWrapper == null) {
+            throw new IllegalArgumentException("物理删除条件 queryWrapper 不能为 null，防御全表误删物理擦除");
+        }
+        if (queryWrapper.isEmptyOfWhere()) {
+            throw new IllegalArgumentException("物理删除条件 queryWrapper 必须包含有效 WHERE 条件，防御全表误删物理擦除");
+        }
+        return baseMapper.deletePhysically(queryWrapper) > 0;
+    }
+
     private String resolveCurrentOperator() {
-        String user = UserContextHolder.get();
+        String user = null;
+        if (currentUserProviderProvider != null) {
+            CurrentUserProvider provider = currentUserProviderProvider.getIfAvailable();
+            if (provider != null) {
+                try {
+                    user = provider.getCurrentUser();
+                } catch (Throwable ignored) {
+                    // 防御 SPI 接入实现抛出异常导致业务事务中断
+                }
+            }
+        }
+        if (user == null || user.isBlank()) {
+            user = UserContextHolder.get();
+        }
         if (user != null && !user.isBlank()) {
             return user;
         }
         if (properties != null && properties.getAudit() != null && properties.getAudit().getDefaultOperator() != null) {
             return properties.getAudit().getDefaultOperator();
         }
-        return "SYSTEM";
+        return BatchUtil.getDefaultOperator();
     }
 }

@@ -35,4 +35,9 @@ public class LocalStorageProperties {
      * 预签名写入安全直传端点路径（默认 /storage/local/upload）
      */
     private String uploadEndpoint = "/storage/local/upload";
+
+    /**
+     * 是否开启本地存储预签名下载与直传端点自动装配（混合多源包含 local 源时同样生效，默认 true）
+     */
+    private boolean endpointEnabled = true;
 }

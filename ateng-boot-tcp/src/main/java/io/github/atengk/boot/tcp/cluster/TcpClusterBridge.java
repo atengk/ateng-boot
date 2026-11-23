@@ -27,4 +27,13 @@ public interface TcpClusterBridge {
      * @return true 表示广播触发成功
      */
     boolean broadcastToCluster(Object payload);
+
+    /**
+     * 向集群中属于指定逻辑分组的全部在线设备跨节点组播数据报文
+     *
+     * @param group   业务逻辑分组标识
+     * @param payload 组播报文载荷（支持 TcpPacket, TcpPayload, byte[], String 或 POJO）
+     * @return true 表示本地直发或集群广播组播触发成功
+     */
+    boolean sendGroupToCluster(String group, Object payload);
 }

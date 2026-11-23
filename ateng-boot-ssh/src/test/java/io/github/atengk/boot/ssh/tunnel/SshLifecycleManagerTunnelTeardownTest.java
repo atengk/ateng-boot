@@ -1,6 +1,7 @@
 package io.github.atengk.boot.ssh.tunnel;
 
 import io.github.atengk.boot.ssh.enums.HostKeyPolicy;
+import io.github.atengk.boot.ssh.enums.TunnelMode;
 import io.github.atengk.boot.ssh.lifecycle.SshLifecycleManager;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.pool.SshSessionPool;
@@ -57,6 +58,7 @@ class SshLifecycleManagerTunnelTeardownTest {
 
         sshClient = SshClient.setUpDefaultClient();
         sshClient.setServerKeyVerifier(AcceptAllServerKeyVerifier.INSTANCE);
+        sshClient.setForwardingFilter(SshTunnelHandle.REMOTE_FORWARDED_ONLY_FILTER);
         sshClient.start();
 
         SshProperties properties = new SshProperties();
@@ -92,10 +94,12 @@ class SshLifecycleManagerTunnelTeardownTest {
     @Test
     @DisplayName("测试应用优雅停机：未手动close的活跃隧道被生命周期协调器优先全部关闭")
     void testShutdownLifecycleTearDown() {
-        // 打开两个受管隧道，均不显式 close
+        // 打开本地与远程两个受管隧道，均不显式 close
         SshTunnelHandle tunnel1 = template.openLocalTunnel(0, "127.0.0.1", dummyPort);
-        SshTunnelHandle tunnel2 = template.openLocalTunnel(0, "127.0.0.1", dummyPort);
+        SshTunnelHandle tunnel2 = template.openRemoteTunnel(0, "127.0.0.1", dummyPort);
 
+        assertThat(tunnel1.getTunnelMode()).isEqualTo(TunnelMode.LOCAL);
+        assertThat(tunnel2.getTunnelMode()).isEqualTo(TunnelMode.REMOTE);
         assertThat(tunnel1.isAlive()).isTrue();
         assertThat(tunnel2.isAlive()).isTrue();
         assertThat(lifecycleManager.getActiveTunnels()).contains(tunnel1, tunnel2);

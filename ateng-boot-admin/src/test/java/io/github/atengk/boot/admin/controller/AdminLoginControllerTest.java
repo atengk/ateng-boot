@@ -202,6 +202,22 @@ class AdminLoginControllerTest {
             // 3. 访问登录页面处于放行白名单，不受登录拦截
             filterMvc.perform(get("/login"))
                     .andExpect(status().isOk());
+
+            // 4. DELETE .../instances/{id}/actuator/caches 属于多段高危操作路径，未登录严禁按 /instances/* 放行
+            filterMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                            .delete("/admin/instances/inst-01/actuator/caches")
+                            .accept(MediaType.APPLICATION_JSON))
+                    .andExpect(status().isUnauthorized());
+
+            // 5. 同后缀非根端点 POST /admin/api/v1/instances 未登录不得被误放行
+            filterMvc.perform(post("/admin/api/v1/instances")
+                            .accept(MediaType.APPLICATION_JSON))
+                    .andExpect(status().isUnauthorized());
+
+            // 6. 归一化后的真实 SBA 生命周期端点 POST /admin//instances;v=1 透传 SaFilter（不触发 401）
+            filterMvc.perform(post("/admin//instances;v=1")
+                            .accept(MediaType.APPLICATION_JSON))
+                    .andExpect(status().isNotFound());
         } finally {
             SaStrategy.instance.routeMatcher = originalRouteMatcher;
             SaManager.setSaTokenContext(null);

@@ -306,6 +306,109 @@ class AlipayTemplateTest {
     }
 
     // =========================================================================
+    // 4.1 小程序统一收单创建 (payJsapi)
+    // =========================================================================
+
+    @Test
+    @DisplayName("小程序收单 payJsapi 成功: 携带 buyerId 成功返回 tradeNo 与 JSAPI 场景")
+    void testPayJsapi_success_withBuyerId() throws Exception {
+        String nodeJson = "{\"code\":\"10000\",\"msg\":\"Success\",\"trade_no\":\"202610232200140099\",\"out_trade_no\":\"JSAPI_ORDER_1001\"}";
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=utf-8")
+                .setBody(buildSignedResponse("alipay_trade_create_response", nodeJson, alipayPrivateKey)));
+
+        AlipayPayRequest request = AlipayPayRequest.builder()
+                .outTradeNo("JSAPI_ORDER_1001")
+                .subject("支付宝小程序商品")
+                .amount(new BigDecimal("199.00"))
+                .buyerId("2088102123456789")
+                .build();
+
+        PayResponse response = payTemplate.payJsapi(request);
+
+        assertNotNull(response);
+        assertEquals(PayChannel.ALIPAY, response.getChannel());
+        assertEquals(PayTradeType.JSAPI, response.getTradeType());
+        assertEquals("JSAPI_ORDER_1001", response.getOutTradeNo());
+        assertEquals("202610232200140099", response.getTradeNo());
+        assertEquals("202610232200140099", response.getTransactionId());
+        assertEquals(new BigDecimal("199.00"), response.getAmount());
+        assertEquals(PayTradeState.NOTPAY, response.getTradeState());
+        assertTrue(response.isSuccess());
+
+        RecordedRequest recorded = server.takeRequest();
+        assertEquals("POST", recorded.getMethod());
+        String requestBody = java.net.URLDecoder.decode(recorded.getBody().readUtf8(), StandardCharsets.UTF_8);
+        assertTrue(recorded.getPath().contains("alipay.trade.create") || requestBody.contains("alipay.trade.create"));
+        assertTrue(requestBody.contains("buyer_id") && requestBody.contains("2088102123456789"));
+        assertTrue(requestBody.contains("JSAPI_ORDER_1001"));
+    }
+
+    @Test
+    @DisplayName("小程序收单 payJsapi 成功: 携带 buyerOpenId 成功上送 open_id")
+    void testPayJsapi_success_withBuyerOpenId() throws Exception {
+        String nodeJson = "{\"code\":\"10000\",\"msg\":\"Success\",\"trade_no\":\"202610232200140088\",\"out_trade_no\":\"JSAPI_ORDER_1002\"}";
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=utf-8")
+                .setBody(buildSignedResponse("alipay_trade_create_response", nodeJson, alipayPrivateKey)));
+
+        AlipayPayRequest request = AlipayPayRequest.builder()
+                .outTradeNo("JSAPI_ORDER_1002")
+                .subject("小程序会员续费")
+                .amount(new BigDecimal("29.90"))
+                .buyerOpenId("074nrx277A50ak9LDg7gKaqzQ0WPt0HnoXqTnoYkn5i1111")
+                .build();
+
+        PayResponse response = payTemplate.payJsapi(request);
+
+        assertNotNull(response);
+        assertEquals("202610232200140088", response.getTradeNo());
+        assertEquals("202610232200140088", response.getTransactionId());
+
+        RecordedRequest recorded = server.takeRequest();
+        String requestBody = java.net.URLDecoder.decode(recorded.getBody().readUtf8(), StandardCharsets.UTF_8);
+        assertTrue(requestBody.contains("buyer_open_id") && requestBody.contains("074nrx277A50ak9LDg7gKaqzQ0WPt0HnoXqTnoYkn5i1111"));
+    }
+
+    @Test
+    @DisplayName("小程序收单 payJsapi 校验: 缺失 buyerId 与 buyerOpenId 立即 Fail-Fast 拦截")
+    void testPayJsapi_missingBuyerInfo_throwsException() {
+        AlipayPayRequest request = AlipayPayRequest.builder()
+                .outTradeNo("JSAPI_ORDER_1003")
+                .subject("缺少买家标识")
+                .amount(new BigDecimal("10.00"))
+                .build();
+
+        PayException ex = assertThrows(PayException.class, () -> payTemplate.payJsapi(request));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex.getResultCode());
+        assertTrue(ex.getMessage().contains("buyerId 与 buyerOpenId 必须二选一填入其一"));
+    }
+
+    @Test
+    @DisplayName("小程序收单 payJsapi 失败: 渠道错误码精确转译为 PayTradeException")
+    void testPayJsapi_channelError_throwsTradeException() throws Exception {
+        String nodeJson = "{\"code\":\"40004\",\"msg\":\"Business Failed\",\"sub_code\":\"ACQ.BUYER_NOT_EXIST\",\"sub_msg\":\"买家用户不存在\"}";
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=utf-8")
+                .setBody(buildSignedResponse("alipay_trade_create_response", nodeJson, alipayPrivateKey)));
+
+        AlipayPayRequest request = AlipayPayRequest.builder()
+                .outTradeNo("JSAPI_ORDER_1004")
+                .subject("异常买家测试")
+                .amount(new BigDecimal("50.00"))
+                .buyerId("2088000000000000")
+                .build();
+
+        PayTradeException ex = assertThrows(PayTradeException.class, () -> payTemplate.payJsapi(request));
+        assertEquals(PayResultCode.PAY_TRADE_STATE_INVALID, ex.getResultCode());
+        assertEquals("ACQ.BUYER_NOT_EXIST", ex.getRawErrorCode());
+        assertEquals("买家用户不存在", ex.getRawErrorMessage());
+    }
+
+    // =========================================================================
     // 5. 订单状态主动查询 (queryOrder)
     // =========================================================================
 
@@ -655,6 +758,39 @@ class AlipayTemplateTest {
         assertEquals(PayResultCode.PAY_PARAM_INVALID, ex3.getResultCode());
     }
 
+    @Test
+    @DisplayName("refund 与 queryRefund: 仅 fund_change=Y / refund_status=REFUND_SUCCESS 映射 SUCCESS，其余统一映射 PROCESSING")
+    void testRefundAndQueryRefundTrueStateMapping() throws Exception {
+        // 1. fund_change="N" 不应误判为 SUCCESS
+        String noChangeNode = "{\"code\":\"10000\",\"msg\":\"Success\",\"trade_no\":\"202611180001\",\"out_trade_no\":\"ALI_T_NC\",\"fund_change\":\"N\",\"refund_fee\":\"10.00\"}";
+        server.enqueue(new MockResponse().setBody(buildSignedResponse("alipay_trade_refund_response", noChangeNode, alipayPrivateKey))
+                .setHeader("Content-Type", "application/json;charset=utf-8"));
+        PayRefundResponse ncResp = payTemplate.refund(AlipayRefundRequest.builder()
+                .outTradeNo("ALI_T_NC").outRefundNo("ALI_R_NC").totalAmount(new BigDecimal("10.00")).refundAmount(new BigDecimal("10.00")).build());
+        assertEquals(PayRefundState.PROCESSING, ncResp.getRefundState());
+
+        // 2. fund_change 缺失不应误判为 SUCCESS
+        String blankChangeNode = "{\"code\":\"10000\",\"msg\":\"Success\",\"trade_no\":\"202611180002\",\"out_trade_no\":\"ALI_T_BC\",\"refund_fee\":\"10.00\"}";
+        server.enqueue(new MockResponse().setBody(buildSignedResponse("alipay_trade_refund_response", blankChangeNode, alipayPrivateKey))
+                .setHeader("Content-Type", "application/json;charset=utf-8"));
+        PayRefundResponse bcResp = payTemplate.refund(AlipayRefundRequest.builder()
+                .outTradeNo("ALI_T_BC").outRefundNo("ALI_R_BC").totalAmount(new BigDecimal("10.00")).refundAmount(new BigDecimal("10.00")).build());
+        assertEquals(PayRefundState.PROCESSING, bcResp.getRefundState());
+
+        // 3. queryRefund 返回 code=10000 但 refund_status 为空 -> PROCESSING
+        String queryEmptyStatusNode = "{\"code\":\"10000\",\"msg\":\"Success\",\"trade_no\":\"202611180003\",\"out_trade_no\":\"ALI_T_QE\",\"out_request_no\":\"ALI_R_QE\"}";
+        server.enqueue(new MockResponse().setBody(buildSignedResponse("alipay_trade_fastpay_refund_query_response", queryEmptyStatusNode, alipayPrivateKey))
+                .setHeader("Content-Type", "application/json;charset=utf-8"));
+        PayRefundResponse qeResp = payTemplate.queryRefund("ALI_T_QE", "ALI_R_QE");
+        assertEquals(PayRefundState.PROCESSING, qeResp.getRefundState());
+
+        // 4. mapRefundState 静态映射契约
+        assertEquals(PayRefundState.PROCESSING, AlipayTemplate.mapRefundState(null));
+        assertEquals(PayRefundState.PROCESSING, AlipayTemplate.mapRefundState(""));
+        assertEquals(PayRefundState.PROCESSING, AlipayTemplate.mapRefundState("PROCESSING"));
+        assertEquals(PayRefundState.SUCCESS, AlipayTemplate.mapRefundState("REFUND_SUCCESS"));
+    }
+
     // =========================================================================
     // 10. 单笔资金转账 (transfer & queryTransfer)
     // =========================================================================
@@ -732,7 +868,7 @@ class AlipayTemplateTest {
         assertTrue(transferBody.contains("50.00"));
 
         // 2. 模拟根据商户单号与渠道单号查询转账状态
-        String queryNode = "{\"code\":\"10000\",\"msg\":\"Success\",\"out_biz_no\":\"ALI_TRANS_001\",\"order_id\":\"202100000000001\",\"pay_fund_order_id\":\"PF_2021001\",\"status\":\"SUCCESS\",\"order_fee\":\"50.00\",\"pay_date\":\"2026-10-24 10:00:00\"}";
+        String queryNode = "{\"code\":\"10000\",\"msg\":\"Success\",\"out_biz_no\":\"ALI_TRANS_001\",\"order_id\":\"202100000000001\",\"pay_fund_order_id\":\"PF_2021001\",\"status\":\"SUCCESS\",\"trans_amount\":\"50.00\",\"order_fee\":\"0.25\",\"pay_date\":\"2026-10-24 10:00:00\"}";
         server.enqueue(new MockResponse()
                 .setResponseCode(200)
                 .setHeader("Content-Type", "application/json")
@@ -746,6 +882,7 @@ class AlipayTemplateTest {
         assertEquals("PF_2021001", queryResp.getPayFundOrderId());
         assertEquals(PayTransferState.SUCCESS, queryResp.getStatus());
         assertEquals(new BigDecimal("50.00"), queryResp.getAmount());
+        assertEquals(new BigDecimal("0.25"), queryResp.getFee());
 
         RecordedRequest recordedQuery = server.takeRequest();
         assertEquals("POST", recordedQuery.getMethod());
@@ -820,6 +957,124 @@ class AlipayTemplateTest {
 
         // 验证参数防卫：空下载地址
         assertThrows(PayException.class, () -> payTemplate.downloadBillStream(""));
+    }
+
+    @Test
+    @DisplayName("网络超时防悬挂: 配置 Duration 读取超时真实作用于 AlipayClient 并快速失败")
+    void testHttpReadTimeoutTakesEffect() {
+        PayProperties fastTimeoutProps = new PayProperties();
+        fastTimeoutProps.getAlipay().getHttp().setConnectTimeout(java.time.Duration.ofMillis(500));
+        fastTimeoutProps.getAlipay().getHttp().setReadTimeout(java.time.Duration.ofMillis(200));
+
+        AlipayAppProperties app = new AlipayAppProperties();
+        app.setAppId("2021000000000088");
+        app.setPrivateKey(merchantPrivateKeyPem);
+        app.setAlipayPublicKey(alipayPublicKeyPem);
+        app.setServerUrl(server.url("/gateway.do").toString());
+        fastTimeoutProps.getAlipay().setDefaultApp("fast");
+        fastTimeoutProps.getAlipay().getApps().put("fast", app);
+
+        AlipayTemplate fastTemplate = new AlipayTemplate(new NamedMerchantRegistry(fastTimeoutProps), fastTimeoutProps);
+        server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE));
+
+        long startNanos = System.nanoTime();
+        assertThrows(PayNetworkException.class, () -> fastTemplate.queryOrder("FAST_TIMEOUT_001"));
+        long elapsedMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+        assertTrue(elapsedMs < 3000, "配置的 200ms 读取超时必须及时生效，实际耗时: " + elapsedMs + "ms");
+    }
+
+    @Test
+    @DisplayName("transfer/queryTransfer: 正确解析 transAmount、保留 orderFee 与错误上下文并恢复精细异常分类")
+    void testQueryTransferTransAmountFeeAndExceptionTranslation() throws Exception {
+        payTemplate.setTransferEnabled(true);
+
+        // 1. 仅存在 order_fee 而无 trans_amount 时，amount 必须为 null（不得误用手续费）且 fee 正确保留，error_code 完整透传
+        String feeOnlyNode = "{\"code\":\"10000\",\"msg\":\"Success\",\"out_biz_no\":\"ALI_TRANS_ERR_01\",\"order_id\":\"20261118001\",\"status\":\"FAIL\",\"order_fee\":\"0.80\",\"error_code\":\"PAYEE_NOT_EXIST\",\"fail_reason\":\"收款方账户不存在\"}";
+        server.enqueue(new MockResponse().setHeader("Content-Type", "application/json")
+                .setBody(buildSignedResponse("alipay_fund_trans_common_query_response", feeOnlyNode, alipayPrivateKey)));
+
+        PayTransferResponse feeOnlyResp = payTemplate.queryTransfer("ALI_TRANS_ERR_01");
+        assertNull(feeOnlyResp.getAmount(), "trans_amount 缺失时 amount 不应回退为 order_fee");
+        assertEquals(new BigDecimal("0.80"), feeOnlyResp.getFee());
+        assertEquals("PAYEE_NOT_EXIST", feeOnlyResp.getErrorCode());
+        assertEquals("收款方账户不存在", feeOnlyResp.getFailReason());
+        assertEquals(PayTransferState.FAIL, feeOnlyResp.getStatus());
+
+        // 2. 转账网络 HTTP 500 必须抛出 PayNetworkException（不得吞并成笼统 PayException）
+        server.enqueue(new MockResponse().setResponseCode(500).setBody("Gateway Bad"));
+        AlipayTransferRequest transferReq = AlipayTransferRequest.builder()
+                .outBizNo("ALI_TRANS_NET_01").amount(new BigDecimal("10.00")).payeeAccount("test@example.com").build();
+        assertThrows(PayNetworkException.class, () -> payTemplate.transfer(transferReq));
+
+        // 3. 查单网络 HTTP 500 必须抛出 PayNetworkException，验签失败抛出 PaySignException
+        server.enqueue(new MockResponse().setResponseCode(500).setBody("Gateway Timeout"));
+        assertThrows(PayNetworkException.class, () -> payTemplate.queryTransfer("ALI_TRANS_NET_02"));
+
+        server.enqueue(new MockResponse().setHeader("Content-Type", "application/json")
+                .setBody("{\"alipay_fund_trans_common_query_response\":{\"code\":\"10000\",\"out_biz_no\":\"T_BAD_SIGN\"},\"sign\":\"bad_sign\"}"));
+        assertThrows(PaySignException.class, () -> payTemplate.queryTransfer("T_BAD_SIGN"));
+
+        // 4. 业务拒绝应抛出 PayTradeException
+        String bizFailNode = "{\"code\":\"40004\",\"msg\":\"Business Failed\",\"sub_code\":\"BALANCE_IS_NOT_ENOUGH\",\"sub_msg\":\"账户余额不足\"}";
+        server.enqueue(new MockResponse().setHeader("Content-Type", "application/json")
+                .setBody(buildSignedResponse("alipay_fund_trans_uni_transfer_response", bizFailNode, alipayPrivateKey)));
+        PayTradeException bizEx = assertThrows(PayTradeException.class, () -> payTemplate.transfer(transferReq));
+        assertEquals("BALANCE_IS_NOT_ENOUGH", bizEx.getRawErrorCode());
+    }
+
+    @Test
+    @DisplayName("bill: 服务商 appAuthToken 透传及下载流 HTTP 状态码/超时/协议防卫")
+    void testBillAppAuthTokenAndDownloadStreamGuards() throws Exception {
+        PayProperties props = new PayProperties();
+        props.getAlipay().getHttp().setConnectTimeout(java.time.Duration.ofMillis(500));
+        props.getAlipay().getHttp().setReadTimeout(java.time.Duration.ofMillis(150));
+
+        AlipayAppProperties isvApp = new AlipayAppProperties();
+        isvApp.setAppId("2021000000000077");
+        isvApp.setPrivateKey(merchantPrivateKeyPem);
+        isvApp.setAlipayPublicKey(alipayPublicKeyPem);
+        isvApp.setAppAuthToken("isv_bill_token_001");
+        isvApp.setServerUrl(server.url("/gateway.do").toString());
+        props.getAlipay().setDefaultApp("isv");
+        props.getAlipay().getApps().put("isv", isvApp);
+
+        AlipayTemplate isvTemplate = new AlipayTemplate(new NamedMerchantRegistry(props), props);
+
+        String billNodeJson = "{\"code\":\"10000\",\"msg\":\"Success\",\"bill_download_url\":\"" + server.url("/bill/20261118.zip") + "\",\"bill_file_code\":\"h1\"}";
+        server.enqueue(new MockResponse().setHeader("Content-Type", "application/json")
+                .setBody(buildSignedResponse("alipay_data_dataservice_bill_downloadurl_query_response", billNodeJson, alipayPrivateKey)));
+        isvTemplate.queryBillDownloadUrl("trade", "2026-11-18", "isv");
+
+        RecordedRequest billReq = server.takeRequest();
+        String billBody = java.net.URLDecoder.decode(billReq.getBody().readUtf8(), StandardCharsets.UTF_8);
+        String billUrl = billReq.getRequestUrl() != null ? billReq.getRequestUrl().toString() : "";
+        assertTrue(billBody.contains("isv_bill_token_001") || billUrl.contains("isv_bill_token_001"),
+                "queryBillDownloadUrl 必须透传 app_auth_token");
+
+        // HTTP 404 / 500 必须立即失败
+        server.enqueue(new MockResponse().setResponseCode(404).setBody("Not Found"));
+        assertThrows(PayNetworkException.class, () -> isvTemplate.downloadBillStream(server.url("/bill/404.zip").toString()));
+
+        server.enqueue(new MockResponse().setResponseCode(500).setBody("Server Error"));
+        assertThrows(PayNetworkException.class, () -> isvTemplate.downloadBillStream(server.url("/bill/500.zip").toString()));
+
+        // 读取超时生效
+        server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE));
+        long startNanos = System.nanoTime();
+        assertThrows(PayNetworkException.class, () -> isvTemplate.downloadBillStream(server.url("/bill/slow.zip").toString()));
+        long elapsedMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+        assertTrue(elapsedMs < 2000, "账单下载流应复用 150ms 读取超时，实际耗时: " + elapsedMs + "ms");
+
+        // 非 HTTP/HTTPS 协议必须拒绝
+        PayException schemeEx = assertThrows(PayException.class, () -> isvTemplate.downloadBillStream("file:///etc/passwd"));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, schemeEx.getResultCode());
+
+        // HTTP 200 正常返回流并安全关闭
+        byte[] okBytes = new byte[]{0x50, 0x4b, 0x03, 0x04};
+        server.enqueue(new MockResponse().setResponseCode(200).setBody(new okio.Buffer().write(okBytes)));
+        try (java.io.InputStream in = isvTemplate.downloadBillStream(server.url("/bill/ok.zip").toString())) {
+            assertArrayEquals(okBytes, in.readAllBytes());
+        }
     }
 
     // =========================================================================

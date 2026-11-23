@@ -4,8 +4,12 @@ import com.alipay.api.*;
 import com.alipay.api.domain.*;
 import com.alipay.api.request.*;
 import com.alipay.api.response.*;
+import com.fasterxml.jackson.databind.JsonNode;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.pay.config.properties.AlipayAppProperties;
+import io.github.atengk.boot.pay.config.properties.PayHttpProperties;
+import io.github.atengk.boot.pay.config.properties.PayProfitSharingProperties;
 import io.github.atengk.boot.pay.config.properties.PayProperties;
 import io.github.atengk.boot.pay.config.properties.PayTransferProperties;
 import io.github.atengk.boot.pay.core.context.PayContextHolder;
@@ -28,17 +32,22 @@ import io.github.atengk.boot.pay.model.response.PayRefundResponse;
 import io.github.atengk.boot.pay.model.response.PayResponse;
 import io.github.atengk.boot.pay.model.response.PayTransferResponse;
 import io.github.atengk.boot.pay.util.PayKeyLoader;
+import io.github.atengk.boot.pay.util.PayTextUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.BeanUtils;
 
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.net.HttpURLConnection;
 import java.net.URI;
-import java.net.URLConnection;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -47,7 +56,7 @@ import java.util.function.Supplier;
  * <p>
  * 基于蚂蚁官方权威 {@code alipay-sdk-java:4.40.1044.ALL} SDK 驱动，具备以下核心工业级特性：
  * <ol>
- *     <li><b>全场景收单覆盖</b>：原生支持电脑网站支付（Page）、手机网站支付（Wap）、App 客户端支付、当面付条码付（Barcode）与扫码预下单（Qr）；</li>
+ *     <li><b>全场景收单覆盖</b>：原生支持电脑网站支付（Page）、手机网站支付（Wap）、App 客户端支付、当面付条码付（Barcode）、扫码预下单（Qr）与小程序统一收单（JSAPI）；</li>
  *     <li><b>全自动凭据封包</b>：Page/Wap 自动生成自提交 HTML 表单脚本（{@code formHtml}），App 自动生成调起签名参数串（{@code orderString}）；</li>
  *     <li><b>双模证书架构自适应</b>：原生无缝支持普通公钥模式与三公钥证书模式（应用公钥证书、支付宝公钥证书、支付宝根证书）；</li>
  *     <li><b>多应用与动态切源</b>：协同 {@link NamedMerchantRegistry} 实现多应用无缝级联与服务商（ISV）{@code app_auth_token} 原生穿透；</li>
@@ -68,8 +77,6 @@ public class AlipayTemplate {
     private static final String PRODUCT_APP_PAY = "QUICK_MSECURITY_PAY";
     private static final String PRODUCT_FACE_TO_FACE = "FACE_TO_FACE_PAYMENT";
     private static final String SCENE_BAR_CODE = "bar_code";
-    private static final int DEFAULT_BILL_CONNECT_TIMEOUT_MS = 15_000;
-    private static final int DEFAULT_BILL_READ_TIMEOUT_MS = 60_000;
 
     private final NamedMerchantRegistry namedMerchantRegistry;
     private final PayProperties payProperties;
@@ -84,6 +91,12 @@ public class AlipayTemplate {
      */
     private Function<String, InputStream> billStreamDownloader;
 
+    /**
+     * 实例级动态开关覆写（避免修改共享 PayProperties 单例配置）
+     */
+    private volatile Boolean transferEnabledOverride;
+    private volatile Boolean profitSharingEnabledOverride;
+
     public AlipayTemplate(NamedMerchantRegistry namedMerchantRegistry, PayProperties payProperties) {
         this.namedMerchantRegistry = Objects.requireNonNull(namedMerchantRegistry, "NamedMerchantRegistry 不能为空");
         this.payProperties = payProperties != null ? payProperties : new PayProperties();
@@ -94,13 +107,10 @@ public class AlipayTemplate {
     }
 
     /**
-     * 动态设置单笔资金转账开关（主要供单测使用）
+     * 动态设置单笔资金转账开关（仅作用于当前模板实例，主要供单测使用）
      */
     public void setTransferEnabled(boolean enabled) {
-        if (this.payProperties.getTransfer() == null) {
-            this.payProperties.setTransfer(new PayTransferProperties());
-        }
-        this.payProperties.getTransfer().setEnabled(enabled);
+        this.transferEnabledOverride = enabled;
     }
 
     /**
@@ -109,6 +119,9 @@ public class AlipayTemplate {
      * @return true 开启，false 关闭
      */
     public boolean isTransferEnabled() {
+        if (this.transferEnabledOverride != null) {
+            return this.transferEnabledOverride;
+        }
         return this.payProperties != null && this.payProperties.getTransfer() != null && this.payProperties.getTransfer().isEnabled();
     }
 
@@ -118,6 +131,34 @@ public class AlipayTemplate {
     private void assertTransferEnabled() {
         if (!isTransferEnabled()) {
             throw new PayException(PayResultCode.PAY_FEATURE_DISABLED, "支付宝资金转账高敏特性未启用，请配置 ateng.boot.pay.transfer.enabled=true 显式开启");
+        }
+    }
+
+    /**
+     * 动态设置资金分账开关（仅作用于当前模板实例，主要供单测使用）
+     */
+    public void setProfitSharingEnabled(boolean enabled) {
+        this.profitSharingEnabledOverride = enabled;
+    }
+
+    /**
+     * 判断资金分账功能是否已开启
+     *
+     * @return true 开启，false 关闭
+     */
+    public boolean isProfitSharingEnabled() {
+        if (this.profitSharingEnabledOverride != null) {
+            return this.profitSharingEnabledOverride;
+        }
+        return this.payProperties != null && this.payProperties.getProfitSharing() != null && this.payProperties.getProfitSharing().isEnabled();
+    }
+
+    /**
+     * 资金分账物理总开关防卫前置断言
+     */
+    private void assertProfitSharingEnabled() {
+        if (!isProfitSharingEnabled()) {
+            throw new PayException(PayResultCode.PAY_FEATURE_DISABLED, "支付宝资金分账高敏特性未启用，请配置 ateng.boot.pay.profit-sharing.enabled=true 显式开启");
         }
     }
 
@@ -155,6 +196,7 @@ public class AlipayTemplate {
             model.setQrPayMode(request.getQrPayMode());
             model.setQrcodeWidth(request.getQrcodeWidth());
             model.setPassbackParams(request.getPassbackParams());
+            applyRoyaltyAndSettleParams(request, model::setExtendParams, model::setSettleInfo);
             alipayRequest.setBizModel(model);
 
             if (appAuthToken != null && !appAuthToken.isBlank()) {
@@ -210,6 +252,7 @@ public class AlipayTemplate {
             model.setTimeExpire(request.getTimeExpire());
             model.setTimeoutExpress(request.getTimeoutExpress());
             model.setPassbackParams(request.getPassbackParams());
+            applyRoyaltyAndSettleParams(request, model::setExtendParams, model::setSettleInfo);
             alipayRequest.setBizModel(model);
 
             if (appAuthToken != null && !appAuthToken.isBlank()) {
@@ -263,6 +306,7 @@ public class AlipayTemplate {
             model.setTimeExpire(request.getTimeExpire());
             model.setTimeoutExpress(request.getTimeoutExpress());
             model.setPassbackParams(request.getPassbackParams());
+            applyRoyaltyAndSettleParams(request, model::setExtendParams, model::setSettleInfo);
             alipayRequest.setBizModel(model);
 
             if (appAuthToken != null && !appAuthToken.isBlank()) {
@@ -319,6 +363,7 @@ public class AlipayTemplate {
             model.setBody(request.getBody());
             model.setTimeoutExpress(request.getTimeoutExpress());
             model.setPassbackParams(request.getPassbackParams());
+            applyRoyaltyAndSettleParams(request, model::setExtendParams, model::setSettleInfo);
             alipayRequest.setBizModel(model);
 
             AlipayTradePayResponse rawResp = executeApi(holder, alipayRequest, appAuthToken);
@@ -330,6 +375,7 @@ public class AlipayTemplate {
                         .tradeType(PayTradeType.BARCODE)
                         .outTradeNo(request.getOutTradeNo())
                         .transactionId(rawResp.getTradeNo())
+                        .tradeNo(rawResp.getTradeNo())
                         .amount(request.getAmount())
                         .tradeState(PayTradeState.USERPAYING)
                         .rawTradeState(rawResp.getCode())
@@ -343,6 +389,7 @@ public class AlipayTemplate {
                         .tradeType(PayTradeType.BARCODE)
                         .outTradeNo(request.getOutTradeNo())
                         .transactionId(rawResp.getTradeNo())
+                        .tradeNo(rawResp.getTradeNo())
                         .amount(request.getAmount())
                         .tradeState(PayTradeState.SUCCESS)
                         .rawTradeState(rawResp.getCode())
@@ -386,6 +433,7 @@ public class AlipayTemplate {
             model.setBody(request.getBody());
             model.setTimeoutExpress(request.getTimeoutExpress());
             model.setPassbackParams(request.getPassbackParams());
+            applyRoyaltyAndSettleParams(request, model::setExtendParams, model::setSettleInfo);
             alipayRequest.setBizModel(model);
 
             AlipayTradePrecreateResponse rawResp = executeApi(holder, alipayRequest, appAuthToken);
@@ -400,6 +448,85 @@ public class AlipayTemplate {
                         .tradeState(PayTradeState.NOTPAY)
                         .rawTradeState(PayTradeState.NOTPAY.getCode())
                         .tradeStateDesc("等待用户扫码支付")
+                        .success(true)
+                        .rawResponse(rawResp)
+                        .build();
+            } else {
+                throw new PayTradeException(PayResultCode.PAY_TRADE_STATE_INVALID,
+                        rawResp.getSubCode() != null ? rawResp.getSubCode() : rawResp.getCode(),
+                        rawResp.getSubMsg() != null ? rawResp.getSubMsg() : rawResp.getMsg());
+            }
+        });
+    }
+
+    // =========================================================================
+    // 5.1 小程序统一收单创建 (payJsapi，生成 tradeNo 供 my.tradePay 调起)
+    // =========================================================================
+
+    /**
+     * 发起支付宝小程序统一收单创建（生成支付宝交易流水号 tradeNo）
+     * <p>
+     * 官方对应接口：{@code alipay.trade.create}。
+     * 买家身份标识 {@code buyerId}（2088 开头 16 位数字）与 {@code buyerOpenId} 必须二选一填入其一。
+     * 前端小程序获取响应后，直接传入客户端收银台 API：
+     * <pre>{@code
+     * my.tradePay({
+     *     tradeNO: res.data.tradeNo,
+     *     success: (res) => { ... },
+     *     fail: (res) => { ... }
+     * });
+     * }</pre>
+     * </p>
+     *
+     * @param request 支付宝收单请求参数（必须携带 buyerId 或 buyerOpenId）
+     * @return 统一收单响应对象（tradeNo 与 transactionId 挂载支付宝交易号）
+     */
+    public PayResponse payJsapi(AlipayPayRequest request) {
+        validateCheckoutRequest(request);
+        boolean hasBuyerId = request.getBuyerId() != null && !request.getBuyerId().isBlank();
+        boolean hasBuyerOpenId = request.getBuyerOpenId() != null && !request.getBuyerOpenId().isBlank();
+        if (!hasBuyerId && !hasBuyerOpenId) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "支付宝小程序下单 buyerId 与 buyerOpenId 必须二选一填入其一");
+        }
+        AlipayAppProperties appProps = resolveApp(request);
+        AlipayClientHolder holder = getClientHolder(appProps);
+        String notifyUrl = resolveNotifyUrl(appProps, request);
+        String appAuthToken = resolveAppAuthToken(appProps, request);
+
+        return executeWithExceptionTranslation("payJsapi", () -> {
+            AlipayTradeCreateRequest alipayRequest = new AlipayTradeCreateRequest();
+            alipayRequest.setNotifyUrl(notifyUrl);
+
+            AlipayTradeCreateModel model = new AlipayTradeCreateModel();
+            model.setOutTradeNo(request.getOutTradeNo());
+            model.setTotalAmount(formatAmount(request.getAmount()));
+            model.setSubject(request.getSubject());
+            model.setBody(request.getBody());
+            model.setTimeExpire(request.getTimeExpire());
+            model.setTimeoutExpress(request.getTimeoutExpress());
+            model.setPassbackParams(request.getPassbackParams());
+            applyRoyaltyAndSettleParams(request, model::setExtendParams, model::setSettleInfo);
+            if (hasBuyerId) {
+                model.setBuyerId(request.getBuyerId());
+            }
+            if (hasBuyerOpenId) {
+                model.setBuyerOpenId(request.getBuyerOpenId());
+            }
+            alipayRequest.setBizModel(model);
+
+            AlipayTradeCreateResponse rawResp = executeApi(holder, alipayRequest, appAuthToken);
+
+            if (rawResp.isSuccess()) {
+                return PayResponse.builder()
+                        .channel(PayChannel.ALIPAY)
+                        .tradeType(PayTradeType.JSAPI)
+                        .outTradeNo(request.getOutTradeNo())
+                        .transactionId(rawResp.getTradeNo())
+                        .tradeNo(rawResp.getTradeNo())
+                        .amount(request.getAmount())
+                        .tradeState(PayTradeState.NOTPAY)
+                        .rawTradeState(PayTradeState.NOTPAY.getCode())
+                        .tradeStateDesc("等待用户在支付宝小程序收银台完成支付")
                         .success(true)
                         .rawResponse(rawResp)
                         .build();
@@ -454,6 +581,7 @@ public class AlipayTemplate {
                         .channel(PayChannel.ALIPAY)
                         .outTradeNo(rawResp.getOutTradeNo() != null ? rawResp.getOutTradeNo() : request.getOutTradeNo())
                         .transactionId(rawResp.getTradeNo())
+                        .tradeNo(rawResp.getTradeNo())
                         .amount(amount != null ? amount : request.getAmount())
                         .tradeState(state)
                         .rawTradeState(rawResp.getTradeStatus())
@@ -680,6 +808,15 @@ public class AlipayTemplate {
                     refundFee = request.getRefundAmount();
                 }
 
+                // 支付宝即时退款响应需严格校验 fund_change == "Y" 方确认资金退回，否则保守认定为 PROCESSING 待核验
+                boolean fundChanged = rawResp.getFundChange() != null
+                        && "Y".equalsIgnoreCase(rawResp.getFundChange().trim());
+                PayRefundState refundState = fundChanged ? PayRefundState.SUCCESS : PayRefundState.PROCESSING;
+                String rawRefundState = rawResp.getFundChange() != null && !rawResp.getFundChange().isBlank()
+                        ? rawResp.getFundChange()
+                        : rawResp.getCode();
+                String defaultDesc = fundChanged ? "退款成功" : "退款处理中";
+
                 return PayRefundResponse.builder()
                         .channel(PayChannel.ALIPAY)
                         .outTradeNo(rawResp.getOutTradeNo() != null ? rawResp.getOutTradeNo() : request.getOutTradeNo())
@@ -687,9 +824,9 @@ public class AlipayTemplate {
                         .outRefundNo(request.getOutRefundNo())
                         .totalAmount(request.getTotalAmount())
                         .refundAmount(refundFee)
-                        .refundState(PayRefundState.SUCCESS)
-                        .rawRefundState(rawResp.getCode())
-                        .refundStateDesc(rawResp.getMsg() != null ? rawResp.getMsg() : "退款成功")
+                        .refundState(refundState)
+                        .rawRefundState(rawRefundState)
+                        .refundStateDesc(rawResp.getMsg() != null ? rawResp.getMsg() : defaultDesc)
                         .success(true)
                         .rawResponse(rawResp)
                         .build();
@@ -790,7 +927,9 @@ public class AlipayTemplate {
                         .refundAmount(refundAmount)
                         .refundState(state)
                         .rawRefundState(rawResp.getRefundStatus() != null ? rawResp.getRefundStatus() : rawResp.getCode())
-                        .refundStateDesc(rawResp.getRefundReason() != null ? rawResp.getRefundReason() : "退款成功")
+                        .refundStateDesc(rawResp.getRefundReason() != null
+                                ? rawResp.getRefundReason()
+                                : (state == PayRefundState.SUCCESS ? "退款成功" : "退款处理中"))
                         .success(true)
                         .rawResponse(rawResp)
                         .build();
@@ -829,13 +968,10 @@ public class AlipayTemplate {
      * 将支付宝原生退款状态映射为统一退款状态枚举
      *
      * @param alipayRefundStatus 支付宝 refund_status 字符串
-     * @return 标准化统一退款状态
+     * @return 标准化统一退款状态（仅 REFUND_SUCCESS 映射 SUCCESS，其余一律为 PROCESSING）
      */
     public static PayRefundState mapRefundState(String alipayRefundStatus) {
-        if (alipayRefundStatus == null || alipayRefundStatus.isBlank()) {
-            return PayRefundState.SUCCESS;
-        }
-        if ("REFUND_SUCCESS".equalsIgnoreCase(alipayRefundStatus.trim())) {
+        if (alipayRefundStatus != null && "REFUND_SUCCESS".equalsIgnoreCase(alipayRefundStatus.trim())) {
             return PayRefundState.SUCCESS;
         }
         return PayRefundState.PROCESSING;
@@ -902,13 +1038,8 @@ public class AlipayTemplate {
                 DesensitizeUtil.maskKeepHeadTail(request.getPayeeAccount(), 2, 2),
                 DesensitizeUtil.chineseName(request.getPayeeRealName()));
 
-        AlipayFundTransUniTransferResponse response = executeWithExceptionTranslation("transfer", () -> {
-            try {
-                return executeApi(holder, alipayRequest, resolveAppAuthToken(appProps, (String) null));
-            } catch (AlipayApiException e) {
-                throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "调用支付宝单笔转账接口通信失败: " + e.getMessage(), e);
-            }
-        });
+        AlipayFundTransUniTransferResponse response = executeWithExceptionTranslation("transfer",
+                () -> executeApi(holder, alipayRequest, resolveAppAuthToken(appProps, (String) null)));
 
         if (!response.isSuccess()) {
             throw new PayTradeException(PayResultCode.PAY_GATEWAY_ERROR,
@@ -943,14 +1074,6 @@ public class AlipayTemplate {
     }
 
     /**
-     * 查询支付宝单笔转账状态
-     *
-     * @param appKey   应用别名或 AppId（可选）
-     * @param outBizNo 商家唯一转账订单号
-     * @param orderId  支付宝转账单据号（可选）
-     * @return 统一转账响应出参
-     */
-    /**
      * 查询支付宝单笔转账状态（支持自定义 productCode 与 bizScene）
      *
      * @param appKey      应用别名或 AppId（可选）
@@ -981,13 +1104,8 @@ public class AlipayTemplate {
         }
         queryRequest.setBizModel(model);
 
-        AlipayFundTransCommonQueryResponse response = executeWithExceptionTranslation("queryTransfer", () -> {
-            try {
-                return executeApi(holder, queryRequest, resolveAppAuthToken(appProps, (String) null));
-            } catch (AlipayApiException e) {
-                throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "调用支付宝转账查询接口通信失败: " + e.getMessage(), e);
-            }
-        });
+        AlipayFundTransCommonQueryResponse response = executeWithExceptionTranslation("queryTransfer",
+                () -> executeApi(holder, queryRequest, resolveAppAuthToken(appProps, (String) null)));
 
         if (!response.isSuccess()) {
             throw new PayTradeException(PayResultCode.PAY_GATEWAY_ERROR,
@@ -997,15 +1115,20 @@ public class AlipayTemplate {
 
         PayTransferState state = mapAlipayTransferStatus(response.getStatus());
 
-        BigDecimal fee = null;
-        if (response.getOrderFee() != null && !response.getOrderFee().isBlank()) {
-            try {
-                fee = new BigDecimal(response.getOrderFee());
-            } catch (Exception e) {
-                throw new PayTradeException(PayResultCode.PAY_GATEWAY_ERROR,
-                        response.getCode(), "支付宝转账订单费用解析失败: [" + response.getOrderFee() + "]", e);
-            }
-        }
+        BigDecimal transAmount = parseTransferDecimal(response.getTransAmount(), "转账金额", response.getCode());
+        BigDecimal fee = parseTransferDecimal(response.getOrderFee(), "转账手续费", response.getCode());
+        String failReason = PayTextUtil.firstNonBlankText(
+                response.getFailReason(),
+                response.getSubOrderFailReason(),
+                response.getFailInstReason(),
+                extractJsonTextField(response.getBody(), "alipay_fund_trans_common_query_response", "fail_reason"),
+                response.getSubMsg());
+        String errorCode = PayTextUtil.firstNonBlankText(
+                response.getErrorCode(),
+                response.getSubOrderErrorCode(),
+                response.getFailInstErrorCode(),
+                extractJsonTextField(response.getBody(), "alipay_fund_trans_common_query_response", "error_code"),
+                response.getSubCode());
 
         return PayTransferResponse.builder()
                 .channel(PayChannel.ALIPAY)
@@ -1013,12 +1136,51 @@ public class AlipayTemplate {
                 .orderId(response.getOrderId())
                 .payFundOrderId(response.getPayFundOrderId())
                 .status(state)
-                .amount(fee)
+                .amount(transAmount)
+                .fee(fee)
                 .payeeAccount(response.getReceiverOpenId() != null ? response.getReceiverOpenId() : response.getReceiverUserId())
                 .payTime(response.getPayDate() != null ? response.getPayDate() : response.getArrivalTimeEnd())
-                .failReason(response.getFailReason())
+                .failReason(failReason)
+                .errorCode(errorCode)
                 .rawResponse(response)
                 .build();
+    }
+
+    private BigDecimal parseTransferDecimal(String rawValue, String fieldDesc, String code) {
+        if (rawValue == null || rawValue.isBlank()) {
+            return null;
+        }
+        try {
+            return new BigDecimal(rawValue.trim());
+        } catch (Exception e) {
+            throw new PayTradeException(PayResultCode.PAY_GATEWAY_ERROR,
+                    code, "支付宝转账" + fieldDesc + "解析失败: [" + rawValue + "]", e);
+        }
+    }
+
+    private static String extractJsonTextField(String body, String wrapperNode, String fieldName) {
+        if (body == null || body.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode root = JsonUtil.readTree(body);
+            if (root == null) {
+                return null;
+            }
+            JsonNode direct = root.get(fieldName);
+            if (direct != null && direct.isValueNode() && !direct.isNull()) {
+                return direct.asText();
+            }
+            if (wrapperNode != null && root.has(wrapperNode)) {
+                JsonNode nested = root.get(wrapperNode).get(fieldName);
+                if (nested != null && nested.isValueNode() && !nested.isNull()) {
+                    return nested.asText();
+                }
+            }
+        } catch (RuntimeException e) {
+            log.debug("Failed to parse JSON body when extracting [{}]: {}", fieldName, e.getMessage());
+        }
+        return null;
     }
 
     /**
@@ -1124,6 +1286,7 @@ public class AlipayTemplate {
         String realBillType = (billType != null && !billType.isBlank()) ? billType : "trade";
         AlipayAppProperties appProps = resolveApp(merchantKey);
         AlipayClientHolder holder = getClientHolder(appProps);
+        String appAuthToken = resolveAppAuthToken(appProps, (String) null);
 
         return executeWithExceptionTranslation("queryBillDownloadUrl", () -> {
             AlipayDataDataserviceBillDownloadurlQueryRequest alipayRequest = new AlipayDataDataserviceBillDownloadurlQueryRequest();
@@ -1132,7 +1295,7 @@ public class AlipayTemplate {
             model.setBillDate(billDate);
             alipayRequest.setBizModel(model);
 
-            AlipayDataDataserviceBillDownloadurlQueryResponse response = executeApi(holder, alipayRequest, null);
+            AlipayDataDataserviceBillDownloadurlQueryResponse response = executeApi(holder, alipayRequest, appAuthToken);
             if (!response.isSuccess()) {
                 throw new PayTradeException(PayResultCode.PAY_GATEWAY_ERROR,
                         response.getSubCode() != null ? response.getSubCode() : response.getCode(),
@@ -1180,32 +1343,408 @@ public class AlipayTemplate {
     }
 
     /**
-     * 根据任意直链下载地址拉取输入流
+     * 根据任意直链下载地址拉取输入流（仅允许 http/https 协议，校验 HTTP 2xx 并复用前置超时配置）
      *
      * @param downloadUrl 账单下载地址
-     * @return 字节流
+     * @return 字节流（关闭时自动释放底层 HTTP 连接）
      */
     public InputStream downloadBillStream(String downloadUrl) {
         if (downloadUrl == null || downloadUrl.isBlank()) {
             throw new PayException(PayResultCode.PAY_PARAM_INVALID, "支付宝对账单下载地址不能为空");
         }
+        URI uri;
+        try {
+            uri = URI.create(downloadUrl.trim());
+        } catch (IllegalArgumentException e) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "支付宝对账单下载地址格式非法: " + downloadUrl, e);
+        }
+        String scheme = uri.getScheme();
+        if (scheme == null || (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme))) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID,
+                    "支付宝对账单下载地址仅支持 http/https 协议: " + scheme);
+        }
         if (billStreamDownloader != null) {
             return billStreamDownloader.apply(downloadUrl);
         }
+
+        PayHttpProperties httpProps = PayHttpProperties.orDefault(
+                payProperties.getAlipay() != null ? payProperties.getAlipay().getHttp() : null);
+        int connectTimeoutMs = httpProps.resolveConnectTimeoutMs();
+        int readTimeoutMs = httpProps.resolveReadTimeoutMs();
+
         return executeWithExceptionTranslation("downloadBillStream", () -> {
-            URI uri = URI.create(downloadUrl);
-            URLConnection conn = uri.toURL().openConnection();
-            conn.setConnectTimeout(DEFAULT_BILL_CONNECT_TIMEOUT_MS);
-            conn.setReadTimeout(DEFAULT_BILL_READ_TIMEOUT_MS);
-            return conn.getInputStream();
+            HttpURLConnection conn = (HttpURLConnection) uri.toURL().openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(connectTimeoutMs);
+            conn.setReadTimeout(readTimeoutMs);
+            try {
+                int status = conn.getResponseCode();
+                if (status < 200 || status >= 300) {
+                    try (InputStream err = conn.getErrorStream()) {
+                        if (err != null) {
+                            err.readAllBytes();
+                        }
+                    } catch (IOException ignored) {
+                        // 忽略错误响应体读取异常，确保后续释放连接
+                    }
+                    conn.disconnect();
+                    throw new PayNetworkException("下载支付宝对账单失败，HTTP 状态码: " + status);
+                }
+                InputStream bodyStream = conn.getInputStream();
+                return new FilterInputStream(bodyStream) {
+                    @Override
+                    public void close() throws IOException {
+                        try {
+                            super.close();
+                        } finally {
+                            conn.disconnect();
+                        }
+                    }
+                };
+            } catch (IOException | RuntimeException e) {
+                conn.disconnect();
+                throw e;
+            }
         });
     }
 
     /**
-     * 注入自定义对账单流式下载器（主要供单元测试脱机离线使用）
+     * 注入自定义对账单流式下载器（包可见，主要供单元测试脱机离线使用）
      */
     void setBillStreamDownloader(Function<String, InputStream> billStreamDownloader) {
         this.billStreamDownloader = billStreamDownloader;
+    }
+
+    // =========================================================================
+    // 11.5 支付宝交易分账与结算 (Alipay Royalty Profit Sharing)
+    // =========================================================================
+
+    /**
+     * 绑定支付宝分账接收方关系（默认应用，alipay.trade.royalty.relation.bind）
+     *
+     * @param model 分账关系绑定请求模型
+     * @return 绑定结果响应
+     */
+    public AlipayTradeRoyaltyRelationBindResponse bindRoyaltyRelation(AlipayTradeRoyaltyRelationBindModel model) {
+        return bindRoyaltyRelation(null, null, model);
+    }
+
+    /**
+     * 绑定支付宝分账接收方关系（指定应用）
+     *
+     * @param appKey 应用别名或 AppId（可选）
+     * @param model  分账关系绑定请求模型
+     * @return 绑定结果响应
+     */
+    public AlipayTradeRoyaltyRelationBindResponse bindRoyaltyRelation(String appKey,
+                                                                      AlipayTradeRoyaltyRelationBindModel model) {
+        return bindRoyaltyRelation(appKey, null, model);
+    }
+
+    /**
+     * 绑定支付宝分账接收方关系（指定应用及服务商授权令牌）
+     *
+     * @param appKey       应用别名或 AppId（可选）
+     * @param appAuthToken 服务商第三方应用授权令牌（可选）
+     * @param model        分账关系绑定请求模型
+     * @return 绑定结果响应
+     */
+    public AlipayTradeRoyaltyRelationBindResponse bindRoyaltyRelation(String appKey,
+                                                                      String appAuthToken,
+                                                                      AlipayTradeRoyaltyRelationBindModel model) {
+        assertProfitSharingEnabled();
+        if (model == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "支付宝分账关系绑定请求入参不能为空");
+        }
+        validateRoyaltyRelationModel(model.getOutRequestNo(), model.getReceiverList(), "绑定");
+        AlipayTradeRoyaltyRelationBindRequest request = new AlipayTradeRoyaltyRelationBindRequest();
+        request.setBizModel(model);
+        return executeRoyaltyApi("bindRoyaltyRelation", appKey, appAuthToken, request);
+    }
+
+    /**
+     * 解绑支付宝分账接收方关系（默认应用，alipay.trade.royalty.relation.unbind）
+     *
+     * @param model 分账关系解绑请求模型
+     * @return 解绑结果响应
+     */
+    public AlipayTradeRoyaltyRelationUnbindResponse unbindRoyaltyRelation(AlipayTradeRoyaltyRelationUnbindModel model) {
+        return unbindRoyaltyRelation(null, null, model);
+    }
+
+    /**
+     * 解绑支付宝分账接收方关系（指定应用）
+     *
+     * @param appKey 应用别名或 AppId（可选）
+     * @param model  分账关系解绑请求模型
+     * @return 解绑结果响应
+     */
+    public AlipayTradeRoyaltyRelationUnbindResponse unbindRoyaltyRelation(String appKey,
+                                                                          AlipayTradeRoyaltyRelationUnbindModel model) {
+        return unbindRoyaltyRelation(appKey, null, model);
+    }
+
+    /**
+     * 解绑支付宝分账接收方关系（指定应用及服务商授权令牌）
+     *
+     * @param appKey       应用别名或 AppId（可选）
+     * @param appAuthToken 服务商第三方应用授权令牌（可选）
+     * @param model        分账关系解绑请求模型
+     * @return 解绑结果响应
+     */
+    public AlipayTradeRoyaltyRelationUnbindResponse unbindRoyaltyRelation(String appKey,
+                                                                          String appAuthToken,
+                                                                          AlipayTradeRoyaltyRelationUnbindModel model) {
+        assertProfitSharingEnabled();
+        if (model == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "支付宝分账关系解绑请求入参不能为空");
+        }
+        validateRoyaltyRelationModel(model.getOutRequestNo(), model.getReceiverList(), "解绑");
+        AlipayTradeRoyaltyRelationUnbindRequest request = new AlipayTradeRoyaltyRelationUnbindRequest();
+        request.setBizModel(model);
+        return executeRoyaltyApi("unbindRoyaltyRelation", appKey, appAuthToken, request);
+    }
+
+    /**
+     * 分页批量查询支付宝分账接收方关系（默认应用，alipay.trade.royalty.relation.batchquery）
+     *
+     * @param model 分页查询请求模型
+     * @return 查询结果响应
+     */
+    public AlipayTradeRoyaltyRelationBatchqueryResponse batchQueryRoyaltyRelation(
+            AlipayTradeRoyaltyRelationBatchqueryModel model) {
+        return batchQueryRoyaltyRelation(null, null, model);
+    }
+
+    /**
+     * 分页批量查询支付宝分账接收方关系（指定应用）
+     *
+     * @param appKey 应用别名或 AppId（可选）
+     * @param model  分页查询请求模型
+     * @return 查询结果响应
+     */
+    public AlipayTradeRoyaltyRelationBatchqueryResponse batchQueryRoyaltyRelation(
+            String appKey,
+            AlipayTradeRoyaltyRelationBatchqueryModel model) {
+        return batchQueryRoyaltyRelation(appKey, null, model);
+    }
+
+    /**
+     * 分页批量查询支付宝分账接收方关系（指定应用及服务商授权令牌）
+     *
+     * @param appKey       应用别名或 AppId（可选）
+     * @param appAuthToken 服务商第三方应用授权令牌（可选）
+     * @param model        分页查询请求模型
+     * @return 查询结果响应
+     */
+    public AlipayTradeRoyaltyRelationBatchqueryResponse batchQueryRoyaltyRelation(
+            String appKey,
+            String appAuthToken,
+            AlipayTradeRoyaltyRelationBatchqueryModel model) {
+        assertProfitSharingEnabled();
+        if (model == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "支付宝分账关系批量查询请求入参不能为空");
+        }
+        requireNonBlank(model.getOutRequestNo(), "支付宝分账关系查询外部请求号 [outRequestNo] 不能为空");
+        if (model.getPageNum() != null && model.getPageNum() <= 0) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "分账关系查询页码 [pageNum] 必须大于 0");
+        }
+        if (model.getPageSize() != null && model.getPageSize() <= 0) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "分账关系查询页大小 [pageSize] 必须大于 0");
+        }
+        AlipayTradeRoyaltyRelationBatchqueryRequest request = new AlipayTradeRoyaltyRelationBatchqueryRequest();
+        request.setBizModel(model);
+        return executeRoyaltyApi("batchQueryRoyaltyRelation", appKey, appAuthToken, request);
+    }
+
+    /**
+     * 统一收单交易结算确认（默认应用，alipay.trade.settle.confirm）
+     *
+     * @param model 结算确认请求模型
+     * @return 结算确认结果响应
+     */
+    public AlipayTradeSettleConfirmResponse confirmSettle(AlipayTradeSettleConfirmModel model) {
+        return confirmSettle(null, null, model);
+    }
+
+    /**
+     * 统一收单交易结算确认（指定应用）
+     *
+     * @param appKey 应用别名或 AppId（可选）
+     * @param model  结算确认请求模型
+     * @return 结算确认结果响应
+     */
+    public AlipayTradeSettleConfirmResponse confirmSettle(String appKey, AlipayTradeSettleConfirmModel model) {
+        return confirmSettle(appKey, null, model);
+    }
+
+    /**
+     * 统一收单交易结算确认（指定应用及服务商授权令牌）
+     *
+     * @param appKey       应用别名或 AppId（可选）
+     * @param appAuthToken 服务商第三方应用授权令牌（可选）
+     * @param model        结算确认请求模型
+     * @return 结算确认结果响应
+     */
+    public AlipayTradeSettleConfirmResponse confirmSettle(String appKey,
+                                                          String appAuthToken,
+                                                          AlipayTradeSettleConfirmModel model) {
+        assertProfitSharingEnabled();
+        if (model == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "支付宝交易结算确认请求入参不能为空");
+        }
+        requireNonBlank(model.getOutRequestNo(), "结算确认外部请求号 [outRequestNo] 不能为空");
+        requireNonBlank(model.getTradeNo(), "结算确认支付宝交易号 [tradeNo] 不能为空");
+        if (model.getSettleInfo() == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "结算确认结算信息 [settleInfo] 不能为空");
+        }
+        AlipayTradeSettleConfirmRequest request = new AlipayTradeSettleConfirmRequest();
+        request.setBizModel(model);
+        return executeRoyaltyApi("confirmSettle", appKey, appAuthToken, request);
+    }
+
+    /**
+     * 统一收单交易分账结算（默认应用，alipay.trade.order.settle）
+     *
+     * @param model 订单分账结算请求模型
+     * @return 分账结算响应
+     */
+    public AlipayTradeOrderSettleResponse settleOrder(AlipayTradeOrderSettleModel model) {
+        return settleOrder(null, null, model);
+    }
+
+    /**
+     * 统一收单交易分账结算（指定应用）
+     *
+     * @param appKey 应用别名或 AppId（可选）
+     * @param model  订单分账结算请求模型
+     * @return 分账结算响应
+     */
+    public AlipayTradeOrderSettleResponse settleOrder(String appKey, AlipayTradeOrderSettleModel model) {
+        return settleOrder(appKey, null, model);
+    }
+
+    /**
+     * 统一收单交易分账结算（指定应用及服务商授权令牌）
+     *
+     * @param appKey       应用别名或 AppId（可选）
+     * @param appAuthToken 服务商第三方应用授权令牌（可选）
+     * @param model        订单分账结算请求模型
+     * @return 分账结算响应
+     */
+    public AlipayTradeOrderSettleResponse settleOrder(String appKey,
+                                                      String appAuthToken,
+                                                      AlipayTradeOrderSettleModel model) {
+        assertProfitSharingEnabled();
+        if (model == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "支付宝交易分账结算请求入参不能为空");
+        }
+        requireNonBlank(model.getOutRequestNo(), "交易分账结算请求流水号 [outRequestNo] 不能为空");
+        requireNonBlank(model.getTradeNo(), "交易分账结算支付宝交易号 [tradeNo] 不能为空");
+        AlipayTradeOrderSettleRequest request = new AlipayTradeOrderSettleRequest();
+        request.setBizModel(model);
+        return executeRoyaltyApi("settleOrder", appKey, appAuthToken, request);
+    }
+
+    /**
+     * 交易分账进度查询（默认应用，alipay.trade.order.settle.query）
+     *
+     * @param model 分账进度查询请求模型
+     * @return 分账进度详情响应
+     */
+    public AlipayTradeOrderSettleQueryResponse querySettleOrder(AlipayTradeOrderSettleQueryModel model) {
+        return querySettleOrder(null, null, model);
+    }
+
+    /**
+     * 交易分账进度查询（指定应用）
+     *
+     * @param appKey 应用别名或 AppId（可选）
+     * @param model  分账进度查询请求模型
+     * @return 分账进度详情响应
+     */
+    public AlipayTradeOrderSettleQueryResponse querySettleOrder(String appKey, AlipayTradeOrderSettleQueryModel model) {
+        return querySettleOrder(appKey, null, model);
+    }
+
+    /**
+     * 交易分账进度查询（指定应用及服务商授权令牌）
+     *
+     * @param appKey       应用别名或 AppId（可选）
+     * @param appAuthToken 服务商第三方应用授权令牌（可选）
+     * @param model        分账进度查询请求模型
+     * @return 分账进度详情响应
+     */
+    public AlipayTradeOrderSettleQueryResponse querySettleOrder(String appKey,
+                                                                String appAuthToken,
+                                                                AlipayTradeOrderSettleQueryModel model) {
+        assertProfitSharingEnabled();
+        if (model == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "支付宝分账进度查询请求入参不能为空");
+        }
+        boolean hasSettleNo = model.getSettleNo() != null && !model.getSettleNo().isBlank();
+        boolean hasPair = model.getOutRequestNo() != null && !model.getOutRequestNo().isBlank()
+                && model.getTradeNo() != null && !model.getTradeNo().isBlank();
+        if (!hasSettleNo && !hasPair) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID,
+                    "分账进度查询必须提供结算单号 [settleNo] 或同时提供 [outRequestNo] 与 [tradeNo]");
+        }
+        AlipayTradeOrderSettleQueryRequest request = new AlipayTradeOrderSettleQueryRequest();
+        request.setBizModel(model);
+        return executeRoyaltyApi("querySettleOrder", appKey, appAuthToken, request);
+    }
+
+    private <R extends AlipayResponse> R executeRoyaltyApi(String operationName,
+                                                           String appKey,
+                                                           String explicitAppAuthToken,
+                                                           AlipayRequest<R> alipayRequest) {
+        AlipayAppProperties appProps = resolveApp(appKey);
+        AlipayClientHolder holder = getClientHolder(appProps);
+        String token = resolveAppAuthToken(appProps, explicitAppAuthToken);
+        return executeWithExceptionTranslation(operationName, () -> {
+            R response = executeApi(holder, alipayRequest, token);
+            if (!response.isSuccess()) {
+                throw new PayTradeException(PayResultCode.PAY_TRADE_STATE_INVALID,
+                        response.getSubCode() != null ? response.getSubCode() : response.getCode(),
+                        response.getSubMsg() != null ? response.getSubMsg() : response.getMsg());
+            }
+            return response;
+        });
+    }
+
+    private static void validateRoyaltyRelationModel(String outRequestNo, List<?> receivers, String action) {
+        requireNonBlank(outRequestNo, "支付宝分账关系" + action + "请求号 [outRequestNo] 不能为空");
+        if (receivers == null || receivers.isEmpty()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID,
+                    "支付宝分账关系" + action + "接收方列表 [receiverList] 不能为空");
+        }
+    }
+
+    private static void requireNonBlank(String val, String message) {
+        if (val == null || val.isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, message);
+        }
+    }
+
+    private static void applyRoyaltyAndSettleParams(AlipayPayRequest request,
+                                                    Consumer<ExtendParams> extendSetter,
+                                                    Consumer<SettleInfo> settleSetter) {
+        if (request == null) {
+            return;
+        }
+        if (request.getExtendParams() != null || request.getRoyaltyFreeze() != null) {
+            ExtendParams effectiveExtend = new ExtendParams();
+            if (request.getExtendParams() != null) {
+                BeanUtils.copyProperties(request.getExtendParams(), effectiveExtend);
+            }
+            if (request.getRoyaltyFreeze() != null) {
+                effectiveExtend.setRoyaltyFreeze(String.valueOf(request.getRoyaltyFreeze()));
+            }
+            extendSetter.accept(effectiveExtend);
+        }
+        if (request.getSettleInfo() != null) {
+            settleSetter.accept(request.getSettleInfo());
+        }
     }
 
     // =========================================================================
@@ -1289,6 +1828,13 @@ public class AlipayTemplate {
         }
     }
 
+    /**
+     * 清理应用客户端持有者缓存（主要用于运行态动态配置刷新或单测桩切换）
+     */
+    public void clearClientCache() {
+        this.holderCache.clear();
+    }
+
     // =========================================================================
     // 内部私有辅助逻辑
     // =========================================================================
@@ -1313,6 +1859,10 @@ public class AlipayTemplate {
     private AlipayClientHolder createClientHolder(AlipayAppProperties properties) {
         AlipayConfig config = new AlipayConfig();
         config.setServerUrl(properties.getServerUrl());
+        PayHttpProperties httpProps = PayHttpProperties.orDefault(
+                payProperties.getAlipay() != null ? payProperties.getAlipay().getHttp() : null);
+        config.setConnectTimeout(httpProps.resolveConnectTimeoutMs());
+        config.setReadTimeout(httpProps.resolveReadTimeoutMs());
         config.setAppId(properties.getAppId());
         config.setFormat(properties.getFormat() != null ? properties.getFormat() : "json");
         config.setCharset(properties.getCharset() != null ? properties.getCharset() : "UTF-8");

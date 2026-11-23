@@ -6,11 +6,14 @@ import io.github.atengk.boot.http.annotation.EnableHttpInterfaces;
 import io.github.atengk.boot.http.annotation.HttpClient;
 import io.github.atengk.boot.http.autoconfigure.AtengHttpAutoConfiguration;
 import io.github.atengk.boot.http.constant.HttpConstants;
+import io.github.atengk.boot.http.context.HttpRequestContextHolder;
 import io.github.atengk.boot.http.error.HttpErrorHandler;
 import io.github.atengk.boot.http.error.HttpRemoteException;
 import io.github.atengk.boot.http.properties.HttpClientItemProperties;
 import io.github.atengk.boot.http.properties.HttpProperties;
+import io.github.atengk.boot.http.properties.HttpProxyProperties;
 import io.github.atengk.boot.http.properties.HttpRetryProperties;
+import io.github.atengk.boot.http.properties.HttpSslProperties;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
@@ -18,6 +21,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -30,7 +34,11 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.service.annotation.GetExchange;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.KeyStore;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -66,6 +74,7 @@ class RestClientRegistryTest {
     void tearDown() throws IOException {
         TenantContextHolder.clear();
         UserContextHolder.clear();
+        HttpRequestContextHolder.clear();
         if (context != null) {
             context.close();
             context = null;
@@ -307,6 +316,194 @@ class RestClientRegistryTest {
         assertNotNull(recordedRequest);
         assertEquals("/users/999", recordedRequest.getPath());
         assertEquals("GET", recordedRequest.getMethod());
+    }
+
+    @Test
+    @DisplayName("测试 defaultHeaders 占位符解析与出站请求头注入")
+    void testDefaultHeadersWithPlaceholderResolution() throws Exception {
+        String baseUrl = mockWebServer.url("/").toString();
+
+        HttpProperties properties = new HttpProperties();
+        HttpClientItemProperties item = new HttpClientItemProperties();
+        item.setBaseUrl(baseUrl);
+        item.setDefaultHeaders(Map.of(
+                "X-Client-Version", "v1.2.0",
+                "X-App-Env", "${app.environment}",
+                "X-Dynamic-Token", "Bearer ${api.token:fallback-token}"
+        ));
+        properties.getClients().put("custom-header-client", item);
+
+        MockEnvironment env = new MockEnvironment();
+        env.setProperty("app.environment", "production");
+        env.setProperty("api.token", "secret-token-888");
+
+        ClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        RestClient.Builder builder = RestClient.builder().requestFactory(factory);
+        RestClientRegistry registry = new RestClientRegistry(builder, factory, properties, new HttpErrorHandler(), env);
+
+        RestClient client = registry.getClient("custom-header-client");
+        assertNotNull(client);
+
+        mockWebServer.enqueue(new MockResponse().setResponseCode(200).setBody("OK"));
+        client.get().uri("/api/ping").retrieve().toBodilessEntity();
+
+        RecordedRequest recorded = mockWebServer.takeRequest(2, TimeUnit.SECONDS);
+        assertNotNull(recorded);
+        assertEquals("v1.2.0", recorded.getHeader("X-Client-Version"));
+        assertEquals("production", recorded.getHeader("X-App-Env"));
+        assertEquals("Bearer secret-token-888", recorded.getHeader("X-Dynamic-Token"));
+    }
+
+    @Test
+    @DisplayName("测试客户端专属正向代理配置覆盖全局设置")
+    void testClientScopedProxyConfiguration() {
+        HttpProperties properties = new HttpProperties();
+        HttpProxyProperties globalProxy = new HttpProxyProperties();
+        globalProxy.setEnabled(true);
+        globalProxy.setHost("global-proxy.local");
+        globalProxy.setPort(8080);
+        properties.setProxy(globalProxy);
+
+        HttpClientItemProperties item = new HttpClientItemProperties();
+        HttpProxyProperties clientProxy = new HttpProxyProperties();
+        clientProxy.setEnabled(true);
+        clientProxy.setHost("client-proxy.local");
+        clientProxy.setPort(8888);
+        item.setProxy(clientProxy);
+        properties.getClients().put("scoped-proxy-client", item);
+
+        MockEnvironment env = new MockEnvironment();
+        ClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        RestClient.Builder builder = RestClient.builder().requestFactory(factory);
+        RestClientRegistry registry = new RestClientRegistry(builder, factory, properties, new HttpErrorHandler(), env);
+
+        // 验证构建专属于 client-proxy 的独立 RestClient 实例
+        RestClient client = registry.getClient("scoped-proxy-client");
+        assertNotNull(client);
+        assertTrue(registry.contains("scoped-proxy-client"));
+    }
+
+    @Test
+    @DisplayName("测试客户端专属 mTLS 证书加载 (PKCS12 密钥库)")
+    void testClientScopedMtlsKeyStoreLoading(@TempDir Path tempDir) throws Exception {
+        // 创建合法的空 PKCS12 密钥库文件
+        Path p12File = tempDir.resolve("wechat_cert.p12");
+        KeyStore keyStore = KeyStore.getInstance("PKCS12");
+        keyStore.load(null, "cert_password".toCharArray());
+        try (OutputStream out = Files.newOutputStream(p12File)) {
+            keyStore.store(out, "cert_password".toCharArray());
+        }
+
+        HttpProperties properties = new HttpProperties();
+        HttpClientItemProperties item = new HttpClientItemProperties();
+        item.setKeyStore(p12File.toUri().toString());
+        item.setKeyStorePassword("cert_password");
+        item.setKeyStoreType("PKCS12");
+        properties.getClients().put("wechat-pay", item);
+
+        MockEnvironment env = new MockEnvironment();
+        ClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        RestClient.Builder builder = RestClient.builder().requestFactory(factory);
+        RestClientRegistry registry = new RestClientRegistry(builder, factory, properties, new HttpErrorHandler(), env);
+
+        RestClient client = registry.getClient("wechat-pay");
+        assertNotNull(client);
+        assertTrue(registry.contains("wechat-pay"));
+    }
+
+    @Test
+    @DisplayName("测试客户端专属 mTLS 证书文件缺失时快速失败")
+    void testClientScopedMtlsMissingFileThrows() {
+        HttpProperties properties = new HttpProperties();
+        HttpClientItemProperties item = new HttpClientItemProperties();
+        item.setKeyStore("classpath:certs/nonexistent_cert.p12");
+        item.setKeyStorePassword("secret");
+        properties.getClients().put("bad-cert-client", item);
+
+        MockEnvironment env = new MockEnvironment();
+        ClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        RestClient.Builder builder = RestClient.builder().requestFactory(factory);
+        RestClientRegistry registry = new RestClientRegistry(builder, factory, properties, new HttpErrorHandler(), env);
+
+        assertThrows(IllegalArgumentException.class, () -> registry.getClient("bad-cert-client"));
+    }
+
+    @Test
+    @DisplayName("测试客户端专属 proxy/ssl 初始化独立工厂时正常回调 HttpClient5Customizer")
+    void testClientScopedPhysicalFactoryInvokesCustomizer() {
+        HttpProperties properties = new HttpProperties();
+        HttpClientItemProperties item = new HttpClientItemProperties();
+        HttpProxyProperties proxy = new HttpProxyProperties();
+        proxy.setHost("127.0.0.1");
+        proxy.setPort(8888);
+        item.setProxy(proxy);
+        properties.getClients().put("custom-proxy-client", item);
+
+        java.util.concurrent.atomic.AtomicBoolean customizerInvoked = new java.util.concurrent.atomic.AtomicBoolean(false);
+        io.github.atengk.boot.http.customizer.HttpClient5Customizer customizer = (clientBuilder, connManagerBuilder) -> {
+            customizerInvoked.set(true);
+        };
+
+        MockEnvironment env = new MockEnvironment();
+        ClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        RestClient.Builder builder = RestClient.builder().requestFactory(factory);
+        RestClientRegistry registry = new RestClientRegistry(
+                builder,
+                factory,
+                properties,
+                new HttpErrorHandler(),
+                env,
+                null,
+                List.of(customizer)
+        );
+
+        RestClient client = registry.getClient("custom-proxy-client");
+        assertNotNull(client);
+        assertTrue(customizerInvoked.get(), "专属客户端物理工厂创建时应正确触发 HttpClient5Customizer 回调");
+    }
+
+    @Test
+    @DisplayName("测试多命名客户端共享相同基地址时 RestClientRegistry 准确命中专属重试策略且净空内部控制头")
+    void testSharedBaseUrlNamedClientsIsolateRetryAndStripInternalHeaders() throws Exception {
+        String baseUrl = mockWebServer.url("/").toString();
+
+        context = new AnnotationConfigApplicationContext();
+        MockEnvironment env = new MockEnvironment();
+        env.setProperty("ateng.boot.http.clients.shared-alpha.base-url", baseUrl);
+        env.setProperty("ateng.boot.http.clients.shared-alpha.retry.enabled", "true");
+        env.setProperty("ateng.boot.http.clients.shared-alpha.retry.max-attempts", "1");
+        env.setProperty("ateng.boot.http.clients.shared-alpha.retry.delay", "5ms");
+        env.setProperty("ateng.boot.http.clients.shared-beta.base-url", baseUrl);
+        env.setProperty("ateng.boot.http.clients.shared-beta.propagate-context", "false");
+        env.setProperty("ateng.boot.http.clients.shared-beta.retry.enabled", "true");
+        env.setProperty("ateng.boot.http.clients.shared-beta.retry.max-attempts", "3");
+        env.setProperty("ateng.boot.http.clients.shared-beta.retry.delay", "5ms");
+        context.setEnvironment(env);
+        context.register(AtengHttpAutoConfiguration.class);
+        context.refresh();
+
+        RestClientRegistry registry = context.getBean(RestClientRegistry.class);
+        RestClient betaClient = registry.getClient("shared-beta");
+
+        TenantContextHolder.setTenantId("tenant-secret");
+        UserContextHolder.setUserId("user-secret");
+
+        mockWebServer.enqueue(new MockResponse().setResponseCode(503));
+        mockWebServer.enqueue(new MockResponse().setResponseCode(503));
+        mockWebServer.enqueue(new MockResponse().setResponseCode(200).setBody("OK-BETA"));
+
+        String body = betaClient.get().uri("/ping").retrieve().body(String.class);
+        assertEquals("OK-BETA", body);
+        assertNull(HttpRequestContextHolder.getClientName());
+
+        for (int i = 0; i < 3; i++) {
+            RecordedRequest recorded = mockWebServer.takeRequest(2, TimeUnit.SECONDS);
+            assertNotNull(recorded);
+            assertNull(recorded.getHeader(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE));
+            assertNull(recorded.getHeader(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE));
+            assertNull(recorded.getHeader("X-Tenant-Id"));
+            assertNull(recorded.getHeader("X-User-Id"));
+        }
     }
 
     @Configuration

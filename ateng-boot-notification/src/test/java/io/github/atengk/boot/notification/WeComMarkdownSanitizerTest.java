@@ -60,6 +60,17 @@ class WeComMarkdownSanitizerTest {
     }
 
     @Test
+    @DisplayName("验证保留尖括号自动链接 <https://...> 与 <http://...> 不被 HTML 标签正则误删")
+    void testAutoLinksPreserved() {
+        String md = "排查链接：<https://example.com/trace?id=123&env=prod> 以及 <http://internal.example.com/health> <script>alert(1)</script>";
+        String sanitized = WeComMarkdownSanitizer.sanitize(md);
+
+        assertTrue(sanitized.contains("<https://example.com/trace?id=123&env=prod>"));
+        assertTrue(sanitized.contains("<http://internal.example.com/health>"));
+        assertFalse(sanitized.contains("<script>"));
+    }
+
+    @Test
     @DisplayName("验证常规代码或数学比较表达式不被误杀为 HTML 标签")
     void testMathComparisonNotStripped() {
         String md = "监控阈值警告：if (cpuUsage < 80.0 && memoryUsage > 90.0) { alert(); }";

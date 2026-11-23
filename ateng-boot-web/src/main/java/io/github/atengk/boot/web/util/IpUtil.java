@@ -4,7 +4,11 @@ import io.github.atengk.boot.core.util.ValidatorUtil;
 import jakarta.servlet.http.HttpServletRequest;
 
 import java.net.InetAddress;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 
 /**
  * 客户端 IP 地址提取与识别工具
@@ -20,6 +24,16 @@ public final class IpUtil {
     public static final String LOCAL_IPV6_SHORT = "::1";
     public static final String UNKNOWN = "unknown";
 
+    /**
+     * 内置默认授信反向代理列表（本地 IPv4 / IPv6 环回地址）
+     */
+    public static final List<String> DEFAULT_TRUSTED_PROXIES = List.of(LOCAL_IPV4, LOCAL_IPV6_SHORT);
+
+    /**
+     * 受管全局默认授信反向代理列表（由自动装配在启动期去重注入）
+     */
+    private static volatile List<String> defaultTrustedProxies = DEFAULT_TRUSTED_PROXIES;
+
     private static final String[] IP_HEADER_CANDIDATES = {
             "X-Forwarded-For",
             "X-Real-IP",
@@ -33,6 +47,106 @@ public final class IpUtil {
     }
 
     /**
+     * 获取当前全局默认授信反向代理列表（只读不可变副本）
+     *
+     * @return 授信反向代理 IP / CIDR 网段列表
+     */
+    public static List<String> getDefaultTrustedProxies() {
+        return defaultTrustedProxies;
+    }
+
+    /**
+     * 设置全局默认授信反向代理列表
+     * 若传入 null 或空集合，则清空默认授信列表（无授信校验兼容模式）；
+     * 若传入非空集合，则自动清洗空白项并冻结为不可变列表
+     *
+     * @param trustedProxies 授信反向代理 IP / CIDR 网段集合
+     */
+    public static void setDefaultTrustedProxies(Collection<String> trustedProxies) {
+        if (trustedProxies == null || trustedProxies.isEmpty()) {
+            defaultTrustedProxies = List.of();
+            return;
+        }
+        Set<String> sanitized = new LinkedHashSet<>();
+        appendSanitized(sanitized, trustedProxies);
+        defaultTrustedProxies = sanitized.isEmpty() ? List.of() : List.copyOf(sanitized);
+    }
+
+    /**
+     * 重置全局默认授信反向代理列表为内置默认值（127.0.0.1, ::1）
+     */
+    public static void resetDefaultTrustedProxies() {
+        defaultTrustedProxies = DEFAULT_TRUSTED_PROXIES;
+    }
+
+    /**
+     * 去重并保序合并两份授信反向代理配置集合
+     *
+     * @param primary   主配置集合
+     * @param secondary 次配置集合
+     * @return 清洗去重后的不可变代理列表
+     */
+    public static List<String> mergeTrustedProxies(Collection<String> primary, Collection<String> secondary) {
+        Set<String> merged = new LinkedHashSet<>();
+        appendSanitized(merged, primary);
+        appendSanitized(merged, secondary);
+        return merged.isEmpty() ? List.of() : List.copyOf(merged);
+    }
+
+    /**
+     * 合并清洗主备授信反向代理清单并刷新全局默认基线
+     *
+     * @param primary   主配置集合（为 null 时回退内置默认环回列表）
+     * @param secondary 次配置集合（可选扩展）
+     */
+    public static void configureDefaultTrustedProxies(Collection<String> primary, Collection<String> secondary) {
+        Collection<String> base = primary != null ? primary : DEFAULT_TRUSTED_PROXIES;
+        setDefaultTrustedProxies(mergeTrustedProxies(base, secondary));
+    }
+
+    /**
+     * 解析客户端真实 IP：优先采用模块级覆盖授信代理，若为空则回退至全局默认授信代理防伪造规则
+     *
+     * @param request                 HTTP 请求对象
+     * @param preferredTrustedProxies 模块级授信代理列表（为 null 或空时回退全局默认基线）
+     * @return 客户端真实 IP 地址；若请求为 null 则返回空串
+     */
+    public static String getClientIpWithDefaultFallback(HttpServletRequest request, Collection<String> preferredTrustedProxies) {
+        if (preferredTrustedProxies != null && !preferredTrustedProxies.isEmpty()) {
+            return getClientIp(request, preferredTrustedProxies);
+        }
+        return getClientIp(request);
+    }
+
+    private static void appendSanitized(Set<String> target, Collection<String> source) {
+        if (source == null || source.isEmpty()) {
+            return;
+        }
+        for (String item : source) {
+            if (item != null && !item.isBlank()) {
+                target.add(item.trim());
+            }
+        }
+    }
+
+    /**
+     * 规范化 IP 字符串（去除前后空格并将 IPv6 本地环回转换为标准 IPv4 环回）
+     *
+     * @param ip 原始 IP
+     * @return 规整后的 IP
+     */
+    public static String normalizeIp(String ip) {
+        if (ip == null || ip.isBlank()) {
+            return ip;
+        }
+        String trimmed = ip.trim();
+        if (LOCAL_IPV6.equals(trimmed) || LOCAL_IPV6_SHORT.equals(trimmed) || (LOCAL_IPV6 + "%0").equals(trimmed)) {
+            return LOCAL_IPV4;
+        }
+        return trimmed;
+    }
+
+    /**
      * 从当前请求上下文中获取客户端真实 IP 地址
      *
      * @return 客户端 IP 地址；若上下文无请求则返回空串
@@ -42,16 +156,97 @@ public final class IpUtil {
     }
 
     /**
+     * 从当前请求上下文中获取客户端真实 IP 地址（配合授信反向代理防伪造）
+     *
+     * @param trustedProxies 授信反向代理 IP / CIDR 网段集合
+     * @return 客户端 IP 地址；若上下文无请求则返回空串
+     */
+    public static String getClientIp(Collection<String> trustedProxies) {
+        return getClientIp(ServletUtil.getRequest(), trustedProxies);
+    }
+
+    /**
      * 从指定 HttpServletRequest 提取客户端真实 IP 地址
+     * 默认遵循全局 {@link #getDefaultTrustedProxies()} 授信反向代理防伪造校验
      *
      * @param request HTTP 请求对象
      * @return 客户端 IP 地址；若请求为 null 则返回空串
      */
     public static String getClientIp(HttpServletRequest request) {
+        return getClientIp(request, defaultTrustedProxies);
+    }
+
+    /**
+     * 从指定 HttpServletRequest 提取客户端真实 IP 地址（配合授信反向代理防伪造校验）
+     * 当 trustedProxies 为空时，保持 100% 既有无授信限制提取行为兼容；
+     * 当 trustedProxies 非空时，校验直连 remoteAddr 是否为授信代理：若非授信代理直接返回 remoteAddr 防伪造，
+     * 若为授信代理则从转发链路中逆向剔除授信代理跳点提取首个未授信的真实客户端 IP
+     *
+     * @param request        HTTP 请求对象
+     * @param trustedProxies 授信反向代理 IP / CIDR 网段集合
+     * @return 客户端真实 IP 地址；若请求为 null 则返回空串
+     */
+    public static String getClientIp(HttpServletRequest request, Collection<String> trustedProxies) {
         if (request == null) {
             return "";
         }
+        if (trustedProxies == null || trustedProxies.isEmpty()) {
+            return extractIpUnchecked(request);
+        }
 
+        String remoteAddr = request.getRemoteAddr();
+        String normalizedRemote = normalizeIp(remoteAddr);
+
+        // 如果直连客户端不是授信代理，则转发头（X-Forwarded-For 等）不可信，直接返回 remoteAddr 防伪造
+        if (!isInRange(normalizedRemote, trustedProxies)) {
+            return normalizedRemote != null ? normalizedRemote : "";
+        }
+
+        // 授信代理场景：遍历候选请求头，从转发链中逆向剔除授信代理跳点提取真实客户端 IP
+        String clientIp = null;
+        String fallbackTrustedIp = null;
+        for (String header : IP_HEADER_CANDIDATES) {
+            String value = request.getHeader(header);
+            if (value == null || value.isBlank()) {
+                continue;
+            }
+            String[] parts = value.split(",");
+            List<String> ipList = new ArrayList<>();
+            for (String part : parts) {
+                String candidate = normalizeIp(part);
+                if (isValidIp(candidate)) {
+                    ipList.add(candidate);
+                }
+            }
+            if (ipList.isEmpty()) {
+                continue;
+            }
+
+            // 从右向左（距当前代理最近的上一跳开始）查找首个非授信代理的真实客户端 IP
+            for (int i = ipList.size() - 1; i >= 0; i--) {
+                String candidate = ipList.get(i);
+                if (!isInRange(candidate, trustedProxies)) {
+                    clientIp = candidate;
+                    break;
+                }
+            }
+
+            // 若找到非授信真实客户端 IP，立即结束候选头遍历
+            if (clientIp != null) {
+                break;
+            }
+
+            // 若当前请求头内所有 IP 均为授信代理，记录链路最左端作为全授信链路兜底候选
+            if (fallbackTrustedIp == null) {
+                fallbackTrustedIp = ipList.get(0);
+            }
+        }
+
+        String ip = clientIp != null ? clientIp : (fallbackTrustedIp != null ? fallbackTrustedIp : normalizedRemote);
+        return ip != null ? ip : "";
+    }
+
+    private static String extractIpUnchecked(HttpServletRequest request) {
         String ip = null;
         for (String header : IP_HEADER_CANDIDATES) {
             String value = request.getHeader(header);
@@ -61,14 +256,17 @@ public final class IpUtil {
             if (value.contains(",")) {
                 String[] parts = value.split(",");
                 for (String part : parts) {
-                    String trimmed = part.trim();
+                    String trimmed = normalizeIp(part);
                     if (isValidIp(trimmed)) {
                         ip = trimmed;
                         break;
                     }
                 }
-            } else if (isValidIp(value.trim())) {
-                ip = value.trim();
+            } else {
+                String candidate = normalizeIp(value);
+                if (isValidIp(candidate)) {
+                    ip = candidate;
+                }
             }
             if (isValidIp(ip)) {
                 break;
@@ -83,14 +281,7 @@ public final class IpUtil {
             return "";
         }
 
-        ip = ip.trim();
-
-        // IPv6 本地环回转换为标准 IPv4 环回
-        if (LOCAL_IPV6.equals(ip) || LOCAL_IPV6_SHORT.equals(ip) || (LOCAL_IPV6 + "%0").equals(ip)) {
-            return LOCAL_IPV4;
-        }
-
-        return ip;
+        return normalizeIp(ip);
     }
 
     /**

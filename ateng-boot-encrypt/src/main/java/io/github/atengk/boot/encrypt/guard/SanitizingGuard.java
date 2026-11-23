@@ -1,12 +1,14 @@
 package io.github.atengk.boot.encrypt.guard;
 
 import io.github.atengk.boot.encrypt.config.EncryptProperties;
+import io.github.atengk.boot.encrypt.detector.KeyDetector;
 import io.github.atengk.boot.encrypt.parser.CiphertextParser;
 import io.github.atengk.boot.encrypt.wrapper.EncryptPropertySourceWrapper;
 import org.springframework.boot.actuate.endpoint.SanitizableData;
 import org.springframework.boot.actuate.endpoint.SanitizingFunction;
 import org.springframework.core.env.PropertySource;
 
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 /**
@@ -47,7 +49,16 @@ public class SanitizingGuard implements SanitizingFunction {
             return data;
         }
 
-        // 1. 若属性源为 EncryptPropertySourceWrapper 且曾包含密文标记
+        // 1. 前置硬规则：主密钥、环境变量主密钥及任意多密钥命名映射项一律无条件物理掩码（不受自定义敏感词正则覆盖影响）
+        String normalizedKey = key.toLowerCase(Locale.ROOT);
+        if (KeyDetector.PROPERTY_PASSWORD.equals(normalizedKey)
+                || KeyDetector.ENV_PASSWORD.equalsIgnoreCase(key)
+                || normalizedKey.startsWith(KeyDetector.KEYS_PREFIX)
+                || normalizedKey.startsWith("ateng.boot.encrypt.keys[")) {
+            return data.withSanitizedValue();
+        }
+
+        // 2. 若属性源为 EncryptPropertySourceWrapper 且曾包含密文标记
         PropertySource<?> source = data.getPropertySource();
         if (source instanceof EncryptPropertySourceWrapper wrapper) {
             if (wrapper.isEncryptedProperty(key)) {
@@ -55,13 +66,13 @@ public class SanitizingGuard implements SanitizingFunction {
             }
         }
 
-        // 2. 若值本身包含密文标记
+        // 3. 若值本身包含密文标记
         Object value = data.getValue();
         if (value instanceof String strVal && parser.hasEncrypted(strVal)) {
             return data.withSanitizedValue();
         }
 
-        // 3. 若键名匹配敏感属性正则模式
+        // 4. 若键名匹配敏感属性正则模式
         if (sensitivePattern.matcher(key).matches()) {
             return data.withSanitizedValue();
         }

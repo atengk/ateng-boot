@@ -38,7 +38,7 @@ public class RedisIdempotentTemplate {
     }
 
     /**
-     * 最简防重幂等执行闭包（带返回值，默认继承全局 TTL 与 deleteOnFailure=true 配置）
+     * 最简防重幂等执行闭包（带返回值，默认继承全局 TTL 与 deleteOnFailure 配置）
      *
      * @param key 业务幂等键
      * @param supplier 受保护业务闭包
@@ -48,11 +48,11 @@ public class RedisIdempotentTemplate {
      * @throws E 业务受控异常
      */
     public <T, E extends Throwable> T execute(String key, IdempotentSupplier<T, E> supplier) throws E {
-        return execute(null, key, null, true, null, supplier);
+        return execute(null, key, null, isDefaultDeleteOnFailure(), null, supplier);
     }
 
     /**
-     * 带指定 TTL 的防重幂等执行闭包（带返回值，默认 deleteOnFailure=true）
+     * 带指定 TTL 的防重幂等执行闭包（带返回值，默认继承全局 deleteOnFailure 配置）
      *
      * @param key 业务幂等键
      * @param ttl 凭据保留时长
@@ -63,7 +63,7 @@ public class RedisIdempotentTemplate {
      * @throws E 业务受控异常
      */
     public <T, E extends Throwable> T execute(String key, Duration ttl, IdempotentSupplier<T, E> supplier) throws E {
-        return execute(null, key, ttl, true, null, supplier);
+        return execute(null, key, ttl, isDefaultDeleteOnFailure(), null, supplier);
     }
 
     /**
@@ -178,11 +178,11 @@ public class RedisIdempotentTemplate {
      * @throws E 业务受控异常
      */
     public <E extends Throwable> void execute(String key, IdempotentAction<E> action) throws E {
-        execute(null, key, null, true, null, action);
+        execute(null, key, null, isDefaultDeleteOnFailure(), null, action);
     }
 
     /**
-     * 带指定 TTL 的无返回值防重幂等执行闭包
+     * 带指定 TTL 的无返回值防重幂等执行闭包（默认继承全局 deleteOnFailure 配置）
      *
      * @param key 业务幂等键
      * @param ttl 凭据保留时长
@@ -191,7 +191,7 @@ public class RedisIdempotentTemplate {
      * @throws E 业务受控异常
      */
     public <E extends Throwable> void execute(String key, Duration ttl, IdempotentAction<E> action) throws E {
-        execute(null, key, ttl, true, null, action);
+        execute(null, key, ttl, isDefaultDeleteOnFailure(), null, action);
     }
 
     /**
@@ -464,30 +464,12 @@ public class RedisIdempotentTemplate {
      */
     public String formatKey(String customPrefix, String key) {
         Assert.hasText(key, "idempotent key must not be blank");
-        String prefix = customPrefix != null
+        String prefix = StringUtils.hasText(customPrefix)
                 ? customPrefix
                 : (redisProperties.getIdempotent() != null && redisProperties.getIdempotent().getPrefix() != null
                         ? redisProperties.getIdempotent().getPrefix()
                         : "idempotent:");
-
-        String globalPrefix = redisProperties.getKeyPrefix();
-        StringBuilder sb = new StringBuilder();
-        if (StringUtils.hasText(globalPrefix)) {
-            String trimmedGlobal = globalPrefix.trim();
-            sb.append(trimmedGlobal);
-            if (!trimmedGlobal.endsWith(":")) {
-                sb.append(":");
-            }
-        }
-        if (StringUtils.hasText(prefix)) {
-            String trimmedPrefix = prefix.trim();
-            sb.append(trimmedPrefix);
-            if (!trimmedPrefix.endsWith(":") && !key.startsWith(":")) {
-                sb.append(":");
-            }
-        }
-        sb.append(key.trim());
-        return sb.toString();
+        return redisProperties.buildKey(prefix, key.trim());
     }
 
     private Duration resolveEffectiveTtl(Duration ttl) {
@@ -498,5 +480,9 @@ public class RedisIdempotentTemplate {
             return redisProperties.getIdempotent().getDefaultExpire();
         }
         return Duration.ofMinutes(10);
+    }
+
+    private boolean isDefaultDeleteOnFailure() {
+        return redisProperties.getIdempotent() == null || redisProperties.getIdempotent().isDeleteOnFailure();
     }
 }

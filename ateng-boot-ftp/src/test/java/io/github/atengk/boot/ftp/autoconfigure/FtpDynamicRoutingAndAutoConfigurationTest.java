@@ -1,6 +1,7 @@
 package io.github.atengk.boot.ftp.autoconfigure;
 
 import io.github.atengk.boot.ftp.context.FtpContextHolder;
+import io.github.atengk.boot.ftp.customizer.FtpClientCustomizer;
 import io.github.atengk.boot.ftp.exception.FtpException;
 import io.github.atengk.boot.ftp.exception.FtpResultCode;
 import io.github.atengk.boot.ftp.properties.FtpProperties;
@@ -106,7 +107,7 @@ class FtpDynamicRoutingAndAutoConfigurationTest {
 
         // 使用自动装配逻辑初始化注册表与主门面
         AtengFtpAutoConfiguration autoConfig = new AtengFtpAutoConfiguration();
-        registry = autoConfig.ftpClientRegistry(properties);
+        registry = autoConfig.ftpClientRegistry(properties, null);
         FtpTemplate ftpTemplate = autoConfig.ftpTemplate(registry);
 
         assertThat(registry.getServerNames()).containsExactlyInAnyOrder("default", "archive");
@@ -161,6 +162,31 @@ class FtpDynamicRoutingAndAutoConfigurationTest {
                     assertThat(context).hasSingleBean(FtpClientRegistry.class);
                     assertThat(context.getBean(FtpTemplate.class)).isSameAs(mockTemplate);
                     assertThat(context.getBean(FtpClientRegistry.class)).isSameAs(mockRegistry);
+                });
+    }
+
+    @Test
+    @DisplayName("测试自动装配收集 FtpClientCustomizer SPI 并在建连时触发定制回调")
+    void testAutoConfigurationInjectsFtpClientCustomizer() {
+        java.util.List<String> customizedServers = new java.util.concurrent.CopyOnWriteArrayList<>();
+        FtpClientCustomizer customizer = (serverName, client, props) -> {
+            customizedServers.add(serverName);
+            client.setListHiddenFiles(true);
+        };
+
+        contextRunner.withPropertyValues(
+                        "ateng.boot.ftp.host=127.0.0.1",
+                        "ateng.boot.ftp.port=" + server1.getServerControlPort(),
+                        "ateng.boot.ftp.username=" + USERNAME,
+                        "ateng.boot.ftp.password=" + PASSWORD
+                )
+                .withBean(FtpClientCustomizer.class, () -> customizer)
+                .run(context -> {
+                    FtpTemplate template = context.getBean(FtpTemplate.class);
+                    assertThat(template.testConnection()).isTrue();
+                    assertThat(customizedServers).contains("default");
+                    boolean hiddenEnabled = template.execute(org.apache.commons.net.ftp.FTPClient::getListHiddenFiles);
+                    assertThat(hiddenEnabled).isTrue();
                 });
     }
 }

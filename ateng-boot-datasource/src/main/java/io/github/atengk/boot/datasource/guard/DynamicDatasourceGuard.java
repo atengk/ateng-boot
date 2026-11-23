@@ -1,9 +1,16 @@
 package io.github.atengk.boot.datasource.guard;
 
+import com.baomidou.dynamic.datasource.DynamicRoutingDataSource;
 import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
 import com.baomidou.dynamic.datasource.tx.TransactionContext;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.datasource.enums.MultiTenancyMode;
 import io.github.atengk.boot.datasource.exception.DataSourceSwitchException;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
+import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteManager;
+import io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource;
+import io.github.atengk.boot.datasource.tenant.DefaultTenantDataSourceProvider;
+import io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.annotation.AnnotatedElementUtils;
@@ -15,6 +22,7 @@ import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Method;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 /**
  * 动态数据源事务切源安全守卫
@@ -36,9 +44,30 @@ public class DynamicDatasourceGuard {
     public static final String TX_BOUND_DATASOURCE_RESOURCE_KEY = "ATENG_TX_BOUND_DATASOURCE_KEY";
 
     private final DatasourceProperties datasourceProperties;
+    private final Supplier<TenantDataSourceProvider> tenantDataSourceProviderSupplier;
+    private final Supplier<ReadAfterWriteManager> readAfterWriteManagerSupplier;
+    private final Supplier<DynamicRoutingDataSource> routingDataSourceSupplier;
 
     public DynamicDatasourceGuard(DatasourceProperties datasourceProperties) {
+        this(datasourceProperties, null, null, null);
+    }
+
+    /**
+     * 构造具备租户感知与写后即读对齐能力的事务切源安全守卫
+     *
+     * @param datasourceProperties             数据源配置属性
+     * @param tenantDataSourceProviderSupplier 租户数据源解析器提供者
+     * @param readAfterWriteManagerSupplier    写后即读协调管理器提供者
+     * @param routingDataSourceSupplier        动态路由数据源提供者
+     */
+    public DynamicDatasourceGuard(DatasourceProperties datasourceProperties,
+                                  Supplier<TenantDataSourceProvider> tenantDataSourceProviderSupplier,
+                                  Supplier<ReadAfterWriteManager> readAfterWriteManagerSupplier,
+                                  Supplier<DynamicRoutingDataSource> routingDataSourceSupplier) {
         this.datasourceProperties = datasourceProperties != null ? datasourceProperties : new DatasourceProperties();
+        this.tenantDataSourceProviderSupplier = tenantDataSourceProviderSupplier;
+        this.readAfterWriteManagerSupplier = readAfterWriteManagerSupplier;
+        this.routingDataSourceSupplier = routingDataSourceSupplier;
     }
 
     /**
@@ -164,30 +193,42 @@ public class DynamicDatasourceGuard {
             }
         }
 
-        // 若尚未记录，则取当前线程栈顶数据源，栈为空则取默认主库
+        // 若尚未记录，则取当前线程栈顶数据源，栈为空则按租户与读写分离拓扑解析默认数据源
         String currentKey = DynamicDataSourceContextHolder.peek();
         if (!StringUtils.hasText(currentKey)) {
             currentKey = resolveDefaultDataSourceKey();
         }
 
-        // 若当前事务同步机制已激活，将初始数据源绑定至事务资源表，并在事务完成时解绑
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            try {
-                TransactionSynchronizationManager.bindResource(TX_BOUND_DATASOURCE_RESOURCE_KEY, currentKey);
-                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                    @Override
-                    public void afterCompletion(int status) {
-                        if (TransactionSynchronizationManager.hasResource(TX_BOUND_DATASOURCE_RESOURCE_KEY)) {
-                            TransactionSynchronizationManager.unbindResource(TX_BOUND_DATASOURCE_RESOURCE_KEY);
-                        }
-                    }
-                });
-            } catch (Throwable t) {
-                log.debug("注册事务数据源解绑同步器异常: {}", t.getMessage());
-            }
-        }
-
+        bindTransactionDataSourceKeyIfAbsent(currentKey);
         return currentKey;
+    }
+
+    /**
+     * 当处于活动 Spring 本地事务且尚未绑定数据源标识时，绑定当前事务数据源并注册事务完结解绑同步器
+     *
+     * @param dsKey 实际绑定的数据源标识
+     */
+    public static void bindTransactionDataSourceKeyIfAbsent(String dsKey) {
+        if (!StringUtils.hasText(dsKey)
+                || StringUtils.hasText(TransactionContext.getXID())
+                || !TransactionSynchronizationManager.isActualTransactionActive()
+                || !TransactionSynchronizationManager.isSynchronizationActive()
+                || TransactionSynchronizationManager.hasResource(TX_BOUND_DATASOURCE_RESOURCE_KEY)) {
+            return;
+        }
+        try {
+            TransactionSynchronizationManager.bindResource(TX_BOUND_DATASOURCE_RESOURCE_KEY, dsKey);
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCompletion(int status) {
+                    if (TransactionSynchronizationManager.hasResource(TX_BOUND_DATASOURCE_RESOURCE_KEY)) {
+                        TransactionSynchronizationManager.unbindResource(TX_BOUND_DATASOURCE_RESOURCE_KEY);
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            log.debug("注册事务数据源解绑同步器异常: {}", t.getMessage());
+        }
     }
 
     /**
@@ -210,23 +251,121 @@ public class DynamicDatasourceGuard {
     }
 
     /**
-     * 解析当前事务默认数据源 Key（感知读写分离事务状态）
+     * 解析当前事务默认数据源 Key（优先复用 AtengDynamicRoutingDataSource 统一路由推导）
      */
     private String resolveDefaultDataSourceKey() {
-        if (datasourceProperties.getReadWriteSplit() != null && datasourceProperties.getReadWriteSplit().isEnabled()) {
-            if (TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
-                String slaveKey = datasourceProperties.getReadWriteSplit().getSlaveDataSource();
-                if (StringUtils.hasText(slaveKey)) {
+        DynamicRoutingDataSource routingDs = routingDataSourceSupplier != null ? routingDataSourceSupplier.get() : null;
+        if (routingDs instanceof AtengDynamicRoutingDataSource atengRouting) {
+            return atengRouting.resolveDefaultRoutingKey();
+        }
+
+        DatasourceProperties.ReadWriteSplitProperties readWrite = datasourceProperties.getReadWriteSplit();
+        DatasourceProperties.MultiTenancyProperties multiTenancy = datasourceProperties.getMultiTenancy();
+
+        String masterKey = (readWrite != null && StringUtils.hasText(readWrite.getMasterDataSource()))
+                ? readWrite.getMasterDataSource()
+                : (multiTenancy != null && StringUtils.hasText(multiTenancy.getDefaultDataSource()) ? multiTenancy.getDefaultDataSource() : "master");
+        String slaveKey = (readWrite != null && StringUtils.hasText(readWrite.getSlaveDataSource()))
+                ? readWrite.getSlaveDataSource()
+                : "slave";
+
+        boolean readWriteEnabled = readWrite != null && readWrite.isEnabled();
+        boolean readOnly = TransactionSynchronizationManager.isCurrentTransactionReadOnly()
+                || TransactionRoutingContext.isStartingReadOnly();
+        ReadAfterWriteManager rawManager = readAfterWriteManagerSupplier != null ? readAfterWriteManagerSupplier.get() : null;
+        boolean writeOccurred = readWriteEnabled && rawManager != null && rawManager.isWriteOccurred();
+
+        // 1. 物理多租户透明路由降级推导（用于未挂载 AtengDynamicRoutingDataSource 的纯单测/自定义路由场景）
+        String currentTenantId = TenantContextHolder.getTenantId();
+        boolean hasTenant = StringUtils.hasText(currentTenantId) && !TenantContextHolder.isIgnoreTenant();
+        if (multiTenancy != null && multiTenancy.isEnabled() && hasTenant && multiTenancy.getMode() != MultiTenancyMode.IGNORE) {
+            String tenantMasterKey = resolveFallbackTenantMasterKey(currentTenantId, multiTenancy, routingDs);
+            boolean tenantMasterExists = StringUtils.hasText(tenantMasterKey) && (routingDs == null || containsDataSource(routingDs, tenantMasterKey));
+            if (tenantMasterExists) {
+                if (readWriteEnabled && readOnly && !writeOccurred) {
+                    String tenantSlaveKey = resolveFallbackTenantSlaveKey(currentTenantId, tenantMasterKey, multiTenancy, routingDs);
+                    if (StringUtils.hasText(tenantSlaveKey) && containsDataSource(routingDs, tenantSlaveKey)) {
+                        return tenantSlaveKey;
+                    }
+                }
+                return tenantMasterKey;
+            }
+            if (multiTenancy.getMode() == MultiTenancyMode.STRICT && StringUtils.hasText(tenantMasterKey)) {
+                return tenantMasterKey;
+            }
+        }
+
+        // 2. 全局读写分离路由（含写后即读回退主库）
+        if (readWriteEnabled) {
+            if (readOnly && !writeOccurred && StringUtils.hasText(slaveKey)) {
+                if (routingDs == null || containsDataSource(routingDs, slaveKey)) {
                     return slaveKey;
                 }
             }
-            if (StringUtils.hasText(datasourceProperties.getReadWriteSplit().getMasterDataSource())) {
-                return datasourceProperties.getReadWriteSplit().getMasterDataSource();
+            if (StringUtils.hasText(masterKey)) {
+                return masterKey;
             }
         }
-        if (datasourceProperties.getMultiTenancy() != null && StringUtils.hasText(datasourceProperties.getMultiTenancy().getDefaultDataSource())) {
-            return datasourceProperties.getMultiTenancy().getDefaultDataSource();
+
+        if (multiTenancy != null && StringUtils.hasText(multiTenancy.getDefaultDataSource())) {
+            return multiTenancy.getDefaultDataSource();
         }
         return "master";
+    }
+
+    private String resolveFallbackTenantMasterKey(String tenantId,
+                                                  DatasourceProperties.MultiTenancyProperties multiTenancy,
+                                                  DynamicRoutingDataSource routingDs) {
+        TenantDataSourceProvider provider = resolveProvider();
+        String key = provider.resolveMasterDataSourceKey(tenantId);
+        if (!StringUtils.hasText(key)) {
+            key = provider.resolveDataSourceKey(tenantId);
+        }
+        if (!StringUtils.hasText(key)) {
+            String prefix = multiTenancy.getDataSourcePrefix();
+            key = (prefix != null ? prefix : "") + tenantId;
+        }
+        if (routingDs != null && containsDataSource(routingDs, key + "_master")) {
+            return key + "_master";
+        }
+        return key;
+    }
+
+    private String resolveFallbackTenantSlaveKey(String tenantId,
+                                                 String tenantMasterKey,
+                                                 DatasourceProperties.MultiTenancyProperties multiTenancy,
+                                                 DynamicRoutingDataSource routingDs) {
+        TenantDataSourceProvider provider = resolveProvider();
+        String slaveKey = provider.resolveSlaveDataSourceKey(tenantId);
+        if (StringUtils.hasText(slaveKey) && (routingDs == null || containsDataSource(routingDs, slaveKey))) {
+            return slaveKey;
+        }
+        if (routingDs != null) {
+            if (StringUtils.hasText(tenantMasterKey) && containsDataSource(routingDs, tenantMasterKey + "_slave")) {
+                return tenantMasterKey + "_slave";
+            }
+            String prefix = multiTenancy.getDataSourcePrefix();
+            String defaultPrefixSlave = (prefix != null ? prefix : "") + tenantId + "_slave";
+            if (containsDataSource(routingDs, defaultPrefixSlave)) {
+                return defaultPrefixSlave;
+            }
+            String rawKey = (prefix != null ? prefix : "") + tenantId;
+            if (routingDs.getGroupDataSources().containsKey(rawKey)) {
+                return rawKey;
+            }
+        }
+        return slaveKey;
+    }
+
+    private TenantDataSourceProvider resolveProvider() {
+        TenantDataSourceProvider provider = tenantDataSourceProviderSupplier != null ? tenantDataSourceProviderSupplier.get() : null;
+        return provider != null ? provider : new DefaultTenantDataSourceProvider(datasourceProperties);
+    }
+
+    private boolean containsDataSource(DynamicRoutingDataSource routingDs, String dsKey) {
+        if (routingDs == null || !StringUtils.hasText(dsKey)) {
+            return false;
+        }
+        return routingDs.getDataSources().containsKey(dsKey) || routingDs.getGroupDataSources().containsKey(dsKey);
     }
 }

@@ -54,12 +54,55 @@ public interface StateMachineBuilder<S, E, C> {
     ChoiceTransitionBuilder.From<S, E, C> choiceTransition();
 
     /**
+     * 声明状态节点生命周期装配入口 (Entry / Exit)
+     *
+     * @param state 目标业务状态节点
+     * @return 状态生命周期构建器
+     */
+    StateLifecycleBuilder<S, E, C> state(S state);
+
+    /**
      * 挂载状态机切面拦截器
      *
      * @param interceptor 拦截器
      * @return 当前构建器
      */
     StateMachineBuilder<S, E, C> interceptor(io.github.atengk.boot.statemachine.core.StateMachineInterceptor<? super S, ? super E, ? super C> interceptor);
+
+    /**
+     * 挂载状态流转轨迹审计监听器
+     *
+     * @param auditListener 审计监听器
+     * @return 当前构建器
+     */
+    StateMachineBuilder<S, E, C> auditListener(io.github.atengk.boot.statemachine.core.StateTransitionAuditListener<? super S, ? super E, ? super C> auditListener);
+
+    /**
+     * 配置状态机全局默认终态幂等放行策略模型
+     *
+     * @param strategy 幂等策略
+     * @return 当前构建器
+     */
+    StateMachineBuilder<S, E, C> idempotentStrategy(io.github.atengk.boot.statemachine.enums.IdempotentStrategy strategy);
+
+    /**
+     * 配置状态机全局默认终态幂等放行策略
+     *
+     * @param idempotent 是否全局默认开启终态幂等放行
+     * @return 当前构建器
+     */
+    default StateMachineBuilder<S, E, C> idempotent(boolean idempotent) {
+        return idempotentStrategy(idempotent ? io.github.atengk.boot.statemachine.enums.IdempotentStrategy.ACCEPT : io.github.atengk.boot.statemachine.enums.IdempotentStrategy.NONE);
+    }
+
+    /**
+     * 开启状态机全局默认终态幂等放行策略
+     *
+     * @return 当前构建器
+     */
+    default StateMachineBuilder<S, E, C> idempotent() {
+        return idempotent(true);
+    }
 
     /**
      * 构建只读不可变状态机实例

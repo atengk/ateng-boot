@@ -1,5 +1,6 @@
 package io.github.atengk.boot.web.util;
 
+import io.github.atengk.boot.core.util.JsonUtil;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -30,6 +31,7 @@ public final class ServletUtil {
     public static final String HEADER_ACCEPT = "Accept";
     public static final String HEADER_CONTENT_TYPE = "Content-Type";
     public static final String HEADER_CONTENT_DISPOSITION = "Content-Disposition";
+    public static final String HEADER_USER_AGENT = "User-Agent";
     public static final String HEADER_X_REQUESTED_WITH = "X-Requested-With";
     public static final String XML_HTTP_REQUEST = "XMLHttpRequest";
 
@@ -86,6 +88,25 @@ public final class ServletUtil {
             return null;
         }
         return request.getHeader(name);
+    }
+
+    /**
+     * 获取当前 HTTP 请求上下文中的 User-Agent 请求头
+     *
+     * @return User-Agent 请求头值；无对应值或无请求上下文时返回 null
+     */
+    public static String getUserAgent() {
+        return getUserAgent(getRequest());
+    }
+
+    /**
+     * 获取指定 HTTP 请求中的 User-Agent 请求头
+     *
+     * @param request HTTP 请求对象
+     * @return User-Agent 请求头值；无对应值或请求为 null 时返回 null
+     */
+    public static String getUserAgent(HttpServletRequest request) {
+        return getHeader(request, HEADER_USER_AGENT);
     }
 
     /**
@@ -181,6 +202,33 @@ public final class ServletUtil {
         }
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        response.getWriter().write(json);
+        response.getWriter().flush();
+    }
+
+    /**
+     * 向响应直接写入状态码与序列化为 JSON 的对象
+     *
+     * @param response HTTP 响应对象
+     * @param status   HTTP 状态码（如 HttpServletResponse.SC_OK）
+     * @param object   待序列化输出的对象（若为 String 则直接输出，否则通过 JsonUtil 序列化）
+     * @throws IOException 写入异常
+     */
+    public static void writeJson(HttpServletResponse response, int status, Object object) throws IOException {
+        if (response == null) {
+            return;
+        }
+        response.setStatus(status);
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        String json;
+        if (object == null) {
+            json = "{}";
+        } else if (object instanceof String str) {
+            json = str;
+        } else {
+            json = JsonUtil.toJsonString(object);
+        }
         response.getWriter().write(json);
         response.getWriter().flush();
     }

@@ -2,6 +2,7 @@ package io.github.atengk.boot.tcp.config;
 
 import io.github.atengk.boot.tcp.client.TcpClient;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
+import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.template.TcpClientTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -9,6 +10,9 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -50,6 +54,15 @@ class TcpClientAutoConfigurationTest {
             assertThat(context).hasSingleBean(TcpRequestCorrelationManager.class);
             assertThat(context).hasSingleBean(TcpClient.class);
             assertThat(context).hasSingleBean(TcpClientTemplate.class);
+            TcpClient client = context.getBean(TcpClient.class);
+            TcpClientTemplate template = context.getBean(TcpClientTemplate.class);
+            TcpRequestCorrelationManager globalManager = context.getBean(TcpRequestCorrelationManager.class);
+            assertThat(client.getCorrelationManager()).isNotNull().isNotSameAs(globalManager);
+            assertThat(template.getCorrelationManager()).isSameAs(client.getCorrelationManager());
+
+            CompletableFuture<TcpPacket> pending = client.getCorrelationManager().register("REQ-CLIENT-CLOSE", Duration.ofSeconds(10));
+            context.close();
+            assertThat(pending.isCompletedExceptionally()).isTrue();
         });
     }
 

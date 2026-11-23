@@ -3,25 +3,31 @@ package io.github.atengk.boot.storage.driver;
 import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
+import io.github.atengk.boot.storage.model.PresignedDownloadRequest;
 import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
+import io.github.atengk.boot.storage.util.StorageHashUtil;
 import io.github.atengk.boot.storage.util.StorageSecurityUtil;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.util.unit.DataSize;
 
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URLEncoder;
+import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
-import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
@@ -30,6 +36,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -85,12 +92,42 @@ public class LocalDriver implements StorageDriver {
     private final String sourceName;
 
     /**
+     * 单分片上传允许的最大字节上限
+     */
+    private final long maxChunkSizeBytes;
+
+    /**
+     * 本地存储对象标签并发映射容器
+     */
+    private final Map<String, Map<String, String>> objectTagsMap = new ConcurrentHashMap<>();
+
+    /**
+     * 本地存储对象自定义元数据并发映射容器（用于跨驱动转移与元数据回查保留）
+     */
+    private final Map<String, Map<String, String>> userMetadataMap = new ConcurrentHashMap<>();
+
+    /**
+     * 本地存储对象声明 MIME 类型并发映射容器
+     */
+    private final Map<String, String> contentTypeMap = new ConcurrentHashMap<>();
+
+    /**
      * 构造基础本地磁盘驱动（自动生成随机密钥）
      *
      * @param basePath 本地存储物理基准路径
      */
     public LocalDriver(String basePath) {
         this(basePath, null, null, DEFAULT_DOWNLOAD_ENDPOINT, DEFAULT_UPLOAD_ENDPOINT, null);
+    }
+
+    /**
+     * 基础参数构造本地磁盘驱动（带访问域名）
+     *
+     * @param basePath 本地存储物理基准路径
+     * @param domain   访问域名或基础 URL
+     */
+    public LocalDriver(String basePath, String domain) {
+        this(basePath, domain, null, DEFAULT_DOWNLOAD_ENDPOINT, DEFAULT_UPLOAD_ENDPOINT, null);
     }
 
     /**
@@ -140,6 +177,21 @@ public class LocalDriver implements StorageDriver {
      * @param sourceName       绑定的命名存储源名称（多源模式下使用）
      */
     public LocalDriver(String basePath, String domain, String secretKey, String downloadEndpoint, String uploadEndpoint, String sourceName) {
+        this(basePath, domain, secretKey, downloadEndpoint, uploadEndpoint, sourceName, null);
+    }
+
+    /**
+     * 完整多源与分片限流参数构造本地磁盘驱动
+     *
+     * @param basePath         本地存储物理基准路径
+     * @param domain           访问域名或基础 URL
+     * @param secretKey        签名密钥（留空时自动生成安全随机密钥）
+     * @param downloadEndpoint 预签名安全下载端点
+     * @param uploadEndpoint   预签名安全直传端点
+     * @param sourceName       绑定的命名存储源名称（多源模式下使用）
+     * @param maxChunkSize     单个分片允许的最大容量上限（为空时回退 100MB）
+     */
+    public LocalDriver(String basePath, String domain, String secretKey, String downloadEndpoint, String uploadEndpoint, String sourceName, DataSize maxChunkSize) {
         if (basePath == null || basePath.isBlank()) {
             throw new StorageException(StorageResultCode.INVALID_PATH, "本地存储基础路径 basePath 不能为空");
         }
@@ -164,21 +216,44 @@ public class LocalDriver implements StorageDriver {
         this.sourceName = (sourceName != null && !sourceName.isBlank())
                 ? sourceName.trim()
                 : null;
+        this.maxChunkSizeBytes = StorageSecurityUtil.resolveMaxChunkSizeBytes(maxChunkSize);
     }
 
     @Override
     public StorageObject upload(String path, InputStream in, String contentType, long size) {
+        return writeObject(path, in, contentType, size, null, true);
+    }
+
+    @Override
+    public StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata) {
+        return writeObject(path, in, contentType, size, userMetadata, true);
+    }
+
+    @Override
+    public StorageObject uploadIfAbsent(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata, boolean publicRead) {
+        return writeObject(path, in, contentType, size, userMetadata, false);
+    }
+
+    private StorageObject writeObject(String path, InputStream in, String contentType, long size,
+                                      Map<String, String> userMetadata, boolean overwrite) {
         if (in == null) {
             throw new StorageException(StorageResultCode.UPLOAD_FAILED, "上传对象输入流不能为空");
         }
         String cleanPath = StorageSecurityUtil.normalizePath(path);
         Path targetFile = resolveAndVerify(cleanPath);
+        if (!overwrite && Files.exists(targetFile)) {
+            throw new StorageException(StorageResultCode.STORAGE_OBJECT_ALREADY_EXISTS, "目标存储对象已存在，禁止覆盖写入: " + cleanPath);
+        }
         try {
             Path parent = targetFile.getParent();
             if (parent != null && !Files.exists(parent)) {
                 Files.createDirectories(parent);
             }
-            Files.copy(in, targetFile, StandardCopyOption.REPLACE_EXISTING);
+            if (overwrite) {
+                Files.copy(in, targetFile, StandardCopyOption.REPLACE_EXISTING);
+            } else {
+                Files.copy(in, targetFile);
+            }
 
             long actualSize = size > 0 ? size : Files.size(targetFile);
             String finalContentType = (contentType != null && !contentType.isBlank())
@@ -186,6 +261,16 @@ public class LocalDriver implements StorageDriver {
                     : StorageSecurityUtil.determineContentType(cleanPath);
             Instant lastModified = Files.getLastModifiedTime(targetFile).toInstant();
             String etag = calculateEtag(targetFile);
+            Map<String, String> immutableMetadata = (userMetadata != null && !userMetadata.isEmpty())
+                    ? Map.copyOf(userMetadata)
+                    : Collections.emptyMap();
+
+            contentTypeMap.put(cleanPath, finalContentType);
+            if (!immutableMetadata.isEmpty()) {
+                userMetadataMap.put(cleanPath, immutableMetadata);
+            } else {
+                userMetadataMap.remove(cleanPath);
+            }
 
             return StorageObject.builder()
                     .path(cleanPath)
@@ -193,20 +278,14 @@ public class LocalDriver implements StorageDriver {
                     .size(actualSize)
                     .contentType(finalContentType)
                     .etag(etag)
+                    .userMetadata(immutableMetadata)
                     .lastModified(lastModified)
                     .build();
+        } catch (FileAlreadyExistsException e) {
+            throw new StorageException(StorageResultCode.STORAGE_OBJECT_ALREADY_EXISTS, "目标存储对象已存在，禁止覆盖写入: " + cleanPath, e);
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.UPLOAD_FAILED, "文件写入本地磁盘失败: " + cleanPath, e);
         }
-    }
-
-    @Override
-    public StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata) {
-        StorageObject obj = upload(path, in, contentType, size);
-        if (userMetadata != null && !userMetadata.isEmpty()) {
-            obj.setUserMetadata(Map.copyOf(userMetadata));
-        }
-        return obj;
     }
 
     @Override
@@ -254,6 +333,42 @@ public class LocalDriver implements StorageDriver {
     }
 
     @Override
+    public InputStream download(String path, long startOffset, long length) {
+        if (startOffset < 0) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "下载起始偏移量不能为负数: " + startOffset);
+        }
+        if (length <= 0) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "下载读取长度必须大于 0: " + length);
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        Path targetFile = resolveAndVerify(cleanPath);
+        if (!Files.exists(targetFile) || Files.isDirectory(targetFile)) {
+            throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "存储对象不存在: " + cleanPath);
+        }
+        try {
+            long fileSize = Files.size(targetFile);
+            if (startOffset >= fileSize) {
+                throw new StorageException(StorageResultCode.OPERATION_FAILED, "下载起始偏移量超出文件大小: offset=" + startOffset + ", fileSize=" + fileSize);
+            }
+            FileChannel channel = FileChannel.open(targetFile, StandardOpenOption.READ);
+            try {
+                channel.position(startOffset);
+                InputStream rawStream = Channels.newInputStream(channel);
+                return new BoundedInputStream(rawStream, length);
+            } catch (Exception e) {
+                try {
+                    channel.close();
+                } catch (IOException closeEx) {
+                    log.warn("分段读取异常释放 FileChannel 失败: path={}", cleanPath, closeEx);
+                }
+                throw e;
+            }
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.DOWNLOAD_FAILED, "分段读取本地文件失败: " + cleanPath, e);
+        }
+    }
+
+    @Override
     public StorageObject getMetadata(String path) {
         String cleanPath = StorageSecurityUtil.normalizePath(path);
         Path targetFile = resolveAndVerify(cleanPath);
@@ -263,8 +378,9 @@ public class LocalDriver implements StorageDriver {
         try {
             long size = Files.size(targetFile);
             Instant lastModified = Files.getLastModifiedTime(targetFile).toInstant();
-            String contentType = StorageSecurityUtil.determineContentType(cleanPath);
+            String contentType = contentTypeMap.getOrDefault(cleanPath, StorageSecurityUtil.determineContentType(cleanPath));
             String etag = calculateEtag(targetFile);
+            Map<String, String> userMetadata = userMetadataMap.getOrDefault(cleanPath, Collections.emptyMap());
 
             return StorageObject.builder()
                     .path(cleanPath)
@@ -272,11 +388,51 @@ public class LocalDriver implements StorageDriver {
                     .size(size)
                     .contentType(contentType)
                     .etag(etag)
+                    .userMetadata(userMetadata)
                     .lastModified(lastModified)
                     .build();
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "获取本地文件元数据失败: " + cleanPath, e);
         }
+    }
+
+    @Override
+    public Map<String, String> getObjectTags(String path) {
+        if (path == null || path.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "存储路径不能为空");
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        Path targetFile = resolveAndVerify(cleanPath);
+        if (!Files.exists(targetFile) || Files.isDirectory(targetFile)) {
+            throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "存储对象不存在: " + cleanPath);
+        }
+        Map<String, String> tags = objectTagsMap.get(cleanPath);
+        return tags != null ? Collections.unmodifiableMap(tags) : Collections.emptyMap();
+    }
+
+    @Override
+    public void setObjectTags(String path, Map<String, String> tags) {
+        if (path == null || path.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "存储路径不能为空");
+        }
+        if (tags == null || tags.isEmpty()) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "设置对象标签不能为空");
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        Path targetFile = resolveAndVerify(cleanPath);
+        if (!Files.exists(targetFile) || Files.isDirectory(targetFile)) {
+            throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "存储对象不存在: " + cleanPath);
+        }
+        objectTagsMap.put(cleanPath, Map.copyOf(tags));
+    }
+
+    @Override
+    public void deleteObjectTags(String path) {
+        if (path == null || path.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "存储路径不能为空");
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        objectTagsMap.remove(cleanPath);
     }
 
     @Override
@@ -306,6 +462,9 @@ public class LocalDriver implements StorageDriver {
                 return true;
             }
             Files.deleteIfExists(targetFile);
+            objectTagsMap.remove(cleanPath);
+            userMetadataMap.remove(cleanPath);
+            contentTypeMap.remove(cleanPath);
             return true;
         } catch (StorageException e) {
             throw e;
@@ -385,6 +544,7 @@ public class LocalDriver implements StorageDriver {
                 Files.createDirectories(dst.getParent());
             }
             Files.copy(src, dst, StandardCopyOption.REPLACE_EXISTING);
+            transferMetadataMaps(cleanSource, cleanTarget, false);
             return true;
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "复制本地文件失败: " + sourcePath + " -> " + targetPath, e);
@@ -415,9 +575,27 @@ public class LocalDriver implements StorageDriver {
             } catch (AtomicMoveNotSupportedException e) {
                 Files.move(src, dst, StandardCopyOption.REPLACE_EXISTING);
             }
+            transferMetadataMaps(cleanSource, cleanTarget, true);
             return true;
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "移动本地文件失败: " + sourcePath + " -> " + targetPath, e);
+        }
+    }
+
+    private void transferMetadataMaps(String cleanSource, String cleanTarget, boolean move) {
+        copyOrMoveMapEntry(contentTypeMap, cleanSource, cleanTarget, move);
+        copyOrMoveMapEntry(userMetadataMap, cleanSource, cleanTarget, move);
+        if (move) {
+            copyOrMoveMapEntry(objectTagsMap, cleanSource, cleanTarget, true);
+        }
+    }
+
+    private <V> void copyOrMoveMapEntry(Map<String, V> map, String sourceKey, String targetKey, boolean move) {
+        V value = move ? map.remove(sourceKey) : map.get(sourceKey);
+        if (value != null) {
+            map.put(targetKey, value);
+        } else {
+            map.remove(targetKey);
         }
     }
 
@@ -490,20 +668,46 @@ public class LocalDriver implements StorageDriver {
     }
 
     @Override
-    public PresignedUrl getPresignedUrl(String path, Duration duration) {
+    public String getUrl(String path) {
         String cleanPath = StorageSecurityUtil.normalizePath(path);
-        Duration effectiveDuration = (duration != null && !duration.isNegative() && !duration.isZero())
-                ? duration
-                : Duration.ofMinutes(15);
+        return StorageSecurityUtil.formatDomainUrl(this.domain, cleanPath);
+    }
+
+    @Override
+    public PresignedUrl getPresignedUrl(PresignedDownloadRequest request) {
+        if (request == null || request.getPath() == null || request.getPath().isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "预签名下载路径不能为空");
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(request.getPath());
+        Duration effectiveDuration = resolveEffectiveDuration(request.getDuration());
         Instant expiration = Instant.now().plus(effectiveDuration);
         long expires = expiration.getEpochSecond();
 
-        String signature = StorageSecurityUtil.hmacSha256(cleanPath + ":" + expires, this.secretKey);
-        String url = buildEndpointUrl(downloadEndpoint, DEFAULT_DOWNLOAD_ENDPOINT)
-                + "?path=" + cleanPath + "&expires=" + expires + "&signature=" + signature;
+        String effectiveSource = resolveEffectiveSource(request.getSource());
+
+        String payload = StorageSecurityUtil.buildPresignedDownloadSignaturePayload(
+                cleanPath, expires, request.getDownloadFilename(), request.getResponseContentType(),
+                request.getResponseContentDisposition(), effectiveSource);
+        String signature = StorageSecurityUtil.hmacSha256(payload, this.secretKey);
+        StringBuilder urlBuilder = new StringBuilder();
+        urlBuilder.append(buildEndpointUrl(downloadEndpoint, DEFAULT_DOWNLOAD_ENDPOINT))
+                .append("?path=").append(cleanPath)
+                .append("&expires=").append(expires)
+                .append("&signature=").append(signature);
+
+        if (request.getDownloadFilename() != null && !request.getDownloadFilename().isBlank()) {
+            urlBuilder.append("&filename=").append(URLEncoder.encode(request.getDownloadFilename().trim(), StandardCharsets.UTF_8));
+        }
+        if (request.getResponseContentType() != null && !request.getResponseContentType().isBlank()) {
+            urlBuilder.append("&contentType=").append(URLEncoder.encode(request.getResponseContentType().trim(), StandardCharsets.UTF_8));
+        }
+        if (request.getResponseContentDisposition() != null && !request.getResponseContentDisposition().isBlank()) {
+            urlBuilder.append("&disposition=").append(URLEncoder.encode(request.getResponseContentDisposition().trim(), StandardCharsets.UTF_8));
+        }
+        appendSourceQuery(urlBuilder, effectiveSource);
 
         return PresignedUrl.builder()
-                .url(url)
+                .url(urlBuilder.toString())
                 .expiration(expiration)
                 .httpMethod("GET")
                 .build();
@@ -515,9 +719,7 @@ public class LocalDriver implements StorageDriver {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "预签名直传请求参数不能为空");
         }
         String cleanPath = StorageSecurityUtil.normalizePath(request.getPath());
-        Duration effectiveDuration = (request.getDuration() != null && !request.getDuration().isNegative() && !request.getDuration().isZero())
-                ? request.getDuration()
-                : Duration.ofMinutes(15);
+        Duration effectiveDuration = resolveEffectiveDuration(request.getDuration());
         Instant expiration = Instant.now().plus(effectiveDuration);
         long expires = expiration.getEpochSecond();
         String contentType = (request.getContentType() != null && !request.getContentType().isBlank())
@@ -525,13 +727,11 @@ public class LocalDriver implements StorageDriver {
                 : "";
         long maxBytes = request.getMaxSizeBytes() > 0 ? request.getMaxSizeBytes() : -1;
 
-        String effectiveSource = (request.getSource() != null && !request.getSource().isBlank())
-                ? request.getSource().trim()
-                : this.sourceName;
+        String effectiveSource = resolveEffectiveSource(request.getSource());
 
         // 签名计算规则：cleanPath:expires:contentType:maxBytes[:source] 与 LocalStorageUploadController 保持严格对称
         String signPayload = cleanPath + ":" + expires + ":" + contentType + ":" + maxBytes
-                + (effectiveSource != null && !effectiveSource.isBlank() ? ":" + effectiveSource : "");
+                + (effectiveSource != null ? ":" + effectiveSource : "");
         String signature = StorageSecurityUtil.hmacSha256(signPayload, this.secretKey);
 
         StringBuilder urlBuilder = new StringBuilder();
@@ -545,9 +745,7 @@ public class LocalDriver implements StorageDriver {
         if (maxBytes > 0) {
             urlBuilder.append("&maxBytes=").append(maxBytes);
         }
-        if (effectiveSource != null && !effectiveSource.isBlank()) {
-            urlBuilder.append("&source=").append(URLEncoder.encode(effectiveSource, StandardCharsets.UTF_8));
-        }
+        appendSourceQuery(urlBuilder, effectiveSource);
 
         Map<String, String> signedHeaders = new LinkedHashMap<>();
         if (!contentType.isBlank()) {
@@ -577,17 +775,15 @@ public class LocalDriver implements StorageDriver {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "未找到分片上传会话或已被清理: " + uploadId);
         }
 
-        Duration effectiveDuration = (duration != null && !duration.isNegative() && !duration.isZero())
-                ? duration
-                : Duration.ofMinutes(15);
+        Duration effectiveDuration = resolveEffectiveDuration(duration);
         Instant expiration = Instant.now().plus(effectiveDuration);
         long expires = expiration.getEpochSecond();
 
-        String effectiveSource = this.sourceName;
+        String effectiveSource = resolveEffectiveSource(null);
 
         // 签名计算规则：cleanPath:expires:uploadId:chunkIndex[:source] 与 LocalStorageUploadController 严格对称
         String signPayload = cleanPath + ":" + expires + ":" + uploadId + ":" + chunkIndex
-                + (effectiveSource != null && !effectiveSource.isBlank() ? ":" + effectiveSource : "");
+                + (effectiveSource != null ? ":" + effectiveSource : "");
         String signature = StorageSecurityUtil.hmacSha256(signPayload, this.secretKey);
 
         StringBuilder urlBuilder = new StringBuilder();
@@ -597,15 +793,32 @@ public class LocalDriver implements StorageDriver {
                 .append("&uploadId=").append(uploadId)
                 .append("&chunkIndex=").append(chunkIndex)
                 .append("&signature=").append(signature);
-        if (effectiveSource != null && !effectiveSource.isBlank()) {
-            urlBuilder.append("&source=").append(URLEncoder.encode(effectiveSource, StandardCharsets.UTF_8));
-        }
+        appendSourceQuery(urlBuilder, effectiveSource);
 
         return PresignedUrl.builder()
                 .url(urlBuilder.toString())
                 .expiration(expiration)
                 .httpMethod("PUT")
                 .build();
+    }
+
+    private Duration resolveEffectiveDuration(Duration duration) {
+        return (duration != null && !duration.isNegative() && !duration.isZero())
+                ? duration
+                : Duration.ofMinutes(15);
+    }
+
+    private String resolveEffectiveSource(String requestedSource) {
+        if (requestedSource != null && !requestedSource.isBlank()) {
+            return requestedSource.trim();
+        }
+        return (this.sourceName != null && !this.sourceName.isBlank()) ? this.sourceName : null;
+    }
+
+    private void appendSourceQuery(StringBuilder urlBuilder, String effectiveSource) {
+        if (effectiveSource != null && !effectiveSource.isBlank()) {
+            urlBuilder.append("&source=").append(URLEncoder.encode(effectiveSource, StandardCharsets.UTF_8));
+        }
     }
 
     /**
@@ -648,20 +861,10 @@ public class LocalDriver implements StorageDriver {
      * @return MD5 十六进制字符串；发生异常时返回空串
      */
     private String calculateEtag(Path file) {
-        try (InputStream is = Files.newInputStream(file)) {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = is.read(buffer)) != -1) {
-                md.update(buffer, 0, read);
-            }
-            byte[] digest = md.digest();
-            StringBuilder sb = new StringBuilder();
-            for (byte b : digest) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
+        try {
+            return StorageHashUtil.md5Hex(file);
         } catch (Exception e) {
+            log.debug("计算本地文件 ETag 失败: path={}, cause={}", file, e.getMessage());
             return "";
         }
     }
@@ -698,11 +901,25 @@ public class LocalDriver implements StorageDriver {
         if (!Files.exists(chunkDir)) {
             throw new StorageException(StorageResultCode.STORAGE_CHUNK_EXPIRED, "未找到分片上传会话或已过期清理: " + uploadId);
         }
+        StorageSecurityUtil.validateChunkSize(size, this.maxChunkSizeBytes);
         Path chunkFile = chunkDir.resolve("chunk_" + chunkIndex);
-        try {
-            Files.copy(in, chunkFile, StandardCopyOption.REPLACE_EXISTING);
+        try (OutputStream out = Files.newOutputStream(chunkFile,
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+            StorageSecurityUtil.copyWithMaxBytes(in, out, this.maxChunkSizeBytes);
+        } catch (StorageException e) {
+            cleanupChunkFileSafely(chunkFile);
+            throw e;
         } catch (IOException e) {
+            cleanupChunkFileSafely(chunkFile);
             throw new StorageException(StorageResultCode.UPLOAD_FAILED, "写入第 " + chunkIndex + " 个分片失败: " + uploadId, e);
+        }
+    }
+
+    private void cleanupChunkFileSafely(Path chunkFile) {
+        try {
+            Files.deleteIfExists(chunkFile);
+        } catch (IOException ex) {
+            log.warn("清理超限或异常残余分片文件失败: chunkFile={}, cause={}", chunkFile, ex.getMessage());
         }
     }
 
@@ -757,6 +974,10 @@ public class LocalDriver implements StorageDriver {
             Instant lastModified = Files.getLastModifiedTime(targetFile).toInstant();
             String etag = calculateEtag(targetFile);
 
+            contentTypeMap.put(cleanPath, contentType);
+            userMetadataMap.remove(cleanPath);
+            objectTagsMap.remove(cleanPath);
+
             // 合并成功后即时清理临时碎片
             deleteRecursively(chunkDir);
 
@@ -798,6 +1019,7 @@ public class LocalDriver implements StorageDriver {
             stream.sorted(Comparator.reverseOrder())
                     .forEach(p -> {
                         try {
+                            evictMetadataForPath(p);
                             Files.deleteIfExists(p);
                         } catch (IOException e) {
                             log.warn("删除本地文件失败: path={}, cause={}", p, e.getMessage());
@@ -805,6 +1027,18 @@ public class LocalDriver implements StorageDriver {
                     });
         } catch (IOException e) {
             log.warn("递归删除本地路径时遍历失败: dir={}, cause={}", dir, e.getMessage());
+        }
+    }
+
+    private void evictMetadataForPath(Path path) {
+        if (path == null || !path.startsWith(this.basePath) || path.equals(this.basePath)) {
+            return;
+        }
+        String cleanKey = this.basePath.relativize(path).toString().replace('\\', '/');
+        if (!cleanKey.isEmpty() && !CHUNKS_DIR_NAME.equals(cleanKey) && !cleanKey.startsWith(CHUNKS_DIR_NAME + "/")) {
+            contentTypeMap.remove(cleanKey);
+            userMetadataMap.remove(cleanKey);
+            objectTagsMap.remove(cleanKey);
         }
     }
 
@@ -857,6 +1091,57 @@ public class LocalDriver implements StorageDriver {
         } catch (Exception e) {
             log.debug("获取会话目录最后修改时间失败: sessionDir={}, cause={}", sessionDir, e.getMessage());
             return null;
+        }
+    }
+
+    /**
+     * 具备严格长度上限的受限包装输入流
+     * 确保仅读取指定的字节长度后即返回 EOF，防止多读
+     */
+    private static class BoundedInputStream extends FilterInputStream {
+        private long remaining;
+
+        BoundedInputStream(InputStream in, long limit) {
+            super(in);
+            this.remaining = limit;
+        }
+
+        @Override
+        public int read() throws IOException {
+            if (remaining <= 0) {
+                return -1;
+            }
+            int result = in.read();
+            if (result != -1) {
+                remaining--;
+            }
+            return result;
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            if (remaining <= 0) {
+                return -1;
+            }
+            int toRead = (int) Math.min(len, remaining);
+            int result = in.read(b, off, toRead);
+            if (result != -1) {
+                remaining -= result;
+            }
+            return result;
+        }
+
+        @Override
+        public long skip(long n) throws IOException {
+            long toSkip = Math.min(n, remaining);
+            long skipped = in.skip(toSkip);
+            remaining -= skipped;
+            return skipped;
+        }
+
+        @Override
+        public int available() throws IOException {
+            return (int) Math.min(in.available(), remaining);
         }
     }
 }

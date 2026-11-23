@@ -5,6 +5,7 @@ import io.github.atengk.boot.storage.exception.StorageResultCode;
 import io.github.atengk.boot.storage.properties.StorageGuardProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.util.unit.DataSize;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -225,6 +226,47 @@ class StorageGuardTest {
 
         assertThat(readBackMd5).isEqualTo(originalMd5);
         assertThat(readBack.length).isEqualTo(original.length);
+    }
+
+    @Test
+    @DisplayName("测试黑名单拦截：disallowedExtensions 优先于白名单一票否决并支持带点与大小写归一化")
+    void testDisallowedExtensionsBlacklistVetoesWhitelist() {
+        StorageGuardProperties props = new StorageGuardProperties();
+        props.setEnabled(true);
+        // 即使白名单包含了 jsp，黑名单（含带点格式与大写混写）也必须一票否决
+        props.setAllowedExtensions(Set.of("png", "jsp", "txt"));
+        props.setDisallowedExtensions(Set.of(".jsp", "BAT", "php"));
+        StorageGuard guard = new StorageGuard(props);
+
+        assertThatThrownBy(() -> guard.inspect("webshell/cmd.JSP", new ByteArrayInputStream("shell".getBytes(StandardCharsets.UTF_8)), null))
+                .isInstanceOf(StorageException.class)
+                .satisfies(e -> assertThat(((StorageException) e).getResultCode()).isEqualTo(StorageResultCode.STORAGE_FILE_NOT_ALLOWED));
+
+        assertThatThrownBy(() -> guard.validatePathAndExtension("scripts/run.bat"))
+                .isInstanceOf(StorageException.class)
+                .satisfies(e -> assertThat(((StorageException) e).getResultCode()).isEqualTo(StorageResultCode.STORAGE_FILE_NOT_ALLOWED));
+
+        // 正常白名单文件放行
+        StorageGuard.GuardResult result = guard.inspect("avatar.png", new ByteArrayInputStream(PNG_HEADER), null);
+        assertThat(result.getDetectedType()).isEqualTo(StorageFileType.PNG);
+    }
+
+    @Test
+    @DisplayName("测试 maxFileSize 大小防卫：未开启或未配置时不限制，配置正值后超限抛出 STORAGE_SIZE_EXCEEDED (40020)")
+    void testMaxFileSizeValidation() {
+        StorageGuardProperties props = new StorageGuardProperties();
+        props.setEnabled(true);
+        props.setMaxFileSize(DataSize.ofBytes(1024));
+        StorageGuard guard = new StorageGuard(props);
+
+        guard.validateFileSize(1024);
+        assertThatThrownBy(() -> guard.validateFileSize(1025))
+                .isInstanceOf(StorageException.class)
+                .satisfies(e -> assertThat(((StorageException) e).getResultCode()).isEqualTo(StorageResultCode.STORAGE_SIZE_EXCEEDED));
+
+        // 关闭防卫时不拦截
+        props.setEnabled(false);
+        guard.validateFileSize(2048);
     }
 
     private String md5Hex(byte[] data) throws Exception {

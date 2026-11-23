@@ -1,7 +1,12 @@
 package io.github.atengk.boot.ftp.properties;
 
 import io.github.atengk.boot.ftp.enums.FtpsDataChannelProtection;
-import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
+import lombok.ToString;
+
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * FTPS 安全加密传输配置属性
@@ -9,8 +14,14 @@ import lombok.Data;
  * @author Ateng
  * @since 2026-10-22
  */
-@Data
+@Getter
+@EqualsAndHashCode
+@ToString
 public class FtpsProperties {
+
+    @EqualsAndHashCode.Exclude
+    @ToString.Exclude
+    private final Set<String> configuredFields = new HashSet<>();
 
     /**
      * 是否启用 FTPS 安全加密传输模式
@@ -56,4 +67,89 @@ public class FtpsProperties {
      * KeyStore 密码
      */
     private String keyStorePassword;
+
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+        this.configuredFields.add("enabled");
+    }
+
+    public void setProtocol(String protocol) {
+        this.protocol = protocol;
+        this.configuredFields.add("protocol");
+    }
+
+    public void setImplicit(boolean implicit) {
+        this.implicit = implicit;
+        this.configuredFields.add("implicit");
+    }
+
+    public void setDataChannelProtection(FtpsDataChannelProtection dataChannelProtection) {
+        this.dataChannelProtection = dataChannelProtection;
+        this.configuredFields.add("dataChannelProtection");
+    }
+
+    public void setTrustAll(boolean trustAll) {
+        this.trustAll = trustAll;
+        this.configuredFields.add("trustAll");
+    }
+
+    public void setTrustStorePath(String trustStorePath) {
+        this.trustStorePath = trustStorePath;
+        this.configuredFields.add("trustStorePath");
+    }
+
+    public void setTrustStorePassword(String trustStorePassword) {
+        this.trustStorePassword = trustStorePassword;
+        this.configuredFields.add("trustStorePassword");
+    }
+
+    public void setKeyStorePath(String keyStorePath) {
+        this.keyStorePath = keyStorePath;
+        this.configuredFields.add("keyStorePath");
+    }
+
+    public void setKeyStorePassword(String keyStorePassword) {
+        this.keyStorePassword = keyStorePassword;
+        this.configuredFields.add("keyStorePassword");
+    }
+
+    /**
+     * 创建当前 FTPS 配置的深拷贝（隔离可变状态）
+     *
+     * @return 独立拷贝实例
+     */
+    public FtpsProperties copy() {
+        FtpsProperties copy = new FtpsProperties();
+        copy.enabled = this.enabled;
+        copy.protocol = this.protocol;
+        copy.implicit = this.implicit;
+        copy.dataChannelProtection = this.dataChannelProtection;
+        copy.trustAll = this.trustAll;
+        copy.trustStorePath = this.trustStorePath;
+        copy.trustStorePassword = this.trustStorePassword;
+        copy.keyStorePath = this.keyStorePath;
+        copy.keyStorePassword = this.keyStorePassword;
+        copy.configuredFields.addAll(this.configuredFields);
+        return copy;
+    }
+
+    /**
+     * 从父级默认 FTPS 配置继承当前实例未显式设置的属性（绝不覆盖显式配置）
+     *
+     * @param defaults 父级默认 FTPS 配置
+     */
+    public void mergeFrom(FtpsProperties defaults) {
+        if (defaults == null) {
+            return;
+        }
+        this.enabled = FtpProperties.pickConfigured(this.configuredFields, "enabled", this.enabled, defaults.enabled);
+        this.protocol = FtpProperties.pickConfigured(this.configuredFields, "protocol", this.protocol, defaults.protocol);
+        this.implicit = FtpProperties.pickConfigured(this.configuredFields, "implicit", this.implicit, defaults.implicit);
+        this.dataChannelProtection = FtpProperties.pickConfigured(this.configuredFields, "dataChannelProtection", this.dataChannelProtection, defaults.dataChannelProtection);
+        this.trustAll = FtpProperties.pickConfigured(this.configuredFields, "trustAll", this.trustAll, defaults.trustAll);
+        this.trustStorePath = FtpProperties.pickConfigured(this.configuredFields, "trustStorePath", this.trustStorePath, defaults.trustStorePath);
+        this.trustStorePassword = FtpProperties.pickConfigured(this.configuredFields, "trustStorePassword", this.trustStorePassword, defaults.trustStorePassword);
+        this.keyStorePath = FtpProperties.pickConfigured(this.configuredFields, "keyStorePath", this.keyStorePath, defaults.keyStorePath);
+        this.keyStorePassword = FtpProperties.pickConfigured(this.configuredFields, "keyStorePassword", this.keyStorePassword, defaults.keyStorePassword);
+    }
 }

@@ -3,29 +3,46 @@ package io.github.atengk.boot.http.template;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.http.constant.HttpConstants;
+import io.github.atengk.boot.http.context.HttpRequestContextHolder;
 import io.github.atengk.boot.http.error.HttpErrorHandler;
 import io.github.atengk.boot.http.error.HttpRemoteException;
+import io.github.atengk.boot.http.interceptor.TraceContextInterceptor;
 import io.github.atengk.boot.http.options.RequestOptions;
 import io.github.atengk.boot.http.options.RequestOptionsApplier;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.core.io.Resource;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.util.Assert;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.URI;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -40,8 +57,10 @@ public class HttpTemplate {
     private static final int BUFFER_SIZE = 8192; // 8KB 零堆缓冲直刷
 
     private final RestClient restClient;
+    private final RestClient streamingRestClient;
     private final HttpErrorHandler httpErrorHandler;
     private final Executor executor;
+    private final TraceContextInterceptor traceContextInterceptor;
 
     /**
      * 基于已有 RestClient 实例构建 HttpTemplate
@@ -60,19 +79,17 @@ public class HttpTemplate {
      * @param executor         受管异步任务执行器（为 null 时默认采用 ForkJoinPool.commonPool()）
      */
     public HttpTemplate(RestClient restClient, HttpErrorHandler httpErrorHandler, Executor executor) {
-        Assert.notNull(restClient, "restClient 实例不可为 null");
-        this.restClient = restClient;
-        this.httpErrorHandler = httpErrorHandler != null ? httpErrorHandler : new HttpErrorHandler();
-        this.executor = executor != null ? executor : ForkJoinPool.commonPool();
+        this(restClient, restClient, httpErrorHandler, executor, null);
     }
 
     /**
      * 基于 RestClient.Builder 构建 HttpTemplate
+     * 自动通过 clone() 清除拦截器链构建流式专职 streamingRestClient，旁路内存全量缓冲
      *
      * @param restClientBuilder RestClient 构建器，不可为 null
      */
     public HttpTemplate(RestClient.Builder restClientBuilder) {
-        this(restClientBuilder, new HttpErrorHandler(), null);
+        this(restClientBuilder, new HttpErrorHandler(), null, null);
     }
 
     /**
@@ -83,10 +100,66 @@ public class HttpTemplate {
      * @param executor          受管异步任务执行器（为 null 时默认采用 ForkJoinPool.commonPool()）
      */
     public HttpTemplate(RestClient.Builder restClientBuilder, HttpErrorHandler httpErrorHandler, Executor executor) {
+        this(restClientBuilder, httpErrorHandler, executor, null);
+    }
+
+    /**
+     * 基于 RestClient.Builder、HttpErrorHandler、受管异步执行器与链路治理拦截器构建 HttpTemplate
+     *
+     * @param restClientBuilder       RestClient 构建器，不可为 null
+     * @param httpErrorHandler        HTTP 统一异常响应处理器
+     * @param executor                受管异步任务执行器（为 null 时默认采用 ForkJoinPool.commonPool()）
+     * @param traceContextInterceptor 四维上下文与非信任域头部治理拦截器（为 null 时尝试从 builder 自动探测）
+     */
+    public HttpTemplate(RestClient.Builder restClientBuilder,
+                        HttpErrorHandler httpErrorHandler,
+                        Executor executor,
+                        TraceContextInterceptor traceContextInterceptor) {
         Assert.notNull(restClientBuilder, "restClientBuilder 实例不可为 null");
         this.restClient = restClientBuilder.build();
+        RestClient.Builder streamingBuilder = restClientBuilder.clone();
+        this.traceContextInterceptor = traceContextInterceptor != null
+                ? traceContextInterceptor
+                : extractTraceContextInterceptor(streamingBuilder);
+        this.streamingRestClient = streamingBuilder
+                .requestInterceptors(List::clear)
+                .build();
         this.httpErrorHandler = httpErrorHandler != null ? httpErrorHandler : new HttpErrorHandler();
         this.executor = executor != null ? executor : ForkJoinPool.commonPool();
+    }
+
+    /**
+     * 基于普通 RestClient、直通流式 RestClient、HttpErrorHandler 与受管异步执行器构建 HttpTemplate
+     *
+     * @param restClient          基础 RestClient 实例，不可为 null
+     * @param streamingRestClient 直通流式 RestClient 实例（旁路拦截器内存缓冲），若为 null 则退化使用 restClient
+     * @param httpErrorHandler    HTTP 统一异常响应处理器
+     * @param executor            受管异步任务执行器（为 null 时默认采用 ForkJoinPool.commonPool()）
+     */
+    public HttpTemplate(RestClient restClient, RestClient streamingRestClient, HttpErrorHandler httpErrorHandler, Executor executor) {
+        this(restClient, streamingRestClient, httpErrorHandler, executor, null);
+    }
+
+    /**
+     * 基于普通 RestClient、直通流式 RestClient、HttpErrorHandler、受管异步执行器与链路治理拦截器构建 HttpTemplate
+     *
+     * @param restClient              基础 RestClient 实例，不可为 null
+     * @param streamingRestClient     直通流式 RestClient 实例（旁路拦截器内存缓冲），若为 null 则退化使用 restClient
+     * @param httpErrorHandler        HTTP 统一异常响应处理器
+     * @param executor                受管异步任务执行器（为 null 时默认采用 ForkJoinPool.commonPool()）
+     * @param traceContextInterceptor 四维上下文与非信任域头部治理拦截器（可为 null）
+     */
+    public HttpTemplate(RestClient restClient,
+                        RestClient streamingRestClient,
+                        HttpErrorHandler httpErrorHandler,
+                        Executor executor,
+                        TraceContextInterceptor traceContextInterceptor) {
+        Assert.notNull(restClient, "restClient 实例不可为 null");
+        this.restClient = restClient;
+        this.streamingRestClient = streamingRestClient != null ? streamingRestClient : restClient;
+        this.httpErrorHandler = httpErrorHandler != null ? httpErrorHandler : new HttpErrorHandler();
+        this.executor = executor != null ? executor : ForkJoinPool.commonPool();
+        this.traceContextInterceptor = traceContextInterceptor;
     }
 
     // ==========================================
@@ -127,12 +200,7 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T get(String url, RequestOptions options, Class<T> responseType) {
-        Assert.hasText(url, "请求 URL 不能为空");
-        Assert.notNull(responseType, "responseType 不能为空");
-        URI uri = RequestOptionsApplier.resolveUri(url, options);
-        RestClient.RequestHeadersSpec<?> spec = this.restClient.get().uri(uri);
-        RequestOptionsApplier.apply(spec, options);
-        return spec.retrieve().body(responseType);
+        return executeWithoutBody(HttpMethod.GET, url, options, responseType, spec -> spec.retrieve().body(responseType));
     }
 
     /**
@@ -145,12 +213,7 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T get(String url, RequestOptions options, ParameterizedTypeReference<T> responseType) {
-        Assert.hasText(url, "请求 URL 不能为空");
-        Assert.notNull(responseType, "responseType 不能为空");
-        URI uri = RequestOptionsApplier.resolveUri(url, options);
-        RestClient.RequestHeadersSpec<?> spec = this.restClient.get().uri(uri);
-        RequestOptionsApplier.apply(spec, options);
-        return spec.retrieve().body(responseType);
+        return executeWithoutBody(HttpMethod.GET, url, options, responseType, spec -> spec.retrieve().body(responseType));
     }
 
     // ==========================================
@@ -263,15 +326,7 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T post(String url, Object body, RequestOptions options, Class<T> responseType) {
-        Assert.hasText(url, "请求 URL 不能为空");
-        Assert.notNull(responseType, "responseType 不能为空");
-        URI uri = RequestOptionsApplier.resolveUri(url, options);
-        RestClient.RequestBodySpec spec = this.restClient.post().uri(uri);
-        RequestOptionsApplier.apply(spec, options);
-        if (body != null) {
-            spec.body(body);
-        }
-        return spec.retrieve().body(responseType);
+        return executeWithBody(HttpMethod.POST, url, body, options, responseType, spec -> spec.retrieve().body(responseType));
     }
 
     /**
@@ -285,15 +340,153 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T post(String url, Object body, RequestOptions options, ParameterizedTypeReference<T> responseType) {
-        Assert.hasText(url, "请求 URL 不能为空");
-        Assert.notNull(responseType, "responseType 不能为空");
-        URI uri = RequestOptionsApplier.resolveUri(url, options);
-        RestClient.RequestBodySpec spec = this.restClient.post().uri(uri);
-        RequestOptionsApplier.apply(spec, options);
-        if (body != null) {
-            spec.body(body);
+        return executeWithBody(HttpMethod.POST, url, body, options, responseType, spec -> spec.retrieve().body(responseType));
+    }
+
+    // ==========================================
+    // POST FORM 表单提交 (application/x-www-form-urlencoded)
+    // ==========================================
+
+    /**
+     * 发起 application/x-www-form-urlencoded 标准表单 POST 请求
+     *
+     * @param url          请求 URL 绝对路径
+     * @param formData     表单键值对集合
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T postForm(String url, MultiValueMap<String, ?> formData, Class<T> responseType) {
+        return postForm(url, formData, null, responseType);
+    }
+
+    /**
+     * 发起 application/x-www-form-urlencoded 标准表单 POST 请求并反序列化为复杂泛型
+     *
+     * @param url          请求 URL 绝对路径
+     * @param formData     表单键值对集合
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T postForm(String url, MultiValueMap<String, ?> formData, ParameterizedTypeReference<T> responseType) {
+        return postForm(url, formData, null, responseType);
+    }
+
+    /**
+     * 携带动态 RequestOptions 发起 application/x-www-form-urlencoded 标准表单 POST 请求
+     *
+     * @param url          请求 URL 绝对路径
+     * @param formData     表单键值对集合
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T postForm(String url, MultiValueMap<String, ?> formData, RequestOptions options, Class<T> responseType) {
+        return executePostForm(url, formData, options, responseType, spec -> spec.retrieve().body(responseType));
+    }
+
+    /**
+     * 携带动态 RequestOptions 发起 application/x-www-form-urlencoded 标准表单 POST 请求并反序列化为复杂泛型
+     *
+     * @param url          请求 URL 绝对路径
+     * @param formData     表单键值对集合
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T postForm(String url, MultiValueMap<String, ?> formData, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        return executePostForm(url, formData, options, responseType, spec -> spec.retrieve().body(responseType));
+    }
+
+    /**
+     * 基于普通 Map 字典发起 application/x-www-form-urlencoded 标准表单 POST 请求
+     *
+     * @param url          请求 URL 绝对路径
+     * @param formData     普通 Map 字典（自动转译为 MultiValueMap）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T postForm(String url, Map<String, ?> formData, Class<T> responseType) {
+        return postForm(url, toMultiValueMap(formData), null, responseType);
+    }
+
+    /**
+     * 基于普通 Map 字典发起 application/x-www-form-urlencoded 标准表单 POST 请求并反序列化为复杂泛型
+     *
+     * @param url          请求 URL 绝对路径
+     * @param formData     普通 Map 字典（自动转译为 MultiValueMap）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T postForm(String url, Map<String, ?> formData, ParameterizedTypeReference<T> responseType) {
+        return postForm(url, toMultiValueMap(formData), null, responseType);
+    }
+
+    /**
+     * 携带动态 RequestOptions 并基于普通 Map 字典发起标准表单 POST 请求
+     *
+     * @param url          请求 URL 绝对路径
+     * @param formData     普通 Map 字典（自动转译为 MultiValueMap）
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T postForm(String url, Map<String, ?> formData, RequestOptions options, Class<T> responseType) {
+        return postForm(url, toMultiValueMap(formData), options, responseType);
+    }
+
+    /**
+     * 携带动态 RequestOptions 并基于普通 Map 字典发起标准表单 POST 请求并反序列化为复杂泛型
+     *
+     * @param url          请求 URL 绝对路径
+     * @param formData     普通 Map 字典（自动转译为 MultiValueMap）
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T postForm(String url, Map<String, ?> formData, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        return postForm(url, toMultiValueMap(formData), options, responseType);
+    }
+
+    private static MultiValueMap<String, Object> toMultiValueMap(Map<String, ?> map) {
+        MultiValueMap<String, Object> multiValueMap = new LinkedMultiValueMap<>();
+        if (map != null) {
+            map.forEach((k, v) -> {
+                if (k != null && v != null) {
+                    if (v instanceof Iterable<?> iterable) {
+                        for (Object item : iterable) {
+                            if (item != null) {
+                                multiValueMap.add(k, item);
+                            }
+                        }
+                    } else if (v instanceof Object[] array) {
+                        for (Object item : array) {
+                            if (item != null) {
+                                multiValueMap.add(k, item);
+                            }
+                        }
+                    } else if (v.getClass().isArray()) {
+                        int length = java.lang.reflect.Array.getLength(v);
+                        for (int i = 0; i < length; i++) {
+                            Object item = java.lang.reflect.Array.get(v, i);
+                            if (item != null) {
+                                multiValueMap.add(k, item);
+                            }
+                        }
+                    } else {
+                        multiValueMap.add(k, v);
+                    }
+                }
+            });
         }
-        return spec.retrieve().body(responseType);
+        return multiValueMap;
     }
 
     // ==========================================
@@ -337,15 +530,7 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T put(String url, Object body, RequestOptions options, Class<T> responseType) {
-        Assert.hasText(url, "请求 URL 不能为空");
-        Assert.notNull(responseType, "responseType 不能为空");
-        URI uri = RequestOptionsApplier.resolveUri(url, options);
-        RestClient.RequestBodySpec spec = this.restClient.put().uri(uri);
-        RequestOptionsApplier.apply(spec, options);
-        if (body != null) {
-            spec.body(body);
-        }
-        return spec.retrieve().body(responseType);
+        return executeWithBody(HttpMethod.PUT, url, body, options, responseType, spec -> spec.retrieve().body(responseType));
     }
 
     /**
@@ -359,15 +544,65 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T put(String url, Object body, RequestOptions options, ParameterizedTypeReference<T> responseType) {
-        Assert.hasText(url, "请求 URL 不能为空");
-        Assert.notNull(responseType, "responseType 不能为空");
-        URI uri = RequestOptionsApplier.resolveUri(url, options);
-        RestClient.RequestBodySpec spec = this.restClient.put().uri(uri);
-        RequestOptionsApplier.apply(spec, options);
-        if (body != null) {
-            spec.body(body);
-        }
-        return spec.retrieve().body(responseType);
+        return executeWithBody(HttpMethod.PUT, url, body, options, responseType, spec -> spec.retrieve().body(responseType));
+    }
+
+    // ==========================================
+    // PATCH 操作 (RFC 5789 局部更新)
+    // ==========================================
+
+    /**
+     * 发起 HTTP PATCH 请求并发送 JSON 请求体
+     *
+     * @param url          请求 URL 绝对路径
+     * @param body         请求载荷对象
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T patch(String url, Object body, Class<T> responseType) {
+        return patch(url, body, null, responseType);
+    }
+
+    /**
+     * 发起 HTTP PATCH 请求并依据复杂泛型类型反序列化响应体
+     *
+     * @param url          请求 URL 绝对路径
+     * @param body         请求载荷对象
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T patch(String url, Object body, ParameterizedTypeReference<T> responseType) {
+        return patch(url, body, null, responseType);
+    }
+
+    /**
+     * 发起携带动态 RequestOptions 配置的 HTTP PATCH 请求
+     *
+     * @param url          请求 URL 绝对路径
+     * @param body         请求载荷对象
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T patch(String url, Object body, RequestOptions options, Class<T> responseType) {
+        return executeWithBody(HttpMethod.PATCH, url, body, options, responseType, spec -> spec.retrieve().body(responseType));
+    }
+
+    /**
+     * 发起携带动态 RequestOptions 配置的 HTTP PATCH 请求并反序列化为复杂泛型
+     *
+     * @param url          请求 URL 绝对路径
+     * @param body         请求载荷对象
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T patch(String url, Object body, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        return executeWithBody(HttpMethod.PATCH, url, body, options, responseType, spec -> spec.retrieve().body(responseType));
     }
 
     // ==========================================
@@ -408,12 +643,7 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T delete(String url, RequestOptions options, Class<T> responseType) {
-        Assert.hasText(url, "请求 URL 不能为空");
-        Assert.notNull(responseType, "responseType 不能为空");
-        URI uri = RequestOptionsApplier.resolveUri(url, options);
-        RestClient.RequestHeadersSpec<?> spec = this.restClient.delete().uri(uri);
-        RequestOptionsApplier.apply(spec, options);
-        return spec.retrieve().body(responseType);
+        return executeWithoutBody(HttpMethod.DELETE, url, options, responseType, spec -> spec.retrieve().body(responseType));
     }
 
     /**
@@ -426,12 +656,276 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T delete(String url, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        return executeWithoutBody(HttpMethod.DELETE, url, options, responseType, spec -> spec.retrieve().body(responseType));
+    }
+
+    // ==========================================
+    // HEAD 操作 (元数据提取)
+    // ==========================================
+
+    /**
+     * 发起 HTTP HEAD 请求，仅获取响应头元数据而不下载响应体
+     *
+     * @param url 请求 URL 绝对路径
+     * @return 远端响应头对象
+     */
+    public HttpHeaders head(String url) {
+        return head(url, null);
+    }
+
+    /**
+     * 携带动态 RequestOptions 发起 HTTP HEAD 请求
+     *
+     * @param url     请求 URL 绝对路径
+     * @param options 单次请求配置载荷（可为 null）
+     * @return 远端响应头对象
+     */
+    public HttpHeaders head(String url, RequestOptions options) {
+        return executeHeadersOnly(HttpMethod.HEAD, url, options);
+    }
+
+    // ==========================================
+    // OPTIONS 操作 (端点能力探测)
+    // ==========================================
+
+    /**
+     * 发起 HTTP OPTIONS 请求，获取目标端点支持的完整响应头（含 Allow 与 CORS 头）
+     *
+     * @param url 请求 URL 绝对路径
+     * @return 远端响应头对象
+     */
+    public HttpHeaders options(String url) {
+        return options(url, null);
+    }
+
+    /**
+     * 携带动态 RequestOptions 发起 HTTP OPTIONS 请求
+     *
+     * @param url     请求 URL 绝对路径
+     * @param options 单次请求配置载荷（可为 null）
+     * @return 远端响应头对象
+     */
+    public HttpHeaders options(String url, RequestOptions options) {
+        return executeHeadersOnly(HttpMethod.OPTIONS, url, options);
+    }
+
+    /**
+     * 发起 HTTP OPTIONS 请求并提取允许的 HTTP 动词集合 (Allow Header)
+     *
+     * @param url 请求 URL 绝对路径
+     * @return 允许的 HttpMethod 集合（若未返回 Allow 头则返回空集合）
+     */
+    public Set<HttpMethod> optionsForAllow(String url) {
+        return optionsForAllow(url, null);
+    }
+
+    /**
+     * 携带动态 RequestOptions 发起 HTTP OPTIONS 请求并提取允许的 HTTP 动词集合
+     *
+     * @param url     请求 URL 绝对路径
+     * @param options 单次请求配置载荷（可为 null）
+     * @return 允许的 HttpMethod 集合（若未返回 Allow 头则返回空集合）
+     */
+    public Set<HttpMethod> optionsForAllow(String url, RequestOptions options) {
+        HttpHeaders headers = options(url, options);
+        return headers != null ? headers.getAllow() : Set.of();
+    }
+
+    // ==========================================
+    // 实体包装与元数据穿透操作 (ResponseEntity)
+    // ==========================================
+
+    /**
+     * 发起 HTTP GET 请求并返回完整的 ResponseEntity（含 HTTP 状态码与响应头）
+     *
+     * @param url          请求 URL 绝对路径
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 包含响应头与状态码的 ResponseEntity 对象
+     */
+    public <T> ResponseEntity<T> getEntity(String url, Class<T> responseType) {
+        return getEntity(url, null, responseType);
+    }
+
+    /**
+     * 发起 HTTP GET 请求并依据复杂泛型返回完整的 ResponseEntity
+     *
+     * @param url          请求 URL 绝对路径
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 包含响应头与状态码的 ResponseEntity 对象
+     */
+    public <T> ResponseEntity<T> getEntity(String url, ParameterizedTypeReference<T> responseType) {
+        return getEntity(url, null, responseType);
+    }
+
+    /**
+     * 携带动态 RequestOptions 发起 HTTP GET 请求并返回完整的 ResponseEntity
+     *
+     * @param url          请求 URL 绝对路径
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 包含响应头与状态码的 ResponseEntity 对象
+     */
+    public <T> ResponseEntity<T> getEntity(String url, RequestOptions options, Class<T> responseType) {
+        return exchange(url, HttpMethod.GET, null, options, responseType);
+    }
+
+    /**
+     * 携带动态 RequestOptions 发起 HTTP GET 请求并依据复杂泛型返回完整的 ResponseEntity
+     *
+     * @param url          请求 URL 绝对路径
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 包含响应头与状态码的 ResponseEntity 对象
+     */
+    public <T> ResponseEntity<T> getEntity(String url, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        return exchange(url, HttpMethod.GET, null, options, responseType);
+    }
+
+    /**
+     * 通用 HTTP 动词交换方法，执行任意请求并返回完整的 ResponseEntity
+     *
+     * @param url          请求 URL 绝对路径
+     * @param method       HTTP 动词
+     * @param body         请求载荷对象（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 包含响应头与状态码的 ResponseEntity 对象
+     */
+    public <T> ResponseEntity<T> exchange(String url, HttpMethod method, Object body, Class<T> responseType) {
+        return exchange(url, method, body, null, responseType);
+    }
+
+    /**
+     * 通用 HTTP 动词交换方法，执行任意请求并依据复杂泛型返回完整的 ResponseEntity
+     *
+     * @param url          请求 URL 绝对路径
+     * @param method       HTTP 动词
+     * @param body         请求载荷对象（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 包含响应头与状态码的 ResponseEntity 对象
+     */
+    public <T> ResponseEntity<T> exchange(String url, HttpMethod method, Object body, ParameterizedTypeReference<T> responseType) {
+        return exchange(url, method, body, null, responseType);
+    }
+
+    /**
+     * 携带动态 RequestOptions 的通用 HTTP 动词交换方法
+     *
+     * @param url          请求 URL 绝对路径
+     * @param method       HTTP 动词
+     * @param body         请求载荷对象（可为 null）
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 包含响应头与状态码的 ResponseEntity 对象
+     */
+    public <T> ResponseEntity<T> exchange(String url, HttpMethod method, Object body, RequestOptions options, Class<T> responseType) {
+        Assert.notNull(method, "HttpMethod 不能为空");
+        return executeWithBody(method, url, body, options, responseType, spec -> spec.retrieve().toEntity(responseType));
+    }
+
+    /**
+     * 携带动态 RequestOptions 的通用 HTTP 动词交换方法（复杂泛型反序列化）
+     *
+     * @param url          请求 URL 绝对路径
+     * @param method       HTTP 动词
+     * @param body         请求载荷对象（可为 null）
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 包含响应头与状态码的 ResponseEntity 对象
+     */
+    public <T> ResponseEntity<T> exchange(String url, HttpMethod method, Object body, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        Assert.notNull(method, "HttpMethod 不能为空");
+        return executeWithBody(method, url, body, options, responseType, spec -> spec.retrieve().toEntity(responseType));
+    }
+
+    // ==========================================
+    // 大模型与事件流流式消费 (SSE / NDJSON)
+    // ==========================================
+
+    /**
+     * 流式消费远程事件流或大模型文本行（如 SSE text/event-stream 或 application/x-ndjson）
+     * 依托 BufferedReader.readLine() 零内存堆积实时按行推流，严格遵循 RFC 8895 保留空行作为 SSE 事件切片边界
+     *
+     * @param url          请求 URL 绝对路径
+     * @param lineConsumer 单行消费回调（空行传入 "" 作为事件分隔边界，回调不可为 null）
+     */
+    public void consumeStream(String url, Consumer<String> lineConsumer) {
+        consumeStream(url, HttpMethod.GET, null, null, lineConsumer);
+    }
+
+    /**
+     * 携带动态 RequestOptions 流式消费远程事件流或大模型文本行
+     *
+     * @param url          请求 URL 绝对路径
+     * @param options      单次请求配置载荷（可为 null）
+     * @param lineConsumer 单行消费回调（空行传入 "" 作为事件分隔边界，回调不可为 null）
+     */
+    public void consumeStream(String url, RequestOptions options, Consumer<String> lineConsumer) {
+        consumeStream(url, HttpMethod.GET, null, options, lineConsumer);
+    }
+
+    /**
+     * 携带 HTTP 动词与请求载荷流式消费远程事件流或大模型文本行（支持 AI 大模型 POST /chat/completions 等场景）
+     *
+     * @param url          请求 URL 绝对路径
+     * @param method       HTTP 请求动词（如 GET 或 POST）
+     * @param body         请求载荷对象（可为 null）
+     * @param lineConsumer 单行消费回调（空行传入 "" 作为事件分隔边界，回调不可为 null）
+     */
+    public void consumeStream(String url, HttpMethod method, Object body, Consumer<String> lineConsumer) {
+        consumeStream(url, method, body, null, lineConsumer);
+    }
+
+    /**
+     * 携带 HTTP 动词、请求载荷及动态 RequestOptions 流式消费远程事件流或大模型文本行
+     * 依托 BufferedReader.readLine() 零内存堆积实时按行推流，严格遵循 RFC 8895 保留空行作为 SSE 事件切片边界
+     *
+     * @param url          请求 URL 绝对路径
+     * @param method       HTTP 请求动词（如 GET 或 POST）
+     * @param body         请求载荷对象（可为 null）
+     * @param options      单次请求配置载荷（可为 null）
+     * @param lineConsumer 单行消费回调（空行传入 "" 作为事件分隔边界，回调不可为 null）
+     */
+    public void consumeStream(String url, HttpMethod method, Object body, RequestOptions options, Consumer<String> lineConsumer) {
         Assert.hasText(url, "请求 URL 不能为空");
-        Assert.notNull(responseType, "responseType 不能为空");
-        URI uri = RequestOptionsApplier.resolveUri(url, options);
-        RestClient.RequestHeadersSpec<?> spec = this.restClient.delete().uri(uri);
-        RequestOptionsApplier.apply(spec, options);
-        return spec.retrieve().body(responseType);
+        Assert.notNull(method, "HttpMethod 不能为空");
+        Assert.notNull(lineConsumer, "lineConsumer 不能为空");
+        executeWithOptions(options, () -> {
+            URI uri = RequestOptionsApplier.resolveUri(url, options);
+            RestClient.RequestBodySpec spec = this.restClient.method(method).uri(uri);
+            spec.header(HttpConstants.HEADER_STREAM_TRANSFER, "true");
+            spec.accept(MediaType.TEXT_EVENT_STREAM, MediaType.APPLICATION_NDJSON, MediaType.ALL);
+            RequestOptionsApplier.apply(spec, options);
+            if (body != null) {
+                spec.body(body);
+            }
+            spec.exchange((request, response) -> {
+                if (response.getStatusCode().isError()) {
+                    this.httpErrorHandler.handleError(uri, method, response);
+                }
+                Charset charset = StandardCharsets.UTF_8;
+                MediaType contentType = response.getHeaders().getContentType();
+                if (contentType != null && contentType.getCharset() != null) {
+                    charset = contentType.getCharset();
+                }
+                try (InputStream in = response.getBody();
+                     BufferedReader reader = new BufferedReader(new InputStreamReader(in, charset))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        lineConsumer.accept(line);
+                    }
+                }
+                return null;
+            });
+            return null;
+        });
     }
 
     // ==========================================
@@ -458,22 +952,25 @@ public class HttpTemplate {
     public void download(String url, RequestOptions options, OutputStream outputStream) {
         Assert.hasText(url, "请求 URL 不能为空");
         Assert.notNull(outputStream, "outputStream 不能为空");
-        URI uri = RequestOptionsApplier.resolveUri(url, options);
-        RestClient.RequestHeadersSpec<?> spec = this.restClient.get().uri(uri);
-        spec.header(HttpConstants.HEADER_STREAM_TRANSFER, "true");
-        RequestOptionsApplier.apply(spec, options);
-        spec.exchange((request, response) -> {
-            if (response.getStatusCode().isError()) {
-                this.httpErrorHandler.handleError(uri, HttpMethod.GET, response);
-            }
-            try (InputStream in = response.getBody()) {
-                byte[] buffer = new byte[BUFFER_SIZE];
-                int bytesRead;
-                while ((bytesRead = in.read(buffer)) != -1) {
-                    outputStream.write(buffer, 0, bytesRead);
+        executeWithOptions(options, () -> {
+            URI uri = RequestOptionsApplier.resolveUri(url, options);
+            RestClient.RequestHeadersSpec<?> spec = this.restClient.get().uri(uri);
+            spec.header(HttpConstants.HEADER_STREAM_TRANSFER, "true");
+            RequestOptionsApplier.apply(spec, options);
+            spec.exchange((request, response) -> {
+                if (response.getStatusCode().isError()) {
+                    this.httpErrorHandler.handleError(uri, HttpMethod.GET, response);
                 }
-                outputStream.flush();
-            }
+                try (InputStream in = response.getBody()) {
+                    byte[] buffer = new byte[BUFFER_SIZE];
+                    int bytesRead;
+                    while ((bytesRead = in.read(buffer)) != -1) {
+                        outputStream.write(buffer, 0, bytesRead);
+                    }
+                    outputStream.flush();
+                }
+                return null;
+            });
             return null;
         });
     }
@@ -618,15 +1115,7 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T upload(String url, MultiValueMap<String, Object> parts, RequestOptions options, Class<T> responseType) {
-        Assert.hasText(url, "请求 URL 不能为空");
-        Assert.notNull(parts, "parts 不能为空");
-        Assert.notNull(responseType, "responseType 不能为空");
-        URI uri = RequestOptionsApplier.resolveUri(url, options);
-        RestClient.RequestBodySpec spec = this.restClient.post().uri(uri);
-        RequestOptionsApplier.apply(spec, options);
-        spec.contentType(MediaType.MULTIPART_FORM_DATA);
-        spec.body(parts);
-        return spec.retrieve().body(responseType);
+        return executeUpload(url, parts, options, responseType, spec -> spec.retrieve().body(responseType));
     }
 
     /**
@@ -640,15 +1129,7 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T upload(String url, MultiValueMap<String, Object> parts, RequestOptions options, ParameterizedTypeReference<T> responseType) {
-        Assert.hasText(url, "请求 URL 不能为空");
-        Assert.notNull(parts, "parts 不能为空");
-        Assert.notNull(responseType, "responseType 不能为空");
-        URI uri = RequestOptionsApplier.resolveUri(url, options);
-        RestClient.RequestBodySpec spec = this.restClient.post().uri(uri);
-        RequestOptionsApplier.apply(spec, options);
-        spec.contentType(MediaType.MULTIPART_FORM_DATA);
-        spec.body(parts);
-        return spec.retrieve().body(responseType);
+        return executeUpload(url, parts, options, responseType, spec -> spec.retrieve().body(responseType));
     }
 
     // ==========================================
@@ -675,5 +1156,141 @@ public class HttpTemplate {
      */
     public RestClient getClient() {
         return this.restClient;
+    }
+
+    /**
+     * 获取底层持有的用于直通大流传输的 RestClient 实例（已旁路拦截器内存缓冲）
+     *
+     * @return 直通流式 RestClient 实例
+     */
+    public RestClient getStreamingClient() {
+        return this.streamingRestClient;
+    }
+
+    // ==========================================
+    // 内部统一执行器与上下文现场保护
+    // ==========================================
+
+    private <T> T executeWithoutBody(HttpMethod method,
+                                     String url,
+                                     RequestOptions options,
+                                     Object responseType,
+                                     Function<RestClient.RequestHeadersSpec<?>, T> extractor) {
+        Assert.notNull(responseType, "responseType 不能为空");
+        return executePrepared(this.restClient, url, options, (client, uri) -> {
+            RestClient.RequestHeadersSpec<?> spec = client.method(method).uri(uri);
+            RequestOptionsApplier.apply(spec, options);
+            return extractor.apply(spec);
+        });
+    }
+
+    private <T> T executeWithBody(HttpMethod method,
+                                  String url,
+                                  Object body,
+                                  RequestOptions options,
+                                  Object responseType,
+                                  Function<RestClient.RequestBodySpec, T> extractor) {
+        Assert.notNull(responseType, "responseType 不能为空");
+        return executePrepared(this.restClient, url, options, (client, uri) -> {
+            RestClient.RequestBodySpec spec = client.method(method).uri(uri);
+            RequestOptionsApplier.apply(spec, options);
+            if (body != null) {
+                spec.body(body);
+            }
+            return extractor.apply(spec);
+        });
+    }
+
+    private <T> T executePostForm(String url,
+                                  MultiValueMap<String, ?> formData,
+                                  RequestOptions options,
+                                  Object responseType,
+                                  Function<RestClient.RequestBodySpec, T> extractor) {
+        Assert.notNull(responseType, "responseType 不能为空");
+        return executePrepared(this.restClient, url, options, (client, uri) -> {
+            RestClient.RequestBodySpec spec = client.post().uri(uri);
+            RequestOptionsApplier.apply(spec, options);
+            spec.contentType(MediaType.APPLICATION_FORM_URLENCODED);
+            if (formData != null) {
+                spec.body(formData);
+            }
+            return extractor.apply(spec);
+        });
+    }
+
+    private HttpHeaders executeHeadersOnly(HttpMethod method, String url, RequestOptions options) {
+        return executePrepared(this.restClient, url, options, (client, uri) -> {
+            RestClient.RequestHeadersSpec<?> spec = client.method(method).uri(uri);
+            RequestOptionsApplier.apply(spec, options);
+            return spec.retrieve().toBodilessEntity().getHeaders();
+        });
+    }
+
+    private <T> T executeUpload(String url,
+                                MultiValueMap<String, Object> parts,
+                                RequestOptions options,
+                                Object responseType,
+                                Function<RestClient.RequestBodySpec, T> extractor) {
+        Assert.notNull(parts, "parts 不能为空");
+        Assert.notNull(responseType, "responseType 不能为空");
+        return executePrepared(this.streamingRestClient, url, options, (client, uri) -> {
+            RestClient.RequestBodySpec spec = client.post().uri(uri);
+            RequestOptionsApplier.apply(spec, options);
+            spec.httpRequest(clientRequest -> {
+                if (this.traceContextInterceptor != null) {
+                    this.traceContextInterceptor.applyContextHeaders(clientRequest.getHeaders(), clientRequest.getURI());
+                } else {
+                    TraceContextInterceptor.clearInternalHeaders(clientRequest.getHeaders());
+                }
+            });
+            spec.contentType(MediaType.MULTIPART_FORM_DATA);
+            spec.body(parts);
+            return extractor.apply(spec);
+        });
+    }
+
+    private <T> T executePrepared(RestClient client,
+                                  String url,
+                                  RequestOptions options,
+                                  BiFunction<RestClient, URI, T> action) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        return executeWithOptions(options, () -> {
+            URI uri = RequestOptionsApplier.resolveUri(url, options);
+            return action.apply(client, uri);
+        });
+    }
+
+    private static TraceContextInterceptor extractTraceContextInterceptor(RestClient.Builder builder) {
+        AtomicReference<TraceContextInterceptor> found = new AtomicReference<>();
+        builder.requestInterceptors(interceptors -> {
+            for (ClientHttpRequestInterceptor interceptor : interceptors) {
+                if (interceptor instanceof TraceContextInterceptor traceInterceptor) {
+                    found.compareAndSet(null, traceInterceptor);
+                    break;
+                }
+            }
+        });
+        return found.get();
+    }
+
+    /**
+     * 在执行单次请求前后备份并确定性恢复 HttpRequestContextHolder 线程上下文，
+     * 防止携带 RequestOptions 的请求在异常或正常结束后污染线程池或虚拟线程后续复用请求
+     *
+     * @param options 单次请求配置载荷
+     * @param action  实际请求动作
+     * @param <T>     返回类型
+     * @return 请求执行结果
+     */
+    private <T> T executeWithOptions(RequestOptions options, Supplier<T> action) {
+        HttpRequestContextHolder.ContextSnapshot previous = HttpRequestContextHolder.capture();
+        try {
+            if (options != null && StringUtils.hasText(options.getClientName())) {
+                HttpRequestContextHolder.setClientName(options.getClientName());
+            }
+            return action.get();
+        } finally {
+            HttpRequestContextHolder.restore(previous);
+        }
     }
 }

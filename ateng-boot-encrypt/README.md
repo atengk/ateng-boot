@@ -1,55 +1,53 @@
 # ateng-boot-encrypt 配置安全加解密套件
 
-> 零臃肿纯原生 Spring Boot 3 生产级配置加解密底座：支持现代高强 AES-GCM / 纯原生国密 SM2/SM4 / 非对称 RSA、动态多 Key 轮换路由、Actuator 物理脱敏防泄露、生产环境明文倒灌拦截、配置中心两阶段预解密 Hook、整文件就地无损智能回写与脱机安全运维 CLI 工具箱。
+> 零臃肿纯原生 Spring Boot 3 生产级配置加解密底座：支持现代高强 AES-GCM / 纯原生国密 SM2/SM4 / 非对称 RSA、动态多 Key 轮换路由、Actuator 物理脱敏防泄露、生产环境三道防误伤门禁过滤、Spring Cloud `{cipher}` 受控兼容、配置中心两阶段预解密 Hook、整文件就地无损智能回写与脱机安全运维 CLI 工具箱。
 
 ---
 
-## 1. 模块定位与技术基线
+## 0. 特性与公共 API 全景速查矩阵 (维度零：100% 全覆盖)
 
-`ateng-boot-encrypt` 专职解决企业级应用中数据库连接密码、第三方 API 令牌、私钥证书等敏感配置在代码库、YAML 配置文件及远端配置中心中的明文暴露风险。
-
-### 核心设计原则
-- **零臃肿与底座收敛 (Zero-Bloat & Core-First)**：100% 依托 JDK 17+ 标准库与 Spring 6 原生能力，国密 SM2/SM3/SM4 纯算法内聚实现，**坚决不引入 BouncyCastle、Jasypt 等重型第三方传递依赖**；
-- **透明无感 (Transparent & Ergonomic)**：基于 Spring Boot `EnvironmentPostProcessor` 与 `ConfigData` 机制，在配置加载阶段透明懒解密，业务代码、`@ConfigurationProperties` 与 `@Value` 完全无感；
-- **现代安全标配 (Modern Cryptography Defaults)**：默认采用具备 AEAD（Authenticated Encryption with Associated Data）完整性认证防篡改的 **AES-256-GCM** 算法，自动附带 12 字节安全随机 IV，彻底抛弃过时不安全的 ECB/DES 算法；
-- **多 Key 轮换与隔离 (Multi-Key Routing & Isolation)**：独创 `ENC[keyId](...)` 语义契约，天然支持多中间件独立密钥隔离与无停机密钥平滑轮换；
-- **全生命周期安全闭环 (Full Lifecycle Governance)**：涵盖开发期脱机加解密 CLI、CI/CD 阶段整文件就地回写、配置中心拉取前预解密 Hook、生产环境明文倒灌强制阻断、以及运行期 Actuator 监控物理脱敏。
-
-### Maven 坐标
-```xml
-<dependency>
-    <groupId>io.github.atengk</groupId>
-    <artifactId>ateng-boot-encrypt</artifactId>
-</dependency>
-```
-
----
-
-## 2. 特性与公共 API 全景速查矩阵
-
-| 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
+| 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.encrypt.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **透明配置解密** | 运行时环境配置属性透明懒解密 | `EncryptEnvironmentPostProcessor`, `EncryptPropertySourceWrapper` | `ateng.boot.encrypt.enabled`, `password`, `algorithm`, `prefix`, `suffix`, `fail-on-error` | 拦截全量 `PropertySource`，自动识别 `ENC(...)` 密文并还原为真实明文；支持快速失败 | `EncryptEnvironmentPostProcessorTest.java`, `EncryptSampleApplicationTest.java` |
-| **多 Key 动态路由** | 多命名密钥隔离与平滑轮换机制 | `MultiKeyRegistry`, `ENC[keyId](...)` 语法契约 | `ateng.boot.encrypt.keys.<key-id>` | `registerKey(keyId, password)`, `getKeyOrDefault(keyId)`，支持通过密文方括号别名指定独立解密密钥 | `MultiKeyRegistryTest.java`, `EncryptSampleApplicationTest.java` |
-| **现代对称加密** | 具备 AEAD 认证防篡改的现代对称算法 | `AesGcmConfigDecryptor`, `AesCbcConfigDecryptor`, `ConfigDecryptor` | `ateng.boot.encrypt.algorithm=AES-GCM` (默认) 或 `AES-CBC` | `AesGcmConfigDecryptor.encrypt(plain, pass)`，支持 12 字节安全 IV 与 GCM AEAD 完整性校验 | `AesGcmConfigDecryptorTest.java`, `AesCbcConfigDecryptorTest.java` |
-| **纯原生国密合规** | 零第三方依赖纯原生国密算法套件 | `Sm4ConfigDecryptor`, `Sm2ConfigDecryptor`, `Sm2Engine`, `Sm3Digest`, `ConfigDecryptor` | `ateng.boot.encrypt.algorithm=SM4-CBC`, `SM4-ECB`, `SM2` | 100% 依托原生 JDK 17 实现；支持 SM4-CBC 16 字节 IV 密文加解密，SM2 椭圆曲线非对称加解密与密钥对生成 | `Sm4ConfigDecryptorTest.java`, `Sm2ConfigDecryptorTest.java`, `EncryptSampleApplicationTest.java` |
-| **非对称密钥分发** | RSA 非对称加密与权限分域管控 | `RsaConfigDecryptor`, `ConfigDecryptor` | `ateng.boot.encrypt.algorithm=RSA` | `generateKeyPair(size)`, `encodePublicKeyToPem(pubKey)`, `encodePrivateKeyToPem(priKey)`, `encrypt(plain, pemPubKey)`, `decrypt(cipher, pemPriKey)` | `RsaConfigDecryptorTest.java`, `EncryptCliTest.java` |
-| **编程式加解密门面** | 统一完备对称加解密工具门面 | `ConfigEncryptor`, `CiphertextParser` | - | `ConfigEncryptor.encrypt(plain, pass, algo)`, `ConfigEncryptor.encrypt(plain, pass)`，`ciphertextParser.hasEncrypted(text)`, `replaceTokens(text, replacer)` | `ConfigEncryptorTest.java`, `CiphertextParserTest.java`, `EncryptScenarioController.java` |
-| **弹性退避重试** | 外部网络与云端解密指数退避装饰器 | `RetryingConfigDecryptor`, `ConfigDecryptor` | - | 基于 Core 原生 `RetryUtil`，为云端解密提供指数退避重试，自动排除不可重试的密码学错误（填充错误/Tag校验失败） | `RetryingConfigDecryptorTest.java` |
-| **外部 KMS / HSM** | 外部云 KMS 与硬件加密机标准 SPI | `AbstractKmsConfigDecryptor`, `ConfigDecryptor` | `ateng.boot.encrypt.algorithm=KMS` | 抽象基类标准契约，提供 `doDecrypt(ciphertext, keyIdOrPassword)` 扩展点，无缝对接 AWS KMS、阿里云 KMS 与硬件加密机 | `AbstractKmsConfigDecryptorTest.java` |
-| **Actuator 物理脱敏** | 监控端点配置属性物理掩码脱敏防泄露 | `SanitizingGuard`, `EncryptSanitizingFunction` | - | 实现 Spring Boot Actuator 的 `SanitizingFunction`，对 `/actuator/env` 等监控端点中携带 `ENC(...)` 密文的敏感属性实施物理掩码为 `******` | `SanitizingGuardTest.java`, `EncryptSampleApplicationTest.java` |
-| **生产明文倒灌拦截** | 生产环境未加密敏感配置强制防卫门禁 | `PlaintextIngressGuard`, `EnforceEncryptionPolicy` | `ateng.boot.encrypt.enforce-encrypted`, `sensitive-key-pattern` | 在生产环境下扫描全量 PropertySource，若发现匹配敏感特征的裸明文属性，立即中断应用启动，强制执行密码学治理 | `PlaintextIngressGuardTest.java` |
-| **整文件就地智能回写** | 保持注释与格式保真的智能回写器 | `InPlaceRewriter`, `# @encrypt` 指令 | - | `rewriteEncrypt(path)`, `rewriteDecrypt(path)`，逐行解析 YAML/Properties，支持 `# @encrypt[keyId](ALGO)` 行内指令，100% 保持缩进、注释与换行符保真，自动生成 `.bak` 备份 | `InPlaceRewriterTest.java`, `EncryptSampleApplicationTest.java` |
-| **脱机安全运维 CLI** | 终端脱机安全加解密与密钥生成工具箱 | `EncryptCli` | - | `EncryptCli.main(args)`，支持命令行批处理（`--encrypt`, `--decrypt`, `--keygen`）与交互式控制台菜单，支持脱机生成 RSA 与 SM2 密钥对与单值加解密 | `EncryptCliTest.java` |
-| **多行大文本规范** | 多行大文本与 PEM 证书单行化编解码 | `MultilineSecretFormatter` | - | `toSingleLine(pem)`, `toMultiLine(singleLinePem)`，将多行 RSA 私钥/公钥与 PEM 证书规范编码为单行，适配配置中心与 YAML 属性规范 | `MultilineSecretFormatterTest.java` |
-| **配置中心预解密 Hook** | Nacos / Apollo 远端拉取前凭据预解密 | `EncryptConfigDataLocationResolver`, `EncryptConfigDataEnvironmentUpdateListener` | - | Spring Boot 2.4+ ConfigData 规范接入，在远端配置中心拉取配置前完成 `spring.cloud.nacos.config.password` 等连接凭据的优先解密，规避 403 权限拒绝 | `EncryptConfigDataLocationResolverTest.java` |
+| **透明配置解密** | 运行时环境配置属性透明懒解密与两阶段同步 | `EncryptPropertySourceWrapper`, `EncryptEnvironmentPostProcessor`, `EncryptEnvironmentSupport` | `enabled`, `password`, `algorithm`, `prefix`, `suffix`, `fail-on-error` | `getProperty(name)`, `updateRuntimeConfig(...)`, `clearCache()`, `isEncryptedProperty(name)`；支持 `enabled=false` 早阶短路、`fail-on-error` 全链路贯通及 `ReentrantLock` 无 Pinning 并发缓存 | `EncryptDecryptionController.java`, `EncryptPropertySourceWrapperTest.java`, `EncryptEnvironmentPostProcessorTest.java` |
+| **配置中心预解密 Hook** | ConfigData 极早期瞬态预解析与属性源包装 | `EncryptConfigDataLocationResolver`, `EncryptConfigDataEnvironmentUpdateListener` | `enabled`, `algorithm`, `fail-on-error`, `prefix`, `suffix`, `compatible-cipher-prefix` | `penetrateAndDecorate(context)`, `onPropertySourceAdded(...)`, `wrapPropertySource(source)`；在 Nacos/Apollo 拉取前优先解密连接凭据并防 `enabled=false` 短路 | `EncryptConfigDataLocationResolverTest.java` |
+| **容器期自动装配桥接** | 容器组件反向同步与核心 Bean 装配 | `AtengEncryptAutoConfiguration` | `enabled`, `retry.*` | 注册 `EncryptTemplate` / `MultiKeyRegistry` / `CiphertextParser` / `PlaintextIngressGuard` / `SanitizingGuard`，并在容器初始化期同步 `ConfigDecryptor` 与 `EncryptRetryProperties` 至属性源包装器 | `AtengEncryptAutoConfigurationTest.java`, `EncryptSampleApplicationTest.java` |
+| **受管编程式门面** | Spring 单例受管加解密综合门面 | `EncryptTemplate` | `algorithm`, `prefix`, `suffix`, `keys.*` | `encrypt(plain)`, `encrypt(plain, keyId)`, `encrypt(plain, keyId, algo)`, `encryptRaw(plain)`, `encryptRaw(plain, keyId)`, `encryptRaw(plain, keyId, algo)`, `decrypt(cipher)`, `decrypt(cipher, keyId)`, `decrypt(cipher, keyId, algo)`, `decryptOrOriginal(cipher)`, `decryptOrDefault(cipher, def)`, `isEncrypted(text)`, `formatToken(keyId, algo, cipher)`, `findDecryptor(algo)` | `EncryptCryptoController.java`, `ProgrammaticCryptoScenarioService.java`, `EncryptTemplateTest.java` |
+| **底层对称门面** | 纯原生静态加解密执行门面 | `ConfigEncryptor` | - | `encrypt(plain, pass)`, `encrypt(plain, pass, algo)`, `decrypt(cipher, pass)`, `decrypt(cipher, pass, algo)`，对称支持 `AES-GCM`, `AES-CBC`, `SM4-CBC`, `SM4-ECB`, `RSA`, `SM2` | `ProgrammaticCryptoScenarioService.java`, `ConfigEncryptorTest.java` |
+| **多 Key 动态路由** | 多命名密钥隔离与平滑轮换机制 | `MultiKeyRegistry`, `KeyRotatedEvent` | `keys.<key-id>` | `registerKey(keyId, pass)`, `unregisterKey(keyId)`, `getKey(keyId)`, `getKeyOrDefault(keyId)`, `rotateDefaultKey(pass)`, `addChangeListener(listener)`, `fromProperties(props)`, `fromEnvironment(env)`；支持 `ENC[keyId](...)` 标签路由 | `EncryptMultiKeyController.java`, `MultiKeyRoutingScenarioService.java`, `MultiKeyRegistryTest.java` |
+| **纯原生对称算法** | AES-256-GCM AEAD 与 AES-CBC 解密引擎 | `AesGcmConfigDecryptor`, `AesCbcConfigDecryptor`, `EncryptAlgorithm` | `algorithm=AES-GCM` 或 `AES-CBC` | `encrypt(plain, pass)`, `decrypt(cipher, pass)`，`EncryptAlgorithm.fromCode(code)`；标配 12 字节随机 IV 与 128 位防篡改认证 Tag | `AesGcmConfigDecryptorTest.java`, `AesCbcConfigDecryptorTest.java` |
+| **纯原生国密 SM4** | 零外部依赖纯原生国密对称加解密 | `Sm4ConfigDecryptor`, `ConfigDecryptor` | `algorithm=SM4-CBC` 或 `SM4-ECB` | `encryptCbc(plain, pass)`, `encryptEcb(plain, pass)`, `decrypt(cipher, pass)`，标配 16 字节随机 IV 与 PKCS5Padding | `Sm4ConfigDecryptorTest.java`, `SampleEncryptWebControllerTest.java` |
+| **纯原生国密 SM2/SM3** | 国标 GM/T 椭圆曲线非对称、SM3 杂凑与密钥派生 | `Sm2ConfigDecryptor`, `Sm2Engine`, `Sm3Digest`, `KeyDerivationHelper` | `algorithm=SM2` | `generateKeyPair()`, `encrypt(plain, pubHex)`, `decrypt(cipher, priHex)`, `c1c3c2ToDer(c1c3c2)`, `derToC1c3c2(der)`, `Sm3Digest.digest(...)`, `KeyDerivationHelper.deriveKey(pass, len)` | `Sm2ConfigDecryptorTest.java`, `Sm2EngineTest.java` |
+| **标准 RSA 非对称** | 2048/4096 位 RSA 密钥分域与 PEM 互通 | `RsaConfigDecryptor`, `ConfigDecryptor` | `algorithm=RSA` | `generateKeyPair(size)`, `encodePublicKeyToPem(pub)`, `encodePrivateKeyToPem(pri)`, `encrypt(plain, pemPub)`, `decrypt(cipher, pemPri)` | `RsaConfigDecryptorTest.java`, `EncryptCliTest.java` |
+| **密文语法解析** | 自定义前后缀与 Spring Cloud 兼容提取器 | `CiphertextParser`, `ParsedToken` | `prefix`, `suffix`, `compatible-cipher-prefix` | `hasEncrypted(value)`, `replaceTokens(value, fn)`, 实例级 `formatToken(cipher)` / `formatToken(keyId, cipher)` / `formatToken(algo, cipher)` / `formatToken(defAlgo, keyId, algo, cipher)` 及静态 `formatToken(...)`；支持 `CIPHER[keyId](...)`、`MY_ENC[keyId][...]` 双向对称与 `{cipher}...` 兼容 | `CiphertextParserTest.java`, `EncryptTemplateTest.java`, `EncryptPropertySourceWrapperTest.java` |
+| **生产防误伤门禁** | 生产强制加密与三道防误伤过滤链 | `EnforceEncryptionPolicy`, `EncryptProperties` | `enforce-encrypted`, `sensitive-key-pattern`, `ignored-keys` | `enforce(env, pattern, ignoredKeys, parser)`；URI 协议（`http://`, `https://`, `classpath:`, `file:`）与多级绝对路径放行、日志级别（`DEBUG` 等）放行、白名单硬放行；裸明文敏感属性刚性拦截 | `EncryptGuardController.java`, `EnforceEncryptionPolicyTest.java`, `SampleEncryptWebControllerTest.java` |
+| **配置热更新防御** | 配置中心热推送防倒灌与单例注册表联动 | `PlaintextIngressGuard` | `enforce-encrypted` | `onEnvironmentChange(changedKeys, env)`, `onApplicationEvent(event)`；复用容器受管 `MultiKeyRegistry` 原子置换缓存并拦截动态推送裸明文 | `EncryptGuardController.java`, `IngressGuardScenarioService.java`, `PlaintextIngressGuardTest.java` |
+| **配置解密引擎装配工厂** | 配置解密引擎 SPI 发现与无双重重试装配 | `ConfigDecryptorFactory` | `retry.*` | `createDefaultDecryptors(custom, retry)`，收敛 `ServiceLoader` 发现、KMS 单层重试适配（杜绝双重重试）与 JDK 原生配置解密引擎装配 | `AbstractKmsConfigDecryptorTest.java`, `EncryptSampleApplicationTest.java` |
+| **外部 KMS SPI** | 外部云 KMS / HSM 抽象解密扩展基类 | `AbstractKmsConfigDecryptor`, `ConfigDecryptor` | `algorithm=KMS`, `retry.*` | 继承实现 `doDecrypt(ciphertext, keyIdOrPassword)`，支持 `supports(algo)` 与 `updateRetryProperties(retry)` 无缝对接云 KMS 及硬件加密机 | `AbstractKmsConfigDecryptorTest.java`, `EncryptSampleApplicationTest.java` |
+| **强类型弹性重试** | 远程云端解密指数退避重试装饰器 | `RetryingConfigDecryptor`, `EncryptRetryProperties` | `retry.max-attempts`, `retry.delay`, `retry.max-delay`, `retry.multiplier`, `retry.jitter` | 默认 `max-attempts=3`、`delay=300ms`、`max-delay=5s`、`multiplier=2.0`、`jitter=true`；`toRetryConfig(...)`，自动排除密码学错误快速失败 | `RetryingConfigDecryptorTest.java`, `EncryptRetryPropertiesTest.java` |
+| **Actuator 物理脱敏** | 监控端点主密钥、多密钥与密文物理掩码 | `SanitizingGuard` | `password`, `keys.*`, `sensitive-key-pattern` | `apply(data)` 实现 `SanitizingFunction`，对 `ateng.boot.encrypt.password`、`ateng.boot.encrypt.keys.*`、密文标记与敏感键名在 `/actuator/env` 无条件掩码为 `******` | `EncryptSampleApplicationTest.java`, `SampleEncryptWebControllerTest.java`, `SanitizingGuardTest.java` |
+| **就地双模智能回写** | YAML/Properties 保真回写与多行块标量往返 | `InPlaceRewriter`, `EncryptFileRewriter`, `# @encrypt` 指令 | - | `rewriteEncrypt(path)`, `rewriteDecrypt(path)`, `encryptFile(file, pass)`, `decryptFile(file, pass)`, `resolveBackupPath(path)`；支持多文档 `---`、占位符 `${...}` 免疫、YAML `\|` 块标量无损往返与 `.bak` 备份 | `EncryptInPlaceRewriteController.java`, `InPlaceRewriteScenarioService.java`, `InPlaceRewriterTest.java` |
+| **脱机安全运维 CLI** | 终端脱机单值、整文件回写与密钥工具箱 | `EncryptCli` | - | `EncryptCli.main(args)`, `run(args)`；批处理支持 `--encrypt`/`-e`、`--decrypt`/`-d`、`--encrypt-file`/`-ef`、`--decrypt-file`/`-df`、`--file`/`-f`、`--keygen`/`-k`、`--key-id`，交互式菜单 `[1]-[7]` | `EncryptCliTest.java` |
+| **多行大文本规范** | PEM 证书与多行私钥清洗及标准化格式化 | `MultilineSecretFormatter` | - | `cleanCiphertext(raw)`, `isPem(text)`, `formatPem(text)`, `formatPem(text, lineSeparator)`, `formatAsPem(type, base64)`，清洗 YAML 折行空白并保真还原 PEM 首尾边界 | `MultilineSecretFormatterTest.java` |
+| **密钥探测与防护** | 主密钥分级探测与严格外部授信源拦截 | `KeyDetector` | `password`, `keys.*` | `detect(env)`, `resolveDefaultPassword(env)`, `getPassword(keyId)`；仅放行命令行、系统属性、环境变量与内存测试源，阻断本地/`application-test.yml` 自加密 | `KeyDetectorTest.java`, `EncryptSampleApplicationTest.java` |
+| **语义化异常体系** | 保留因果链的解密失败与安全阻断异常 | `ConfigDecryptionException`, `ConfigSecurityException` | `fail-on-error`, `enforce-encrypted` | `ConfigDecryptionException` 暴露 `getPropertyKey()`, `getKeyId()`, `getAlgorithm()` 并保留完整 `cause` 链（严禁打印明文/密文）；`ConfigSecurityException` 阻断明文倒灌与自加密 | `EncryptTemplateTest.java`, `KeyDetectorTest.java`, `EnforceEncryptionPolicyTest.java` |
 
 ---
 
-## 3. 最小起步体验三板斧
+## 1. 模块定位与快速起步 (维度一：最小可用配置与极简实战代码)
 
-### 第一板斧：引入依赖
-在业务模块 `pom.xml` 中引入 Starter（版本由根工程 BOM 统管）：
+### 1.1 一句话痛点与设计原则
+在微服务与单体应用中，数据库连接密码、缓存凭据、第三方 API 令牌、证书私钥等明文写入配置文件存在极高泄露风险；而传统加密插件依赖重、启动慢、且容易因配置中心握手时序问题引发 403 认证死锁。`ateng-boot-encrypt` 专职解决企业级配置安全问题：
+- **纯原生零依赖 (Zero-Bloat & Core-First)**：100% 依托 JDK 17+ 标准库与 Spring 6 原生能力，国密 SM2/SM3/SM4 纯算法内聚实现，**坚决不引入 BouncyCastle、Jasypt 等重型第三方依赖**；
+- **透明无感懒解密 (Transparent Lazy Decryption)**：基于 Spring Boot `EnvironmentPostProcessor` 与 `ConfigData` 两阶段机制（`Two-Phase Wrapper Sync`），在配置加载与容器期自动装配同步解密组件，业务代码、`@ConfigurationProperties` 与 `@Value` 完全无感；
+- **现代高强密码标配 (Modern Cryptography Defaults)**：默认采用具备 AEAD 完整性认证防篡改的 **AES-256-GCM** 算法，自动附带 12 字节安全随机 IV，彻底抛弃过时的 ECB/DES 模式；
+- **多 Key 轮换与隔离 (Multi-Key Routing & Isolation)**：独创 `ENC[keyId](...)`（及自定义前后缀 `[keyId]`）语义契约，支持不同组件独立密钥管理、`KeyRotatedEvent` 领域事件通知与无停机平滑轮换；
+- **内存真明文原则 (In-Memory Plaintext Invariant)**：业务层与实体在内存中始终保持 100% 原始真实明文，只在向外暴露端点处执行掩码脱敏，杜绝脏数据写回。
+
+### 1.2 引入依赖 (Maven)
+
+**方式一：通过 BOM 统一版本管理（推荐，免配 `<version>`）**：
+先在工程 `<dependencyManagement>` 中导入 [`ateng-boot-bom`](../ateng-boot-bom/README.md)，再引入模块坐标：
+
 ```xml
 <dependency>
     <groupId>io.github.atengk</groupId>
@@ -57,365 +55,657 @@
 </dependency>
 ```
 
-### 第二板斧：配置文件声明密文并注入主密钥
-在 `application.yml` 中声明已加密的配置项：
+**方式二：独立显式版本引入**：
+
+```xml
+<dependency>
+    <groupId>io.github.atengk</groupId>
+    <artifactId>ateng-boot-encrypt</artifactId>
+    <version>1.2.0</version>
+</dependency>
+```
+
+### 1.3 最小可用配置 (`application.yml`)
+提取自样例工程 `ateng-boot-samples/ateng-boot-sample-encrypt/src/main/resources/application.yml`：
 ```yaml
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-encrypt
+
+# ===================================================================
+# ateng-boot 配置加解密底座核心配置
+# ===================================================================
 ateng:
   boot:
     encrypt:
       enabled: true
-      algorithm: AES-GCM # 默认现代高强对称加密算法
+      algorithm: AES-GCM # 全局默认高强 AEAD 对称加密算法
+      # 命名密钥映射表（KeyId -> Password/PrivateKey），用于多 Key 轮换与分域解密
+      keys:
+        redis-cluster: RedisSpecialClusterKey2026!
 
-# 业务敏感属性（由 ENC(...) 标记包裹）
+# ===================================================================
+# 业务机密属性（配置已加密的密文，由 Starter 运行时透明懒解密还原）
+# 注意：全局主解密密钥严禁硬编码在本地 application.yml 中，统一通过环境变量或启动参数注入！
+# ===================================================================
 sample:
   secret:
+    # 数据库密码：采用默认 AES-GCM 算法加密
     database-password: ENC(CZAQmB7bsLk2Z8AWBDWuLuEdXBkLlPSelifEvpUKZF8hnxMYmS5qiJ0QPqAICQ==)
+    # 缓存密码：指定多 Key 路由 [redis-cluster] 执行解密
+    redis-password: ENC[redis-cluster](YbIg1S6F2964mdnyLgtvn1D4SjJ2QqxN8M45CBCnWs0VpgEJ4b5wEZyEKOJyDA==)
+    # 第三方API令牌：显式指定国密 SM4-CBC 算法加解密
+    third-party-token: ENC(SM4-CBC@ODPVE+KjssNqGN6yrBqMlXcYvDKQgNYADkGV+HV6vL+/H/Juo4KFpgIuVeRMmIT+)
+```
+
+### 1.4 业务代码透明无感使用与主密钥注入规范
+业务代码完全无需感知密文，直接通过强类型属性对象获取已解密的真实明文：
+```java
+@Data
+@ConfigurationProperties(prefix = "sample.secret")
+public class SampleSecretProperties {
+    private String databasePassword;
+    private String redisPassword;
+    private String thirdPartyToken;
+}
+```
+
+专职场景服务透明注入与验证（提取自 `ConfigDecryptionScenarioService.java`）：
+```java
+@Service
+@Getter
+public class ConfigDecryptionScenarioService {
+    private final SampleSecretProperties secretProperties;
+
+    @Value("${sample.secret.database-password}")
+    private String databasePasswordFromValue;
+
+    public ConfigDecryptionScenarioService(SampleSecretProperties secretProperties) {
+        this.secretProperties = secretProperties;
+    }
+
+    public String getDatabasePasswordFromProperties() {
+        return secretProperties.getDatabasePassword();
+    }
+}
 ```
 
 > [!IMPORTANT]
-> **主密钥注入铁律**：严禁将解密主密钥（`ateng.boot.encrypt.password`）硬编码在任何由版本控制纳管的本地 `application.yml` 中！必须通过环境变量或容器启动参数动态注入：
+> **主密钥注入规范与防自加密铁律**：严禁将解密主密钥（`ateng.boot.encrypt.password`）写在本地 `application.yml` 中（Starter 将直接抛出 `ConfigSecurityException` 拦截自加密）。请统一通过环境变量或启动参数动态注入：
 > ```bash
-> # 推荐生产注入方式：操作系统环境变量
+> # 生产标准推荐：环境变量
 > export ATENG_BOOT_ENCRYPT_PASSWORD="SampleMasterSecretKey2026!"
 > 
 > # 或 JVM 启动参数
 > java -Dateng.boot.encrypt.password=SampleMasterSecretKey2026! -jar app.jar
 > ```
 
-### 第三板斧：业务代码无感透明使用
-业务实体类与 `@ConfigurationProperties` 强类型模型完全无感知，直接使用明文：
-```java
-package io.github.atengk.boot.sample.encrypt.config;
+---
 
-import lombok.Data;
-import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.stereotype.Component;
+## 2. 核心架构拓扑与设计不变量
 
-@Data
-@Component
-@ConfigurationProperties(prefix = "sample.secret")
-public class SampleSecretProperties {
+```mermaid
+flowchart TD
+    subgraph ConfigLayer["配置输入与生命周期层 (Config Sources)"]
+        YAML_SRC["本地文件: application.yml / properties"]
+        ENV_SRC["系统环境: SystemEnvironment (K8s Secret)"]
+        CMD_SRC["命令行: SimpleCommandLine (--ateng.boot.encrypt.password)"]
+        REMOTE_SRC["配置中心: Nacos / Apollo (spring.config.import)"]
+    end
 
-    /**
-     * 数据库连接密码（运行时由 Starter 自动透明解密）
-     */
-    private String databasePassword;
-}
-```
+    subgraph PreResolverPhase["阶段一：ConfigData 瞬态预解析守卫与两阶段同步 (Pre-Resolver & Two-Phase Sync)"]
+        HOOK["EncryptConfigDataLocationResolver (ORDER = HIGHEST_PRECEDENCE)"]
+        INSTANT_WRAP["即时装饰原始 PropertySource 为 EncryptPropertySourceWrapper"]
+        NACOS_BIND["优先解密 nacos.username / nacos.password 连接凭据"]
+        SYNC_BRIDGE["Two-Phase Wrapper Sync (EPP 与容器期反向回填同步)"]
+        HOOK --> INSTANT_WRAP --> NACOS_BIND --> SYNC_BRIDGE
+    end
 
-Controller 传输边界显式契约返回真实明文（逆向提取自已跑通的真实样例）：
-```java
-@GetMapping("/secrets")
-public Result<SampleSecretVO> getDecryptedSecrets() {
-    SampleSecretVO vo = SampleSecretVO.builder()
-            .databasePassword(secretProperties.getDatabasePassword())
-            .build();
-    return Result.success(vo);
-}
-```
+    subgraph CoreEngine["加解密核心引擎矩阵 (Crypto & Decryptor Engine)"]
+        TEMPLATE["EncryptTemplate (受管高阶门面)"]
+        STATIC_FACADE["ConfigEncryptor (静态无状态对称纯函数)"]
+        ROUTER["MultiKeyRegistry (多密钥路由 & 版本平滑轮换)"]
+        AES_GCM["AesGcmConfigDecryptor (默认: 12字节IV + 128位Tag)"]
+        SM4_CBC["Sm4ConfigDecryptor (纯JDK原生国密 SM4)"]
+        RSA_ASYM["RsaConfigDecryptor (非对称公私钥分离: 2048/4096)"]
+        SM2_ASYM["Sm2ConfigDecryptor (纯原生国密 SM2 C1C3C2 / DER)"]
+        RETRY_DEC["RetryingConfigDecryptor (基于 Core RetryUtil 的指数退避重试)"]
+        KMS_SPI["AbstractKmsConfigDecryptor (外部云 KMS / HSM SPI)"]
+        ROUTER --> AES_GCM
+        ROUTER --> SM4_CBC
+        ROUTER --> RSA_ASYM
+        ROUTER --> SM2_ASYM
+        ROUTER --> RETRY_DEC --> KMS_SPI
+    end
 
-请求响应结果验证：
-```json
-{
-  "code": 200,
-  "msg": "操作成功",
-  "data": {
-    "databasePassword": "mysqlRootPass2026!"
-  },
-  "success": true,
-  "traceId": "7c5e13d987a048a8b1a830b80ef92315"
-}
+    subgraph DefenseGuards["多重防御与质量门禁 (Runtime & Pre-Flight Guards)"]
+        ENFORCE_GUARD["EnforceEncryptionPolicy (生产环境敏感字段明文硬阻断)"]
+        INGRESS_GUARD["PlaintextIngressGuard (配置中心动态热更新防明文倒灌)"]
+        ACTUATOR_GUARD["SanitizingGuard (Spring Boot 3 SanitizingFunction 物理掩码)"]
+        FAIL_FAST["FailFastPolicy (解密失败指明出错Key，严禁带病启动)"]
+    end
+
+    subgraph ToolingLayer["离线运维与开发者工具链 (Developer Tooling)"]
+        CLI["EncryptCli (终端单值加解密、整文件 --encrypt-file/--decrypt-file 与密钥对生成)"]
+        REWRITER["InPlaceRewriter (YAML/Properties 就地加解密、多行块标量无损往返与 .bak 备份)"]
+        FORMATTER["MultilineSecretFormatter (cleanCiphertext / formatPem 清洗与 PEM 标准化)"]
+    end
+
+    ConfigLayer --> PreResolverPhase
+    PreResolverPhase --> CoreEngine
+    CoreEngine --> DefenseGuards
+    ToolingLayer -.->|离线生成密文 / 就地回写| ConfigLayer
 ```
 
 ---
 
-## 4. 高级密码学引擎与纯原生国密合规
+## 3. 环境属性透明懒解密与多算法协同套件
 
-`ateng-boot-encrypt` 彻底摒弃传统方案中引入外部沉重依赖的做法，所有算法 100% 依托 JDK 17 原生能力与纯算法数学建模。
-
-### 4.1 现代高强 AES-GCM（默认引擎）
-- **算法模式**：`AES/GCM/NoPadding`（256 位密钥派生，12 字节强随机 IV，128 位认证 Tag）；
-- **AEAD 认证防篡改**：不仅保护机密性，还能在解密阶段自动检测密文与附加验证数据是否遭受恶意篡改，校验失败直接抛出异常快速失败；
-- **编程式调用**：
-  ```java
-  // 1. 快速加密（密文前 12 字节为随机 IV，Base64 封装）
-  String cipher = AesGcmConfigDecryptor.encrypt("mysqlRootPass2026!", "SampleMasterSecretKey2026!");
-  
-  // 2. 快速解密
-  String plain = new AesGcmConfigDecryptor().decrypt(cipher, "SampleMasterSecretKey2026!");
+### 3.1 默认 AES-256-GCM AEAD 透明解密
+- **专属配置片段**：
+  ```yaml
+  ateng:
+    boot:
+      encrypt:
+        enabled: true
+        algorithm: AES-GCM # 全局默认高强算法 (带 128 位抗篡改 Tag)
+        prefix: "ENC("     # 密文起始标记
+        suffix: ")"        # 密文结束标记
+        fail-on-error: true # 解密失败立即阻断启动
   ```
+- **业务 Java 示例**（提取自 `EncryptDecryptionController.java`）：
+  ```java
+  @GetMapping("/secrets")
+  public Result<SampleSecretVO> getDecryptedSecrets() {
+      SampleSecretVO vo = SampleSecretVO.builder()
+              .databasePassword(decryptionScenarioService.getDatabasePasswordFromProperties())
+              .redisPassword(decryptionScenarioService.getRedisPasswordFromProperties())
+              .thirdPartyToken(decryptionScenarioService.getThirdPartyTokenFromProperties())
+              .activeAlgorithm("AES-GCM")
+              .decryptionStatus(decryptionScenarioService.verifyDecryptionConsistency() ? "VERIFIED_CONSISTENT" : "MISMATCH")
+              .build();
+      return Result.success(vo);
+  }
+  ```
+- **核心机制与边界防御**：
+  1. 采用具备 AEAD（Authenticated Encryption with Associated Data）认证的 AES-256-GCM 算法，每次加密生成 12 字节安全随机 IV，有效抵御密文篡改与重放攻击；
+  2. 采用懒解密机制，在配置属性首次通过 `getProperty(name)` 访问时按需计算并原子写入内存缓存；解密失败时抛出语义化 `ConfigDecryptionException` 指明出错键名。
 
-### 4.2 纯原生国密 SM4（商用密码合规）
-- **算法模式**：支持 `SM4-CBC`（标配 16 字节随机 IV，PKCS5Padding）与 `SM4-ECB`；
-- **零依赖合规**：纯原生 Java 实现，无需配置或挂载 BouncyCastle Provider，彻底杜绝 JVM 模块化和安全策略限制问题；
-- **密文语法**：在密文中显式标明算法标识 `ENC(SM4-CBC@...)`：
+### 3.2 显式指定算法加解密 (SM4-CBC / SM2 / RSA)
+- **专属配置片段**：
   ```yaml
   sample:
     secret:
+      # 显式指定国密 SM4-CBC 算法解密（格式: ENC(SM4-CBC@<base64>)）
       third-party-token: ENC(SM4-CBC@ODPVE+KjssNqGN6yrBqMlXcYvDKQgNYADkGV+HV6vL+/H/Juo4KFpgIuVeRMmIT+)
   ```
-- **编程式调用**：
+- **业务 Java 示例**（提取自 `SampleEncryptWebControllerTest.java`）：
   ```java
-  // 国密 SM4-CBC 加密
-  String cipher = Sm4ConfigDecryptor.encryptCbc("sm4ApiSecretToken888", "SampleMasterSecretKey2026!");
-  // 解密还原
-  String plain = new Sm4ConfigDecryptor().decrypt(cipher, "SampleMasterSecretKey2026!");
-  ```
-
-### 4.3 纯原生国密 SM2（椭圆曲线非对称密码）
-- **算法标准**：GM/T 0003-2012《SM2 椭圆曲线公钥密码算法》；
-- **标准曲线**：支持国标推荐 256 位椭圆曲线参数与 SM3 杂凑密码算法，密文输出格式遵循标准 C1C3C2；
-- **编程式调用与密钥对生成**：
-  ```java
-  // 1. 一键生成原生 SM2 密钥对
-  Sm2ConfigDecryptor.Sm2KeyPair keyPair = Sm2ConfigDecryptor.generateKeyPair();
-  String privateKeyHex = keyPair.privateKeyHex(); // 32 字节私钥十六进制（生产持有）
-  String publicKeyHex = keyPair.publicKeyHex();   // 65 字节非压缩公钥十六进制（公开发布）
-  
-  // 2. 公钥加密
-  String cipher = Sm2ConfigDecryptor.encrypt("sensitiveTokenValue", publicKeyHex);
-  
-  // 3. 私钥解密
-  String plain = new Sm2ConfigDecryptor().decrypt(cipher, privateKeyHex);
-  ```
-
-### 4.4 非对称 RSA（公钥加密，私钥解密）
-- **分域权限管控**：研发团队、CI/CD 构建流水线仅持有公钥用于配置加密；解密私钥仅存在于生产运行环境，根绝运维与研发之间的密钥泄露风险；
-- **密钥生成与 PEM 互转**：
-  ```java
-  // 1. 生成 2048 位密钥对并导出标准 PEM 格式
-  KeyPair keyPair = RsaConfigDecryptor.generateKeyPair(2048);
-  String publicPem = RsaConfigDecryptor.encodePublicKeyToPem(keyPair.getPublic());
-  String privatePem = RsaConfigDecryptor.encodePrivateKeyToPem(keyPair.getPrivate());
-  
-  // 2. 公钥加密
-  String cipher = RsaConfigDecryptor.encrypt("superSecretPassword", publicPem);
-  
-  // 3. 私钥解密
-  String plain = new RsaConfigDecryptor().decrypt(cipher, privatePem);
-  ```
-
----
-
-## 5. 多 Key 动态路由与多域密钥轮换
-
-在企业级大型系统或多租户架构中，不同中间件（如 MySQL、Redis、RabbitMQ）往往由不同的运维团队负责，或者系统需要定期进行密钥轮换。
-
-### 5.1 方括号别名语法契约：`ENC[keyId](...)`
-Starter 统一遵循 `ENC[keyId](ciphertext)` 契约。若未声明 `[keyId]`，则默认使用全局主密钥 `default`：
-```yaml
-ateng:
-  boot:
-    encrypt:
-      enabled: true
-      keys:
-        # 命名密钥映射表（KeyId -> Password/PrivateKey）
-        redis-cluster: RedisSpecialClusterKey2026!
-        mq-broker: MqDedicatedKey2026!
-
-sample:
-  secret:
-    # 使用默认主密钥解密
-    database-password: ENC(CZAQmB7bsLk2Z8AWBDWuLuEdXBkLlPSelifEvpUKZF8hnxMYmS5qiJ0QPqAICQ==)
-    # 动态路由至 redis-cluster 命名密钥解密
-    redis-password: ENC[redis-cluster](YbIg1S6F2964mdnyLgtvn1D4SjJ2QqxN8M45CBCnWs0VpgEJ4b5wEZyEKOJyDA==)
-```
-
-### 5.2 编程式注册与无感平滑轮换
-通过 `MultiKeyRegistry` 可在运行时编程式动态挂载或更新命名密钥：
-```java
-@Autowired
-private MultiKeyRegistry multiKeyRegistry;
-
-// 1. 动态注册或更新新版本密钥
-multiKeyRegistry.registerKey("v2026-q4", "NewQuarterlySecretKey2026!");
-
-// 2. 获取指定密钥或保底主密钥
-String activeKey = multiKeyRegistry.getKeyOrDefault("v2026-q4");
-```
-密钥轮换期间，配置文件可同时存在 `ENC[v2026-q3](...)` 与 `ENC[v2026-q4](...)`，应用平滑重启或热重载，无需全量同步切换。
-
----
-
-## 6. Actuator 监控脱敏与生产明文倒灌拦截
-
-### 6.1 Actuator 运行时物理脱敏防泄露
-Spring Boot 默认在暴露 `/actuator/env` 或 `/actuator/configprops` 端点时可能会泄露配置解密后的明文或带 `ENC(...)` 标记的原始密文。
-
-Starter 内置 `SanitizingGuard`（基于 Spring Boot Actuator `SanitizingFunction`）：
-- 只要配置属性属于被解密属性或包含 `ENC(...)` 标记，监控端点一律在物理层输出恒定掩码：
-  ```json
-  {
-    "name": "sample.secret.database-password",
-    "value": "******",
-    "origin": "class path resource [application.yml] - 27:24"
+  @Test
+  void testDecryptedSecrets() throws Exception {
+      mockMvc.perform(get("/sample/encrypt/decrypt/secrets"))
+              .andExpect(status().isOk())
+              .andExpect(jsonPath("$.data.thirdPartyToken").value("sm4ApiSecretToken888"));
   }
   ```
-- **内存真明文与输出脱敏绝不冲突**：业务 Service 与实体对象在内存中始终保持 100% 原始真实明文，而在对外监控出口执行不可逆物理脱敏，彻底杜绝数据外泄。
+- **核心机制与边界防御**：
+  1. 令牌解析器（`CiphertextParser`）支持在括号内以 `@` 前缀显式指定算法名称，如 `ENC(SM4-CBC@...)`、`ENC(RSA@...)`；
+  2. 当密文内声明了显式算法时，其优先级高于全局默认 `ateng.boot.encrypt.algorithm`，实现混合多算法安全协同。
 
-### 6.2 生产环境明文倒灌拦截门禁 (`PlaintextIngressGuard`)
-在生产部署流程中，防止开发人员或运维人员疏忽将明文密码直接推送到生产环境：
-```yaml
-ateng:
-  boot:
-    encrypt:
-      enforce-encrypted: true # 生产环境强行开启防倒灌校验
-      sensitive-key-pattern: ".*password.*|.*secret.*|.*token.*|.*private-key.*"
-```
-**防御行为**：在 Spring Boot 启动阶段自动扫描全量外部配置源，若发现匹配正则特征的敏感键仍为未加密裸明文，直接拦截抛出 `ConfigSecurityException` 并阻断容器启动，实现生产安全红牌门禁。
-
----
-
-## 7. 生产扩展与弹性接管
-
-### 7.1 自定义解密器与外部云 KMS / HSM 逃生舱
-当企业级生产环境需对接 AWS KMS、阿里云 KMS、腾讯云 KMS 或 PCI-E 硬件加密机时，开发者只需继承 `AbstractKmsConfigDecryptor` 或实现 `ConfigDecryptor` SPI：
-
-```java
-package io.github.atengk.boot.sample.encrypt.extension;
-
-import io.github.atengk.boot.encrypt.decryptor.AbstractKmsConfigDecryptor;
-import org.springframework.stereotype.Component;
-
-/**
- * 自定义企业外部云 KMS 解密器
- */
-@Component
-public class CustomAliyunKmsConfigDecryptor extends AbstractKmsConfigDecryptor {
-
-    @Override
-    protected String doDecrypt(String ciphertext, String keyIdOrPassword) throws Exception {
-        // 调用企业统一 KMS SDK 或内网 RPC 解密服务
-        return kmsClient.decrypt(ciphertext, keyIdOrPassword);
-    }
-}
-```
-
-配置文件中声明算法为 `KMS`：
-```yaml
-datasource:
-  password: ENC(KMS@AQICAHjW3...==)
-```
-
-### 7.2 外部网络抖动弹性指数退避 (`RetryingConfigDecryptor`)
-对接远程云 KMS 或网络解密服务时，网络抖动可能导致服务启动瞬时失败。通过包装 `RetryingConfigDecryptor` 赋予其工业级弹性退避容灾能力：
-
-```java
-ConfigDecryptor kmsDecryptor = new CustomAliyunKmsConfigDecryptor();
-
-// 自动挂载基于 ateng-boot-core 的 RetryUtil 原生指数退避重试装饰器
-ConfigDecryptor resilientDecryptor = new RetryingConfigDecryptor(
-        kmsDecryptor,
-        RetryUtil.RetryConfig.builder()
-                .maxAttempts(3)
-                .delay(Duration.ofMillis(100))
-                .multiplier(2.0)
-                .maxDelay(Duration.ofSeconds(5))
-                .jitter(true) // 启用 Full Jitter 打散重试洪峰
-                .retryPredicate(RetryingConfigDecryptor.DEFAULT_RETRYABLE_PREDICATE)
-                .build()
-);
-```
-
-> [!NOTE]
-> `DEFAULT_RETRYABLE_PREDICATE` 会自动递归分析因果异常链，若属于不可重试的密码学错误（如 `BadPaddingException`、`AEADBadTagException`、`InvalidKeyException` 等密钥或密文损坏），立即中断并快速失败，绝不进行无意义的盲目重试。
-
-### 7.3 Nacos / Apollo 远端配置解析预拦截 (`PreResolverHook`)
-在 Spring Boot 2.4+ 的 `ConfigData` 加载机制下，若 Nacos / Apollo 连接配置自身的用户名和密码也被加密（例如 `spring.cloud.nacos.config.password=ENC(...)`），常规的 `EnvironmentPostProcessor` 会因介入过晚而导致客户端拉取远端配置时抛出 403 权限拒绝。
-
-Starter 内置 `EncryptConfigDataLocationResolver` 与 `EncryptConfigDataEnvironmentUpdateListener`，在配置中心拉取远端资源前的极早期阶段自动完成解密预拦截，彻底消除配置中心连接 403 痛点。
+### 3.3 Spring Cloud `{cipher}` 历史前缀平滑兼容
+- **专属配置片段**：
+  ```yaml
+  ateng:
+    boot:
+      encrypt:
+        compatible-cipher-prefix: true # 开启历史 Spring Cloud Config {cipher} 前缀兼容
+  ```
+- **业务 Java 实测示例**（提取自 `EncryptSampleApplicationTest.java`）：
+  ```java
+  // 配合 Two-Phase Wrapper Sync，即使通过 spring.config.import 后置覆盖 compatible-cipher-prefix: true，
+  // 仍可透明解密 {cipher}... 属性：
+  SampleSecretProperties props = ctx.getBean(SampleSecretProperties.class);
+  assertEquals("twoPhaseLegacyRedisPass", props.getRedisPassword());
+  ```
+- **核心机制与边界说明**：
+  当旧工程迁移至 `ateng-boot` 时，开启 `compatible-cipher-prefix: true` 后，解析器将透明剥离 `{cipher}` 前缀并调用解密引擎，实现零业务代码修改平滑迁移。
 
 ---
 
-## 8. 整文件就地智能回写与脱机安全运维 CLI
+## 4. 统一编程式加解密与双层完备对称门面套件
 
-### 8.1 配置文件整文件就地智能加解密回写器 (`InPlaceRewriter`)
-传统加解密工具在重写 YAML/Properties 文件时，往往会打乱原有配置文件的缩进、破坏注释行并丢失空白换行符。
+### 4.1 Spring 受管 `EncryptTemplate` 业务门面
+- **专属配置片段**：
+  ```yaml
+  ateng:
+    boot:
+      encrypt:
+        enabled: true
+        algorithm: AES-GCM
+  ```
+- **业务 Java 示例**（提取自 `EncryptCryptoController.java`）：
+  ```java
+  @PostMapping("/encrypt")
+  public Result<CryptoResultVO> encryptDefault(@Valid @RequestBody CryptoEncryptRequest request) {
+      String token = cryptoScenarioService.encryptDefault(request.getPlaintext());
+      CryptoResultVO vo = CryptoResultVO.builder()
+              .plaintext(request.getPlaintext())
+              .token(token)
+              .algorithm("AES-GCM")
+              .build();
+      return Result.success(vo);
+  }
 
-`InPlaceRewriter` 采用逐行语义扫描算法，能够做到：
-1. **100% 格式与注释保真**：完美保留原有注释、缩进空白以及平台中立换行符（CRLF / LF）；
-2. **支持智能自动识别与显式指令**：
-   - 自动识别匹配敏感正则的字段进行就地加密；
-   - 支持显式行内/行前指令：`# @encrypt`、`# @encrypt[keyId]`、`# @encrypt(SM4-CBC)`、`# @encrypt[keyId](RSA)`；
-3. **确定性自动备份**：执行就地重写前自动在同级目录生成 `.bak` 备份文件，确保运维操作 100% 可回滚；
-4. **对称完备性**：支持就地加密 `rewriteEncrypt` 与就地逆向解密还原 `rewriteDecrypt`。
+  @PostMapping("/decrypt")
+  public Result<String> decrypt(@Valid @RequestBody CryptoDecryptRequest request) {
+      String plain = cryptoScenarioService.decrypt(request.getCiphertext());
+      return Result.success(plain);
+  }
+  ```
+- **核心机制与边界防御说明**：
+  `EncryptTemplate` 为 Spring 单例受管 Bean，具备完全对称语义（`encrypt` / `decrypt`），内部自动装配当前主密钥、算法与前后缀解析器，避免业务层手动解析 SPI。
 
-```java
-// 编程式就地重写加密
-InPlaceRewriter rewriter = new InPlaceRewriter("SampleMasterSecretKey2026!", EncryptAlgorithm.AES_GCM);
-int encryptedCount = rewriter.rewriteEncrypt(Path.of("src/main/resources/application.yml"));
+### 4.2 `ConfigEncryptor` 静态无状态对称纯函数门面
+- **适用配置说明**：纯原生无状态静态门面，无需 Spring 容器或 YAML 配置，直接传入明文/密文、密钥与 `EncryptAlgorithm` 即可执行。
+- **业务 Java 示例**（提取自 `ProgrammaticCryptoScenarioService.java`）：
+  ```java
+  public String executeDirectStaticCrypto(String plaintext, String password, EncryptAlgorithm algorithm) {
+      String cipher = ConfigEncryptor.encrypt(plaintext, password, algorithm);
+      return ConfigEncryptor.decrypt(cipher, password, algorithm);
+  }
+  ```
+- **核心机制与边界防御说明**：
+  `ConfigEncryptor` 提供静态纯函数 API，具备严格对称语义（入参为 `null` 返回 `null`），脱离 Spring 容器亦可直接运行，非常适合单测测试夹具或独立命令行工具调用。
 
-// 就地逆向解密还原明文
-int decryptedCount = rewriter.rewriteDecrypt(Path.of("src/main/resources/application.yml"));
-```
+### 4.3 纯 Base64 裸密文、命名密钥快捷重载与容错逃生舱
+- **专属配置片段**：
+  ```yaml
+  ateng:
+    boot:
+      encrypt:
+        algorithm: AES-GCM # 命名密钥缺省重载自动沿用环境默认算法
+        keys:
+          redis-cluster: RedisSpecialClusterKey2026!
+  ```
+- **业务 Java 示例**（提取自 `EncryptCryptoController.java`）：
+  ```java
+  @PostMapping("/encrypt-key")
+  public Result<CryptoResultVO> encryptWithKey(@Valid @RequestBody CryptoKeyEncryptRequest request) {
+      String token = cryptoScenarioService.encryptWithKey(request.getPlaintext(), request.getKeyId());
+      CryptoResultVO vo = CryptoResultVO.builder()
+              .plaintext(request.getPlaintext())
+              .token(token)
+              .keyId(request.getKeyId())
+              .algorithm(cryptoScenarioService.getDefaultAlgorithmCode())
+              .build();
+      return Result.success(vo);
+  }
 
-### 8.2 脱机安全运维终端 CLI 工具箱 (`EncryptCli`)
-纯原生 JDK 实现，内置脱机终端菜单与批处理能力，无需启动任何 Spring 容器即可完成生产密钥生成与密文运算：
+  @PostMapping("/decrypt-key")
+  public Result<String> decryptWithKey(@Valid @RequestBody CryptoKeyDecryptRequest request) {
+      String plain = cryptoScenarioService.decryptWithKey(request.getCiphertext(), request.getKeyId());
+      return Result.success(plain);
+  }
 
-#### 交互式菜单模式
-直接执行入口类进入运维控制台：
-```bash
-java -cp ateng-boot-encrypt.jar io.github.atengk.boot.encrypt.cli.EncryptCli
-```
-控制台菜单：
-```text
-=================================================================
-*              ateng-boot-encrypt 终端脱机安全工具箱             *
-=================================================================
-[1] 单值快速加密 (AES-GCM / SM4 / RSA / SM2)
-[2] 单值快速解密
-[3] 一键生成非对称 RSA 密钥对 (2048 / 4096 位)
-[4] 一键生成纯原生国密 SM2 密钥对
-[5] 退出工具箱
------------------------------------------------------------------
-请选择操作编号 [1-5]: 
-```
+  @PostMapping("/encrypt-raw")
+  public Result<String> encryptRaw(@Valid @RequestBody CryptoRawRequest request) {
+      String raw = cryptoScenarioService.encryptRaw(request.getPlaintext());
+      return Result.success(raw);
+  }
 
-#### 命令行批处理模式（适配 CI/CD 自动化流水线）
-```bash
-# 1. 快速单值加密（AES-GCM）
-java -cp ateng-boot-encrypt.jar io.github.atengk.boot.encrypt.cli.EncryptCli \
-  --encrypt -v "mysqlRootPass2026!" -p "SampleMasterSecretKey2026!"
-# 输出: ENC(CZAQmB7bsLk2Z8AWBDWuLuEdXBkLlPSelifEvpUKZF8hnxMYmS5qiJ0QPqAICQ==)
+  @PostMapping("/decrypt-safe")
+  public Result<String> decryptSafe(@Valid @RequestBody CryptoSafeDecryptRequest request) {
+      String safeValue = cryptoScenarioService.decryptOrDefault(request.getCiphertext(), request.getDefaultValue());
+      return Result.success(safeValue);
+  }
+  ```
+- **核心机制与边界说明**：
+  1. `EncryptTemplate` 提供 `encrypt(plaintext, keyId)`、`encryptRaw(plaintext, keyId)` 与 `decrypt(ciphertext, keyId)` 三个缺省算法对称重载，自动沿用环境默认算法并路由至指定 `keyId`（缺失密钥或密文损坏时 Fail-Fast 抛出保留 `cause` 的 `ConfigDecryptionException`）；
+  2. `decryptOrDefault` / `decryptOrOriginal` 提供容错逃生舱机制：在面对非合规密文或损坏数据时安全返回默认值或原串，杜绝单点解密失败瘫痪核心业务主流程。
 
-# 2. 指定多 Key 别名与算法加密
-java -cp ateng-boot-encrypt.jar io.github.atengk.boot.encrypt.cli.EncryptCli \
-  --encrypt -v "redisAuthPass2026!" -p "RedisSpecialClusterKey2026!" -a AES-GCM --key-id redis-cluster
-# 输出: ENC[redis-cluster](YbIg1S6F2964mdnyLgtvn1D4SjJ2QqxN8M45CBCnWs0VpgEJ4b5wEZyEKOJyDA==)
+### 4.4 自定义前后缀 (`prefix` / `suffix`) 与 `[keyId]` 双向对称闭环
+- **专属配置片段**：
+  ```yaml
+  ateng:
+    boot:
+      encrypt:
+        prefix: "CIPHER(" # 也支持 MY_ENC[ / SEC{ 或非括号前缀 CIPHER:
+        suffix: ")"
+        keys:
+          redis-cluster: CustomPrefixRedis2026!
+  ```
+- **业务 Java 实测示例**（提取自 `EncryptSampleApplicationTest.java`）：
+  ```java
+  EncryptTemplate template = ctx.getBean(EncryptTemplate.class);
+  String routedToken = template.encrypt("round-trip-routed", "redis-cluster");
+  // 输出: CIPHER[redis-cluster](...)
+  assertTrue(template.isEncrypted(routedToken));
+  assertEquals("round-trip-routed", template.decrypt(routedToken, "redis-cluster"));
 
-# 3. 快速解密还原
-java -cp ateng-boot-encrypt.jar io.github.atengk.boot.encrypt.cli.EncryptCli \
-  --decrypt -v "ENC(...)" -p "SampleMasterSecretKey2026!"
-
-# 4. 一键生成非对称密钥对
-java -cp ateng-boot-encrypt.jar io.github.atengk.boot.encrypt.cli.EncryptCli --keygen -a RSA --key-size 2048
-java -cp ateng-boot-encrypt.jar io.github.atengk.boot.encrypt.cli.EncryptCli --keygen -a SM2
-```
-
-### 8.3 多行大文本与 PEM 证书单行化编解码 (`MultilineSecretFormatter`)
-在配置中心或 YAML 文件中存储非对称公私钥或多行 PEM 证书时，多行换行往往会导致缩进错乱。
-
-`MultilineSecretFormatter` 提供纯原生单行化与还原转换：
-```java
-// 多行 PEM 证书转单行（安全转义换行符并保留头尾）
-String singleLine = MultilineSecretFormatter.toSingleLine(pemPrivateKey);
-
-// 单行字符串还原为标准 RFC 规范的多行 PEM 证书
-String standardPem = MultilineSecretFormatter.toMultiLine(singleLine);
-```
+  String sm4RoutedToken = template.encrypt("round-trip-sm4", "redis-cluster", EncryptAlgorithm.SM4_CBC);
+  // 输出: CIPHER[redis-cluster](SM4-CBC@...)
+  assertEquals("round-trip-sm4", template.decrypt(sm4RoutedToken));
+  ```
+- **核心机制与边界说明**：
+  1. `CiphertextParser` 在配置非默认 `prefix` / `suffix` 时，若 `prefix` 以开括号（`(`、`[`、`{`）结尾，自动在开括号前解析/组装可选 `[keyId]` 标签（如 `CIPHER[redis-cluster](...)`、`MY_ENC[redis-cluster][...]`），非括号前缀亦支持 `[keyId]` 对称识别；
+  2. `EncryptTemplate.formatToken` 与 `encrypt` 委派至持有的解析器实例，保障 `EncryptTemplate` 与 `EncryptPropertySourceWrapper` 在任意自定义前后缀下 100% 往返一致，并完整保留静态 `CiphertextParser.formatToken(...)` 与标准 `ENC(...)` 向后兼容。
 
 ---
 
-## 9. 核心生产边界与非功能语义
+## 5. 多 Key 命名路由与无感平滑轮换套件
 
-1. **确定性初始化时序与引导规范**：
-   - `EncryptEnvironmentPostProcessor` 在 Spring Boot 最早期的 `EnvironmentPostProcessor` 阶段介入，早于所有业务 `@Configuration` 与 Bean 初始化；
-   - 遵循 Spring Boot 3 规范，`EnvironmentPostProcessor` 注册于 `META-INF/spring.factories`，自动装配类注册于 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`；
-   - 替换底层属性源后严格调用 `ConfigurationPropertySources.attach(environment)`，确保 `@ConfigurationProperties` 强类型绑定实时感知解密代理。
-2. **Spring Boot 测试环境与 MapPropertySource 强转防御**：
-   - `EncryptPropertySourceWrapper` 直接继承自 `MapPropertySource`，彻底根除 Spring Boot 测试框架在 `SpringBootTestRandomPortEnvironmentPostProcessor` 中对属性源进行 `(MapPropertySource)` 强制类型转换时引发的 `ClassCastException`。
-3. **跨平台换行符保真机制**：
-   - `InPlaceRewriter` 在读取目标配置文件时自动探测源文件的换行符规范（CRLF 或 LF）并在写回时严格保留，杜绝 Windows 与 Linux 跨环境协作时 Git Diff 产生全文件换行符污染。
-4. **内存真明文与不可倒灌不变量**：
-   - 业务层在运行时内存中获取的始终为 100% 原始真实明文，免除任何业务代码侵入；
-   - 只有在向外暴露（Actuator 监控端点）或文件写回时进行物理脱敏或密码学重写，不可逆防护。
+### 5.1 `ENC[keyId](...)` 别名语义路由
+- **专属配置片段**：
+  ```yaml
+  ateng:
+    boot:
+      encrypt:
+        keys:
+          redis-cluster: RedisSpecialClusterKey2026!
+          payment-shard: PaymentMasterSecretPass888!
+
+  sample:
+    secret:
+      redis-password: ENC[redis-cluster](YbIg1S6F2964mdnyLgtvn1D4SjJ2QqxN8M45CBCnWs0VpgEJ4b5wEZyEKOJyDA==)
+  ```
+- **业务 Java 示例**（提取自 `EncryptMultiKeyController.java`）：
+  ```java
+  @PostMapping("/decrypt-routed")
+  public Result<String> decryptRoutedToken(@Valid @RequestBody RoutedDecryptRequest request) {
+      String plain = multiKeyService.decryptRoutedToken(request.getToken());
+      return Result.success(plain);
+  }
+  ```
+- **核心机制与边界说明**：
+  支持 `ENC[keyId](...)` 与 `ENC[keyId](algorithm@...)` 语法，解析器自动提取方括号内的 `keyId` 并路由至 `MultiKeyRegistry` 获取对应密钥，实现不同业务组件独立秘钥隔离。
+
+### 5.2 动态密钥注册与平滑轮换
+- **业务 Java 示例**（提取自 `EncryptMultiKeyController.java`）：
+  ```java
+  @PostMapping("/rotate")
+  public Result<Boolean> rotateKey(@Valid @RequestBody KeyRotateRequest request) {
+      multiKeyService.rotateKey(request.getKeyId(), request.getNewPassword());
+      return Result.success(true);
+  }
+  ```
+- **核心机制与边界防御说明**：
+  调用 `MultiKeyRegistry.registerKey` 注册或更新密钥时，系统自动清空已代理属性源中的解密内存缓存，并通过领域事件通知下游监听器，零停机平滑轮换。
+
+### 5.3 `KeyRotatedEvent` 领域事件与缓存原子置换
+- **业务 Java 示例**（提取自 `MultiKeyRegistry.java`）：
+  ```java
+  @EventListener
+  public void onKeyRotated(KeyRotatedEvent event) {
+      log.info("监听到密钥轮换事件: keyId={}, timestamp={}", event.getKeyId(), event.getTimestamp());
+  }
+  ```
+- **核心机制说明**：
+  轮换触发后广播 Spring 上下文事件 `KeyRotatedEvent`，底层属性源装饰器执行原子置换 `AtomicReference<ConcurrentHashMap<String, Object>>`，并发读取线程既无锁竞争又绝对不会脏读旧明文。
+
+---
+
+## 6. 生产强制加密与三道防误伤门禁套件
+
+### 6.1 `enforce-encrypted` 生产敏感明文刚性阻断
+- **专属配置片段**：
+  ```yaml
+  ateng:
+    boot:
+      encrypt:
+        enforce-encrypted: true # 生产环境建议开启：强制阻断裸明文密码
+        sensitive-key-pattern: ".*password.*|.*secret.*|.*token.*|.*private-key.*"
+  ```
+- **业务 Java 实测断言**（提取自 `EncryptSampleApplicationTest.java`）：
+  ```java
+  @Test
+  void testEnforceEncryptedBlocksUnencryptedSecretsInApplication() {
+      assertThrows(Exception.class, () -> {
+          new SpringApplicationBuilder(EncryptSampleApplication.class)
+                  .properties("ateng.boot.encrypt.password=SampleMasterSecretKey2026!", "ateng.boot.encrypt.enforce-encrypted=true")
+                  .initializers(context -> {
+                      context.getEnvironment().getPropertySources().addFirst(
+                              new MapPropertySource("external-source", Map.of("spring.datasource.password", "nakedPlaintextSecret999")));
+                  })
+                  .run();
+      });
+  }
+  ```
+- **核心机制与边界说明**：
+  在应用启动前置扫描外部属性源，若命中敏感正则且属性值未以 `ENC(...)` 标记包裹（包括未加双引号的纯数字密码），抛出 `ConfigSecurityException` 立即熔断阻断启动。
+
+### 6.2 三道防误伤过滤链 (协议/路径/日志级别/白名单)
+- **专属配置片段**：
+  ```yaml
+  ateng:
+    boot:
+      encrypt:
+        enforce-encrypted: true
+        ignored-keys:
+          - sample.secret.whitelist-key
+  ```
+- **业务 Java 示例**（提取自 `EncryptGuardController.java`）：
+  ```java
+  @GetMapping("/rules")
+  public Result<IngressRuleVO> getIngressRules() {
+      String configuredPattern = encryptProperties.getSensitiveKeyPattern();
+      String effectivePattern = (configuredPattern != null && !configuredPattern.trim().isEmpty())
+              ? configuredPattern.trim()
+              : EnforceEncryptionPolicy.DEFAULT_SENSITIVE_KEY_PATTERN;
+      Set<String> effectiveIgnoredKeys = encryptProperties.getIgnoredKeys() != null
+              ? Collections.unmodifiableSet(new LinkedHashSet<>(encryptProperties.getIgnoredKeys()))
+              : Collections.emptySet();
+
+      IngressRuleVO vo = IngressRuleVO.builder()
+              .enforceEncrypted(encryptProperties.isEnforceEncrypted())
+              .sensitivePattern(effectivePattern)
+              .ignoredKeys(effectiveIgnoredKeys)
+              .protocolImmunities(List.of("http://", "https://", "classpath:", "file:", "ws://", "wss://"))
+              .logLevelImmunities(List.of("DEBUG", "INFO", "WARN", "ERROR", "TRACE"))
+              .build();
+      return Result.success(vo);
+  }
+  ```
+- **核心机制说明**：
+  1. **协议与多级路径特征豁免**：以 `http://`、`https://`、`classpath:`、`file:` 开头，或属于多级绝对路径（如 `/etc/ssl/cert.pem`）自动豁免；
+  2. **日志级别特征豁免**：属性值为标准日志级别（`DEBUG`、`INFO` 等）时自动放行；
+  3. **白名单硬放行**：`ateng.boot.encrypt.*` 属性与 `ignored-keys` 显式声明的属性跳过校验。
+
+### 6.3 `PlaintextIngressGuard` 配置中心动态热推防倒灌
+- **业务 Java 实测断言**（提取自 `EncryptSampleApplicationTest.java`）：
+  ```java
+  @Test
+  void testPlaintextIngressGuardBlocksDynamicUnencryptedPush() {
+      assertThrows(ConfigSecurityException.class, () -> {
+          service.simulatePlaintextIngress("spring.datasource.password", "hotPushedPlaintext123");
+      });
+  }
+  ```
+- **核心机制说明**：
+  监听 `EnvironmentChangeEvent` / `RefreshEvent` 事件，在配置中心热推送配置时持续校验，坚决拒绝生产环境动态推送裸明文敏感配置覆盖有效密文。
+
+---
+
+## 7. 配置文件就地双模智能回写与格式保真套件
+
+### 7.1 YAML / Properties 保真就地回写与多行块标量无损往返 (`Block Scalar Round-Trip Rewrite`)
+- **适用配置与指令语法**：
+  ```yaml
+  rsa:
+    # @encrypt
+    private-key: |
+      -----BEGIN PRIVATE KEY-----
+      MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7
+      -----END PRIVATE KEY-----
+  ```
+- **业务 Java 示例**（提取自 `EncryptInPlaceRewriteController.java` 与 `SampleEncryptWebControllerTest.java`）：
+  ```java
+  @PostMapping("/encrypt-yaml")
+  public Result<RewriteResultVO> encryptYaml(@Valid @RequestBody InPlaceRewriteRequest request) {
+      RewriteResultVO vo = executeSandboxRewrite(
+              request.getContent(), "yml", request.getPassword(),
+              request.getAlgorithm() != null ? request.getAlgorithm() : EncryptAlgorithm.AES_GCM, true);
+      return Result.success(vo);
+  }
+
+  @PostMapping("/decrypt-yaml")
+  public Result<RewriteResultVO> decryptYaml(@Valid @RequestBody InPlaceRewriteRequest request) {
+      RewriteResultVO vo = executeSandboxRewrite(
+              request.getContent(), "yml", request.getPassword(),
+              request.getAlgorithm() != null ? request.getAlgorithm() : EncryptAlgorithm.AES_GCM, false);
+      return Result.success(vo);
+  }
+  ```
+- **核心机制与边界防御说明**：
+  1. `InPlaceRewriter`（及别名 `EncryptFileRewriter`）识别敏感键或 `# @encrypt` / `# @encrypt[keyId](ALGO)` 指令并就地替换为 `ENC(...)`，重写前强制生成 `.bak` 备份（`InPlaceRewriter.resolveBackupPath(path)`），100% 保持缩进、空行、行尾注释与原始换行符（`LF` / `CRLF`）；
+  2. **YAML 多行块标量无损往返**：逆向执行 `rewriteDecrypt` 时，若非 `.properties` 的 YAML 键值行解密出多行文本（如 PEM 私钥/证书），自动重构为 `<indent><key><separator>|<inlineComment>` 后接 `<indent>  ` 缩进的合法 YAML 块标量。
+
+### 7.2 占位符 `${...}` 与 SpEL 免疫机制
+- **核心机制说明**：
+  在执行就地加密时，自动识别形如 `${spring.profiles.active}`、`${DB_PASS:root}` 的环境变量占位符或 SpEL 表达式（`#{...}`）并严格豁免加密，杜绝将动态外部注入变量固化为死密文。
+
+### 7.3 脱机安全运维终端 CLI 工具箱 (`EncryptCli`)
+- **终端交互式菜单（菜单 `[1]-[7]`，含 `[5]` 配置文件就地加密与 `[6]` 配置文件就地解密还原）**：
+  ```bash
+  java -cp ateng-boot-encrypt.jar io.github.atengk.boot.encrypt.cli.EncryptCli
+  ```
+- **命令行批处理（适配 CI/CD 流水线，支持单值加解密、整文件就地回写与密钥对生成）**：
+  ```bash
+  # 1. 快速单值加密 (AES-GCM)
+  java -cp ateng-boot-encrypt.jar io.github.atengk.boot.encrypt.cli.EncryptCli \
+    --encrypt -v "mysqlRootPass2026!" -p "SampleMasterSecretKey2026!"
+
+  # 2. 整文件就地加密（生成 .bak 备份并输出处理字段数，支持 --key-id 与 -a 算法指定）
+  java -cp ateng-boot-encrypt.jar io.github.atengk.boot.encrypt.cli.EncryptCli \
+    --encrypt-file -f application-prod.yml -p "SampleMasterSecretKey2026!"
+
+  # 3. 整文件就地解密还原（短参 -df，支持 YAML 多行块标量无损还原）
+  java -cp ateng-boot-encrypt.jar io.github.atengk.boot.encrypt.cli.EncryptCli \
+    -df -f application-prod.yml -p "SampleMasterSecretKey2026!"
+
+  # 4. 生成非对称 RSA / 纯原生国密 SM2 密钥对
+  java -cp ateng-boot-encrypt.jar io.github.atengk.boot.encrypt.cli.EncryptCli --keygen -a RSA --key-size 2048
+  java -cp ateng-boot-encrypt.jar io.github.atengk.boot.encrypt.cli.EncryptCli --keygen -a SM2
+  ```
+
+---
+
+## 8. 运行时端点安全防御与物理脱敏套件
+
+### 8.1 Actuator `/actuator/env` 物理掩码脱敏 (`SanitizingGuard`)
+- **专属配置片段**：
+  ```yaml
+  management:
+    endpoints:
+      web:
+        exposure:
+          include: env,health,info
+    endpoint:
+      env:
+        show-values: ALWAYS
+  ```
+- **业务 Java 实测断言**（提取自 `EncryptSampleApplicationTest.java`）：
+  ```java
+  @Test
+  void testActuatorSanitizingGuardMasking() {
+      SanitizingGuard sanitizingGuard = applicationContext.getBean(SanitizingGuard.class);
+      SanitizableData sensitiveData = new SanitizableData(null, "sample.secret.database-password", "mysqlRootPass2026!");
+      SanitizableData sanitized = sanitizingGuard.apply(sensitiveData);
+      assertEquals("******", sanitized.getValue());
+  }
+  ```
+- **核心机制说明**：
+  基于 Spring Boot 3 `SanitizingFunction` 规范，对所有命中敏感正则、包含密文标记，以及主密钥（`ateng.boot.encrypt.password`）与任意命名多密钥（`ateng.boot.encrypt.keys.*`）在监控端点无条件物理掩码为 `******`，彻底杜绝运行时凭据外泄。
+
+---
+
+## 9. 生产扩展接管与核心非功能边界 (维度二 & 维度三)
+
+### 9.1 扩展外部云 KMS / 硬件加密机 SPI (`AbstractKmsConfigDecryptor`)
+- **专属配置片段**：
+  ```yaml
+  sample:
+    kms:
+      value-secret: ENC(KMS@value-payload)
+      config-secret: ENC(KMS@config-payload)
+  ```
+- **扩展实现示例**（提取自 `EncryptSampleApplicationTest.java`）：
+  ```java
+  @Bean
+  AbstractKmsConfigDecryptor sampleKmsDecryptor(KmsInvocationTracker tracker) {
+      return new AbstractKmsConfigDecryptor() {
+          @Override
+          protected String doDecrypt(String ciphertext, String password) throws Exception {
+              if ("bad-padding".equals(ciphertext)) {
+                  tracker.badPaddingAttempts.incrementAndGet();
+                  throw new BadPaddingException("sample bad padding");
+              }
+              int attempt = tracker.transientAttempts.incrementAndGet();
+              if (attempt < 4) {
+                  throw new IOException("sample transient kms failure #" + attempt);
+              }
+              return "e2e-kms:" + ciphertext;
+          }
+      };
+  }
+  ```
+- **核心机制与边界说明**：
+  通过 Spring `@Bean` 或 `META-INF/services/io.github.atengk.boot.encrypt.decryptor.ConfigDecryptor` SPI 注册后，容器同步桥接机制自动将 KMS 配置解密引擎回填至环境属性源包装器，无缝支持 `@Value`、`@ConfigurationProperties` 与 `EncryptTemplate` 透明调用。
+
+### 9.2 强类型弹性指数退避重试 (`RetryingConfigDecryptor`)
+- **专属配置片段**：
+  ```yaml
+  ateng:
+    boot:
+      encrypt:
+        retry:
+          max-attempts: 3  # 最大尝试次数（含首次执行）
+          delay: 300ms     # 初始退避延迟 (java.time.Duration)
+          max-delay: 5s    # 最大退避延迟 (java.time.Duration)
+          multiplier: 2.0  # 指数退避乘数
+          jitter: true     # 启用 Full Jitter 打散重试洪峰
+  ```
+- **边界防御说明**：
+  1. 内置密码学异常短路机制：遇到 `BadPaddingException`、`AEADBadTagException` 等密文/口令损坏错误时立即快速失败，杜绝盲目重试；
+  2. `ConfigDecryptorFactory` 在合并容器 `AbstractKmsConfigDecryptor` Bean 时直接更新其内部重试策略而不额外包裹 `RetryingConfigDecryptor`，彻底消除 KMS 双重嵌套重试。
+
+### 9.3 配置中心极早期穿透守卫 (`EncryptConfigDataLocationResolver`)
+- **核心机制说明**：
+  在 Spring Boot 3 `ConfigDataLocationResolver` 极早期阶段（`ORDER = HIGHEST_PRECEDENCE`），Nacos / Apollo 客户端发起网络连接握手前，守卫穿透已加载的贡献源优先解密连接凭据，彻底根除 403 认证死锁。
+
+---
+
+## 10. 完整 YAML 配置属性清单 (全量速查附录)
+
+### 10.1 全量配置属性字典
+
+| 配置项 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `ateng.boot.encrypt.enabled` | `Boolean` | `true` | 是否启用配置加解密透明解密底座 |
+| `ateng.boot.encrypt.password` | `String` | `null` | 全局默认主解密密钥（严禁写入本地配置文件） |
+| `ateng.boot.encrypt.algorithm` | `EncryptAlgorithm` | `AES-GCM` | 全局默认加密算法（支持 `AES-GCM`, `AES-CBC`, `SM4-CBC`, `SM4-ECB`, `RSA`, `SM2`, `KMS`） |
+| `ateng.boot.encrypt.prefix` | `String` | `ENC(` | 密文起始包裹标记 |
+| `ateng.boot.encrypt.suffix` | `String` | `)` | 密文结束包裹标记 |
+| `ateng.boot.encrypt.fail-on-error` | `Boolean` | `true` | 解密失败时是否立即阻断启动（快速失败） |
+| `ateng.boot.encrypt.compatible-cipher-prefix` | `Boolean` | `false` | 是否兼容解析 Spring Cloud Config `{cipher}` 历史前缀 |
+| `ateng.boot.encrypt.enforce-encrypted` | `Boolean` | `false` | 生产环境强制加密门禁：检测到未加密敏感配置时阻断启动 |
+| `ateng.boot.encrypt.sensitive-key-pattern` | `String` | `.*password.*\|.*secret.*\|.*token.*\|.*private-key.*` | 敏感属性键名正则表达式特征 |
+| `ateng.boot.encrypt.ignored-keys` | `Set<String>` | `empty` | 生产强制加密门禁显式豁免白名单属性集合 |
+| `ateng.boot.encrypt.keys.*` | `Map<String, String>` | `empty` | 多 Key 命名密钥映射表（KeyId -> Password/PrivateKey） |
+| `ateng.boot.encrypt.retry.max-attempts` | `Integer` | `3` | 远程云 KMS 调用最大尝试次数（含首次执行） |
+| `ateng.boot.encrypt.retry.delay` | `Duration` | `300ms` | 远程云 KMS 调用初始退避重试延迟 |
+| `ateng.boot.encrypt.retry.max-delay` | `Duration` | `5s` | 远程云 KMS 调用最大退避重试延迟 |
+| `ateng.boot.encrypt.retry.multiplier` | `Double` | `2.0` | 指数退避乘数 |
+| `ateng.boot.encrypt.retry.jitter` | `Boolean` | `true` | 是否启用 Full Jitter 抖动打散重试洪峰 |
+
+### 10.2 样例工程 Controller 快速索引
+
+| 业务领域 | Controller 类 | 根路由路径 | 核心体验动作 |
+| :--- | :--- | :--- | :--- |
+| **透明解密呈现** | `EncryptDecryptionController` | `/sample/encrypt/decrypt` | `GET /secrets`, `GET /property` |
+| **编程式对称门面** | `EncryptCryptoController` | `/sample/encrypt/crypto` | `POST /encrypt`, `POST /decrypt`, `POST /encrypt-custom`, `POST /encrypt-key`, `POST /encrypt-raw-key`, `POST /decrypt-key`, `POST /encrypt-raw`, `POST /decrypt-safe` |
+| **多 Key 路由轮换** | `EncryptMultiKeyController` | `/sample/encrypt/multi-key` | `GET /keys`, `POST /decrypt-routed`, `POST /rotate` |
+| **生产防倒灌守卫** | `EncryptGuardController` | `/sample/encrypt/guard` | `POST /refresh`, `POST /simulate-ingress`, `GET /rules` |
+| **沙箱就地智能回写** | `EncryptInPlaceRewriteController` | `/sample/encrypt/rewrite` | `POST /encrypt-yaml`, `POST /decrypt-yaml`, `POST /encrypt-properties`, `POST /decrypt-properties` |

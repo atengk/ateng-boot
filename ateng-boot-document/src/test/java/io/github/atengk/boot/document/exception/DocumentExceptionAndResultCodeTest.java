@@ -36,6 +36,13 @@ class DocumentExceptionAndResultCodeTest {
         assertThat(DocumentResultCode.TEMPLATE_NOT_FOUND.getCode()).isEqualTo(57005);
         assertThat(DocumentResultCode.PASSWORD_ERROR.getCode()).isEqualTo(57006);
         assertThat(DocumentResultCode.FORM_ERROR.getCode()).isEqualTo(57007);
+        assertThat(DocumentResultCode.PDF_XFA_UNSUPPORTED.getCode()).isEqualTo(57008);
+        assertThat(DocumentResultCode.PDF_PAGE_INDEX_OUT_OF_BOUNDS.getCode()).isEqualTo(57009);
+        assertThat(DocumentResultCode.PDF_RENDER_EXCEEDED_MAX_PAGES.getCode()).isEqualTo(57010);
+        assertThat(DocumentResultCode.DOCUMENT_SIZE_EXCEEDED.getCode()).isEqualTo(57011);
+        assertThat(DocumentResultCode.KEYWORD_NOT_FOUND.getCode()).isEqualTo(57012);
+        assertThat(DocumentResultCode.CONVERSION_FAILED.getCode()).isEqualTo(57013);
+        assertThat(DocumentResultCode.ENCRYPTION_ERROR.getCode()).isEqualTo(57014);
     }
 
     @Test

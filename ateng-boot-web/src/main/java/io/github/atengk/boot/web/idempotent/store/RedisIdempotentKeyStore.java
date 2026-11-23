@@ -1,5 +1,7 @@
 package io.github.atengk.boot.web.idempotent.store;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.util.Assert;
 
@@ -35,13 +37,34 @@ public class RedisIdempotentKeyStore implements IdempotentKeyStore {
     public boolean tryLock(String key, long timeout, TimeUnit unit) {
         Assert.hasText(key, "idempotent key must not be blank");
         Objects.requireNonNull(unit, "time unit must not be null");
-        Boolean success = redisTemplate.opsForValue().setIfAbsent(key, LOCK_VALUE, timeout, unit);
-        return Boolean.TRUE.equals(success);
+        try {
+            Boolean success = redisTemplate.opsForValue().setIfAbsent(key, LOCK_VALUE, timeout, unit);
+            return Boolean.TRUE.equals(success);
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "Redis idempotent tryLock failed: " + e.getMessage(), e);
+        }
     }
 
     @Override
     public void unlock(String key) {
         Assert.hasText(key, "idempotent key must not be blank");
-        redisTemplate.delete(key);
+        try {
+            redisTemplate.delete(key);
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "Redis idempotent unlock failed: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public boolean isLocked(String key) {
+        Assert.hasText(key, "idempotent key must not be blank");
+        try {
+            return Boolean.TRUE.equals(redisTemplate.hasKey(key));
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "Redis idempotent isLocked failed: " + e.getMessage(), e);
+        }
     }
 }

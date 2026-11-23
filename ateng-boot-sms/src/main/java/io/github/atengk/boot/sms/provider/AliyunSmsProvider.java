@@ -1,0 +1,515 @@
+package io.github.atengk.boot.sms.provider;
+
+import io.github.atengk.boot.core.util.BatchSliceUtil;
+import io.github.atengk.boot.core.util.BusinessAssert;
+import io.github.atengk.boot.core.util.DesensitizeUtil;
+import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.sms.exception.SmsResultCode;
+import io.github.atengk.boot.sms.exception.SmsSendException;
+import io.github.atengk.boot.sms.model.*;
+import io.github.atengk.boot.sms.support.SmsPhoneNormalizer;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.MediaType;
+import org.springframework.util.StringUtils;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
+
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+
+/**
+ * 阿里云短信服务驱动实现 (Dysmsapi)
+ * 基于 Spring 6 原生 RestClient 与 JDK 17，原生实现 POP RPC 规范与 HMAC-SHA1 签名算法
+ * 100% 纯原生零第三方 SDK 依赖，支持出站请求参数规范化与统一因果异常转译
+ *
+ * @author Ateng
+ * @since 2026-11-02
+ */
+@Slf4j
+public class AliyunSmsProvider extends AbstractHttpSmsProvider {
+
+    /**
+     * 默认阿里云短信官方接入公网端点
+     */
+    public static final String DEFAULT_ENDPOINT = "https://dysmsapi.aliyuncs.com";
+
+    /**
+     * POP RPC 签名算法参数值
+     */
+    private static final String SIGNATURE_METHOD = "HMAC-SHA1";
+
+    /**
+     * Java JCA 标准 Mac 算法标识
+     */
+    private static final String MAC_ALGORITHM = "HmacSHA1";
+
+    /**
+     * POP RPC 接口版本
+     */
+    private static final String API_VERSION = "2017-05-25";
+
+    /**
+     * ISO 8601 UTC 时间格式化器
+     */
+    private static final DateTimeFormatter UTC_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'")
+            .withZone(ZoneOffset.UTC);
+
+    public AliyunSmsProvider(RestClient.Builder restClientBuilder) {
+        super(restClientBuilder);
+    }
+
+    public AliyunSmsProvider() {
+        this(RestClient.builder());
+    }
+
+    @Override
+    public SmsSupplier getSupplier() {
+        return SmsSupplier.ALIYUN;
+    }
+
+    @Override
+    public SmsResult send(SmsRequest request, SmsChannel channel) {
+        // 1. 前置卫语句防御
+        BusinessAssert.notNull(request, "发信请求 SmsRequest 不能为空");
+        BusinessAssert.notNull(channel, "短信渠道 SmsChannel 不能为空");
+        BusinessAssert.hasText(channel.getAccessKeyId(), "阿里云短信 AccessKeyId 不能为空");
+        BusinessAssert.hasText(channel.getAccessKeySecret(), "阿里云短信 AccessKeySecret 不能为空");
+        BusinessAssert.hasText(request.getPhone(), "接收短信的目标手机号不能为空");
+        BusinessAssert.hasText(request.getTemplateId(), "短信模板 ID (TemplateCode) 不能为空");
+
+        String signName = channel.resolveSignName(request.getTemplateId(), request.getSignName());
+        BusinessAssert.hasText(signName, "短信签名 (SignName) 不能为空，请在请求或渠道配置中显式指定");
+
+        // 2. 组装待发送业务与公共参数
+        Map<String, String> params = new HashMap<>();
+        params.put("Action", "SendSms");
+        params.put("Version", API_VERSION);
+        params.put("Format", "JSON");
+        params.put("SignatureMethod", SIGNATURE_METHOD);
+        params.put("SignatureVersion", "1.0");
+        params.put("SignatureNonce", UUID.randomUUID().toString());
+        params.put("Timestamp", UTC_FORMATTER.format(Instant.now()));
+        params.put("AccessKeyId", channel.getAccessKeyId());
+        params.put("RegionId", StringUtils.hasText(channel.getRegion()) ? channel.getRegion() : "cn-hangzhou");
+
+        // 手机号归一化与拼接（国内 11 位、国际去 + 前缀并以英文逗号分隔）
+        List<String> formattedPhones = formatPhones(request.getPhones(), channel);
+        params.put("PhoneNumbers", String.join(",", formattedPhones));
+        params.put("SignName", signName);
+        params.put("TemplateCode", request.getTemplateId());
+
+        // 模板动态变量映射为 JSON 字符串
+        if (request.getParams() != null && !request.getParams().isEmpty()) {
+            params.put("TemplateParam", request.getParams().toJsonString());
+        }
+
+        // 外部业务流水追踪号 (OutId)
+        if (StringUtils.hasText(request.getBizId())) {
+            params.put("OutId", request.getBizId());
+        }
+
+        // 3. 原生 POP RPC 签名生成
+        String signature = generateSignature(params, "POST", channel.getAccessKeySecret());
+
+        // 4. 构建 application/x-www-form-urlencoded 请求体（包含 URL 编码后的 Signature）
+        StringBuilder formBody = new StringBuilder();
+        formBody.append("Signature=").append(percentEncode(signature));
+        for (Map.Entry<String, String> entry : params.entrySet()) {
+            if (entry.getValue() != null) {
+                formBody.append("&")
+                        .append(percentEncode(entry.getKey()))
+                        .append("=")
+                        .append(percentEncode(entry.getValue()));
+            }
+        }
+
+        // 5. 确定请求端点并执行网络调用
+        String endpoint = normalizeEndpoint(channel.getEndpoint(), DEFAULT_ENDPOINT);
+        RestClient client = buildRestClient(channel);
+
+        String responseBody;
+        try {
+            responseBody = executeWithRetry(channel, "SendSms", () -> client.post()
+                    .uri(endpoint)
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .body(formBody.toString())
+                    .retrieve()
+                    .body(String.class));
+        } catch (RestClientResponseException e) {
+            String errorBody = e.getResponseBodyAsString();
+            parseAndThrowExceptionIfPossible(channel.getName(), errorBody, e);
+            throw new SmsSendException(channel.getName(), "HTTP_" + e.getStatusCode().value(),
+                    e.getStatusText(), SmsResultCode.SMS_SEND_ERROR, "阿里云短信网关响应异常: " + e.getMessage(), e);
+        } catch (SmsSendException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new SmsSendException(channel.getName(), "NETWORK_ERROR", e.getMessage(),
+                    SmsResultCode.SMS_SEND_ERROR, "阿里云短信网络通信异常: " + e.getMessage(), e);
+        }
+
+        // 6. 解析响应结果并执行因果异常转译
+        return parseResponse(channel.getName(), request.getPhone(), request.getTemplateId(), responseBody);
+    }
+
+    /**
+     * 生成阿里云 POP RPC 规范的 HMAC-SHA1 签名
+     *
+     * @param params          所有待签名参数集合（排除 Signature）
+     * @param httpMethod      HTTP 请求方法（如 POST）
+     * @param accessKeySecret 访问密钥 Secret
+     * @return Base64 编码的签名串
+     */
+    public static String generateSignature(Map<String, String> params, String httpMethod, String accessKeySecret) {
+        BusinessAssert.hasText(accessKeySecret, "accessKeySecret 不能为空");
+        BusinessAssert.notNull(params, "待签名参数集合不能为空");
+
+        // 1. 参数按 ASCII 字典序自然升序排列
+        Map<String, String> sortedMap = new TreeMap<>(params);
+
+        // 2. 构造规范化查询字符串 CanonicalizedQueryString
+        StringBuilder canonical = new StringBuilder();
+        for (Map.Entry<String, String> entry : sortedMap.entrySet()) {
+            if ("Signature".equals(entry.getKey()) || entry.getValue() == null) {
+                continue;
+            }
+            if (canonical.length() > 0) {
+                canonical.append("&");
+            }
+            canonical.append(percentEncode(entry.getKey()))
+                    .append("=")
+                    .append(percentEncode(entry.getValue()));
+        }
+
+        // 3. 构造待签名字符串 StringToSign
+        String stringToSign = httpMethod + "&" + percentEncode("/") + "&" + percentEncode(canonical.toString());
+
+        // 4. 使用 HMAC-SHA1 计算哈希并进行 Base64 编码
+        try {
+            Mac mac = Mac.getInstance(MAC_ALGORITHM);
+            mac.init(new SecretKeySpec((accessKeySecret + "&").getBytes(StandardCharsets.UTF_8), MAC_ALGORITHM));
+            byte[] signBytes = mac.doFinal(stringToSign.getBytes(StandardCharsets.UTF_8));
+            return Base64.getEncoder().encodeToString(signBytes);
+        } catch (Exception e) {
+            throw new IllegalStateException("计算阿里云短信 HMAC-SHA1 签名异常: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 遵循 RFC 3986 规范的 URL 百分号编码
+     * 针对 A-Z、a-z、0-9 以及 '-'、'_'、'.'、'~' 不编码
+     * 将 '+' 转换为 '%20'，'*' 转换为 '%2A'，'%7E' 转换为 '~'
+     *
+     * @param value 原始待编码字符串
+     * @return 符合规范的百分号编码字符串
+     */
+    public static String percentEncode(String value) {
+        if (value == null) {
+            return "";
+        }
+        return URLEncoder.encode(value, StandardCharsets.UTF_8)
+                .replace("+", "%20")
+                .replace("*", "%2A")
+                .replace("%7E", "~");
+    }
+
+    /**
+     * 解析成功响应或抛出因果业务异常
+     */
+    private SmsResult parseResponse(String channelName, String phone, String templateId, String responseBody) {
+        Map<String, Object> respMap = parseJsonSafely(responseBody);
+        String code = getFieldIgnoreCase(respMap, "Code");
+        String message = getFieldIgnoreCase(respMap, "Message");
+        String bizId = getFieldIgnoreCase(respMap, "BizId");
+        String requestId = getFieldIgnoreCase(respMap, "RequestId");
+
+        if ("OK".equalsIgnoreCase(code)) {
+            log.info("[AliyunSmsProvider] 阿里云发信成功 -> 渠道: {}, 目标号码: {}, 模板ID: {}, bizId: {}, requestId: {}",
+                    channelName, DesensitizeUtil.mobilePhone(phone), templateId, bizId, requestId);
+            return SmsResult.success(channelName, SmsSupplier.ALIYUN, bizId, requestId, 1);
+        }
+
+        throw new SmsSendException(channelName, code, message, SmsResultCode.SMS_SEND_ERROR,
+                "阿里云短信发送失败: [" + code + "] " + message);
+    }
+
+    @Override
+    public BatchSmsResult sendPersonalizedBatch(BatchSmsRequest request, SmsChannel channel) {
+        BusinessAssert.notNull(request, "批量发信请求 BatchSmsRequest 不能为空");
+        BusinessAssert.notNull(channel, "短信渠道 SmsChannel 不能为空");
+        BusinessAssert.hasText(channel.getAccessKeyId(), "阿里云短信 AccessKeyId 不能为空");
+        BusinessAssert.hasText(channel.getAccessKeySecret(), "阿里云短信 AccessKeySecret 不能为空");
+        BusinessAssert.notEmpty(request.getPhones(), "接收短信的目标手机号列表不能为空");
+        BusinessAssert.hasText(request.getTemplateId(), "短信模板 ID (TemplateCode) 不能为空");
+
+        String signName = channel.resolveSignName(request.getTemplateId(), request.getSignName());
+        BusinessAssert.hasText(signName, "短信签名 (SignName) 不能为空，请在请求或渠道配置中显式指定");
+
+        String endpoint = normalizeEndpoint(channel.getEndpoint(), DEFAULT_ENDPOINT);
+        RestClient client = buildRestClient(channel);
+
+        List<List<String>> slices = BatchSliceUtil.slice(request.getPhones(), 100);
+        int successCount = 0;
+        List<String> failedPhones = new ArrayList<>();
+        List<SmsResult> batchResults = new ArrayList<>(slices.size());
+
+        for (List<String> slice : slices) {
+            Map<String, String> params = new HashMap<>();
+            params.put("Action", "SendBatchSms");
+            params.put("Version", API_VERSION);
+            params.put("Format", "JSON");
+            params.put("SignatureMethod", SIGNATURE_METHOD);
+            params.put("SignatureVersion", "1.0");
+            params.put("SignatureNonce", UUID.randomUUID().toString());
+            params.put("Timestamp", UTC_FORMATTER.format(Instant.now()));
+            params.put("AccessKeyId", channel.getAccessKeyId());
+            params.put("RegionId", StringUtils.hasText(channel.getRegion()) ? channel.getRegion() : "cn-hangzhou");
+            params.put("TemplateCode", request.getTemplateId());
+
+            params.put("PhoneNumberJson", JsonUtil.toJsonString(formatPhones(slice, channel)));
+            params.put("SignNameJson", JsonUtil.toJsonString(Collections.nCopies(slice.size(), signName)));
+
+            List<Map<String, Object>> paramMaps = new ArrayList<>(slice.size());
+            for (String phone : slice) {
+                SmsParam p = request.getPhoneParams().get(phone);
+                paramMaps.add(p != null ? p.asMap() : Collections.emptyMap());
+            }
+            params.put("TemplateParamJson", JsonUtil.toJsonString(paramMaps));
+
+            String signature = generateSignature(params, "POST", channel.getAccessKeySecret());
+
+            StringBuilder formBody = new StringBuilder();
+            formBody.append("Signature=").append(percentEncode(signature));
+            for (Map.Entry<String, String> entry : params.entrySet()) {
+                if (entry.getValue() != null) {
+                    formBody.append("&")
+                            .append(percentEncode(entry.getKey()))
+                            .append("=")
+                            .append(percentEncode(entry.getValue()));
+                }
+            }
+
+            try {
+                String responseBody = executeWithRetry(channel, "SendBatchSms", () -> client.post()
+                        .uri(endpoint)
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .body(formBody.toString())
+                        .retrieve()
+                        .body(String.class));
+
+                Map<String, Object> respMap = parseJsonSafely(responseBody);
+                String code = getFieldIgnoreCase(respMap, "Code");
+                String message = getFieldIgnoreCase(respMap, "Message");
+                String bizId = getFieldIgnoreCase(respMap, "BizId");
+                String requestId = getFieldIgnoreCase(respMap, "RequestId");
+
+                if ("OK".equalsIgnoreCase(code)) {
+                    batchResults.add(SmsResult.success(channel.getName(), SmsSupplier.ALIYUN, bizId, requestId, slice.size()));
+                    successCount += slice.size();
+                } else {
+                    failedPhones.addAll(slice);
+                    batchResults.add(SmsResult.failure(channel.getName(), SmsSupplier.ALIYUN, code, message));
+                }
+            } catch (RestClientResponseException e) {
+                failedPhones.addAll(slice);
+                String errorBody = e.getResponseBodyAsString();
+                batchResults.add(SmsResult.failure(channel.getName(), SmsSupplier.ALIYUN, "HTTP_" + e.getStatusCode().value(), errorBody));
+            } catch (Exception ex) {
+                failedPhones.addAll(slice);
+                String rawCode = ex instanceof SmsSendException sse ? sse.getRawCode() : "SEND_ERROR";
+                batchResults.add(SmsResult.failure(channel.getName(), SmsSupplier.ALIYUN, rawCode, ex.getMessage()));
+            }
+        }
+
+        return BatchSmsResult.of(
+                request.getPhones().size(),
+                successCount,
+                failedPhones,
+                Collections.emptyList(),
+                batchResults
+        );
+    }
+
+    /**
+     * 当收到 HTTP 非 200 响应时，尝试从 Body 解析阿里云结构化错误并抛出
+     */
+    private void parseAndThrowExceptionIfPossible(String channelName, String errorBody, Exception cause) {
+        if (!StringUtils.hasText(errorBody)) {
+            return;
+        }
+        try {
+            Map<String, Object> respMap = parseJsonSafely(errorBody);
+            String code = getFieldIgnoreCase(respMap, "Code");
+            String message = getFieldIgnoreCase(respMap, "Message");
+            if (StringUtils.hasText(code)) {
+                throw new SmsSendException(channelName, code, message, SmsResultCode.SMS_SEND_ERROR,
+                        "阿里云短信网关拒绝: [" + code + "] " + message, cause);
+            }
+        } catch (SmsSendException e) {
+            throw e;
+        } catch (Exception ignored) {
+            // 解析失败不影响兜底异常向外抛出
+        }
+    }
+
+    private List<String> formatPhones(List<String> phones, SmsChannel channel) {
+        List<String> formatted = new ArrayList<>(phones.size());
+        for (String phone : phones) {
+            formatted.add(SmsPhoneNormalizer.toAliyunFormat(phone, channel));
+        }
+        return formatted;
+    }
+
+    private String getFieldIgnoreCase(Map<String, Object> map, String key) {
+        if (map == null || key == null) {
+            return null;
+        }
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            if (key.equalsIgnoreCase(entry.getKey()) && entry.getValue() != null) {
+                return String.valueOf(entry.getValue());
+            }
+        }
+        return null;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public SmsDeliveryQueryResult querySendStatus(String phone, String bizId, LocalDate sendDate, SmsChannel channel) {
+        BusinessAssert.notNull(channel, "短信渠道 SmsChannel 不能为空");
+        BusinessAssert.hasText(channel.getAccessKeyId(), "阿里云短信 AccessKeyId 不能为空");
+        BusinessAssert.hasText(channel.getAccessKeySecret(), "阿里云短信 AccessKeySecret 不能为空");
+        BusinessAssert.hasText(phone, "查询短信回执的目标手机号不能为空");
+
+        Map<String, String> params = new HashMap<>();
+        params.put("Action", "QuerySendDetails");
+        params.put("Version", API_VERSION);
+        params.put("Format", "JSON");
+        params.put("SignatureMethod", SIGNATURE_METHOD);
+        params.put("SignatureVersion", "1.0");
+        params.put("SignatureNonce", UUID.randomUUID().toString());
+        params.put("Timestamp", UTC_FORMATTER.format(Instant.now()));
+        params.put("AccessKeyId", channel.getAccessKeyId());
+        params.put("RegionId", StringUtils.hasText(channel.getRegion()) ? channel.getRegion() : "cn-hangzhou");
+        params.put("PhoneNumber", SmsPhoneNormalizer.toAliyunFormat(phone, channel));
+        params.put("SendDate", (sendDate != null ? sendDate : LocalDate.now()).format(DateTimeFormatter.BASIC_ISO_DATE));
+        params.put("PageSize", "10");
+        params.put("CurrentPage", "1");
+        if (StringUtils.hasText(bizId)) {
+            params.put("BizId", bizId.trim());
+        }
+
+        String signature = generateSignature(params, "POST", channel.getAccessKeySecret());
+        StringBuilder formBody = new StringBuilder();
+        formBody.append("Signature=").append(percentEncode(signature));
+        for (Map.Entry<String, String> entry : params.entrySet()) {
+            if (entry.getValue() != null) {
+                formBody.append("&")
+                        .append(percentEncode(entry.getKey()))
+                        .append("=")
+                        .append(percentEncode(entry.getValue()));
+            }
+        }
+
+        String endpoint = normalizeEndpoint(channel.getEndpoint(), DEFAULT_ENDPOINT);
+        RestClient client = buildRestClient(channel);
+        String responseBody;
+        try {
+            responseBody = executeWithRetry(channel, "QuerySendDetails", () -> client.post()
+                    .uri(endpoint)
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .body(formBody.toString())
+                    .retrieve()
+                    .body(String.class));
+        } catch (RestClientResponseException e) {
+            parseAndThrowExceptionIfPossible(channel.getName(), e.getResponseBodyAsString(), e);
+            throw new SmsSendException(channel.getName(), "HTTP_" + e.getStatusCode().value(),
+                    e.getStatusText(), SmsResultCode.SMS_SEND_ERROR, "阿里云短信状态查询响应异常: " + e.getMessage(), e);
+        } catch (SmsSendException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new SmsSendException(channel.getName(), "NETWORK_ERROR", e.getMessage(),
+                    SmsResultCode.SMS_SEND_ERROR, "阿里云短信状态查询网络异常: " + e.getMessage(), e);
+        }
+
+        Map<String, Object> respMap = parseJsonSafely(responseBody);
+        String code = getFieldIgnoreCase(respMap, "Code");
+        String message = getFieldIgnoreCase(respMap, "Message");
+        if (!"OK".equalsIgnoreCase(code)) {
+            throw new SmsSendException(channel.getName(), code != null ? code : "QUERY_ERROR",
+                    message, SmsResultCode.SMS_SEND_ERROR,
+                    "阿里云短信状态查询失败: [" + code + "] " + message);
+        }
+
+        List<Map<String, Object>> detailsList = Collections.emptyList();
+        Object dtosObj = respMap.get("SmsSendDetailDTOs");
+        if (dtosObj instanceof Map<?, ?> dtosMap) {
+            Object dtoArr = dtosMap.get("SmsSendDetailDTO");
+            if (dtoArr instanceof List<?> rawList) {
+                List<Map<String, Object>> normalized = new ArrayList<>(rawList.size());
+                for (Object item : rawList) {
+                    if (item instanceof Map<?, ?> itemMap) {
+                        Map<String, Object> copy = new LinkedHashMap<>();
+                        itemMap.forEach((k, v) -> copy.put(String.valueOf(k), v));
+                        normalized.add(copy);
+                    }
+                }
+                detailsList = Collections.unmodifiableList(normalized);
+            }
+        }
+
+        if (detailsList.isEmpty()) {
+            return SmsDeliveryQueryResult.builder()
+                    .supported(true)
+                    .channelName(channel.getName())
+                    .supplier(SmsSupplier.ALIYUN)
+                    .phone(phone)
+                    .bizId(bizId)
+                    .deliveryStatus(SmsDeliveryStatus.UNKNOWN)
+                    .message("未查询到匹配的阿里云发送回执明细")
+                    .details(Collections.emptyList())
+                    .build();
+        }
+
+        Map<String, Object> first = detailsList.get(0);
+        Object sendStatusObj = first.get("SendStatus");
+        int sendStatusVal = 0;
+        if (sendStatusObj instanceof Number n) {
+            sendStatusVal = n.intValue();
+        } else if (sendStatusObj != null) {
+            try {
+                sendStatusVal = Integer.parseInt(String.valueOf(sendStatusObj).trim());
+            } catch (NumberFormatException nfe) {
+                throw new SmsSendException(channel.getName(), "INVALID_RESPONSE", "阿里云 SendStatus 非合法整数",
+                        SmsResultCode.SMS_SEND_ERROR, "阿里云短信状态回查响应 SendStatus 非法: " + sendStatusObj, nfe);
+            }
+        }
+        SmsDeliveryStatus status = switch (sendStatusVal) {
+            case 3 -> SmsDeliveryStatus.DELIVERED;
+            case 2 -> SmsDeliveryStatus.FAILED;
+            case 1 -> SmsDeliveryStatus.ACCEPTED;
+            default -> SmsDeliveryStatus.UNKNOWN;
+        };
+
+        return SmsDeliveryQueryResult.builder()
+                .supported(true)
+                .channelName(channel.getName())
+                .supplier(SmsSupplier.ALIYUN)
+                .phone(getFieldIgnoreCase(first, "PhoneNum") != null ? getFieldIgnoreCase(first, "PhoneNum") : phone)
+                .bizId(getFieldIgnoreCase(first, "OutId") != null ? getFieldIgnoreCase(first, "OutId") : bizId)
+                .deliveryStatus(status)
+                .rawStatusCode(getFieldIgnoreCase(first, "ErrCode"))
+                .rawStatusDesc(getFieldIgnoreCase(first, "Content"))
+                .sendTime(getFieldIgnoreCase(first, "SendDate"))
+                .receiveTime(getFieldIgnoreCase(first, "ReceiveDate"))
+                .message(message)
+                .details(detailsList)
+                .build();
+    }
+}

@@ -7,7 +7,7 @@
     <parent>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot</artifactId>
-        <version>1.0.0</version>
+        <version>1.2.0</version>
     </parent>
 
     <artifactId>ateng-boot-observability</artifactId>
@@ -33,6 +33,12 @@
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- Spring Boot AOP Starter (用于 @ObservedMetric 方法度量切面拦截) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
         </dependency>
 
         <!-- 可选依赖：Spring MVC (用于端点安全过滤器与 HTTP 访问，纯后台 Worker 场景免配) -->
@@ -67,6 +73,55 @@
         <dependency>
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-mybatis-plus</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：Redis 底座 (用于编译与装配 RedisSafeHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-redis</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：Kafka 消息底座 (用于编译与装配 KafkaSafeHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-kafka</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：RabbitMQ 消息底座 (用于编译与装配 RabbitmqSafeHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-rabbitmq</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：Search 检索引擎底座 (用于编译与装配 SearchSafeHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-search</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：Mail 邮件通信底座 (用于编译与装配 MailSafeHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-mail</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：SMS 企业级短信底座 (用于编译与装配 SmsSafeHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-sms</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：AI 大模型底座 (用于编译与装配 AiSafeHealthIndicator，严格单向零循环依赖) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-ai</artifactId>
             <optional>true</optional>
         </dependency>
 

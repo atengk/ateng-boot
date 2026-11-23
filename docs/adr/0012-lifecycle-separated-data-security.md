@@ -76,6 +76,15 @@ flowchart TD
 - **防御性容错降级 (Defensive Plaintext Fallback)**：
   - 读取数据时若发现空值直接返回；若遇到非 Base64、非 AES 密文或由于密钥不匹配导致解密失败时，处理器自动捕获异常并原样返回原始字符串，确保平滑兼容老系统已存在的历史未加密明文数据。
 
+### 2.1 确定性透明加密与等值检索：`@FieldEncrypt(deterministic = true)` 与 `DeterministicEncryptTypeHandler`
+- **合成初始化向量（SIV）保障等值恒定性**：
+  - 当实体属性标注 `@FieldEncrypt(deterministic = true)` 并挂载 `DeterministicEncryptTypeHandler` 时，系统基于 HMAC-SHA256(key, plain) 派生前 16 字节作为固定合成 IV，结合 AES-CBC 生成 `v1:` 密文；
+  - 相同明文在同一密钥下永远生成唯一恒定密文，支持在数据库物理列上建立索引，并支持精确等值（`=` / `IN`）密文检索。
+- **动态查询引擎安全编译与双向解密兼容**：
+  - `DynamicQueryHelper` 对确定性加密字段开放 `EQ`、`NE`、`IN`、`NOT_IN`、`IS_NULL`、`IS_NOT_NULL` 算子，在组装条件前自动将明文入参转换为确定性密文入参；
+  - 对确定性加密字段尝试使用 `LIKE` 模糊匹配、范围比较或 `ORDER BY` 排序时，立即抛出 `IllegalArgumentException` 快速失败阻断；
+  - `DeterministicEncryptTypeHandler` 与 `EncryptTypeHandler` 解密端完全双向兼容（自包含解密随机 IV 与 SIV 密文及历史真明文）。
+
 ### 3. 视图出库动态脱敏：`@FieldSensitive` 与 `SensitiveJsonSerializer`
 - **Jackson 原生非侵入挂载**：
   - 基于 Jackson 标准 `JsonSerializer<String>` 与 `ContextualSerializer` 上下文机制，在序列化时动态感知字段上的 `@FieldSensitive` 配置；

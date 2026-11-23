@@ -1,5 +1,6 @@
 package io.github.atengk.boot.document.enums;
 
+import io.github.atengk.boot.core.enums.IBaseEnum;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 
@@ -11,7 +12,7 @@ import lombok.Getter;
  */
 @Getter
 @AllArgsConstructor
-public enum PageNumberPosition {
+public enum PageNumberPosition implements IBaseEnum<String> {
 
     /**
      * 底部居中（默认常用）
@@ -45,4 +46,9 @@ public enum PageNumberPosition {
 
     private final String code;
     private final String desc;
+
+    @Override
+    public String getLabel() {
+        return desc;
+    }
 }

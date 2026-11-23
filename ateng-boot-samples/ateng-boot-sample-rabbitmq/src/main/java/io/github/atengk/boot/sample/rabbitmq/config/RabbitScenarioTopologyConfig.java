@@ -1,7 +1,12 @@
 package io.github.atengk.boot.sample.rabbitmq.config;
 
+import io.github.atengk.boot.rabbitmq.builder.DeadLetterStrategy;
+import io.github.atengk.boot.rabbitmq.builder.OverflowStrategy;
 import io.github.atengk.boot.rabbitmq.builder.RabbitTopologyBuilder;
+import org.springframework.amqp.core.AnonymousQueue;
 import org.springframework.amqp.core.Declarables;
+import org.springframework.amqp.core.Queue;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -9,7 +14,7 @@ import java.time.Duration;
 
 /**
  * RabbitMQ 演示场景拓扑配置
- * 演示使用 RabbitTopologyBuilder 声明 Direct、Topic、Quorum 队列、单活独占消费者、死信拓扑 (DLX+DLQ) 与插件延迟交换机
+ * 演示使用 RabbitTopologyBuilder 声明 Direct、Topic、Fanout 广播、Quorum 队列、单活独占消费者、死信拓扑 (DLX+DLQ)、插件延迟与现代溢出策略
  *
  * @author Ateng
  * @since 2026-10-21
@@ -23,6 +28,8 @@ public class RabbitScenarioTopologyConfig {
 
     public static final String QUEUE_ORDER_IDEMPOTENT = "sample.order.idempotent.queue";
     public static final String ROUTING_KEY_ORDER_IDEMPOTENT = "order.idempotent";
+    public static final String QUEUE_ORDER_EXPIRATION = "sample.order.expiration.queue";
+    public static final String ROUTING_KEY_ORDER_EXPIRATION = "order.expiration";
 
     public static final String EXCHANGE_LOG_TOPIC = "sample.log.topic";
     public static final String QUEUE_LOG_ERROR = "sample.log.error.queue";
@@ -38,6 +45,18 @@ public class RabbitScenarioTopologyConfig {
     public static final String EXCHANGE_BIZ_DLX = "sample.biz.dlx";
     public static final String QUEUE_BIZ_DLQ = "sample.biz.dlq";
     public static final String ROUTING_KEY_BIZ_DEAD = "biz.dead";
+
+    public static final String EXCHANGE_BATCH_DIRECT = "sample.batch.direct";
+    public static final String QUEUE_BATCH_ORDER = "sample.batch.order.queue";
+    public static final String ROUTING_KEY_BATCH_ORDER = "batch.order";
+    public static final String QUEUE_BATCH_TENANT = "sample.batch.tenant.queue";
+    public static final String ROUTING_KEY_BATCH_TENANT = "batch.tenant";
+
+    public static final String EXCHANGE_PRIORITY_DIRECT = "sample.priority.direct";
+    public static final String QUEUE_PRIORITY_ORDER = "sample.priority.order.queue";
+    public static final String ROUTING_KEY_PRIORITY_ORDER = "priority.order";
+
+    public static final String EXCHANGE_BROADCAST_FANOUT = "sample.broadcast.fanout";
 
     /**
      * 场景 A & B: Direct 交换机、Quorum 队列、单活消费者与幂等测试队列拓扑
@@ -67,8 +86,10 @@ public class RabbitScenarioTopologyConfig {
 
     /**
      * 场景 C: 基于 rabbitmq_delayed_message_exchange 插件的延迟队列拓扑
+     * 若远程 Broker 未安装启用延迟插件，可通过 ateng.boot.rabbitmq.sample.delayed-plugin-enabled=false 关闭
      */
     @Bean
+    @ConditionalOnProperty(name = "ateng.boot.rabbitmq.sample.delayed-plugin-enabled", havingValue = "true", matchIfMissing = true)
     public Declarables orderDelayTopology() {
         return RabbitTopologyBuilder.delayed(EXCHANGE_ORDER_DELAY)
                 .queue(QUEUE_ORDER_DELAY)
@@ -99,5 +120,60 @@ public class RabbitScenarioTopologyConfig {
                 EXCHANGE_ORDER_DIRECT,
                 ROUTING_KEY_ORDER_CREATE
         );
+    }
+
+    /**
+     * 原生消息级 TTL（expiration）演示直连队列拓扑，无需延迟交换机插件即可验证 per-message TTL 投递
+     */
+    @Bean
+    public Declarables orderExpirationTopology() {
+        return RabbitTopologyBuilder.direct(EXCHANGE_ORDER_DIRECT)
+                .queue(QUEUE_ORDER_EXPIRATION)
+                .routingKey(ROUTING_KEY_ORDER_EXPIRATION)
+                .build();
+    }
+
+    /**
+     * 场景 F: 批量消费削峰队列拓扑
+     */
+    @Bean
+    public Declarables batchOrderTopology() {
+        return RabbitTopologyBuilder.direct(EXCHANGE_BATCH_DIRECT)
+                .queue(QUEUE_BATCH_ORDER)
+                .routingKey(ROUTING_KEY_BATCH_ORDER)
+                .build();
+    }
+
+    @Bean
+    public Declarables batchTenantTopology() {
+        return RabbitTopologyBuilder.direct(EXCHANGE_BATCH_DIRECT)
+                .queue(QUEUE_BATCH_TENANT)
+                .routingKey(ROUTING_KEY_BATCH_TENANT)
+                .build();
+    }
+
+    /**
+     * 场景 G: 现代 Quorum 队列、溢出策略与投递毒丸次数限制拓扑 (遵循 RabbitMQ 规范：Quorum 不支持 maxPriority)
+     */
+    @Bean
+    public Declarables priorityQuorumTopology() {
+        return RabbitTopologyBuilder.direct(EXCHANGE_PRIORITY_DIRECT)
+                .queue(QUEUE_PRIORITY_ORDER)
+                .quorum()
+                .overflow(OverflowStrategy.REJECT_PUBLISH_DLX)
+                .deliveryLimit(5)
+                .deadLetterStrategy(DeadLetterStrategy.AT_LEAST_ONCE)
+                .deadLetter(EXCHANGE_BIZ_DLX, QUEUE_BIZ_DLQ, ROUTING_KEY_BIZ_DEAD)
+                .routingKey(ROUTING_KEY_PRIORITY_ORDER)
+                .build();
+    }
+
+    /**
+     * 场景 H: Fanout 广播交换机拓扑 (动态匿名排他自动删除队列由消费端通过 @RabbitListener(bindings = @QueueBinding(...)) 原生自洽绑定)
+     */
+    @Bean
+    public Declarables broadcastFanoutTopology() {
+        return RabbitTopologyBuilder.fanout(EXCHANGE_BROADCAST_FANOUT)
+                .build();
     }
 }

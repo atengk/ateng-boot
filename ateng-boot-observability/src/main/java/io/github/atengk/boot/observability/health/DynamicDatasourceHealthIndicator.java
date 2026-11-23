@@ -47,6 +47,11 @@ public class DynamicDatasourceHealthIndicator extends AbstractSafeHealthIndicato
     }
 
     @Override
+    protected String getComponentName() {
+        return "dynamic-datasource";
+    }
+
+    @Override
     protected void doCheck(Health.Builder builder) throws Exception {
         if (applicationContext == null) {
             builder.unknown().withDetail("message", "ApplicationContext 为 null，跳过多数据源健康探测");

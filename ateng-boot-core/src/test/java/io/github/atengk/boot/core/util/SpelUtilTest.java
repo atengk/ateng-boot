@@ -30,6 +30,7 @@ class SpelUtilTest {
     @BeforeEach
     @AfterEach
     void cleanCache() {
+        SpelUtil.configureCache(1024, null);
         SpelUtil.clearCache();
     }
 
@@ -233,5 +234,25 @@ class SpelUtilTest {
         Map<String, Object> vars = Map.of("word", "trusted");
         String result = SpelUtil.evaluateTrusted("#word.toUpperCase()", null, vars, String.class);
         assertEquals("TRUSTED", result);
+    }
+
+    @Test
+    @DisplayName("configureCache: 动态配置 LRU 缓存规格、容量淘汰与合法性拦截")
+    void shouldConfigureCacheWithCapacityAndTtl() {
+        // 1. 配置小容量缓存规格
+        SpelUtil.configureCache(2, java.time.Duration.ofMinutes(5));
+        assertEquals(0, SpelUtil.getCacheSize());
+
+        // 2. 依次解析 3 个不同表达式，验证第 3 个触发 LRU 淘汰且容量稳定在 2
+        SpelUtil.parseExpression("1 + 1");
+        SpelUtil.parseExpression("2 + 2");
+        assertEquals(2, SpelUtil.getCacheSize());
+        SpelUtil.parseExpression("3 + 3");
+        assertEquals(2, SpelUtil.getCacheSize());
+
+        // 3. 非法参数快速失败
+        assertThrows(IllegalArgumentException.class, () -> SpelUtil.configureCache(0, null));
+        assertThrows(IllegalArgumentException.class, () -> SpelUtil.configureCache(-5, null));
+        assertThrows(IllegalArgumentException.class, () -> SpelUtil.configureCache(10, java.time.Duration.ofMinutes(-1)));
     }
 }

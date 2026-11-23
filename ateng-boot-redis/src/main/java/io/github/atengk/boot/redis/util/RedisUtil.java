@@ -43,7 +43,11 @@ public class RedisUtil {
 
     private static volatile RedisTemplate<String, Object> staticTemplate;
     private static volatile RedisProperties staticProperties;
+    private static final RedisProperties DEFAULT_PROPERTIES = new RedisProperties();
     private static final ObjectMapper OBJECT_MAPPER = RedisSerializerFactory.createSafeObjectMapper();
+
+    private final RedisTemplate<String, Object> instanceTemplate;
+    private final RedisProperties instanceProperties;
 
     /**
      * 容器实例化构造器，自动同步静态门面引用
@@ -61,6 +65,36 @@ public class RedisUtil {
      * @param properties RedisProperties
      */
     public RedisUtil(RedisTemplate<String, Object> template, RedisProperties properties) {
+        Assert.notNull(template, "template must not be null");
+        this.instanceTemplate = template;
+        this.instanceProperties = properties;
+        RedisUtil.staticTemplate = template;
+        RedisUtil.staticProperties = properties;
+    }
+
+    /**
+     * 绑定静态门面引用（由自动装配在全量单例就绪后显式同步）
+     *
+     * @param util 受管 RedisUtil 实例
+     */
+    public static void init(RedisUtil util) {
+        if (util == null) {
+            RedisUtil.staticTemplate = null;
+            RedisUtil.staticProperties = null;
+            return;
+        }
+        RedisUtil.staticTemplate = util.instanceTemplate;
+        RedisUtil.staticProperties = util.instanceProperties;
+    }
+
+    /**
+     * 绑定静态门面引用（显式传入受管 Template 与配置属性）
+     *
+     * @param template   RedisTemplate
+     * @param properties RedisProperties
+     */
+    public static void init(RedisTemplate<String, Object> template, RedisProperties properties) {
+        Assert.notNull(template, "template must not be null");
         RedisUtil.staticTemplate = template;
         RedisUtil.staticProperties = properties;
     }
@@ -90,20 +124,21 @@ public class RedisUtil {
      */
     public static String buildKey(String modulePrefix, String... keys) {
         StringBuilder sb = new StringBuilder();
-        if (modulePrefix != null && !modulePrefix.isEmpty()) {
-            sb.append(modulePrefix);
-        }
         if (keys != null) {
             for (String k : keys) {
-                if (k != null) {
-                    if (sb.length() > 0 && !sb.toString().endsWith(":")) {
+                if (k != null && !k.isEmpty()) {
+                    if (sb.length() > 0 && sb.charAt(sb.length() - 1) != ':') {
                         sb.append(":");
                     }
                     sb.append(k);
                 }
             }
         }
-        return buildKey(sb.toString());
+        RedisProperties properties = staticProperties != null ? staticProperties : DEFAULT_PROPERTIES;
+        if (sb.length() == 0) {
+            return properties.buildKey(modulePrefix != null ? modulePrefix : "");
+        }
+        return properties.buildKey(modulePrefix, sb.toString());
     }
 
     /**
@@ -666,18 +701,6 @@ public class RedisUtil {
         }
     }
 
-    /**
-     * 删除 Hash 中的字段（hDel 别名）
-     *
-     * @param key 键名
-     * @param hashKeys 字段名数组
-     * @return 成功删除的数量
-     */
-    @Deprecated
-    public static long hDelete(String key, Object... hashKeys) {
-        return hDel(key, hashKeys);
-    }
-
     // ==================== 4. List 列表操作 ====================
 
     /**
@@ -811,16 +834,6 @@ public class RedisUtil {
     }
 
     /**
-     * 获取列表长度（lLen 别名）
-     *
-     * @param key 键名
-     * @return 长度
-     */
-    public static long lSize(String key) {
-        return lLen(key);
-    }
-
-    /**
      * 根据索引获取元素
      *
      * @param key 键名
@@ -903,28 +916,6 @@ public class RedisUtil {
     }
 
     /**
-     * 从集合中移除元素（sRem 别名）
-     *
-     * @param key 键名
-     * @param values 待移除元素
-     * @return 移除成功的数量
-     */
-    @Deprecated
-    public static long sRemove(String key, Object... values) {
-        return sRem(key, values);
-    }
-
-    /**
-     * 获取集合大小（sCard 别名）
-     *
-     * @param key 键名
-     * @return 大小
-     */
-    public static long sSize(String key) {
-        return sCard(key);
-    }
-
-    /**
      * 渐进式游标遍历 Set 成员
      *
      * @param key 键名
@@ -996,6 +987,18 @@ public class RedisUtil {
     }
 
     /**
+     * 为有序集合成员原子累加分值
+     *
+     * @param key 键名
+     * @param value 成员
+     * @param delta 分值增量
+     * @return 累加后的新分值
+     */
+    public static Double zIncrBy(String key, Object value, double delta) {
+        return getTemplate().opsForZSet().incrementScore(key, value, delta);
+    }
+
+    /**
      * 获取指定排名区间的成员（从小到大升序）
      *
      * @param key 键名
@@ -1031,6 +1034,19 @@ public class RedisUtil {
      */
     public static Set<Object> zRangeByScore(String key, double min, double max) {
         Set<Object> range = getTemplate().opsForZSet().rangeByScore(key, min, max);
+        return range != null ? range : Collections.emptySet();
+    }
+
+    /**
+     * 按分值区间逆序查询成员（从大到小）
+     *
+     * @param key 键名
+     * @param min 最小分
+     * @param max 最大分
+     * @return 成员集合
+     */
+    public static Set<Object> zRevRangeByScore(String key, double min, double max) {
+        Set<Object> range = getTemplate().opsForZSet().reverseRangeByScore(key, min, max);
         return range != null ? range : Collections.emptySet();
     }
 
@@ -1117,15 +1133,16 @@ public class RedisUtil {
     }
 
     /**
-     * 移除有序集合中的成员（zRem 别名）
+     * 获取指定排名区间的成员及分值（降序，常用于排行榜）
      *
      * @param key 键名
-     * @param values 待移除成员
-     * @return 移除成功的数量
+     * @param start 起始名次
+     * @param end 终止名次
+     * @return 带分值的成员集合
      */
-    @Deprecated
-    public static long zRemove(String key, Object... values) {
-        return zRem(key, values);
+    public static Set<ZSetOperations.TypedTuple<Object>> zRevRangeWithScores(String key, long start, long end) {
+        Set<ZSetOperations.TypedTuple<Object>> range = getTemplate().opsForZSet().reverseRangeWithScores(key, start, end);
+        return range != null ? range : Collections.emptySet();
     }
 
     /**
@@ -1306,53 +1323,5 @@ public class RedisUtil {
             }
         });
         return results != null ? results : Collections.emptyList();
-    }
-
-    // ==================== 11. 历史兼容性别名（所有静态方法均支持通过 RedisUtil Bean 实例直接调用） ====================
-
-    // --- 兼容性别名（推荐使用同名实例方法） ---
-    @Deprecated
-    public boolean isKeyExists(String key) {
-        return hasKey(key);
-    }
-
-    @Deprecated
-    public boolean setKeyExpire(String key, long timeout, TimeUnit unit) {
-        return expire(key, timeout, unit);
-    }
-
-    @Deprecated
-    public long getKeyExpire(String key, TimeUnit unit) {
-        return getExpire(key, unit);
-    }
-
-    @Deprecated
-    public boolean deleteKey(String key) {
-        return delete(key);
-    }
-
-    @Deprecated
-    public long deleteKeys(Collection<String> keys) {
-        return delete(keys);
-    }
-
-    @Deprecated
-    public void setVal(String key, Object value) {
-        set(key, value);
-    }
-
-    @Deprecated
-    public void setVal(String key, Object value, long timeout, TimeUnit unit) {
-        set(key, value, timeout, unit);
-    }
-
-    @Deprecated
-    public Object getVal(String key) {
-        return get(key);
-    }
-
-    @Deprecated
-    public <T> T getVal(String key, Class<T> clazz) {
-        return get(key, clazz);
     }
 }

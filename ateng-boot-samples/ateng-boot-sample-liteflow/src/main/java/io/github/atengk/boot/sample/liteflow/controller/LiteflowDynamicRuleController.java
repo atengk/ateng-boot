@@ -1,0 +1,296 @@
+package io.github.atengk.boot.sample.liteflow.controller;
+
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.liteflow.core.LiteflowChainMetadata;
+import io.github.atengk.boot.liteflow.core.LiteflowElValidationResult;
+import io.github.atengk.boot.liteflow.core.LiteflowTemplate;
+import io.github.atengk.boot.liteflow.rule.LiteflowRuleSourceManager;
+import io.github.atengk.boot.liteflow.rule.event.LiteflowRuleRefreshEvent;
+import io.github.atengk.boot.liteflow.trace.LiteflowExecutionTrace;
+import io.github.atengk.boot.liteflow.trace.LiteflowTraceResult;
+import io.github.atengk.boot.sample.liteflow.context.DynamicFlowContext;
+import io.github.atengk.boot.sample.liteflow.interceptor.SampleAuditExecutionInterceptor;
+import io.github.atengk.boot.sample.liteflow.model.DynamicChainReloadRequest;
+import io.github.atengk.boot.sample.liteflow.model.DynamicElExecuteRequest;
+import io.github.atengk.boot.sample.liteflow.model.DynamicElExecuteResponse;
+import io.github.atengk.boot.sample.liteflow.model.DynamicElValidateRequest;
+import io.github.atengk.boot.sample.liteflow.model.InterceptorStatsResponse;
+import io.github.atengk.boot.sample.liteflow.rule.SampleDynamicRuleSourceProvider;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Set;
+
+/**
+ * 动态规则热重载与在线即时 EL 执行接口控制器
+ * 演示：规则链动态热重载 (reloadChain)、即时在线 EL 表达式执行 (executeElWithTrace)、规则链探测 (containChain)、
+ * 多源规则纳管与孤儿链自动下线 (refreshAll / getManagedChainIds) 与事件总线热更 (refresh-event)
+ *
+ * @author Ateng
+ * @since 2026-11-03
+ */
+@Slf4j
+@Validated
+@RestController
+@RequestMapping("/sample/liteflow/dynamic")
+@RequiredArgsConstructor
+public class LiteflowDynamicRuleController {
+
+    private final LiteflowTemplate liteflowTemplate;
+    private final LiteflowRuleSourceManager ruleSourceManager;
+    private final SampleDynamicRuleSourceProvider sampleRuleSourceProvider;
+    private final ApplicationEventPublisher eventPublisher;
+    private final SampleAuditExecutionInterceptor auditInterceptor;
+
+    /**
+     * 在线热重载或动态注册一条规则链
+     *
+     * @param request 重载请求
+     * @return 是否成功
+     */
+    @PostMapping("/reload-chain")
+    public Result<Boolean> reloadChain(@Valid @RequestBody DynamicChainReloadRequest request) {
+        log.info("【动态规则】动态更新规则链：chainId={}, el={}", request.getChainId(), request.getEl());
+        liteflowTemplate.reloadChain(request.getChainId(), request.getEl());
+        return Result.success(true);
+    }
+
+    /**
+     * 在线即时编译并执行 EL 表达式（无需提前预定义 chainId）
+     *
+     * @param request 即时执行请求
+     * @return 执行产出与轨迹
+     */
+    @PostMapping("/execute-el")
+    public Result<DynamicElExecuteResponse> executeEl(@Valid @RequestBody DynamicElExecuteRequest request) {
+        log.info("【动态规则】即时执行 EL 表达式：el={}, payload={}", request.getEl(), request.getPayload());
+
+        LiteflowTraceResult<DynamicFlowContext> traceResult = liteflowTemplate.executeElWithTrace(
+                request.getEl(), request.getPayload(), DynamicFlowContext.class);
+
+        DynamicFlowContext context = traceResult.getContext();
+        LiteflowExecutionTrace trace = traceResult.getTrace();
+        String traceSummary = trace != null ? trace.formatSummary() : "N/A";
+        Long duration = trace != null ? trace.getTotalTimeSpentMs() : null;
+        boolean slow = trace != null && trace.isSlow();
+        List<String> slowNodeIds = trace != null && trace.getSlowNodeIds() != null
+                ? trace.getSlowNodeIds()
+                : Collections.emptyList();
+
+        DynamicElExecuteResponse response = DynamicElExecuteResponse.builder()
+                .success(true)
+                .executeTimeMs(duration)
+                .slow(slow)
+                .slowNodeIds(slowNodeIds)
+                .outputData(context != null ? new HashMap<>(context.getAttributes()) : new HashMap<>())
+                .traceSummary(traceSummary)
+                .build();
+
+        return Result.success(response);
+    }
+
+    /**
+     * 在线预校验 EL 规则表达式语法有效性
+     *
+     * @param request 校验请求
+     * @return 结构化校验结果
+     */
+    @PostMapping("/validate-el")
+    public Result<LiteflowElValidationResult> validateEl(@Valid @RequestBody DynamicElValidateRequest request) {
+        log.info("【动态规则】在线校验 EL 表达式语法：el={}", request.getEl());
+        LiteflowElValidationResult result = liteflowTemplate.validateEl(request.getEl());
+        return Result.success(result);
+    }
+
+    /**
+     * 获取当前系统已编译加载的全部规则链 ID 集合
+     *
+     * @return 规则链 ID 集合
+     */
+    @GetMapping("/chains")
+    public Result<Set<String>> getLoadedChains() {
+        Set<String> chains = liteflowTemplate.getLoadedChainIds();
+        log.info("【动态规则】获取已加载流程链列表，当前数量: {}", chains.size());
+        return Result.success(chains);
+    }
+
+    /**
+     * 获取当前系统已注册加载的全部组件节点 ID 集合
+     *
+     * @return 组件节点 ID 集合
+     */
+    @GetMapping("/nodes")
+    public Result<Set<String>> getLoadedNodes() {
+        Set<String> nodes = liteflowTemplate.getLoadedNodeIds();
+        log.info("【动态规则】获取已加载组件节点列表，当前数量: {}", nodes.size());
+        return Result.success(nodes);
+    }
+
+    /**
+     * 获取指定规则链的运行时拓扑元数据快照
+     *
+     * @param chainId 规则链标识
+     * @return 规则链拓扑元数据（不存在时 data 为 null）
+     */
+    @GetMapping("/chain-metadata")
+    public Result<LiteflowChainMetadata> getChainMetadata(
+            @NotBlank(message = "规则链 chainId 不能为空") @RequestParam("chainId") String chainId) {
+        LiteflowChainMetadata metadata = liteflowTemplate.getChainMetadata(chainId);
+        log.info("【动态规则】查询规则链拓扑元数据：chainId={}, found={}", chainId, metadata != null);
+        return Result.success(metadata);
+    }
+
+    /**
+     * 获取当前已加载的全部规则链运行时拓扑元数据集合
+     *
+     * @return 规则链拓扑元数据列表
+     */
+    @GetMapping("/chains-metadata")
+    public Result<List<LiteflowChainMetadata>> getAllChainMetadata() {
+        List<LiteflowChainMetadata> metadataList = liteflowTemplate.getAllChainMetadata();
+        log.info("【动态规则】查询全量规则链拓扑元数据，当前数量: {}", metadataList.size());
+        return Result.success(metadataList);
+    }
+
+    /**
+     * 探测当前运行环境中指定 chainId 是否已被加载就绪
+     *
+     * @param chainId 规则链标识
+     * @return 是否存在
+     */
+    @GetMapping("/contain-chain")
+    public Result<Boolean> containChain(@NotBlank(message = "规则链 chainId 不能为空") @RequestParam("chainId") String chainId) {
+        boolean exists = liteflowTemplate.containChain(chainId);
+        log.info("【动态规则】探测规则链就绪状态：chainId={}, exists={}", chainId, exists);
+        return Result.success(exists);
+    }
+
+    /**
+     * 通过 Spring 领域事件总线触发规则热更新
+     *
+     * @param chainId 规则链标识（可选，若不传则触发全量规则源刷新）
+     * @param el      新的 EL 表达式（可选）
+     * @return 触发状态
+     */
+    @PostMapping("/refresh-event")
+    public Result<String> publishRefreshEvent(
+            @RequestParam(value = "chainId", required = false) String chainId,
+            @RequestParam(value = "el", required = false) String el) {
+        log.info("【动态规则】通过领域事件总线发布规则热更新：chainId={}, el={}", chainId, el);
+
+        if (chainId != null && !chainId.isBlank() && el != null && !el.isBlank()) {
+            eventPublisher.publishEvent(LiteflowRuleRefreshEvent.refreshChain(this, chainId, el));
+            return Result.success("单链热更新事件已发布: chainId=" + chainId);
+        } else {
+            eventPublisher.publishEvent(LiteflowRuleRefreshEvent.refreshAll(this));
+            return Result.success("全量规则源热重载事件已发布");
+        }
+    }
+
+    /**
+     * 一键故障回退指定流程链至上一个历史版本快照
+     *
+     * @param chainId 流程链标识
+     * @return 是否成功回退
+     */
+    @PostMapping("/rollback-chain")
+    public Result<Boolean> rollbackChain(@NotBlank(message = "规则链 chainId 不能为空") @RequestParam("chainId") String chainId) {
+        log.info("【动态规则】请求一键回退流程链至上一历史快照：chainId={}", chainId);
+        boolean success = liteflowTemplate.rollbackChain(chainId);
+        return Result.success(success);
+    }
+
+    /**
+     * 查询指定流程链的历史版本 EL 快照列表（按时间倒序排列）
+     *
+     * @param chainId 流程链标识
+     * @return 历史快照列表
+     */
+    @GetMapping("/chain-snapshots")
+    public Result<java.util.List<String>> getChainSnapshots(@NotBlank(message = "规则链 chainId 不能为空") @RequestParam("chainId") String chainId) {
+        java.util.List<String> snapshots = liteflowTemplate.getChainHistorySnapshots(chainId);
+        log.info("【动态规则】查询规则链历史快照：chainId={}, count={}", chainId, snapshots.size());
+        return Result.success(snapshots);
+    }
+
+    /**
+     * 获取全局三阶段执行拦截器累计审计统计快照
+     *
+     * @return 全局执行拦截器审计统计响应
+     */
+    @GetMapping("/interceptor-stats")
+    public Result<InterceptorStatsResponse> getInterceptorStats() {
+        InterceptorStatsResponse stats = auditInterceptor.snapshot();
+        log.info("【动态规则】查询全局执行拦截器审计统计: successCount={}, errorCount={}",
+                stats.successCount(), stats.errorCount());
+        return Result.success(stats);
+    }
+
+    /**
+     * 查询当前由多源动态规则管理器纳管的规则链 ID 只读快照
+     *
+     * @return 动态纳管规则链 ID 集合
+     */
+    @GetMapping("/managed-chains")
+    public Result<Set<String>> getManagedChains() {
+        Set<String> managed = ruleSourceManager.getManagedChainIds();
+        log.info("【动态规则】查询多源动态规则纳管链快照: count={}", managed.size());
+        return Result.success(managed);
+    }
+
+    /**
+     * 触发全量多源动态规则同步刷新并自动清理已移除孤儿链
+     *
+     * @return 本次刷新生效的动态规则数量
+     */
+    @PostMapping("/sync-source")
+    public Result<Integer> syncRuleSource() {
+        int activeCount = ruleSourceManager.refreshAll();
+        log.info("【动态规则】多源动态规则全量刷新完成: activeCount={}, managed={}",
+                activeCount, ruleSourceManager.getManagedChainIds());
+        return Result.success(activeCount);
+    }
+
+    /**
+     * 向动态规则源新增/更新规则并全量同步至执行器
+     *
+     * @param request 规则更新请求
+     * @return 刷新后的动态纳管规则链 ID 集合
+     */
+    @PostMapping("/source-rule/upsert")
+    public Result<Set<String>> upsertSourceRule(@Valid @RequestBody DynamicChainReloadRequest request) {
+        sampleRuleSourceProvider.upsertRule(request.getChainId(), request.getEl());
+        ruleSourceManager.refreshAll();
+        Set<String> managed = ruleSourceManager.getManagedChainIds();
+        log.info("【动态规则】规则源新增/更新并同步完成: chainId={}, managed={}", request.getChainId(), managed);
+        return Result.success(managed);
+    }
+
+    /**
+     * 从动态规则源物理移除指定规则并触发全量刷新，演示孤儿链自动下线（不影响本地静态规则链）
+     *
+     * @param chainId 目标动态规则链 ID
+     * @return 清理后剩余的动态纳管规则链 ID 集合
+     */
+    @PostMapping("/source-rule/evict")
+    public Result<Set<String>> evictSourceRule(@NotBlank(message = "规则链 chainId 不能为空") @RequestParam("chainId") String chainId) {
+        sampleRuleSourceProvider.removeRule(chainId);
+        ruleSourceManager.refreshAll();
+        Set<String> managed = ruleSourceManager.getManagedChainIds();
+        log.info("【动态规则】规则源物理移除并触发孤儿链差量下线: chainId={}, remainingManaged={}", chainId, managed);
+        return Result.success(managed);
+    }
+}

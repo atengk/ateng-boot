@@ -1,6 +1,8 @@
 package io.github.atengk.boot.statemachine.builder;
 
 import io.github.atengk.boot.statemachine.core.*;
+import io.github.atengk.boot.statemachine.enums.IdempotentStrategy;
+import io.github.atengk.boot.statemachine.model.StateLifecycle;
 
 import java.util.*;
 
@@ -16,7 +18,16 @@ import java.util.*;
 public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<S, E, C> {
 
     private final List<TransitionHolder<S, E, C>> transitionHolders = new ArrayList<>();
+    private final Map<S, StateLifecycleHolder<S, E, C>> stateLifecycleHolders = new LinkedHashMap<>();
     private final List<StateMachineInterceptor<? super S, ? super E, ? super C>> interceptors = new ArrayList<>();
+    private final List<StateTransitionAuditListener<? super S, ? super E, ? super C>> auditListeners = new ArrayList<>();
+    private boolean defaultIdempotent = false;
+
+    @Override
+    public StateMachineBuilder<S, E, C> idempotentStrategy(IdempotentStrategy strategy) {
+        this.defaultIdempotent = (strategy == IdempotentStrategy.ACCEPT);
+        return this;
+    }
 
     @Override
     public StateMachineBuilder<S, E, C> interceptor(StateMachineInterceptor<? super S, ? super E, ? super C> interceptor) {
@@ -27,31 +38,47 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
     }
 
     @Override
+    public StateMachineBuilder<S, E, C> auditListener(StateTransitionAuditListener<? super S, ? super E, ? super C> auditListener) {
+        if (auditListener != null) {
+            this.auditListeners.add(auditListener);
+        }
+        return this;
+    }
+
+    @Override
     public ExternalTransitionBuilder.From<S, E, C> externalTransition() {
-        ExternalTransitionHolder<S, E, C> holder = new ExternalTransitionHolder<>();
+        ExternalTransitionHolder<S, E, C> holder = new ExternalTransitionHolder<>(defaultIdempotent);
         transitionHolders.add(holder);
         return holder;
     }
 
     @Override
     public InternalTransitionBuilder.From<S, E, C> internalTransition() {
-        InternalTransitionHolder<S, E, C> holder = new InternalTransitionHolder<>();
+        InternalTransitionHolder<S, E, C> holder = new InternalTransitionHolder<>(defaultIdempotent);
         transitionHolders.add(holder);
         return holder;
     }
 
     @Override
     public MultiFromTransitionBuilder.From<S, E, C> multiFromTransition() {
-        MultiFromTransitionHolder<S, E, C> holder = new MultiFromTransitionHolder<>();
+        MultiFromTransitionHolder<S, E, C> holder = new MultiFromTransitionHolder<>(defaultIdempotent);
         transitionHolders.add(holder);
         return holder;
     }
 
     @Override
     public ChoiceTransitionBuilder.From<S, E, C> choiceTransition() {
-        ChoiceTransitionHolder<S, E, C> holder = new ChoiceTransitionHolder<>();
+        ChoiceTransitionHolder<S, E, C> holder = new ChoiceTransitionHolder<>(defaultIdempotent);
         transitionHolders.add(holder);
         return holder;
+    }
+
+    @Override
+    public StateLifecycleBuilder<S, E, C> state(S state) {
+        if (state == null) {
+            throw new IllegalArgumentException("state must not be null");
+        }
+        return stateLifecycleHolders.computeIfAbsent(state, k -> new StateLifecycleHolder<>(this, state));
     }
 
     @Override
@@ -78,7 +105,42 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
             }
         }
 
-        return new DefaultStateMachine<>(machineId, transitionMap, interceptors);
+        for (Map.Entry<S, Map<E, List<Transition<S, E, C>>>> sourceEntry : transitionMap.entrySet()) {
+            S source = sourceEntry.getKey();
+            for (Map.Entry<E, List<Transition<S, E, C>>> eventEntry : sourceEntry.getValue().entrySet()) {
+                validateTransitionRoutes(machineId, source, eventEntry.getKey(), eventEntry.getValue());
+            }
+        }
+
+        Map<S, StateLifecycle<S, E, C>> stateLifecycleMap = new LinkedHashMap<>();
+        for (Map.Entry<S, StateLifecycleHolder<S, E, C>> entry : stateLifecycleHolders.entrySet()) {
+            stateLifecycleMap.put(entry.getKey(), entry.getValue().buildStateLifecycle());
+        }
+
+        return new DefaultStateMachine<>(machineId, transitionMap, interceptors, stateLifecycleMap, auditListeners);
+    }
+
+    private void validateTransitionRoutes(String machineId, S source, E event, List<Transition<S, E, C>> routes) {
+        if (routes == null || routes.size() <= 1) {
+            return;
+        }
+        boolean hasChoice = routes.stream().anyMatch(ChoiceTransition.class::isInstance);
+        if (hasChoice) {
+            throw new IllegalStateException(String.format(
+                    "状态机 [%s] 构建期冲突: 状态 [%s] 响应事件 [%s] 下 Choice 分支跃迁不能与其他跃迁混用",
+                    machineId, source, event));
+        }
+        boolean seenUnconditional = false;
+        for (Transition<S, E, C> route : routes) {
+            if (seenUnconditional) {
+                throw new IllegalStateException(String.format(
+                        "状态机 [%s] 构建期检测到不可达死路由: 状态 [%s] 响应事件 [%s] 在无条件默认跃迁之后又声明了其他跃迁",
+                        machineId, source, event));
+            }
+            if (route.getConditions().isEmpty()) {
+                seenUnconditional = true;
+            }
+        }
     }
 
     private interface TransitionHolder<S, E, C> {
@@ -88,6 +150,20 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
     private abstract static class AbstractTransitionHolder<S, E, C> implements TransitionHolder<S, E, C> {
         protected final List<Condition<C>> conditions = new ArrayList<>();
         protected final List<Action<S, E, C>> actions = new ArrayList<>();
+        protected final List<Action<S, E, C>> postCommitActions = new ArrayList<>();
+        protected boolean idempotent;
+
+        public AbstractTransitionHolder(boolean defaultIdempotent) {
+            this.idempotent = defaultIdempotent;
+        }
+
+        protected void setIdempotent(boolean idempotent) {
+            this.idempotent = idempotent;
+        }
+
+        protected void setIdempotent(IdempotentStrategy strategy) {
+            this.idempotent = (strategy == IdempotentStrategy.ACCEPT);
+        }
 
         protected void addCondition(Condition<C> condition) {
             if (condition != null) {
@@ -98,6 +174,12 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         protected void addAction(Action<S, E, C> action) {
             if (action != null) {
                 this.actions.add(action);
+            }
+        }
+
+        protected void addPostCommitAction(Action<S, E, C> action) {
+            if (action != null) {
+                this.postCommitActions.add(action);
             }
         }
     }
@@ -111,6 +193,10 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         private S sourceState;
         private S targetState;
         private E event;
+
+        public ExternalTransitionHolder(boolean defaultIdempotent) {
+            super(defaultIdempotent);
+        }
 
         @Override
         public ExternalTransitionBuilder.To<S, E, C> from(S sourceState) {
@@ -152,11 +238,29 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         }
 
         @Override
+        public ExternalTransitionBuilder.WhenOrPerform<S, E, C> performAfterCommit(Action<S, E, C> action) {
+            addPostCommitAction(action);
+            return this;
+        }
+
+        @Override
+        public ExternalTransitionBuilder.WhenOrPerform<S, E, C> idempotent(IdempotentStrategy strategy) {
+            setIdempotent(strategy);
+            return this;
+        }
+
+        @Override
+        public ExternalTransitionBuilder.WhenOrPerform<S, E, C> idempotent(boolean idempotent) {
+            setIdempotent(idempotent);
+            return this;
+        }
+
+        @Override
         public List<Transition<S, E, C>> buildTransitions() {
             if (sourceState == null || targetState == null || event == null) {
                 throw new IllegalStateException("Incomplete external transition configuration: sourceState, targetState, and event must all be set");
             }
-            return Collections.singletonList(new Transition<>(sourceState, targetState, event, TransitionType.EXTERNAL, conditions, actions));
+            return Collections.singletonList(new Transition<>(sourceState, targetState, event, TransitionType.EXTERNAL, conditions, actions, postCommitActions, idempotent));
         }
     }
 
@@ -167,6 +271,10 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
 
         private S sourceState;
         private E event;
+
+        public InternalTransitionHolder(boolean defaultIdempotent) {
+            super(defaultIdempotent);
+        }
 
         @Override
         public InternalTransitionBuilder.On<S, E, C> from(S sourceState) {
@@ -199,11 +307,29 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         }
 
         @Override
+        public InternalTransitionBuilder.WhenOrPerform<S, E, C> performAfterCommit(Action<S, E, C> action) {
+            addPostCommitAction(action);
+            return this;
+        }
+
+        @Override
+        public InternalTransitionBuilder.WhenOrPerform<S, E, C> idempotent(IdempotentStrategy strategy) {
+            setIdempotent(strategy);
+            return this;
+        }
+
+        @Override
+        public InternalTransitionBuilder.WhenOrPerform<S, E, C> idempotent(boolean idempotent) {
+            setIdempotent(idempotent);
+            return this;
+        }
+
+        @Override
         public List<Transition<S, E, C>> buildTransitions() {
             if (sourceState == null || event == null) {
                 throw new IllegalStateException("Incomplete internal transition configuration: sourceState and event must be set");
             }
-            return Collections.singletonList(new Transition<>(sourceState, sourceState, event, TransitionType.INTERNAL, conditions, actions));
+            return Collections.singletonList(new Transition<>(sourceState, sourceState, event, TransitionType.INTERNAL, conditions, actions, postCommitActions, idempotent));
         }
     }
 
@@ -216,6 +342,10 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         private final Set<S> sourceStates = new LinkedHashSet<>();
         private S targetState;
         private E event;
+
+        public MultiFromTransitionHolder(boolean defaultIdempotent) {
+            super(defaultIdempotent);
+        }
 
         @SafeVarargs
         @Override
@@ -277,13 +407,31 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         }
 
         @Override
+        public MultiFromTransitionBuilder.WhenOrPerform<S, E, C> performAfterCommit(Action<S, E, C> action) {
+            addPostCommitAction(action);
+            return this;
+        }
+
+        @Override
+        public MultiFromTransitionBuilder.WhenOrPerform<S, E, C> idempotent(IdempotentStrategy strategy) {
+            setIdempotent(strategy);
+            return this;
+        }
+
+        @Override
+        public MultiFromTransitionBuilder.WhenOrPerform<S, E, C> idempotent(boolean idempotent) {
+            setIdempotent(idempotent);
+            return this;
+        }
+
+        @Override
         public List<Transition<S, E, C>> buildTransitions() {
             if (sourceStates.isEmpty() || targetState == null || event == null) {
                 throw new IllegalStateException("Incomplete multi-from transition configuration: sourceStates, targetState, and event must all be set");
             }
             List<Transition<S, E, C>> transitions = new ArrayList<>();
             for (S source : sourceStates) {
-                transitions.add(new Transition<>(source, targetState, event, TransitionType.EXTERNAL, conditions, actions));
+                transitions.add(new Transition<>(source, targetState, event, TransitionType.EXTERNAL, conditions, actions, postCommitActions, idempotent));
             }
             return transitions;
         }
@@ -303,6 +451,10 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         private S defaultTargetState;
 
         private List<Condition<C>> currentBranchConditions = new ArrayList<>();
+
+        public ChoiceTransitionHolder(boolean defaultIdempotent) {
+            super(defaultIdempotent);
+        }
 
         @Override
         public ChoiceTransitionBuilder.On<S, E, C> from(S sourceState) {
@@ -360,11 +512,68 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         }
 
         @Override
+        public ChoiceTransitionBuilder.PerformOrEnd<S, E, C> performAfterCommit(Action<S, E, C> action) {
+            addPostCommitAction(action);
+            return this;
+        }
+
+        @Override
+        public ChoiceTransitionBuilder.PerformOrEnd<S, E, C> idempotent(IdempotentStrategy strategy) {
+            setIdempotent(strategy);
+            return this;
+        }
+
+        @Override
+        public ChoiceTransitionBuilder.PerformOrEnd<S, E, C> idempotent(boolean idempotent) {
+            setIdempotent(idempotent);
+            return this;
+        }
+
+        @Override
         public List<Transition<S, E, C>> buildTransitions() {
             if (sourceState == null || event == null || branches.isEmpty() || defaultTargetState == null) {
                 throw new IllegalStateException("Incomplete choice transition configuration: sourceState, event, at least one branch, and defaultTargetState must all be set");
             }
-            return Collections.singletonList(new ChoiceTransition<>(sourceState, event, branches, defaultTargetState, actions));
+            return Collections.singletonList(new ChoiceTransition<>(sourceState, event, branches, defaultTargetState, actions, postCommitActions, idempotent));
+        }
+    }
+
+    private static class StateLifecycleHolder<S, E, C> implements StateLifecycleBuilder<S, E, C> {
+        private final StateMachineBuilder<S, E, C> builder;
+        private final S state;
+        private final List<Action<S, E, C>> entryActions = new ArrayList<>();
+        private final List<Action<S, E, C>> exitActions = new ArrayList<>();
+
+        public StateLifecycleHolder(StateMachineBuilder<S, E, C> builder, S state) {
+            this.builder = builder;
+            this.state = state;
+        }
+
+        @Override
+        public StateLifecycleBuilder<S, E, C> onEntry(Action<S, E, C> action) {
+            if (action == null) {
+                throw new IllegalArgumentException("Entry action must not be null");
+            }
+            this.entryActions.add(action);
+            return this;
+        }
+
+        @Override
+        public StateLifecycleBuilder<S, E, C> onExit(Action<S, E, C> action) {
+            if (action == null) {
+                throw new IllegalArgumentException("Exit action must not be null");
+            }
+            this.exitActions.add(action);
+            return this;
+        }
+
+        @Override
+        public StateMachineBuilder<S, E, C> and() {
+            return builder;
+        }
+
+        public StateLifecycle<S, E, C> buildStateLifecycle() {
+            return new StateLifecycle<>(state, entryActions, exitActions);
         }
     }
 }

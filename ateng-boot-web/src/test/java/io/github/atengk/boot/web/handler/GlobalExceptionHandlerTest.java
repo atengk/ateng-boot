@@ -5,9 +5,14 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.slf4j.MDC;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.test.web.servlet.MockMvc;
@@ -29,6 +34,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * @author Ateng
  * @since 2026-10-15
  */
+@ExtendWith(OutputCaptureExtension.class)
 @DisplayName("全局异常处理器测试")
 class GlobalExceptionHandlerTest {
 
@@ -40,6 +46,11 @@ class GlobalExceptionHandlerTest {
         @GetMapping("/test/business-exception")
         public Result<Void> triggerBusinessException() {
             throw new BusinessException(403, "账户已被封禁");
+        }
+
+        @GetMapping("/test/business-exception-remote-trace")
+        public Result<Void> triggerRemoteTraceBusinessException() {
+            throw new BusinessException(502, "下游订单服务异常").withTraceId("remote-trace-777");
         }
 
         @GetMapping("/test/business-exception-with-cause")
@@ -126,11 +137,17 @@ class GlobalExceptionHandlerTest {
 
     @BeforeEach
     void setUp() {
+        MDC.clear();
         GlobalExceptionHandler exceptionHandler = new GlobalExceptionHandler();
         mockMvc = MockMvcBuilders.standaloneSetup(new TestController())
                 .setControllerAdvice(exceptionHandler)
                 .setMessageConverters(new MappingJackson2HttpMessageConverter())
                 .build();
+    }
+
+    @AfterEach
+    void tearDown() {
+        MDC.clear();
     }
 
     @Test
@@ -140,7 +157,8 @@ class GlobalExceptionHandlerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.msg").value("账户已被封禁"))
-                .andExpect(jsonPath("$.success").value(false));
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.traceId").doesNotExist());
     }
 
     @Test
@@ -345,5 +363,50 @@ class GlobalExceptionHandlerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(500))
                 .andExpect(jsonPath("$.msg").value(CommonResultCode.INTERNAL_SERVER_ERROR.getMsg()));
+    }
+
+    @Test
+    @DisplayName("本地 MDC traceId 为空时由 BusinessException.traceId 兜底回填 Result.traceId")
+    void shouldFallbackResultTraceIdFromBusinessExceptionWhenMdcEmpty() throws Exception {
+        MDC.clear();
+        mockMvc.perform(get("/test/business-exception-remote-trace"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(502))
+                .andExpect(jsonPath("$.msg").value("下游订单服务异常"))
+                .andExpect(jsonPath("$.traceId").value("remote-trace-777"));
+    }
+
+    @Test
+    @DisplayName("本地 MDC traceId 非空时优先保留本地 MDC，不被 BusinessException.traceId 覆盖")
+    void shouldPreferLocalMdcTraceIdOverBusinessExceptionTraceId() throws Exception {
+        MDC.put("traceId", "local-trace-888");
+        mockMvc.perform(get("/test/business-exception-remote-trace"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(502))
+                .andExpect(jsonPath("$.msg").value("下游订单服务异常"))
+                .andExpect(jsonPath("$.traceId").value("local-trace-888"));
+    }
+
+    @Test
+    @DisplayName("带 cause 的远程 BusinessException 在 MDC 为空时同样回填 Result.traceId 与错误日志且支持 Customizer 回填")
+    void shouldFallbackTraceIdForCausalAndCustomizedBusinessException(CapturedOutput output) {
+        MDC.clear();
+        GlobalExceptionHandler handler = new GlobalExceptionHandler();
+        BusinessException causalEx = new BusinessException(
+                CommonResultCode.INTERNAL_SERVER_ERROR,
+                "远程驱动调用失败",
+                new java.io.IOException("EOF")
+        ).withTraceId("remote-causal-trace-999");
+
+        Result<?> result = handler.handleBusinessException(causalEx);
+        assertEquals("remote-causal-trace-999", result.getTraceId());
+        assertTrue(output.getOut().contains("[TraceId: remote-causal-trace-999]"));
+
+        GlobalExceptionHandler customizedHandler = new GlobalExceptionHandler(java.util.List.of(
+                t -> t instanceof BusinessException be ? Result.fail(40088, "定制:" + be.getMsg()) : null
+        ));
+        Result<?> customizedResult = customizedHandler.handleBusinessException(causalEx);
+        assertEquals(40088, customizedResult.getCode());
+        assertEquals("remote-causal-trace-999", customizedResult.getTraceId());
     }
 }

@@ -54,4 +54,12 @@ public final class RealtimeCloseStatus {
      * 空闲超时排空假死连接 (4004)
      */
     public static final CloseStatus IDLE_TIMEOUT = new CloseStatus(4004, "Idle Timeout");
+
+    /**
+     * 上行流量超限熔断排空 (4005)
+     * <p>
+     * 客户端发送频率持续严重超出服务端限流阈值，服务端主动断开长连接以防范 DoS 攻击。
+     * </p>
+     */
+    public static final CloseStatus RATE_LIMIT_EXCEEDED = new CloseStatus(4005, "Rate Limit Exceeded");
 }

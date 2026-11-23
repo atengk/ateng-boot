@@ -1,5 +1,7 @@
 package io.github.atengk.boot.mqtt.annotation;
 
+import io.github.atengk.boot.mqtt.properties.AckMode;
+
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -56,4 +58,34 @@ public @interface MqttListener {
      * 自定义死信目标主题（默认空，为空时自动派生为 ${topic}/DLT）
      */
     String dltTopic() default "";
+
+    /**
+     * 端点级消费确认模式覆盖（留空则继承全局 {@code ateng.boot.mqtt.consumer.ack-mode}）
+     */
+    AckMode[] ackMode() default {};
+
+    /**
+     * 端点级可恢复异常最大重试次数覆盖（默认为 -1，表示继承全局 {@code ateng.boot.mqtt.consumer.max-retries}）
+     */
+    int maxRetries() default -1;
+
+    /**
+     * 是否在容器启动时自动向 Broker 建立订阅（默认 true；设为 false 时启动保持暂停态直至显式 resume）
+     */
+    boolean autoStartup() default true;
+
+    /**
+     * MQTT 5.0 订阅选项：禁止接收由同一客户端连接发布的匹配消息（默认 false）
+     */
+    boolean noLocal() default false;
+
+    /**
+     * MQTT 5.0 订阅选项：投递消息时是否保留发布端原始 Retain 标志（默认 false）
+     */
+    boolean retainAsPublished() default false;
+
+    /**
+     * MQTT 5.0 订阅选项：建立订阅时保留消息的投递策略（0=始终发送, 1=仅新订阅发送, 2=不发送；默认 0）
+     */
+    int retainHandling() default 0;
 }

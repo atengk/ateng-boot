@@ -1,8 +1,11 @@
 package io.github.atengk.boot.satoken.cache;
 
 import cn.dev33.satoken.stp.StpInterface;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.satoken.model.ParsedLoginId;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
+import io.github.atengk.boot.satoken.util.LoginHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -12,6 +15,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.Supplier;
 
 /**
  * Sa-Token 两级高并发权限与角色缓存数据源适配器
@@ -39,34 +43,21 @@ public class CachedStpInterface implements StpInterface {
         if (loginId == null) {
             return Collections.emptyList();
         }
-        String userId = String.valueOf(loginId);
-        String cacheKey = PermissionCacheService.USER_ROLES_PREFIX + userId;
+        ParsedLoginId parsed = LoginHelper.parseCompositeLoginId(loginId, loginType);
+        String ownerTenantId = resolveOwnerTenantId(parsed, loginType);
+        return getRoleList(parsed, loginType, ownerTenantId);
+    }
 
-        // 1. 查询缓存
-        String cachedVal = cacheService.get(cacheKey);
-        if (cachedVal != null) {
-            if (EMPTY_SENTINEL.equals(cachedVal)) {
-                return Collections.emptyList();
-            }
-            return deserializeList(cachedVal);
-        }
-
-        // 2. 缓存未命中，回源业务加载器
-        List<String> roles = loader.loadRolesByUserId(userId);
-        if (roles == null || roles.isEmpty()) {
-            cacheService.set(cacheKey, EMPTY_SENTINEL, properties.getPermissionCache().getEmptyTtlSeconds());
+    private List<String> getRoleList(ParsedLoginId parsed, String loginType, String ownerTenantId) {
+        String userId = parsed != null ? parsed.userId() : null;
+        if (userId == null || userId.isBlank()) {
             return Collections.emptyList();
         }
-
-        // 3. 过滤清洗并写入缓存（带 Jitter 随机抖动防雪崩）
-        List<String> cleanRoles = roles.stream()
-                .filter(r -> r != null && !r.isBlank())
-                .distinct()
-                .toList();
-        long ttl = calculateTtlWithJitter(properties.getPermissionCache().getTimeoutSeconds());
-        cacheService.set(cacheKey, serializeList(cleanRoles), ttl);
-
-        return cleanRoles;
+        String cacheKey = PermissionCacheService.buildUserRolesKey(userId, loginType, ownerTenantId);
+        return getOrLoadCachedList(cacheKey, () -> runInTenantScope(ownerTenantId, () ->
+                ownerTenantId != null
+                        ? loader.loadRolesByUserId(userId, loginType, ownerTenantId)
+                        : loader.loadRolesByUserId(userId, loginType)));
     }
 
     @Override
@@ -74,10 +65,15 @@ public class CachedStpInterface implements StpInterface {
         if (loginId == null) {
             return Collections.emptyList();
         }
-        String userId = String.valueOf(loginId);
+        ParsedLoginId parsed = LoginHelper.parseCompositeLoginId(loginId, loginType);
+        String userId = parsed.userId();
+        if (userId == null || userId.isBlank()) {
+            return Collections.emptyList();
+        }
+        String ownerTenantId = resolveOwnerTenantId(parsed, loginType);
 
         // 1. 获取用户所属角色列表
-        List<String> roles = getRoleList(loginId, loginType);
+        List<String> roles = getRoleList(parsed, loginType, ownerTenantId);
 
         // 2. 汇总各角色关联的权限集
         Set<String> permissionSet = new LinkedHashSet<>();
@@ -86,12 +82,12 @@ public class CachedStpInterface implements StpInterface {
                 if (roleCode == null || roleCode.isBlank()) {
                     continue;
                 }
-                permissionSet.addAll(getPermissionsByRole(roleCode));
+                permissionSet.addAll(getPermissionsByRole(roleCode, loginType, ownerTenantId));
             }
         }
 
         // 3. 汇总用户个人特有的额外直属权限集
-        permissionSet.addAll(getDirectPermissions(userId));
+        permissionSet.addAll(getDirectPermissions(parsed, loginType, ownerTenantId));
 
         return new ArrayList<>(permissionSet);
     }
@@ -103,33 +99,77 @@ public class CachedStpInterface implements StpInterface {
      * @return 权限码集合
      */
     public List<String> getPermissionsByRole(String roleCode) {
-        String cacheKey = PermissionCacheService.ROLE_PERMS_PREFIX + roleCode;
+        return getPermissionsByRole(roleCode, null);
+    }
 
-        // 1. 查询角色权限二级缓存
-        String cachedVal = cacheService.get(cacheKey);
-        if (cachedVal != null) {
-            if (EMPTY_SENTINEL.equals(cachedVal)) {
-                return Collections.emptyList();
-            }
-            return deserializeList(cachedVal);
-        }
+    /**
+     * 根据角色编码与账号体系标识从二级缓存或业务数据源获取权限码集合
+     *
+     * @param roleCode  角色编码
+     * @param loginType 账号体系类型标识
+     * @return 权限码集合
+     */
+    public List<String> getPermissionsByRole(String roleCode, String loginType) {
+        return getPermissionsByRole(roleCode, loginType, null);
+    }
 
-        // 2. 缓存未命中，回源业务加载器
-        List<String> permissions = loader.loadPermissionsByRole(roleCode);
-        if (permissions == null || permissions.isEmpty()) {
-            cacheService.set(cacheKey, EMPTY_SENTINEL, properties.getPermissionCache().getEmptyTtlSeconds());
+    private List<String> getPermissionsByRole(String roleCode, String loginType, String explicitOwnerTenantId) {
+        if (roleCode == null || roleCode.isBlank()) {
             return Collections.emptyList();
         }
+        if (isTenantScopedEnabled()) {
+            String tenantId = (explicitOwnerTenantId != null && !explicitOwnerTenantId.isBlank())
+                    ? explicitOwnerTenantId.trim()
+                    : resolveCurrentTenantId(loginType);
+            if (tenantId != null) {
+                String cacheKey = PermissionCacheService.buildRolePermsKey(roleCode, loginType, tenantId);
+                return getOrLoadCachedList(cacheKey, () -> runInTenantScope(tenantId,
+                        () -> loader.loadPermissionsByRole(roleCode, loginType, tenantId)));
+            }
+        }
+        String cacheKey = PermissionCacheService.buildRolePermsKey(roleCode, loginType);
+        return getOrLoadCachedList(cacheKey, () -> runInTenantScope(explicitOwnerTenantId, () ->
+                (loginType == null || loginType.isBlank())
+                        ? loader.loadPermissionsByRole(roleCode)
+                        : loader.loadPermissionsByRole(roleCode, loginType)));
+    }
 
-        // 3. 过滤清洗并写入缓存（带 Jitter 随机抖动防雪崩）
-        List<String> cleanPermissions = permissions.stream()
-                .filter(p -> p != null && !p.isBlank())
-                .distinct()
-                .toList();
-        long ttl = calculateTtlWithJitter(properties.getPermissionCache().getTimeoutSeconds());
-        cacheService.set(cacheKey, serializeList(cleanPermissions), ttl);
+    private String resolveOwnerTenantId(ParsedLoginId parsed, String loginType) {
+        if (parsed != null && parsed.hasTenant()) {
+            return parsed.tenantId().trim();
+        }
+        if (isTenantScopedEnabled()) {
+            return resolveCurrentTenantId(loginType);
+        }
+        return null;
+    }
 
-        return cleanPermissions;
+    private <T> T runInTenantScope(String tenantId, Supplier<T> supplier) {
+        if (tenantId == null || tenantId.isBlank()) {
+            return supplier.get();
+        }
+        return TenantContextHolder.runWithTenant(tenantId.trim(), supplier);
+    }
+
+    private boolean isTenantScopedEnabled() {
+        return properties != null
+                && properties.getPermissionCache() != null
+                && properties.getPermissionCache().isTenantScoped();
+    }
+
+    private String resolveCurrentTenantId(String loginType) {
+        try {
+            String sessionTenantId = (loginType == null || loginType.isBlank())
+                    ? LoginHelper.getTenantId()
+                    : LoginHelper.getTenantId(loginType);
+            if (sessionTenantId != null && !sessionTenantId.isBlank()) {
+                return sessionTenantId.trim();
+            }
+        } catch (Exception ex) {
+            log.debug("读取会话租户标识失败，回退至上下文租户: loginType={}, error={}", loginType, ex.toString());
+        }
+        String contextTenantId = TenantContextHolder.getTenantId();
+        return (contextTenantId != null && !contextTenantId.isBlank()) ? contextTenantId.trim() : null;
     }
 
     /**
@@ -139,9 +179,39 @@ public class CachedStpInterface implements StpInterface {
      * @return 直属权限码集合
      */
     public List<String> getDirectPermissions(String userId) {
-        String cacheKey = PermissionCacheService.USER_PERMS_PREFIX + userId;
+        return getDirectPermissions(userId, null);
+    }
 
-        // 1. 查询用户直属权限缓存
+    /**
+     * 根据用户 ID 与账号体系标识从辅助缓存或业务数据源获取个人直属权限码集合
+     *
+     * @param userId    用户唯一标识
+     * @param loginType 账号体系类型标识
+     * @return 直属权限码集合
+     */
+    public List<String> getDirectPermissions(String userId, String loginType) {
+        if (userId == null || userId.isBlank()) {
+            return Collections.emptyList();
+        }
+        ParsedLoginId parsed = LoginHelper.parseCompositeLoginId(userId, loginType);
+        String ownerTenantId = resolveOwnerTenantId(parsed, loginType);
+        return getDirectPermissions(parsed, loginType, ownerTenantId);
+    }
+
+    private List<String> getDirectPermissions(ParsedLoginId parsed, String loginType, String ownerTenantId) {
+        String plainUserId = parsed != null ? parsed.userId() : null;
+        if (plainUserId == null || plainUserId.isBlank()) {
+            return Collections.emptyList();
+        }
+        String cacheKey = PermissionCacheService.buildUserPermsKey(plainUserId, loginType, ownerTenantId);
+        return getOrLoadCachedList(cacheKey, () -> runInTenantScope(ownerTenantId, () ->
+                ownerTenantId != null
+                        ? loader.loadDirectPermissionsByUserId(plainUserId, loginType, ownerTenantId)
+                        : loader.loadDirectPermissionsByUserId(plainUserId, loginType)));
+    }
+
+    private List<String> getOrLoadCachedList(String cacheKey, Supplier<List<String>> sourceSupplier) {
+        // 1. 查询缓存
         String cachedVal = cacheService.get(cacheKey);
         if (cachedVal != null) {
             if (EMPTY_SENTINEL.equals(cachedVal)) {
@@ -151,21 +221,30 @@ public class CachedStpInterface implements StpInterface {
         }
 
         // 2. 缓存未命中，回源业务加载器
-        List<String> directPermissions = loader.loadDirectPermissionsByUserId(userId);
-        if (directPermissions == null || directPermissions.isEmpty()) {
-            cacheService.set(cacheKey, EMPTY_SENTINEL, properties.getPermissionCache().getEmptyTtlSeconds());
+        List<String> loaded = sourceSupplier.get();
+        long emptyTtlSeconds = resolveSeconds(properties.getPermissionCache().getEmptyTtl());
+        if (loaded == null || loaded.isEmpty()) {
+            cacheService.set(cacheKey, EMPTY_SENTINEL, emptyTtlSeconds);
             return Collections.emptyList();
         }
 
-        // 3. 过滤清洗并写入缓存
-        List<String> cleanPermissions = directPermissions.stream()
-                .filter(p -> p != null && !p.isBlank())
+        // 3. 过滤清洗并写入缓存（带 Jitter 随机抖动防雪崩）
+        List<String> cleanList = loaded.stream()
+                .filter(item -> item != null && !item.isBlank())
                 .distinct()
                 .toList();
-        long ttl = calculateTtlWithJitter(properties.getPermissionCache().getTimeoutSeconds());
-        cacheService.set(cacheKey, serializeList(cleanPermissions), ttl);
+        if (cleanList.isEmpty()) {
+            cacheService.set(cacheKey, EMPTY_SENTINEL, emptyTtlSeconds);
+            return Collections.emptyList();
+        }
+        long ttl = calculateTtlWithJitter(resolveSeconds(properties.getPermissionCache().getTimeout()));
+        cacheService.set(cacheKey, serializeList(cleanList), ttl);
 
-        return cleanPermissions;
+        return cleanList;
+    }
+
+    private static long resolveSeconds(java.time.Duration duration) {
+        return duration != null ? duration.toSeconds() : 0L;
     }
 
     /**

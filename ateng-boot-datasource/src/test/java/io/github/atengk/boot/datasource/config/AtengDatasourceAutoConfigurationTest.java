@@ -4,6 +4,8 @@ import com.baomidou.dynamic.datasource.spring.boot.autoconfigure.DynamicDataSour
 import io.github.atengk.boot.datasource.enums.MultiTenancyMode;
 import io.github.atengk.boot.datasource.enums.ReadAfterWriteScope;
 import io.github.atengk.boot.datasource.guard.DynamicDatasourceGuard;
+import io.github.atengk.boot.datasource.loader.DynamicDataSourceSyncManager;
+import io.github.atengk.boot.datasource.metrics.DynamicDatasourceMetricsBinder;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
 import io.github.atengk.boot.datasource.readwrite.DefaultWriteOccurredResolver;
 import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteManager;
@@ -13,6 +15,8 @@ import io.github.atengk.boot.datasource.strategy.HealthAwareDynamicDataSourceStr
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.datasource.tenant.DefaultTenantDataSourceProvider;
 import io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -52,6 +56,7 @@ class AtengDatasourceAutoConfigurationTest {
             assertThat(context).hasSingleBean(HealthAwareDynamicDataSourceStrategy.class);
             assertThat(context).hasSingleBean(io.github.atengk.boot.datasource.security.DataSourcePasswordDecryptor.class);
             assertThat(context).hasSingleBean(com.baomidou.dynamic.datasource.event.DataSourceInitEvent.class);
+            assertThat(context).hasSingleBean(DynamicDataSourceSyncManager.class);
 
             DatasourceProperties properties = context.getBean(DatasourceProperties.class);
             assertThat(properties.isEnabled()).isTrue();
@@ -81,6 +86,10 @@ class AtengDatasourceAutoConfigurationTest {
             assertThat(properties.getDynamicLoad().getDrainTimeout()).isEqualTo(Duration.ofSeconds(5));
             assertThat(properties.getSecurity().isPasswordDecryptionEnabled()).isTrue();
             assertThat(properties.getSeata().isEnabled()).isFalse();
+            assertThat(properties.getMetrics().isEnabled()).isTrue();
+            assertThat(properties.getDynamicLoad().getCoreWhitelist()).contains("master", "slave");
+            assertThat(properties.getDynamicLoad().getAutoSync().isEnabled()).isFalse();
+            assertThat(properties.getDynamicLoad().getAutoSync().getInterval()).isEqualTo(Duration.ofMinutes(1));
         });
     }
 
@@ -115,6 +124,8 @@ class AtengDatasourceAutoConfigurationTest {
                         "ateng.boot.datasource.read-write-split.failover.cooldown-window=1m",
                         "ateng.boot.datasource.dynamic-load.probe-timeout=4s",
                         "ateng.boot.datasource.dynamic-load.drain-timeout=10s",
+                        "ateng.boot.datasource.dynamic-load.auto-sync.enabled=true",
+                        "ateng.boot.datasource.dynamic-load.auto-sync.interval=30s",
                         "ateng.boot.datasource.seata.enabled=true"
                 )
                 .run(context -> {
@@ -127,7 +138,30 @@ class AtengDatasourceAutoConfigurationTest {
                     assertThat(properties.getReadWriteSplit().getFailover().getCooldownWindow()).isEqualTo(Duration.ofMinutes(1));
                     assertThat(properties.getDynamicLoad().getProbeTimeout()).isEqualTo(Duration.ofSeconds(4));
                     assertThat(properties.getDynamicLoad().getDrainTimeout()).isEqualTo(Duration.ofSeconds(10));
+                    assertThat(properties.getDynamicLoad().getAutoSync().isEnabled()).isTrue();
+                    assertThat(properties.getDynamicLoad().getAutoSync().getInterval()).isEqualTo(Duration.ofSeconds(30));
                     assertThat(properties.getSeata().isEnabled()).isTrue();
+                });
+    }
+
+    @Test
+    @DisplayName("测试当容器存在 MeterRegistry 时自动装配 DynamicDatasourceMetricsBinder")
+    void testMetricsBinderAutoConfigurationWhenMeterRegistryPresent() {
+        contextRunner
+                .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(DynamicDatasourceMetricsBinder.class);
+                });
+    }
+
+    @Test
+    @DisplayName("测试显式关闭 metrics.enabled 时跳过装配 DynamicDatasourceMetricsBinder")
+    void testMetricsBinderDisabledWhenPropertyFalse() {
+        contextRunner
+                .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .withPropertyValues("ateng.boot.datasource.metrics.enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(DynamicDatasourceMetricsBinder.class);
                 });
     }
 }

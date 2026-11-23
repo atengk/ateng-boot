@@ -1,52 +1,100 @@
 # MyBatis-Plus Context
 
-`ateng-boot-mybatis-plus` 为持久层提供标准化实体基类、智能审计填充、多数据库方言自适应拦截器链与分布式主键扩展能力。
+`ateng-boot-mybatis-plus` 为持久层提供正交实体能力接口、双轨标准化实体继承阶梯、智能审计填充、多数据库方言自适应拦截器链与分布式主键扩展能力。
 
 ## Language
 
+**Identifiable**:
+声明强类型主键读写契约的正交实体能力接口，用于抽象实体主键访问与统一自愈发号入口。
+_Avoid_: IdAware, HasId, PrimaryKeyAware
+
+**TenantAware**:
+声明泛型租户标识读写契约的正交多租户能力接口，同时兼容 `Long` 与 `String` 租户类型。
+_Avoid_: TenantEntity, TenantModel, HasTenant
+
+**TimeAuditable**:
+声明创建与修改时间戳读写契约的正交审计能力接口，供轻量时间流转实体直接接入。
+_Avoid_: TimestampAware, HasTimestamps
+
+**Auditable**:
+继承 `TimeAuditable` 并追加创建人与修改人标识读写契约的四要素全审计能力接口。
+_Avoid_: FullAuditable, OperatorAuditable, AuditAware
+
+**LogicDeletable**:
+声明泛型逻辑删除标记读写契约的正交软删能力接口，与实体主键或占位标识类型保持对齐。
+_Avoid_: SoftDeletable, DeleteAware, Deletable
+
+**Versioned**:
+声明 CAS 乐观锁版本号读写契约的正交并发控制能力接口。
+_Avoid_: OptimisticLockable, HasVersion, LockVersioned
+
 **BaseGenericEntity**:
-泛型主键实体抽象顶层基类，允许业务自定义主键类型。
+泛型主键实体抽象顶层基类，实现 `Identifiable` 契约，将主键字段定义与生成策略交由具体业务子类声明。
 _Avoid_: RootEntity, GenericModel
 
+**BaseGenericTimeEntity**:
+泛型主键时间审计实体抽象基类，继承 `BaseGenericEntity` 并实现 `TimeAuditable`，适用于无需操作人审计的自定义主键表。
+_Avoid_: GenericTimeModel, BaseGenericTimestampEntity
+
+**BaseGenericAuditEntity**:
+泛型主键四要素全审计实体抽象基类，继承 `BaseGenericTimeEntity` 并实现 `Auditable`，适用于自定义主键的物理删除业务表。
+_Avoid_: GenericBaseEntity, GenericAuditModel
+
+**BaseGenericLogicEntity**:
+泛型主键占位软删实体抽象基类，继承 `BaseGenericAuditEntity` 并实现 `LogicDeletable`，统一采用主键占位消除复合唯一索引冲突（不含乐观锁版本号）。
+_Avoid_: GenericSoftDeleteEntity, BaseGenericDeleteIdEntity
+
+**BaseGenericFullEntity**:
+泛型主键全要素受管实体抽象基类，继承 `BaseGenericLogicEntity` 并实现 `Versioned`，对称补齐 CAS 乐观锁版本号。
+_Avoid_: GenericFullModel, GenericAllInOneEntity
+
 **BaseIdEntity**:
-标配雪花长整型主键的极简实体抽象基类，适用于关联映射表与无审计日志表。
+标配 64 位雪花长整型主键的极简实体抽象基类，继承 `BaseGenericEntity<Long>`，适用于关联映射表与无审计日志表。
 _Avoid_: IdModel, PrimaryEntity
 
 **BaseTimeEntity**:
-提供雪花主键与自动审计创建/修改时间的实体抽象基类，适用于无需操作人记录的轻量表。
+提供雪花主键与自动审计创建/修改时间的实体抽象基类，继承 `BaseIdEntity` 并实现 `TimeAuditable`，适用于无需操作人记录的轻量表。
 _Avoid_: TimeEntity, TimestampModel
 
 **BaseEntity**:
-主力业务实体抽象基类，提供雪花主键与完整的创建/修改时间及操作人审计字段。
+标准四要素全审计业务实体抽象基类，继承 `BaseTimeEntity` 并实现 `Auditable`，适用于常规物理删除业务表。
 _Avoid_: Model, SuperEntity, CommonEntity, RootEntity
 
+**BaseLogicEntity**:
+常规软删主表默认实体抽象基类，继承 `BaseEntity` 并实现 `LogicDeletable`，采用 `Long` 型自身主键占位软删标记（`delval = "id"`）并标配 `@JsonIgnore`，不强绑乐观锁版本号。
+_Avoid_: BaseDeleteIdEntity, BaseDeleteTimeEntity, SoftDeleteEntity, DeleteModel, TimestampEntity
+
 **BaseFullEntity**:
-全要素受管业务实体抽象基类，在 BaseEntity 基础上追加 CAS 乐观锁版本号与在 JSON 中自动忽略的逻辑删除标记。
+全要素受管业务实体抽象基类，继承 `BaseLogicEntity` 并实现 `Versioned`，兼具 `Long` 型主键占位软删与 CAS 乐观锁版本号，专供高并发状态流转表。
 _Avoid_: FullModel, AllInOneEntity
 
-**AuditMetaObjectHandler**:
-在实体持久化插入与更新时智能感知字段存在性，并防御性自动填充时间与当前操作人的元对象处理器。
-_Avoid_: FieldFiller, AutoFillHandler, MetaHandler
+**DefaultMetaObjectHandler**:
+在实体持久化插入与更新时智能感知字段与正交能力接口、执行类型安全多租户填充（不兼容类型快速失败）及防御性审计填充的默认元对象处理器。
+_Avoid_: AuditMetaObjectHandler, FieldFiller, AutoFillHandler, MetaHandler
 
-**AdaptivePaginationInterceptor**:
+**PaginationInnerInterceptor**:
 支持动态探测底层数据库方言（杜绝硬编码 MySQL），并带有单页 500 条上限内存防爆保护的分页内拦截器。
-_Avoid_: MybatisPaging, PageHelper
+_Avoid_: AdaptivePaginationInterceptor, MybatisPaging, PageHelper
 
-**BlockAttackInterceptor**:
-自动阻断无 WHERE 条件的全表更新与全表物理删除的防灾安全拦截器。
-_Avoid_: SafeDeleteInterceptor, TableAttackBlocker
+**BlockAttackInnerInterceptor**:
+自动阻断无 WHERE 条件的全表更新与全表物理删除的防灾安全内拦截器。
+_Avoid_: BlockAttackInterceptor, SafeDeleteInterceptor, TableAttackBlocker
 
-**OptimisticLockerInterceptor**:
-基于实体标记的版本号字段实现并发原子递增与 CAS 防护的乐观锁拦截器。
-_Avoid_: VersionInterceptor, ConcurrencyInterceptor
+**OptimisticLockerInnerInterceptor**:
+基于实体标记的版本号字段实现并发原子递增与 CAS 防护的乐观锁内拦截器。
+_Avoid_: OptimisticLockerInterceptor, VersionInterceptor, ConcurrencyInterceptor
 
 **FieldEncrypt**:
-声明在实体敏感属性上的持久化透明加密注解，在落盘写入数据库时自动加密为 AES 密文，在查询读取时自动解密为真实明文。配合 `@TableField(typeHandler = EncryptTypeHandler.class)` 使用。
+声明在实体敏感属性上的持久化透明加密注解，在落盘写入数据库时自动加密为 AES 密文，在查询读取时自动解密为真实明文；支持声明确定性加密模式以支撑等值索引检索，配合 `EncryptTypeHandler` 或 `DeterministicEncryptTypeHandler` 使用。
 _Avoid_: SecretField, CryptoField, EncryptField
 
 **EncryptTypeHandler**:
-继承 MyBatis `BaseTypeHandler<String>` 的透明加解密类型处理器，采用 AES 对称算法，前置 16 字节随机 IV 并进行 Base64 组合编码，具备自包含解密与防御性历史明文兼容能力。
+继承 MyBatis `BaseTypeHandler<String>` 的概率性透明加解密类型处理器，采用 AES-CBC 对称算法，前置 16 字节随机 IV 并进行 Base64 组合编码，具备自包含解密与防御性历史明文兼容能力。
 _Avoid_: AesTypeHandler, SecretHandler, CryptoHandler
+
+**DeterministicEncryptTypeHandler**:
+继承 `EncryptTypeHandler` 的确定性透明加解密类型处理器，采用基于 HMAC-SHA256 合成初始化向量（SIV）的 AES-CBC 对称算法，保障相同明文生成恒定密文以支持数据库等值（`=` / `IN`）精确检索，并与 `EncryptTypeHandler` 双向解密兼容。
+_Avoid_: SearchableEncryptHandler, FixedIvTypeHandler, HashEncryptHandler
 
 **FieldSensitive**:
 声明在实体或 VO 属性上的出库数据动态脱敏注解，定义于 `ateng-boot-core`，基于 Jackson `SensitiveJsonSerializer` 在序列化为 JSON 响应时动态掩码，确保 Java 内存中始终保持 100% 原始真实明文。
@@ -93,11 +141,11 @@ _Avoid_: DataScopeContextHolder, PermissionContext
 _Avoid_: CustomDataPermissionInterceptor, DataScopeInterceptor
 
 **AtengBaseMapper**:
-继承 MyBatis-Plus `BaseMapper` 的通用增强持久层接口，扩展原生单条多值批量插入（`insertBatchSomeColumn`）、批量/单条 Upsert（`upsertBatchSomeColumn` / `upsertSomeColumn`）、单条 CASE WHEN 批量更新（`updateBatchSomeColumn`）与受管游标查询（`selectCursor`）方法。
+继承 MyBatis-Plus `BaseMapper` 的通用增强持久层接口，扩展原生单条多值批量插入（`insertBatchSomeColumn`）、批量/单条 Upsert（`upsertBatchSomeColumn` / `upsertSomeColumn`）、单条 CASE WHEN 批量更新（`updateBatchSomeColumn`）、受管游标查询（`selectCursor`）与穿透 `@TableLogic` 的物理硬删除（`deletePhysicallyById` / `deletePhysicallyBatchByIds` / `deletePhysically`）方法。
 _Avoid_: SuperMapper, EnhancedMapper, CustomBaseMapper
 
 **AtengBaseService**:
-继承 MyBatis-Plus `IService` 的通用业务增强接口，扩展声明式分批写入门面（批量插/更/Upsert）、受管流式防 OOM 游标直出（`stream` / `streamDynamic`）、动态查询完备直出（`pageDynamic` / `existsDynamic`）、VO 强类型安全投影与乐观锁并发自旋重试契约。
+继承 MyBatis-Plus `IService` 的通用业务增强接口，扩展声明式分批写入门面（批量插/更/Upsert）、受管流式防 OOM 游标直出（`stream` / `streamDynamic`）、动态查询完备直出（`pageDynamic` / `existsDynamic`）、逻辑删除全生命周期闭环（`*WithDeleted` / `restore*` / `removePhysically*`）、VO 强类型安全投影、悲观行锁（`getByIdForUpdate` / `getOneForUpdate` / `listForUpdate`）与乐观锁并发自旋重试契约。
 _Avoid_: SuperService, EnhancedService, CustomBaseService
 
 **AtengServiceImpl**:
@@ -105,12 +153,8 @@ _Avoid_: SuperService, EnhancedService, CustomBaseService
 _Avoid_: SuperServiceImpl, EnhancedServiceImpl
 
 **BatchUtil**:
-批量操作静态门面工具类，提供无侵入的原生多值批量插入切片工具方法。
+面向正交实体能力接口与元数据的批量操作静态门面工具类，提供无侵入的原生多值分批读写与主键正序防死锁自愈能力（版本号默认初始为 `0`）。
 _Avoid_: BatchHelper, BulkUtil
-
-**TenantEntity**:
-可选的租户实体标记接口，提供类型安全的租户读写契约。
-_Avoid_: TenantModel, HasTenant
 
 **OptimisticLockTemplate**:
 基于 core 底座 RetryUtil 实现的乐观锁并发自旋重试模板门面，针对 @Version 并发冲突（更新行数 = 0）提供自动重新加载最新版本实体与自旋退避守护。
@@ -131,10 +175,6 @@ _Avoid_: StatementManager, DynamicSqlManager, SqlRegistry
 **DynamicSqlExecutor**:
 通用编程式动态 SQL 执行门面组件，依托 `SqlSession` 与已注册的 `MappedStatement`，提供免建 Mapper 接口的增删改查以及符合 ADR-0010 规范的标准分页执行能力。
 _Avoid_: UniversalSqlExecutor, CommonDao, DynamicSqlDao
-
-**BaseDeleteIdEntity**:
-针对高频逻辑删除复合唯一索引冲突表设计的受管业务实体抽象基类，继承 BaseEntity，追加乐观锁版本号与以 Snowflake ID 占位删除的 Long 型删除标记（未删除为 0，删除时 `deleted = id`）。
-_Avoid_: BaseDeleteTimeEntity, SoftDeleteEntity, DeleteModel, TimestampEntity
 
 **StreamingQueryTemplate**:
 受管游标流式查询模板门面，结合 MyBatis Cursor 与声明式只读事务，提供逐条流式或分批遍历消费能力，彻底防御堆内存 OOM 与数据库连接池句柄悬挂泄漏。
@@ -193,7 +233,7 @@ _Avoid_: AuditContext, ChangeSession, AuditHolder
 _Avoid_: BatchUpdater, CaseWhenUpdater, FastBatchUpdate
 
 **DataChangeAuditInterceptor**:
-MyBatis 原生 Executor 拦截器，捕获 UPDATE/DELETE 前置快照并计算字段级 Diff 增量，集成超限熔断降级与事务提交后异步分发。
+MyBatis 原生 Executor 拦截器，捕获物理与逻辑删除（`DELETE`）及更新（`UPDATE`）前置快照并计算字段级 Diff 增量，集成超限熔断降级与事务提交后四维上下文异步分发。
 _Avoid_: AuditInterceptor, ChangeTracker, DiffInterceptor
 **DynamicQueryTemplate**:
 通用受管动态查询执行模板组件，作为 Spring 单例 Bean 注入持久层容器，提供跨实体单表与多表外部/XML SQL 的强类型转译执行与 VO 投影转换能力。
@@ -208,15 +248,31 @@ _Avoid_: SqlAliasParser, ColumnExtractor, ProjectionMapper
 _Avoid_: CursorInjector, StreamMethod, SelectCursorMethod
 
 **SqlLogInterceptor**:
-持久层物理终态 SQL 日志打印与可执行带参诊断拦截器，拦截 MyBatis 原生 StatementHandler 物理执行，输出带参可执行 SQL、毫秒耗时、影响行数与业务代码行号看板，内建批量防刷屏、游标只读防卫与失败现场捕获。
+持久层物理终态 SQL 日志打印与可执行带参诊断拦截器，拦截 MyBatis 原生 StatementHandler 物理执行，输出带参可执行 SQL、毫秒耗时、影响行数与业务代码行号看板，内建批量防刷屏、游标只读防卫与失败现场捕获；同时作为结构化 SQL 审计数据源，驱动受管异步 SPI 持久化派发与事件广播。
 _Avoid_: P6SpyInterceptor, SqlPrintPlugin, MybatisLogInterceptor, DruidLogFilter
+
+**SqlLogStorageProvider**:
+持久层物理 SQL 操作审计日志存储解耦 SPI 函数式契约接口，定义结构化 SQL 日志模型持久化与外部投递契约，支持下游无缝对接数据库、Elasticsearch、Kafka 或 APM。
+_Avoid_: SqlStorageProvider, SqlAuditProvider, SqlLogDao, SqlAuditStore
+
+**DefaultSqlLogStorageProvider**:
+默认物理 SQL 操作日志存储提供者，当无自定义外部 SPI 实现时基于 SLF4J 打印标准紧凑 JSON 作为开箱即用保底。
+_Avoid_: SimpleSqlLogStorageProvider, Slf4jSqlLogProvider, FallbackSqlLogStorage
+
+**SqlLogEvent**:
+Spring 原生应用层 SQL 操作审计事件，继承 `ApplicationEvent`，支持在单体应用内基于 `@EventListener` 解耦监听与异步消费。
+_Avoid_: SqlEvent, SqlAuditEvent, SqlOperationEvent
+
+**IgnoreSqlLog**:
+声明式 SQL 日志与审计忽略注解，支持标注于 Mapper 接口或方法上，指示拦截器对特定心跳或内部操作跳过控制台诊断与 SPI 存储。
+_Avoid_: SkipSqlLog, NoSqlLog, DisableSqlLog, IgnoreSqlAudit
 
 **SqlParameterFormatter**:
 纯原生字符流 SQL 参数安全反填与敏感脱敏引擎，采用零依赖 Token 状态机流式逐字符扫描，智能跳过字符串常量与注释内的占位符，安全映射 JDBC 字面量，彻底杜绝正则替换特殊字符异常；内置属性提取 Fail-Safe 容错兜底、缓存容量上限守卫、超长 SQL 性能熔断旁路与 PII 个人敏感凭据脱敏。
 _Avoid_: SqlFormatter, ParamReplacer, RegexSqlPaster, P6SpyFormatter
 
 **MybatisInterceptorUtil**:
-持久层底层拦截器基础设施工具类，提供兼容 JDK 17 强封装模块化的递归代理拆包（Plugin 物理目标还原）与智能穿透切面/容器的真实业务调用栈位置解析能力。
+持久层底层拦截器基础设施工具类，提供兼容 JDK 17 强封装模块化的递归代理拆包（Plugin 物理目标还原）、智能穿透切面/容器的真实业务调用栈位置解析，以及衍生 `MappedStatement` 方法名归一化与 Mapper 级注解反射缓存解析能力。
 _Avoid_: InterceptorHelper, ProxyUnwrapper, StackTraceLocator
 
 **LockMode**:
@@ -224,7 +280,7 @@ _Avoid_: InterceptorHelper, ProxyUnwrapper, StackTraceLocator
 _Avoid_: LockType, LockOption, PagingLock
 
 **PessimisticLockUtil**:
-悲观锁语法糖与转译工具类，提供将强类型 `LockMode` 安全无缝绑定至 MyBatis-Plus QueryWrapper 与 LambdaQueryWrapper 的编译期校验与方言防护门面。
+悲观锁语法糖与转译工具类，提供将强类型 `LockMode` 安全无缝绑定至 MyBatis-Plus QueryWrapper 与 LambdaQueryWrapper 的编译期校验、受控方言上下文闭包与方言防护门面。
 _Avoid_: LockHelper, PessimisticHelper, ForUpdateHelper
 
 **AtengJacksonTypeHandler**:
@@ -242,3 +298,91 @@ _Avoid_: TypeReferenceJsonHandler, JacksonGenericHandler, ComplexJsonHandler
 **AtengLogicDeleteInnerInterceptor**:
 基于 JSqlParser AST 语法树动态解耦的逻辑删除穿透拦截器，集成于 MyBatis-Plus 拦截器插件链，当 `LogicDeleteContextHolder` 激活时自动定位并安全剥离 WHERE 子句中的逻辑删除过滤表达式，支持回收站查询与安全恢复。
 _Avoid_: LogicDeleteInterceptor, CustomLogicDeleteHandler, BypassDeletePlugin
+
+**AtengTenantLineInnerInterceptor**:
+基于 JSqlParser AST 语法树的增强型行级多租户内拦截器，支持 `@IgnoreTenant` 声明式豁免与 `TenantContextHolder` 闭包短路放行。
+_Avoid_: CustomTenantInterceptor, TenantSqlInterceptor
+
+**DefaultTenantLineHandler**:
+默认行级多租户处理器，桥接 `TenantContextHolder` 动态提取当前租户标识并结合配置表白名单判定忽略规则。
+_Avoid_: SimpleTenantHandler, CustomTenantLineHandler
+
+**AtengSqlInjector**:
+全局增强型 SQL 注入器，自动向持久层 Mapper 注入 `insertBatchSomeColumn`、`upsertBatchSomeColumn`、`updateBatchSomeColumn`、`selectCursor` 及物理硬删除（`deletePhysicallyById` / `deletePhysicallyBatchByIds` / `deletePhysically`）原生高性能方法，并修正字符型主键下占位软删 `delval = "id"` 的列引用语义。
+_Avoid_: CustomSqlInjector, BatchSqlInjector
+
+**DeletePhysicallyById**:
+继承 MyBatis-Plus `AbstractMethod` 的按主键物理硬删除 SQL 注入器节点，无视实体 `@TableLogic` 声明直接生成 `DELETE FROM table WHERE id = ?` 物理清除语句，用于回收站彻底清理与 GDPR 合规擦除。
+_Avoid_: HardDeleteById, ForceDeleteById, PhysicalRemoveById
+
+**DeletePhysicallyBatchByIds**:
+继承 MyBatis-Plus `AbstractMethod` 的按主键集合批量物理硬删除 SQL 注入器节点，无视实体 `@TableLogic` 声明直接生成 `DELETE FROM table WHERE id IN (...)` 批量物理清除语句。
+_Avoid_: HardDeleteBatchByIds, ForceDeleteByIds, PhysicalBatchRemove
+
+**DeletePhysically**:
+继承 MyBatis-Plus `AbstractMethod` 的按条件包装器物理硬删除 SQL 注入器节点，无视实体 `@TableLogic` 声明直接生成带 `WHERE` 守卫的物理清除语句。
+_Avoid_: HardDeleteByWrapper, ForceDelete, PhysicalRemove
+
+**UpsertBatchSomeColumn**:
+双方言原生单条多值 Upsert SQL 注入器节点，自适应生成 MySQL `ON DUPLICATE KEY UPDATE` 与 PostgreSQL `ON CONFLICT DO UPDATE` 语句。
+_Avoid_: BatchUpsertMethod, UpsertInjector
+
+**SlowSqlEvent**:
+慢 SQL 性能审计 Spring 领域事件，承载超时 SQL 文本、脱敏参数、执行耗时与业务调用栈位置。
+_Avoid_: SlowQueryEvent, SqlTimeoutEvent
+
+**DataChangeEvent**:
+事务提交后触发的数据变更 Diff 审计 Spring 领域事件，承载本次事务捕获的 `DataChangeRecord` 列表。
+_Avoid_: AuditChangeEvent, EntityDiffEvent
+
+**FieldDiff**:
+单字段变更前后对比明细值对象，包含属性名、旧值与新值。
+_Avoid_: ColumnChange, PropertyDiff
+
+**SqlLogModel**:
+定义于 `ateng-boot-core` 的结构化物理 SQL 操作审计元数据模型，承载可执行 SQL、耗时、影响行数、四维上下文与状态信息。
+_Avoid_: SqlAuditEntity, SqlLogRecord
+
+**ChangeType**:
+数据变更 Diff 审计记录的操作类型枚举，严格划分为 `UPDATE` 与 `DELETE`（含 `@TableLogic` 逻辑删除归类）。
+_Avoid_: AuditAction, DiffOperation
+
+**QueryCondition**:
+动态查询过滤条件标准契约值对象，封装目标字段名、受控操作符 `QueryOperator` 及单值或区间多值参数。
+_Avoid_: SearchFilter, ConditionItem
+
+**QueryOperator**:
+动态查询受控安全操作符枚举，严格收敛 13 种标准比较、区间与模式匹配操作符，杜绝非法 SQL 运算符注入。
+_Avoid_: FilterOp, CompareType
+
+**DynamicMapperPageMethod**:
+`Serializable` 函数式 Mapper 分页方法引用契约接口，支持基于 `SerializedLambda` 纳秒级推导自定义联表分页 `MappedStatement` 标识。
+_Avoid_: PageMapperFn, DynamicPageFunction
+
+**DynamicMapperListMethod**:
+`Serializable` 函数式 Mapper 列表方法引用契约接口，支持基于方法引用极速直出多表联表列表与 VO 投影。
+_Avoid_: ListMapperFn, DynamicListFunction
+
+**ResourceExternalSqlLoader**:
+基于 Spring `ResourcePatternResolver` 的默认外部动态 SQL 加载器实现，自动扫描并解析 `locations` 路径下的 XML 片段。
+_Avoid_: XmlSqlFileLoader, DefaultScriptScanner
+
+**DefaultDataPermissionHandler**:
+默认数据权限 SPI 兜底处理器实现，在未装配业务自定义数据权限规则时返回 `null` 以平滑透传原 SQL。
+_Avoid_: EmptyDataScopeHandler, NoopPermissionHandler
+
+**AuditChangeProperties**:
+数据变更 Diff 审计强类型配置属性，集中定义开关状态、`maxDiffRows` 熔断上限及事务提交后异步投递策略。
+_Avoid_: DiffAuditConfig, ChangeTrackerProperties
+
+**SqlLogProperties**:
+SQL 执行诊断看板与 SPI 结构化存储强类型配置属性，管控控制台开关、脱敏掩码、SQL 长度上限及忽略规则清单。
+_Avoid_: SqlPrintConfig, SqlAuditProperties
+
+**DynamicSqlProperties**:
+外部动态 SQL 引擎强类型配置属性，纳管 `enabled` 开关、`autoScriptWrap` 容错包裹及外部 XML 扫描路径清单。
+_Avoid_: ExternalSqlConfig, DynamicXmlProperties
+
+**DynamicQueryProperties**:
+动态查询转译引擎强类型配置属性，提供 `ateng.boot.mybatis-plus.dynamic-query.enabled` 全局开关治理。
+_Avoid_: QueryEngineConfig, FilterProperties

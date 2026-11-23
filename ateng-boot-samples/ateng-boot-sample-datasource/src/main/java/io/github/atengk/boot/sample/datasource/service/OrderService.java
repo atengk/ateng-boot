@@ -100,6 +100,29 @@ public class OrderService {
     }
 
     /**
+     * 显式 @DS("master") 写事务写入订单（由框架自动触发写后即读一致性防延迟标记）
+     *
+     * @param request 订单创建请求
+     * @return 订单展示视图对象
+     */
+    @DS("master")
+    @Transactional(rollbackFor = Exception.class)
+    public OrderResponse createMasterOrderExplicitDs(OrderCreateRequest request) {
+        log.info("[OrderService] 显式 @DS(\"master\") 写事务创建订单（自动激活写后即读保护）: {}", request.getOrderNo());
+
+        OrderEntity entity = new OrderEntity();
+        entity.setOrderNo(request.getOrderNo());
+        entity.setProductName(request.getProductName());
+        entity.setAmount(request.getAmount());
+        entity.setTenantId(TenantContextHolder.getTenantId());
+        entity.setStatus("PAID");
+
+        orderMapper.insert(entity);
+
+        return convertToVo(entity, dynamicDatasourceTemplate.getCurrentDataSourceKey());
+    }
+
+    /**
      * 读从库订单 (标记 @DS("slave"))
      * <p>
      * 默认路由至 slave 读从库；若在写后读主防延迟窗口内，将自动回退路由至 master。

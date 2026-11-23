@@ -19,13 +19,27 @@ import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.core.util.SpringUtil;
+import io.github.atengk.boot.core.exception.IdempotentException;
+import io.github.atengk.boot.sample.core.dto.ExchangeRateRequest;
+import io.github.atengk.boot.sample.core.dto.OrderCheckRequest;
+import io.github.atengk.boot.sample.core.dto.RateLimitRequest;
+import io.github.atengk.boot.sample.core.vo.ExchangeRateVO;
+import io.github.atengk.boot.sample.core.vo.OrderCheckVO;
+import io.github.atengk.boot.sample.core.vo.OrderSummaryVO;
+import io.github.atengk.boot.sample.core.vo.RateLimitVO;
+import io.github.atengk.boot.sample.core.vo.RemoteTraceUnpackVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -40,6 +54,17 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class CoreResilienceScenarioService {
 
     private final Snowflake springManagedSnowflake;
+    private final SlidingWindowCounter sharedSlidingWindow = new SlidingWindowCounter(Duration.ofSeconds(1), 5);
+    private final TokenBucketLimiter sharedTokenBucket = new TokenBucketLimiter(10, 5.0);
+    private final Map<String, Long> idempotentTokens = new ConcurrentHashMap<>();
+
+    private static final Map<String, BigDecimal> LIVE_RATES = Map.of(
+            "USD/CNY", new BigDecimal("7.2350"),
+            "EUR/CNY", new BigDecimal("7.8520"),
+            "GBP/CNY", new BigDecimal("9.3150"),
+            "JPY/CNY", new BigDecimal("0.0485")
+    );
+    private static final BigDecimal FALLBACK_DEFAULT_RATE = new BigDecimal("7.0000");
 
     public CoreResilienceScenarioService(@Autowired(required = false) Snowflake springManagedSnowflake) {
         this.springManagedSnowflake = springManagedSnowflake;
@@ -155,6 +180,31 @@ public class CoreResilienceScenarioService {
     }
 
     /**
+     * 4.1 模拟跨进程 RPC/Feign 异常解包并透传远端 traceId 至 BusinessException
+     *
+     * @param orderNo       订单编号
+     * @param remoteTraceId 下游响应携带的远端 traceId
+     * @return 解包还原后的异常追踪信息视图
+     */
+    public RemoteTraceUnpackVO unpackRemoteFailureWithTraceId(String orderNo, String remoteTraceId) {
+        Result<Void> remoteResult = Result.<Void>fail(4001, "下游库存扣减服务异常: " + orderNo)
+                .traceId(remoteTraceId);
+        try {
+            remoteResult.getOrThrow();
+            throw new IllegalStateException("预期应由 Result.getOrThrow() 抛出 BusinessException");
+        } catch (BusinessException ex) {
+            log.info("跨进程异常解包透传 traceId: code={}, msg={}, traceId={}",
+                    ex.getCode(), ex.getMsg(), ex.getTraceId());
+            return RemoteTraceUnpackVO.builder()
+                    .orderNo(orderNo)
+                    .code(ex.getCode())
+                    .msg(ex.getMsg())
+                    .propagatedTraceId(ex.getTraceId())
+                    .build();
+        }
+    }
+
+    /**
      * 5. 验证 Result<T> 强类型契约、函数式变换与安全取值
      *
      * @param payload 载荷内容
@@ -184,7 +234,7 @@ public class CoreResilienceScenarioService {
         long queryCurrent = query.getCurrent();
         long querySize = query.getSize();
 
-        List<String> list = List.of("Item-1", "Item-2");
+        List<String> list = List.of("ORD-20261107-001", "ORD-20261107-002");
         PageResult<String> pageResult = PageResult.of(list, 100L, queryCurrent, querySize);
 
         log.info("PageQuery 与 PageResult: current={}, size={}, sorts={}, totalPages={}",
@@ -286,7 +336,7 @@ public class CoreResilienceScenarioService {
      * @return 分页结果实例
      */
     public PageResult<String> demonstratePageResultNavigation() {
-        PageResult<String> pageResult = PageResult.of(List.of("Data-A", "Data-B"), 100L, 2L, 10L);
+        PageResult<String> pageResult = PageResult.of(List.of("ORD-20261107-001", "ORD-20261107-002"), 100L, 2L, 10L);
         log.info("PageResult 导航属性: hasPrevious={}, hasNext={}, isEmpty={}",
                 pageResult.hasPrevious(), pageResult.hasNext(), pageResult.isEmpty());
         return pageResult;
@@ -378,5 +428,176 @@ public class CoreResilienceScenarioService {
         long datacenterId = instance.getDatacenterId();
         log.info("Spring 容器受管 Snowflake: id={}, workerId={}, datacenterId={}", id, workerId, datacenterId);
         return Triple.of(id, workerId, datacenterId);
+    }
+
+    /**
+     * 16. 执行订单结算前置业务语义断言与双模异常堆栈分析
+     *
+     * @param request 订单校验请求
+     * @return 订单校验结果视图模型
+     */
+    public OrderCheckVO checkOrderCheckout(OrderCheckRequest request) {
+        BusinessAssert.notNull(request, "订单校验请求参数不能为空");
+        BusinessAssert.hasText(request.getOrderNo(), "订单编号不能为空");
+        BusinessAssert.notNull(request.getAmount(), "订单金额不能为空");
+        BusinessAssert.gt(request.getAmount(), java.math.BigDecimal.ZERO, "订单金额必须大于0");
+
+        // 1. 双模堆栈治理自验
+        BusinessException lightweightEx = new BusinessException(CommonResultCode.BAD_REQUEST);
+        int lightweightLen = lightweightEx.getStackTrace().length;
+
+        int causalLen;
+        if (Boolean.TRUE.equals(request.getSimulateDriverFailure())) {
+            BusinessException causalEx = new BusinessException(
+                    CommonResultCode.INTERNAL_SERVER_ERROR,
+                    "外部支付网关通信超时",
+                    new java.io.IOException("Socket read timeout")
+            );
+            causalLen = causalEx.getStackTrace().length;
+        } else {
+            causalLen = 0;
+        }
+
+        // 2. 状态码号段归属分析（演示 1000~1999 核心底座系统号段 SYSTEM_CORE）
+        ResultCodeSegment segment = ResultCodeUtil.getSegment(SampleBusinessResultCode.USER_NOT_FOUND);
+        String segmentName = segment != null ? segment.name() : "UNKNOWN";
+
+        return OrderCheckVO.builder()
+                .orderNo(request.getOrderNo())
+                .checkStatus("CHECKED_PASSED")
+                .amount(request.getAmount())
+                .lightweightStackLength(lightweightLen)
+                .causalStackLength(causalLen)
+                .resultCodeSegment(segmentName)
+                .build();
+    }
+
+    /**
+     * 17. 查询订单分页摘要列表
+     *
+     * @param query 分页入参
+     * @return 强类型订单分页结果
+     */
+    public PageResult<OrderSummaryVO> queryOrderPage(PageQuery query) {
+        long current = (query != null) ? query.safeCurrent() : 1L;
+        long size = (query != null) ? query.safeSize() : 10L;
+        long offset = (query != null) ? query.offset() : 0L;
+        log.info("执行订单分页查询: offset={}, safeCurrent={}, safeSize={}", offset, current, size);
+
+        List<OrderSummaryVO> orders = List.of(
+                OrderSummaryVO.builder()
+                        .orderNo("ORD-20261107-1001")
+                        .productName("Spring Boot 3 企业级架构实战指南")
+                        .amount(new java.math.BigDecimal("129.00"))
+                        .statusDesc("已支付")
+                        .orderTime(LocalDateTime.of(2026, 11, 7, 10, 30, 0))
+                        .build(),
+                OrderSummaryVO.builder()
+                        .orderNo("ORD-20261107-1002")
+                        .productName("分布式微服务高可用中间件核心套件")
+                        .amount(new java.math.BigDecimal("299.00"))
+                        .statusDesc("待发货")
+                        .orderTime(LocalDateTime.of(2026, 11, 7, 11, 15, 0))
+                        .build()
+        );
+
+        return PageResult.of(orders, 100L, current, size);
+    }
+
+    /**
+     * 18. 跨境汇率网关弹性查询（支持指数退避、Equal Jitter 抖动、onRetry 监控与 Fallback 降级）
+     *
+     * @param request 汇率查询请求
+     * @return 汇率响应视图对象
+     */
+    public ExchangeRateVO queryExchangeRateWithRetry(ExchangeRateRequest request) {
+        String pair = request.getFromCurrency().toUpperCase() + "/" + request.getToCurrency().toUpperCase();
+        AtomicInteger attemptCounter = new AtomicInteger(0);
+        List<String> retryLogs = new CopyOnWriteArrayList<>();
+
+        RetryUtil.RetryConfig config = RetryUtil.RetryConfig.builder()
+                .maxAttempts(3)
+                .delay(Duration.ofMillis(30))
+                .multiplier(1.5)
+                .maxDelay(Duration.ofMillis(150))
+                .jitter(true)
+                .retryPredicate(ex -> ex instanceof java.io.IOException || ex instanceof IllegalStateException)
+                .onRetry((attempt, ex) -> {
+                    String logMsg = String.format("汇率网关重试 [attempt=%d, reason=%s]", attempt, ex.getMessage());
+                    log.warn(logMsg);
+                    retryLogs.add(logMsg);
+                })
+                .build();
+
+        return RetryUtil.execute(() -> {
+            int currentAttempt = attemptCounter.incrementAndGet();
+            if (currentAttempt <= request.getSimulateFailures()) {
+                log.info("模拟跨境汇率网关临时网络超时: attempt={}, pair={}", currentAttempt, pair);
+                throw new IllegalStateException("跨境汇率网关网络通信波动超时: attempt=" + currentAttempt);
+            }
+
+            BigDecimal rate = LIVE_RATES.getOrDefault(pair, new BigDecimal("7.1500"));
+            return ExchangeRateVO.builder()
+                    .currencyPair(pair)
+                    .rate(rate)
+                    .attempts(currentAttempt)
+                    .fallbackTriggered(false)
+                    .source("LIVE_GATEWAY")
+                    .retryLogs(new ArrayList<>(retryLogs))
+                    .build();
+        }, config, ex -> {
+            log.warn("跨境汇率网关多次重试耗尽，平滑触发本地 Fallback 保底缓存汇率: {}", ex.getMessage());
+            return ExchangeRateVO.builder()
+                    .currencyPair(pair)
+                    .rate(FALLBACK_DEFAULT_RATE)
+                    .attempts(attemptCounter.get())
+                    .fallbackTriggered(true)
+                    .source("FALLBACK_CACHE")
+                    .retryLogs(new ArrayList<>(retryLogs))
+                    .build();
+        });
+    }
+
+    /**
+     * 19. 接口防刷与流量整形（滑动窗口计数 + 令牌桶限流 + 幂等防重拦截）
+     *
+     * @param request 防刷请求参数
+     * @return 流量整形与防重响应视图对象
+     */
+    public RateLimitVO executeRateLimitCheck(RateLimitRequest request) {
+        // 1. 幂等防重检测
+        if (request.isTriggerIdempotentCheck()) {
+            Long previous = idempotentTokens.putIfAbsent(request.getReqToken(), System.currentTimeMillis());
+            if (previous != null) {
+                log.warn("检测到重复提交请求，触发幂等防重拦截: token={}", request.getReqToken());
+                throw new IdempotentException("短时间内重复提交请求，被防重幂等拦截: " + request.getReqToken());
+            }
+        }
+
+        // 2. 进程内滑动窗口防刷计数与放行判定 (1 秒窗口 5 切片，阈值 10)
+        long currentWindowCount = sharedSlidingWindow.incrementAndGet();
+        boolean slidingWindowAllowed = sharedSlidingWindow.tryAcquire(1, 10);
+
+        // 3. 纯无锁 CAS 令牌桶流量整形 (容量 10，每秒 5 令牌)
+        boolean tokenBucketAcquired = sharedTokenBucket.tryAcquire();
+        double availableTokens = sharedTokenBucket.getAvailableTokens();
+
+        return RateLimitVO.builder()
+                .clientId(request.getClientId())
+                .slidingWindowCount(currentWindowCount)
+                .slidingWindowAllowed(slidingWindowAllowed)
+                .tokenBucketAcquired(tokenBucketAcquired)
+                .availableTokens(availableTokens)
+                .idempotentPassed(true)
+                .build();
+    }
+
+    /**
+     * 清理幂等 Token 缓存与计数状态（用于测试现场清理）
+     */
+    public void resetResilienceState() {
+        idempotentTokens.clear();
+        sharedSlidingWindow.reset();
+        sharedTokenBucket.reset();
     }
 }

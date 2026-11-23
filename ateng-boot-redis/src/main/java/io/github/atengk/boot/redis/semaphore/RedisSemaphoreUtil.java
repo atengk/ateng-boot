@@ -116,6 +116,48 @@ public final class RedisSemaphoreUtil {
     }
 
     /**
+     * 尝试获取指定数量的信号量许可证（支持超时等待）
+     */
+    public static boolean tryAcquire(String name, int permits, Duration waitTimeout) {
+        return getTemplate().tryAcquire(name, permits, waitTimeout);
+    }
+
+    /**
+     * 非阻塞尝试获取指定数量的信号量许可证
+     */
+    public static boolean tryAcquire(String name, int permits) {
+        return getTemplate().tryAcquire(name, permits);
+    }
+
+    /**
+     * 尝试获取单枚信号量许可证（支持超时等待）
+     */
+    public static boolean tryAcquire(String name, Duration waitTimeout) {
+        return getTemplate().tryAcquire(name, waitTimeout);
+    }
+
+    /**
+     * 非阻塞尝试获取单枚信号量许可证
+     */
+    public static boolean tryAcquire(String name) {
+        return getTemplate().tryAcquire(name);
+    }
+
+    /**
+     * 释放指定数量的信号量许可证
+     */
+    public static void release(String name, int permits) {
+        getTemplate().release(name, permits);
+    }
+
+    /**
+     * 释放单枚信号量许可证
+     */
+    public static void release(String name) {
+        getTemplate().release(name);
+    }
+
+    /**
      * 原子尝试初始化信号量许可证配额（仅在未设置时生效）
      */
     public static boolean trySetPermits(String name, int totalPermits) {

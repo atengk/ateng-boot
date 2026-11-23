@@ -4,9 +4,14 @@ server:
 spring:
   application:
     name: ateng-boot-sample-admin
+  config:
+    import: "optional:classpath:application-local.yml"
   boot:
     admin:
       context-path: /admin
+      client:
+        # 默认关闭客户端自动注册，避免影响独立单元测试；真实端到端测试按需激活
+        enabled: false
 
 ateng:
   boot:
@@ -19,6 +24,18 @@ ateng:
         default-actuator-token: DEFAULT_ACTUATOR_TOKEN_DEMO
         debounce-duration: 30s
         allow-local-instances: true
+        enable-write-operations: true
+        max-registration-payload-size: 1MB
+        cleanup:
+          enabled: true
+          interval: 1h
+          zombie-threshold: 24h
+        alert:
+          excluded-services:
+            - "silent-*"
+          notify-statuses:
+            - "DOWN"
+            - "OFFLINE"
     observability:
       security:
         token: CLIENT_ACTUATOR_TOKEN_DEMO

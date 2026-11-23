@@ -1,5 +1,6 @@
 package io.github.atengk.boot.mail.template;
 
+import io.github.atengk.boot.mail.model.BatchMailSendResult;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailSendResult;
@@ -7,10 +8,12 @@ import io.github.atengk.boot.mail.model.MailSendResult;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * 编程式动态账号发信会话操作门面
@@ -42,6 +45,24 @@ public class DynamicMailSession {
     }
 
     /**
+     * 探测当前动态会话绑定的发信账号物理连通性（快速布尔型探测）
+     *
+     * @return 连通成功返回 true，失败返回 false
+     */
+    public boolean testConnection() {
+        return template.testConnection(account);
+    }
+
+    /**
+     * 探测当前动态会话绑定的发信账号物理连通性（异常型探测，失败抛出语义化业务异常并保留因果链）
+     *
+     * @throws io.github.atengk.boot.mail.exception.MailSendException 连通失败或认证异常时抛出
+     */
+    public void testConnectionOrThrow() {
+        template.testConnectionOrThrow(account);
+    }
+
+    /**
      * 基于强类型邮件消息模型发送邮件
      *
      * @param message 邮件消息模型
@@ -59,10 +80,7 @@ public class DynamicMailSession {
      * @return 发送结果回执
      */
     public MailSendResult send(Consumer<MailMessage> messageConfigurer) {
-        Objects.requireNonNull(messageConfigurer, "messageConfigurer must not be null");
-        MailMessage message = new MailMessage();
-        messageConfigurer.accept(message);
-        return send(message);
+        return withConfiguredMessage(messageConfigurer, this::send);
     }
 
     /**
@@ -131,7 +149,11 @@ public class DynamicMailSession {
      * @return 发送结果回执
      */
     public MailSendResult sendTemplate(String to, String subject, String templateName, Map<String, Object> model) {
-        return sendTemplate(to != null ? List.of(to) : List.of(), subject, templateName, model);
+        return sendTemplate(to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public MailSendResult sendTemplate(String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        return sendTemplate(to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     /**
@@ -144,7 +166,11 @@ public class DynamicMailSession {
      * @return 发送结果回执
      */
     public MailSendResult sendTemplate(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        String renderedHtml = template.getTemplateRenderer().render(templateName, model);
+        return sendTemplate(to, subject, templateName, model, null);
+    }
+
+    public MailSendResult sendTemplate(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        String renderedHtml = template.renderTemplate(templateName, model, locale);
         return sendHtml(to, subject, renderedHtml);
     }
 
@@ -173,9 +199,7 @@ public class DynamicMailSession {
         if (messageConfigurer == null) {
             throw new IllegalArgumentException("messageConfigurer must not be null");
         }
-        MailMessage message = new MailMessage();
-        messageConfigurer.accept(message);
-        return sendAsync(message);
+        return withConfiguredMessage(messageConfigurer, this::sendAsync);
     }
 
     /**
@@ -244,7 +268,11 @@ public class DynamicMailSession {
      * @return 包含发送结果回执的异步 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendTemplateAsync(String to, String subject, String templateName, Map<String, Object> model) {
-        return sendTemplateAsync(to != null ? List.of(to) : List.of(), subject, templateName, model);
+        return sendTemplateAsync(to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public CompletableFuture<MailSendResult> sendTemplateAsync(String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        return sendTemplateAsync(to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     /**
@@ -257,7 +285,11 @@ public class DynamicMailSession {
      * @return 包含发送结果回执的异步 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendTemplateAsync(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        String renderedHtml = template.getTemplateRenderer().render(templateName, model);
+        return sendTemplateAsync(to, subject, templateName, model, null);
+    }
+
+    public CompletableFuture<MailSendResult> sendTemplateAsync(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        String renderedHtml = template.renderTemplate(templateName, model, locale);
         return sendHtmlAsync(to, subject, renderedHtml);
     }
 
@@ -284,9 +316,10 @@ public class DynamicMailSession {
         if (messageConfigurer == null) {
             throw new IllegalArgumentException("messageConfigurer must not be null");
         }
-        MailMessage message = new MailMessage();
-        messageConfigurer.accept(message);
-        sendAfterCommit(message);
+        withConfiguredMessage(messageConfigurer, msg -> {
+            sendAfterCommit(msg);
+            return null;
+        });
     }
 
     /**
@@ -310,9 +343,14 @@ public class DynamicMailSession {
         if (messageConfigurer == null) {
             throw new IllegalArgumentException("messageConfigurer must not be null");
         }
-        MailMessage message = new MailMessage();
-        messageConfigurer.accept(message);
-        sendAsyncAfterCommit(message);
+        withConfiguredMessage(messageConfigurer, msg -> {
+            sendAsyncAfterCommit(msg);
+            return null;
+        });
+    }
+
+    private <T> T withConfiguredMessage(Consumer<MailMessage> messageConfigurer, Function<MailMessage, T> action) {
+        return MailTemplate.executeWithConfiguredMessage(messageConfigurer, action);
     }
 
     public void sendTextAfterCommit(String to, String subject, String text) {
@@ -340,11 +378,19 @@ public class DynamicMailSession {
     }
 
     public void sendTemplateAfterCommit(String to, String subject, String templateName, Map<String, Object> model) {
-        sendTemplateAfterCommit(to != null ? List.of(to) : List.of(), subject, templateName, model);
+        sendTemplateAfterCommit(to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public void sendTemplateAfterCommit(String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        sendTemplateAfterCommit(to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     public void sendTemplateAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        String renderedHtml = template.getTemplateRenderer().render(templateName, model);
+        sendTemplateAfterCommit(to, subject, templateName, model, null);
+    }
+
+    public void sendTemplateAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        String renderedHtml = template.renderTemplate(templateName, model, locale);
         sendHtmlAfterCommit(to, subject, renderedHtml);
     }
 
@@ -373,11 +419,59 @@ public class DynamicMailSession {
     }
 
     public void sendTemplateAsyncAfterCommit(String to, String subject, String templateName, Map<String, Object> model) {
-        sendTemplateAsyncAfterCommit(to != null ? List.of(to) : List.of(), subject, templateName, model);
+        sendTemplateAsyncAfterCommit(to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public void sendTemplateAsyncAfterCommit(String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        sendTemplateAsyncAfterCommit(to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     public void sendTemplateAsyncAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        String renderedHtml = template.getTemplateRenderer().render(templateName, model);
+        sendTemplateAsyncAfterCommit(to, subject, templateName, model, null);
+    }
+
+    public void sendTemplateAsyncAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        String renderedHtml = template.renderTemplate(templateName, model, locale);
         sendHtmlAsyncAfterCommit(to, subject, renderedHtml);
+    }
+
+    // ==================== 动态会话批量个性化发信对称门面 ====================
+
+    /**
+     * 基于当前会话绑定账号批量个性化发送邮件（强制使用当前动态账号路由，支持 BatchSliceUtil 分片与片内 Transport 复用）
+     *
+     * @param messages 邮件消息列表
+     * @return 批量发信聚合回执
+     */
+    public BatchMailSendResult sendBatch(List<MailMessage> messages) {
+        return template.sendBatchWithAccount(account, messages);
+    }
+
+    /**
+     * 基于当前会话绑定账号异步批量个性化发送邮件
+     *
+     * @param messages 邮件消息列表
+     * @return 包含批量发信聚合回执的 CompletableFuture
+     */
+    public CompletableFuture<BatchMailSendResult> sendBatchAsync(List<MailMessage> messages) {
+        return template.sendBatchAsyncWithAccount(account, messages);
+    }
+
+    /**
+     * 基于当前会话绑定账号在本地事务提交后批量个性化发送邮件（回滚时自动取消并关闭流句柄）
+     *
+     * @param messages 邮件消息列表
+     */
+    public void sendBatchAfterCommit(List<MailMessage> messages) {
+        template.sendBatchAfterCommitWithAccount(account, messages);
+    }
+
+    /**
+     * 基于当前会话绑定账号在本地事务提交后异步批量个性化发送邮件（回滚时自动取消并关闭流句柄）
+     *
+     * @param messages 邮件消息列表
+     */
+    public void sendBatchAsyncAfterCommit(List<MailMessage> messages) {
+        template.sendBatchAsyncAfterCommitWithAccount(account, messages);
     }
 }

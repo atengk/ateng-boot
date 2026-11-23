@@ -1,5 +1,7 @@
 package io.github.atengk.boot.realtime.template;
 
+import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.util.TransactionUtil;
 import io.github.atengk.boot.realtime.cluster.RealtimeClusterBroadcaster;
 import io.github.atengk.boot.realtime.cluster.RealtimeClusterMetricsProvider;
 import io.github.atengk.boot.realtime.cluster.RealtimeClusterPacket;
@@ -97,13 +99,17 @@ public class RealtimeTemplate {
         if (packet == null || packet.getBroadcastType() == null) {
             return;
         }
+        Set<String> excludeKeys = packet.getExcludeSessionKeys();
         switch (packet.getBroadcastType()) {
             case USER -> {
                 String targetUserId = packet.getTargetKey();
                 if (targetUserId != null) {
                     List<RealtimeSession> sessions = sessionManager.getSessionsByUser(targetUserId);
                     Long tenantId = packet.getTenantId();
-                    sendToSessions(sessions, s -> tenantId == null || Objects.equals(tenantId, s.getTenantId()), packet.getMessage());
+                    Predicate<RealtimeSession> tenantPredicate = tenantId == null
+                            ? null
+                            : s -> Objects.equals(tenantId, s.getTenantId());
+                    sendToSessions(sessions, buildExcludePredicate(tenantPredicate, excludeKeys), packet.getMessage());
                 }
             }
             case GROUP -> {
@@ -117,7 +123,7 @@ public class RealtimeTemplate {
                             sessions.add(session);
                         }
                     }
-                    sendToSessions(sessions, null, packet.getMessage());
+                    sendToSessions(sessions, buildExcludePredicate(null, excludeKeys), packet.getMessage());
                 }
             }
             case TENANT -> {
@@ -126,7 +132,7 @@ public class RealtimeTemplate {
                     try {
                         Long tenantId = Long.valueOf(tenantKey);
                         List<RealtimeSession> sessions = sessionManager.getSessionsByTenant(tenantId);
-                        sendToSessions(sessions, null, packet.getMessage());
+                        sendToSessions(sessions, buildExcludePredicate(null, excludeKeys), packet.getMessage());
                     } catch (NumberFormatException e) {
                         log.warn("[Realtime-Cluster] 远端广播租户 ID 格式非法，忽略投递: tenantKey={}, error={}",
                                 tenantKey, e.getMessage());
@@ -135,7 +141,7 @@ public class RealtimeTemplate {
             }
             case ALL -> {
                 List<RealtimeSession> sessions = sessionManager.getAllSessions();
-                sendToSessions(sessions, null, packet.getMessage());
+                sendToSessions(sessions, buildExcludePredicate(null, excludeKeys), packet.getMessage());
             }
             case KICKOUT -> {
                 String targetUserId = packet.getTargetKey();
@@ -146,6 +152,29 @@ public class RealtimeTemplate {
                             : RealtimeCloseStatus.USER_KICKED_OUT;
                     for (RealtimeSession s : sessions) {
                         sessionManager.removeAndClose(s.getSessionKey(), closeStatus);
+                    }
+                }
+            }
+            case DISMISS_GROUP -> {
+                String groupId = packet.getTargetKey();
+                if (groupId != null) {
+                    dismissGroupLocally(groupId);
+                }
+            }
+            case KICKOUT_TENANT -> {
+                String tenantKey = packet.getTargetKey();
+                if (tenantKey != null) {
+                    try {
+                        Long tenantId = Long.valueOf(tenantKey);
+                        List<RealtimeSession> sessions = sessionManager.getSessionsByTenant(tenantId);
+                        CloseStatus closeStatus = packet.getCloseStatusCode() != null
+                                ? new CloseStatus(packet.getCloseStatusCode(), packet.getReason())
+                                : RealtimeCloseStatus.USER_KICKED_OUT;
+                        for (RealtimeSession s : sessions) {
+                            sessionManager.removeAndClose(s.getSessionKey(), closeStatus);
+                        }
+                    } catch (NumberFormatException e) {
+                        log.warn("[Realtime-Cluster] 远端广播租户踢人 ID 格式非法，忽略处理: tenantKey={}", tenantKey);
                     }
                 }
             }
@@ -186,6 +215,32 @@ public class RealtimeTemplate {
     }
 
     /**
+     * 向指定物理会话下发原生二进制数据帧（仅 WebSocket 通道支持）
+     *
+     * @param sessionKey 会话坐标
+     * @param payload    二进制字节数组载荷
+     * @return 是否成功投递
+     */
+    public boolean sendBinary(SessionKey sessionKey, byte[] payload) {
+        if (sessionKey == null || payload == null) {
+            return false;
+        }
+        RealtimeSession session = sessionManager.getSession(sessionKey);
+        if (session == null || !session.isOpen()) {
+            return false;
+        }
+        try {
+            session.sendBinary(payload);
+            return true;
+        } catch (IOException | UnsupportedOperationException e) {
+            log.warn("[Realtime] 发送二进制帧发生异常，执行安全排空: sessionKey={}, error={}",
+                    sessionKey, e.getMessage());
+            sessionManager.removeAndClose(sessionKey, CloseStatus.SERVER_ERROR);
+            return false;
+        }
+    }
+
+    /**
      * 向指定用户的所有在线设备/通道会话广播下发消息
      *
      * @param userId  用户标识
@@ -205,19 +260,79 @@ public class RealtimeTemplate {
      * @return 成功投递的会话数量
      */
     public int sendToUser(Object userId, Long tenantId, RealtimeMessage<?> message) {
+        return sendToUserInternal(userId, tenantId, message, null);
+    }
+
+    /**
+     * 向指定用户的其余在线会话广播消息（排除指定发送方会话）
+     *
+     * @param userId             用户标识
+     * @param message            实时业务消息
+     * @param excludeSessionKeys 需要排除的会话坐标
+     * @return 成功投递的会话数量
+     */
+    public int sendToUserExcept(Object userId, RealtimeMessage<?> message, SessionKey... excludeSessionKeys) {
+        return sendToUserInternal(userId, null, message, toSessionKeySet(excludeSessionKeys));
+    }
+
+    /**
+     * 向指定用户的其余在线会话广播消息（排除指定会话集合）
+     *
+     * @param userId             用户标识
+     * @param message            实时业务消息
+     * @param excludeSessionKeys 需要排除的会话坐标集合
+     * @return 成功投递的会话数量
+     */
+    public int sendToUserExcept(Object userId, RealtimeMessage<?> message, Collection<SessionKey> excludeSessionKeys) {
+        return sendToUserInternal(userId, null, message, toSessionKeySet(excludeSessionKeys));
+    }
+
+    /**
+     * 向指定租户下指定用户的其余在线会话广播消息（排除指定会话）
+     *
+     * @param userId             用户标识
+     * @param tenantId           租户标识（可为空，为空时匹配用户全部租户会话）
+     * @param message            实时业务消息
+     * @param excludeSessionKeys 需要排除的会话坐标
+     * @return 成功投递的会话数量
+     */
+    public int sendToUserExcept(Object userId, Long tenantId, RealtimeMessage<?> message, SessionKey... excludeSessionKeys) {
+        return sendToUserInternal(userId, tenantId, message, toSessionKeySet(excludeSessionKeys));
+    }
+
+    /**
+     * 向指定租户下指定用户的其余在线会话广播消息（排除指定会话集合）
+     *
+     * @param userId             用户标识
+     * @param tenantId           租户标识（可为空，为空时匹配用户全部租户会话）
+     * @param message            实时业务消息
+     * @param excludeSessionKeys 需要排除的会话坐标集合
+     * @return 成功投递的会话数量
+     */
+    public int sendToUserExcept(Object userId, Long tenantId, RealtimeMessage<?> message, Collection<SessionKey> excludeSessionKeys) {
+        return sendToUserInternal(userId, tenantId, message, toSessionKeySet(excludeSessionKeys));
+    }
+
+    private int sendToUserInternal(Object userId, Long tenantId, RealtimeMessage<?> message, Set<SessionKey> excludeSet) {
         if (userId == null || message == null) {
             return 0;
         }
-        Predicate<RealtimeSession> predicate = (tenantId == null)
+        Set<String> excludeKeyStrings = toExcludeKeyStrings(excludeSet);
+        Predicate<RealtimeSession> tenantPredicate = (tenantId == null)
                 ? null
                 : s -> Objects.equals(tenantId, s.getTenantId());
-        int localCount = sendToSessions(sessionManager.getSessionsByUser(userId), predicate, message);
+        Predicate<RealtimeSession> finalPredicate = buildExcludePredicate(tenantPredicate, excludeKeyStrings);
+        List<RealtimeSession> userSessions = sessionManager.getSessionsByUser(userId);
+        int localCount = sendToSessions(userSessions, finalPredicate, message);
         boolean clusterEnabled = clusterBroadcaster.isClusterEnabled();
         if (clusterEnabled) {
-            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofUser(clusterBroadcaster.getNodeId(), userId, tenantId, message));
+            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofUser(
+                    clusterBroadcaster.getNodeId(), userId, tenantId, message, excludeSet));
         }
-        // 离线消息触发判定：仅当目标用户全网离线（本地且集群均无活跃连接）且消息标记持久化时触发 SPI 暂存
-        boolean isOnline = localCount > 0 || (clusterEnabled && clusterBroadcaster.isUserOnline(userId));
+        // 离线消息触发判定：排除发送端自身标签页时，仅当目标用户在对应租户作用域下仍持有本地活跃连接时视作在线
+        boolean hasActiveLocalSession = localCount > 0 || (!excludeKeyStrings.isEmpty()
+                && userSessions.stream().anyMatch(s -> s.isOpen() && (tenantId == null || Objects.equals(tenantId, s.getTenantId()))));
+        boolean isOnline = hasActiveLocalSession || (clusterEnabled && clusterBroadcaster.isUserOnline(userId));
         if (!isOnline && isOfflineSaveEligible(message)) {
             offlineMessageProvider.saveOfflineMessage(userId, message);
         }
@@ -304,6 +419,34 @@ public class RealtimeTemplate {
      * @return 成功投递的会话数量
      */
     public int sendToGroup(String groupId, RealtimeMessage<?> message) {
+        return sendToGroupInternal(groupId, message, null);
+    }
+
+    /**
+     * 向指定群组/房间成员广播消息并排除指定会话（典型用于聊天室不回显发送方自身）
+     *
+     * @param groupId            群组唯一标识
+     * @param message            实时业务消息
+     * @param excludeSessionKeys 需要排除的会话坐标
+     * @return 成功投递的会话数量
+     */
+    public int sendToGroupExcept(String groupId, RealtimeMessage<?> message, SessionKey... excludeSessionKeys) {
+        return sendToGroupInternal(groupId, message, toSessionKeySet(excludeSessionKeys));
+    }
+
+    /**
+     * 向指定群组/房间成员广播消息并排除指定会话集合
+     *
+     * @param groupId            群组唯一标识
+     * @param message            实时业务消息
+     * @param excludeSessionKeys 需要排除的会话坐标集合
+     * @return 成功投递的会话数量
+     */
+    public int sendToGroupExcept(String groupId, RealtimeMessage<?> message, Collection<SessionKey> excludeSessionKeys) {
+        return sendToGroupInternal(groupId, message, toSessionKeySet(excludeSessionKeys));
+    }
+
+    private int sendToGroupInternal(String groupId, RealtimeMessage<?> message, Set<SessionKey> excludeSet) {
         if (groupId == null || groupId.isBlank() || message == null) {
             return 0;
         }
@@ -315,9 +458,11 @@ public class RealtimeTemplate {
                 sessions.add(session);
             }
         }
-        int successCount = sendToSessions(sessions, null, message);
+        Predicate<RealtimeSession> predicate = buildExcludePredicate(null, toExcludeKeyStrings(excludeSet));
+        int successCount = sendToSessions(sessions, predicate, message);
         if (clusterBroadcaster.isClusterEnabled()) {
-            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofGroup(clusterBroadcaster.getNodeId(), groupId, message));
+            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofGroup(
+                    clusterBroadcaster.getNodeId(), groupId, message, excludeSet));
         }
         return successCount;
     }
@@ -405,6 +550,83 @@ public class RealtimeTemplate {
         return groupManager.getGroupMemberCount(groupId);
     }
 
+    /**
+     * 获取全集群指定群组的在线成员总数
+     * <p>
+     * 若处于集群协同模式，从分布式协调中心 (Redis) 汇总全域存活节点的在线成员总数；
+     * 若处于单机模式或未启用分布式群组，平滑回退为当前单机节点的在线成员数。
+     * </p>
+     *
+     * @param groupId 群组标识
+     * @return 全集群成员连接总数
+     */
+    public int getClusterGroupMemberCount(String groupId) {
+        return groupManager.getClusterGroupMemberCount(groupId);
+    }
+
+    /**
+     * 获取全集群指定群组名下的所有在线成员会话坐标
+     * <p>
+     * 若处于集群协同模式，从分布式协调中心 (Redis) 检索全域存活节点的名下成员坐标集合；
+     * 若处于单机模式或未启用分布式群组，平滑回退为当前单机节点的成员坐标集合。
+     * </p>
+     *
+     * @param groupId 群组标识
+     * @return 会话坐标集合（空安全防御，绝不返回 null）
+     */
+    public Set<SessionKey> getClusterGroupMembers(String groupId) {
+        return groupManager.getClusterGroupMembers(groupId);
+    }
+
+    /**
+     * 解散指定群组/房间，全集群广播通知并移出所有群组成员
+     *
+     * @param groupId 群组标识
+     * @return 本节点解散并通知的成员会话数量
+     */
+    public int dismissGroup(String groupId) {
+        if (groupId == null || groupId.isBlank()) {
+            return 0;
+        }
+        String cleanGroupId = groupId.trim();
+        // 1. 本地解散并通知本地成员
+        int localCount = dismissGroupLocally(cleanGroupId);
+        // 2. 若处于集群模式，广播 DISMISS_GROUP 信令
+        if (clusterBroadcaster.isClusterEnabled()) {
+            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofDismissGroup(clusterBroadcaster.getNodeId(), cleanGroupId));
+        }
+        log.info("[Realtime] 解散群组完成: groupId={}, localEjectedCount={}", cleanGroupId, localCount);
+        return localCount;
+    }
+
+    /**
+     * 本地执行群组解散并向本地名下成员推送 group_dismissed 事件
+     *
+     * @param groupId 群组标识
+     * @return 成功投递的本地会话数量
+     */
+    private int dismissGroupLocally(String groupId) {
+        if (groupId == null || groupId.isBlank()) {
+            return 0;
+        }
+        Set<SessionKey> members = groupManager.dismissGroup(groupId);
+        if (members == null || members.isEmpty()) {
+            return 0;
+        }
+        RealtimeMessage<Map<String, Object>> dismissMessage = RealtimeMessage.of(
+                RealtimeMessage.EVENT_GROUP_DISMISSED,
+                Map.of("groupId", groupId, "message", "Group has been dismissed")
+        );
+        List<RealtimeSession> sessions = new ArrayList<>(members.size());
+        for (SessionKey key : members) {
+            RealtimeSession session = sessionManager.getSession(key);
+            if (session != null) {
+                sessions.add(session);
+            }
+        }
+        return sendToSessions(sessions, null, dismissMessage);
+    }
+
     // ==================== 租户隔离广播与全服广播 (Tenant & Global Broadcast) ====================
 
     /**
@@ -432,14 +654,192 @@ public class RealtimeTemplate {
      * @return 成功投递的会话数量
      */
     public int sendToAll(RealtimeMessage<?> message) {
+        return sendToAllInternal(message, null);
+    }
+
+    /**
+     * 向全量活跃会话广播消息并排除指定会话
+     *
+     * @param message            实时业务消息
+     * @param excludeSessionKeys 需要排除的会话坐标
+     * @return 成功投递的会话数量
+     */
+    public int sendToAllExcept(RealtimeMessage<?> message, SessionKey... excludeSessionKeys) {
+        return sendToAllInternal(message, toSessionKeySet(excludeSessionKeys));
+    }
+
+    /**
+     * 向全量活跃会话广播消息并排除指定会话集合
+     *
+     * @param message            实时业务消息
+     * @param excludeSessionKeys 需要排除的会话坐标集合
+     * @return 成功投递的会话数量
+     */
+    public int sendToAllExcept(RealtimeMessage<?> message, Collection<SessionKey> excludeSessionKeys) {
+        return sendToAllInternal(message, toSessionKeySet(excludeSessionKeys));
+    }
+
+    private int sendToAllInternal(RealtimeMessage<?> message, Set<SessionKey> excludeSet) {
         if (message == null) {
             return 0;
         }
-        int localCount = sendToSessions(sessionManager.getAllSessions(), null, message);
+        Predicate<RealtimeSession> predicate = buildExcludePredicate(null, toExcludeKeyStrings(excludeSet));
+        int localCount = sendToSessions(sessionManager.getAllSessions(), predicate, message);
         if (clusterBroadcaster.isClusterEnabled()) {
-            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofAll(clusterBroadcaster.getNodeId(), message));
+            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofAll(
+                    clusterBroadcaster.getNodeId(), message, excludeSet));
         }
         return localCount;
+    }
+
+    // ==================== 事务提交后消息推送 (Transactional After-Commit Delivery) ====================
+
+    /**
+     * 在当前事务提交成功后向指定物理会话投递实时消息（无活跃事务时立即同步下发）
+     *
+     * @param sessionKey 会话坐标
+     * @param message    实时业务消息
+     */
+    public void sendToSessionAfterCommit(SessionKey sessionKey, RealtimeMessage<?> message) {
+        if (sessionKey == null || message == null) {
+            return;
+        }
+        executeAfterCommitWithContext(message, () -> sendToSession(sessionKey, message));
+    }
+
+    /**
+     * 在当前事务提交成功后向指定用户的指定客户端会话投递实时消息（无活跃事务时立即同步下发）
+     *
+     * @param userId   用户标识
+     * @param clientId 客户端标识
+     * @param message  实时业务消息
+     */
+    public void sendToSessionAfterCommit(Object userId, String clientId, RealtimeMessage<?> message) {
+        if (userId == null || clientId == null || message == null) {
+            return;
+        }
+        executeAfterCommitWithContext(message, () -> sendToSession(userId, clientId, message));
+    }
+
+    /**
+     * 在当前事务提交成功后向指定用户的所有在线会话广播消息（无活跃事务时立即同步下发）
+     *
+     * @param userId  用户标识
+     * @param message 实时业务消息
+     */
+    public void sendToUserAfterCommit(Object userId, RealtimeMessage<?> message) {
+        sendToUserAfterCommit(userId, null, message);
+    }
+
+    /**
+     * 在当前事务提交成功后向指定租户下指定用户的所有在线会话广播消息（无活跃事务时立即同步下发）
+     *
+     * @param userId   用户标识
+     * @param tenantId 租户标识（可为空，为空时匹配用户全部租户会话）
+     * @param message  实时业务消息
+     */
+    public void sendToUserAfterCommit(Object userId, Long tenantId, RealtimeMessage<?> message) {
+        if (userId == null || message == null) {
+            return;
+        }
+        executeAfterCommitWithContext(message, () -> sendToUser(userId, tenantId, message));
+    }
+
+    /**
+     * 在当前事务提交成功后向指定群组/房间的所有成员会话广播消息（无活跃事务时立即同步下发）
+     *
+     * @param groupId 群组唯一标识
+     * @param message 实时业务消息
+     */
+    public void sendToGroupAfterCommit(String groupId, RealtimeMessage<?> message) {
+        if (groupId == null || groupId.isBlank() || message == null) {
+            return;
+        }
+        executeAfterCommitWithContext(message, () -> sendToGroup(groupId, message));
+    }
+
+    /**
+     * 在当前事务提交成功后向指定多租户下的所有活跃会话广播消息（无活跃事务时立即同步下发）
+     *
+     * @param tenantId 租户标识
+     * @param message  实时业务消息
+     */
+    public void sendToTenantAfterCommit(Long tenantId, RealtimeMessage<?> message) {
+        if (tenantId == null || message == null) {
+            return;
+        }
+        executeAfterCommitWithContext(message, () -> sendToTenant(tenantId, message));
+    }
+
+    /**
+     * 在当前事务提交成功后向全量活跃会话广播消息（无活跃事务时立即同步下发）
+     *
+     * @param message 实时业务消息
+     */
+    public void sendToAllAfterCommit(RealtimeMessage<?> message) {
+        if (message == null) {
+            return;
+        }
+        executeAfterCommitWithContext(message, () -> sendToAll(message));
+    }
+
+    /**
+     * 预冻结消息上下文元数据并按事务同步状态路由执行时机
+     * 处于活跃事务时捕获调用线程四维上下文快照并在提交后执行与确定性清理；无事务时立即同步执行
+     */
+    private void executeAfterCommitWithContext(RealtimeMessage<?> message, Runnable sendAction) {
+        message.freezeContextMetadata();
+        if (TransactionUtil.isSynchronizationActive()) {
+            Runnable contextWrappedAction = AsyncContext.wrap(sendAction);
+            TransactionUtil.executeAfterCommit(contextWrappedAction);
+            return;
+        }
+        sendAction.run();
+    }
+
+    private Predicate<RealtimeSession> buildExcludePredicate(Predicate<RealtimeSession> basePredicate,
+                                                             Set<String> excludeKeyStrings) {
+        if (excludeKeyStrings == null || excludeKeyStrings.isEmpty()) {
+            return basePredicate;
+        }
+        Predicate<RealtimeSession> excludePredicate = session -> {
+            SessionKey key = session.getSessionKey();
+            return key == null || !excludeKeyStrings.contains(key.format());
+        };
+        return basePredicate == null ? excludePredicate : basePredicate.and(excludePredicate);
+    }
+
+    private Set<SessionKey> toSessionKeySet(SessionKey... excludeSessionKeys) {
+        if (excludeSessionKeys == null || excludeSessionKeys.length == 0) {
+            return Collections.emptySet();
+        }
+        return toSessionKeySet(Arrays.asList(excludeSessionKeys));
+    }
+
+    private Set<SessionKey> toSessionKeySet(Collection<SessionKey> excludeSessionKeys) {
+        if (excludeSessionKeys == null || excludeSessionKeys.isEmpty()) {
+            return Collections.emptySet();
+        }
+        Set<SessionKey> keys = new LinkedHashSet<>(excludeSessionKeys.size());
+        for (SessionKey key : excludeSessionKeys) {
+            if (key != null) {
+                keys.add(key);
+            }
+        }
+        return keys.isEmpty() ? Collections.emptySet() : keys;
+    }
+
+    private Set<String> toExcludeKeyStrings(Collection<SessionKey> excludeSessionKeys) {
+        if (excludeSessionKeys == null || excludeSessionKeys.isEmpty()) {
+            return Collections.emptySet();
+        }
+        Set<String> strings = new LinkedHashSet<>(excludeSessionKeys.size());
+        for (SessionKey key : excludeSessionKeys) {
+            if (key != null) {
+                strings.add(key.format());
+            }
+        }
+        return strings.isEmpty() ? Collections.emptySet() : strings;
     }
 
     // ==================== 主动会话驱逐与下线 (Kickout & Eviction) ====================
@@ -503,6 +903,43 @@ public class RealtimeTemplate {
      */
     public int kickoutUser(Object userId) {
         return kickoutUser(userId, RealtimeCloseStatus.USER_KICKED_OUT);
+    }
+
+    /**
+     * 主动驱逐指定多租户下的所有在线设备会话下线（携带自定义关闭状态码）
+     *
+     * @param tenantId 租户标识
+     * @param status   关闭状态原因
+     * @return 成功驱逐的会话数量
+     */
+    public int kickoutTenant(Long tenantId, CloseStatus status) {
+        if (tenantId == null) {
+            return 0;
+        }
+        List<RealtimeSession> sessions = sessionManager.getSessionsByTenant(tenantId);
+        int count = 0;
+        CloseStatus closeStatus = status != null ? status : RealtimeCloseStatus.USER_KICKED_OUT;
+        for (RealtimeSession s : sessions) {
+            if (sessionManager.removeAndClose(s.getSessionKey(), closeStatus) != null) {
+                count++;
+            }
+        }
+        if (clusterBroadcaster.isClusterEnabled()) {
+            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofKickoutTenant(
+                    clusterBroadcaster.getNodeId(), tenantId, closeStatus.getCode(), closeStatus.getReason()));
+        }
+        log.info("[Realtime] 主动驱逐租户全部会话下线: tenantId={}, localCount={}", tenantId, count);
+        return count;
+    }
+
+    /**
+     * 主动驱逐指定多租户下的所有在线设备会话下线（以默认 USER_KICKED_OUT 状态码）
+     *
+     * @param tenantId 租户标识
+     * @return 成功驱逐的会话数量
+     */
+    public int kickoutTenant(Long tenantId) {
+        return kickoutTenant(tenantId, RealtimeCloseStatus.USER_KICKED_OUT);
     }
 
     // ==================== 状态度量与会话查询 (Metrics & Status) ====================
@@ -569,6 +1006,29 @@ public class RealtimeTemplate {
      */
     public int getOnlineCountByChannel(ChannelType channelType) {
         return sessionManager.getOnlineCountByChannel(channelType);
+    }
+
+    /**
+     * 获取指定多租户维度的在线连接数
+     *
+     * @param tenantId 租户标识
+     * @return 租户在线连接数
+     */
+    public int getOnlineCountByTenant(Long tenantId) {
+        return sessionManager.getOnlineCountByTenant(tenantId);
+    }
+
+    /**
+     * 获取指定多租户维度的全量活跃会话列表
+     *
+     * @param tenantId 租户标识
+     * @return 会话不可变列表（保底返回空列表，绝不返回 null）
+     */
+    public List<RealtimeSession> getSessionsByTenant(Long tenantId) {
+        if (tenantId == null) {
+            return Collections.emptyList();
+        }
+        return sessionManager.getSessionsByTenant(tenantId);
     }
 
     /**
@@ -639,6 +1099,34 @@ public class RealtimeTemplate {
             return Collections.emptyList();
         }
         return offlineMessageProvider.getOfflineMessages(userId);
+    }
+
+    /**
+     * 根据起始时间戳（不含）只读获取指定用户的增量离线消息（支持 W3C SSE Last-Event-ID 断点重放与 CQS 幂等读取）
+     *
+     * @param userId        目标用户标识
+     * @param fromTimestamp 起始时间戳（毫秒）
+     * @return 增量离线消息列表
+     */
+    public List<RealtimeMessage<?>> getOfflineMessagesSince(Object userId, long fromTimestamp) {
+        if (userId == null) {
+            return Collections.emptyList();
+        }
+        return offlineMessageProvider.getOfflineMessagesSince(userId, fromTimestamp);
+    }
+
+    /**
+     * 根据客户端上报的 Last-Event-ID 只读获取指定用户的增量离线消息（支持 W3C SSE 断点重放与 CQS 幂等读取）
+     *
+     * @param userId      目标用户标识
+     * @param lastEventId 客户端上报的最后事件标识
+     * @return 增量离线消息列表
+     */
+    public List<RealtimeMessage<?>> getOfflineMessagesSince(Object userId, String lastEventId) {
+        if (userId == null) {
+            return Collections.emptyList();
+        }
+        return offlineMessageProvider.getOfflineMessagesSince(userId, lastEventId);
     }
 
     /**

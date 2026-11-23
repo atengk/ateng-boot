@@ -30,6 +30,7 @@ public final class RequestOptions {
             Map.of(),
             null,
             null,
+            null,
             null
     );
 
@@ -54,6 +55,11 @@ public final class RequestOptions {
     private final Duration readTimeout;
 
     /**
+     * 单次请求建联超时时间（覆盖全局 connectTimeout 配置）
+     */
+    private final Duration connectTimeout;
+
+    /**
      * 单次请求四维上下文出站透传控制开关（为 null 时依客户端或全局规则自适应判断）
      */
     private final Boolean propagateContext;
@@ -67,6 +73,7 @@ public final class RequestOptions {
                            MultiValueMap<String, String> queryParams,
                            Map<String, Object> uriVariables,
                            Duration readTimeout,
+                           Duration connectTimeout,
                            Boolean propagateContext,
                            String clientName) {
         this.headers = HttpHeaders.readOnlyHttpHeaders(headers != null ? headers : new HttpHeaders());
@@ -77,6 +84,7 @@ public final class RequestOptions {
                 ? Collections.unmodifiableMap(new LinkedHashMap<>(uriVariables))
                 : Collections.emptyMap();
         this.readTimeout = readTimeout;
+        this.connectTimeout = connectTimeout;
         this.propagateContext = propagateContext;
         this.clientName = clientName;
     }
@@ -121,6 +129,7 @@ public final class RequestOptions {
         private final MultiValueMap<String, String> queryParams = new LinkedMultiValueMap<>();
         private final Map<String, Object> uriVariables = new LinkedHashMap<>();
         private Duration readTimeout;
+        private Duration connectTimeout;
         private Boolean propagateContext;
         private String clientName;
 
@@ -260,14 +269,28 @@ public final class RequestOptions {
         /**
          * 设置单次请求的读取超时时间（覆盖全局 readTimeout）
          *
-         * @param readTimeout 读取超时时长
+         * @param readTimeout 读取超时时长（必须大于 0）
          * @return 当前构建器
          */
         public Builder readTimeout(Duration readTimeout) {
             if (readTimeout != null) {
-                Assert.isTrue(!readTimeout.isNegative(), "readTimeout 不能为负数");
+                Assert.isTrue(!readTimeout.isZero() && !readTimeout.isNegative(), "readTimeout 不能为负数或 0");
             }
             this.readTimeout = readTimeout;
+            return this;
+        }
+
+        /**
+         * 设置单次请求的建联超时时间（覆盖全局 connectTimeout）
+         *
+         * @param connectTimeout 建联超时时长（必须大于 0）
+         * @return 当前构建器
+         */
+        public Builder connectTimeout(Duration connectTimeout) {
+            if (connectTimeout != null) {
+                Assert.isTrue(!connectTimeout.isZero() && !connectTimeout.isNegative(), "connectTimeout 不能为负数或 0");
+            }
+            this.connectTimeout = connectTimeout;
             return this;
         }
 
@@ -300,7 +323,7 @@ public final class RequestOptions {
          * @return 不可变 RequestOptions 实例
          */
         public RequestOptions build() {
-            return new RequestOptions(headers, queryParams, uriVariables, readTimeout, propagateContext, clientName);
+            return new RequestOptions(headers, queryParams, uriVariables, readTimeout, connectTimeout, propagateContext, clientName);
         }
     }
 }

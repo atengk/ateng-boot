@@ -4,10 +4,13 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 类型转换门面 ConvertUtil 单测
@@ -101,5 +104,52 @@ class ConvertUtilTest {
         List<Object> allItems = ConvertUtil.toList(mixed);
         assertThat(allItems).containsExactly("str", 123, "another-str");
         assertThat(ConvertUtil.toList(null)).isEmpty();
+
+        // Iterable 与 Iterator 扩展支持
+        Iterable<String> iterable = () -> List.of("i1", "i2").iterator();
+        assertThat(ConvertUtil.toList(iterable, String.class)).containsExactly("i1", "i2");
+        Iterator<String> iterator = List.of("it1", "it2").iterator();
+        assertThat(ConvertUtil.toList(iterator, String.class)).containsExactly("it1", "it2");
+    }
+
+    @Test
+    @DisplayName("集合安全去重转换 toSet 校验（保序、空白兜底不可变空集、Iterable/Iterator/数组）")
+    void shouldConvertToSetSafely() {
+        // null、空白字符及空集合兜底不可变空 Set
+        Set<Object> fromNull = ConvertUtil.toSet(null);
+        assertThat(fromNull).isEmpty();
+        assertThatThrownBy(() -> fromNull.add("x")).isInstanceOf(UnsupportedOperationException.class);
+
+        Set<String> fromEmpty = ConvertUtil.toSet("", String.class);
+        assertThat(fromEmpty).isEmpty();
+        assertThatThrownBy(() -> fromEmpty.add("x")).isInstanceOf(UnsupportedOperationException.class);
+
+        Set<String> fromBlank = ConvertUtil.toSet("   ", String.class);
+        assertThat(fromBlank).isEmpty();
+        assertThatThrownBy(() -> fromBlank.add("x")).isInstanceOf(UnsupportedOperationException.class);
+
+        // 异构过滤后为空也返回不可变空集
+        Set<Integer> filteredEmpty = ConvertUtil.toSet(List.of("only-str"), Integer.class);
+        assertThat(filteredEmpty).isEmpty();
+        assertThatThrownBy(() -> filteredEmpty.add(1)).isInstanceOf(UnsupportedOperationException.class);
+
+        // 保序去重（LinkedHashSet）
+        List<Object> mixed = List.of("str", 123, "str", "another-str", 123);
+        Set<String> stringSet = ConvertUtil.toSet(mixed, String.class);
+        assertThat(stringSet).isInstanceOf(LinkedHashSet.class);
+        assertThat(stringSet).containsExactly("str", "another-str");
+
+        Set<Object> allSet = ConvertUtil.toSet(mixed);
+        assertThat(allSet).isInstanceOf(LinkedHashSet.class);
+        assertThat(allSet).containsExactly("str", 123, "another-str");
+
+        // 数组、自定义 Iterable、Iterator 与单值包装
+        assertThat(ConvertUtil.toSet(new String[]{"k1", "k2", "k1"}, String.class))
+                .containsExactly("k1", "k2");
+        Iterable<String> customIterable = () -> List.of("a", "b", "a").iterator();
+        assertThat(ConvertUtil.toSet(customIterable, String.class)).containsExactly("a", "b");
+        Iterator<String> iterator = List.of("x", "y", "x").iterator();
+        assertThat(ConvertUtil.toSet(iterator, String.class)).containsExactly("x", "y");
+        assertThat(ConvertUtil.toSet("single", String.class)).containsExactly("single");
     }
 }

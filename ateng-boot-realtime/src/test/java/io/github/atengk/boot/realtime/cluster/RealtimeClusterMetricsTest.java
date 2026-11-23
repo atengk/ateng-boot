@@ -10,13 +10,19 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.redisson.api.RKeys;
 import org.redisson.api.RMap;
+import org.redisson.api.RSet;
 import org.redisson.api.RedissonClient;
 import org.redisson.client.codec.StringCodec;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.WebSocketSession;
 
+import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -83,7 +89,7 @@ class RealtimeClusterMetricsTest {
         assertThat(reporter.getPhase()).isEqualTo(Integer.MAX_VALUE - 1200);
 
         // 模拟 Redis Hash 中存在 3 个节点的上报数据 (NodeA=10, NodeB=25, NodeC=5)
-        when(mockNodeMap.readAllValues()).thenReturn(List.of("10", "25", "5"));
+        when(mockNodeMap.readAllMap()).thenReturn(Map.of("node-a", "10", "node-b", "25", "node-c", "5"));
 
         int totalCluster = reporter.getClusterOnlineCount();
         assertThat(totalCluster).isEqualTo(40);
@@ -101,12 +107,12 @@ class RealtimeClusterMetricsTest {
         when(mockWs.isOpen()).thenReturn(true);
         sessionManager.registerSession(RealtimeSession.ofWebSocket(SessionKey.of("user-2", "c2"), mockWs));
 
-        // 1. Redis 返回空集合 -> 保底返回本地连接数 1
-        when(mockNodeMap.readAllValues()).thenReturn(List.of());
+        // 1. Redis 返回空映射 -> 保底返回本地连接数 1
+        when(mockNodeMap.readAllMap()).thenReturn(Map.of());
         assertThat(reporter.getClusterOnlineCount()).isEqualTo(1);
 
         // 2. Redis 抛出异常 -> 降级捕获并不崩溃，保底返回本地连接数 1
-        when(mockNodeMap.readAllValues()).thenThrow(new RuntimeException("Redis connection timed out"));
+        when(mockNodeMap.readAllMap()).thenThrow(new RuntimeException("Redis connection timed out"));
         assertThat(reporter.getClusterOnlineCount()).isEqualTo(1);
     }
 
@@ -121,9 +127,9 @@ class RealtimeClusterMetricsTest {
         when(mockWs.isOpen()).thenReturn(true);
         sessionManager.registerSession(RealtimeSession.ofWebSocket(SessionKey.of("user-3", "c3"), mockWs));
 
-        // 1. 单次上报写入本地在线数 1
+        // 1. 单次上报写入 localCount:timestamp 心跳格式，并清理过期死节点
         reporter.reportMetrics();
-        verify(mockNodeMap).put(eq("node-test-1"), eq("1"));
+        verify(mockNodeMap).put(eq("node-test-1"), argThat(val -> val != null && val.startsWith("1:")));
 
         // 2. 清理注销
         reporter.cleanup();
@@ -132,6 +138,59 @@ class RealtimeClusterMetricsTest {
         // 3. 验证独立 stop 也自动触发从 Hash 移除，防御孤立停机导致残留
         reporter.stop();
         verify(mockNodeMap, atLeastOnce()).remove(eq("node-test-1"));
+    }
+
+    @Test
+    @DisplayName("死节点心跳惰性剔除: 忽略并清理超过 3 * metricsInterval（且不低于 15s）的失联节点、同步清理死节点用户在线残留并兼容旧版纯数字值")
+    @SuppressWarnings("unchecked")
+    void testDeadNodeEvictionAndLegacyCompatibility() {
+        properties.getCluster().setMetricsInterval(Duration.ofSeconds(5));
+        RedissonClusterMetricsReporter reporter = new RedissonClusterMetricsReporter(
+                redissonClient, properties, sessionManager, clusterBroadcaster);
+
+        RSet<String> deadNodeUsersSet = mock(RSet.class);
+        when(deadNodeUsersSet.readAll()).thenReturn(Set.of("ghost-u1", "ghost-u2"));
+        when(redissonClient.<String>getSet(eq("ateng:realtime:cluster:nodes:node-users:dead-node-crash"), eq(StringCodec.INSTANCE)))
+                .thenReturn(deadNodeUsersSet);
+        RMap<String, String> ghostUser1Map = mock(RMap.class);
+        RMap<String, String> ghostUser2Map = mock(RMap.class);
+        when(redissonClient.<String, String>getMap(eq("ateng:realtime:cluster:nodes:users:ghost-u1"), eq(StringCodec.INSTANCE)))
+                .thenReturn(ghostUser1Map);
+        when(redissonClient.<String, String>getMap(eq("ateng:realtime:cluster:nodes:users:ghost-u2"), eq(StringCodec.INSTANCE)))
+                .thenReturn(ghostUser2Map);
+
+        long now = System.currentTimeMillis();
+        Map<String, String> entries = new LinkedHashMap<>();
+        entries.put("alive-node-a", "10:" + (now - 3_000L));
+        entries.put("legacy-node-b", "20");
+        entries.put("dead-node-crash", "99:" + (now - 20_000L));
+        entries.put("invalid-node", "bad-data");
+        when(mockNodeMap.readAllMap()).thenReturn(entries);
+
+        // 查询全集群在线总数时忽略 dead-node-crash(99)，惰性剔除死节点度量并同步清理其关联用户在线记录
+        int clusterTotal = reporter.getClusterOnlineCount();
+        assertThat(clusterTotal).isEqualTo(30);
+        verify(mockNodeMap).remove("dead-node-crash");
+        verify(ghostUser1Map).remove("dead-node-crash");
+        verify(ghostUser2Map).remove("dead-node-crash");
+        verify(deadNodeUsersSet).delete();
+        verify(mockNodeMap, never()).remove("alive-node-a");
+        verify(mockNodeMap, never()).remove("legacy-node-b");
+
+        // 定时上报 reportMetrics() 时同样顺带清理过期死节点；若反向索引为空则回退 RKeys 扫描清理
+        reset(mockNodeMap);
+        when(mockNodeMap.readAllMap()).thenReturn(entries);
+        when(deadNodeUsersSet.readAll()).thenReturn(Set.of());
+        RKeys mockKeys = mock(RKeys.class);
+        when(redissonClient.getKeys()).thenReturn(mockKeys);
+        when(mockKeys.getKeysByPattern("ateng:realtime:cluster:nodes:users:*"))
+                .thenReturn(List.of("ateng:realtime:cluster:nodes:users:ghost-u1"));
+        reset(ghostUser1Map);
+
+        reporter.reportMetrics();
+        verify(mockNodeMap).put(eq("node-test-1"), argThat(val -> val != null && val.startsWith("0:")));
+        verify(mockNodeMap).remove("dead-node-crash");
+        verify(ghostUser1Map).remove("dead-node-crash");
     }
 
     @Test

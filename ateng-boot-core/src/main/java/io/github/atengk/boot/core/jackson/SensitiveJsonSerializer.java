@@ -32,10 +32,6 @@ public class SensitiveJsonSerializer extends JsonSerializer<String> implements C
         this(SensitiveType.CUSTOM, 0, 0, 0, 0, '*');
     }
 
-    public SensitiveJsonSerializer(SensitiveType type, int startInclude, int endExclude, char maskChar) {
-        this(type, startInclude, endExclude, 0, 0, maskChar);
-    }
-
     public SensitiveJsonSerializer(SensitiveType type, int startInclude, int endExclude, int keepHead, int keepTail, char maskChar) {
         this.type = type != null ? type : SensitiveType.CUSTOM;
         this.startInclude = startInclude;

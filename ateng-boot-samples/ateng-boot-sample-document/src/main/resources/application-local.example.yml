@@ -1,0 +1,27 @@
+# ===================================================================
+# ateng-boot-sample-document 本地真实联调配置模板
+#
+# 复制当前文件为 application-local.yml 并填入真实路径或 Gotenberg 服务地址即可激活 local 直连调试
+# 启动命令：mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-document -Dspring-boot.run.profiles=local
+# 注意：application-local.yml 已被 .gitignore 忽略，不会提交至仓库
+# ===================================================================
+
+server:
+  port: 8080
+
+ateng:
+  boot:
+    document:
+      word:
+        # 本地自定义 Word 模板目录（示例：/data/templates/ 或 D:/templates/）
+        template-base-dir: "/path/to/YOUR_LOCAL_TEMPLATE_DIR/"
+      pdf:
+        # 本地完整中文字体路径（示例：/usr/share/fonts/noto/NotoSansCJK-Regular.ttc）
+        font-path: "/path/to/YOUR_LOCAL_CJK_FONT.ttf"
+      converter:
+        gotenberg:
+          # local 模式下启用真实 Gotenberg 集群（禁用默认的 @Profile("!local") 离线转换桩）
+          enabled: true
+          base-url: "http://YOUR_GOTENBERG_HOST:3000"
+          connect-timeout: 5s
+          read-timeout: 60s

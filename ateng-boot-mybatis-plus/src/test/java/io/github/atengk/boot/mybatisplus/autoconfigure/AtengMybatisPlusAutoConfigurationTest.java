@@ -12,6 +12,9 @@ import io.github.atengk.boot.mybatisplus.handler.DefaultMetaObjectHandler;
 import io.github.atengk.boot.mybatisplus.tenant.AtengTenantLineInnerInterceptor;
 import io.github.atengk.boot.mybatisplus.tenant.DefaultTenantLineHandler;
 import io.github.atengk.boot.core.id.Snowflake;
+import io.github.atengk.boot.mybatisplus.util.BatchUtil;
+import io.github.atengk.boot.mybatisplus.util.PageUtil;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -35,6 +38,15 @@ class AtengMybatisPlusAutoConfigurationTest {
             .withConfiguration(AutoConfigurations.of(
                     AtengMybatisPlusAutoConfiguration.class,
                     AtengMybatisPlusDynamicQueryAutoConfiguration.class));
+
+    @AfterEach
+    void resetStaticGlobalState() {
+        BatchUtil.setCurrentUserProvider(null);
+        BatchUtil.setAuditEnabled(true);
+        BatchUtil.setDefaultOperator(null);
+        BatchUtil.setDefaultBatchSize(0);
+        PageUtil.setDefaultMaxLimit(500L);
+    }
 
     @Test
     @DisplayName("默认配置下成功装配审计填充器、MybatisPlusInterceptor 插件链与雪花发号器")
@@ -321,6 +333,7 @@ class AtengMybatisPlusAutoConfigurationTest {
             assertThat(interceptor.getThreshold()).isEqualTo(java.time.Duration.ofSeconds(1));
             assertThat(interceptor.isFormatSql()).isTrue();
             assertThat(interceptor.isMaskSensitive()).isTrue();
+            assertThat(interceptor.isAsyncEnabled()).isFalse();
             assertThat(interceptor.getAlertProviders()).isEmpty();
         });
     }
@@ -353,6 +366,21 @@ class AtengMybatisPlusAutoConfigurationTest {
             assertThat(interceptor.getAlertProviders()).containsExactly(customAlert);
             assertThat(interceptor.getAlertProvider()).isSameAs(customAlert);
         });
+    }
+
+    @Test
+    @DisplayName("开启 ateng.boot.mybatis-plus.slow-sql.async-enabled=true 时注入受管 Executor 线程池")
+    void shouldBindTaskExecutorWhenSlowSqlAsyncEnabled() {
+        java.util.concurrent.Executor customExecutor = Runnable::run;
+        contextRunner.withPropertyValues("ateng.boot.mybatis-plus.slow-sql.async-enabled=true")
+                .withBean("applicationTaskExecutor", java.util.concurrent.Executor.class, () -> customExecutor)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor.class);
+                    io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor interceptor =
+                            context.getBean(io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor.class);
+                    assertThat(interceptor.isAsyncEnabled()).isTrue();
+                    assertThat(interceptor.getTaskExecutor()).isSameAs(customExecutor);
+                });
     }
 
     @Test
@@ -566,6 +594,43 @@ class AtengMybatisPlusAutoConfigurationTest {
                     assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor.class);
                     assertThat(context.getBean(io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor.class)).isSameAs(customInterceptor);
                 });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.mybatis-plus.pagination.max-limit 时自动同步 PageUtil.defaultMaxLimit")
+    void shouldSyncPaginationMaxLimitToPageUtil() {
+        long originalLimit = io.github.atengk.boot.mybatisplus.util.PageUtil.getDefaultMaxLimit();
+        try {
+            contextRunner.withPropertyValues("ateng.boot.mybatis-plus.pagination.max-limit=2500")
+                    .run(context -> {
+                        assertThat(io.github.atengk.boot.mybatisplus.util.PageUtil.getDefaultMaxLimit()).isEqualTo(2500L);
+                    });
+        } finally {
+            io.github.atengk.boot.mybatisplus.util.PageUtil.setDefaultMaxLimit(originalLimit);
+        }
+    }
+
+    @Test
+    @DisplayName("当配置 audit 与 batch 全局属性时自动同步至 BatchUtil 静态配置")
+    void shouldSyncAuditAndBatchPropertiesToBatchUtil() {
+        boolean originalAuditEnabled = io.github.atengk.boot.mybatisplus.util.BatchUtil.isAuditEnabled();
+        String originalOperator = io.github.atengk.boot.mybatisplus.util.BatchUtil.getDefaultOperator();
+        int originalBatchSize = io.github.atengk.boot.mybatisplus.util.BatchUtil.getDefaultBatchSize();
+        try {
+            contextRunner.withPropertyValues(
+                    "ateng.boot.mybatis-plus.audit.enabled=false",
+                    "ateng.boot.mybatis-plus.audit.default-operator=AUDIT_BOT",
+                    "ateng.boot.mybatis-plus.batch.default-size=256"
+            ).run(context -> {
+                assertThat(io.github.atengk.boot.mybatisplus.util.BatchUtil.isAuditEnabled()).isFalse();
+                assertThat(io.github.atengk.boot.mybatisplus.util.BatchUtil.getDefaultOperator()).isEqualTo("AUDIT_BOT");
+                assertThat(io.github.atengk.boot.mybatisplus.util.BatchUtil.getDefaultBatchSize()).isEqualTo(256);
+            });
+        } finally {
+            io.github.atengk.boot.mybatisplus.util.BatchUtil.setAuditEnabled(originalAuditEnabled);
+            io.github.atengk.boot.mybatisplus.util.BatchUtil.setDefaultOperator(originalOperator);
+            io.github.atengk.boot.mybatisplus.util.BatchUtil.setDefaultBatchSize(originalBatchSize);
+        }
     }
 }
 

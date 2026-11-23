@@ -1,6 +1,7 @@
 package io.github.atengk.boot.mqtt.properties;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 
 /**
  * MQTT 遗嘱消息（Last Will and Testament, LWT）配置属性
@@ -34,6 +35,11 @@ public class MqttLwtProperties {
      * 是否作为保留消息 (Retain)
      */
     private boolean retain = false;
+
+    /**
+     * MQTT 5.0 遗嘱延迟间隔（防止网络瞬断闪退立刻广播离线遗嘱，默认 0 表示立即发布）
+     */
+    private Duration willDelayInterval = Duration.ZERO;
 
     public boolean isEnabled() {
         return enabled;
@@ -73,6 +79,14 @@ public class MqttLwtProperties {
 
     public void setRetain(boolean retain) {
         this.retain = retain;
+    }
+
+    public Duration getWillDelayInterval() {
+        return willDelayInterval;
+    }
+
+    public void setWillDelayInterval(Duration willDelayInterval) {
+        this.willDelayInterval = willDelayInterval;
     }
 
     public byte[] getPayloadBytes() {

@@ -33,4 +33,40 @@ public interface JobClusterLockProvider {
      * @return 是否释放成功（若锁已过期转移或属主不匹配返回 false）
      */
     boolean unlock(JobLockHandle handle);
+
+    /**
+     * 带最小持有时间约束的释放集群互斥锁（零线程阻塞防跨节点时钟漂移）
+     * <p>
+     * 当任务实际持有耗时小于 {@code minHoldTime} 时，不物理删锁，而是非阻塞地将锁剩余有效期收缩为
+     * {@code minHoldTime - elapsed}，在剩余窗口期内阻挡存在 NTP 时钟偏移的慢节点重复抢锁。
+     * </p>
+     *
+     * @param handle      锁持有句柄
+     * @param minHoldTime 最小锁持有时长（为 null 或非正数时直接物理删除释放）
+     * @return 是否释放或收缩租期成功
+     */
+    default boolean unlock(JobLockHandle handle, Duration minHoldTime) {
+        return unlock(handle);
+    }
+
+    /**
+     * 对已持有的集群互斥锁执行租约续期
+     *
+     * @param handle    锁持有句柄
+     * @param leaseTime 新的续期租约时长（必须为正数）
+     * @return 是否续期成功（属主不匹配、锁已过期或入参非法时返回 false）
+     */
+    default boolean renew(JobLockHandle handle, Duration leaseTime) {
+        return false;
+    }
+
+    /**
+     * 判断指定任务的集群互斥锁当前是否处于有效锁定状态
+     *
+     * @param jobName 任务唯一标识名称
+     * @return true 表示锁当前正被持有且未过期
+     */
+    default boolean isLocked(String jobName) {
+        return false;
+    }
 }

@@ -52,6 +52,9 @@ class HttpGovernanceScenarioTest {
     @Autowired
     private HttpProperties httpProperties;
 
+    @Autowired
+    private io.github.atengk.boot.http.factory.RestClientRegistry restClientRegistry;
+
     private MockWebServer mockWebServer;
     private String baseUrl;
 
@@ -335,5 +338,45 @@ class HttpGovernanceScenarioTest {
                 .filter(event -> event.getFormattedMessage().contains("HTTP GET"))
                 .count();
         assertThat(httpLogCount).as("内层日志拦截器应完整记录 3 次物理调用（2次503与1次200）").isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("场景 6：命名客户端专属正向代理与专属连接配置端到端解析验证")
+    void testScopedProxyClientConfigurationBinding() {
+        HttpClientItemProperties scopedProxy = httpProperties.getClients().get("scoped-proxy-client");
+        assertThat(scopedProxy).isNotNull();
+        assertThat(scopedProxy.getBaseUrl()).isEqualTo("http://proxy-target.internal:8080");
+        assertThat(scopedProxy.getProxy()).isNotNull();
+        assertThat(scopedProxy.getProxy().isEnabled()).isTrue();
+        assertThat(scopedProxy.getProxy().getHost()).isEqualTo("127.0.0.1");
+        assertThat(scopedProxy.getProxy().getPort()).isEqualTo(8888);
+
+        // 验证从注册表获取该客户端单例成功装配
+        org.springframework.web.client.RestClient client = restClientRegistry.getClient("scoped-proxy-client");
+        assertThat(client).isNotNull();
+        assertThat(restClientRegistry.contains("scoped-proxy-client")).isTrue();
+    }
+
+    @Test
+    @DisplayName("场景 7：金融级 mTLS 双向认证证书配置绑定与专职物理工厂端到端装配")
+    void testMtlsAndSslPropertiesIntegrity() {
+        // 1. 验证全局 SSL 属性默认安全配置
+        assertThat(httpProperties.getSsl()).isNotNull();
+        assertThat(httpProperties.getSsl().isInsecure()).isFalse();
+
+        // 2. 验证 Spring 容器已自动从 application.yml 完成 mtls-service 的配置绑定
+        HttpClientItemProperties mtlsConfig = httpProperties.getClients().get("mtls-service");
+        assertThat(mtlsConfig).isNotNull();
+        assertThat(mtlsConfig.getBaseUrl()).isEqualTo("https://mtls.internal:8443");
+        assertThat(mtlsConfig.getSsl()).isNotNull();
+        assertThat(mtlsConfig.getSsl().getKeyStore()).isEqualTo("classpath:certs/sample-client-cert.p12");
+        assertThat(mtlsConfig.getSsl().getKeyStorePassword()).isEqualTo("cert_password");
+        assertThat(mtlsConfig.getSsl().getKeyStoreType()).isEqualTo("PKCS12");
+        assertThat(mtlsConfig.getSsl().hasKeyStore()).isTrue();
+
+        // 3. 真实通过 RestClientRegistry 触发端到端构建，验证 mTLS 客户端私钥证书被底层物理连接池正常加载
+        org.springframework.web.client.RestClient mtlsRestClient = restClientRegistry.getClient("mtls-service");
+        assertThat(mtlsRestClient).isNotNull();
+        assertThat(restClientRegistry.contains("mtls-service")).isTrue();
     }
 }

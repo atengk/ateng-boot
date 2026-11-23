@@ -92,10 +92,38 @@ _Avoid_: SseHelper, StreamUtil, SseFactory
 客户端会话分组与频道订阅受管注册表组件，提供多端会话加入、退出与组播映射的确定性维护。
 _Avoid_: RoomManager, ChannelManager, GroupService
 
+**RedissonRealtimeGroupManager**:
+基于 Redisson 与 Redis Set 双向索引构建的分布式群组协同受管管理器，在集群模式下纳管群组全域成员三维坐标与会话所属群组，提供集群全域房间人数与在线成员查询，并在会话断线或群组解散时执行原子级联清理。
+_Avoid_: RedisGroupService, DistributedRoomManager, ClusterGroupRegistry
+
+**RedissonRealtimeOfflineMessageProvider**:
+基于 Redisson 与 Redis ZSet 构建的企业级分布式离线消息暂存提供者，以毫秒时间戳作为有序分值，受单用户最大保留配额与 TTL 严格治理，支持跨节点上线增量拉取与 W3C SSE Last-Event-ID 断点重放。
+_Avoid_: RedisOfflineStore, DistributedMessageQueue, RedisOfflineBuffer
+
+**SessionRateLimiter**:
+长连接端点会话级内存无锁滑动窗口流量限制器，在会话内部执行纳秒级吞吐频控，支持超限 429 丢弃警告与持续恶意刷量 4005 状态码强制切断两阶惩罚治理。
+_Avoid_: WsRateLimiter, TokenBucketFilter, MessageThrottle
+
+**RealtimeActionInterceptor**:
+客户端上行 `@RealtimeAction` 业务动作方法责任链拦截器 SPI 扩展点，支持在反射调用目标动作方法前后执行统一权限校验、租户准入裁决或耗时审计。
+_Avoid_: ActionFilter, WsInterceptor, MessageAspect, ActionHook
+
 **RealtimeCloseStatus**:
-RFC 6455 标准扩展关闭状态码契约常量类，统一定义 4001（鉴权失败）、4002（被踢下线）、4003（连接配额超限）与 1012（服务优雅停机排空）语义。
+RFC 6455 标准扩展关闭状态码契约常量类，统一定义 4001（鉴权失败）、4002（被踢下线）、4003（连接配额超限）、4004（空闲超时排空）、4005（上行流量超限熔断）与 1012（服务优雅停机排空）语义。
 _Avoid_: WsStatus, CloseCode, DisconnectReason
 
 **RealtimeGracefulShutdownHandler**:
 实时底座优雅停机受管处理器，接入 Spring SmartLifecycle 体系，执行拒绝新连接握手、广播 1012 状态码与存量发送缓冲队列安全排空。
 _Avoid_: ShutdownManager, RealtimeCloser, WsShutdown
+
+**RealtimeBinaryMessageListener**:
+原生二进制帧上行消费扩展 SPI，支持直接接收 WebSocket 原始字节数组（如音视频分片流 ASR/TTS、Protobuf、文件块），绕过 JSON 反序列化开销并贯通四维追踪上下文。
+_Avoid_: BinaryListener, WsBinaryHandler, StreamByteReceiver
+
+**RateLimitDecision**:
+会话级滑动窗口限流器判定结果枚举，明确区分正常放行（`ALLOWED`）、超出阈值丢弃警告（`WARNING`）与持续违规强制熔断关闭（`CLOSE`）三种状态。
+_Avoid_: LimitResult, RateStatus, QuotaDecision
+
+**RedissonClusterMetricsReporter**:
+基于 Redisson Hash 与节点心跳租约（`count:timestampMillis`）的集群在线连接数上报与聚合统计器，在周期心跳及查询聚合期间自动惰性淘汰超时失联的崩溃节点。
+_Avoid_: ClusterStatsService, NodeCounter, OnlineMetricsStore

@@ -1,1 +1,2 @@
+io.github.atengk.boot.admin.autoconfigure.AtengAdminServerDefenseAutoConfiguration
 io.github.atengk.boot.admin.autoconfigure.AtengAdminServerAutoConfiguration

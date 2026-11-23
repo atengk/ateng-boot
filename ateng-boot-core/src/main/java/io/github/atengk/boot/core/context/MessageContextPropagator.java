@@ -90,18 +90,16 @@ public final class MessageContextPropagator {
     }
 
     /**
-     * 从入站消息头提取四维上下文并在当前线程安全激活，返回现场自恢复清理句柄
+     * 从入站消息头提取全维度上下文并在当前线程安全激活，返回现场自恢复清理句柄
      *
      * @param headers 入站消息头 Map (支持兼容 Object、byte[] 等异构 MQ 头格式)
      * @return 现场恢复句柄 ContextScope，必须在 try-with-resources 或 finally 块中 close()
      */
     public static ContextScope activate(Map<String, ?> headers) {
-        // 1. 抓取工作线程执行前的原始现场
-        Map<String, String> previousMdc = MDC.getCopyOfContextMap();
-        String previousUser = UserContextHolder.getExplicit();
-        TenantContextHolder.TenantSnapshot previousTenant = TenantContextHolder.capturePrevious();
+        // 1. 抓取工作线程执行前的全维度原始现场快照（含 MDC、User、Tenant、IgnoreTenant 及 SPI 扩展维度）
+        AsyncContext.ContextSnapshot previousSnapshot = AsyncContext.capturePrevious();
 
-        // 2. 从消息头中提取四维上下文
+        // 2. 从消息头中提取多维上下文
         String traceId = extractString(headers, MessageHeaderConstants.TRACE_ID);
         String tenantId = extractString(headers, MessageHeaderConstants.TENANT_ID);
         String userId = extractString(headers, MessageHeaderConstants.USER_ID);
@@ -131,26 +129,8 @@ public final class MessageContextPropagator {
             UserContextHolder.clear();
         }
 
-        // 6. 返回具备确定性自恢复能力的句柄
-        return () -> {
-            try {
-                if (previousMdc != null && !previousMdc.isEmpty()) {
-                    MDC.setContextMap(previousMdc);
-                } else {
-                    MDC.clear();
-                }
-            } finally {
-                try {
-                    if (previousUser != null) {
-                        UserContextHolder.set(previousUser);
-                    } else {
-                        UserContextHolder.clear();
-                    }
-                } finally {
-                    TenantContextHolder.restore(previousTenant);
-                }
-            }
-        };
+        // 6. 返回具备全维度确定性自恢复能力的句柄
+        return previousSnapshot::restore;
     }
 
     /**

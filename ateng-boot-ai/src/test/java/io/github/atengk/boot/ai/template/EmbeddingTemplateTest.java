@@ -1,0 +1,498 @@
+package io.github.atengk.boot.ai.template;
+
+import dev.ai4j.openai4j.OpenAiHttpException;
+import dev.langchain4j.data.embedding.Embedding;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.output.Response;
+import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+import io.github.atengk.boot.ai.context.AiContextHolder;
+import io.github.atengk.boot.ai.exception.AiException;
+import io.github.atengk.boot.ai.exception.AiResultCode;
+import io.github.atengk.boot.ai.properties.AiModelConfig;
+import io.github.atengk.boot.ai.properties.AtengAiProperties;
+import io.github.atengk.boot.ai.properties.AtengAiRagProperties;
+import io.github.atengk.boot.ai.registry.EmbeddingModelRegistry;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+
+import java.time.Duration;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.*;
+
+/**
+ * EmbeddingTemplate 统一向量化嵌入门面全维度单测
+ *
+ * @author Ateng
+ * @since 2026-11-04
+ */
+@DisplayName("EmbeddingTemplate 统一向量化嵌入门面全维度单测")
+class EmbeddingTemplateTest {
+
+    private EmbeddingModel mockEmbeddingModel;
+    private EmbeddingTemplate template;
+
+    @BeforeEach
+    void setUp() {
+        mockEmbeddingModel = mock(EmbeddingModel.class);
+        AtengAiProperties properties = new AtengAiProperties();
+        // 设置极短的重试延迟，确保测试极速通过
+        properties.getModel().setMaxRetries(2);
+        properties.getModel().setRetryInitialInterval(Duration.ofMillis(10));
+        properties.getModel().setRetryMaxInterval(Duration.ofMillis(50));
+        template = new EmbeddingTemplate(mockEmbeddingModel, properties);
+    }
+
+    @AfterEach
+    void tearDown() {
+        AiContextHolder.clearAll();
+    }
+
+    @Test
+    @DisplayName("单文本向量化成功且结果正确")
+    void testEmbedSingleTextSuccess() {
+        float[] vector = new float[]{0.1f, 0.2f, 0.3f};
+        Embedding embedding = new Embedding(vector);
+        when(mockEmbeddingModel.embed("Hello LangChain4j")).thenReturn(Response.from(embedding));
+
+        Response<Embedding> response = template.embed("Hello LangChain4j");
+
+        assertThat(response).isNotNull();
+        assertThat(response.content()).isEqualTo(embedding);
+        assertThat(response.content().vector()).containsExactly(0.1f, 0.2f, 0.3f);
+        verify(mockEmbeddingModel, times(1)).embed("Hello LangChain4j");
+    }
+
+    @Test
+    @DisplayName("单文本为空或空白字符时防御性抛出 IllegalArgumentException")
+    void testEmbedSingleTextBlankException() {
+        assertThatThrownBy(() -> template.embed((String) null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("待向量化文本不能为空");
+
+        assertThatThrownBy(() -> template.embed("   "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("待向量化文本不能为空");
+
+        verifyNoInteractions(mockEmbeddingModel);
+    }
+
+    @Test
+    @DisplayName("批量文本向量化成功且结果正确")
+    void testEmbedMultipleTextsSuccess() {
+        float[] v1 = new float[]{0.1f, 0.2f};
+        float[] v2 = new float[]{0.3f, 0.4f};
+        List<Embedding> embeddings = List.of(new Embedding(v1), new Embedding(v2));
+        when(mockEmbeddingModel.embedAll(anyList())).thenReturn(Response.from(embeddings));
+
+        Response<List<Embedding>> response = template.embed(List.of("文本1", "文本2"));
+
+        assertThat(response).isNotNull();
+        assertThat(response.content()).hasSize(2);
+        verify(mockEmbeddingModel, times(1)).embedAll(anyList());
+    }
+
+    @Test
+    @DisplayName("批量文本列表为空时保底返回空响应")
+    void testEmbedMultipleTextsEmptyReturnsEmpty() {
+        Response<List<Embedding>> r1 = template.embed((List<String>) null);
+        assertThat(r1).isNotNull();
+        assertThat(r1.content()).isEmpty();
+
+        Response<List<Embedding>> r2 = template.embed(Collections.emptyList());
+        assertThat(r2).isNotNull();
+        assertThat(r2.content()).isEmpty();
+
+        verifyNoInteractions(mockEmbeddingModel);
+    }
+
+    @Test
+    @DisplayName("单 TextSegment 向量化成功")
+    void testEmbedSegmentSuccess() {
+        TextSegment segment = TextSegment.from("知识库切片001");
+        Embedding embedding = new Embedding(new float[]{0.5f, 0.6f});
+        when(mockEmbeddingModel.embed(segment)).thenReturn(Response.from(embedding));
+
+        Response<Embedding> response = template.embed(segment);
+
+        assertThat(response).isNotNull();
+        assertThat(response.content().vector()).containsExactly(0.5f, 0.6f);
+        verify(mockEmbeddingModel, times(1)).embed(segment);
+    }
+
+    @Test
+    @DisplayName("TextSegment 为空时防御性抛出 IllegalArgumentException")
+    void testEmbedSegmentNullException() {
+        assertThatThrownBy(() -> template.embed((TextSegment) null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("TextSegment 文本片段对象不能为空");
+        verifyNoInteractions(mockEmbeddingModel);
+    }
+
+    @Test
+    @DisplayName("批量 TextSegment 列表为空时保底返回空响应")
+    void testEmbedMultipleSegmentsEmptyReturnsEmpty() {
+        Response<List<Embedding>> r1 = template.embedSegments(null);
+        assertThat(r1).isNotNull();
+        assertThat(r1.content()).isEmpty();
+
+        Response<List<Embedding>> r2 = template.embedSegments(Collections.emptyList());
+        assertThat(r2).isNotNull();
+        assertThat(r2.content()).isEmpty();
+
+        verifyNoInteractions(mockEmbeddingModel);
+    }
+
+    @Test
+    @DisplayName("embedVector 与 embedVectors 便捷数组提取")
+    void testEmbedVectorShortcuts() {
+        float[] v1 = new float[]{1.0f, 2.0f};
+        float[] v2 = new float[]{3.0f, 4.0f};
+        when(mockEmbeddingModel.embed("single")).thenReturn(Response.from(new Embedding(v1)));
+        when(mockEmbeddingModel.embedAll(anyList())).thenReturn(Response.from(List.of(new Embedding(v1), new Embedding(v2))));
+
+        float[] vector = template.embedVector("single");
+        assertThat(vector).containsExactly(1.0f, 2.0f);
+
+        List<float[]> vectors = template.embedVectors(List.of("t1", "t2"));
+        assertThat(vectors).hasSize(2);
+        assertThat(vectors.get(0)).containsExactly(1.0f, 2.0f);
+        assertThat(vectors.get(1)).containsExactly(3.0f, 4.0f);
+    }
+
+    @Test
+    @DisplayName("获取向量维度与底层模型实例")
+    void testDimensionAndGetModel() {
+        when(mockEmbeddingModel.dimension()).thenReturn(1536);
+        assertThat(template.dimension()).isEqualTo(1536);
+        assertThat(template.getModel()).isSameAs(mockEmbeddingModel);
+    }
+
+    @Test
+    @DisplayName("瞬时 429 限流异常触发指数退避重试并成功恢复")
+    void testRetryOnTransient429Success() {
+        AtomicInteger attempts = new AtomicInteger(0);
+        float[] v = new float[]{0.7f, 0.8f};
+        when(mockEmbeddingModel.embed("retryText")).thenAnswer(inv -> {
+            int attempt = attempts.incrementAndGet();
+            if (attempt <= 2) {
+                throw new OpenAiHttpException(429, "Rate limit exceeded (Too Many Requests)");
+            }
+            return Response.from(new Embedding(v));
+        });
+
+        Response<Embedding> response = template.embed("retryText");
+
+        assertThat(response).isNotNull();
+        assertThat(response.content().vector()).containsExactly(0.7f, 0.8f);
+        assertThat(attempts.get()).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("重试耗尽后转译为语义化 AiException 且完整保留因果链")
+    void testRetryExhaustionThrowsAiException() {
+        when(mockEmbeddingModel.embed("alwaysFail"))
+                .thenThrow(new OpenAiHttpException(429, "Rate limit exceeded"));
+
+        assertThatThrownBy(() -> template.embed("alwaysFail"))
+                .isInstanceOf(AiException.class)
+                .satisfies(ex -> {
+                    AiException aiEx = (AiException) ex;
+                    assertThat(aiEx.getResultCode()).isEqualTo(AiResultCode.AI_RATE_LIMIT_EXCEEDED);
+                    assertThat(aiEx.getCause()).isNotNull();
+                });
+    }
+
+    @Test
+    @DisplayName("非重试 401 认证异常立即失败且无多余重试")
+    void testNonRetryableAuthErrorImmediatelyFails() {
+        AtomicInteger attempts = new AtomicInteger(0);
+        when(mockEmbeddingModel.embed("authError")).thenAnswer(inv -> {
+            attempts.incrementAndGet();
+            throw new OpenAiHttpException(401, "Invalid API Key");
+        });
+
+        assertThatThrownBy(() -> template.embed("authError"))
+                .isInstanceOf(AiException.class)
+                .satisfies(ex -> {
+                    AiException aiEx = (AiException) ex;
+                    assertThat(aiEx.getResultCode()).isEqualTo(AiResultCode.AI_AUTH_FAILED);
+                });
+
+        assertThat(attempts.get()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("ingest 与 ingestAll 写入 InMemoryEmbeddingStore 成功")
+    void testIngestSuccess() {
+        InMemoryEmbeddingStore<TextSegment> store = new InMemoryEmbeddingStore<>();
+        when(mockEmbeddingModel.embed(any(TextSegment.class)))
+                .thenReturn(Response.from(new Embedding(new float[]{0.1f, 0.2f})));
+        when(mockEmbeddingModel.embedAll(anyList()))
+                .thenReturn(Response.from(List.of(
+                        new Embedding(new float[]{0.3f, 0.4f}),
+                        new Embedding(new float[]{0.5f, 0.6f})
+                )));
+
+        // 1. 单文本入库
+        String id1 = template.ingest(store, "企业研发规范一：严禁泄露 Entity");
+        assertThat(id1).isNotBlank();
+
+        // 2. 单 TextSegment 入库
+        TextSegment segment = TextSegment.from("企业研发规范二：统一 Result 显式契约");
+        String id2 = template.ingest(store, segment);
+        assertThat(id2).isNotBlank();
+
+        // 3. 批量 TextSegment 入库
+        List<String> ids = template.ingestAll(store, List.of(
+                TextSegment.from("规范三"),
+                TextSegment.from("规范四")
+        ));
+        assertThat(ids).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("ingest 前置参数防卫断言")
+    void testIngestDefenseInDepth() {
+        InMemoryEmbeddingStore<TextSegment> store = new InMemoryEmbeddingStore<>();
+
+        assertThatThrownBy(() -> template.ingest(null, "text"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("目标 EmbeddingStore 存储库不能为空");
+
+        assertThatThrownBy(() -> template.ingest(store, (String) null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("待存储文本内容不能为空");
+
+        assertThatThrownBy(() -> template.ingest(null, TextSegment.from("text")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("目标 EmbeddingStore 存储库不能为空");
+
+        assertThatThrownBy(() -> template.ingest(store, (TextSegment) null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("待存储 TextSegment 不能为空");
+
+        assertThatThrownBy(() -> template.ingestAll(null, List.of(TextSegment.from("t"))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("目标 EmbeddingStore 存储库不能为空");
+
+        List<String> emptyIds = template.ingestAll(store, Collections.emptyList());
+        assertThat(emptyIds).isEmpty();
+    }
+
+    @Test
+    @DisplayName("验证 remove/removeAll 对称回收操作")
+    void testRemoveSymmetricOperations() {
+        InMemoryEmbeddingStore<TextSegment> store = new InMemoryEmbeddingStore<>();
+
+        when(mockEmbeddingModel.embed(any(TextSegment.class)))
+                .thenReturn(Response.from(Embedding.from(new float[]{0.1f, 0.2f, 0.3f})));
+
+        String id1 = template.ingest(store, "规范一");
+        String id2 = template.ingest(store, "规范二");
+        String id3 = template.ingest(store, "规范三");
+
+        // 1. 单条删除
+        template.remove(store, id1);
+
+        // 2. 批量删除
+        template.removeAll(store, List.of(id2));
+
+        // 3. 全部清空
+        template.removeAll(store);
+
+        // 4. 空安全防卫
+        template.remove(store, null);
+        template.removeAll(store, Collections.emptyList());
+
+        assertThatThrownBy(() -> template.remove(null, "id"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.removeAll(null, List.of("id")))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.removeAll((dev.langchain4j.store.embedding.EmbeddingStore<TextSegment>) null))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("底层无模型时处于待命模式，调用计算接口抛出 AI_CONFIG_ERROR")
+    void testStandbyModeBehavior() {
+        EmbeddingTemplate standbyTemplate = new EmbeddingTemplate(null);
+        assertThat(standbyTemplate.isAvailable()).isFalse();
+        assertThat(standbyTemplate.getModel()).isNull();
+
+        assertThatThrownBy(() -> standbyTemplate.embed("test"))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+
+        assertThatThrownBy(() -> standbyTemplate.embed(TextSegment.from("test")))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+
+        assertThatThrownBy(() -> standbyTemplate.embedSegments(List.of(TextSegment.from("test"))))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+
+        assertThatThrownBy(standbyTemplate::dimension)
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_CONFIG_ERROR));
+    }
+
+    @Test
+    @DisplayName("通过 useModel 动态切换向量模型并在作用域退出后自动还原")
+    void testUseModelDynamicSwitching() {
+        EmbeddingModel bgeModel = mock(EmbeddingModel.class);
+        when(bgeModel.embed("Hello BGE")).thenReturn(Response.from(new Embedding(new float[]{0.9f})));
+        when(mockEmbeddingModel.embed("Hello Default")).thenReturn(Response.from(new Embedding(new float[]{0.1f})));
+
+        EmbeddingModelRegistry registry = new EmbeddingModelRegistry();
+        registry.registerDefault(mockEmbeddingModel, "default");
+        registry.register("bge-large", bgeModel);
+
+        AtengAiProperties properties = new AtengAiProperties();
+        EmbeddingTemplate multiModelTemplate = new EmbeddingTemplate(mockEmbeddingModel, registry, (dev.langchain4j.store.embedding.EmbeddingStore<TextSegment>) null, properties);
+
+        // 1. 默认状态路由至默认模型
+        Response<Embedding> defaultResp = multiModelTemplate.embed("Hello Default");
+        assertThat(defaultResp.content().vector()).containsExactly(0.1f);
+        verify(mockEmbeddingModel, times(1)).embed("Hello Default");
+
+        // 2. 作用域内切换至 bge-large
+        try (EmbeddingTemplate.EmbeddingModelScope ignored = multiModelTemplate.useModel("bge-large")) {
+            Response<Embedding> bgeResp = multiModelTemplate.embed("Hello BGE");
+            assertThat(bgeResp.content().vector()).containsExactly(0.9f);
+            verify(bgeModel, times(1)).embed("Hello BGE");
+        }
+
+        // 3. 作用域外自动还原为默认模型
+        Response<Embedding> restoredResp = multiModelTemplate.embed("Hello Default");
+        assertThat(restoredResp.content().vector()).containsExactly(0.1f);
+        verify(mockEmbeddingModel, times(2)).embed("Hello Default");
+    }
+
+    @Test
+    @DisplayName("指定命名模型显式调用 embedWithModel 与 embedVectorWithModel")
+    void testNamedModelExplicitExecution() {
+        EmbeddingModel bgeModel = mock(EmbeddingModel.class);
+        when(bgeModel.embed("测试文本")).thenReturn(Response.from(new Embedding(new float[]{0.5f, 0.6f})));
+        when(bgeModel.dimension()).thenReturn(1024);
+
+        EmbeddingModelRegistry registry = new EmbeddingModelRegistry();
+        registry.register("bge-large", bgeModel);
+
+        AtengAiProperties properties = new AtengAiProperties();
+        EmbeddingTemplate multiModelTemplate = new EmbeddingTemplate(mockEmbeddingModel, registry, (dev.langchain4j.store.embedding.EmbeddingStore<TextSegment>) null, properties);
+
+        Response<Embedding> resp = multiModelTemplate.embedWithModel("bge-large", "测试文本");
+        assertThat(resp.content().vector()).containsExactly(0.5f, 0.6f);
+
+        float[] vector = multiModelTemplate.embedVectorWithModel("bge-large", "测试文本");
+        assertThat(vector).containsExactly(0.5f, 0.6f);
+
+        int dim = multiModelTemplate.dimensionWithModel("bge-large");
+        assertThat(dim).isEqualTo(1024);
+
+        // 查询不存在的模型抛出 AI_CONFIG_ERROR
+        assertThatThrownBy(() -> multiModelTemplate.embedWithModel("non-existent", "文本"))
+                .isInstanceOf(AiException.class)
+                .hasMessageContaining("未找到标识为 [non-existent] 的 Embedding 向量化模型");
+    }
+
+    @Test
+    @DisplayName("默认向量存储库自动绑定：免参入库与删除成功")
+    void testDefaultStoreBindingSuccess() {
+        InMemoryEmbeddingStore<TextSegment> defaultStore = new InMemoryEmbeddingStore<>();
+        EmbeddingModelRegistry registry = new EmbeddingModelRegistry();
+        registry.registerDefault(mockEmbeddingModel, "default");
+
+        AtengAiProperties properties = new AtengAiProperties();
+        EmbeddingTemplate boundTemplate = new EmbeddingTemplate(mockEmbeddingModel, registry, defaultStore, properties);
+
+        when(mockEmbeddingModel.embed(any(TextSegment.class))).thenReturn(Response.from(new Embedding(new float[]{0.1f, 0.2f})));
+        when(mockEmbeddingModel.embedAll(anyList())).thenReturn(Response.from(List.of(new Embedding(new float[]{0.1f}), new Embedding(new float[]{0.2f}))));
+
+        // 1. 免传 store 写入单个 TextSegment
+        TextSegment segment = TextSegment.from("默认库入库内容");
+        String id1 = boundTemplate.ingest(segment);
+        assertThat(id1).isNotBlank();
+
+        // 2. 免传 store 写入纯文本字符串
+        String id2 = boundTemplate.ingest("纯字符串入库");
+        assertThat(id2).isNotBlank();
+
+        // 3. 免传 store 批量入库
+        List<String> ids = boundTemplate.ingestAll(List.of(TextSegment.from("批量1"), TextSegment.from("批量2")));
+        assertThat(ids).hasSize(2);
+
+        // 4. 免传 store 删除
+        boundTemplate.remove(id1);
+        boundTemplate.removeAll(ids);
+        boundTemplate.removeAll();
+    }
+
+    @Test
+    @DisplayName("未配置默认向量存储库时调用免参入库防御性抛出 AI_CONFIG_ERROR")
+    void testMissingDefaultStoreThrowsException() {
+        EmbeddingTemplate noStoreTemplate = new EmbeddingTemplate(mockEmbeddingModel);
+
+        assertThatThrownBy(() -> noStoreTemplate.ingest("测试文本"))
+                .isInstanceOf(AiException.class)
+                .hasMessageContaining("未检测到任何可用的 EmbeddingStore 向量存储库 Bean");
+
+        assertThatThrownBy(() -> noStoreTemplate.ingest(TextSegment.from("测试")))
+                .isInstanceOf(AiException.class)
+                .hasMessageContaining("未检测到任何可用的 EmbeddingStore 向量存储库 Bean");
+
+        assertThatThrownBy(() -> noStoreTemplate.ingestAll(List.of(TextSegment.from("测试"))))
+                .isInstanceOf(AiException.class)
+                .hasMessageContaining("未检测到任何可用的 EmbeddingStore 向量存储库 Bean");
+
+        assertThatThrownBy(() -> noStoreTemplate.remove("id"))
+                .isInstanceOf(AiException.class)
+                .hasMessageContaining("未检测到任何可用的 EmbeddingStore 向量存储库 Bean");
+    }
+
+    @Test
+    @DisplayName("EmbeddingTemplate 应统一接入 AiRateLimiter 限流与 AiQuotaChecker 配额扣减保护")
+    void testEmbeddingEnforcesRateLimitAndQuota() {
+        io.github.atengk.boot.ai.properties.AtengAiRateLimitProperties rlProps = new io.github.atengk.boot.ai.properties.AtengAiRateLimitProperties();
+        rlProps.setEnabled(true);
+        rlProps.setDefaultRps(1);
+        io.github.atengk.boot.ai.ratelimit.AiRateLimiter rateLimiter = new io.github.atengk.boot.ai.ratelimit.DefaultAiRateLimiter(rlProps);
+
+        io.github.atengk.boot.ai.properties.AtengAiQuotaProperties quotaProps = new io.github.atengk.boot.ai.properties.AtengAiQuotaProperties();
+        quotaProps.setEnabled(true);
+        quotaProps.setDailyRequestLimit(2);
+        io.github.atengk.boot.ai.quota.DefaultAiQuotaChecker quotaChecker = new io.github.atengk.boot.ai.quota.DefaultAiQuotaChecker(quotaProps);
+
+        AtengAiProperties props = new AtengAiProperties();
+        EmbeddingTemplate governedTemplate = new EmbeddingTemplate(
+                mockEmbeddingModel, null, null, null, props.getRag(), props.getModel(), quotaChecker, rateLimiter);
+
+        when(mockEmbeddingModel.embed(anyString())).thenReturn(Response.from(new Embedding(new float[]{0.5f, 0.5f})));
+
+        io.github.atengk.boot.core.context.TenantContextHolder.setTenantId("tenant-embed");
+        try {
+            // 首次调用成功并记录配额
+            governedTemplate.embed("向量化测试");
+            assertThat(quotaChecker.getDailyRequests("tenant-embed")).isEqualTo(1);
+
+            // 第二次受 RPS=1 限流拦截
+            assertThatThrownBy(() -> governedTemplate.embed("第二次立即调用"))
+                    .isInstanceOf(AiException.class)
+                    .extracting("code")
+                    .isEqualTo(AiResultCode.AI_RATE_LIMIT_EXCEEDED.getCode());
+        } finally {
+            io.github.atengk.boot.core.context.TenantContextHolder.clear();
+        }
+    }
+}

@@ -21,6 +21,7 @@ import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Sa-Token 匿名公开访问与动态白名单自动汇聚处理器
@@ -41,6 +42,7 @@ public class AnonymousUrlProcessor implements SmartInitializingSingleton, Applic
     private final SaTokenProperties properties;
     private final AtengSaTokenInterceptor saTokenInterceptor;
     private final ObjectProvider<SaTokenWhitelistProvider> whitelistProviders;
+    private final ReentrantLock processLock = new ReentrantLock();
 
     @Override
     public void afterSingletonsInstantiated() {
@@ -55,51 +57,57 @@ public class AnonymousUrlProcessor implements SmartInitializingSingleton, Applic
     /**
      * 执行白名单汇聚与注入逻辑
      */
-    public synchronized void process() {
+    public void process() {
         if (saTokenInterceptor == null) {
             log.debug("AtengSaTokenInterceptor 未初始化，跳过动态白名单汇聚");
             return;
         }
+        processLock.lock();
+        try {
+            Set<String> mergedWhitelist = new LinkedHashSet<>();
 
-        Set<String> mergedWhitelist = new LinkedHashSet<>();
-
-        // 1. 汇聚 YAML 静态白名单
-        if (properties != null) {
-            if (properties.getWhiteList() != null) {
-                mergedWhitelist.addAll(properties.getWhiteList());
+            // 1. 汇聚 YAML 静态白名单
+            if (properties != null) {
+                if (properties.getWhiteList() != null) {
+                    mergedWhitelist.addAll(properties.getWhiteList());
+                }
+                if (properties.getInterceptor() != null && properties.getInterceptor().getExcludes() != null) {
+                    mergedWhitelist.addAll(properties.getInterceptor().getExcludes());
+                }
             }
-            if (properties.getInterceptor() != null && properties.getInterceptor().getExcludes() != null) {
-                mergedWhitelist.addAll(properties.getInterceptor().getExcludes());
-            }
-        }
 
-        // 2. 汇聚 SaTokenWhitelistProvider SPI 动态白名单
-        if (whitelistProviders != null) {
-            for (SaTokenWhitelistProvider provider : whitelistProviders) {
-                if (provider != null) {
-                    try {
-                        Set<String> customList = provider.getWhitelist();
-                        if (customList != null && !customList.isEmpty()) {
-                            mergedWhitelist.addAll(customList);
-                            log.info("Sa-Token 汇聚 SPI 扩展白名单 [{}]: {}", provider.getClass().getSimpleName(), customList);
+            // 2. 汇聚 SaTokenWhitelistProvider SPI 动态白名单
+            if (whitelistProviders != null) {
+                for (SaTokenWhitelistProvider provider : whitelistProviders) {
+                    if (provider != null) {
+                        try {
+                            Set<String> customList = provider.getWhitelist();
+                            if (customList != null && !customList.isEmpty()) {
+                                mergedWhitelist.addAll(customList);
+                                log.info("Sa-Token 汇聚 SPI 扩展白名单 [{}]: {}", provider.getClass().getSimpleName(), customList);
+                            }
+                        } catch (Exception e) {
+                            log.error("Sa-Token 执行动态白名单 Provider [{}] 异常: ", provider.getClass().getName(), e);
                         }
-                    } catch (Exception e) {
-                        log.error("Sa-Token 执行动态白名单 Provider [{}] 异常: ", provider.getClass().getName(), e);
                     }
                 }
             }
-        }
 
-        // 3. 扫描 @Anonymous 声明式注解接口
-        Set<String> anonymousUrls = scanAnonymousUrls();
-        if (!anonymousUrls.isEmpty()) {
-            mergedWhitelist.addAll(anonymousUrls);
-            log.info("Sa-Token 扫描到 @Anonymous 声明式免鉴权路径 ({} 条): {}", anonymousUrls.size(), anonymousUrls);
-        }
+            // 3. 扫描 @Anonymous 声明式注解接口
+            Set<String> anonymousUrls = scanAnonymousUrls();
+            if (!anonymousUrls.isEmpty()) {
+                mergedWhitelist.addAll(anonymousUrls);
+                log.info("Sa-Token 扫描到 @Anonymous 声明式免鉴权路径 ({} 条): {}", anonymousUrls.size(), anonymousUrls);
+            }
 
-        // 4. 动态注入拦截器
-        saTokenInterceptor.setWhitelist(mergedWhitelist);
-        log.info("Sa-Token 全域路由白名单汇聚完成，生效总规则数: {}", mergedWhitelist.size());
+            // 4. 动态注入拦截器
+            saTokenInterceptor.setWhitelist(mergedWhitelist);
+            log.info("Sa-Token 全域路由白名单汇聚完成，生效总规则数: {}", mergedWhitelist.size());
+        } finally {
+            if (processLock.isHeldByCurrentThread()) {
+                processLock.unlock();
+            }
+        }
     }
 
     /**

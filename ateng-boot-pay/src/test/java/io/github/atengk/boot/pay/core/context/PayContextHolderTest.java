@@ -111,4 +111,28 @@ class PayContextHolderTest {
         assertEquals("wx1234567890", PayContextHolder.getDirectAppId());
         assertEquals("wx1234567890", PayContextHolder.getAppId());
     }
+
+    @Test
+    @DisplayName("MerchantKey 语义别名读写、租户回退与清理兼容性测试")
+    void testMerchantKeyAliasCompatibility() {
+        assertNull(PayContextHolder.getMerchantKey());
+
+        // 1. 通过 setMerchantKey 写入可同时被 getMerchantKey 与 getMerchantId 读取
+        PayContextHolder.setMerchantKey("tenant_key_01");
+        assertEquals("tenant_key_01", PayContextHolder.getMerchantKey());
+        assertEquals("tenant_key_01", PayContextHolder.getMerchantId());
+        assertEquals("tenant_key_01", PayContextHolder.getDirectMerchantId());
+
+        // 2. 与 setMerchantId / runWithMerchant 互操作保持对称
+        PayContextHolder.runWithMerchant("nested_key_02", () ->
+                assertEquals("nested_key_02", PayContextHolder.getMerchantKey()));
+        assertEquals("tenant_key_01", PayContextHolder.getMerchantKey());
+
+        // 3. 清理后同步回退租户上下文，再清零归 null
+        PayContextHolder.clear();
+        TenantContextHolder.setTenantId("saas_tenant_03");
+        assertEquals("saas_tenant_03", PayContextHolder.getMerchantKey());
+        TenantContextHolder.clear();
+        assertNull(PayContextHolder.getMerchantKey());
+    }
 }

@@ -283,4 +283,218 @@ class TcpClientIntegrationTest {
         clientTemplate.reconnect();
         assertThat(clientTemplate.isConnected()).isTrue();
     }
+
+    @Test
+    @DisplayName("验证服务端与客户端热重启 (stop -> start) 后全双工 RPC 时间轮自动可用，且并发启停重连线程安全")
+    void testRestartPreservesFullDuplexRpcAndConcurrentLifecycle() throws Exception {
+        TcpChannelCustomizer serverCustomizer = ch -> ch.pipeline().addLast(new SimpleChannelInboundHandler<TcpPayload>() {
+            @Override
+            protected void channelRead0(ChannelHandlerContext ctx, TcpPayload msg) {
+                String reqJson = msg.asString();
+                if (reqJson.contains("\"requestId\"")) {
+                    String reqId = clientCorrelationManager.getCorrelationIdExtractor().extract(reqJson);
+                    if (reqId != null) {
+                        ctx.writeAndFlush("{\"requestId\":\"" + reqId + "\",\"result\":\"RESTART_RPC_OK\"}\n");
+                    }
+                }
+            }
+        });
+
+        initServerAndClient(List.of(serverCustomizer), Collections.emptyList());
+
+        // 1. 客户端 stop -> start 热重启后发起全双工 RPC
+        client.stop();
+        assertThat(client.isRunning()).isFalse();
+        client.start();
+        long deadlineClient = System.currentTimeMillis() + 3000;
+        while (!client.isConnected() && System.currentTimeMillis() < deadlineClient) {
+            Thread.sleep(30);
+        }
+        assertThat(client.isConnected()).isTrue();
+
+        String reqId1 = IdUtil.fastSimpleUUID();
+        TcpPacket resp1 = clientTemplate.request(
+                TcpPacket.of("PING", reqId1, TcpPayload.of("{\"requestId\":\"" + reqId1 + "\",\"command\":\"PING\"}\n")),
+                Duration.ofSeconds(3)
+        );
+        assertThat(resp1.getPayload().asString()).contains("RESTART_RPC_OK");
+
+        // 2. 服务端 stop -> start 热重启后（同端口）客户端重连并发起全双工 RPC
+        int boundPort = server.getActualPort();
+        server.stop();
+        assertThat(server.isRunning()).isFalse();
+        server.getProperties().setPort(boundPort);
+        server.start();
+        assertThat(server.isRunning()).isTrue();
+
+        client.reconnect();
+        assertThat(client.isConnected()).isTrue();
+
+        String reqId2 = IdUtil.fastSimpleUUID();
+        TcpPacket resp2 = clientTemplate.request(
+                TcpPacket.of("PING", reqId2, TcpPayload.of("{\"requestId\":\"" + reqId2 + "\",\"command\":\"PING\"}\n")),
+                Duration.ofSeconds(3)
+        );
+        assertThat(resp2.getPayload().asString()).contains("RESTART_RPC_OK");
+
+        // 3. 在 JDK 21+ 上基于虚拟线程（JDK 17 回退平台线程）并发调用 start / stop / reconnect 验证 ReentrantLock 互斥与防 Pinning 安全性
+        org.springframework.core.task.SimpleAsyncTaskExecutor executor = new org.springframework.core.task.SimpleAsyncTaskExecutor("test-tcp-vt-");
+        if (Runtime.version().feature() >= 21) {
+            executor.setVirtualThreads(true);
+        }
+        try {
+            java.util.concurrent.CountDownLatch startLatch = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.CountDownLatch doneLatch = new java.util.concurrent.CountDownLatch(5);
+            java.util.List<Throwable> errors = new CopyOnWriteArrayList<>();
+            java.util.List<Runnable> actions = java.util.List.of(
+                    () -> client.stop(),
+                    () -> client.start(),
+                    () -> {
+                        try {
+                            client.reconnect();
+                        } catch (Exception ignored) {
+                            // 并发 stop 窗口下 reconnect 可能抛出连接失败异常，锁互斥不应死锁或 Pinning
+                        }
+                    },
+                    () -> client.start(),
+                    () -> server.start()
+            );
+            for (Runnable action : actions) {
+                executor.execute(() -> {
+                    try {
+                        startLatch.await();
+                        action.run();
+                    } catch (Throwable ex) {
+                        errors.add(ex);
+                    } finally {
+                        doneLatch.countDown();
+                    }
+                });
+            }
+            startLatch.countDown();
+            assertThat(doneLatch.await(15, TimeUnit.SECONDS)).isTrue();
+            assertThat(errors).isEmpty();
+            client.stop();
+            client.start();
+            assertThat(client.isConnected()).isTrue();
+        } finally {
+            executor.close();
+        }
+    }
+
+    @Test
+    @DisplayName("验证毫秒级心跳保活（250ms）与自定义 response-payload 静默消费不穿透下游业务")
+    void testMillisecondHeartbeatAndCustomResponsePayload() throws Exception {
+        CountDownLatch pingReceivedLatch = new CountDownLatch(2);
+        List<String> serverReceivedPings = new CopyOnWriteArrayList<>();
+
+        TcpServerProperties serverProps = new TcpServerProperties();
+        serverProps.setPort(0);
+        serverProps.getFraming().setMode(FramingMode.DELIMITER);
+        serverProps.getFraming().setDelimiter("\n");
+
+        sessionManager = new TcpSessionManager();
+        serverCorrelationManager = new TcpRequestCorrelationManager();
+        server = new TcpServer(
+                serverProps,
+                sessionManager,
+                serverCorrelationManager,
+                Collections.emptyList(),
+                List.of((TcpChannelCustomizer) ch -> ch.pipeline().addLast(new SimpleChannelInboundHandler<TcpPayload>() {
+                    @Override
+                    protected void channelRead0(ChannelHandlerContext ctx, TcpPayload msg) {
+                        String text = msg.asString().trim();
+                        if ("CUSTOM_HB_PING".equals(text)) {
+                            serverReceivedPings.add(text);
+                            ctx.writeAndFlush("CUSTOM_HB_PONG\n");
+                            pingReceivedLatch.countDown();
+                        }
+                    }
+                })),
+                null
+        );
+        server.start();
+        int port = server.getActualPort();
+
+        List<String> clientDownstreamMessages = new CopyOnWriteArrayList<>();
+        CountDownLatch bizMsgLatch = new CountDownLatch(1);
+
+        TcpClientProperties clientProps = new TcpClientProperties();
+        clientProps.setEnabled(true);
+        clientProps.setHost("127.0.0.1");
+        clientProps.setPort(port);
+        clientProps.getFraming().setMode(FramingMode.DELIMITER);
+        clientProps.getFraming().setDelimiter("\n");
+        clientProps.getHeartbeat().setEnabled(true);
+        clientProps.getHeartbeat().setInterval(Duration.ofMillis(250));
+        clientProps.getHeartbeat().setPayload("CUSTOM_HB_PING");
+        clientProps.getHeartbeat().setResponsePayload("CUSTOM_HB_PONG");
+
+        clientCorrelationManager = new TcpRequestCorrelationManager();
+        client = new TcpClient(
+                clientProps,
+                Collections.emptyList(),
+                List.of((TcpChannelCustomizer) ch -> ch.pipeline().addLast(new SimpleChannelInboundHandler<TcpPayload>() {
+                    @Override
+                    protected void channelRead0(ChannelHandlerContext ctx, TcpPayload msg) {
+                        clientDownstreamMessages.add(msg.asString().trim());
+                        if ("BIZ_HELLO".equals(msg.asString().trim())) {
+                            bizMsgLatch.countDown();
+                        }
+                    }
+                })),
+                null,
+                clientCorrelationManager
+        );
+        client.start();
+
+        // 1. 亚秒级 250ms 心跳应在 2s 内至少触发 2 次（若按旧实现 toSeconds() 截断为 0 则永不触发）
+        assertThat(pingReceivedLatch.await(2, TimeUnit.SECONDS)).isTrue();
+        assertThat(serverReceivedPings).hasSizeGreaterThanOrEqualTo(2);
+
+        // 2. 向客户端发送业务报文，确认业务报文到达下游而 CUSTOM_HB_PONG 被静默消费未穿透
+        serverCorrelationManager = server.getCorrelationManager();
+        TcpSession serverSession = sessionManager.getAllSessions().iterator().next();
+        serverSession.send("BIZ_HELLO\n");
+        assertThat(bizMsgLatch.await(2, TimeUnit.SECONDS)).isTrue();
+        assertThat(clientDownstreamMessages).containsExactly("BIZ_HELLO");
+        assertThat(clientDownstreamMessages).doesNotContain("CUSTOM_HB_PONG");
+
+        // 3. 验证 responsePayload 为空白时安全回退消费默认 "PONG"
+        clientDownstreamMessages.clear();
+        clientProps.getHeartbeat().setResponsePayload("   ");
+        serverSession.send("PONG\n");
+        serverSession.send("BIZ_AFTER_PONG\n");
+        long waitAfterPong = System.currentTimeMillis() + 2000;
+        while (!clientDownstreamMessages.contains("BIZ_AFTER_PONG") && System.currentTimeMillis() < waitAfterPong) {
+            Thread.sleep(20);
+        }
+        assertThat(clientDownstreamMessages).contains("BIZ_AFTER_PONG");
+        assertThat(clientDownstreamMessages).doesNotContain("PONG");
+
+        // 4. 验证 JSON 载荷心跳识别：
+        // 4a. 文本配置 PONG 可识别无 requestId 的 {"command":"PONG"} 心跳回执，但不误吞 {"command":"ECHO","status":"PONG"} 业务报文
+        clientDownstreamMessages.clear();
+        clientProps.getHeartbeat().setResponsePayload("PONG");
+        serverSession.send("{\"command\":\"PONG\"}\n");
+        serverSession.send("{\"command\":\"ECHO\",\"status\":\"PONG\"}\n");
+        long waitJsonToken = System.currentTimeMillis() + 2000;
+        while (!clientDownstreamMessages.contains("{\"command\":\"ECHO\",\"status\":\"PONG\"}") && System.currentTimeMillis() < waitJsonToken) {
+            Thread.sleep(20);
+        }
+        assertThat(clientDownstreamMessages).contains("{\"command\":\"ECHO\",\"status\":\"PONG\"}");
+        assertThat(clientDownstreamMessages).doesNotContain("{\"command\":\"PONG\"}");
+
+        // 4b. JSON 格式 responsePayload 支持忽略键序与空白的结构化等价匹配
+        clientDownstreamMessages.clear();
+        clientProps.getHeartbeat().setResponsePayload("{\"type\":\"HEARTBEAT\",\"status\":\"PONG\"}");
+        serverSession.send("  { \"status\" : \"PONG\" , \"type\" : \"HEARTBEAT\" }  \n");
+        serverSession.send("BIZ_AFTER_JSON_HB\n");
+        long waitJsonStruct = System.currentTimeMillis() + 2000;
+        while (!clientDownstreamMessages.contains("BIZ_AFTER_JSON_HB") && System.currentTimeMillis() < waitJsonStruct) {
+            Thread.sleep(20);
+        }
+        assertThat(clientDownstreamMessages).contains("BIZ_AFTER_JSON_HB");
+        assertThat(clientDownstreamMessages).noneMatch(msg -> msg.contains("HEARTBEAT"));
+    }
 }

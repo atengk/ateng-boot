@@ -186,4 +186,66 @@ class RedisSemaphoreTemplateTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("acquirePermits must not exceed totalPermits");
     }
+
+    @Test
+    @DisplayName("测试对称门面 tryAcquire 与 release 多许可获取与归还")
+    void testTryAcquireAndReleaseSymmetric() throws Exception {
+        when(semaphore.tryAcquire(3, Duration.ofSeconds(2))).thenReturn(true);
+        when(semaphore.tryAcquire(2)).thenReturn(true);
+        when(semaphore.tryAcquire(1, Duration.ofSeconds(1))).thenReturn(true);
+        when(semaphore.tryAcquire(1)).thenReturn(true);
+
+        assertThat(template.tryAcquire("task:sem", 3, Duration.ofSeconds(2))).isTrue();
+        verify(semaphore).tryAcquire(3, Duration.ofSeconds(2));
+
+        template.release("task:sem", 3);
+        verify(semaphore).release(3);
+
+        assertThat(template.tryAcquire("task:sem", 2)).isTrue();
+        verify(semaphore).tryAcquire(2);
+
+        assertThat(template.tryAcquire("task:sem", Duration.ofSeconds(1))).isTrue();
+        verify(semaphore).tryAcquire(1, Duration.ofSeconds(1));
+
+        assertThat(template.tryAcquire("task:sem")).isTrue();
+        verify(semaphore).tryAcquire(1);
+
+        template.release("task:sem");
+        verify(semaphore).release(1);
+
+        // 静态门面委托验证
+        assertThat(RedisSemaphoreUtil.tryAcquire("task:sem", 3, Duration.ofSeconds(2))).isTrue();
+        RedisSemaphoreUtil.release("task:sem", 3);
+
+        assertThat(RedisSemaphoreUtil.tryAcquire("task:sem", 2)).isTrue();
+        assertThat(RedisSemaphoreUtil.tryAcquire("task:sem", Duration.ofSeconds(1))).isTrue();
+        assertThat(RedisSemaphoreUtil.tryAcquire("task:sem")).isTrue();
+        RedisSemaphoreUtil.release("task:sem");
+    }
+
+    @Test
+    @DisplayName("测试信号量键名默认 semaphore 前缀与无冒号前缀规范化幂等防重")
+    void testSemaphoreKeyPrefixIdempotentNormalization() throws Exception {
+        RedisProperties props = new RedisProperties();
+        props.setKeyPrefix("prod");
+        RedisSemaphoreTemplate prefixedSemaphore = new RedisSemaphoreTemplate(redissonClient, props);
+
+        when(redissonClient.getSemaphore("prod:semaphore:export")).thenReturn(semaphore);
+        when(semaphore.tryAcquire(1, Duration.ofSeconds(1))).thenReturn(true);
+
+        assertThat(prefixedSemaphore.tryAcquire("export", Duration.ofSeconds(1))).isTrue();
+        assertThat(prefixedSemaphore.tryAcquire("semaphore:export", Duration.ofSeconds(1))).isTrue();
+        assertThat(prefixedSemaphore.tryAcquire("prod:semaphore:export", Duration.ofSeconds(1))).isTrue();
+        verify(redissonClient, org.mockito.Mockito.times(3)).getSemaphore("prod:semaphore:export");
+
+        // 验证自定义 semaphore.prefix 无冒号规范化
+        RedisProperties customProps = new RedisProperties();
+        customProps.setKeyPrefix("prod");
+        customProps.getSemaphore().setPrefix("sem");
+        RedisSemaphoreTemplate customSemaphore = new RedisSemaphoreTemplate(redissonClient, customProps);
+        when(redissonClient.getSemaphore("prod:sem:export")).thenReturn(semaphore);
+
+        assertThat(customSemaphore.tryAcquire("export", Duration.ofSeconds(1))).isTrue();
+        verify(redissonClient).getSemaphore("prod:sem:export");
+    }
 }

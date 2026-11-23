@@ -120,6 +120,8 @@ class WechatPayTemplateTest {
         PayProperties payProperties = new PayProperties();
         WechatPayProperties wechat = payProperties.getWechat();
         wechat.setDefaultMerchant("default");
+        wechat.getReverseRetry().setDelay(Duration.ofMillis(20));
+        wechat.getReverseRetry().setMaxDelay(Duration.ofMillis(20));
 
         Map<String, WechatMerchantProperties> merchants = new HashMap<>();
 
@@ -145,11 +147,22 @@ class WechatPayTemplateTest {
         partnerMch.setNotifyUrl("https://example.com/pay/callback/partner");
         merchants.put("partner_tenant", partnerMch);
 
+        // 静态平台公钥直连商户
+        WechatMerchantProperties pubKeyMch = new WechatMerchantProperties();
+        pubKeyMch.setMchId("1900000003");
+        pubKeyMch.setAppId("wx_pubkey_app");
+        pubKeyMch.setMerchantSerialNumber(testCertSerial);
+        pubKeyMch.setPrivateKeyPath(CLASSPATH_KEY);
+        pubKeyMch.setWechatPayPublicKeyPath("classpath:certs/test_public_key.pem");
+        pubKeyMch.setWechatPayPublicKeyId("PUB_KEY_ID_TEST_001");
+        pubKeyMch.setNotifyUrl("https://example.com/pay/callback/wechat");
+        merchants.put("pubkey_mch", pubKeyMch);
+
         wechat.setMerchants(merchants);
         merchantRegistry = new NamedMerchantRegistry(payProperties);
 
         // 5. 初始化 WechatPayTemplate
-        payTemplate = new WechatPayTemplate(merchantRegistry, certificateManager);
+        payTemplate = new WechatPayTemplate(merchantRegistry, certificateManager, payProperties);
 
         // 6. 注入重定向拦截器，将腾讯官方域名流量 100% 导入本地 MockWebServer
         OkHttpClient redirectOkHttpClient = new OkHttpClient.Builder()
@@ -431,6 +444,94 @@ class WechatPayTemplateTest {
         assertTrue(recorded.getBody().readUtf8().contains("\"mchid\":\"1900000001\""));
     }
 
+    @Test
+    @DisplayName("cancelOrder: 直连商户成功发起撤销冲正并断言 URL 与 mchid")
+    void testCancelOrderDirect() throws Exception {
+        server.enqueue(mockResponse(204, null));
+
+        PayResponse response = payTemplate.cancelOrder("CANCEL_20261023_001");
+
+        assertNotNull(response);
+        assertTrue(response.isSuccess());
+        assertEquals(PayTradeState.REVOKED, response.getTradeState());
+        assertEquals("CANCEL_20261023_001", response.getOutTradeNo());
+        assertEquals("订单已成功撤销冲正", response.getTradeStateDesc());
+
+        RecordedRequest recorded = server.takeRequest();
+        assertEquals("POST", recorded.getMethod());
+        assertEquals("/v3/pay/transactions/out-trade-no/CANCEL_20261023_001/reverse", recorded.getPath());
+        assertTrue(recorded.getBody().readUtf8().contains("\"mchid\":\"1900000001\""));
+    }
+
+    @Test
+    @DisplayName("cancelOrder: 服务商模式 (Partner) 撤销冲正注入 sp_mchid 与 sub_mchid")
+    void testCancelOrderPartner() throws Exception {
+        server.enqueue(mockResponse(204, null));
+
+        WechatPayRequest request = WechatPayRequest.builder()
+                .merchantKey("partner_tenant")
+                .outTradeNo("CANCEL_PARTNER_002")
+                .build();
+
+        PayResponse response = payTemplate.cancelOrder(request);
+
+        assertNotNull(response);
+        assertTrue(response.isSuccess());
+        assertEquals(PayTradeState.REVOKED, response.getTradeState());
+        assertEquals("CANCEL_PARTNER_002", response.getOutTradeNo());
+
+        RecordedRequest recorded = server.takeRequest();
+        assertEquals("POST", recorded.getMethod());
+        assertEquals("/v3/pay/partner/transactions/out-trade-no/CANCEL_PARTNER_002/reverse", recorded.getPath());
+        String body = recorded.getBody().readUtf8();
+        assertTrue(body.contains("\"sp_mchid\":\"1900000000\""));
+        assertTrue(body.contains("\"sub_mchid\":\"1900000002\""));
+    }
+
+    @Test
+    @DisplayName("cancelOrder: 遭遇微信服务端 SYSTEMERROR 异常时依托 RetryUtil 自动重试并最终成功")
+    void testCancelOrderRetryResilience() throws Exception {
+        String errorJson = "{\"code\":\"SYSTEMERROR\",\"message\":\"系统繁忙，请稍后重试\"}";
+        server.enqueue(mockResponse(500, errorJson));
+        server.enqueue(mockResponse(500, errorJson));
+        server.enqueue(mockResponse(204, null));
+
+        PayResponse response = payTemplate.cancelOrder("CANCEL_RETRY_003");
+
+        assertNotNull(response);
+        assertTrue(response.isSuccess());
+        assertEquals(PayTradeState.REVOKED, response.getTradeState());
+        assertEquals(3, server.getRequestCount());
+    }
+
+    @Test
+    @DisplayName("cancelOrder: 重试耗尽后如实转译业务异常并暴露真实因果链")
+    void testCancelOrderRetryExhaustedFails() throws Exception {
+        PayProperties customProps = new PayProperties();
+        customProps.getWechat().getReverseRetry().setMaxAttempts(2);
+        customProps.getWechat().getReverseRetry().setDelay(Duration.ofMillis(10));
+        customProps.getWechat().getReverseRetry().setMaxDelay(Duration.ofMillis(10));
+        WechatPayTemplate retryFailTemplate = new WechatPayTemplate(merchantRegistry, certificateManager, customProps);
+        retryFailTemplate.setCustomHttpClient(payTemplate.getHttpClient());
+
+        String errorJson = "{\"code\":\"SYSTEMERROR\",\"message\":\"系统繁忙，请稍后重试\"}";
+        server.enqueue(mockResponse(500, errorJson));
+        server.enqueue(mockResponse(500, errorJson));
+
+        PayTradeException ex = assertThrows(PayTradeException.class, () -> retryFailTemplate.cancelOrder("CANCEL_FAIL_004"));
+        assertEquals("SYSTEMERROR", ex.getRawErrorCode());
+        assertTrue(ex.getRawErrorMessage().contains("系统繁忙"));
+    }
+
+    @Test
+    @DisplayName("cancelOrder: 空入参或商户订单号缺失时 Fail-Fast 拦截")
+    void testCancelOrderValidation() {
+        assertThrows(PayException.class, () -> payTemplate.cancelOrder((WechatPayRequest) null));
+        assertThrows(PayException.class, () -> payTemplate.cancelOrder((String) null));
+        assertThrows(PayException.class, () -> payTemplate.cancelOrder("   "));
+        assertThrows(PayException.class, () -> payTemplate.cancelOrder(WechatPayRequest.builder().build()));
+    }
+
     // =========================================================================
     // 7. 服务商模式测试 (ISV特约商户)
     // =========================================================================
@@ -700,6 +801,20 @@ class WechatPayTemplateTest {
         assertEquals(PayResultCode.PAY_PARAM_INVALID, ex4.getResultCode());
     }
 
+    @Test
+    @DisplayName("payNative: 超出 32 位整型分上限金额快速拦截防止静默截断")
+    void testPayNativeAmountOverflowGuard() {
+        WechatPayRequest overflowReq = WechatPayRequest.builder()
+                .outTradeNo("OVERFLOW_20261118_001")
+                .description("大额防溢出校验商品")
+                .amount(new BigDecimal("21474836.48"))
+                .build();
+
+        PayException ex = assertThrows(PayException.class, () -> payTemplate.payNative(overflowReq));
+        assertEquals(PayResultCode.PAY_AMOUNT_INVALID, ex.getResultCode());
+        assertEquals(0, server.getRequestCount(), "金额溢出必须在调用网关前前置阻断");
+    }
+
     // =========================================================================
     // 10. 资金分账单元测试 (Profit Sharing)
     // =========================================================================
@@ -964,10 +1079,16 @@ class WechatPayTemplateTest {
 
         PayException ex4 = assertThrows(PayException.class, () -> payTemplate.getTransferBatchService());
         assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex4.getResultCode());
+
+        PayException ex5 = assertThrows(PayException.class, () -> payTemplate.queryTransfer("BILL_DISABLED_001"));
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex5.getResultCode());
+
+        PayException ex6 = assertThrows(PayException.class, () -> payTemplate.cancelTransfer("BILL_DISABLED_001"));
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex6.getResultCode());
     }
 
     @Test
-    @DisplayName("transfer: 100% 离线自洽模拟微信单笔转账发起与明细状态查询")
+    @DisplayName("transfer(legacyBatchMode=true): 显式开启旧版批次模式兼容调用 /v3/transfer/batches")
     void testInitiateSingleTransferAndQueryHermetic() throws Exception {
         payTemplate.setTransferEnabled(true);
 
@@ -982,6 +1103,7 @@ class WechatPayTemplateTest {
                 .transferRemark("研发绩效奖金")
                 .openid("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o")
                 .userName("张三")
+                .legacyBatchMode(true)
                 .build();
 
         PayTransferResponse transferResp = payTemplate.transfer(transferReq);
@@ -1024,6 +1146,143 @@ class WechatPayTemplateTest {
 
         // 3. 逃生舱实例检查
         assertNotNull(payTemplate.getTransferBatchService());
+    }
+
+    @Test
+    @DisplayName("transfer: 默认新版商家转账全链路 (WAIT_USER_CONFIRM / packageInfo / user_name 加密 / 双路径查单 / cancelTransfer)")
+    void testUserConfirmTransferMainFlowAndCancelHermetic() throws Exception {
+        payTemplate.setTransferEnabled(true);
+
+        // 1. 大额 >= 2000 元未传收款人真实姓名必须 Fail-Fast
+        WechatTransferRequest largeWithoutName = WechatTransferRequest.builder()
+                .outBatchNo("MCH_TRANS_LARGE_NO_NAME")
+                .amount(new BigDecimal("2000.00"))
+                .openid("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o")
+                .build();
+        PayException largeEx = assertThrows(PayException.class, () -> payTemplate.transfer(largeWithoutName));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, largeEx.getResultCode());
+
+        // 1b. 场景报备项存在空白 infoType/infoContent 时必须 Fail-Fast
+        WechatTransferRequest badReportReq = WechatTransferRequest.builder()
+                .outBatchNo("MCH_TRANS_BAD_REPORT")
+                .amount(new BigDecimal("10.00"))
+                .openid("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o")
+                .transferSceneReportInfos(java.util.List.of(
+                        io.github.atengk.boot.pay.model.request.TransferSceneReportInfo.builder()
+                                .infoType("   ")
+                                .infoContent("活动内容")
+                                .build()))
+                .build();
+        PayException badReportEx = assertThrows(PayException.class, () -> payTemplate.transfer(badReportReq));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, badReportEx.getResultCode());
+
+        // 2. 新版商家转账发起（使用平台公钥商户 pubkey_mch + 场景报备 + 真实姓名加密）
+        com.wechat.pay.java.core.Config pubKeyConfig = payTemplate.getWechatConfig("pubkey_mch");
+        OkHttpClient redirectOkHttpClient = new OkHttpClient.Builder()
+                .addInterceptor(chain -> {
+                    Request orig = chain.request();
+                    HttpUrl newUrl = orig.url().newBuilder()
+                            .scheme("http")
+                            .host(server.getHostName())
+                            .port(server.getPort())
+                            .build();
+                    return chain.proceed(orig.newBuilder().url(newUrl).build());
+                })
+                .build();
+        HttpClient pubKeyHttpClient = new DefaultHttpClientBuilder()
+                .config(pubKeyConfig)
+                .okHttpClient(redirectOkHttpClient)
+                .build();
+
+        String initiateJson = "{\"out_bill_no\":\"MCH_BILL_20261118_01\",\"transfer_bill_no\":\"133000007110109690030000001\",\"create_time\":\"2026-11-18T15:00:00+08:00\",\"state\":\"WAIT_USER_CONFIRM\",\"package_info\":\"MOCK_PKG_INFO_ABC\"}";
+        server.enqueue(mockResponse(200, initiateJson, "PUB_KEY_ID_TEST_001"));
+
+        var reportInfo = io.github.atengk.boot.pay.model.request.TransferSceneReportInfo.builder()
+                .infoType("活动名称")
+                .infoContent("会员拉新奖励")
+                .build();
+        WechatTransferRequest newReq = WechatTransferRequest.builder()
+                .merchantKey("pubkey_mch")
+                .outBatchNo("MCH_BILL_20261118_01")
+                .transferSceneId("1000")
+                .transferRemark("会员拉新现金红包")
+                .amount(new BigDecimal("2000.00"))
+                .openid("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o")
+                .userName("王五")
+                .notifyUrl("https://example.com/transfer/notify")
+                .transferSceneReportInfos(java.util.List.of(reportInfo))
+                .build();
+
+        assertFalse(newReq.toString().contains("王五"), "WechatTransferRequest.toString() 不得泄露收款人明文姓名");
+
+        HttpClient defaultHttpClient = new DefaultHttpClientBuilder()
+                .config(payTemplate.getWechatConfig())
+                .okHttpClient(redirectOkHttpClient)
+                .build();
+
+        PayTransferResponse initResp;
+        payTemplate.setCustomHttpClient(pubKeyHttpClient);
+        try {
+            initResp = payTemplate.transfer("pubkey_mch", newReq);
+        } finally {
+            payTemplate.setCustomHttpClient(defaultHttpClient);
+        }
+        assertEquals(PayChannel.WECHAT_PAY, initResp.getChannel());
+        assertEquals("MCH_BILL_20261118_01", initResp.getOutBizNo());
+        assertEquals("133000007110109690030000001", initResp.getOrderId());
+        assertEquals(PayTransferState.WAIT_USER_CONFIRM, initResp.getStatus());
+        assertEquals("MOCK_PKG_INFO_ABC", initResp.getPackageInfo());
+        assertFalse(initResp.toString().contains("王五"), "PayTransferResponse.toString() 不得泄露收款人明文姓名");
+
+        RecordedRequest recordedInit = server.takeRequest();
+        assertEquals("POST", recordedInit.getMethod());
+        assertEquals("/v3/fund-app/mch-transfer/transfer-bills", recordedInit.getPath());
+        assertEquals("PUB_KEY_ID_TEST_001", recordedInit.getHeader("Wechatpay-Serial"));
+        String initBody = recordedInit.getBody().readUtf8();
+        assertTrue(initBody.contains("\"appid\":\"wx_pubkey_app\""));
+        assertTrue(initBody.contains("\"out_bill_no\":\"MCH_BILL_20261118_01\""));
+        assertTrue(initBody.contains("\"transfer_scene_id\":\"1000\""));
+        assertTrue(initBody.contains("\"openid\":\"oUpF8uMuAJO_M2pxb1Q9zNjWeS6o\""));
+        assertTrue(initBody.contains("\"transfer_amount\":200000"));
+        assertTrue(initBody.contains("\"transfer_remark\":\"会员拉新现金红包\""));
+        assertTrue(initBody.contains("\"transfer_scene_report_infos\""));
+        assertTrue(initBody.contains("\"info_type\":\"活动名称\""));
+        assertTrue(initBody.contains("\"info_content\":\"会员拉新奖励\""));
+        assertTrue(initBody.contains("\"notify_url\":\"https://example.com/transfer/notify\""));
+        assertTrue(initBody.contains("\"user_name\":\"") && !initBody.contains("\"user_name\":\"王五\""),
+                "出站载荷中的 user_name 必须为密文");
+
+        // 3. 按商户单号 out_bill_no 查询
+        String queryByOutJson = "{\"mch_id\":\"1900000001\",\"out_bill_no\":\"MCH_BILL_20261118_01\",\"transfer_bill_no\":\"133000007110109690030000001\",\"state\":\"SUCCESS\",\"transfer_amount\":200000,\"openid\":\"oUpF8uMuAJO_M2pxb1Q9zNjWeS6o\",\"update_time\":\"2026-11-18T15:02:00+08:00\"}";
+        server.enqueue(mockResponse(200, queryByOutJson));
+        PayTransferResponse q1 = payTemplate.queryTransfer("MCH_BILL_20261118_01");
+        assertEquals(PayTransferState.SUCCESS, q1.getStatus());
+        assertEquals(new BigDecimal("2000.00"), q1.getAmount());
+        assertEquals("133000007110109690030000001", q1.getOrderId());
+        RecordedRequest reqQ1 = server.takeRequest();
+        assertEquals("GET", reqQ1.getMethod());
+        assertEquals("/v3/fund-app/mch-transfer/transfer-bills/out-bill-no/MCH_BILL_20261118_01", reqQ1.getPath());
+
+        // 4. 按微信转账单号 transfer_bill_no 查询
+        String queryByWxJson = "{\"mch_id\":\"1900000001\",\"out_bill_no\":\"MCH_BILL_20261118_01\",\"transfer_bill_no\":\"133000007110109690030000001\",\"state\":\"PROCESSING\",\"transfer_amount\":5000,\"openid\":\"oUpF8uMuAJO_M2pxb1Q9zNjWeS6o\",\"create_time\":\"2026-11-18T15:00:00+08:00\"}";
+        server.enqueue(mockResponse(200, queryByWxJson));
+        PayTransferResponse q2 = payTemplate.queryTransfer(null, null, "133000007110109690030000001");
+        assertEquals(PayTransferState.PROCESSING, q2.getStatus());
+        assertEquals(new BigDecimal("50.00"), q2.getAmount());
+        RecordedRequest reqQ2 = server.takeRequest();
+        assertEquals("GET", reqQ2.getMethod());
+        assertEquals("/v3/fund-app/mch-transfer/transfer-bills/transfer-bill-no/133000007110109690030000001", reqQ2.getPath());
+
+        // 5. 撤销转账 cancelTransfer
+        String cancelJson = "{\"out_bill_no\":\"MCH_BILL_20261118_01\",\"transfer_bill_no\":\"133000007110109690030000001\",\"state\":\"CANCELLED\",\"update_time\":\"2026-11-18T15:03:00+08:00\"}";
+        server.enqueue(mockResponse(200, cancelJson));
+        PayTransferResponse cancelResp = payTemplate.cancelTransfer("MCH_BILL_20261118_01");
+        assertEquals(PayTransferState.CANCELLED, cancelResp.getStatus());
+        assertEquals("MCH_BILL_20261118_01", cancelResp.getOutBizNo());
+        assertEquals("133000007110109690030000001", cancelResp.getOrderId());
+        RecordedRequest reqCancel = server.takeRequest();
+        assertEquals("POST", reqCancel.getMethod());
+        assertEquals("/v3/fund-app/mch-transfer/transfer-bills/out-bill-no/MCH_BILL_20261118_01/cancel", reqCancel.getPath());
     }
 
     @Test
@@ -1092,6 +1351,434 @@ class WechatPayTemplateTest {
         assertEquals(PayResultCode.PAY_PARAM_INVALID, ex3.getResultCode());
     }
 
+    @Test
+    @DisplayName("平台公钥模式：使用 wechatPayPublicKeyPath 加载公钥并初始化 RSAPublicKeyConfig 与 Native 扫码成功")
+    void testInitWithWechatPayPublicKeyPathAndPayNative() throws Exception {
+        com.wechat.pay.java.core.Config config = payTemplate.getWechatConfig("pubkey_mch");
+        assertNotNull(config, "获取配置对象不应为空");
+        assertInstanceOf(com.wechat.pay.java.core.RSAPublicKeyConfig.class, config,
+                "配置对象必须是官方 RSAPublicKeyConfig 实例");
+
+        // 为 pubkey_mch 注入对应的 MockHttpClient，使其使用 RSAPublicKeyConfig 进行响应验签
+        OkHttpClient redirectOkHttpClient = new OkHttpClient.Builder()
+                .addInterceptor(chain -> {
+                    Request orig = chain.request();
+                    HttpUrl newUrl = orig.url().newBuilder()
+                            .scheme("http")
+                            .host(server.getHostName())
+                            .port(server.getPort())
+                            .build();
+                    return chain.proceed(orig.newBuilder().url(newUrl).build());
+                })
+                .build();
+        HttpClient pubKeyHttpClient = new DefaultHttpClientBuilder()
+                .config(config)
+                .okHttpClient(redirectOkHttpClient)
+                .build();
+        payTemplate.setCustomHttpClient(pubKeyHttpClient);
+
+        String mockResponseJson = "{\"code_url\":\"weixin://wxpay/bizpayurl?pr=mock_pubkey_qr\"}";
+        server.enqueue(mockResponse(200, mockResponseJson, "PUB_KEY_ID_TEST_001"));
+
+        WechatPayRequest request = WechatPayRequest.builder()
+                .merchantKey("pubkey_mch")
+                .outTradeNo("PUBKEY_20261023_001")
+                .description("测试平台公钥商品-Native")
+                .amount(new BigDecimal("88.88"))
+                .build();
+
+        PayResponse response = payTemplate.payNative(request);
+
+        assertNotNull(response);
+        assertTrue(response.isSuccess());
+        assertEquals("weixin://wxpay/bizpayurl?pr=mock_pubkey_qr", response.getQrCode());
+        assertEquals(new BigDecimal("88.88"), response.getAmount());
+    }
+
+    @Test
+    @DisplayName("网络超时防悬挂: 微信 HttpProperties 读取超时真实作用于构建出的 HttpClient 并验证非法超时 Fail-Fast")
+    void testWechatHttpTimeoutTakesEffectAndValidation() {
+        PayProperties fastProps = new PayProperties();
+        fastProps.getWechat().getHttp().setConnectTimeout(Duration.ofMillis(500));
+        fastProps.getWechat().getHttp().setReadTimeout(Duration.ofMillis(200));
+        fastProps.getWechat().getHttp().setWriteTimeout(Duration.ofMillis(500));
+        fastProps.getWechat().setDefaultMerchant("fast");
+
+        WechatMerchantProperties mch = new WechatMerchantProperties();
+        mch.setMchId("1900000099");
+        mch.setAppId("wx_fast_app");
+        mch.setMerchantSerialNumber(testCertSerial);
+        mch.setPrivateKeyPath(CLASSPATH_KEY);
+        fastProps.getWechat().getMerchants().put("fast", mch);
+
+        certificateManager.registerCertificates("1900000099", Map.of(testCertSerial, testCert));
+        WechatPayTemplate fastTemplate = new WechatPayTemplate(
+                new NamedMerchantRegistry(fastProps), certificateManager, fastProps);
+
+        server.enqueue(new MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE));
+        HttpClient builtClient = fastTemplate.getHttpClient("fast");
+        long startNanos = System.nanoTime();
+        assertThrows(com.wechat.pay.java.core.exception.HttpException.class,
+                () -> builtClient.download(server.url("/v3/slow-timeout-probe").toString()));
+        long elapsedMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+        assertTrue(elapsedMs < 3000, "微信 200ms 读取超时必须生效，实际耗时: " + elapsedMs + "ms");
+
+        // 非法 <= 0 超时配置必须 Fail-Fast
+        PayProperties badProps = new PayProperties();
+        badProps.getWechat().getHttp().setReadTimeout(Duration.ZERO);
+        badProps.getWechat().setDefaultMerchant("bad");
+        badProps.getWechat().getMerchants().put("bad", mch);
+        WechatPayTemplate badTemplate = new WechatPayTemplate(
+                new NamedMerchantRegistry(badProps), certificateManager, badProps);
+        PayException ex = assertThrows(PayException.class, () -> badTemplate.getHttpClient("bad"));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex.getResultCode());
+    }
+
+    @Test
+    @DisplayName("微信公钥ID强校验: 配置公钥但缺失 wechatPayPublicKeyId 时快速失败而非回退商户序列号")
+    void testWechatPublicKeyMissingIdFailFast() {
+        PayProperties props = new PayProperties();
+        props.getWechat().setDefaultMerchant("pubkey_missing_id");
+        WechatMerchantProperties broken = new WechatMerchantProperties();
+        broken.setMchId("1900000087");
+        broken.setAppId("wx_pubkey_app");
+        broken.setMerchantSerialNumber(testCertSerial);
+        broken.setPrivateKeyPath(CLASSPATH_KEY);
+        broken.setWechatPayPublicKeyPath("classpath:certs/test_public_key.pem");
+        broken.setWechatPayPublicKeyId("   ");
+        props.getWechat().getMerchants().put("pubkey_missing_id", broken);
+
+        WechatPayTemplate brokenTemplate = new WechatPayTemplate(
+                new NamedMerchantRegistry(props), certificateManager, props);
+        PayException ex = assertThrows(PayException.class, () -> brokenTemplate.getWechatConfig("pubkey_missing_id"));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex.getResultCode());
+    }
+
+    @Test
+    @DisplayName("自动平台证书下载与生命周期: 未预置证书时通过 /v3/certificates 下载解密并支持 destroy 清理")
+    void testWechatAutoCertificateDownloadAndDestroyLifecycle() throws Exception {
+        String autoMchId = "1900000088";
+        PayProperties autoProps = new PayProperties();
+        autoProps.getWechat().setDefaultMerchant("auto_mch");
+        WechatMerchantProperties autoMch = new WechatMerchantProperties();
+        autoMch.setMchId(autoMchId);
+        autoMch.setAppId("wx_auto_app");
+        autoMch.setMerchantSerialNumber(testCertSerial);
+        autoMch.setPrivateKeyPath(CLASSPATH_KEY);
+        autoMch.setApiV3Key("0123456789ABCDEF0123456789ABCDEF");
+        autoMch.setNotifyUrl("https://example.com/pay/callback/wechat");
+        autoMch.setAutoCertificate(true);
+        autoProps.getWechat().getMerchants().put("auto_mch", autoMch);
+
+        WechatAutoCertificateManager autoCertManager = new WechatAutoCertificateManager(Duration.ofMinutes(10));
+        WechatPayTemplate autoTemplate = new WechatPayTemplate(
+                new NamedMerchantRegistry(autoProps), autoCertManager, autoProps);
+        try {
+            okhttp3.OkHttpClient redirectOkHttpClient = new okhttp3.OkHttpClient.Builder()
+                    .addInterceptor(chain -> {
+                        okhttp3.Request orig = chain.request();
+                        okhttp3.HttpUrl newUrl = orig.url().newBuilder()
+                                .scheme("http")
+                                .host(server.getHostName())
+                                .port(server.getPort())
+                                .build();
+                        return chain.proceed(orig.newBuilder().url(newUrl).build());
+                    })
+                    .build();
+            com.wechat.pay.java.core.auth.Credential cred = new com.wechat.pay.java.core.auth.WechatPay2Credential(
+                    autoMchId, new com.wechat.pay.java.core.cipher.RSASigner(testCertSerial, testPrivateKey));
+            com.wechat.pay.java.core.auth.Validator bootstrapValidator = new com.wechat.pay.java.core.auth.Validator() {
+                @Override
+                public <T> boolean validate(com.wechat.pay.java.core.http.HttpHeaders responseHeaders, String responseBody) {
+                    return true;
+                }
+
+                @Override
+                public <T> String getSerialNumber() {
+                    return testCertSerial;
+                }
+            };
+            HttpClient mockAutoClient = new DefaultHttpClientBuilder()
+                    .credential(cred)
+                    .validator(bootstrapValidator)
+                    .okHttpClient(redirectOkHttpClient)
+                    .build();
+            autoTemplate.setCustomHttpClient(mockAutoClient);
+
+            // 构造加密后的 /v3/certificates 平台证书响应（AEAD_AES_256_GCM）
+            String certPem = "-----BEGIN CERTIFICATE-----\n"
+                    + Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.UTF_8)).encodeToString(testCert.getEncoded())
+                    + "\n-----END CERTIFICATE-----";
+            String nonce = "cert_nonce_12";
+            String associatedData = "certificate";
+            javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(javax.crypto.Cipher.ENCRYPT_MODE,
+                    new javax.crypto.spec.SecretKeySpec(autoMch.getApiV3Key().getBytes(StandardCharsets.UTF_8), "AES"),
+                    new javax.crypto.spec.GCMParameterSpec(128, nonce.getBytes(StandardCharsets.UTF_8)));
+            cipher.updateAAD(associatedData.getBytes(StandardCharsets.UTF_8));
+            String ciphertext = Base64.getEncoder().encodeToString(cipher.doFinal(certPem.getBytes(StandardCharsets.UTF_8)));
+
+            String certRespBody = "{"
+                    + "\"data\":[{"
+                    + "\"serial_no\":\"" + testCertSerial + "\","
+                    + "\"effective_time\":\"2026-01-01T00:00:00+08:00\","
+                    + "\"expire_time\":\"2030-01-01T00:00:00+08:00\","
+                    + "\"encrypt_certificate\":{"
+                    + "\"algorithm\":\"AEAD_AES_256_GCM\","
+                    + "\"nonce\":\"" + nonce + "\","
+                    + "\"associated_data\":\"" + associatedData + "\","
+                    + "\"ciphertext\":\"" + ciphertext + "\""
+                    + "}"
+                    + "}]"
+                    + "}";
+
+            server.enqueue(mockResponse(200, certRespBody));
+            server.enqueue(mockResponse(200, "{\"code_url\":\"weixin://wxpay/bizpayurl?pr=auto_cert_ok\"}"));
+            server.enqueue(mockResponse(200, certRespBody));
+
+            WechatPayRequest request = WechatPayRequest.builder()
+                    .merchantKey("auto_mch")
+                    .outTradeNo("AUTO_CERT_20261118_01")
+                    .description("自动证书下载测试")
+                    .amount(new BigDecimal("12.34"))
+                    .build();
+
+            PayResponse response = autoTemplate.payNative(request);
+            assertTrue(response.isSuccess());
+            assertEquals("weixin://wxpay/bizpayurl?pr=auto_cert_ok", response.getQrCode());
+            assertNotNull(autoCertManager.getCertificate(autoMchId, testCertSerial));
+
+            RecordedRequest firstReq = server.takeRequest();
+            RecordedRequest secondReq = server.takeRequest();
+            assertTrue(firstReq.getPath().startsWith("/v3/certificates"));
+            assertTrue(secondReq.getPath().contains("/v3/pay/transactions/native"));
+
+            // 触发证书刷新更新并验证 HTTP 模拟桩再次拉取
+            autoCertManager.refreshCertificate(autoMchId);
+            RecordedRequest refreshReq = server.takeRequest();
+            assertTrue(refreshReq.getPath().startsWith("/v3/certificates"));
+            assertNotNull(autoCertManager.getAvailableCertificate(autoMchId));
+
+            // 销毁生命周期后校验缓存与任务已彻底清理
+            autoCertManager.destroy();
+            assertFalse(autoCertManager.hasCertificates(autoMchId));
+            assertThrows(io.github.atengk.boot.pay.exception.PaySignException.class,
+                    () -> autoCertManager.getAvailableCertificate(autoMchId));
+        } finally {
+            autoCertManager.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("cancelOrder: reverseRetry.enabled=false 时仅单次调用不重试，且默认退避配置对齐 1s/2.0/5s/3次")
+    void testCancelOrder_retryDisabledAndDefaultExponentialConfig() throws Exception {
+        WechatPayTemplate defaultTemplate = new WechatPayTemplate(merchantRegistry, certificateManager);
+        io.github.atengk.boot.core.util.RetryUtil.RetryConfig defaultConfig = defaultTemplate.getWechatReverseRetryConfig();
+        assertEquals(3, defaultConfig.maxAttempts());
+        assertEquals(Duration.ofSeconds(1), defaultConfig.delay());
+        assertEquals(2.0, defaultConfig.multiplier());
+        assertEquals(Duration.ofSeconds(5), defaultConfig.maxDelay());
+
+        PayProperties disabledProps = new PayProperties();
+        disabledProps.getWechat().getReverseRetry().setEnabled(false);
+        disabledProps.getWechat().getReverseRetry().setMaxAttempts(3);
+        disabledProps.getWechat().getReverseRetry().setDelay(Duration.ofMillis(10));
+        disabledProps.getWechat().getReverseRetry().setMaxDelay(Duration.ofMillis(10));
+        WechatPayTemplate noRetryTemplate = new WechatPayTemplate(merchantRegistry, certificateManager, disabledProps);
+        noRetryTemplate.setCustomHttpClient(payTemplate.getHttpClient());
+
+        server.enqueue(mockResponse(500, "{\"code\":\"SYSTEMERROR\",\"message\":\"系统繁忙\"}"));
+
+        PayTradeException ex = assertThrows(PayTradeException.class,
+                () -> noRetryTemplate.cancelOrder("CANCEL_NO_RETRY_001"));
+        assertEquals("SYSTEMERROR", ex.getRawErrorCode());
+        assertEquals(1, server.getRequestCount());
+    }
+
+    @Test
+    @DisplayName("cancelOrder: 结构化响应解析(CLOSED)与 recall=Y 受控重试闭环")
+    void testCancelOrder_structuredResponseAndRecallRetry() throws Exception {
+        // 1. HTTP 200 结构化响应体直接映射 CLOSED 与描述
+        String closedJson = """
+                {
+                  "out_trade_no": "CANCEL_STRUCT_001",
+                  "trade_state": "CLOSED",
+                  "trade_state_desc": "未支付已安全关闭",
+                  "recall": "N"
+                }
+                """;
+        server.enqueue(mockResponse(200, closedJson));
+
+        PayResponse closedResp = payTemplate.cancelOrder("CANCEL_STRUCT_001");
+        assertTrue(closedResp.isSuccess());
+        assertEquals(PayTradeState.CLOSED, closedResp.getTradeState());
+        assertEquals("未支付已安全关闭", closedResp.getTradeStateDesc());
+        assertNotNull(closedResp.getRawResponse());
+
+        // 2. recall=Y 触发退避重试并在第二次成功
+        String recallJson = "{\"out_trade_no\":\"CANCEL_RECALL_002\",\"recall\":\"Y\"}";
+        server.enqueue(mockResponse(200, recallJson));
+        server.enqueue(mockResponse(204, null));
+
+        PayResponse recallSuccessResp = payTemplate.cancelOrder("CANCEL_RECALL_002");
+        assertTrue(recallSuccessResp.isSuccess());
+        assertEquals(PayTradeState.REVOKED, recallSuccessResp.getTradeState());
+        assertEquals(3, server.getRequestCount());
+
+        // 3. recall=Y 耗尽次数后清晰转译业务异常
+        server.enqueue(mockResponse(200, recallJson));
+        server.enqueue(mockResponse(200, recallJson));
+        server.enqueue(mockResponse(200, recallJson));
+
+        PayTradeException recallEx = assertThrows(PayTradeException.class,
+                () -> payTemplate.cancelOrder("CANCEL_RECALL_002"));
+        assertEquals("REVERSE_RECALL_REQUIRED", recallEx.getRawErrorCode());
+    }
+
+    @Test
+    @DisplayName("cancelOrder: 安全兜底策略验证(未支付关单 / 查单不存在幂等 / 已支付 REJECT 与 AUTO_REFUND / ORDER_NOT_EXIST 不误触发)")
+    void testCancelOrder_safeFallbackPolicies() throws Exception {
+        // 1. 开启兜底且 paidPolicy=REJECT（默认）：未支付 -> 查单 -> 关单
+        PayProperties rejectFallbackProps = new PayProperties();
+        rejectFallbackProps.getWechat().getReverseRetry().setDelay(Duration.ofMillis(10));
+        rejectFallbackProps.getWechat().getReverseRetry().setMaxDelay(Duration.ofMillis(10));
+        rejectFallbackProps.getWechat().getReverseFallback().setEnabled(true);
+        rejectFallbackProps.getWechat().getReverseFallback().setPaidPolicy(
+                WechatPayProperties.ReverseFallbackProperties.PaidPolicy.REJECT);
+        WechatPayTemplate rejectTemplate = new WechatPayTemplate(merchantRegistry, certificateManager, rejectFallbackProps);
+        rejectTemplate.setCustomHttpClient(payTemplate.getHttpClient());
+
+        server.enqueue(mockResponse(404, "{\"code\":\"RESOURCE_NOT_EXISTS\",\"message\":\"接口未开放\"}"));
+        server.enqueue(mockResponse(200, "{\"out_trade_no\":\"FB_NOTPAY_01\",\"trade_state\":\"NOTPAY\",\"trade_state_desc\":\"未支付\"}"));
+        server.enqueue(mockResponse(204, null));
+
+        PayResponse closedResp = rejectTemplate.cancelOrder("FB_NOTPAY_01");
+        assertTrue(closedResp.isSuccess());
+        assertEquals(PayTradeState.CLOSED, closedResp.getTradeState());
+        assertEquals("/v3/pay/transactions/out-trade-no/FB_NOTPAY_01/reverse", server.takeRequest().getPath());
+        assertEquals("/v3/pay/transactions/out-trade-no/FB_NOTPAY_01?mchid=1900000001", server.takeRequest().getPath());
+        assertEquals("/v3/pay/transactions/out-trade-no/FB_NOTPAY_01/close", server.takeRequest().getPath());
+
+        // 2. 开启兜底：查单返回 ORDER_NOT_EXIST 时幂等视同已关闭
+        server.enqueue(mockResponse(404, "{\"code\":\"RESOURCE_NOT_EXISTS\",\"message\":\"接口未开放\"}"));
+        server.enqueue(mockResponse(404, "{\"code\":\"ORDER_NOT_EXIST\",\"message\":\"订单不存在\"}"));
+        PayResponse notExistResp = rejectTemplate.cancelOrder("FB_MISSING_02");
+        assertTrue(notExistResp.isSuccess());
+        assertEquals(PayTradeState.CLOSED, notExistResp.getTradeState());
+        server.takeRequest();
+        server.takeRequest();
+
+        // 3. 开启兜底且 paidPolicy=REJECT：已支付 -> 拒绝自动退款
+        server.enqueue(mockResponse(501, "{\"code\":\"NOT_IMPLEMENTED\",\"message\":\"不支持撤销端点\"}"));
+        server.enqueue(mockResponse(200, "{\"out_trade_no\":\"FB_PAID_03\",\"transaction_id\":\"WX_PAID_03\",\"trade_state\":\"SUCCESS\",\"amount\":{\"total\":2500,\"currency\":\"CNY\"}}"));
+        PayTradeException rejectEx = assertThrows(PayTradeException.class, () -> rejectTemplate.cancelOrder("FB_PAID_03"));
+        assertEquals("ORDER_PAID_REVERSE_REJECTED", rejectEx.getRawErrorCode());
+        assertEquals("/v3/pay/transactions/out-trade-no/FB_PAID_03/reverse", server.takeRequest().getPath());
+        assertEquals("/v3/pay/transactions/out-trade-no/FB_PAID_03?mchid=1900000001", server.takeRequest().getPath());
+
+        // 4. 开启兜底且 /reverse 本身返回 ORDER_NOT_EXIST -> 不触发兜底，直接抛 PAY_ORDER_NOT_FOUND
+        server.enqueue(mockResponse(404, "{\"code\":\"ORDER_NOT_EXIST\",\"message\":\"此交易订单号不存在\"}"));
+        PayTradeException orderMissingEx = assertThrows(PayTradeException.class, () -> rejectTemplate.cancelOrder("FB_404_04"));
+        assertEquals(PayResultCode.PAY_ORDER_NOT_FOUND, orderMissingEx.getResultCode());
+        server.takeRequest();
+
+        // 5. 开启兜底且 paidPolicy=AUTO_REFUND：已支付 -> 自动全额退款
+        PayProperties refundFallbackProps = new PayProperties();
+        refundFallbackProps.getWechat().getReverseRetry().setDelay(Duration.ofMillis(10));
+        refundFallbackProps.getWechat().getReverseRetry().setMaxDelay(Duration.ofMillis(10));
+        refundFallbackProps.getWechat().getReverseFallback().setEnabled(true);
+        refundFallbackProps.getWechat().getReverseFallback().setPaidPolicy(
+                WechatPayProperties.ReverseFallbackProperties.PaidPolicy.AUTO_REFUND);
+        WechatPayTemplate autoRefundTemplate = new WechatPayTemplate(merchantRegistry, certificateManager, refundFallbackProps);
+        autoRefundTemplate.setCustomHttpClient(payTemplate.getHttpClient());
+
+        server.enqueue(mockResponse(404, "{\"code\":\"RESOURCE_NOT_EXISTS\",\"message\":\"接口未开放\"}"));
+        server.enqueue(mockResponse(200, "{\"out_trade_no\":\"FB_REFUND_05\",\"transaction_id\":\"WX_REFUND_05\",\"trade_state\":\"SUCCESS\",\"amount\":{\"total\":1234,\"currency\":\"CNY\"}}"));
+        server.enqueue(mockResponse(200, "{\"refund_id\":\"500000999\",\"out_refund_no\":\"REV_FB_REFUND_05\",\"transaction_id\":\"WX_REFUND_05\",\"out_trade_no\":\"FB_REFUND_05\",\"status\":\"PROCESSING\",\"amount\":{\"total\":1234,\"refund\":1234,\"currency\":\"CNY\"}}"));
+
+        PayResponse autoRefundResp = autoRefundTemplate.cancelOrder("FB_REFUND_05");
+        assertTrue(autoRefundResp.isSuccess());
+        assertEquals(PayTradeState.REFUND, autoRefundResp.getTradeState());
+        assertEquals(new BigDecimal("12.34"), autoRefundResp.getAmount());
+        server.takeRequest();
+        server.takeRequest();
+        RecordedRequest refundReq = server.takeRequest();
+        assertEquals("/v3/refund/domestic/refunds", refundReq.getPath());
+        String refundBody = refundReq.getBody().readUtf8();
+        assertTrue(refundBody.contains("\"out_refund_no\":\"REV_FB_REFUND_05\""));
+        assertTrue(refundBody.contains("\"refund\":1234"));
+    }
+
+    @Test
+    @DisplayName("服务商模式 (Partner): 条码付、撤销冲正（含 serviceProviderMode 全局开关）与对账单自动透传 sub_mchid")
+    void testPartnerMode_barcodeCancelAndTradeBill() throws Exception {
+        // 1. 显式使用 partner_tenant 发起服务商条码付
+        server.enqueue(mockResponse(200, """
+                {
+                  "sp_mchid": "1900000000",
+                  "sp_appid": "wx_sp_app",
+                  "sub_mchid": "1900000002",
+                  "sub_appid": "wx_sub_app",
+                  "out_trade_no": "P_BAR_001",
+                  "transaction_id": "4200009999",
+                  "trade_type": "MICROPAY",
+                  "trade_state": "SUCCESS",
+                  "amount": {"total": 1500, "currency": "CNY"}
+                }
+                """));
+        PayResponse barcodeResp = payTemplate.payBarcode(WechatPayRequest.builder()
+                .merchantKey("partner_tenant")
+                .outTradeNo("P_BAR_001")
+                .description("服务商条码付")
+                .amount(new BigDecimal("15.00"))
+                .authCode("134567890123456789")
+                .build());
+        assertTrue(barcodeResp.isSuccess());
+        assertEquals(PayTradeState.SUCCESS, barcodeResp.getTradeState());
+        RecordedRequest barcodeReq = server.takeRequest();
+        assertEquals("/v3/pay/partner/transactions/codepay", barcodeReq.getPath());
+        String barcodeBody = barcodeReq.getBody().readUtf8();
+        assertTrue(barcodeBody.contains("\"sp_appid\":\"wx_sp_app\""));
+        assertTrue(barcodeBody.contains("\"sp_mchid\":\"1900000000\""));
+        assertTrue(barcodeBody.contains("\"sub_mchid\":\"1900000002\""));
+        assertTrue(barcodeBody.contains("\"sub_appid\":\"wx_sub_app\""));
+
+        // 2. 服务商模式下对账单查询与下载自动透传 sub_mchid 查询参数
+        server.enqueue(mockResponse(200, "{\"download_url\":\"https://api.mch.weixin.qq.com/v3/billdownload/file?token=partner_tok\",\"hash_type\":\"SHA1\",\"hash_value\":\"h_partner\"}"));
+        GetTradeBillRequest billReq = new GetTradeBillRequest();
+        billReq.setBillDate("2026-11-18");
+        billReq.setBillType(BillType.ALL);
+        billReq.setTarType(TarType.GZIP);
+        QueryBillEntity billMeta = payTemplate.queryTradeBill("partner_tenant", billReq);
+        assertEquals("h_partner", billMeta.getHashValue());
+        RecordedRequest billRecorded = server.takeRequest();
+        assertTrue(billRecorded.getPath().contains("/v3/bill/tradebill?"));
+        assertTrue(billRecorded.getPath().contains("sub_mchid=1900000002"));
+
+        // 3. 全局开启 serviceProviderMode=true 且商户仅配置 mchId + subMchId 时自动按服务商路由
+        PayProperties spProps = new PayProperties();
+        spProps.getWechat().setServiceProviderMode(true);
+        spProps.getWechat().setDefaultMerchant("sp_only");
+        WechatMerchantProperties spOnlyMch = new WechatMerchantProperties();
+        spOnlyMch.setMchId("1900000001");
+        spOnlyMch.setAppId("wx_sp_global_app");
+        spOnlyMch.setSubMchId("1900000888");
+        spOnlyMch.setMerchantSerialNumber(testCertSerial);
+        spOnlyMch.setPrivateKeyPath(CLASSPATH_KEY);
+        spProps.getWechat().setMerchants(Map.of("sp_only", spOnlyMch));
+        WechatPayTemplate spTemplate = new WechatPayTemplate(new NamedMerchantRegistry(spProps), certificateManager, spProps);
+        spTemplate.setCustomHttpClient(payTemplate.getHttpClient());
+
+        server.enqueue(mockResponse(204, null));
+        PayResponse spCancelResp = spTemplate.cancelOrder("SP_GLOBAL_REV_01");
+        assertTrue(spCancelResp.isSuccess());
+        RecordedRequest spCancelReq = server.takeRequest();
+        assertEquals("/v3/pay/partner/transactions/out-trade-no/SP_GLOBAL_REV_01/reverse", spCancelReq.getPath());
+        String spCancelBody = spCancelReq.getBody().readUtf8();
+        assertTrue(spCancelBody.contains("\"sp_mchid\":\"1900000001\""));
+        assertTrue(spCancelBody.contains("\"sub_mchid\":\"1900000888\""));
+    }
+
     // =========================================================================
     // 辅助工具方法
     // =========================================================================
@@ -1100,6 +1787,13 @@ class WechatPayTemplateTest {
      * 构造携带微信支付标准验签标头的 MockResponse
      */
     private MockResponse mockResponse(int statusCode, String body) throws Exception {
+        return mockResponse(statusCode, body, testCertSerial);
+    }
+
+    /**
+     * 构造携带指定证书/公钥序列号的 MockResponse
+     */
+    private MockResponse mockResponse(int statusCode, String body, String serialNumber) throws Exception {
         long timestamp = Instant.now().getEpochSecond();
         String nonce = "mock_nonce_" + System.currentTimeMillis();
         String signPayload = timestamp + "\n" + nonce + "\n" + (body != null ? body : "") + "\n";
@@ -1115,7 +1809,7 @@ class WechatPayTemplateTest {
                 .setHeader("Wechatpay-Timestamp", String.valueOf(timestamp))
                 .setHeader("Wechatpay-Nonce", nonce)
                 .setHeader("Wechatpay-Signature", signature)
-                .setHeader("Wechatpay-Serial", testCertSerial);
+                .setHeader("Wechatpay-Serial", serialNumber);
 
         if (body != null) {
             response.setBody(body);

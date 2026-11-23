@@ -42,6 +42,11 @@ public class AtengRocketmqProperties {
     private String secretKey;
 
     /**
+     * 是否启用 SSL/TLS 通信加密（默认 false；开源私有化部署为明文，公网云上或开启 TLS 时显式配置为 true）
+     */
+    private boolean sslEnabled = false;
+
+    /**
      * 客户端默认请求超时时间（默认 3s）
      */
     private Duration requestTimeout = Duration.ofSeconds(3);
@@ -57,6 +62,18 @@ public class AtengRocketmqProperties {
      */
     @NestedConfigurationProperty
     private Consumer consumer = new Consumer();
+
+    /**
+     * SimpleConsumer 流式拉取消费配置
+     */
+    @NestedConfigurationProperty
+    private SimpleConsumer simpleConsumer = new SimpleConsumer();
+
+    /**
+     * 死信队列治理与受控重放配置
+     */
+    @NestedConfigurationProperty
+    private DeadLetter deadLetter = new DeadLetter();
 
     /**
      * 生产端参数配置
@@ -75,6 +92,40 @@ public class AtengRocketmqProperties {
         private int maxAttempts = 3;
 
         /**
+         * 批量发信单批次最大容量上限，超出将触发 Fail-Fast（默认 500 条）
+         */
+        private int maxBatchSize = 500;
+
+        /**
+         * 批量发信底层自动分片并发投递步长，遵循工业级双层分片契约（默认 64 条/片）
+         */
+        private int batchSliceSize = 64;
+
+        /**
+         * 设置批量发信单批次最大容量上限（必须大于 0）
+         *
+         * @param maxBatchSize 单批次最大容量上限
+         */
+        public void setMaxBatchSize(int maxBatchSize) {
+            if (maxBatchSize <= 0) {
+                throw new IllegalArgumentException("ateng.boot.rocketmq.producer.max-batch-size 必须大于 0");
+            }
+            this.maxBatchSize = maxBatchSize;
+        }
+
+        /**
+         * 设置批量发信自动分片步长（必须大于 0）
+         *
+         * @param batchSliceSize 分片步长
+         */
+        public void setBatchSliceSize(int batchSliceSize) {
+            if (batchSliceSize <= 0) {
+                throw new IllegalArgumentException("ateng.boot.rocketmq.producer.batch-slice-size 必须大于 0");
+            }
+            this.batchSliceSize = batchSliceSize;
+        }
+
+        /**
          * 单条消息最大载荷容量限制，超出将触发 Fail-Fast（默认 4MB）
          */
         private DataSize maxPayloadSize = DataSize.ofMegabytes(4);
@@ -88,6 +139,54 @@ public class AtengRocketmqProperties {
          * 预热主题列表（可选，在 Producer 初始化时提前拉取路由元数据）
          */
         private List<String> topics = new ArrayList<>();
+
+        /**
+         * 设置发送超时时长（必须为正数）
+         *
+         * @param sendTimeout 发送超时时长
+         */
+        public void setSendTimeout(Duration sendTimeout) {
+            if (sendTimeout == null || sendTimeout.isZero() || sendTimeout.isNegative()) {
+                throw new IllegalArgumentException("ateng.boot.rocketmq.producer.send-timeout 必须为正数");
+            }
+            this.sendTimeout = sendTimeout;
+        }
+
+        /**
+         * 设置发送失败最大重试次数（必须大于 0）
+         *
+         * @param maxAttempts 最大尝试次数
+         */
+        public void setMaxAttempts(int maxAttempts) {
+            if (maxAttempts <= 0) {
+                throw new IllegalArgumentException("ateng.boot.rocketmq.producer.max-attempts 必须大于 0");
+            }
+            this.maxAttempts = maxAttempts;
+        }
+
+        /**
+         * 设置单条消息最大载荷容量限制（必须为正数）
+         *
+         * @param maxPayloadSize 单条消息最大载荷容量
+         */
+        public void setMaxPayloadSize(DataSize maxPayloadSize) {
+            if (maxPayloadSize == null || maxPayloadSize.toBytes() <= 0) {
+                throw new IllegalArgumentException("ateng.boot.rocketmq.producer.max-payload-size 必须大于 0");
+            }
+            this.maxPayloadSize = maxPayloadSize;
+        }
+
+        /**
+         * 设置消息透明 GZIP 压缩阈值（必须非负）
+         *
+         * @param compressionThreshold 压缩阈值
+         */
+        public void setCompressionThreshold(DataSize compressionThreshold) {
+            if (compressionThreshold == null || compressionThreshold.toBytes() < 0) {
+                throw new IllegalArgumentException("ateng.boot.rocketmq.producer.compression-threshold 不能为负数或空");
+            }
+            this.compressionThreshold = compressionThreshold;
+        }
     }
 
     /**
@@ -110,5 +209,86 @@ public class AtengRocketmqProperties {
          * 优雅停机排空在途消费消息的最大等待超时时间（默认 15s）
          */
         private Duration closeTimeout = Duration.ofSeconds(15);
+
+        /**
+         * 消费端捕获不可自愈毒丸异常时是否自动附加诊断头转储至 {@code %DLQ%<ConsumerGroup>}（默认 true）
+         */
+        private boolean forwardPoisonPillToDlq = true;
+    }
+
+    /**
+     * SimpleConsumer 流式拉取参数配置
+     */
+    @Data
+    public static class SimpleConsumer {
+
+        /**
+         * 消息拉取后默认隐身不可见租约时长（默认 30s）
+         */
+        private Duration invisibleDuration = Duration.ofSeconds(30);
+
+        /**
+         * 单次拉取最大批量消息数量（默认 32）
+         */
+        private int maxMessageNum = 32;
+
+        /**
+         * 长轮询拉取最大挂起等待时间（默认 5s）
+         */
+        private Duration awaitDuration = Duration.ofSeconds(5);
+
+        /**
+         * 是否在 receiveAndExecute 长耗时处理期间启用不可见租约自动续期看门狗（默认 true）
+         */
+        private boolean autoRenewLease = true;
+
+        /**
+         * 单条消息允许自动续期租约的最大次数上限（默认 5 次；0 表示不续期，严禁负数）
+         */
+        private int maxLeaseRenewAttempts = 5;
+
+        /**
+         * 设置单条消息自动续期最大次数上限（不能为负数）
+         *
+         * @param maxLeaseRenewAttempts 最大自动续期次数
+         */
+        public void setMaxLeaseRenewAttempts(int maxLeaseRenewAttempts) {
+            if (maxLeaseRenewAttempts < 0) {
+                throw new IllegalArgumentException("ateng.boot.rocketmq.simple-consumer.max-lease-renew-attempts 不能为负数");
+            }
+            this.maxLeaseRenewAttempts = maxLeaseRenewAttempts;
+        }
+    }
+
+    /**
+     * 死信队列治理与受控重放参数配置
+     */
+    @Data
+    public static class DeadLetter {
+
+        /**
+         * 单条死信最大允许重放次数，超过将触发防二次雪崩熔断拦截（默认 3 次）
+         */
+        private int maxReplayAttempts = 3;
+
+        /**
+         * 死信探查与重放默认批量大小（默认 32）
+         */
+        private int defaultBatchSize = 32;
+
+        /**
+         * 死信探查与重放单批次最大容量上限，超出将触发 Fail-Fast（默认 100）
+         */
+        private int maxBatchSize = 100;
+
+        /**
+         * 死信探查与拉取时默认隐身不可见租约时长（默认 30s）
+         */
+        private Duration invisibleDuration = Duration.ofSeconds(30);
+
+        /**
+         * 触发防二次雪崩熔断时，是否自动确认并丢弃毒丸死信（默认 false；若为 true 则在触发熔断时自动 ACK 移出死信队列以防队列死锁）
+         */
+        private boolean discardOnMaxAttemptsBlocked = false;
     }
 }

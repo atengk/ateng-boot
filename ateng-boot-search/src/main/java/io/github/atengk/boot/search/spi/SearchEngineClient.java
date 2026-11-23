@@ -5,6 +5,7 @@ import io.github.atengk.boot.search.enums.SearchEngineType;
 import io.github.atengk.boot.search.enums.SearchResultCode;
 import io.github.atengk.boot.search.exception.SearchException;
 import io.github.atengk.boot.search.template.SearchCallback;
+import io.github.atengk.boot.search.util.SearchExceptionClassifier;
 
 import java.io.Closeable;
 import java.util.Objects;
@@ -59,7 +60,8 @@ public interface SearchEngineClient extends Closeable {
         } catch (SearchException se) {
             throw se;
         } catch (Exception e) {
-            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
+            throw new SearchException(
+                    SearchExceptionClassifier.classifyResultCode(e, SearchResultCode.SEARCH_OPERATION_ERROR),
                     "Failed to execute elasticsearch callback action: " + e.getMessage(), e);
         }
     }

@@ -1,0 +1,20 @@
+# 本地真实 Milvus 向量数据库联调模板文件（复制为 application-local.yml 并在本地环境激活）
+# 严禁将真实凭据填入本 example 文件，真实配置文件 application-local.yml 已被 .gitignore 忽略
+spring:
+  config:
+    activate:
+      on-profile: local
+
+ateng:
+  boot:
+    milvus:
+      enabled: true
+      uri: http://YOUR_MILVUS_HOST:YOUR_MILVUS_PORT # 例如 http://192.168.1.100:19530 或 Zilliz Cloud 端点
+      token: YOUR_MILVUS_TOKEN # 可选：Zilliz Cloud API Key 或 root:Milvus 认证串
+      username: YOUR_MILVUS_USERNAME
+      password: YOUR_MILVUS_PASSWORD
+      database: default
+      consistency-level: BOUNDED
+      auto-create-partition: true
+      connect-timeout: 5s
+      idle-timeout: 30s

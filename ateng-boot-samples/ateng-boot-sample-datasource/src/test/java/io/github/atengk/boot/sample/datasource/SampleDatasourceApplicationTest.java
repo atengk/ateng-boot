@@ -3,7 +3,7 @@ package io.github.atengk.boot.sample.datasource;
 import com.baomidou.dynamic.datasource.DynamicRoutingDataSource;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
-import io.github.atengk.boot.sample.datasource.controller.OrderController;
+import io.github.atengk.boot.sample.datasource.controller.*;
 import io.github.atengk.boot.sample.datasource.service.OrderService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -34,7 +34,22 @@ class SampleDatasourceApplicationTest {
     private OrderService orderService;
 
     @Autowired
-    private OrderController orderController;
+    private DatasourceTenantController tenantController;
+
+    @Autowired
+    private DatasourceReadWriteController readWriteController;
+
+    @Autowired
+    private DatasourceLifecycleController lifecycleController;
+
+    @Autowired
+    private DatasourceBatchController batchController;
+
+    @Autowired
+    private DatasourceOpsController opsController;
+
+    @Autowired
+    private DatasourceGuardController guardController;
 
     @AfterEach
     void tearDown() {
@@ -48,7 +63,12 @@ class SampleDatasourceApplicationTest {
         assertThat(dataSource).isInstanceOf(DynamicRoutingDataSource.class);
         assertThat(dynamicDatasourceTemplate).isNotNull();
         assertThat(orderService).isNotNull();
-        assertThat(orderController).isNotNull();
+        assertThat(tenantController).isNotNull();
+        assertThat(readWriteController).isNotNull();
+        assertThat(lifecycleController).isNotNull();
+        assertThat(batchController).isNotNull();
+        assertThat(opsController).isNotNull();
+        assertThat(guardController).isNotNull();
 
         DynamicRoutingDataSource dynamicRoutingDataSource = (DynamicRoutingDataSource) dataSource;
         assertThat(dynamicRoutingDataSource.getDataSources()).containsKey("master");

@@ -1,5 +1,6 @@
 package io.github.atengk.boot.document.pdf;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -23,7 +24,8 @@ class WatermarkMacroParserTest {
 
     @AfterEach
     void tearDown() {
-        UserContextHolder.set(null);
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
         MDC.clear();
     }
 
@@ -85,5 +87,39 @@ class WatermarkMacroParserTest {
         String result = WatermarkMacroParser.parse(template, null);
 
         assertThat(result).isEqualTo("操作人: ctx-admin-user");
+    }
+
+    @Test
+    @DisplayName("测试 #{user.name}、#{user.code} 与 #{tenantId} / #{tenant_id} 上下文解析")
+    void testUserNameCodeAndTenantMacros() {
+        TenantContextHolder.setTenantId("tenant-007");
+        UserContextHolder.set("ctx-user");
+
+        Map<String, Object> explicitVars = new HashMap<>();
+        explicitVars.put("user", Map.of(
+                "name", "张三",
+                "code", "ZS_001"
+        ));
+        assertThat(WatermarkMacroParser.parse("#{user.name}-#{user.code}-#{tenantId}-#{tenant_id}", explicitVars))
+                .isEqualTo("张三-ZS_001-tenant-007-tenant-007");
+
+        // 显式 user map 仅有 nickname/username 时，user.name 回退到 nickname，user.code 回退到 username
+        Map<String, Object> aliasVars = new HashMap<>();
+        aliasVars.put("user", Map.of(
+                "nickname", "王五",
+                "username", "wangwu"
+        ));
+        aliasVars.put("tenantId", "override-tenant");
+        assertThat(WatermarkMacroParser.parse("#{user.name}-#{user.code}-#{tenantId}", aliasVars))
+                .isEqualTo("王五-wangwu-override-tenant");
+
+        // 无 variables 时 #{user.name} 回退至 UserContextHolder，#{tenantId} 回退至 TenantContextHolder
+        assertThat(WatermarkMacroParser.parse("#{user.name}-#{tenantId}", null))
+                .isEqualTo("ctx-user-tenant-007");
+
+        TenantContextHolder.clear();
+        UserContextHolder.clear();
+        assertThat(WatermarkMacroParser.parse("#{user.name!'匿名'}-#{tenantId!'默认租户'}", null))
+                .isEqualTo("匿名-默认租户");
     }
 }

@@ -5,7 +5,10 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 空安全与抗异常通用类型转换门面工具类
@@ -243,7 +246,7 @@ public final class ConvertUtil {
 
     /**
      * 将异构对象安全转换为通用 Object List 集合（{@link #toList(Object, Class)} 的泛型通用重载）
-     * 支持 Collection、Array 与单个对象包装；若为 null 则保底返回空列表
+     * 支持 Iterable（含 Collection）、Iterator、Array 与单个对象包装；若为 null 则保底返回空列表
      *
      * @param value 待转换对象
      * @return 转换后的元素列表，永不返回 null
@@ -254,43 +257,80 @@ public final class ConvertUtil {
 
     /**
      * 将异构对象安全转换为 List 集合
-     * 支持 Collection、Array 与单个对象包装；若为 null 则保底返回空列表
+     * 支持 Iterable（含 Collection）、Iterator、Array 与单个对象包装；若为 null 则保底返回空列表
      *
      * @param value       待转换对象
      * @param elementType 目标元素类型
      * @param <T>         元素泛型
      * @return 转换后的元素列表，永不返回 null
      */
-    @SuppressWarnings("unchecked")
     public static <T> List<T> toList(Object value, Class<T> elementType) {
         if (value == null) {
             return Collections.emptyList();
         }
-
         List<T> result = new ArrayList<>();
-        if (value instanceof Collection<?> coll) {
-            for (Object item : coll) {
-                if (item != null && (elementType == null || elementType.isInstance(item))) {
-                    result.add((T) item);
-                }
-            }
-            return result;
-        }
+        collectElements(value, elementType, result);
+        return result;
+    }
 
+    /**
+     * 将异构对象安全转换为通用 Object Set 集合（{@link #toSet(Object, Class)} 的泛型通用重载）
+     * 支持 Iterable（含 Collection）、Iterator、Array 与单个对象包装；保持插入顺序去重；
+     * 若为 null、空白字符序列或过滤后无匹配元素，保底返回不可变空 Set
+     *
+     * @param value 待转换对象
+     * @return 转换后的保序去重集合，永不返回 null
+     */
+    public static Set<Object> toSet(Object value) {
+        return toSet(value, Object.class);
+    }
+
+    /**
+     * 将异构对象安全转换为保序去重 Set 集合
+     * 支持 Iterable（含 Collection）、Iterator、Array 与单个对象包装；
+     * 若为 null、空白字符序列或过滤后无匹配元素，保底返回不可变空 Set
+     *
+     * @param value       待转换对象
+     * @param elementType 目标元素类型
+     * @param <T>         元素泛型
+     * @return 转换后的保序去重集合（非空时为 {@link LinkedHashSet}），永不返回 null
+     */
+    public static <T> Set<T> toSet(Object value, Class<T> elementType) {
+        if (value == null || (value instanceof CharSequence cs && cs.toString().isBlank())) {
+            return Collections.emptySet();
+        }
+        Set<T> result = new LinkedHashSet<>();
+        collectElements(value, elementType, result);
+        return result.isEmpty() ? Collections.emptySet() : result;
+    }
+
+    private static <T> void collectElements(Object value, Class<T> elementType, Collection<T> target) {
+        if (value instanceof Iterable<?> iterable) {
+            for (Object item : iterable) {
+                addIfMatches(item, elementType, target);
+            }
+            return;
+        }
+        if (value instanceof Iterator<?> iterator) {
+            while (iterator.hasNext()) {
+                addIfMatches(iterator.next(), elementType, target);
+            }
+            return;
+        }
         if (value.getClass().isArray()) {
             int length = Array.getLength(value);
             for (int i = 0; i < length; i++) {
-                Object item = Array.get(value, i);
-                if (item != null && (elementType == null || elementType.isInstance(item))) {
-                    result.add((T) item);
-                }
+                addIfMatches(Array.get(value, i), elementType, target);
             }
-            return result;
+            return;
         }
+        addIfMatches(value, elementType, target);
+    }
 
-        if (elementType == null || elementType.isInstance(value)) {
-            result.add((T) value);
+    @SuppressWarnings("unchecked")
+    private static <T> void addIfMatches(Object item, Class<T> elementType, Collection<T> target) {
+        if (item != null && (elementType == null || elementType.isInstance(item))) {
+            target.add((T) item);
         }
-        return result;
     }
 }

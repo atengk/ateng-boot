@@ -1,0 +1,260 @@
+package io.github.atengk.boot.social.controller;
+
+import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.social.model.SocialAuthResult;
+import io.github.atengk.boot.social.model.SocialBindRequest;
+import io.github.atengk.boot.social.model.SocialBoundAccount;
+import io.github.atengk.boot.social.model.SocialDirectBindRequest;
+import io.github.atengk.boot.social.model.SocialDirectLoginRequest;
+import io.github.atengk.boot.social.model.SocialLoginOptions;
+import io.github.atengk.boot.social.model.SocialToken;
+import io.github.atengk.boot.social.model.SocialTokenRefreshRequest;
+import io.github.atengk.boot.social.model.SocialTokenRevokeRequest;
+import io.github.atengk.boot.social.model.SocialUnbindRequest;
+import io.github.atengk.boot.social.model.SocialUser;
+import io.github.atengk.boot.social.model.StateContext;
+import io.github.atengk.boot.social.template.SocialAuthTemplate;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.dromara.anduin.model.AuthCallback;
+import org.springframework.util.ClassUtils;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
+
+/**
+ * 社交登录与 OAuth2 统一 REST 接入端点控制器
+ * <p>
+ * 默认不开启，可通过配置 {@code ateng.boot.social.controller.enabled=true} 激活自动装配。
+ * 遵循 ADR-0002 显式强类型契约设计，所有接口显式返回 {@link Result}。
+ * </p>
+ *
+ * @author Ateng
+ * @since 2026-11-03
+ */
+@Slf4j
+@RestController
+@RequestMapping("${ateng.boot.social.controller.prefix:/auth/social}")
+@RequiredArgsConstructor
+public class SocialAuthController {
+
+    private final SocialAuthTemplate socialAuthTemplate;
+
+    /**
+     * 生成第三方 OAuth2 平台授权跳转 URL
+     *
+     * @param appKey      社交应用唯一标识
+     * @param redirectUrl 认证成功后最终重定向业务地址
+     * @param tenantId    租户标识
+     * @return 携带高熵防伪 State 的第三方平台授权地址
+     */
+    @GetMapping("/render/{appKey}")
+    public Result<String> renderAuthorizeUrl(
+            @PathVariable("appKey") String appKey,
+            @RequestParam(value = "redirectUrl", required = false) String redirectUrl,
+            @RequestParam(value = "tenantId", required = false) String tenantId) {
+        StateContext context = StateContext.builder()
+                .redirectUrl(redirectUrl)
+                .tenantId(tenantId)
+                .build();
+        String authorizeUrl = socialAuthTemplate.getAuthorizeUrl(appKey, context);
+        return Result.success(authorizeUrl);
+    }
+
+    /**
+     * 处理标准 Web 浏览器端 OAuth2 回调换码认证（同时支持 GET 重定向回调与 Apple Sign In 等 POST form_post 回调）
+     *
+     * @param appKey   社交应用唯一标识
+     * @param callback 接收包含 code、auth_code、state、oauth_token、oauth_verifier、user 等平台回调参数
+     * @return 认证结果（已绑定签发会话或未绑定引导两阶段绑定）
+     */
+    @RequestMapping(value = "/callback/{appKey}", method = {RequestMethod.GET, RequestMethod.POST})
+    public Result<SocialAuthResult> callback(
+            @PathVariable("appKey") String appKey,
+            AuthCallback callback) {
+        SocialAuthResult result = socialAuthTemplate.login(appKey, callback);
+        return Result.success(result);
+    }
+
+    /**
+     * 小程序 (wx.login code2Session) 或 App 原生授权直传凭证登录
+     *
+     * @param appKey  社交应用唯一标识
+     * @param request 直传登录请求对象
+     * @return 认证结果
+     */
+    @PostMapping("/direct-login/{appKey}")
+    public Result<SocialAuthResult> directLogin(
+            @PathVariable("appKey") String appKey,
+            @Valid @RequestBody SocialDirectLoginRequest request) {
+        SocialLoginOptions options = SocialLoginOptions.builder()
+                .deviceType(request.getDeviceType())
+                .loginType(request.getLoginType())
+                .build();
+        SocialAuthResult result;
+        if (request.hasExtendedCallbackFields()) {
+            result = socialAuthTemplate.directLogin(appKey, request.toAuthCallback(), options);
+        } else {
+            result = socialAuthTemplate.directLogin(appKey, request.getCode(), options);
+        }
+        return Result.success(result);
+    }
+
+    /**
+     * 消费两阶段绑定票据 BindTicket 完成本地账号绑定与登录
+     *
+     * @param appKey  社交应用唯一标识
+     * @param request 绑定请求对象
+     * @return 认证结果
+     */
+    @PostMapping("/bind/{appKey}")
+    public Result<SocialAuthResult> bind(
+            @PathVariable("appKey") String appKey,
+            @Valid @RequestBody SocialBindRequest request) {
+        SocialLoginOptions options = SocialLoginOptions.builder()
+                .deviceType(request.getDeviceType())
+                .loginType(request.getLoginType())
+                .build();
+        SocialAuthResult result = socialAuthTemplate.bind(appKey, request.getBindTicket(), request.getUserId(), options);
+        return Result.success(result);
+    }
+
+    /**
+     * 解除本地用户与第三方账号的绑定关系
+     *
+     * @param appKey  社交应用唯一标识
+     * @param request 解绑请求对象
+     * @return 操作成功响应
+     */
+    @PostMapping("/unbind/{appKey}")
+    public Result<Void> unbind(
+            @PathVariable("appKey") String appKey,
+            @Valid @RequestBody SocialUnbindRequest request) {
+        socialAuthTemplate.unbind(request.getUserId(), appKey);
+        return Result.success();
+    }
+
+    /**
+     * 刷新第三方 OAuth2 访问令牌（主路径 /refresh-token/{appKey}，向下兼容 /refresh/{appKey}）
+     *
+     * @param appKey  社交应用唯一标识
+     * @param request 刷新令牌请求对象
+     * @return 刷新后的最新令牌领域模型
+     */
+    @PostMapping({"/refresh-token/{appKey}", "/refresh/{appKey}"})
+    public Result<SocialToken> refresh(
+            @PathVariable("appKey") String appKey,
+            @Valid @RequestBody SocialTokenRefreshRequest request) {
+        SocialToken socialToken = socialAuthTemplate.refreshToken(appKey, request.getRefreshToken());
+        return Result.success(socialToken);
+    }
+
+    /**
+     * 吊销第三方 OAuth2 授权凭证（主路径 /revoke-token/{appKey}，向下兼容 /revoke/{appKey}）
+     *
+     * @param appKey  社交应用唯一标识
+     * @param request 吊销令牌请求对象
+     * @return 操作成功响应
+     */
+    @PostMapping({"/revoke-token/{appKey}", "/revoke/{appKey}"})
+    public Result<Void> revoke(
+            @PathVariable("appKey") String appKey,
+            @Valid @RequestBody SocialTokenRevokeRequest request) {
+        socialAuthTemplate.revokeAuth(appKey, request.getAccessToken());
+        return Result.success();
+    }
+
+    /**
+     * 个人中心已登录态直接绑定第三方社交账号
+     *
+     * @param appKey  社交应用唯一标识
+     * @param request 直接绑定请求对象
+     * @return 绑定的第三方标准化用户画像
+     */
+    @PostMapping("/bind-direct/{appKey}")
+    public Result<SocialUser> bindDirect(
+            @PathVariable("appKey") String appKey,
+            @Valid @RequestBody SocialDirectBindRequest request) {
+        SocialUser socialUser;
+        boolean hasState = request.getState() != null && !request.getState().isBlank();
+        if (hasState) {
+            socialUser = socialAuthTemplate.bindDirect(request.getUserId(), appKey, request.toAuthCallback());
+        } else if (request.hasExtendedCallbackFields()) {
+            socialUser = socialAuthTemplate.bindDirect(request.getUserId(), appKey, request.toAuthCallback(), false);
+        } else {
+            socialUser = socialAuthTemplate.bindDirect(request.getUserId(), appKey, request.getCode());
+        }
+        return Result.success(socialUser);
+    }
+
+    /**
+     * 查询指定本地用户已绑定的第三方社交账号列表
+     * <p>
+     * 支持显式传入 userId 查询，或默认自动从当前 Sa-Token 登录态中获取 userId。
+     * </p>
+     *
+     * @param userId 本地用户标识（可选，若为空则自动探测登录会话）
+     * @return 已绑定的第三方社交账号视图列表
+     */
+    @GetMapping("/bindings")
+    public Result<List<SocialBoundAccount>> listBindings(
+            @RequestParam(value = "userId", required = false) String userId) {
+        String targetUserId = resolveCurrentUserId(userId);
+        if (targetUserId == null || targetUserId.isBlank()) {
+            throw new IllegalArgumentException("本地用户标识 [userId] 不能为空");
+        }
+        List<SocialBoundAccount> accounts = socialAuthTemplate.listBoundAccounts(targetUserId);
+        return Result.success(accounts);
+    }
+
+    private String resolveCurrentUserId(String userId) {
+        if (userId != null && !userId.isBlank()) {
+            return userId;
+        }
+        String currentUserId = UserContextHolder.get();
+        if (currentUserId != null && !currentUserId.isBlank()) {
+            return currentUserId;
+        }
+        if (SaTokenBridge.isAvailable()) {
+            return SaTokenBridge.getLoginId();
+        }
+        return null;
+    }
+
+    private static final class SaTokenBridge {
+        private static final boolean AVAILABLE = ClassUtils.isPresent(
+                "cn.dev33.satoken.stp.StpUtil",
+                SocialAuthController.class.getClassLoader()
+        );
+
+        static boolean isAvailable() {
+            return AVAILABLE;
+        }
+
+        static String getLoginId() {
+            if (AVAILABLE) {
+                return SaTokenAccessor.getLoginId();
+            }
+            return null;
+        }
+
+        private static final class SaTokenAccessor {
+            static String getLoginId() {
+                try {
+                    return cn.dev33.satoken.stp.StpUtil.isLogin() ? cn.dev33.satoken.stp.StpUtil.getLoginIdAsString() : null;
+                } catch (Throwable ex) {
+                    return null;
+                }
+            }
+        }
+    }
+}

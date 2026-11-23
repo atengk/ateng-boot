@@ -17,6 +17,15 @@ public final class RedisBloomUtil {
     private RedisBloomUtil() {
     }
 
+    /**
+     * 绑定静态门面底层受管布隆过滤器实例（由自动装配统一触发）
+     *
+     * @param bloomFilter 受管布隆过滤器实例
+     */
+    public static void init(RedisBloomFilter bloomFilter) {
+        RedisBloomFilter.init(bloomFilter);
+    }
+
     private static RedisBloomFilter getFilter() {
         return RedisBloomFilter.getInstance();
     }

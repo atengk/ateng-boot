@@ -1,5 +1,6 @@
 package io.github.atengk.boot.search.bulk;
 
+import io.github.atengk.boot.core.context.AsyncContext;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.ToString;
@@ -15,8 +16,8 @@ import java.io.Serializable;
  * @since 2026-10-25
  */
 @Getter
-@Builder
-@ToString(exclude = "document")
+@Builder(toBuilder = true)
+@ToString(exclude = {"document", "contextSnapshot"})
 public class SearchBulkAction implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -72,4 +73,24 @@ public class SearchBulkAction implements Serializable {
      * 估算序列化字节容量
      */
     private final long estimatedBytes;
+
+    /**
+     * 入队时捕获的实体类类型（用于异步刷盘阶段的多租户 @IgnoreTenant 判定，可能为 null）
+     */
+    private final Class<?> entityClass;
+
+    /**
+     * 入队时捕获的调用线程租户标识（可能为 null）
+     */
+    private final String tenantId;
+
+    /**
+     * 入队时是否触发忽略租户标志
+     */
+    private final boolean ignoreTenant;
+
+    /**
+     * 入队时刻捕获的四维异步上下文快照（供后台刷盘与死信回调精准恢复 MDC traceId/User/Tenant 现场）
+     */
+    private final transient AsyncContext.ContextSnapshot contextSnapshot;
 }

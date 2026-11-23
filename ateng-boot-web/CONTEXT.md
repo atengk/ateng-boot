@@ -5,7 +5,7 @@
 ## Language
 
 **TraceFilter**:
-在 HTTP 请求入口处提取或生成链路追踪标识、写入日志 MDC、回写响应头并在出口安全清理的高优先级 Web 过滤器。
+在 HTTP 请求入口处提取并严格校验入站链路追踪标识（长度 `max-length` 默认 `64` 与安全字符集校验防 CRLF/超长载荷注入，非法或缺失时生成 UUID）、写入日志 MDC、回写响应头并在出口安全清理的高优先级 Web 过滤器；同时自动剔除优雅停机控制面端点（`/pre-stop`、`/actuator/pre-stop` 及自定义 `mvc-endpoint-path`）避免在途请求自计数阻塞。
 _Avoid_: LogFilter, TraceInterceptor, MDCFilter
 
 **GlobalExceptionHandler**:
@@ -13,31 +13,27 @@ _Avoid_: LogFilter, TraceInterceptor, MDCFilter
 _Avoid_: ExceptionAdvice, ErrorHandler, WebExceptionHandler
 
 **JacksonCustomizer**:
-基于 Spring 标准构建器定制器挂载的长整型转字符串（防雪花失真）与 Java 8 全量日期东八区标准化配置。
+基于 Spring 标准构建器定制器挂载的上下文感知长整型转字符串（响应 `@JsonFormat(shape = JsonFormat.Shape.NUMBER / NUMBER_INT)` 与 Core `NumericLongSerializer` 显式数值保真覆写，兼顾主键防雪花失真与分页/时间戳等度量字段保真）、高精度 `BigDecimal` 防科学计数法平原输出（`WRITE_BIGDECIMAL_AS_PLAIN`）、Java 8 全量日期东八区标准化配置与 `IBaseEnum` 通用枚举自动发现。
 _Avoid_: ObjectMapperConfig, JsonConfig, JacksonConfig
 
 **CorsConfiguration**:
 基于属性开关动态启闭与配置允许跨域源、HTTP 方法及请求头的 Web 安全规则。
 _Avoid_: CrossFilter, WebCorsConfig
 
-**AtengAsyncAutoConfiguration**:
-上下文感知受管异步线程池自动装配类（已下沉收敛至 `ateng-boot-core` 统一底座），web 模块直接依赖继承，为 Spring 异步体系统一提供四维上下文快照（MDC、用户、租户、忽略租户）调度与未捕获异常处理。
-_Avoid_: AsyncConfig, ThreadPoolConfiguration, AsyncThreadPoolAutoConfiguration
-
-**AsyncProperties**:
-异步线程池运行时增强配置属性（位于 `ateng-boot-core`），以 ateng.boot.async 为前缀，提供基于 CPU 核心数自适应的线程池容量、队列缓冲与优雅停机超时控制。
-_Avoid_: ThreadPoolProperties, AsyncConfigProperties
+**TraceUtil**:
+全链路追踪 MDC 与 HTTP 上下文操作门面，提供 traceId 的安全读取、写入与确定性清理。
+_Avoid_: TraceHelper, MdcUtil, LogTraceUtil
 
 **IpUtil**:
-多级反向代理客户端真实 IP 提取工具，按序解析 X-Forwarded-For 首个有效 IP，并安全兼容本地环回与 IPv6 规整。
+多级反向代理客户端真实 IP 提取工具，内置全局默认授信反向代理列表（`defaultTrustedProxies`，初始含 `127.0.0.1`、`::1` 并自动合并配置基线）与可信反向代理逆向清洗防伪造机制，支持按需传入自定义 `trustedProxies`、本地环回与 IPv6 规整及纯原生无 DNS 依赖 CIDR 判定。
 _Avoid_: AddressUtil, NetworkUtil, ClientIpUtil
 
 **ServletUtil**:
-Servlet 上下文与请求响应静态操作门面，基于 RequestContextHolder 安全获取当前 Request/Response 并提供 Header、Cookie、JSON/AJAX 请求识别、JSON 文本直接写入，以及基于 RFC 6266 / RFC 5987 双重文件名防乱码编码的安全流式文件下载与导出辅助（setDownloadHeader / writeDownload）。
+Servlet 上下文与请求响应静态操作门面，基于 RequestContextHolder 安全获取当前 Request/Response 并提供 Header（含 `HEADER_USER_AGENT` 与 `getUserAgent` 快捷提取）、Cookie、JSON/AJAX 请求识别、JSON 文本直接写入，以及基于 RFC 6266 / RFC 5987 双重文件名防乱码编码的安全流式文件下载与导出辅助（setDownloadHeader / writeDownload）。
 _Avoid_: WebUtil, HttpUtil, RequestUtil
 
 **WebLog**:
-Web 接口审计日志注解，支持标注于 Controller 类或方法上，提供操作描述、入参/出参打印控制、耗时观测与敏感参数显式排除配置。
+Web 接口审计日志注解，支持标注于 Controller 类或方法上，提供操作描述、入参/出参打印控制、耗时观测与敏感参数排除配置（自动叠加 `ateng.boot.web.log.default-exclude-params` 全局 11 项默认脱敏基线，支持嵌套对象与集合忽略大小写递归掩码）。
 _Avoid_: ApiLog, AuditLog, RequestLog, LogOperation
 
 **WebLogAspect**:
@@ -49,7 +45,7 @@ Web 接口防重幂等注解，声明于 Controller 方法上，定义幂等键 
 _Avoid_: RepeatSubmit, PreventDuplicate, Idempotence, NoRepeat
 
 **IdempotentAspect**:
-基于 AOP 环绕拦截的接口防重幂等切面，解析 `@Idempotent` 契约，调用 `IdempotentKeyStore` 实施原子加锁与全生命周期治理。
+基于 AOP 环绕拦截的接口防重幂等切面，解析 `@Idempotent` 契约，调用 `IdempotentKeyStore` 实施原子加锁与全生命周期治理；默认 `fail-open=false`（Fail-Closed 严格阻断），开启 `fail-open=true` 且分布式存储异常时自动降级回退至进程内 `InMemoryIdempotentKeyStore` 后备存储维持单机防重。
 _Avoid_: IdempotentInterceptor, RepeatSubmitAspect, DuplicateAspect
 
 **IdempotentKeyStore**:
@@ -68,16 +64,8 @@ _Avoid_: DistributedRedisStore, RedisLockStore
 基于 RedissonClient RBucket 原生原子抢占与存活周期的分布式幂等存储实现，作为 Tier 1 最高优先级分布式存储提供者。
 _Avoid_: RedissonLockStore, RedissonStore
 
-**RedissonIdempotentAutoConfiguration**:
-Tier 1 幂等存储自动装配类，当容器中存在 RedissonClient Bean 时自动装配 RedissonIdempotentKeyStore。
-_Avoid_: RedissonAutoConfig, RedissonStoreConfiguration
-
-**RedisIdempotentAutoConfiguration**:
-Tier 2 幂等存储自动装配类，当容器中存在 StringRedisTemplate Bean 且未命中 Redisson 时自动装配 RedisIdempotentKeyStore。
-_Avoid_: RedisAutoConfig, RedisStoreConfiguration
-
 **AtengIdempotentAutoConfiguration**:
-Tier 3 核心自动装配类，在分布式中间件之后执行，负责单机内存存储兜底（InMemoryIdempotentKeyStore）与 AOP 切面（IdempotentAspect）装配。
+防重幂等三级自适应统一自动装配类，按序探测并装配 Tier 1（`RedissonIdempotentConfiguration` -> `RedissonIdempotentKeyStore`）、Tier 2（`RedisIdempotentConfiguration` -> `RedisIdempotentKeyStore`）或 Tier 3 单机内存存储兜底（`InMemoryIdempotentConfiguration` -> `InMemoryIdempotentKeyStore`），并装配 AOP 切面（`IdempotentAspect`）。
 _Avoid_: IdempotentConfig, IdempotentAspectAutoConfiguration
 
 **RateLimiter**:
@@ -85,11 +73,11 @@ Web 接口防刷限流注解，声明于 Controller 方法上，定义时间窗�
 _Avoid_: Limit, RateLimit, TrafficControl, FlowControl
 
 **RateLimiterAspect**:
-基于 AOP 环绕拦截的接口限流切面，解析 `@RateLimiter` 契约，调用 `RateLimiterStore` 执行原子令牌判定并管理超限熔断。
+基于 AOP 环绕拦截的接口限流切面，解析 `@RateLimiter` 契约与全局配置前缀（`RateLimiterProperties.keyPrefix`），调用 `RateLimiterStore` 执行原子令牌判定、管理超限熔断并在 `include-headers=true` 时写入 `X-RateLimit-Limit` / `X-RateLimit-Remaining` 与 `Retry-After` 响应头；默认 `fail-open=false`（Fail-Closed），开启 `fail-open=true` 且分布式存储异常时自动降级回退至进程内 `InMemoryRateLimiterStore` 维持单机限流。
 _Avoid_: LimitAspect, RateLimitInterceptor, FlowAspect
 
 **RateLimiterStore**:
-限流状态统计与许可扣减的通用 SPI 接口，定义原子尝试获取许可（tryAcquire）与状态清理契约。
+限流状态统计与许可扣减的通用 SPI 接口，完备提供原子尝试获取许可（`tryAcquire`）、只读查询剩余可用许可（`getAvailablePermits`）与状态清理重置（`reset`）契约。
 _Avoid_: LimitStore, RateLimiterManager, RateLimitStorage
 
 **CorsOriginProvider**:
@@ -97,7 +85,7 @@ _Avoid_: LimitStore, RateLimiterManager, RateLimitStorage
 _Avoid_: OriginValidator, CorsProvider, AllowedOriginProvider
 
 **ApiSign**:
-Web 接口数据签名与防篡改注解，声明于 Controller 方法或类上，提供双向或单向验签与加签控制及防重放时效配置。
+Web 接口数据签名与防篡改注解，声明于 Controller 方法或类上，提供双向或单向验签与加签控制、防重放时效配置及注解级算法路由属性 `algorithm`（默认 `SignAlgorithm.DEFAULT` 跟随全局配置，可按接口覆盖 `HMAC_SHA256` / `RSA` / `SM2`）；出站响应加签严格遵守 Fail-Closed 语义，失败或缺失私钥时抛出受控异常。
 _Avoid_: Sign, DataSign, Signature, SecureApi
 
 **ApiSigner**:
@@ -105,7 +93,7 @@ _Avoid_: Sign, DataSign, Signature, SecureApi
 _Avoid_: SignManager, SignatureEngine, CryptoSigner
 
 **Traffic Drain**:
-容器下线前将就绪探针置为拒绝流量并执行静默等待的流量排空阶段，防止在途请求与网关路由摘除延迟导致 502/504。
+容器下线前将就绪探针置为拒绝流量并执行两阶段自适应排空（先等待 `quiet-period` 保障网关路由摘除传播，再在剩余 `drain-timeout` 窗口内按 `poll-interval` 轮询探测在途请求归零即提前退出）的流量排空阶段，防止在途请求与网关路由摘除延迟导致 502/504。
 _Avoid_: PreStop Sleep, Force Kill, Fast Shutdown
 
 **Slow Request Alert**:
@@ -117,19 +105,23 @@ _Avoid_: Request Timeout, Slow Query, Latency Monitor
 _Avoid_: BodyCacheFilter, ReReadFilter, RequestWrapperFilter
 
 **OperateLog**:
-声明式企业级操作审计注解，声明于 Controller 方法上，定义模块、操作类型、业务描述与敏感参数排除。
+声明式企业级操作审计注解，声明于 Controller 方法上，定义模块、操作类型、业务描述与敏感参数排除（自动叠加 `ateng.boot.web.operate-log.default-exclude-params` 全局 11 项默认脱敏基线，支持嵌套对象与集合忽略大小写递归掩码）。
 _Avoid_: OperationLog, SysLog, UserLog, ActionLog
 
 **OperateLogAspect**:
-基于 AOP 环绕拦截的结构化操作审计切面，自动关联四维全链路上下文并在出参联动视图脱敏（守卫 ADR-0012 内存真明文）。
+基于 AOP 环绕拦截的结构化操作审计切面，在异步派发前于请求线程同步采集四维全链路上下文与净化限长后的 `User-Agent` / 解析结果（委托 Core `UserAgentUtil`，受 `OperateLogProperties` 开关与最大长度约束），并在出参联动视图脱敏（守卫 ADR-0012 内存真明文）。
 _Avoid_: SysLogAspect, AuditAspect, ActionAspect
 
+**OperateLogProperties**:
+定义于 `WebProperties.OperateLogProperties`（前缀 `ateng.boot.web.operate-log`）的操作审计强类型配置属性组，统管总开关（`enabled`）、11 项默认脱敏基线（`defaultExcludeParams`）及同步客户端 UA 采集与解析防御参数（`collectUserAgent`、`parseUserAgent`、`userAgentMaxLength`）。
+_Avoid_: AuditProperties, LogAspectProperties, OperateLogConfig
+
 **OperateLogStorageProvider**:
-操作审计存储解耦 SPI 接口，定义审计模型持久化与外部投递契约，支持自定义接入 ES/Kafka。
-_Avoid_: AuditStore, LogStorage, OperateLogDao, AuditStorageProvider
+操作审计存储解耦 `@FunctionalInterface` SPI 接口，以 `store(OperateLogModel)` 作为唯一抽象契约，支持自定义接入数据库、ES 或 Kafka。
+_Avoid_: AuditStore, LogStorage, OperateLogDao, AuditStorageProvider, OperateLogStorageProvider#save
 
 **AtengGracefulShutdownHandler**:
-云原生优雅停机排空生命周期处理器，协调就绪探针反转、静默等待、SmartLifecycle 兜底与原子幂等防重入。
+云原生优雅停机排空生命周期处理器，协调就绪探针反转、两阶段自适应排空等待（`drain-timeout` / `quiet-period` / `poll-interval`）、SmartLifecycle 兜底与原子幂等防重入。
 _Avoid_: GracefulShutdownManager, PreStopHandler, DrainService
 
 **SlowRequestFilter**:
@@ -211,4 +203,210 @@ _Avoid_: XssType, CleanMode, SanitizerMode
 **XssCleaner**:
 XSS 无害化安全清洗引擎，依托纯 JDK 原生字符串替换与正则算法实现高效实体转义与脚本标签剥离，零引入三方重型解析库。
 _Avoid_: HtmlSanitizer, AntiXssUtil, XssUtil
+
+**EnumDictionaryProperties**:
+枚举字典 HTTP 运行时配置属性，以 `ateng.boot.web.enum` 为前缀，管控总开关（`enabled`）、内置 HTTP 控制器暴露开关（`endpoint-enabled`，设为 `false` 时仅保留 `EnumDictionaryRegistry` 交由上游自行接管路由与鉴权）、路由路径前缀、扫描包清单与命名转换策略。
+_Avoid_: EnumProperties, DictProperties, EnumEndpointProperties
+
+**EnumNamingStrategy**:
+枚举类短名转前端别名命名策略枚举，支持小驼峰（LOWER_CAMEL_CASE）、下划线（SNAKE_CASE）与原始类名（ORIGINAL）。
+_Avoid_: NamingType, EnumCaseStrategy
+
+**EnumDictionaryRegistry**:
+枚举字典启动期扫描注册中心，负责解析指定包路径内所有实现 IBaseEnum 的枚举，检测别名冲突并预编译为不可变选项缓存。
+_Avoid_: EnumManager, DictRegistry, EnumCache
+
+**EnumDictionaryController**:
+提供对外只读枚举字典查询的 HTTP 控制器，遵循统一 Result 响应契约，提供单个查询、批量合并及全量目录检索端点。
+_Avoid_: EnumController, DictController, EnumEndpoint
+
+**BaseEnumDeserializer**:
+Jackson 泛型反序列化定制器，拦截 IBaseEnum 实现类型，支持将前端传入的整数或字符串状态码自动解析为强类型枚举实例。
+_Avoid_: EnumJsonDeserializer, BaseEnumJsonCreator
+
+**SignAlgorithm**:
+API 数据签名算法枚举，支持 HMAC_SHA256 对称哈希、RSA 非对称与 SM2 国密非对称算法。
+_Avoid_: SignatureType, SignMode, CryptoAlgorithm
+
+**SignKeyProvider**:
+签名密钥对与 SecretKey 动态提供者 SPI 接口，支持根据 `appId` 与目标签名算法（`getVerifyKey(appId, algorithm)` / `getSignKey(appId, algorithm)`，按 RSA / SM2 专属密钥配置优先解析并兼容回退至通用 `public-key` / `private-key`）动态获取加验签密钥。
+_Avoid_: KeyManager, SecretProvider, ApiKeyStore
+
+**DefaultSignKeyProvider**:
+基于本地配置属性（SignProperties）加载密钥的开箱即用默认提供者实现。
+_Avoid_: SimpleSignKeyProvider, ConfigSignKeyProvider
+
+**HmacSha256Signer**:
+基于纯 JDK 原生 Mac 实现的 HMAC-SHA256 对称签名与验签引擎。
+_Avoid_: HmacSigner, Sha256Signer
+
+**RsaSigner**:
+基于纯 JDK 原生 SHA256withRSA 实现的非对称数字签名与验签引擎。
+_Avoid_: RsaSignatureEngine, RsaCryptoSigner
+
+**SignCanonicalUtil**:
+API 签名规范化规约工具，提供 Query 参数与 JSON 请求体字典序排序、键值拼接与防重放摘要基底构造。
+_Avoid_: CanonicalHelper, SignUtil, UrlParamUtil
+
+**LimitType**:
+接口限流防刷维度枚举，支持默认接口方法级（DEFAULT）、客户端真实 IP（IP）、用户身份（USER）与多租户（TENANT）维度。
+_Avoid_: RateLimitType, LimitDimension, FlowRuleType
+
+**InMemoryRateLimiterStore**:
+基于纯 JDK 原生并发容器与防爆容量软上限的单机令牌桶限流存储实现（Tier 3 兜底）。
+_Avoid_: LocalRateLimiterStore, MemoryRateLimiterStore
+
+**RedisRateLimiterStore**:
+基于 Spring Data Redis 与原子 Lua 脚本的分布式令牌桶限流存储实现（Tier 2 次级）。
+_Avoid_: DistributedRedisRateLimiter, RedisLimitStore
+
+**RedissonRateLimiterStore**:
+基于 RedissonClient RRateLimiter 原生分布式令牌桶的限流存储实现（Tier 1 最高优先级）。
+_Avoid_: RedissonLimitStore, DistributedRedissonStore
+
+**AtengRateLimiterAutoConfiguration**:
+限流治理三级自适应自动装配类，负责按序探测 Redisson/Redis/InMemory 存储并装配 RateLimiterAspect。
+_Avoid_: RateLimiterAutoConfig, RateLimiterConfiguration
+
+**PreStopEndpoint**:
+基于 Spring Boot Actuator 的云原生 Pod 生命周期流量排空端点，暴露 /actuator/pre-stop。
+_Avoid_: PreStopActuator, DrainEndpoint
+
+**PreStopController**:
+无 Actuator 依赖时的轻量级 Spring MVC 流量排空控制器，暴露 /pre-stop。
+_Avoid_: PreStopMvcController, ShutdownController
+
+**ApplicationReadyCardListener**:
+应用启动就绪事件监听器，探测服务端口、真实内网 IP 与接口文档端点并渲染一体化 ASCII 欢迎卡片。
+_Avoid_: StartupCardListener, BannerPrinter, ReadyListener
+
+**ProductionSanityChecker**:
+生产环境（激活 `prod`、`production`、`prod-*` 或 `prod_*` Profile，忽略大小写）高危配置防呆自检器，启动期探测 Swagger 公网暴露、Payload 全量日志与 H2 控制台并输出安全警示。
+_Avoid_: SecuritySanityChecker, ProductionGuard, StartupChecker
+
+**DynamicCorsConfigurationSource**:
+基于属性配置与 CorsOriginProvider 的动态安全跨域配置源，实施请求时动态来源判定与凭据安全反射。
+_Avoid_: DynamicCorsSource, CustomCorsConfigurationSource, WebCorsSource
+
+**DefaultCorsOriginProvider**:
+基于属性配置白名单与正则表达式模式的开箱即用默认跨域来源校验提供者。
+_Avoid_: SimpleCorsOriginProvider, ConfigCorsOriginProvider
+
+**CachedBodyHttpServletRequest**:
+可重复读取请求体的 HttpServletRequest 包装器，支持载荷上限拦截防 OOM 与 HTTP 200 + 413 业务错误码快速失败。
+_Avoid_: BodyCacheRequest, ReReadRequest, CachedRequest
+
+**XssHttpServletRequestWrapper**:
+XSS 安全清洗 HTTP 请求包装器，拦截 Query/Form 参数与非排除 Header 并实施无害化清洗与伪协议剥离。
+_Avoid_: CleanRequestWrapper, AntiXssRequestWrapper, SafeRequest
+
+**XssStringDeserializer**:
+Jackson 字符串反序列化器，在 JSON 请求体反序列化为对象属性阶段根据 XssCleaner 执行无害化清洗，支持 @XssIgnore 字段级豁免。
+_Avoid_: JsonXssCleaner, XssDeserializer, StringCleanDeserializer
+
+**ApiSignAspect**:
+基于 AOP 环绕拦截的 API 数据签名防篡改切面，解析 @ApiSign 契约，调用 ApiSigner 实施双向或单向验签与加签控制。
+_Avoid_: SignAspect, SignatureAspect, DataSignAspect
+
+**DocDetectionHelper**:
+OpenAPI/Swagger 接口文档暴露探测辅助工具，用于应用启动就绪卡片与生产高危配置防呆探测。
+_Avoid_: SwaggerHelper, DocUtil, OpenApiDetector
+
+**ContentCachingCondition**:
+通用请求体可重读过滤器装配条件评估器，当开启 API 加签验签（`ateng.boot.web.sign.enabled=true`）或开启 Payload 采样日志（`ateng.boot.web.payload-log.enabled=true`）时按需激活 `ContentCachingFilter`，关闭时保持零包装开销。
+_Avoid_: BodyCacheCondition, CachingSwitchCondition
+
+**DrainResult**:
+云原生优雅停机流量排空结果契约模型（记录模型），承载探针目标状态、实际执行标志、排水等待时长、排水开始与结束时的活跃在途请求水位（`inFlightRequestsAtStart` / `inFlightRequestsRemaining`）及诊断摘要。
+_Avoid_: ShutdownResult, DrainReport, PreStopResult
+
+**OptionItem**:
+跨模块复用自 `ateng-boot-core` 的强类型标准枚举字典选项模型，作为 `EnumDictionaryRegistry` 预编译缓存与 `EnumDictionaryController` HTTP 查询接口的对外标准视图模型。
+_Avoid_: EnumItemVO, DictOptionVO, SelectOption
+
+**SecurityHeadersProperties**:
+定义于 `WebProperties.SecurityHeadersProperties`（前缀 `ateng.boot.web.security-headers`）的 HTTP 安全响应头强类型配置属性组，统一纳管 `X-Content-Type-Options`、`X-Frame-Options`、`X-XSS-Protection`、`Referrer-Policy`、`Content-Security-Policy`、`Permissions-Policy` 与容器 `Server` 标头剥离策略。
+_Avoid_: HeaderSecurityConfig, SecureHeaderOptions, CorsSecurityHeaders
+
+**DefaultOperateLogStorageProvider**:
+`OperateLogStorageProvider` 的开箱即用保底实现，依托受管 SLF4J 日志器以标准 JSON 格式输出 `[OPERATE_LOG]` 结构化审计记录，无外部持久化依赖即可运行；业务侧注册自定义 `OperateLogStorageProvider` Bean 时自动让位。
+_Avoid_: ConsoleAuditStore, Slf4jOperateLogDao, FallbackAuditStorage
+
+**OperateLogEvent**:
+跨模块复用自 `io.github.atengk.boot.core.audit.OperateLogEvent` 的 Spring 应用事件载体，由 `OperateLogAspect` 在同步调用或 `@Async` 受管异步投递阶段协同发布，供进程内多个监听器按事件机制订阅消费 `OperateLogModel`。
+_Avoid_: AuditLogEvent, OperationRecordEvent, WebOperateEvent
+
+**AuditParamSanitizer**:
+`@OperateLog` 与 `@WebLog` 切面共享的包内安全脱敏原语，负责合并全局 `default-exclude-params`（11 项默认敏感词基线）与注解级 `excludeParams`，并对嵌套实体、Map、Collection 与数组执行忽略大小写递归掩码及环引用防护（`[CIRCULAR_REF]` / `[EXCLUDED]`）。
+_Avoid_: LogMasker, ParamFilterUtil, SensitiveArgCleaner
+
+**CaptchaTemplate**:
+图形验证码全生命周期编程式门面，负责生成图像凭据、执行严格一次一密（无论核验成败均原子消费）校验（`verify` / `verifyOrThrow`）及主动失效清理（`invalidate`）。
+_Avoid_: CaptchaService, VerifyCodeManager, ImageCodeUtil
+
+**CaptchaResult**:
+不可变图形验证码生成结果契约模型（记录模型），承载随机唯一键（`captchaKey`）、Base64 Data URL 图像载荷（`imageBase64`）与有效时长秒数（`expireSeconds`）。
+_Avoid_: CaptchaVO, CaptchaResponse, VerifyCodeDTO
+
+**CaptchaStore**:
+图形验证码答案状态存储的通用 SPI 接口，定义带 TTL 写入（`save`）、严格单次消费原子取删（`getAndDelete`）及主动清除（`delete`）契约。
+_Avoid_: CaptchaCache, CaptchaRepository, CodeStorage
+
+**RedissonCaptchaStore**:
+基于 `RedissonClient` `RBucket` 原生原子 `getAndDelete` 与存活周期实现的分布式验证码存储（Tier 1 最高优先级）。
+_Avoid_: RedissonVerifyStore, RedissonCodeCache
+
+**RedisCaptchaStore**:
+基于 `StringRedisTemplate` 与原子 `getAndDelete` 原语实现的分布式验证码存储（Tier 2 次级）。
+_Avoid_: RedisVerifyStore, StringRedisCaptchaCache
+
+**InMemoryCaptchaStore**:
+基于纯 JDK `ConcurrentHashMap`、`ReentrantLock` 细粒度并发控制、软容量上限淘汰及 CAS 节流清理的单机内存验证码存储兜底实现（Tier 3 兜底）。
+_Avoid_: LocalCaptchaStore, MemoryCaptchaCache
+
+**CaptchaRenderer**:
+图形验证码图像渲染 SPI 接口，定义根据展示文本与配置参数生成 Base64 Data URL 图像载荷的契约。
+_Avoid_: CaptchaDrawer, ImageGenerator, CaptchaPainter
+
+**SvgCaptchaRenderer**:
+默认零系统字体依赖的纯 JDK 矢量图形渲染器，基于内置字符轮廓 `<path>` 表叠加随机旋转缩放、贝塞尔干扰曲线与噪点生成 `data:image/svg+xml;base64,...` 图像，输出不含 `<text>` 标签以防御正则直读。
+_Avoid_: SvgDrawer, VectorCaptchaGenerator
+
+**PngCaptchaRenderer**:
+基于纯 JDK `BufferedImage` / `Graphics2D` 与逻辑字体渲染字符扭曲、干扰线及噪点并输出 `data:image/png;base64,...` 位图的备选图形渲染器。
+_Avoid_: AwtCaptchaGenerator, BufferedImageCaptchaDrawer
+
+**CaptchaType**:
+图形验证码内容模式枚举，支持随机字符（`CHAR`）与简单加减乘算术表达式（`MATH`）。
+_Avoid_: CaptchaCategory, VerifyType
+
+**CaptchaCharType**:
+随机字符模式字符集策略枚举，支持剔除易混淆字符的安全字母数字混合（`ALPHANUMERIC_SAFE`，默认）、纯数字（`NUMERIC`）、纯字母（`ALPHA`）与全量字母数字（`ALPHANUMERIC`）。
+_Avoid_: CharMode, CodeCharset
+
+**CaptchaRendererType**:
+图形验证码内置渲染引擎类型枚举，支持零字体依赖矢量图（`SVG`，默认）与位图（`PNG`）。
+_Avoid_: ImageFormat, RenderEngine
+
+**CaptchaProperties**:
+图形验证码运行时强类型配置属性，以 `ateng.boot.web.captcha` 为前缀，纳管开关、Key 前缀、渲染引擎、内容模式、字符集、尺寸、过期时长（`Duration`）、大小写策略、干扰强度、故障降级开关（`fail-open`）及内存兜底参数。
+_Avoid_: VerifyCodeProperties, ImageCaptchaConfig
+
+**AtengCaptchaAutoConfiguration**:
+图形验证码三级自适应自动装配类，按序探测并装配 `CaptchaStore`（Redisson → Redis → InMemory）、`CaptchaRenderer`（SVG / PNG）及编程式门面 `CaptchaTemplate`。
+_Avoid_: CaptchaConfig, CaptchaAutoConfig
+
+---
+
+## Disambiguation & Errata
+
+- **WebLogEvent**: 历史拟定审计事件载体；当前模块坚持零多余内存开销，直接由 `WebLogAspect` 结构化输出 SLF4J JSON 审计日志，无需额外中间事件模型。
+- **RequestBodyCachingFilter**: 已净切移除的历史加签专用请求体缓存过滤器，统一由 `ContentCachingFilter` 与 `CachedBodyHttpServletRequest` 替代。
+- **OperateLogStorageProvider#save**: 已净切移除的历史别名方法，统一使用唯一抽象契约 `store(OperateLogModel)`。
+- **EnumItemVO**: 历史拟定枚举字典视图模型；当前模块统一复用 Core 底座提供的强类型 `OptionItem<T>` 标准选项模型（参见 ADR-0060）。
+- **MultipartConfig**: 历史拟定文件上传配置类；100% 依托 Spring Boot 原生 `spring.servlet.multipart.*` 机制，不额外引入无谓配置包装类。
+- **UserAgentUtil / UserAgentInfo**: 已解除早期 Errata 搁置限制，仍严格禁止引入重型外部 UA 规则库（ADR-0011）；现由 `ateng-boot-core` 统一提供纯 JDK 17 零依赖原生解析原语 `UserAgentUtil` 与不可变记录 `UserAgentInfo`，并由本模块 `ServletUtil` 与 `OperateLogAspect` 同步采集衔接（历史废弃别名 **`ClientInfo`** 仍保持禁用）。
+
+
+
 

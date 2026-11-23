@@ -34,6 +34,11 @@ public class NotificationAlertProperties {
     private boolean includeArgs = true;
 
     /**
+     * 全局默认告警链路详情跳转地址模板（可选，支持 ${traceId} 变量插值，如 https://trace.example.com/trace/${traceId}）
+     */
+    private String detailUrl;
+
+    /**
      * 入参脱敏的敏感字段关键字列表，默认包含 password, secret, token, credential, idCard, mobile 等
      */
     private java.util.List<String> desensitizeKeys = new java.util.ArrayList<>(java.util.List.of(

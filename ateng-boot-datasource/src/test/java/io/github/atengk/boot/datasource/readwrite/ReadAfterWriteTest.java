@@ -1,5 +1,6 @@
 package io.github.atengk.boot.datasource.readwrite;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.datasource.enums.ReadAfterWriteScope;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
@@ -9,6 +10,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -40,6 +42,7 @@ class ReadAfterWriteTest {
         ReadAfterWriteContextHolder.clear();
         resolver.clearAll();
         UserContextHolder.clear();
+        TenantContextHolder.clear();
     }
 
     @Test
@@ -89,5 +92,56 @@ class ReadAfterWriteTest {
 
         manager.markWriteOccurred();
         assertThat(manager.isWriteOccurred()).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 WINDOW 模式下相同 userId 在不同租户间写后即读窗口完全隔离")
+    void testWindowScope_IsolatesSameUserIdAcrossDifferentTenants() {
+        properties.setScope(ReadAfterWriteScope.WINDOW);
+        properties.setWindowTtl(Duration.ofSeconds(3));
+
+        // 租户 1001 的 admin 用户触发写操作
+        TenantContextHolder.setTenantId("1001");
+        UserContextHolder.setUserId("admin");
+        manager.markWriteOccurred();
+        assertThat(manager.isWriteOccurred()).isTrue();
+
+        // 切换到租户 1002 且同样为 admin 用户：必须隔离不受租户 1001 影响
+        TenantContextHolder.setTenantId("1002");
+        assertThat(manager.isWriteOccurred()).isFalse();
+
+        // 切换到全局无租户且同样为 admin 用户：必须隔离不受租户 1001 影响
+        TenantContextHolder.clear();
+        assertThat(manager.isWriteOccurred()).isFalse();
+
+        // 切回租户 1001 的 admin 用户：在窗口期内依然命中
+        TenantContextHolder.setTenantId("1001");
+        assertThat(manager.isWriteOccurred()).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试 WINDOW 模式下未登录场景按租户与线程隔离互不串扰")
+    void testWindowScope_ThreadFallbackIsolatesAcrossTenantsAndThreads() throws Exception {
+        properties.setScope(ReadAfterWriteScope.WINDOW);
+        properties.setWindowTtl(Duration.ofSeconds(3));
+
+        TenantContextHolder.setTenantId("1001");
+        manager.markWriteOccurred();
+        assertThat(manager.isWriteOccurred()).isTrue();
+
+        // 同线程切换租户 1002 隔离
+        TenantContextHolder.setTenantId("1002");
+        assertThat(manager.isWriteOccurred()).isFalse();
+
+        // 跨线程即使相同租户 1001 也隔离
+        Boolean otherThreadActive = CompletableFuture.supplyAsync(() -> {
+            TenantContextHolder.setTenantId("1001");
+            try {
+                return manager.isWriteOccurred();
+            } finally {
+                TenantContextHolder.clear();
+            }
+        }).get();
+        assertThat(otherThreadActive).isFalse();
     }
 }

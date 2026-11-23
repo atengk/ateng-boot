@@ -1,9 +1,12 @@
 package io.github.atengk.boot.core.util;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -121,5 +124,73 @@ class HmacUtilTest {
         assertThrows(NullPointerException.class, () -> HmacUtil.hmacSha256(new byte[1], null));
         assertThrows(NullPointerException.class, () -> HmacUtil.hmacSha256Hex(null, "key"));
         assertThrows(NullPointerException.class, () -> HmacUtil.hmacSha256Hex("data", null));
+    }
+
+    @Test
+    @DisplayName("纯 JDK 原生国密 HmacSM3：6 组对称重载、RFC2104 长密钥压缩与恒定时间验签")
+    void shouldSupportHmacSm3AndVerifySymmetrically() {
+        byte[] dataBytes = PAYLOAD.getBytes(StandardCharsets.UTF_8);
+        byte[] keyBytes = SECRET_KEY.getBytes(StandardCharsets.UTF_8);
+
+        byte[] rawFromBytes = HmacUtil.hmacSm3(dataBytes, keyBytes);
+        byte[] rawFromStrings = HmacUtil.hmacSm3(PAYLOAD, SECRET_KEY);
+        byte[] rawViaGeneric = HmacUtil.hmac(HmacUtil.HMAC_SM3, dataBytes, keyBytes);
+        assertEquals(32, rawFromBytes.length);
+        assertArrayEquals(rawFromBytes, rawFromStrings);
+        assertArrayEquals(rawFromBytes, rawViaGeneric);
+
+        String hexFromBytes = HmacUtil.hmacSm3Hex(dataBytes, keyBytes);
+        String hexFromStrings = HmacUtil.hmacSm3Hex(PAYLOAD, SECRET_KEY);
+        assertEquals(64, hexFromBytes.length());
+        assertEquals(hexFromBytes, hexFromStrings);
+        assertTrue(HmacUtil.verifyHex(hexFromBytes, hexFromStrings));
+        assertFalse(HmacUtil.verifyHex(hexFromBytes, HmacUtil.hmacSm3Hex(PAYLOAD + "&tampered=1", SECRET_KEY)));
+
+        String b64FromBytes = HmacUtil.hmacSm3Base64(dataBytes, keyBytes);
+        String b64FromStrings = HmacUtil.hmacSm3Base64(PAYLOAD, SECRET_KEY);
+        assertEquals(b64FromBytes, b64FromStrings);
+        assertArrayEquals(rawFromBytes, Base64.getDecoder().decode(b64FromStrings));
+        assertTrue(HmacUtil.verifyBase64(b64FromBytes, b64FromStrings));
+
+        // 空报文属于合法 RFC2104 输入
+        assertEquals(32, HmacUtil.hmacSm3("", SECRET_KEY).length);
+
+        // 超过 64 字节的超长密钥应先经 DigestUtil.sm3 压缩至 32 字节再参与 RFC2104 计算
+        byte[] over64Key = new byte[100];
+        for (int i = 0; i < over64Key.length; i++) {
+            over64Key[i] = (byte) (i + 1);
+        }
+        byte[] compressedKey = DigestUtil.sm3(over64Key);
+        assertArrayEquals(HmacUtil.hmacSm3(dataBytes, compressedKey), HmacUtil.hmacSm3(dataBytes, over64Key));
+
+        // 恰好 64 字节边界密钥不做 SM3 预压缩
+        byte[] exact64Key = new byte[64];
+        exact64Key[0] = 0x11;
+        exact64Key[63] = 0x22;
+        assertEquals(64, HmacUtil.hmacSm3Hex(dataBytes, exact64Key).length());
+    }
+
+    @Test
+    @DisplayName("纯 JDK 原生国密 HmacSM3：空入参快速失败抛出 BusinessException")
+    void shouldFailFastWithBusinessExceptionOnEmptyHmacSm3Inputs() {
+        BusinessException ex1 = assertThrows(BusinessException.class,
+                () -> HmacUtil.hmacSm3((byte[]) null, "key".getBytes(StandardCharsets.UTF_8)));
+        assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex1.getCode());
+
+        BusinessException ex2 = assertThrows(BusinessException.class,
+                () -> HmacUtil.hmacSm3("data".getBytes(StandardCharsets.UTF_8), null));
+        assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex2.getCode());
+
+        BusinessException ex3 = assertThrows(BusinessException.class,
+                () -> HmacUtil.hmacSm3("data".getBytes(StandardCharsets.UTF_8), new byte[0]));
+        assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex3.getCode());
+
+        BusinessException ex4 = assertThrows(BusinessException.class,
+                () -> HmacUtil.hmacSm3Hex((String) null, SECRET_KEY));
+        assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex4.getCode());
+
+        BusinessException ex5 = assertThrows(BusinessException.class,
+                () -> HmacUtil.hmacSm3Base64(PAYLOAD, ""));
+        assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex5.getCode());
     }
 }

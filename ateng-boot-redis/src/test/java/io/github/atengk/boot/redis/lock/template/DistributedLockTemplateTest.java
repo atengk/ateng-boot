@@ -57,7 +57,6 @@ class DistributedLockTemplateTest {
         redisProperties.getLock().setWaitTime(Duration.ofMillis(3000));
         redisProperties.getLock().setLeaseTime(Duration.ofMillis(-1));
         redisProperties.getLock().setSlowThreshold(Duration.ofMillis(5000));
-        redisProperties.getLock().setTimeUnit(TimeUnit.MILLISECONDS);
 
         lockTemplate = new DistributedLockTemplate(redissonClient, redisProperties);
     }
@@ -275,31 +274,29 @@ class DistributedLockTemplateTest {
     }
 
     @Test
-    @DisplayName("execute: 全局配置默认 Duration 3s 且单位为 SECONDS 时正确按秒换算")
-    void execute_defaultSecondsConfig() throws Throwable {
+    @DisplayName("execute: 全局配置 Duration 5s 默认按毫秒无损换算")
+    void execute_defaultDurationConfig() throws Throwable {
         RedisProperties customProps = new RedisProperties();
         customProps.getLock().setWaitTime(Duration.ofSeconds(5));
         customProps.getLock().setLeaseTime(Duration.ofMillis(-1));
-        customProps.getLock().setTimeUnit(TimeUnit.SECONDS);
         DistributedLockTemplate template = new DistributedLockTemplate(redissonClient, customProps);
 
         when(redissonClient.getLock("lock:sec:1")).thenReturn(rLock);
-        when(rLock.tryLock(5L, TimeUnit.SECONDS)).thenReturn(true);
+        when(rLock.tryLock(5000L, TimeUnit.MILLISECONDS)).thenReturn(true);
         when(rLock.isHeldByCurrentThread()).thenReturn(true);
 
         String result = template.execute("sec:1", () -> "OK_SEC");
         assertThat(result).isEqualTo("OK_SEC");
-        verify(rLock).tryLock(5L, TimeUnit.SECONDS);
+        verify(rLock).tryLock(5000L, TimeUnit.MILLISECONDS);
         verify(rLock).unlock();
     }
 
     @Test
-    @DisplayName("execute: 亚秒级 Duration 自动提升精度为毫秒，防止被整除为 0 造成精度截断")
+    @DisplayName("execute: 亚秒级 Duration 按毫秒无损换算，防止精度截断")
     void execute_subSecondDurationWithoutTruncation() throws Throwable {
         RedisProperties customProps = new RedisProperties();
         customProps.getLock().setWaitTime(Duration.ofMillis(500));
         customProps.getLock().setLeaseTime(Duration.ofMillis(-1));
-        customProps.getLock().setTimeUnit(TimeUnit.SECONDS); // 默认单位为 SECONDS，500ms 转换秒会截断为 0
         DistributedLockTemplate template = new DistributedLockTemplate(redissonClient, customProps);
 
         when(redissonClient.getLock("lock:sub:1")).thenReturn(rLock);
@@ -313,25 +310,132 @@ class DistributedLockTemplateTest {
     }
 
     @Test
-    @DisplayName("LockProperties: 秒级数值向后兼容适配方法正常工作")
-    void lockProperties_backwardCompatibility() {
+    @DisplayName("LockProperties: 强类型 Duration 默认值与配置生效验证")
+    void lockProperties_strongTypedDuration() {
         RedisProperties.LockProperties lock = new RedisProperties.LockProperties();
-        lock.setWaitTimeSeconds(10L);
-        assertThat(lock.getWaitTimeSeconds()).isEqualTo(10L);
-        assertThat(lock.getWaitTime()).isEqualTo(Duration.ofSeconds(10));
-
-        lock.setLeaseTimeSeconds(20L);
-        assertThat(lock.getLeaseTimeSeconds()).isEqualTo(20L);
-        assertThat(lock.getLeaseTime()).isEqualTo(Duration.ofSeconds(20));
-
-        lock.setLeaseTimeSeconds(-1L);
-        assertThat(lock.getLeaseTimeSeconds()).isEqualTo(-1L);
+        assertThat(lock.getWaitTime()).isEqualTo(Duration.ofSeconds(3));
         assertThat(lock.getLeaseTime()).isEqualTo(Duration.ofMillis(-1));
+        assertThat(lock.getSlowThreshold()).isEqualTo(Duration.ofMillis(3000L));
 
-        lock.setWaitTime(15L);
+        lock.setWaitTime(Duration.ofSeconds(15));
+        lock.setLeaseTime(Duration.ofSeconds(25));
+        lock.setSlowThreshold(Duration.ofMillis(500));
+
         assertThat(lock.getWaitTime()).isEqualTo(Duration.ofSeconds(15));
-
-        lock.setLeaseTime(25L);
         assertThat(lock.getLeaseTime()).isEqualTo(Duration.ofSeconds(25));
+        assertThat(lock.getSlowThreshold()).isEqualTo(Duration.ofMillis(500));
+    }
+
+    @Test
+    @DisplayName("execute: 多键联锁对乱序键进行字典序升序排序防止 AB-BA 死锁")
+    void execute_multiKeys_sortedDictionaryOrder() throws Throwable {
+        RLock lockA = mock(RLock.class);
+        RLock lockB = mock(RLock.class);
+        RLock lockC = mock(RLock.class);
+        RLock multiLock = mock(RLock.class);
+        when(redissonClient.getLock("lock:A")).thenReturn(lockA);
+        when(redissonClient.getLock("lock:B")).thenReturn(lockB);
+        when(redissonClient.getLock("lock:C")).thenReturn(lockC);
+        when(redissonClient.getMultiLock(lockA, lockB, lockC)).thenReturn(multiLock);
+        when(multiLock.tryLock(eq(2000L), eq(5000L), eq(TimeUnit.MILLISECONDS))).thenReturn(true);
+        when(multiLock.isHeldByCurrentThread()).thenReturn(true);
+
+        // 故意乱序传入 C, A, B
+        String res = lockTemplate.execute(List.of("C", "A", "B"), LockMode.REENTRANT,
+                Duration.ofSeconds(2), Duration.ofSeconds(5), () -> "SORTED_OK");
+
+        assertThat(res).isEqualTo("SORTED_OK");
+        // 校验底层 MultiLock 获得的锁数组严格按 A, B, C 字典序排列
+        verify(redissonClient).getMultiLock(lockA, lockB, lockC);
+        verify(multiLock).unlock();
+    }
+
+    @Test
+    @DisplayName("execute: Duration 强类型重载加锁执行与负数防御校验")
+    void execute_durationOverloadsAndValidation() throws Throwable {
+        when(redissonClient.getLock("lock:dur:1")).thenReturn(rLock);
+        when(rLock.tryLock(eq(2000L), eq(10000L), eq(TimeUnit.MILLISECONDS))).thenReturn(true);
+        when(rLock.isHeldByCurrentThread()).thenReturn(true);
+
+        String result = lockTemplate.execute("dur:1", LockMode.REENTRANT,
+                Duration.ofSeconds(2), Duration.ofSeconds(10), () -> "DUR_OK");
+        assertThat(result).isEqualTo("DUR_OK");
+        verify(rLock).tryLock(eq(2000L), eq(10000L), eq(TimeUnit.MILLISECONDS));
+        verify(rLock).unlock();
+
+        // null waitTime 快速失败校验
+        assertThatThrownBy(() -> lockTemplate.execute(List.of("dur:1"), LockMode.REENTRANT,
+                (Duration) null, Duration.ofSeconds(10), () -> "FAIL"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("waitTime must not be null");
+
+        // null leaseTime 快速失败校验
+        assertThatThrownBy(() -> lockTemplate.execute(List.of("dur:1"), LockMode.REENTRANT,
+                Duration.ofSeconds(1), (Duration) null, () -> "FAIL"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("leaseTime must not be null");
+
+        // 负数 waitTime 快速失败校验
+        assertThatThrownBy(() -> lockTemplate.execute(List.of("dur:1"), LockMode.REENTRANT,
+                Duration.ofSeconds(-1), Duration.ofSeconds(10), () -> "FAIL"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("waitTime must not be negative");
+
+        // 负数 leaseTime 快速失败校验
+        assertThatThrownBy(() -> lockTemplate.execute(List.of("dur:1"), LockMode.REENTRANT,
+                Duration.ofSeconds(1), Duration.ofSeconds(-5), () -> "FAIL"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("leaseTime must not be negative");
+    }
+
+    @Test
+    @DisplayName("tryExecute: Duration 强类型重载试探加锁")
+    void tryExecute_durationOverloads() throws Throwable {
+        when(redissonClient.getLock("lock:try:dur")).thenReturn(rLock);
+        when(rLock.tryLock(eq(1500L), eq(TimeUnit.MILLISECONDS))).thenReturn(true);
+        when(rLock.isHeldByCurrentThread()).thenReturn(true);
+
+        AtomicBoolean executed = new AtomicBoolean(false);
+        boolean success = lockTemplate.tryExecute("try:dur", Duration.ofMillis(1500), () -> executed.set(true));
+
+        assertThat(success).isTrue();
+        assertThat(executed.get()).isTrue();
+        verify(rLock).tryLock(eq(1500L), eq(TimeUnit.MILLISECONDS));
+        verify(rLock).unlock();
+
+        assertThatThrownBy(() -> lockTemplate.tryExecute("try:dur", (Duration) null, () -> {}))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("waitTime must not be null");
+
+        assertThatThrownBy(() -> lockTemplate.tryExecute(List.of("try:dur"), LockMode.REENTRANT, (Duration) null, Duration.ofSeconds(1), () -> {}))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("waitTime must not be null");
+
+        assertThatThrownBy(() -> lockTemplate.tryExecute(List.of("try:dur"), LockMode.REENTRANT, Duration.ofSeconds(1), (Duration) null, () -> {}))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("leaseTime must not be null");
+    }
+
+    @Test
+    @DisplayName("测试锁键全局与模块前缀无冒号规范化与幂等去重")
+    void resolveKeys_idempotentPrefixNormalization() throws Throwable {
+        io.github.atengk.boot.redis.properties.RedisProperties props = new io.github.atengk.boot.redis.properties.RedisProperties();
+        props.setKeyPrefix("prod");
+        props.getLock().setPrefix("lock");
+        DistributedLockTemplate prefixedLock = new DistributedLockTemplate(redissonClient, props);
+
+        when(redissonClient.getLock(org.mockito.ArgumentMatchers.anyString())).thenReturn(rLock);
+        when(rLock.tryLock(anyLong(), any(TimeUnit.class))).thenReturn(true);
+        when(rLock.isHeldByCurrentThread()).thenReturn(true);
+
+        prefixedLock.execute("order:1", () -> {});
+        prefixedLock.execute("lock:order:2", () -> {});
+        prefixedLock.execute("prod:order:3", () -> {});
+        prefixedLock.execute("prod:lock:order:4", () -> {});
+
+        verify(redissonClient).getLock("prod:lock:order:1");
+        verify(redissonClient).getLock("prod:lock:order:2");
+        verify(redissonClient).getLock("prod:lock:order:3");
+        verify(redissonClient).getLock("prod:lock:order:4");
     }
 }

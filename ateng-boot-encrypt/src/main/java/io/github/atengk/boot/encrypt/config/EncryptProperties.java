@@ -2,9 +2,12 @@ package io.github.atengk.boot.encrypt.config;
 
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 配置加解密核心属性类
@@ -52,6 +55,17 @@ public class EncryptProperties {
     private boolean enforceEncrypted = false;
 
     /**
+     * 生产环境强制加密白名单属性键集合（配置项 ateng.boot.encrypt.ignored-keys）
+     * 显式白名单内的属性跳过强制加密校验
+     */
+    private Set<String> ignoredKeys = new HashSet<>();
+
+    /**
+     * 是否兼容 Spring Cloud Config {cipher}... 格式密文，默认为 false
+     */
+    private boolean compatibleCipherPrefix = false;
+
+    /**
      * 敏感属性匹配正则模式，用于生产环境明文强制检测
      */
     private String sensitiveKeyPattern = ".*password.*|.*secret.*|.*token.*|.*private-key.*";
@@ -60,4 +74,10 @@ public class EncryptProperties {
      * 多密钥映射表（KeyId -> Password/PrivateKey），用于多 Key 轮换与分域隔离
      */
     private Map<String, String> keys = new LinkedHashMap<>();
+
+    /**
+     * 外部 KMS / 硬件加密机弹性退避重试配置
+     */
+    @NestedConfigurationProperty
+    private EncryptRetryProperties retry = new EncryptRetryProperties();
 }

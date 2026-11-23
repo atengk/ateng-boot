@@ -33,6 +33,11 @@ public final class PageUtil {
     public static final long DEFAULT_MAX_LIMIT = 500L;
 
     /**
+     * 可动态配置的全局默认单页最大允许记录数，默认初始化为 {@link #DEFAULT_MAX_LIMIT}
+     */
+    private static volatile long defaultMaxLimit = DEFAULT_MAX_LIMIT;
+
+    /**
      * 启发式敏感排序属性黑名单，禁止通过排序泄露信息
      */
     private static final Set<String> SENSITIVE_PROPERTIES = Set.of(
@@ -43,6 +48,28 @@ public final class PageUtil {
     }
 
     /**
+     * 设置全局默认单页最大允许记录数上限（由自动装配联动 ateng.boot.mybatis-plus.pagination.max-limit）
+     *
+     * @param maxLimit 单页最大记录数上限（若小于等于 0 则自动回退为默认 500）
+     */
+    public static void setDefaultMaxLimit(long maxLimit) {
+        if (maxLimit > 0) {
+            defaultMaxLimit = maxLimit;
+        } else {
+            defaultMaxLimit = DEFAULT_MAX_LIMIT;
+        }
+    }
+
+    /**
+     * 获取当前全局默认单页最大允许记录数上限
+     *
+     * @return 当前默认最大记录数上限
+     */
+    public static long getDefaultMaxLimit() {
+        return defaultMaxLimit;
+    }
+
+    /**
      * 将业务传输层分页入参 PageQuery 转换为 MyBatis-Plus 分页对象 Page（默认开启 count 查询）
      *
      * @param query 分页入参（若为 null 则自动降级为默认第一页每页 10 条）
@@ -50,7 +77,7 @@ public final class PageUtil {
      * @return MyBatis-Plus 分页实例
      */
     public static <T> Page<T> toPage(PageQuery query) {
-        return toPage(query, (Class<T>) null, true, DEFAULT_MAX_LIMIT);
+        return toPage(query, (Class<T>) null, true, defaultMaxLimit);
     }
 
     /**
@@ -62,7 +89,7 @@ public final class PageUtil {
      * @return MyBatis-Plus 分页实例
      */
     public static <T> Page<T> toPage(PageQuery query, boolean searchCount) {
-        return toPage(query, (Class<T>) null, searchCount, DEFAULT_MAX_LIMIT);
+        return toPage(query, (Class<T>) null, searchCount, defaultMaxLimit);
     }
 
     /**
@@ -70,7 +97,7 @@ public final class PageUtil {
      *
      * @param query       分页入参（若为 null 或非正数则自动降级为默认第 1 页每页 10 条）
      * @param searchCount 是否执行 COUNT 查询
-     * @param maxLimit    单页最大允许记录数上限（若小于等于 0 则自动采用默认 500）
+     * @param maxLimit    单页最大允许记录数上限（若小于等于 0 则自动采用当前 defaultMaxLimit）
      * @param <T>         实体泛型
      * @return MyBatis-Plus 分页实例
      */
@@ -87,7 +114,7 @@ public final class PageUtil {
      * @return MyBatis-Plus 分页实例
      */
     public static <T> Page<T> toPage(PageQuery query, Class<T> entityClass) {
-        return toPage(query, entityClass, true, DEFAULT_MAX_LIMIT);
+        return toPage(query, entityClass, true, defaultMaxLimit);
     }
 
     /**
@@ -100,7 +127,49 @@ public final class PageUtil {
      * @return MyBatis-Plus 分页实例
      */
     public static <T> Page<T> toPage(PageQuery query, Class<T> entityClass, boolean searchCount) {
-        return toPage(query, entityClass, searchCount, DEFAULT_MAX_LIMIT);
+        return toPage(query, entityClass, searchCount, defaultMaxLimit);
+    }
+
+    /**
+     * 将业务传输层分页入参 PageQuery 转换为无排序 MyBatis-Plus 分页对象 Page（默认开启 count 查询）
+     * 专供 DynamicQueryHelper、DynamicQueryTemplate 等已在 QueryWrapper 中接管排序与 AST 联表投影解析的链路调用，
+     * 杜绝因同时在 QueryWrapper 与 Page.orders 中重复填充排序列而引发重复 ORDER BY 或多表联表列名歧义
+     *
+     * @param query 分页入参（若为 null 则自动降级为默认第一页每页 10 条）
+     * @param <T>   实体泛型
+     * @return 不包含任何 OrderItem 的 MyBatis-Plus 分页实例
+     */
+    public static <T> Page<T> toUnsortedPage(PageQuery query) {
+        return toUnsortedPage(query, true, defaultMaxLimit);
+    }
+
+    /**
+     * 将业务传输层分页入参 PageQuery 转换为无排序 MyBatis-Plus 分页对象 Page，并显式指定是否执行 COUNT 查询
+     *
+     * @param query       分页入参（若为 null 或非正数则自动降级为默认第 1 页每页 10 条）
+     * @param searchCount 是否执行 COUNT 查询
+     * @param <T>         实体泛型
+     * @return 不包含任何 OrderItem 的 MyBatis-Plus 分页实例
+     */
+    public static <T> Page<T> toUnsortedPage(PageQuery query, boolean searchCount) {
+        return toUnsortedPage(query, searchCount, defaultMaxLimit);
+    }
+
+    /**
+     * 将业务传输层分页入参 PageQuery 转换为无排序 MyBatis-Plus 分页对象 Page，支持自定义单页最大记录数上限
+     *
+     * @param query       分页入参（若为 null 或非正数则自动降级为默认第 1 页每页 10 条）
+     * @param searchCount 是否执行 COUNT 查询
+     * @param maxLimit    单页最大允许记录数上限（若小于等于 0 则自动采用当前 defaultMaxLimit）
+     * @param <T>         实体泛型
+     * @return 不包含任何 OrderItem 的 MyBatis-Plus 分页实例
+     */
+    public static <T> Page<T> toUnsortedPage(PageQuery query, boolean searchCount, long maxLimit) {
+        long current = (query == null || query.getCurrent() < 1L) ? 1L : query.getCurrent();
+        long rawSize = (query == null || query.getSize() < 1L) ? 10L : query.getSize();
+        long limit = maxLimit > 0 ? maxLimit : defaultMaxLimit;
+        long size = Math.min(rawSize, limit);
+        return new Page<>(current, size, searchCount);
     }
 
     /**
@@ -110,14 +179,14 @@ public final class PageUtil {
      * @param query       分页入参（若为 null 或非正数则自动降级为默认第 1 页每页 10 条）
      * @param entityClass 目标实体类型（若为 null 则退化为基础驼峰下划线转译）
      * @param searchCount 是否执行 COUNT 查询
-     * @param maxLimit    单页最大允许记录数上限（若小于等于 0 则自动采用默认 500）
+     * @param maxLimit    单页最大允许记录数上限（若小于等于 0 则自动采用当前 defaultMaxLimit）
      * @param <T>         实体泛型
      * @return MyBatis-Plus 分页实例
      */
     public static <T> Page<T> toPage(PageQuery query, Class<T> entityClass, boolean searchCount, long maxLimit) {
         long current = (query == null || query.getCurrent() < 1L) ? 1L : query.getCurrent();
         long rawSize = (query == null || query.getSize() < 1L) ? 10L : query.getSize();
-        long limit = maxLimit > 0 ? maxLimit : DEFAULT_MAX_LIMIT;
+        long limit = maxLimit > 0 ? maxLimit : defaultMaxLimit;
         long size = Math.min(rawSize, limit);
         Page<T> page = new Page<>(current, size, searchCount);
 

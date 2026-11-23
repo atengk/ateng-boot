@@ -109,4 +109,40 @@ class RedisStreamUtilTest {
         assertThat(RedisStreamUtil.formatStreamKey("test")).isEqualTo("sample:test");
         assertThat(RedisStreamUtil.read(consumer, options, offset)).isEmpty();
     }
+
+    @Test
+    @DisplayName("测试消费组便捷门面与死信管理静态委托")
+    void testConvenientAndDeadLetterDelegation() {
+        RecordId id1 = RecordId.of("1-0");
+        when(streamTemplate.ack("s", "g", "1-0")).thenReturn(1L);
+        when(streamTemplate.ack("s", "g", id1)).thenReturn(1L);
+        assertThat(RedisStreamUtil.ack("s", "g", "1-0")).isEqualTo(1L);
+        assertThat(RedisStreamUtil.ack("s", "g", id1)).isEqualTo(1L);
+
+        PendingMessages mockPm = mock(PendingMessages.class);
+        when(streamTemplate.getPendingMessages("s", "g", 10)).thenReturn(mockPm);
+        assertThat(RedisStreamUtil.getPendingMessages("s", "g", 10)).isSameAs(mockPm);
+
+        when(streamTemplate.readGroup("s", "g", "c", 5, Duration.ofSeconds(1))).thenReturn(Collections.emptyList());
+        assertThat(RedisStreamUtil.readGroup("s", "g", "c", 5, Duration.ofSeconds(1))).isEmpty();
+
+        when(streamTemplate.claimPendingMessages("s", "g", "c", Duration.ofSeconds(60), 5)).thenReturn(Collections.emptyList());
+        assertThat(RedisStreamUtil.claimPendingMessages("s", "g", "c", Duration.ofSeconds(60), 5)).isEmpty();
+
+        when(streamTemplate.resolveDeadLetterStream("s")).thenReturn("s:dlq");
+        when(streamTemplate.formatDeadLetterStreamKey("s")).thenReturn("sample:s:dlq");
+        when(streamTemplate.deadLetterSize("s")).thenReturn(2L);
+        when(streamTemplate.peekDeadLetters("s", 5)).thenReturn(Collections.emptyList());
+        when(streamTemplate.replayDeadLetter("s", "1-0")).thenReturn(true);
+        when(streamTemplate.replayDeadLetters("s", 5)).thenReturn(1);
+        when(streamTemplate.clearDeadLetters("s")).thenReturn(true);
+
+        assertThat(RedisStreamUtil.resolveDeadLetterStream("s")).isEqualTo("s:dlq");
+        assertThat(RedisStreamUtil.formatDeadLetterStreamKey("s")).isEqualTo("sample:s:dlq");
+        assertThat(RedisStreamUtil.deadLetterSize("s")).isEqualTo(2L);
+        assertThat(RedisStreamUtil.peekDeadLetters("s", 5)).isEmpty();
+        assertThat(RedisStreamUtil.replayDeadLetter("s", "1-0")).isTrue();
+        assertThat(RedisStreamUtil.replayDeadLetters("s", 5)).isEqualTo(1);
+        assertThat(RedisStreamUtil.clearDeadLetters("s")).isTrue();
+    }
 }

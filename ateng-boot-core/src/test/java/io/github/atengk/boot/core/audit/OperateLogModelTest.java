@@ -96,6 +96,9 @@ class OperateLogModelTest {
                 .requestMethod("POST")
                 .requestUrl("/api/users")
                 .clientIp("192.168.1.100")
+                .userAgent("Mozilla/5.0 (Windows NT 10.0) Chrome/126.0.0.0")
+                .browser("Chrome")
+                .os("Windows")
                 .operateLocation("中国北京北京")
                 .requestParams("{\"username\":\"zhangsan\"}")
                 .responseResult("{\"code\":200,\"msg\":\"success\"}")
@@ -115,6 +118,9 @@ class OperateLogModelTest {
         assertEquals("POST", model.getRequestMethod());
         assertEquals("/api/users", model.getRequestUrl());
         assertEquals("192.168.1.100", model.getClientIp());
+        assertEquals("Mozilla/5.0 (Windows NT 10.0) Chrome/126.0.0.0", model.getUserAgent());
+        assertEquals("Chrome", model.getBrowser());
+        assertEquals("Windows", model.getOs());
         assertEquals("中国北京北京", model.getOperateLocation());
         assertEquals("{\"username\":\"zhangsan\"}", model.getRequestParams());
         assertEquals("{\"code\":200,\"msg\":\"success\"}", model.getResponseResult());
@@ -185,6 +191,9 @@ class OperateLogModelTest {
                 .requestMethod("DELETE")
                 .requestUrl("/api/orders/88888")
                 .clientIp("127.0.0.1")
+                .userAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) Version/17.5 Safari/605.1.15")
+                .browser("Safari")
+                .os("macOS")
                 .operateLocation("内网IP")
                 .requestParams("{\"orderId\":88888}")
                 .responseResult("{\"code\":200}")
@@ -224,6 +233,9 @@ class OperateLogModelTest {
         assertEquals(original.getRequestMethod(), deserialized.getRequestMethod());
         assertEquals(original.getRequestUrl(), deserialized.getRequestUrl());
         assertEquals(original.getClientIp(), deserialized.getClientIp());
+        assertEquals(original.getUserAgent(), deserialized.getUserAgent());
+        assertEquals(original.getBrowser(), deserialized.getBrowser());
+        assertEquals(original.getOs(), deserialized.getOs());
         assertEquals(original.getOperateLocation(), deserialized.getOperateLocation());
         assertEquals(original.getRequestParams(), deserialized.getRequestParams());
         assertEquals(original.getResponseResult(), deserialized.getResponseResult());

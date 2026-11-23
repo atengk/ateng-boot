@@ -5,6 +5,7 @@ import cn.dev33.satoken.stp.parameter.SaLoginParameter;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.satoken.constant.SaTokenConstant;
 import io.github.atengk.boot.satoken.model.LoginUser;
+import io.github.atengk.boot.satoken.model.ParsedLoginId;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
@@ -203,16 +204,9 @@ class LoginHelperTest {
             LoginHelper.disable("user-1", Duration.ofHours(1));
             stpUtilMock.verify(() -> StpUtil.disable("user-1", 3600L));
 
-            // 秒级封禁
-            LoginHelper.disable("user-1", 1800L);
-            stpUtilMock.verify(() -> StpUtil.disable("user-1", 1800L));
-
             // 服务级封禁
             LoginHelper.disable("user-1", "chat", Duration.ofMinutes(10));
             stpUtilMock.verify(() -> StpUtil.disable("user-1", "chat", 600L));
-
-            LoginHelper.disable("user-1", "chat", 300L);
-            stpUtilMock.verify(() -> StpUtil.disable("user-1", "chat", 300L));
 
             // 状态判断与校验
             assertThat(LoginHelper.isDisable("user-1")).isTrue();
@@ -466,6 +460,151 @@ class LoginHelperTest {
             assertThat(LoginHelper.isRunAs()).isFalse();
             assertThat(LoginHelper.getUserId()).isEqualTo("admin-1");
             assertThat(LoginHelper.getOriginalUserId()).isNull();
+        }
+    }
+
+    @Test
+    @DisplayName("17. renewTimeout / renewTimeoutByToken: 强类型 Duration 续期与非法参数快速失败")
+    void testRenewTimeoutAndValidation() {
+        // 1. 非法 Duration / tokenValue 快速失败防御
+        assertThatThrownBy(() -> LoginHelper.renewTimeout(null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.renewTimeout(java.time.Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.renewTimeout(java.time.Duration.ofSeconds(-10)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.renewTimeout("admin", java.time.Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.renewTimeoutByToken((String) null, java.time.Duration.ofMinutes(5)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.renewTimeoutByToken("  ", java.time.Duration.ofMinutes(5)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.renewTimeoutByToken("token-1", java.time.Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.renewTimeoutByToken("admin", " ", java.time.Duration.ofMinutes(5)))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // 2. 默认账号体系委托 StpUtil.renewTimeout 刷新有效期
+        try (MockedStatic<StpUtil> stpUtilMock = mockStatic(StpUtil.class)) {
+            LoginHelper.renewTimeout(java.time.Duration.ofMinutes(30));
+            LoginHelper.renewTimeout("login", java.time.Duration.ofMinutes(10));
+            LoginHelper.renewTimeoutByToken("token-abc", java.time.Duration.ofHours(2));
+            LoginHelper.renewTimeoutByToken("login", "token-xyz", java.time.Duration.ofMinutes(15));
+
+            stpUtilMock.verify(() -> StpUtil.renewTimeout(1800L));
+            stpUtilMock.verify(() -> StpUtil.renewTimeout(600L));
+            stpUtilMock.verify(() -> StpUtil.renewTimeout("token-abc", 7200L));
+            stpUtilMock.verify(() -> StpUtil.renewTimeout("token-xyz", 900L));
+        }
+
+        // 3. 非默认账号体系委托对应 StpLogic.renewTimeout 刷新有效期
+        try (MockedStatic<LoginHelper> helperMock = mockStatic(LoginHelper.class, org.mockito.Mockito.CALLS_REAL_METHODS)) {
+            cn.dev33.satoken.stp.StpLogic memberLogic = mock(cn.dev33.satoken.stp.StpLogic.class);
+            helperMock.when(() -> LoginHelper.getStpLogic("member")).thenReturn(memberLogic);
+
+            LoginHelper.renewTimeout("member", java.time.Duration.ofMinutes(20));
+            LoginHelper.renewTimeoutByToken("member", "member-tok-1", java.time.Duration.ofMinutes(45));
+
+            verify(memberLogic).renewTimeout(1200L);
+            verify(memberLogic).renewTimeout("member-tok-1", 2700L);
+        }
+    }
+
+    @Test
+    @DisplayName("18. superAdminRoles / superAdminPermissions 可配置收敛与通配符禁用")
+    void testConfigurableSuperAdminRolesAndPermissions() {
+        try (MockedStatic<StpUtil> stpUtilMock = mockStatic(StpUtil.class)) {
+            cn.dev33.satoken.session.SaSession mockSession = mock(cn.dev33.satoken.session.SaSession.class);
+            stpUtilMock.when(StpUtil::isLogin).thenReturn(true);
+            stpUtilMock.when(() -> StpUtil.getSession(false)).thenReturn(mockSession);
+            stpUtilMock.when(StpUtil::getLoginIdDefaultNull).thenReturn("u-100");
+
+            LoginUser tenantAdminUser = LoginUser.builder()
+                    .userId("u-100")
+                    .roles(Set.of("admin"))
+                    .permissions(Set.of("*", "*:*:*"))
+                    .build();
+            when(mockSession.get(SaTokenConstant.LOGIN_USER_KEY))
+                    .thenReturn(io.github.atengk.boot.core.util.JsonUtil.toJsonString(tenantAdminUser));
+
+            // 1. 默认配置兼容："admin" 与 "*" 均判定为超管
+            assertThat(LoginHelper.isSuperAdmin()).isTrue();
+
+            // 2. 收敛超管角色为仅 "super_admin"，但保留默认通配符权限时，"*" 仍触发超管
+            LoginHelper.setSuperAdminRoles(java.util.List.of("super_admin"));
+            assertThat(LoginHelper.isSuperAdmin()).isTrue();
+
+            // 3. 显式配置空权限列表禁用通配符超管判定后，仅携带 "admin" + "*" 返回 false
+            LoginHelper.setSuperAdminPermissions(java.util.Collections.emptyList());
+            assertThat(LoginHelper.isSuperAdmin()).isFalse();
+
+            // 4. 携带 "super_admin" 角色返回 true
+            LoginUser platformAdminUser = LoginUser.builder()
+                    .userId("u-1")
+                    .roles(Set.of("super_admin"))
+                    .permissions(Set.of())
+                    .build();
+            when(mockSession.get(SaTokenConstant.LOGIN_USER_KEY))
+                    .thenReturn(io.github.atengk.boot.core.util.JsonUtil.toJsonString(platformAdminUser));
+            assertThat(LoginHelper.isSuperAdmin()).isTrue();
+        } finally {
+            LoginHelper.resetSuperAdminConfig();
+        }
+    }
+
+    @Test
+    @DisplayName("19. parseCompositeLoginId 精确拆解复合 loginId：会话优先消歧与无会话保底")
+    void testParseCompositeLoginId() {
+        try (MockedStatic<StpUtil> stpUtilMock = mockStatic(StpUtil.class)) {
+            cn.dev33.satoken.session.SaSession tenantSession = mock(cn.dev33.satoken.session.SaSession.class);
+            LoginUser tenantBUser = LoginUser.builder()
+                    .tenantId("tenant_B")
+                    .userId("operator_88001")
+                    .build();
+            when(tenantSession.get(SaTokenConstant.LOGIN_USER_KEY)).thenReturn(tenantBUser);
+            stpUtilMock.when(() -> StpUtil.getSessionByLoginId("tenant_B_operator_88001", false))
+                    .thenReturn(tenantSession);
+
+            // 1. 租户与用户 ID 均含下划线时，依据会话真实 tenantId 精确前缀剥离
+            ParsedLoginId withBothUnderscores = LoginHelper.parseCompositeLoginId("tenant_B_operator_88001");
+            assertThat(withBothUnderscores.tenantId()).isEqualTo("tenant_B");
+            assertThat(withBothUnderscores.userId()).isEqualTo("operator_88001");
+            assertThat(withBothUnderscores.rawLoginId()).isEqualTo("tenant_B_operator_88001");
+
+            // 2. 非租户用户且 userId 含下划线时，不被误拆为租户前缀
+            cn.dev33.satoken.session.SaSession plainSession = mock(cn.dev33.satoken.session.SaSession.class);
+            LoginUser plainUser = LoginUser.builder()
+                    .tenantId(null)
+                    .userId("cluster_user_888")
+                    .build();
+            when(plainSession.get(SaTokenConstant.LOGIN_USER_KEY)).thenReturn(plainUser);
+            stpUtilMock.when(() -> StpUtil.getSessionByLoginId("cluster_user_888", false))
+                    .thenReturn(plainSession);
+
+            ParsedLoginId nonTenantUnderscore = LoginHelper.parseCompositeLoginId("cluster_user_888");
+            assertThat(nonTenantUnderscore.tenantId()).isNull();
+            assertThat(nonTenantUnderscore.userId()).isEqualTo("cluster_user_888");
+            assertThat(nonTenantUnderscore.rawLoginId()).isEqualTo("cluster_user_888");
+
+            // 3. 无会话时按首个下划线降级拆解
+            stpUtilMock.when(() -> StpUtil.getSessionByLoginId("tenantA_u1001", false)).thenReturn(null);
+            ParsedLoginId fallback = LoginHelper.parseCompositeLoginId("tenantA_u1001");
+            assertThat(fallback.tenantId()).isEqualTo("tenantA");
+            assertThat(fallback.userId()).isEqualTo("u1001");
+
+            // 4. 无分隔符纯 userId 与空边界入参
+            ParsedLoginId pure = LoginHelper.parseCompositeLoginId("1001");
+            assertThat(pure.tenantId()).isNull();
+            assertThat(pure.userId()).isEqualTo("1001");
+
+            ParsedLoginId nullParsed = LoginHelper.parseCompositeLoginId(null);
+            assertThat(nullParsed.tenantId()).isNull();
+            assertThat(nullParsed.userId()).isNull();
+            assertThat(nullParsed.rawLoginId()).isNull();
+
+            ParsedLoginId blankParsed = LoginHelper.parseCompositeLoginId("   ");
+            assertThat(blankParsed.tenantId()).isNull();
+            assertThat(blankParsed.userId()).isNull();
         }
     }
 }

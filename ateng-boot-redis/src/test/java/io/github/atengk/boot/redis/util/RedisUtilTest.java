@@ -293,6 +293,16 @@ class RedisUtilTest {
 
         when(zSetOperations.zCard("zset:1")).thenReturn(50L);
         assertThat(RedisUtil.zCard("zset:1")).isEqualTo(50L);
+
+        when(zSetOperations.incrementScore("zset:1", "player1", 5.5)).thenReturn(105.5);
+        assertThat(RedisUtil.zIncrBy("zset:1", "player1", 5.5)).isEqualTo(105.5);
+
+        Set<ZSetOperations.TypedTuple<Object>> mockTuples = Set.of();
+        when(zSetOperations.reverseRangeWithScores("zset:1", 0, 9)).thenReturn(mockTuples);
+        assertThat(RedisUtil.zRevRangeWithScores("zset:1", 0, 9)).isEqualTo(mockTuples);
+
+        when(zSetOperations.reverseRangeByScore("zset:1", 0.0, 100.0)).thenReturn(Set.of("player1"));
+        assertThat(RedisUtil.zRevRangeByScore("zset:1", 0.0, 100.0)).containsExactly("player1");
     }
 
     @Test
@@ -363,19 +373,15 @@ class RedisUtilTest {
     void shouldSupportInstanceMethodDelegation() {
         when(redisTemplate.hasKey("inst:k")).thenReturn(true);
         assertThat(redisUtil.hasKey("inst:k")).isTrue();
-        assertThat(redisUtil.isKeyExists("inst:k")).isTrue();
 
         when(redisTemplate.expire("inst:k", 10, TimeUnit.SECONDS)).thenReturn(true);
         assertThat(redisUtil.expire("inst:k", 10, TimeUnit.SECONDS)).isTrue();
-        assertThat(redisUtil.setKeyExpire("inst:k", 10, TimeUnit.SECONDS)).isTrue();
 
         when(redisTemplate.getExpire("inst:k", TimeUnit.SECONDS)).thenReturn(10L);
         assertThat(redisUtil.getExpire("inst:k", TimeUnit.SECONDS)).isEqualTo(10L);
-        assertThat(redisUtil.getKeyExpire("inst:k", TimeUnit.SECONDS)).isEqualTo(10L);
 
         when(redisTemplate.delete("inst:k")).thenReturn(true);
         assertThat(redisUtil.delete("inst:k")).isTrue();
-        assertThat(redisUtil.deleteKey("inst:k")).isTrue();
 
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
         when(valueOperations.get("inst:k")).thenReturn("inst_val");
@@ -400,5 +406,23 @@ class RedisUtilTest {
 
         assertThatThrownBy(() -> RedisUtil.expire("", java.time.Duration.ofSeconds(10)))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("RedisUtil.buildKey 全局与模块前缀无冒号规范化及幂等去重")
+    void testBuildKeyIdempotentNormalization() {
+        io.github.atengk.boot.redis.properties.RedisProperties props = new io.github.atengk.boot.redis.properties.RedisProperties();
+        props.setKeyPrefix("prod");
+        new RedisUtil(redisTemplate, props);
+        try {
+            assertThat(RedisUtil.buildKey("user:1")).isEqualTo("prod:user:1");
+            assertThat(RedisUtil.buildKey("prod:user:1")).isEqualTo("prod:user:1");
+            assertThat(RedisUtil.buildKey("user", "profile", "1001")).isEqualTo("prod:user:profile:1001");
+            assertThat(RedisUtil.buildKey("user", "user:profile:1001")).isEqualTo("prod:user:profile:1001");
+            assertThat(RedisUtil.buildKey("user", "prod:user:profile:1001")).isEqualTo("prod:user:profile:1001");
+            assertThat(RedisUtil.buildKey((String) null, new String[0])).isEqualTo("prod:");
+        } finally {
+            new RedisUtil(redisTemplate);
+        }
     }
 }

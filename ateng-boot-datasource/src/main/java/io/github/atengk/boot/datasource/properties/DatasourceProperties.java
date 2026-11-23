@@ -7,6 +7,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /**
  * 动态多数据源与物理隔离核心配置属性
@@ -58,6 +61,12 @@ public class DatasourceProperties {
      */
     @NestedConfigurationProperty
     private SeataProperties seata = new SeataProperties();
+
+    /**
+     * 动态多数据源连接池运行指标与度量透视配置
+     */
+    @NestedConfigurationProperty
+    private MetricsProperties metrics = new MetricsProperties();
 
     /**
      * SaaS 物理多租户隔离配置
@@ -162,6 +171,26 @@ public class DatasourceProperties {
          * 当所有从库均不可用时，是否自动保底降级路由至主库
          */
         private boolean fallbackToMaster = true;
+
+        /**
+         * 是否启用后台受管主动探活自愈机制
+         */
+        private boolean activeProbeEnabled = true;
+
+        /**
+         * 主动探活初始检测周期（默认 5 秒）
+         */
+        private Duration probeInitialInterval = Duration.ofSeconds(5);
+
+        /**
+         * 主动探活最大退避周期（默认 30 秒）
+         */
+        private Duration probeMaxInterval = Duration.ofSeconds(30);
+
+        /**
+         * 主动探活单次物理连接校验超时时间（默认 1 秒）
+         */
+        private Duration probeTimeout = Duration.ofSeconds(1);
     }
 
     /**
@@ -201,6 +230,44 @@ public class DatasourceProperties {
          * 注销数据源时等待在途事务连接归还的优雅排空超时时间（默认 5 秒）
          */
         private Duration drainTimeout = Duration.ofSeconds(5);
+
+        /**
+         * 是否在动态挂载数据源时自动预热物理连接池（消除首批请求冷启动排队抖动）
+         */
+        private boolean preWarm = false;
+
+        /**
+         * 动态挂载数据源时预热的物理连接数量（默认 5）
+         */
+        private int preWarmConnections = 5;
+
+        /**
+         * 核心受保护不可删除数据源白名单（默认包含 master, slave 及系统 primary）
+         */
+        private Set<String> coreWhitelist = new LinkedHashSet<>(Arrays.asList("master", "slave"));
+
+        /**
+         * 外部数据源定时自动差量同步配置
+         */
+        @NestedConfigurationProperty
+        private AutoSyncProperties autoSync = new AutoSyncProperties();
+    }
+
+    /**
+     * 外部数据源定时自动差量同步配置
+     */
+    @Data
+    public static class AutoSyncProperties {
+
+        /**
+         * 是否启用外部数据源定时自动差量同步 (Smart Diff)
+         */
+        private boolean enabled = false;
+
+        /**
+         * 自动差量同步轮询执行间隔（默认 1 分钟）
+         */
+        private Duration interval = Duration.ofMinutes(1);
     }
 
     /**
@@ -235,5 +302,17 @@ public class DatasourceProperties {
          * 是否启用 Seata 分布式事务透明代理包裹
          */
         private boolean enabled = false;
+    }
+
+    /**
+     * 动态多数据源 Micrometer 指标自动透视与生命周期配置
+     */
+    @Data
+    public static class MetricsProperties {
+
+        /**
+         * 是否启用动态多数据源 Micrometer 连接池指标自动透视与生命周期绑定
+         */
+        private boolean enabled = true;
     }
 }

@@ -1,45 +1,44 @@
-# Issue 跟踪器：GitHub
+# Issue 跟踪器与工单流转规约 (GitHub Issue Tracker)
 
-本仓库的所有 Issue、任务工单与特性规范均直接托管在 GitHub Issues 中。所有操作统一使用 `gh` CLI 执行。
+本仓库的所有任务工单、缺陷跟踪与特性规范均托管于 GitHub Issues，统一使用官方 `gh` CLI 操作。
 
-## 操作规约
+## 1. 标准 `gh` CLI 操作命令
 
-- **创建 Issue**：`gh issue create --title "..." --body "..."`（多行内容建议使用 `-F <file>` 或 Here-doc）。
-- **查看 Issue**：`gh issue view <number> --comments`。
-- **查询列表**：`gh issue list --state open --json number,title,body,labels,comments` 并辅以 `--label` 过滤。
-- **添加评论**：`gh issue comment <number> -F <file>` 或单行 `gh issue comment <number> --body "..."`。
-- **打标/移除标签**：`gh issue edit <number> --add-label "..."` / `--remove-label "..."`。
-- **认领任务**：`gh issue edit <number> --add-assignee "@me"`。
-- **关闭 Issue**：`gh issue close <number> --comment "..."`。
+- **创建 Issue**：`gh issue create --title "..." -F <body-file>`
+- **查看 Issue 详情与评论**：`gh issue view <number> --comments`
+- **查询列表**：`gh issue list --state open --json number,title,labels,assignees`（可附加 `--label <label>`）
+- **添加评论**：`gh issue comment <number> -F <file>`（单行简短回复可用 `--body "..."`）
+- **打标/移除标签**：`gh issue edit <number> --add-label "..."` / `--remove-label "..."`（标准标签见 [`triage-labels.md`](./triage-labels.md)）
+- **认领指派**：`gh issue edit <number> --add-assignee "@me"`
+- **关闭 Issue**：`gh issue close <number>`
 
-## 跨平台参数避坑防线 (Windows PowerShell)
+## 2. 跨平台参数避坑防线 (Windows PowerShell)
 
-- **特殊字符与标识符加引号**：在 PowerShell 下执行 `gh` 命令时，含特殊字符（如 `@me`）的参数务必显式使用双引号包裹（如 `--add-assignee "@me"`），避免 PowerShell 将 `@` 解析为数组表达式或未识别 cmdlet 导致报错。
-- **长文本强制文件回写 (`-F <file>`)**：回写验收报告、长篇测试清单或多行内容时，强制将内容写入临时文件并使用 `-F <file>` 传入（如 `gh issue comment <n> -F report.md`），严禁在命令行直接拼接复杂多行文本，杜绝 shell 转义截断与字符编码损坏。
+1. **特殊字符强制双引号包裹**：在 PowerShell 下执行 `gh` 命令时，含 `@` 等特殊字符的参数必须显式使用双引号包裹（如 `--add-assignee "@me"`），防止 PowerShell 将 `@me` 解析为 Splatting 表达式报错。
+2. **长文本强制文件传入 (`-F <file>`)**：创建多行 Issue 正文或回写验收清单时，强制先写入临时文件（存放于会话 Scratch 隔离目录或系统临时目录，严禁污染项目源码树）再通过 `-F <file>` 传入，彻底杜绝命令行多行转义截断与编码乱码。
 
-## 标准工单生命周期命令参考
+## 3. 五阶段工单生命周期与 Git 授权边界 (Ticket Lifecycle & Explicit Git Gate)
 
-1. **认领**：`gh issue view <n> --comments` 研读上下文，执行 `gh issue edit <n> --add-assignee "@me"` 指派认领。
-2. **测试与编码**：依据需求执行 TDD，通过阶梯二准出测试并运行 `/code-review`。
-3. **受控提交**：通过项目门面 `bash scripts/commit.sh` 提交并推送。
-4. **流水线守护**：通过 `gh run list -L 1` 获取 Run ID，执行 `gh run watch <run-id>` 跟踪 CI 至全绿。
-5. **回写与闭环**：通过 `gh issue comment <n> -F <file>` 回写验收清单与提交记录，执行 `gh issue close <n>` 关闭工单。
+执行 GitHub Issue 任务时遵循以下五阶段状态机，并严格服从 [`AGENTS.md`](../../AGENTS.md) 第 5 节的**“显式两级 Git 授权门禁”**：
 
-## PR 作为外部需求分诊渠道
+### 第一部分：研发与验证阶段（默认自动执行并停留在工作区）
+1. **阶段 1（认领）**：执行 `gh issue view <n> --comments` 研读需求，执行 `gh issue edit <n> --add-assignee "@me"` 指派当前开发者，确认当前处于 `dev` 分支。
+2. **阶段 2（TDD 与 Sample-First 实现）**：
+   - 遵循 [`AGENTS.md`](../../AGENTS.md) 第 2、3 节完成核心源码与全自洽对抗单测；
+   - 遵循 [`documentation-specification.md`](./documentation-specification.md) 在 `ateng-boot-sample-<module>` 中补齐多 Controller 接口与双模端到端测试并跑通全绿，随后 1:1 逆向提取更新 Starter `README.md` 与 Sample 体验卡 `README.md`。
+3. **阶段 3（准出测试与双轴审查）**：
+   - 执行阶梯二定向测试 `mvn test -pl <changed-module>,ateng-boot-samples/ateng-boot-sample-<module> -am -T 1C -nsu -B`；
+   - 对照 [`documentation-specification.md`](./documentation-specification.md) 第 4 节《12 项自检清单》并执行 `/code-review` 双轴审查直至全绿。
+   - **🚨 默认停止边界（Default Stop Criterion）**：若用户在会话中未明确下达“提交/推送/关闭工单”指令，Agent 完成阶段 3 后**必须停留在工作区向用户汇报审查结果**，严禁擅自执行阶段 4~5。
 
-**PR 作为需求分诊入口：关闭 (no)。**（若后续希望将外部 PR 纳入分诊队列，可将此项修改为 `yes`）。
+### 第二部分：提交、监控与关单阶段（仅在收到用户显式指令或全自动闭环授权时触发）
+4. **阶段 4（受控提交与推送）**：收到明确提交/推送指令后，使用精准文件相对路径执行 `bash scripts/commit.sh -t <type> -s <scope> -m "<主说明>" [-l "<细项>"] -c <n> [-p] -y`。
+5. **阶段 5（CI 守护与工单闭环）**：推送后通过 `gh run list -L 1` 与 `gh run watch <run-id>` 持续监控远端流水线直至 100% 全绿；随后通过 `gh issue comment <n> -F <report-file>` 回写验收报告与提交哈希，并执行 `gh issue close <n>` 关闭工单。
 
-## 技能约定
+## 4. 技能联动与寻路器约定 (Skill & Wayfinding Conventions)
 
-- 当技能提示“发布至 Issue 跟踪器 (publish to the issue tracker)”时：创建 GitHub Issue。
-- 当技能提示“抓取相关工单 (fetch the relevant ticket)”时：执行 `gh issue view <number> --comments`。
-
-## 寻路器操作 (Wayfinding operations)
-
-供 `/wayfinder` 技能使用。**导航图 (Map)** 是一个带有 `wayfinder:map` 标签的统领 Issue，**子工单 (Child ticket)** 为其子任务。
-
-- **导航图 Issue**：打上 `wayfinder:map` 标签的统领 Issue，承载“笔记 / 迄今决策 / 迷雾”正文。执行 `gh issue create --label wayfinder:map`。
-- **子任务工单**：作为 GitHub Sub-issue 关联至导航图 Issue。若未开启 Sub-issues，则在导航图正文的任务列表中引用并在子工单顶部标注 `Part of #<map>`。标签格式为 `wayfinder:<type>`（如 `research` / `prototype` / `grilling` / `task`）。被认领后指派给当前开发者。
-- **依赖阻塞阻断**：使用 GitHub 原生 Issue 依赖能力（`issue_dependencies_summary.blocked_by`），无原生支持时在工单正文顶部标注 `Blocked by: #<n>`。当所有前置阻断工单均关闭时，该工单自动解锁。
-- **认领任务**：`gh issue edit <n> --add-assignee "@me"`。
-- **完成任务**：`gh issue comment <n> --body "<answer>" && gh issue close <n>`，并将决策要点追加至导航图正文。
+- **PR 作为外部需求分诊入口**：`关闭 (no)`。
+- **寻路器（`/wayfinder`）映射**：
+  - **导航图 Issue（Map）**：带 `wayfinder:map` 标签的统领 Issue（`gh issue create --label wayfinder:map`），承载全局笔记、已决方案与待探迷雾；
+  - **子工单（Child Ticket）**：作为 GitHub Sub-issue 关联至导航图（或在正文顶部标注 `Part of #<map>`），标签格式为 `wayfinder:<type>`（`research` / `prototype` / `grilling` / `task`）；
+  - **前置阻塞（Blocked By）**：使用原生 Issue 依赖或正文顶部 `Blocked by: #<n>` 标记，前置工单全部关闭后自动解锁。

@@ -84,6 +84,24 @@ public final class PayContextHolder {
     }
 
     /**
+     * 设置当前线程商户路由键（{@link #setMerchantId(String)} 的领域术语对齐别名）
+     *
+     * @param merchantKey 商户路由键或配置别名
+     */
+    public static void setMerchantKey(String merchantKey) {
+        setMerchantId(merchantKey);
+    }
+
+    /**
+     * 获取当前生效的商户路由键（{@link #getMerchantId()} 的领域术语对齐别名）
+     *
+     * @return 当前生效的商户路由键或租户标识，若无则返回 null
+     */
+    public static String getMerchantKey() {
+        return getMerchantId();
+    }
+
+    /**
      * 设置当前线程应用标识 (AppId)
      *
      * @param appId 应用标识

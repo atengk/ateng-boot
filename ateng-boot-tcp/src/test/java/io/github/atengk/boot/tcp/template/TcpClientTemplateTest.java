@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.Collections;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -122,5 +123,52 @@ class TcpClientTemplateTest {
 
         clientTemplate.disconnect();
         verify(tcpClient, times(1)).disconnect();
+    }
+
+    @Test
+    @DisplayName("验证客户端强类型异步 requestAsync 与对称同步 request 重载（兼顾旧签名向后兼容）")
+    void testTypedAsyncAndSymmetricSyncRequests() throws Exception {
+        // 1. 异步强类型重载 requestAsync(payload, Class<T>)
+        CompletableFuture<String> asyncStr = clientTemplate.requestAsync("PING_1", String.class);
+        TcpPacket out1 = embeddedChannel.readOutbound();
+        correlationManager.complete(out1.getRequestId(),
+                TcpPacket.of("PONG", out1.getRequestId(), TcpPayload.of("CLIENT_ASYNC_OK\n")));
+        assertThat(asyncStr.get(2, TimeUnit.SECONDS)).isEqualTo("CLIENT_ASYNC_OK");
+
+        // 2. 异步带超时强类型重载 requestAsync(payload, Duration, Class<T>)
+        CompletableFuture<Map> asyncMap = clientTemplate.requestAsync("PING_2", Duration.ofSeconds(3), Map.class);
+        TcpPacket out2 = embeddedChannel.readOutbound();
+        correlationManager.complete(out2.getRequestId(),
+                TcpPacket.of("PONG", out2.getRequestId(), TcpPayload.of("{\"ok\":true,\"val\":42}")));
+        assertThat(asyncMap.get(2, TimeUnit.SECONDS)).containsEntry("ok", true).containsEntry("val", 42);
+
+        // 3. 同步对称参数顺序重载 request(payload, Duration, Class<T>) 与旧签名 request(payload, Class<T>, Duration)
+        simulateAsyncReply("SYNC_SYMMETRIC_OK");
+        String symmetricResult = clientTemplate.request("PING_3", Duration.ofSeconds(3), String.class);
+        assertThat(symmetricResult).isEqualTo("SYNC_SYMMETRIC_OK");
+
+        simulateAsyncReply("LEGACY_ORDER_OK");
+        String legacyResult = clientTemplate.request("PING_4", String.class, Duration.ofSeconds(3));
+        assertThat(legacyResult).isEqualTo("LEGACY_ORDER_OK");
+    }
+
+    private void simulateAsyncReply(String replyPayload) {
+        CompletableFuture.runAsync(() -> {
+            long deadline = System.currentTimeMillis() + 2000;
+            while (System.currentTimeMillis() < deadline) {
+                Object msg = embeddedChannel.readOutbound();
+                if (msg instanceof TcpPacket req) {
+                    correlationManager.complete(req.getRequestId(),
+                            TcpPacket.of("SYNC", req.getRequestId(), TcpPayload.of(replyPayload)));
+                    return;
+                }
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        });
     }
 }

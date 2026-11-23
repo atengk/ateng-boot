@@ -2,6 +2,7 @@ package io.github.atengk.boot.core.util;
 
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.ThreadPoolStatus;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -11,12 +12,19 @@ import org.slf4j.MDC;
 import org.springframework.context.support.GenericApplicationContext;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -339,5 +347,213 @@ class AsyncUtilTest {
 
         assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
         assertThat(matchCount.get()).isEqualTo(count);
+    }
+
+    @Test
+    @DisplayName("supplyAll 批量并行任务执行并按任务顺序汇聚结果")
+    void shouldSupplyAllSuccessfullyInOrder() {
+        List<String> results = AsyncUtil.supplyAll(List.of(
+                () -> "item-1",
+                () -> "item-2",
+                () -> "item-3"
+        ));
+        assertThat(results).containsExactly("item-1", "item-2", "item-3");
+    }
+
+    @Test
+    @DisplayName("supplyAll 空集合与 null 入参安全返回空列表")
+    void shouldSupplyAllHandleEmptyAndNull() {
+        assertThat(AsyncUtil.supplyAll(null)).isEmpty();
+        assertThat(AsyncUtil.supplyAll(Collections.emptyList())).isEmpty();
+        assertThat(AsyncUtil.supplyAll(Collections.emptyList(), Duration.ofSeconds(5))).isEmpty();
+        assertThat(AsyncUtil.allOf(Collections.emptyList(), Duration.ofSeconds(5))).isEmpty();
+    }
+
+    @Test
+    @DisplayName("allOf 与 supplyAll 超时未完成抛出 BusinessException 且取消未完成子任务")
+    void shouldSupplyAllTimeoutAndCancelPendingFutures() {
+        CompletableFuture<String> slowFuture = new CompletableFuture<>();
+        CompletableFuture<String> fastFuture = CompletableFuture.completedFuture("fast");
+
+        assertThatThrownBy(() -> AsyncUtil.allOf(List.of(fastFuture, slowFuture), Duration.ofMillis(50)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("异步任务批量并行汇聚超时");
+
+        assertThat(slowFuture.isCancelled()).isTrue();
+
+        // 验证 supplyAll 便捷门面的超时拦截
+        assertThatThrownBy(() -> AsyncUtil.supplyAll(List.of(
+                () -> {
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException ignored) {
+                    }
+                    return "slow";
+                }
+        ), Duration.ofMillis(50)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("异步任务批量并行汇聚超时");
+    }
+
+    @Test
+    @DisplayName("supplyAll 子任务执行失败转译因果异常并取消剩余任务")
+    void shouldSupplyAllTranslateTaskExceptions() {
+        CompletableFuture<String> failedFuture = new CompletableFuture<>();
+        failedFuture.completeExceptionally(new IllegalStateException("子任务业务处理异常"));
+        CompletableFuture<String> pendingFuture = new CompletableFuture<>();
+
+        assertThatThrownBy(() -> AsyncUtil.allOf(List.of(failedFuture, pendingFuture), Duration.ofSeconds(5)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("子任务业务处理异常");
+
+        assertThat(pendingFuture.isCancelled()).isTrue();
+    }
+
+    @Test
+    @DisplayName("allMatches 全部满足条件返回 true")
+    void shouldAllMatchesReturnTrueWhenAllMatch() {
+        boolean matched = AsyncUtil.allMatches(List.of(
+                () -> 10,
+                () -> 20,
+                () -> 30
+        ), (Integer val) -> val > 0);
+        assertThat(matched).isTrue();
+    }
+
+    @Test
+    @DisplayName("allMatches 早期短路：任一不匹配立即返回 false 并取消剩余任务")
+    void shouldAllMatchesShortCircuitAndCancelRemaining() {
+        boolean matched = AsyncUtil.allMatches(List.of(
+                () -> -1, // 立即不匹配
+                () -> {
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException ignored) {
+                    }
+                    return 100;
+                }
+        ), (Integer val) -> val > 0, Duration.ofSeconds(5));
+
+        assertThat(matched).isFalse();
+    }
+
+    @Test
+    @DisplayName("allMatches 空集合安全返回 true")
+    void shouldAllMatchesHandleEmpty() {
+        assertThat(AsyncUtil.allMatches(null, val -> true)).isTrue();
+        assertThat(AsyncUtil.allMatches(Collections.emptyList(), val -> true)).isTrue();
+    }
+
+    @Test
+    @DisplayName("validateTimeout 参数非法时快速失败断言")
+    void shouldValidateTimeoutParameters() {
+        assertThatThrownBy(() -> AsyncUtil.supplyAll(List.of(() -> "ok"), null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("timeout 必须非空且大于 0");
+
+        assertThatThrownBy(() -> AsyncUtil.supplyAll(List.of(() -> "ok"), Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("timeout 必须非空且大于 0");
+
+        assertThatThrownBy(() -> AsyncUtil.supplyAll(List.of(() -> "ok"), Duration.ofMillis(-1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("timeout 必须非空且大于 0");
+    }
+
+    @Test
+    @DisplayName("allMatches 早期短路高对抗：首个任务不匹配时阻断后续任务提交并取消未决任务")
+    void shouldAllMatchesShortCircuitAndPreventSubsequentExecution() {
+        java.util.concurrent.atomic.AtomicInteger executedCount = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.atomic.AtomicInteger cancelledCount = new java.util.concurrent.atomic.AtomicInteger(0);
+
+        List<java.util.function.Supplier<Integer>> tasks = new ArrayList<>();
+        // 首个任务快速返回不匹配值 -1
+        tasks.add(() -> -1);
+
+        // 后续追加 20 个慢任务
+        for (int i = 0; i < 20; i++) {
+            tasks.add(() -> {
+                executedCount.incrementAndGet();
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {
+                    cancelledCount.incrementAndGet();
+                }
+                return 100;
+            });
+        }
+
+        long start = System.currentTimeMillis();
+        boolean matched = AsyncUtil.allMatches(tasks, val -> val > 0, Duration.ofSeconds(5));
+        long cost = System.currentTimeMillis() - start;
+
+        assertThat(matched).isFalse();
+        // 早期短路必须立即返回，耗时必须远小于全部慢任务耗时
+        assertThat(cost).isLessThan(400);
+    }
+
+    @Test
+    @DisplayName("多线程高并发竞争对抗：20 个并发工作线程同时高频调用 supplyAll 与 allMatches 无死锁且无数据污染")
+    void shouldHandleHighConcurrencyStressOnSupplyAllAndAllMatches() throws Exception {
+        int threadCount = 20;
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(threadCount);
+        java.util.concurrent.atomic.AtomicInteger successCounter = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.atomic.AtomicReference<Throwable> failureRef = new java.util.concurrent.atomic.AtomicReference<>();
+
+        ExecutorService stressExecutor = Executors.newFixedThreadPool(threadCount);
+
+        try {
+            for (int i = 0; i < threadCount; i++) {
+                final int idx = i;
+                stressExecutor.submit(() -> {
+                    try {
+                        startLatch.await();
+                        // 1. 并发执行 supplyAll
+                        List<String> results = AsyncUtil.supplyAll(List.of(
+                                () -> "task-" + idx + "-A",
+                                () -> "task-" + idx + "-B"
+                        ), Duration.ofSeconds(5));
+                        if (results.size() != 2 || !results.get(0).equals("task-" + idx + "-A")) {
+                            throw new IllegalStateException("supplyAll 结果顺序或内容不符合预期");
+                        }
+
+                        // 2. 并发执行 allMatches (全匹配)
+                        boolean allMatched = AsyncUtil.allMatches(List.<Supplier<Integer>>of(
+                                () -> 10 + idx,
+                                () -> 20 + idx
+                        ), (Integer val) -> val >= 10, Duration.ofSeconds(5));
+                        if (!allMatched) {
+                            throw new IllegalStateException("allMatches 应该全部匹配通过");
+                        }
+
+                        // 3. 并发执行 allMatches (短路)
+                        boolean shortCircuit = AsyncUtil.allMatches(List.<Supplier<Integer>>of(
+                                () -> -idx - 1,
+                                () -> 100 + idx
+                        ), (Integer val) -> val >= 0, Duration.ofSeconds(5));
+                        if (shortCircuit) {
+                            throw new IllegalStateException("allMatches 包含负数应该早期短路为 false");
+                        }
+
+                        successCounter.incrementAndGet();
+                    } catch (Throwable t) {
+                        failureRef.compareAndSet(null, t);
+                    } finally {
+                        doneLatch.countDown();
+                    }
+                });
+            }
+
+            // 发令枪起跑，触发瞬间并发竞争
+            startLatch.countDown();
+            boolean finished = doneLatch.await(10, TimeUnit.SECONDS);
+
+            assertThat(finished).isTrue();
+            assertThat(failureRef.get()).isNull();
+            assertThat(successCounter.get()).isEqualTo(threadCount);
+        } finally {
+            stressExecutor.shutdownNow();
+        }
     }
 }

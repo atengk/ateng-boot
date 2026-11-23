@@ -29,4 +29,24 @@ public class DocumentPdfProperties {
             "WenQuanYi Micro Hei",
             "PingFang SC"
     ));
+
+    /**
+     * PDF 默认页面渲染分辨率 DPI
+     */
+    private float defaultRenderDpi = 150.0f;
+
+    /**
+     * PDF 页面渲染允许的最大 DPI 安全上限，防止超高分辨率渲染导致 OOM
+     */
+    private float maxRenderDpi = 600.0f;
+
+    /**
+     * PDF 默认单次最多允许渲染页数安全上限
+     */
+    private int defaultMaxRenderPages = 50;
+
+    /**
+     * PDF 黑涂脱敏栅格化默认输出 DPI
+     */
+    private float redactionDpi = 200.0f;
 }

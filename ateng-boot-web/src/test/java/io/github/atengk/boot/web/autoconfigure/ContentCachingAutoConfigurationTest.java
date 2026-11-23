@@ -31,12 +31,11 @@ class ContentCachingAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("开启 ateng.boot.web.sign.enabled=true 时自动装配 ContentCachingFilter 并兼容旧别名")
+    @DisplayName("开启 ateng.boot.web.sign.enabled=true 时自动装配 ContentCachingFilter")
     void shouldLoadWhenSignEnabled() {
         contextRunner.withPropertyValues("ateng.boot.web.sign.enabled=true")
                 .run(context -> {
                     assertThat(context).hasBean("contentCachingFilterRegistration");
-                    assertThat(context).hasBean("requestBodyCachingFilterRegistration");
                     FilterRegistrationBean<?> registration = context.getBean("contentCachingFilterRegistration", FilterRegistrationBean.class);
                     assertThat(registration.getFilter()).isInstanceOf(ContentCachingFilter.class);
                     assertThat(registration.getOrder()).isEqualTo(ContentCachingFilter.ORDER);

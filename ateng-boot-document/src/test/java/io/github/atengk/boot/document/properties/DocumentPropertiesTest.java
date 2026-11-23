@@ -5,7 +5,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.util.unit.DataSize;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 文档治理配置属性单元测试
@@ -23,18 +26,33 @@ class DocumentPropertiesTest {
 
         assertThat(properties.isEnabled()).isTrue();
         assertThat(properties.getInMemoryThreshold()).isEqualTo(DataSize.ofMegabytes(10));
+        assertThat(properties.getMaxDocumentSize()).isEqualTo(DataSize.ofMegabytes(100));
         assertThat(properties.getTempDir()).isEmpty();
         assertThat(properties.resolveEffectiveTempDir()).contains("ateng-boot-document");
 
         // Word 属性
         assertThat(properties.getWord()).isNotNull();
         assertThat(properties.getWord().getTemplateBaseDir()).isEqualTo("classpath:/templates/word/");
+        assertThat(properties.getWord().isSpringElEnabled()).isFalse();
+        assertThat(properties.getWord().isSpringElStrict()).isFalse();
 
         // PDF 属性
         assertThat(properties.getPdf()).isNotNull();
         assertThat(properties.getPdf().getFontPath()).isEmpty();
         assertThat(properties.getPdf().getPreferredFontNames())
                 .containsExactly("SimSun", "Microsoft YaHei", "Source Han Sans CN", "WenQuanYi Micro Hei", "PingFang SC");
+        assertThat(properties.getPdf().getDefaultRenderDpi()).isEqualTo(150.0f);
+        assertThat(properties.getPdf().getMaxRenderDpi()).isEqualTo(600.0f);
+        assertThat(properties.getPdf().getDefaultMaxRenderPages()).isEqualTo(50);
+        assertThat(properties.getPdf().getRedactionDpi()).isEqualTo(200.0f);
+
+        // Converter 属性
+        assertThat(properties.getConverter()).isNotNull();
+        assertThat(properties.getConverter().getGotenberg()).isNotNull();
+        assertThat(properties.getConverter().getGotenberg().isEnabled()).isFalse();
+        assertThat(properties.getConverter().getGotenberg().getBaseUrl()).isEmpty();
+        assertThat(properties.getConverter().getGotenberg().getConnectTimeout()).isEqualTo(Duration.ofSeconds(5));
+        assertThat(properties.getConverter().getGotenberg().getReadTimeout()).isEqualTo(Duration.ofSeconds(60));
 
         // 水印属性
         assertThat(properties.getWatermark()).isNotNull();
@@ -72,5 +90,11 @@ class DocumentPropertiesTest {
         assertThat(properties.getWatermark().getLayer()).isEqualTo(WatermarkLayer.UNDERLAY);
         assertThat(properties.getWatermark().getColor()).isEqualTo("#000000");
         assertThat(properties.getWatermark().getOpacity()).isEqualTo(0.5f);
+
+        // 路径穿越防卫
+        properties.setTempDir("/data/../../etc/passwd");
+        assertThatThrownBy(properties::resolveEffectiveTempDir)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("路径穿越");
     }
 }

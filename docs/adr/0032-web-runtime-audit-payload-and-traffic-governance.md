@@ -37,16 +37,16 @@ flowchart TD
     end
 
     subgraph WebFilters["ateng-boot-web 过滤器执行流水线"]
-        TraceFilter["TraceFilter (ORDER)\n提取/生成 TraceId, 注入 MDC"]
-        ContentCachingFilter["ContentCachingFilter (ORDER+1)\n包装 CachedBodyHttpServletRequest (可重读 + 防 OOM)"]
-        PayloadLoggingFilter["PayloadLoggingFilter (ORDER+2)\nMIME过滤 + 4KB截断 + 敏感掩码 + 单行聚合 [HTTP_PAYLOAD]"]
-        SlowRequestFilter["SlowRequestFilter (ORDER+3)\n耗时统计 + 智能长连接放行 + [SLOW_REQUEST] WARN"]
+        TraceFilter["TraceFilter (ORDER: +0)\n提取/生成 TraceId, 注入 MDC 与在途请求计数"]
+        ContentCachingFilter["ContentCachingFilter (ORDER: +30)\n包装 CachedBodyHttpServletRequest (可重读 + 防 OOM)"]
+        PayloadLoggingFilter["PayloadLoggingFilter (ORDER: +40)\nMIME过滤 + 4KB截断 + 敏感掩码 + 单行聚合 [HTTP_PAYLOAD]"]
+        SlowRequestFilter["SlowRequestFilter (ORDER: +50)\n耗时统计 + 智能长连接放行 + [SLOW_REQUEST] WARN"]
     end
 
     subgraph DrainLifecycle["云原生就绪探针排空与生命周期治理"]
         PreStopEndpoint["/actuator/pre-stop (Actuator 端点)"]
         PreStopController["/pre-stop (MVC 降级端点)"]
-        ShutdownHandler["AtengGracefulShutdownHandler\n- AvailabilityChangeEvent(REFUSING_TRAFFIC)\n- drain-timeout 静默排空 (默认 10s)\n- AtomicBoolean 状态机防重入\n- SmartLifecycle 优先级最高兜底"]
+        ShutdownHandler["AtengGracefulShutdownHandler\n- AvailabilityChangeEvent(REFUSING_TRAFFIC)\n- drain-timeout 静默排空 (默认 10s)\n- DrainResult 在途请求快照统计\n- AtomicBoolean 状态机防重入\n- SmartLifecycle 优先级最高兜底"]
     end
 
     subgraph MVCDispatcher["Spring MVC 调度与切面"]
@@ -81,7 +81,7 @@ flowchart TD
 - **下沉归位与条件激活**：将原散落在加签模块内部的流缓存逻辑提升为通用 Web 底座，命名为 `ContentCachingFilter` 与 `CachedBodyHttpServletRequest`。引入条件装配 `ContentCachingCondition`：仅当配置了加签（`ateng.boot.web.sign.enabled=true`）或 Payload 日志（`ateng.boot.web.payload-log.enabled=true`）时才自动激活；两者均未开启时跳过装配，实现运行时零额外包装与零性能损耗。
 - **可重复消费与防 OOM 不变量**：
   - `CachedBodyHttpServletRequest` 将请求体安全缓冲至受控的 `byte[]` 中，并发重写 `getInputStream()` 与 `getReader()`，支持后续所有中间件、切面与业务 Controller 无限次重复消费；
-  - 严格设立强类型载荷上限 `max-body-size: 2MB`（`DataSize`），若 `Content-Length` 请求头或实际流式读取字节数超出阈值，立即抛出受控的业务异常 `BusinessException(CommonResultCode.REQUEST_BODY_TOO_LARGE)` 实施快速失败，从根本上杜绝恶意构造的超大请求体打爆 JVM 堆内存；
+  - 严格设立强类型载荷上限 `max-body-size: 2MB`（`DataSize`），若 `Content-Length` 请求头或实际流式读取字节数超出阈值，立即抛出受控的业务异常 `BusinessException(CommonResultCode.PAYLOAD_TOO_LARGE)` 实施快速失败，从根本上杜绝恶意构造的超大请求体打爆 JVM 堆内存；
   - 智能过滤非目标请求：仅对 `POST`/`PUT`/`PATCH` 且为文本/JSON 类型实施包装，文件上传（`multipart/form-data`）与表单（`application/x-www-form-urlencoded`）自动放行不予缓存；
   - 原加签模块的 `RequestBodyCachingFilter` 声明 `@Deprecated`，内部完全委托至通用 `ContentCachingFilter`，实现 100% 向后兼容。
 
@@ -105,7 +105,7 @@ flowchart TD
 - **并发原子幂等状态机**：内部设立 `AtomicBoolean` 状态标记，无论是 preStop 钩子先行调用还是与 SIGTERM 信号并发到达，均保证排空流程仅执行一次，杜绝延时重复叠加。
 
 ### 4. 长耗时慢请求性能主动告警拦截器 (`SlowRequestFilter`)
-- **出口统一精准耗时统计**：过滤器注册优先级固定为 `TraceFilter.ORDER + 3`，在请求出口 `finally` 阶段精确统计全生命周期处理耗时。
+- **出口统一精准耗时统计**：过滤器注册优先级固定为 `TraceFilter.ORDER + 50`（`Ordered.HIGHEST_PRECEDENCE + 50`），在请求出口 `finally` 阶段精确统计全生命周期处理耗时。
 - **强类型阈值判定与 WARN 告警**：耗时超过配置的强类型阈值 `threshold: 3s`（`Duration`，支持 `500ms`, `3s` 等）时，输出规范化单行 WARN 日志，完整聚合 MDC 全链路 `traceId`、HTTP 方法、请求 URI、耗时（ms）、阈值（ms）及客户端真实 IP。
 - **智能长连接与流式免打扰放行**：
   - 自动识别并放行请求/响应头中的 `Upgrade` 握手标头（WebSocket 升级协议）；
@@ -116,13 +116,106 @@ flowchart TD
 - **白名单精准排除与因果链透明**：支持通过 `exclude-urls`（Ant 风格路径匹配）排除监控；若下游控制器抛出异常，在 `finally` 记录慢请求告警后 100% 原样重抛原始异常。
 
 ### 5. HTTP Payload 双向安全采样打印与防 OOM 不变量 (`PayloadLoggingFilter`)
-- **执行优先级对齐**：注册优先级固定为 `TraceFilter.ORDER + 2`，位于 `ContentCachingFilter` 之后，确保能够稳定复用已缓冲的请求体。
+- **执行优先级对齐**：注册优先级固定为 `TraceFilter.ORDER + 40`（`Ordered.HIGHEST_PRECEDENCE + 40`），位于 `ContentCachingFilter`（`+30`）之后，确保能够稳定复用已缓冲的请求体。
 - **单行聚合日志呈现**：采用结构化单行输出，包含 `traceId`、`method`、`uri`、`status`、`cost`、`reqBody` 与 `respBody`，彻底解决传统分段多行日志在并发环境下相互穿插错乱的痛点。
 - **MIME 智能过滤防卫**：仅针对文本与结构化媒介（`application/json`、`application/xml`、`text/plain`、`application/x-www-form-urlencoded` 等）进行安全采样；遇到 `multipart/*`、`application/octet-stream`、`image/*` 等二进制流时自动跳过并填充 `[BINARY_STREAM]` 占位，坚决杜绝大文件上传下载导致的 OOM 风险。
-- **强类型截断防卫**：严格遵循 `max-payload-size: 4KB`（强类型 `DataSize`），请求体与响应体超出阈值部分强制截断并追加 ` ... [TRUNCATED]` 标识。
+- **强类型截断防卫**：严格遵循 `max-payload-size: 4KB`（强类型 `DataSize`），请求体与响应体超出阈值部分强制截断并追加 `... [TRUNCATED]` 截断标识。
 - **敏感凭据纯原生正则掩码**：对请求体与响应体中出现的 `password`、`secret`、`token`、`authorization` 等字段，内置高效率纯原生正则表达式自动掩码替换为 `***`，筑牢合规防线。
 - **响应确定性释放不变量 (Deterministic Cleanup)**：使用 `ContentCachingResponseWrapper` 拦截响应体并在 `finally` 嵌套块中 **100% 确保调用 `responseWrapper.copyBodyToResponse()`**，从底层架构上消除因异常中断导致客户端挂起的恶性 Bug。
 - **状态码自适应提升**：HTTP 响应状态码 $\ge 400$ 时，单行聚合日志级别自动由 `INFO` 提升为 `WARN`，提升运维感知灵敏度。
+
+### 6. 全景 Web 过滤器与 AOP 确定性时序天梯 (Deterministic Filter & AOP Ordering Ladder)
+为了彻底根除多中间件叠加时的执行时序混乱、Filter 相互遮蔽与 AOP 切面抢占问题，`ateng-boot-web` 确立全景时序天梯基线：
+
+#### 9 大过滤器时序阶梯 (Filter Chain Ladder, 步长 10)
+所有 Filter 均基于 Spring `Ordered.HIGHEST_PRECEDENCE`（最高优先级）按步长 10 显式递增注册，确保安全上下文最前置、响应修改紧随其后：
+
+```mermaid
+flowchart LR
+    F1["1. TraceFilter<br>(ORDER: +0)"] --> F2["2. IpAccessControlFilter<br>(ORDER: +10)"]
+    F2 --> F3["3. CorsFilter<br>(ORDER: +20)"]
+    F3 --> F4["4. ContentCachingFilter<br>(ORDER: +30)"]
+    F4 --> F5["5. PayloadLoggingFilter<br>(ORDER: +40)"]
+    F5 --> F6["6. SlowRequestFilter<br>(ORDER: +50)"]
+    F6 --> F7["7. SecurityHeadersFilter<br>(ORDER: +60)"]
+    F7 --> F8["8. ShallowEtagHeaderFilter<br>(ORDER: +70)"]
+    F8 --> F9["9. XssFilter<br>(ORDER: +80)"]
+    F9 --> Dispatcher["DispatcherServlet / Controller"]
+```
+
+1. **`TraceFilter` (`ORDER = HIGHEST_PRECEDENCE + 0`)**：全链路根基，提取或生成无锁 MDC `traceId`、维护在途请求计数器、向出站响应头写入 `X-Trace-Id`，并在 `finally` 确定性清理；
+2. **`IpAccessControlFilter` (`ORDER = HIGHEST_PRECEDENCE + 10`)**：URL 路径级 IP 防火墙，优先在未读取请求体前实施快速无状态阻断；
+3. **`CorsFilter` (`ORDER = HIGHEST_PRECEDENCE + 20`)**：基于 `DynamicCorsConfigurationSource` 与 `CorsOriginProvider` 实施安全跨域校验与凭据反射，保证预检 `OPTIONS` 与跨域异常响应正常携带 CORS 头；
+4. **`ContentCachingFilter` (`ORDER = HIGHEST_PRECEDENCE + 30`)**：请求体可重复读包装，拦截超限载荷并实施 HTTP 200 + 413 优雅降级；
+5. **`PayloadLoggingFilter` (`ORDER = HIGHEST_PRECEDENCE + 40`)**：双向安全采样日志，复用可重读请求体，敏感信息脱敏与单行聚合；
+6. **`SlowRequestFilter` (`ORDER = HIGHEST_PRECEDENCE + 50`)**：出口耗时统计与长连接/流式/异步免打扰告警；
+7. **`SecurityHeadersFilter` (`ORDER = HIGHEST_PRECEDENCE + 60`)**：注入 OWASP/等保三级推荐安全响应头并抹除容器指纹；
+8. **`ShallowEtagHeaderFilter` (`ORDER = HIGHEST_PRECEDENCE + 70`)**：协商缓存计算 ETag，客户端命中直接返回 304 节省网络带宽；
+9. **`XssFilter` (`ORDER = HIGHEST_PRECEDENCE + 80`)**：包装 `XssHttpServletRequestWrapper`，清洗 Query/Form 参数与可选 Header。
+
+#### 6 大 AOP 切面时序阶梯 (Aspect Chain Ladder, 步长 100)
+切面优先级通过 `@Order` 显式按步长 100 编排，保障安全防御在先、业务审计紧贴真实逻辑：
+
+```mermaid
+flowchart TD
+    A1["1. IpAccessControlAspect (@Order 100)<br>方法/类级精细化 IP 防火墙拦截"] --> A2["2. RateLimiterAspect (@Order 200)<br>接口频控令牌桶防刷与超限阻断"]
+    A2 --> A3["3. IdempotentAspect (@Order 300)<br>接口防重幂等原子抢占与锁定"]
+    A3 --> A4["4. ApiSignAspect (@Order 400)<br>接口双向加签验签与防篡改/防重放"]
+    A4 --> A5["5. OperateLogAspect (@Order 500)<br>结构化业务操作审计，紧贴业务执行与出参脱敏"]
+    A5 --> A6["6. WebLogAspect (@Order 600)<br>基础 Web 访问审计与入参出参打印"]
+    A6 --> Biz["业务 Controller 方法体"]
+```
+
+### 7. 虚拟线程友好防 Carrier Pinning 与受管并发 (Virtual Thread Carrier Pinning Defense)
+- **零野线程与受管收敛**：全面取缔内部任何私自使用 `Executors` 或 `new Thread()` 创建未受管线程池的行为，全部异步投递与事件广播统一接入 `ateng-boot-core` 的受管线程池（`AtengAsyncAutoConfiguration`）；
+- **全面替换 `synchronized` 为 `ReentrantLock`**：在单机内存组件（`InMemoryIdempotentKeyStore`、`InMemoryRateLimiterStore` 等）的并发临界区中，100% 消除 Java 原生 `synchronized` 关键字，统一重构为 JUC `ReentrantLock`。彻底消除 JDK 21+ 虚拟线程在 `synchronized` 临界区内可能引发的 Carrier Thread Pinning（宿主平台线程锁死），保障虚拟线程在高并发场景下的无损调度与高吞吐；
+- **锁释放状态安全防御**：临界区锁释放严格遵循前置持有判定（`if (lock.isHeldByCurrentThread()) { lock.unlock(); }`）范式并在 `finally` 块中执行，杜绝非法状态异常（`IllegalMonitorStateException`）。
+
+### 8. 对称存储契约与高可用灾备架构 (Symmetric Store SPIs & Fail-Open Resilient Governance)
+- **对称语义完备性**：
+  - `IdempotentKeyStore` SPI 完备提供原子抢占（`tryLock`）、主动释放（`unlock`）与状态探针（`isLocked(key)`）；
+  - `RateLimiterStore` SPI 完备提供原子尝试获取（`tryAcquire`）、动态重置与状态清理（`reset(key)`）；
+- **`fail-open` 存储容灾与单机本地兜底回退**：
+  - 默认 `fail-open: false`（Fail-Closed 安全优先策略）：当分布式存储后端（如 Redis / Redisson）出现网络断连、连接池耗尽或超时异常时，切面直接向全局异常防线抛出底层异常并阻断请求，防止幂等锁失效引发重复扣款/重放或限流击穿；
+  - 当业务按需显式开启 `fail-open: true` 时，主存储故障后切面输出格式化 WARN 告警，并**自动降级回退至内置单机 `InMemoryIdempotentKeyStore` / `InMemoryRateLimiterStore`** 继续维持单机原子抢占（包含异常解锁）与令牌桶窗口限流，而非无保护盲放行。
+
+### 9. 载荷超限 413 优雅降级与快速失败屏障 (ContentCachingFilter 413 Fallback Barrier)
+- `CachedBodyHttpServletRequest` 在构造或流读取过程中探测到请求体超出阈值（`max-body-size: 2MB`）时，抛出 `PAYLOAD_TOO_LARGE` (413) 业务异常；
+- `ContentCachingFilter` 就近捕获该异常，在过滤器出口实施快速失败屏障：
+  - 自动从 MDC 提取并回写 `X-Trace-Id` 响应头；
+  - 严守显式响应契约（ADR-0002 与 ADR-0004），使用 `ServletUtil.writeJson` 向响应流直接回写 HTTP 200 + `Result.fail(CommonResultCode.PAYLOAD_TOO_LARGE.getCode(), message)` 的 JSON 报文并刷新关闭；
+  - 阻断超限报文继续流入后续过滤器或打爆 Spring MVC 分发层，兼顾安全性与客户端体验。
+
+### 10. 反向代理受信链与防伪造清洗 (Trusted Proxies Anti-Spoofing & Reverse Hop Cleaning)
+- `IpUtil` 提供 `trustedProxies` 可信反向代理列表参数，同时全局配置 `ateng.boot.web.trusted-proxies`（默认 `["127.0.0.1", "::1"]`）在容器启动完成后自动与 `ip-access-control.trusted-proxies`（默认 `[]`）去重合并并注入 `IpUtil` 默认防伪造基线；
+- 在多级反向代理（如 CDN -> SLB -> Ingress -> Pod）场景下，若直连 `remoteAddr` 不在 `trustedProxies` 内则直接返回 `remoteAddr` 防伪造；若来自授信代理，则从代理链最右侧（直接上游）开始向左倒序遍历，跳过命中代理取第一个非授信 IP 作为真实客户端 IP；
+- 兼顾 IPv4 与 IPv6 规整化（如规整 `0:0:0:0:0:0:0:1` 与 `::1` 为 `127.0.0.1`）。
+
+### 11. 全景双轨 XSS 防御与请求头清洗 (XSS Header Cleaning & Pseudo-Protocol Stripping)
+- `WebProperties.XssProperties` 提供 `clean-headers`（默认 `false`，按需开启）与 `exclude-headers`（默认排除 `Authorization`, `Cookie`, `X-Signature`, `Content-Type`, `Accept`）；
+- `XssHttpServletRequestWrapper` 拦截 `getHeader` 与 `getHeaders`，在开启 `clean-headers: true` 时对非排除标头实施安全清洗；
+- `XssCleaner` 原生引擎增强伪协议防御，自动剔除 `javascript:` 与 `vbscript:` 等危险脚本协议；
+- 配合 Jackson `XssStringDeserializer` 与 `@XssIgnore`，实现请求参数、请求头与 JSON 请求体的三维全景防护。
+
+### 12. 增量强化演进不变量 (Hardening & Contract Symmetry Evolution)
+- **BigDecimal 平原十进制防科学计数法 (`WRITE_BIGDECIMAL_AS_PLAIN`)**：通过 `ateng.boot.web.jackson.write-big-decimal-as-plain`（默认 `true`）控制 `JacksonCustomizer` 启用 `JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN`，保证高精度数值不被序列化为科学计数法；
+- **配置项对称命名与别名兼容**：`ateng.boot.web.api-version.header` 兼容 `header-name`、`ateng.boot.web.trace.header` 兼容 `header-name`、`ateng.boot.web.etag.write-weak-etag` 兼容 `write-weak-e-tag`，`RateLimiterProperties` 暴露对称 `key-prefix`（默认 `"rate_limit:"`）；
+> **演进注记（#1135）**：`ateng.boot.web.api-version.header-name`、`WebProperties` 中的非 `Duration`/`DataSize` 数值兼容包装及 `OperateLogStorageProvider#save` 兼容别名已净切移除，统一使用强类型 `Duration`/`DataSize`、`api-version.header` 与 `OperateLogStorageProvider#store`。
+- **停机排空在途请求快照感知**：`TraceFilter` 内建无锁活跃请求计数器并由 `AtengGracefulShutdownHandler` 注入读取，`DrainResult` 对外输出 `inFlightRequestsAtStart` 与 `inFlightRequestsRemaining` 排空指标。
+
+### 13. 生产防线二次加固演进 (2026-11 防线收敛与契约完备性强化)
+- **多算法动态路由与 Fail-Closed 响应加签 (`@ApiSign`)**：`@ApiSign` 新增 `algorithm` 属性（默认 `SignAlgorithm.DEFAULT` 跟随全局配置），支持单一应用内按接口粒度同时混合使用 `HMAC_SHA256`、`RSA`（`rsa-public-key`/`rsa-private-key`）与国密 `SM2`（`sm2-public-key`/`sm2-private-key`）且保持缺省兼容回退；新增 `ateng.boot.web.sign.nonce-prefix`（默认 `"ateng:sign:nonce:"`）与 `fail-open`（默认 `false` 强安全阻断）；出站响应加签严格遵循 Fail-Closed，私钥缺失或加签失败直接抛出受控 `BusinessException` 严禁静默降级跳过回签。
+- **限流剩余许可只读探针 (`RateLimiterStore.getAvailablePermits`)**：`RateLimiterStore` SPI 补全对称只读查询契约 `getAvailablePermits(key, count, time, unit)`（`InMemory` / `Redis` / `Redisson` 三阶实现严格只读不扣减）；`RateLimiterProperties` 通过 `include-headers`（默认 `true`）控制切面注入 `X-RateLimit-Limit` 与 `X-RateLimit-Remaining` 响应标头。
+- **入站 TraceId 净化与两阶段自适应停机排空 (`TraceFilter` & `AtengGracefulShutdownHandler`)**：`TraceFilter` 通过 `ateng.boot.web.trace.max-length`（默认 `64`）与安全字符集（`[a-zA-Z0-9._:-]`）校验入站 `X-Trace-Id` 防御日志注入与超长载荷攻击，同时剔除控制面路径（`/pre-stop`、`/actuator/pre-stop`、`mvc-endpoint-path`）避免在途计数自锁；`GracefulShutdownProperties` 拆分 `quiet-period`（未配置时默认等价 `drain-timeout` 保向后兼容）与 `poll-interval`（默认 `100ms`），实现“路由摘除静默传播 -> 剩余窗口轮询探测在途归零提前退出”两阶段自适应排空。
+- **默认审计敏感字段基线与存储 SPI 收敛 (`@OperateLog` & `@WebLog`)**：`OperateLogProperties.default-exclude-params` 与 `LogProperties.default-exclude-params` 统一内建 11 项安全基线字段（`password`、`passwd`、`pwd`、`oldPassword`、`newPassword`、`confirmPassword`、`secret`、`token`、`accessToken`、`refreshToken`、`authorization`），经共享原语 `AuditParamSanitizer` 对嵌套对象与集合执行大小写不敏感递归掩码及环引用防御；`OperateLogStorageProvider` 确立 `store(OperateLogModel)` 为唯一抽象方法保持 `@FunctionalInterface` 语义，保留 `save(OperateLogModel)` 作为向后兼容 `default` 委托别名。
+- **异步派发前 `User-Agent` 同步采集与零依赖原生解析 (#1165)**：`OperateLogAspect` 在调用目标业务方法前的 Web 请求线程同步通过 `ServletUtil.getUserAgent` 读取 HTTP `User-Agent` 标头，过滤控制字符（`\r`/`\n`/`\t` 防日志注入）并按 `ateng.boot.web.operate-log.user-agent-max-length`（默认 `512`）截断后填入 `OperateLogModel` 一等字段（`userAgent` 及按 `parse-user-agent` 开关委托 Core 纯 JDK `UserAgentUtil` 解析出的 `browser`、`os`），确保异步调用 `OperateLogStorageProvider#store` 时不依赖已销毁的 `HttpServletRequest` 上下文。
+
+### 14. 纯 JDK 原生轻量图形验证码生成与受管校验架构 (Pure-JDK Image Captcha Generation & Burn-on-Read Verification Architecture)
+为消除上层项目各自引入重型三方 Captcha 库带来的依赖膨胀，并与前端 `<AtengCaptcha type="image" />` 组件形成开箱即用闭环，`ateng-boot-web` 增量引入纯 JDK 原生图形验证码生成与受管校验体系（`io.github.atengk.boot.web.captcha.*`）：
+- **零字体依赖 SVG 矢量优先渲染 (`CaptchaRenderer` SPI)**：提供 `CaptchaRenderer` SPI 与内置双引擎（`SvgCaptchaRenderer` / `PngCaptchaRenderer`）。默认采用 `SvgCaptchaRenderer`（`data:image/svg+xml;base64,...`），基于内置字符矢量轮廓 `<path>` 表叠加随机旋转缩放、贝塞尔干扰曲线与噪点，**输出绝对不包含明文 `<text>` 标签**（防爬虫正则直读），且 100% 脱离 `java.awt` 与操作系统字体库（彻底消除 Alpine / Distroless 等精简无头容器缺少 `fontconfig` 引发的运行时异常）；同时保留基于 `BufferedImage` / `Graphics2D`（逻辑字体）的 `PngCaptchaRenderer` 可通过 `ateng.boot.web.captcha.renderer=PNG` 一键切换。
+- **双模内容生成与防混淆策略**：通过 `ateng.boot.web.captcha.type` 同时支持随机字符（`CHAR`，默认 `ALPHANUMERIC_SAFE` 剔除 `0/O/o/1/I/l`，可配置 `NUMERIC`/`ALPHA`/`ALPHANUMERIC`）与简单算术题（`MATH`，支持 `+`/`-`/`*` 个位数运算且减法确保非负结果）。
+- **严格一次一密防爆破 (`CaptchaStore` & `CaptchaTemplate`)**：`CaptchaTemplate` 对外提供 `generate()`、`generate(CaptchaType)`、`verify(key, code)`、`verifyOrThrow(key, code)` 与对称主动清理 `invalidate(key)`，返回不可变 `CaptchaResult(captchaKey, imageBase64, expireSeconds)`；无论用户输入正确或错误，核验均通过 `CaptchaStore.getAndDelete` **原子读取并立即销毁**（严禁针对同一 `captchaKey` 多次暴力试错），统一复用 `BusinessException` 与 `CommonResultCode`。
+- **三级自适应存储与纯门面边界**：`AtengCaptchaAutoConfiguration` 对齐幂等/限流架构，按 `RedissonClient` → `StringRedisTemplate` → `InMemoryCaptchaStore`（`ConcurrentHashMap` + `ReentrantLock` 防虚拟线程 Pinning + 软容量上限淘汰 + Core 受管线程池 CAS 节流清理）三级自适应装配，默认 `fail-open: false`（分布式存储故障抛出受管异常防多节点状态裂脑，可按需开启降级内存）；Starter 内仅交付编程式 `CaptchaTemplate`，不内置暴露未鉴权默认 HTTP 端点，由业务 Controller 自主挂载路由与限流策略。
 
 ---
 
@@ -130,13 +223,24 @@ flowchart TD
 
 | 组件 / SPI | 核心配置项 (`ateng.boot.web.*`) | 默认值 | 作用与职责 |
 | :--- | :--- | :--- | :--- |
-| `ContentCachingFilter` | `body-cache.max-body-size` | `2MB` | 通用请求体可重读管道，超限快速失败截断防 OOM |
-| `OperateLogAspect` | `operate-log.enabled` | `true` | 声明式结构化操作审计切面，自动关联四维上下文，守卫内存真明文 |
-| `OperateLogStorageProvider` | - | `DefaultOperateLogStorageProvider` | 操作审计存储解耦 SPI 扩展点，开箱提供 SLF4J JSON 保底 |
-| `AtengGracefulShutdownHandler` | `shutdown.enabled`<br>`shutdown.drain-timeout`<br>`shutdown.smart-lifecycle-enabled` | `true`<br>`10s`<br>`true` | K8s 云原生就绪探针主动反转与静默排空，SmartLifecycle 兜底 |
-| `PreStopEndpoint` / `PreStopController` | `shutdown.actuator-endpoint-enabled`<br>`shutdown.mvc-endpoint-enabled` | `true`<br>`true` | `/actuator/pre-stop` 与 `/pre-stop` 双模停机排空端点 |
-| `SlowRequestFilter` | `slow-request.enabled`<br>`slow-request.threshold`<br>`slow-request.exclude-urls` | `true`<br>`3s`<br>`[]` | 长耗时慢请求性能告警，智能放行 WebSocket/SSE/下载/异步任务 |
-| `PayloadLoggingFilter` | `payload-log.enabled`<br>`payload-log.max-payload-size`<br>`payload-log.exclude-urls` | `false`<br>`4KB`<br>`[]` | HTTP 请求与响应双向安全采样，内建 MIME 过滤、正则掩码与防挂起 |
+| `TraceFilter` | `trace.enabled`, `trace.header`, `trace.max-length` | `true`, `"X-Trace-Id"`, `64` | 入站 `X-Trace-Id` 安全校验、无锁 MDC 写入、排除停机控制面的在途计数与响应头回写 (ORDER: +0) |
+| `IpAccessControlFilter` | `trusted-proxies`, `ip-access-control.enabled`, `ip-access-control.trusted-proxies` | `["127.0.0.1", "::1"]`, `true`, `[]` | URL 路径级 IP 防火墙与启动期 `IpUtil` 授信基线合并注入 (ORDER: +10) |
+| `DynamicCorsConfigurationSource` | `cors.enabled`, `cors.allowed-origins` | `false`, `["*"]` | 动态跨域校验源，联动 `CorsOriginProvider` SPI 实施安全凭据反射 (ORDER: +20) |
+| `ContentCachingFilter` | `body-cache.max-body-size` | `2MB` | 通用请求体可重读管道，超限 413 优雅降级与快速失败截断防 OOM (ORDER: +30) |
+| `PayloadLoggingFilter` | `payload-log.enabled`, `payload-log.max-payload-size`, `payload-log.exclude-urls` | `false`, `4KB`, `[]` | HTTP 请求与响应双向安全采样，内建 MIME 过滤、正则掩码与防挂起 (ORDER: +40) |
+| `SlowRequestFilter` | `slow-request.enabled`, `slow-request.threshold`, `slow-request.exclude-urls` | `true`, `3s`, `[]` | 长耗时慢请求性能告警，智能放行 WebSocket/SSE/下载/异步任务 (ORDER: +50) |
+| `SecurityHeadersFilter` | `security-headers.enabled` | `true` | OWASP / 等保三级推荐安全标头注入并抹除容器版本指纹 (ORDER: +60) |
+| `ShallowEtagHeaderFilter` | `etag.enabled`, `etag.write-weak-etag` | `false`, `false` | 基于响应内容哈希的条件协商缓存与 304 节省带宽 (ORDER: +70) |
+| `XssFilter` | `xss.enabled`, `xss.clean-headers`, `xss.exclude-headers` | `false`, `false`, `["Authorization", "Cookie", "X-Signature", "Content-Type", "Accept"]` | XSS 安全清洗过滤器，清洗 Query/Form 与可选请求头 (ORDER: +80) |
+| `JacksonCustomizer` | `long-to-string`, `jackson.write-big-decimal-as-plain` | `true`, `true` | 上下文感知 Long 转字符串（响应 `@JsonFormat(shape = NUMBER)` 覆写）、BigDecimal 平原十进制输出与东八区日期标准化 |
+| `ApiSignAspect` / `@ApiSign` | `sign.enabled`, `sign.algorithm`, `sign.nonce-prefix`, `sign.fail-open` | `false`, `HMAC_SHA256`, `"ateng:sign:nonce:"`, `false` | 多算法注解动态路由（HMAC/RSA/SM2）、Nonce 防重放及 Fail-Closed 出站响应加签 (Order: 400) |
+| `IdempotentKeyStore` | `idempotent.enabled`, `idempotent.key-prefix`, `idempotent.fail-open` | `true`, `"idempotent:"`, `false` | 对称幂等存储 SPI，完备提供 `tryLock`、`unlock` 与 `isLocked`；`fail-open: true` 时故障回退单机内存锁 |
+| `RateLimiterStore` | `ratelimit.enabled`, `ratelimit.key-prefix`, `ratelimit.fail-open`, `ratelimit.include-headers` | `true`, `"rate_limit:"`, `false`, `true` | 对称限流存储 SPI，完备提供 `tryAcquire`、`getAvailablePermits` 与 `reset`；`fail-open: true` 时故障回退单机令牌桶 |
+| `OperateLogAspect` / `WebLogAspect` | `operate-log.enabled`, `operate-log.default-exclude-params`, `operate-log.collect-user-agent`, `operate-log.parse-user-agent`, `operate-log.user-agent-max-length`, `log.enabled`, `log.default-exclude-params` | `true`, 11项敏感基线, `true`, `true`, `512`, `false`, 11项敏感基线 | 声明式审计切面，默认敏感基线递归掩码、异步前同步采集防注入限长 UA 并守卫内存真明文 (Order: 500/600) |
+| `OperateLogStorageProvider` | - | `DefaultOperateLogStorageProvider` | 操作审计存储解耦 `@FunctionalInterface` SPI（`store` 主契约与 `save` 兼容别名），开箱提供 SLF4J JSON 保底 |
+| `AtengGracefulShutdownHandler` | `shutdown.enabled`, `shutdown.drain-timeout`, `shutdown.quiet-period`, `shutdown.poll-interval`, `shutdown.smart-lifecycle-enabled` | `true`, `10s`, `null` (`=drain-timeout`), `100ms`, `true` | K8s 就绪探针反转、两阶段自适应排空（静默传播+轮询提前退出）与 `SmartLifecycle` 兜底 |
+| `PreStopEndpoint` / `PreStopController` | `shutdown.actuator-endpoint-enabled`, `shutdown.mvc-endpoint-enabled`, `shutdown.mvc-endpoint-path` | `true`, `null`, `"/pre-stop"` | `/actuator/pre-stop` 与 `/pre-stop` 双模停机排空端点（已排除在途自计数） |
+| `CaptchaTemplate` / `CaptchaStore` / `CaptchaRenderer` | `captcha.enabled`, `captcha.renderer`, `captcha.type`, `captcha.char-type`, `captcha.length`, `captcha.expire`, `captcha.ignore-case`, `captcha.fail-open` | `true`, `SVG`, `CHAR`, `ALPHANUMERIC_SAFE`, `4`, `2m`, `true`, `false` | 纯 JDK 原生图形验证码生成（SVG `<path>` / PNG）与严格一次一密原子核验，三级存储自适应 |
 
 ---
 

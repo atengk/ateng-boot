@@ -8,9 +8,12 @@ import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.rabbitmq.callback.RabbitTransactionFailureCallback;
 import io.github.atengk.boot.rabbitmq.callback.RabbitUnroutableMessageCallback;
 import io.github.atengk.boot.rabbitmq.error.RabbitFatalExceptionStrategy;
+import io.github.atengk.boot.rabbitmq.executor.RabbitBatchExecutor;
 import io.github.atengk.boot.rabbitmq.interceptor.RabbitListenerGlobalAdvice;
+import io.github.atengk.boot.rabbitmq.manager.RabbitContainerManager;
 import io.github.atengk.boot.rabbitmq.properties.RabbitmqProperties;
 import io.github.atengk.boot.rabbitmq.retry.RabbitRetryPolicy;
+import io.github.atengk.boot.rabbitmq.template.RabbitDeadLetterReplayTemplate;
 import io.github.atengk.boot.rabbitmq.template.RabbitReliableTemplate;
 import io.micrometer.observation.ObservationRegistry;
 import lombok.extern.slf4j.Slf4j;
@@ -19,10 +22,12 @@ import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.config.ContainerCustomizer;
 import org.springframework.amqp.rabbit.config.RetryInterceptorBuilder;
 import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
+import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.listener.ConditionalRejectingErrorHandler;
 import org.springframework.amqp.rabbit.listener.FatalExceptionStrategy;
+import org.springframework.amqp.rabbit.listener.RabbitListenerEndpointRegistry;
 import org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer;
 import org.springframework.amqp.rabbit.retry.RejectAndDontRequeueRecoverer;
 import org.springframework.amqp.support.converter.DefaultJackson2JavaTypeMapper;
@@ -37,6 +42,7 @@ import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.amqp.RabbitAutoConfiguration;
 import org.springframework.boot.autoconfigure.amqp.RabbitTemplateCustomizer;
+import org.springframework.boot.autoconfigure.amqp.SimpleRabbitListenerContainerFactoryConfigurer;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -146,6 +152,18 @@ public class AtengRabbitmqAutoConfiguration {
     }
 
     /**
+     * 装配死信队列受控治理与防雪崩重放门面模版
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(RabbitTemplate.class)
+    public RabbitDeadLetterReplayTemplate rabbitDeadLetterReplayTemplate(
+            RabbitTemplate rabbitTemplate,
+            RabbitmqProperties properties) {
+        return new RabbitDeadLetterReplayTemplate(rabbitTemplate, properties);
+    }
+
+    /**
      * 毒丸与致命不可自愈异常判定策略
      */
     @Bean
@@ -175,6 +193,26 @@ public class AtengRabbitmqAutoConfiguration {
     }
 
     /**
+     * 运行期监听容器管控与队列观测门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public RabbitContainerManager rabbitContainerManager(
+            ObjectProvider<RabbitListenerEndpointRegistry> registryProvider,
+            ObjectProvider<RabbitAdmin> rabbitAdminProvider) {
+        return new RabbitContainerManager(registryProvider, rabbitAdminProvider);
+    }
+
+    /**
+     * 批量消息逐条上下文隔离与单条容错执行器
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public RabbitBatchExecutor rabbitBatchExecutor(MessageConverter messageConverter) {
+        return new RabbitBatchExecutor(messageConverter);
+    }
+
+    /**
      * 容器级别优雅停机排空定制器
      */
     @Bean
@@ -184,6 +222,45 @@ public class AtengRabbitmqAutoConfiguration {
             container.setShutdownTimeout(properties.getConsumer().getShutdownTimeout().toMillis());
             container.addAfterReceivePostProcessors(new GUnzipPostProcessor());
         };
+    }
+
+    /**
+     * 装配专用的批量监听器容器工厂，支持高并发批量微批削峰消费
+     * 下游监听器可通过 @RabbitListener(containerFactory = "batchRabbitListenerContainerFactory") 独立绑定
+     */
+    @Bean(name = "batchRabbitListenerContainerFactory")
+    @ConditionalOnMissingBean(name = "batchRabbitListenerContainerFactory")
+    @ConditionalOnBean(ConnectionFactory.class)
+    public SimpleRabbitListenerContainerFactory batchRabbitListenerContainerFactory(
+            ObjectProvider<SimpleRabbitListenerContainerFactoryConfigurer> configurerProvider,
+            ConnectionFactory connectionFactory,
+            RabbitmqProperties properties,
+            MessageConverter messageConverter,
+            ObjectProvider<ConditionalRejectingErrorHandler> errorHandlerProvider,
+            ObjectProvider<ObservationRegistry> observationRegistryProvider) {
+        SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
+        configurerProvider.ifAvailable(configurer -> configurer.configure(factory, connectionFactory));
+        factory.setConnectionFactory(connectionFactory);
+        factory.setConsumerBatchEnabled(true);
+        factory.setBatchListener(true);
+
+        RabbitmqProperties.Consumer consumer = properties.getConsumer();
+        factory.setPrefetchCount(consumer.getPrefetch());
+        factory.setConcurrentConsumers(consumer.getConcurrency());
+        factory.setMaxConcurrentConsumers(consumer.getMaxConcurrency());
+
+        RabbitmqProperties.Consumer.Batch batch = consumer.getBatch();
+        factory.setBatchSize(batch.getSize() > 0 ? batch.getSize() : 10);
+        if (batch.getMaxWaitTime() != null) {
+            factory.setBatchReceiveTimeout(batch.getMaxWaitTime().toMillis());
+        }
+
+        factory.setMessageConverter(messageConverter);
+        errorHandlerProvider.ifAvailable(factory::setErrorHandler);
+        // adviceChain 由 AtengRabbitLifecycleBeanPostProcessor 统一装配外层重试拦截器 + 内层全局拦截器，避免重复设置
+        factory.setAfterReceivePostProcessors(new GUnzipPostProcessor());
+        observationRegistryProvider.ifAvailable(registry -> factory.setObservationEnabled(true));
+        return factory;
     }
 
     /**
@@ -238,6 +315,17 @@ public class AtengRabbitmqAutoConfiguration {
                     factory.setConcurrentConsumers(consumer.getConcurrency());
                     factory.setMaxConcurrentConsumers(consumer.getMaxConcurrency());
 
+                    // 批量消费削峰支持
+                    RabbitmqProperties.Consumer.Batch batch = consumer.getBatch();
+                    if ("batchRabbitListenerContainerFactory".equals(beanName) || batch.isEnabled()) {
+                        factory.setConsumerBatchEnabled(true);
+                        factory.setBatchListener(true);
+                        factory.setBatchSize(batch.getSize() > 0 ? batch.getSize() : 10);
+                        if (batch.getMaxWaitTime() != null) {
+                            factory.setBatchReceiveTimeout(batch.getMaxWaitTime().toMillis());
+                        }
+                    }
+
                     // 装配消费端受控防卫拦截链与本地指数退避重试
                     RabbitListenerGlobalAdvice globalAdvice = adviceProvider.getIfAvailable();
                     if (globalAdvice != null) {
@@ -249,7 +337,7 @@ public class AtengRabbitmqAutoConfiguration {
                                             retryProps.getInitialInterval().toMillis(),
                                             retryProps.getMultiplier(),
                                             retryProps.getMaxInterval().toMillis())
-                                    .recoverer(new RejectAndDontRequeueRecoverer())
+                                    .recoverer(new LoggingRejectAndDontRequeueRecoverer())
                                     .build();
                             factory.setAdviceChain(retryInterceptor, globalAdvice);
                         } else {
@@ -267,8 +355,39 @@ public class AtengRabbitmqAutoConfiguration {
                     log.info("[RABBITMQ-TOPOLOGY] auto-declare=false，已禁用 RabbitAdmin 启动自动建队与声明拓扑");
                     admin.setAutoStartup(false);
                 }
+            } else if (bean instanceof org.springframework.amqp.rabbit.connection.CachingConnectionFactory connectionFactory) {
+                RabbitmqProperties properties = propertiesProvider.getIfAvailable();
+                if (properties != null && properties.getReliable() != null) {
+                    connectionFactory.setPublisherConfirmType(org.springframework.amqp.rabbit.connection.CachingConnectionFactory.ConfirmType.CORRELATED);
+                    if (properties.getReliable().isReturnsCallbackEnabled()) {
+                        connectionFactory.setPublisherReturns(true);
+                    }
+                }
             }
             return bean;
+        }
+    }
+
+    /**
+     * 增强型拒绝且不重入队恢复器：在本地重试彻底耗尽进入死信队列前输出结构化 [MQ-CONSUME-RETRY-EXHAUSTED] Error 日志
+     */
+    static class LoggingRejectAndDontRequeueRecoverer extends RejectAndDontRequeueRecoverer {
+
+        @Override
+        public void recover(Message message, Throwable cause) {
+            MessageProperties props = message != null ? message.getMessageProperties() : null;
+            Map<String, Object> headers = props != null && props.getHeaders() != null
+                    ? props.getHeaders()
+                    : Collections.emptyMap();
+            String exchange = props != null ? props.getReceivedExchange() : "";
+            String routingKey = props != null ? props.getReceivedRoutingKey() : "";
+            String queue = props != null ? props.getConsumerQueue() : "";
+            String bizKey = MessageContextPropagator.extractString(headers, MessageHeaderConstants.BIZ_KEY);
+            String traceId = MessageContextPropagator.extractString(headers, MessageHeaderConstants.TRACE_ID);
+            String error = cause != null ? cause.getMessage() : "Unknown";
+            log.error("[MQ-CONSUME-RETRY-EXHAUSTED] mq=rabbitmq 本地重试耗尽即将拒绝消息并流转至死信队列: exchange={}, routingKey={}, queue={}, bizKey={}, traceId={}, error={}",
+                    exchange, routingKey, queue, bizKey, traceId, error, cause);
+            super.recover(message, cause);
         }
     }
 

@@ -1,14 +1,16 @@
 package io.github.atengk.boot.storage.util;
 
 import io.github.atengk.boot.core.util.FileUtil;
+import io.github.atengk.boot.core.util.HmacUtil;
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
+import org.springframework.util.unit.DataSize;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -26,8 +28,12 @@ import java.util.Set;
  */
 public final class StorageSecurityUtil {
 
+    /**
+     * 默认单个分片允许的最大容量上限 (100MB)
+     */
+    public static final long DEFAULT_MAX_CHUNK_SIZE_BYTES = DataSize.ofMegabytes(100).toBytes();
+
     private static final String DEFAULT_CONTENT_TYPE = "application/octet-stream";
-    private static final String HMAC_SHA256_ALGORITHM = "HmacSHA256";
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
@@ -122,6 +128,73 @@ public final class StorageSecurityUtil {
     }
 
     /**
+     * 格式化并拼接包含自定义域名或相对路径前缀的完整访问 URL
+     *
+     * @param domain 自定义域名或前缀（例如 "https://cdn.example.com" 或 "http://localhost:8080"）
+     * @param cleanPath 已经过规范化的相对存储路径
+     * @return 拼接后的规范 URL（例如 "https://cdn.example.com/images/avatar.png" 或 "/images/avatar.png"）
+     */
+    public static String formatDomainUrl(String domain, String cleanPath) {
+        if (cleanPath == null || cleanPath.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "存储路径不能为空");
+        }
+        String relativePath = cleanPath.startsWith("/") ? cleanPath.substring(1) : cleanPath;
+        if (domain != null && !domain.isBlank()) {
+            String cleanDomain = domain.endsWith("/") ? domain.substring(0, domain.length() - 1) : domain;
+            return cleanDomain + "/" + relativePath;
+        }
+        return "/" + relativePath;
+    }
+
+    /**
+     * 构建预签名只读下载 HMAC 签名摘要数据源载荷
+     * 将存储相对路径、有效截止时间戳以及可选的响应头重写参数（下载文件名、Content-Type、Content-Disposition）
+     * 规范化拼接入防篡改校验载荷中，全面防御外部参数篡改攻击
+     *
+     * @param cleanPath   规范化相对存储路径
+     * @param expires     Unix 秒级过期时间戳
+     * @param filename    自定义友好下载文件名（可选）
+     * @param contentType 响应 Content-Type（可选）
+     * @param disposition 响应 Content-Disposition（可选）
+     * @return 规约签名源载荷字符串
+     */
+    public static String buildPresignedDownloadSignaturePayload(String cleanPath, long expires,
+                                                               String filename, String contentType, String disposition) {
+        return buildPresignedDownloadSignaturePayload(cleanPath, expires, filename, contentType, disposition, null);
+    }
+
+    /**
+     * 构建预签名下载载荷字符串（支持绑定命名存储源 source 防止跨源重放篡改）
+     *
+     * @param cleanPath   标准化相对路径
+     * @param expires     Unix 秒级过期时间戳
+     * @param filename    自定义下载文件名（可选）
+     * @param contentType 自定义响应 Content-Type（可选）
+     * @param disposition 自定义响应 Content-Disposition（可选）
+     * @param source      命名存储源标识（可选，空值时与单源历史签名格式完全兼容）
+     * @return 待签名的载荷字符串
+     */
+    public static String buildPresignedDownloadSignaturePayload(String cleanPath, long expires,
+                                                               String filename, String contentType,
+                                                               String disposition, String source) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(cleanPath).append(":").append(expires);
+        if (filename != null && !filename.isBlank()) {
+            sb.append(":fn=").append(filename.trim());
+        }
+        if (contentType != null && !contentType.isBlank()) {
+            sb.append(":ct=").append(contentType.trim());
+        }
+        if (disposition != null && !disposition.isBlank()) {
+            sb.append(":cd=").append(disposition.trim());
+        }
+        if (source != null && !source.isBlank()) {
+            sb.append(":src=").append(source.trim());
+        }
+        return sb.toString();
+    }
+
+    /**
      * 根据文件名自动推导标准 MIME 内容类型 (Content-Type)
      *
      * @param filename 文件名或路径
@@ -169,11 +242,7 @@ public final class StorageSecurityUtil {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "HMAC 签名数据或密钥不能为空");
         }
         try {
-            Mac mac = Mac.getInstance(HMAC_SHA256_ALGORITHM);
-            SecretKeySpec secretKeySpec = new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), HMAC_SHA256_ALGORITHM);
-            mac.init(secretKeySpec);
-            byte[] bytes = mac.doFinal(data.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(bytes);
+            return HmacUtil.hmacSha256Hex(data, key);
         } catch (Exception e) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "计算 HMAC-SHA256 签名异常", e);
         }
@@ -193,10 +262,7 @@ public final class StorageSecurityUtil {
         }
         try {
             String expected = hmacSha256(data, key);
-            return MessageDigest.isEqual(
-                    expected.getBytes(StandardCharsets.UTF_8),
-                    signature.getBytes(StandardCharsets.UTF_8)
-            );
+            return HmacUtil.verifyHex(expected, signature);
         } catch (Exception e) {
             return false;
         }
@@ -273,5 +339,89 @@ public final class StorageSecurityUtil {
 
         String normalized = String.join("/", stack);
         return endsWithSlash ? normalized + "/" : normalized;
+    }
+
+    /**
+     * 构建符合 RFC 5987 与 RFC 6266 标准的 Content-Disposition 响应头值
+     * 自动处理 ASCII 回退文件名与 UTF-8 扩展文件名（支持中文与特殊字符），防御 CRLF 响应拆分注入
+     *
+     * @param filename 下载文件名
+     * @return 格式化的 Content-Disposition 字符串，例如：attachment; filename="report.pdf"; filename*=UTF-8''%E6%8A%A5%E8%A1%A8.pdf
+     */
+    public static String formatContentDisposition(String filename) {
+        if (filename == null || filename.isBlank()) {
+            return "attachment";
+        }
+        // 清洗 CRLF 防御 HTTP 响应拆分注入攻击
+        String clean = filename.replace("\r", "").replace("\n", "").trim();
+        String basename = FileUtil.cleanFilename(clean).replace("\"", "");
+        if (basename.isBlank()) {
+            return "attachment";
+        }
+        String encoded = java.net.URLEncoder.encode(basename, StandardCharsets.UTF_8).replace("+", "%20");
+
+        // 构建 ASCII 回退文件名，非 ASCII 字符替换为下划线
+        StringBuilder asciiFallback = new StringBuilder();
+        for (char c : basename.toCharArray()) {
+            if (c > 31 && c < 127 && c != '"' && c != '\\') {
+                asciiFallback.append(c);
+            } else {
+                asciiFallback.append('_');
+            }
+        }
+        String fallback = !asciiFallback.isEmpty() ? asciiFallback.toString() : "download";
+        return "attachment; filename=\"" + fallback + "\"; filename*=UTF-8''" + encoded;
+    }
+
+    /**
+     * 受上限约束的流式字节拷贝（防御未知长度分片流导致磁盘爆盘或 OOM）
+     *
+     * @param in       输入流
+     * @param out      输出流
+     * @param maxBytes 允许的最大字节上限（<= 0 时不限制）
+     * @throws IOException      流读写异常
+     * @throws StorageException 当实际读取字节数超出 maxBytes 时抛出 STORAGE_SIZE_EXCEEDED
+     */
+    public static void copyWithMaxBytes(InputStream in, OutputStream out, long maxBytes) throws IOException {
+        if (in == null || out == null) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "流拷贝入参不能为空");
+        }
+        byte[] buffer = new byte[16384];
+        long totalRead = 0;
+        int read;
+        while ((read = in.read(buffer)) != -1) {
+            totalRead += read;
+            if (maxBytes > 0 && totalRead > maxBytes) {
+                throw new StorageException(StorageResultCode.STORAGE_SIZE_EXCEEDED,
+                        "分片数据流体积超出允许的最大上限: maxBytes=" + maxBytes);
+            }
+            out.write(buffer, 0, read);
+        }
+    }
+
+    /**
+     * 解析单个分片允许的最大字节上限（未配置或非正值时回退至默认 100MB）
+     *
+     * @param maxChunkSize 配置的分片上限
+     * @return 生效的字节上限
+     */
+    public static long resolveMaxChunkSizeBytes(DataSize maxChunkSize) {
+        return (maxChunkSize != null && maxChunkSize.toBytes() > 0)
+                ? maxChunkSize.toBytes()
+                : DEFAULT_MAX_CHUNK_SIZE_BYTES;
+    }
+
+    /**
+     * 前置校验已知分片大小是否超出允许上限
+     *
+     * @param size              声明的分片字节大小（未知长度流传 <= 0 时跳过前置校验）
+     * @param maxChunkSizeBytes 最大允许字节上限
+     * @throws StorageException 超出上限时抛出 STORAGE_SIZE_EXCEEDED
+     */
+    public static void validateChunkSize(long size, long maxChunkSizeBytes) {
+        if (size > 0 && size > maxChunkSizeBytes) {
+            throw new StorageException(StorageResultCode.STORAGE_SIZE_EXCEEDED,
+                    "分片声明大小超出允许的最大上限: size=" + size + ", maxBytes=" + maxChunkSizeBytes);
+        }
     }
 }

@@ -2,6 +2,7 @@ package io.github.atengk.boot.encrypt.env;
 
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
 import io.github.atengk.boot.encrypt.detector.KeyDetector;
+import io.github.atengk.boot.encrypt.parser.CiphertextParser;
 import io.github.atengk.boot.encrypt.wrapper.EncryptPropertySourceWrapper;
 import org.springframework.boot.context.config.ConfigDataEnvironmentUpdateListener;
 import org.springframework.boot.context.config.ConfigDataLocation;
@@ -33,7 +34,14 @@ public class EncryptConfigDataEnvironmentUpdateListener implements ConfigDataEnv
                                                      KeyDetector keyDetector,
                                                      EncryptAlgorithm defaultAlgorithm) {
         this.environment = environment;
-        this.keyDetector = keyDetector != null ? keyDetector : KeyDetector.detect(environment);
+        if (keyDetector != null) {
+            this.keyDetector = keyDetector;
+        } else if (EncryptEnvironmentSupport.resolveBooleanProperty(
+                environment, EncryptEnvironmentSupport.PROPERTY_ENABLED, EncryptEnvironmentSupport.ENV_ENABLED, true)) {
+            this.keyDetector = KeyDetector.detect(environment);
+        } else {
+            this.keyDetector = new KeyDetector();
+        }
         this.defaultAlgorithm = defaultAlgorithm != null ? defaultAlgorithm : EncryptAlgorithm.AES_GCM;
     }
 
@@ -54,6 +62,9 @@ public class EncryptConfigDataEnvironmentUpdateListener implements ConfigDataEnv
         if (propertySource == null || propertySource instanceof EncryptPropertySourceWrapper) {
             return;
         }
+        if (!isEncryptEnabled(propertySource)) {
+            return;
+        }
 
         String sourceName = propertySource.getName();
         if (processedPropertySources.contains(sourceName)) {
@@ -66,8 +77,7 @@ public class EncryptConfigDataEnvironmentUpdateListener implements ConfigDataEnv
             if (sources.contains(sourceName)) {
                 PropertySource<?> existing = sources.get(sourceName);
                 if (existing != null && !(existing instanceof EncryptPropertySourceWrapper)) {
-                    EncryptPropertySourceWrapper wrapper = new EncryptPropertySourceWrapper(
-                            existing, keyDetector, defaultAlgorithm);
+                    EncryptPropertySourceWrapper wrapper = createWrapper(existing);
                     sources.replace(sourceName, wrapper);
                     processedPropertySources.add(sourceName);
                     return;
@@ -88,13 +98,30 @@ public class EncryptConfigDataEnvironmentUpdateListener implements ConfigDataEnv
      * 将给定的属性源装饰为解密包装器
      *
      * @param propertySource 原始属性源
-     * @return 装饰后的属性源
+     * @return 装饰后的属性源（禁用开关生效时原样返回）
      */
     public PropertySource<?> wrapPropertySource(PropertySource<?> propertySource) {
-        if (propertySource == null || propertySource instanceof EncryptPropertySourceWrapper) {
+        if (propertySource == null || propertySource instanceof EncryptPropertySourceWrapper || !isEncryptEnabled(propertySource)) {
             return propertySource;
         }
-        return new EncryptPropertySourceWrapper(propertySource, keyDetector, defaultAlgorithm);
+        return createWrapper(propertySource);
+    }
+
+    private boolean isEncryptEnabled(PropertySource<?> propertySource) {
+        return EncryptEnvironmentSupport.resolveBooleanProperty(
+                environment, propertySource,
+                EncryptEnvironmentSupport.PROPERTY_ENABLED, EncryptEnvironmentSupport.ENV_ENABLED, true);
+    }
+
+    private EncryptPropertySourceWrapper createWrapper(PropertySource<?> source) {
+        EncryptAlgorithm effectiveAlgorithm = EncryptEnvironmentSupport.resolveDefaultAlgorithm(
+                environment, source, this.defaultAlgorithm);
+        boolean failOnError = EncryptEnvironmentSupport.resolveBooleanProperty(
+                environment, source,
+                EncryptEnvironmentSupport.PROPERTY_FAIL_ON_ERROR, EncryptEnvironmentSupport.ENV_FAIL_ON_ERROR, true);
+        CiphertextParser parser = EncryptEnvironmentSupport.resolveCiphertextParser(environment, source);
+
+        return new EncryptPropertySourceWrapper(source, parser, keyDetector, null, effectiveAlgorithm, failOnError);
     }
 
     public Set<String> getProcessedPropertySources() {

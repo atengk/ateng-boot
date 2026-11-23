@@ -3,6 +3,7 @@ package io.github.atengk.boot.job.local.storage;
 import io.github.atengk.boot.job.local.enums.JobStatus;
 import io.github.atengk.boot.job.local.model.JobDefinition;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 
@@ -49,6 +50,28 @@ public interface JobMetadataRepository {
      * @return 是否更新成功
      */
     boolean updateCron(String jobName, String newCron);
+
+    /**
+     * 动态更新任务固定频率调度周期
+     *
+     * @param jobName      任务名称
+     * @param newFixedRate 新的固定频率时长
+     * @return 是否更新成功
+     */
+    default boolean updateFixedRate(String jobName, Duration newFixedRate) {
+        return false;
+    }
+
+    /**
+     * 动态更新任务固定延迟调度周期
+     *
+     * @param jobName       任务名称
+     * @param newFixedDelay 新的固定延迟时长
+     * @return 是否更新成功
+     */
+    default boolean updateFixedDelay(String jobName, Duration newFixedDelay) {
+        return false;
+    }
 
     /**
      * 查询所有已持久化的任务定义清单

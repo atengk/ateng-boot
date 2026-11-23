@@ -65,4 +65,35 @@ class SessionKeyTest {
         assertThatThrownBy(() -> SessionKey.of("1001", null))
                 .isInstanceOf(NullPointerException.class);
     }
+
+    @Test
+    void testParse() {
+        // 标准坐标双向往返解析
+        SessionKey key1 = SessionKey.of("user-1001", "mobile", "client-99");
+        String formatted1 = key1.format();
+        SessionKey parsed1 = SessionKey.parse(formatted1);
+        assertThat(parsed1).isEqualTo(key1);
+        assertThat(parsed1.getUserId()).isEqualTo("user-1001");
+        assertThat(parsed1.getDeviceType()).isEqualTo("mobile");
+        assertThat(parsed1.getClientId()).isEqualTo("client-99");
+
+        // 匿名用户 (userId 内部包含冒号) 解析
+        SessionKey anon = SessionKey.anonymous("client-xyz");
+        String formattedAnon = anon.format();
+        SessionKey parsedAnon = SessionKey.parse(formattedAnon);
+        assertThat(parsedAnon).isEqualTo(anon);
+        assertThat(parsedAnon.getUserId()).isEqualTo("anonymous:client-xyz");
+        assertThat(parsedAnon.getDeviceType()).isEqualTo("default");
+        assertThat(parsedAnon.getClientId()).isEqualTo("client-xyz");
+
+        // 非法入参异常防卫
+        assertThatThrownBy(() -> SessionKey.parse(null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> SessionKey.parse("   "))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> SessionKey.parse("invalid"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> SessionKey.parse("invalid:part"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }

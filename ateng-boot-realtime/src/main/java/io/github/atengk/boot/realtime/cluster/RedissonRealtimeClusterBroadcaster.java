@@ -9,6 +9,7 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RFuture;
 import org.redisson.api.RMap;
+import org.redisson.api.RSet;
 import org.redisson.api.RTopic;
 import org.redisson.api.RedissonClient;
 import org.redisson.client.codec.StringCodec;
@@ -16,9 +17,14 @@ import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.web.socket.CloseStatus;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 /**
@@ -34,14 +40,26 @@ import java.util.function.Consumer;
 @Slf4j
 public class RedissonRealtimeClusterBroadcaster implements RealtimeClusterBroadcaster, RealtimeSessionListener, InitializingBean, DisposableBean {
 
+    private static final int PRESENCE_LOCK_STRIPES = 64;
+
     private final RedissonClient redissonClient;
     private final RealtimeProperties properties;
     @Getter
     private final String nodeId;
     private final List<Consumer<RealtimeClusterPacket>> consumers = new CopyOnWriteArrayList<>();
+    private final ConcurrentHashMap<String, Set<String>> localUserSessions = new ConcurrentHashMap<>();
+    private final ReentrantLock[] userSyncLocks = createLockStripes();
 
     private RTopic topic;
     private Integer listenerId;
+
+    private static ReentrantLock[] createLockStripes() {
+        ReentrantLock[] locks = new ReentrantLock[PRESENCE_LOCK_STRIPES];
+        for (int i = 0; i < locks.length; i++) {
+            locks[i] = new ReentrantLock();
+        }
+        return locks;
+    }
 
     public RedissonRealtimeClusterBroadcaster(RedissonClient redissonClient, RealtimeProperties properties) {
         this.redissonClient = Objects.requireNonNull(redissonClient, "redissonClient must not be null");
@@ -59,7 +77,7 @@ public class RedissonRealtimeClusterBroadcaster implements RealtimeClusterBroadc
 
     @Override
     public void broadcast(RealtimeClusterPacket packet) {
-        if (packet == null) {
+        if (packet == null || topic == null) {
             return;
         }
         if (packet.getSourceNodeId() == null || packet.getSourceNodeId().isBlank()) {
@@ -95,54 +113,175 @@ public class RedissonRealtimeClusterBroadcaster implements RealtimeClusterBroadc
         if (userId == null) {
             return false;
         }
+        String userKey = String.valueOf(userId);
         try {
-            String hashKey = getUserPresenceHashKey();
-            RMap<String, Integer> map = redissonClient.getMap(hashKey, StringCodec.INSTANCE);
-            if (map != null) {
-                Integer count = map.get(String.valueOf(userId));
-                return count != null && count > 0;
+            RMap<String, String> userNodeMap = redissonClient.getMap(getUserPresenceHashKey(userKey), StringCodec.INSTANCE);
+            Map<String, String> nodeEntries = userNodeMap != null ? userNodeMap.readAllMap() : null;
+            if (nodeEntries == null || nodeEntries.isEmpty()) {
+                return false;
             }
+            long now = System.currentTimeMillis();
+            long expireMillis = ClusterNodeHeartbeatSupport.resolveExpirationMillis(properties);
+            Map<String, String> clusterNodesSnapshot = null;
+            boolean clusterNodesLoaded = false;
+
+            boolean online = false;
+            List<String> staleNodeIds = new ArrayList<>();
+            for (Map.Entry<String, String> entry : nodeEntries.entrySet()) {
+                String remoteNodeId = entry.getKey();
+                int count = parsePositiveCount(entry.getValue());
+                if (remoteNodeId == null || count <= 0) {
+                    if (remoteNodeId != null) {
+                        staleNodeIds.add(remoteNodeId);
+                    }
+                    continue;
+                }
+                if (Objects.equals(this.nodeId, remoteNodeId)) {
+                    online = true;
+                    continue;
+                }
+                if (!clusterNodesLoaded) {
+                    RMap<String, String> clusterNodesMap = redissonClient.getMap(
+                            ClusterNodeHeartbeatSupport.resolveNodesHashKey(properties), StringCodec.INSTANCE);
+                    clusterNodesSnapshot = clusterNodesMap != null ? clusterNodesMap.readAllMap() : null;
+                    clusterNodesLoaded = true;
+                }
+                if (isClusterNodeAlive(clusterNodesSnapshot, remoteNodeId, now, expireMillis)) {
+                    online = true;
+                } else {
+                    staleNodeIds.add(remoteNodeId);
+                }
+            }
+            cleanupStaleUserNodes(userNodeMap, staleNodeIds, !online && staleNodeIds.size() == nodeEntries.size());
+            return online;
         } catch (Exception e) {
             log.warn("[Realtime-Cluster] 查询集群用户在线状态异常: userId={}, error={}", userId, e.getMessage());
+            return false;
         }
-        return false;
     }
 
     @Override
     public void onSessionRegistered(RealtimeSession session) {
-        if (session != null && session.getUserId() != null) {
-            try {
-                String hashKey = getUserPresenceHashKey();
-                RMap<String, Integer> map = redissonClient.getMap(hashKey, StringCodec.INSTANCE);
-                if (map != null) {
-                    map.addAndGet(String.valueOf(session.getUserId()), 1);
-                }
-            } catch (Exception e) {
-                log.warn("[Realtime-Cluster] 同步集群用户上线状态异常: userId={}, error={}", session.getUserId(), e.getMessage());
+        if (session == null || session.getUserId() == null || session.getSessionKey() == null) {
+            return;
+        }
+        String userKey = String.valueOf(session.getUserId());
+        String sessionKey = session.getSessionKey().format();
+        ReentrantLock lock = lockForUser(userKey);
+        lock.lock();
+        try {
+            Set<String> sessions = localUserSessions.computeIfAbsent(userKey, k -> ConcurrentHashMap.newKeySet());
+            sessions.add(sessionKey);
+            syncUserPresence(userKey, sessions.size());
+        } catch (Exception e) {
+            log.warn("[Realtime-Cluster] 同步集群用户上线状态异常: userId={}, error={}", userKey, e.getMessage());
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
             }
         }
     }
 
     @Override
     public void onSessionClosed(RealtimeSession session, CloseStatus closeStatus) {
-        if (session != null && session.getUserId() != null) {
-            try {
-                String hashKey = getUserPresenceHashKey();
-                RMap<String, Integer> map = redissonClient.getMap(hashKey, StringCodec.INSTANCE);
-                if (map != null) {
-                    Integer remaining = map.addAndGet(String.valueOf(session.getUserId()), -1);
-                    if (remaining != null && remaining <= 0) {
-                        map.remove(String.valueOf(session.getUserId()));
-                    }
+        if (session == null || session.getUserId() == null || session.getSessionKey() == null) {
+            return;
+        }
+        String userKey = String.valueOf(session.getUserId());
+        String sessionKey = session.getSessionKey().format();
+        ReentrantLock lock = lockForUser(userKey);
+        lock.lock();
+        try {
+            Set<String> sessions = localUserSessions.get(userKey);
+            int remaining = 0;
+            if (sessions != null) {
+                sessions.remove(sessionKey);
+                remaining = sessions.size();
+                if (remaining == 0) {
+                    localUserSessions.remove(userKey, sessions);
                 }
-            } catch (Exception e) {
-                log.warn("[Realtime-Cluster] 同步集群用户下线状态异常: userId={}, error={}", session.getUserId(), e.getMessage());
+            }
+            syncUserPresence(userKey, remaining);
+        } catch (Exception e) {
+            log.warn("[Realtime-Cluster] 同步集群用户下线状态异常: userId={}, error={}", userKey, e.getMessage());
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
             }
         }
     }
 
-    private String getUserPresenceHashKey() {
-        return properties.getCluster().getNodesHashKey() + ":users";
+    private void syncUserPresence(String userKey, int sessionCount) {
+        RMap<String, String> map = redissonClient.getMap(getUserPresenceHashKey(userKey), StringCodec.INSTANCE);
+        if (map != null) {
+            if (sessionCount > 0) {
+                map.put(this.nodeId, String.valueOf(sessionCount));
+            } else {
+                map.remove(this.nodeId);
+            }
+        }
+        RSet<String> nodeUsersSet = redissonClient.getSet(
+                ClusterNodeHeartbeatSupport.resolveNodeUsersSetKey(properties, this.nodeId), StringCodec.INSTANCE);
+        if (nodeUsersSet != null) {
+            if (sessionCount > 0) {
+                nodeUsersSet.add(userKey);
+            } else {
+                nodeUsersSet.remove(userKey);
+            }
+        }
+    }
+
+    private boolean isClusterNodeAlive(Map<String, String> clusterNodesSnapshot,
+                                       String targetNodeId,
+                                       long nowMillis,
+                                       long expireMillis) {
+        if (clusterNodesSnapshot == null || targetNodeId == null) {
+            return false;
+        }
+        String rawHeartbeat = clusterNodesSnapshot.get(targetNodeId);
+        if (rawHeartbeat == null || rawHeartbeat.isBlank()) {
+            return false;
+        }
+        ClusterNodeHeartbeatSupport.HeartbeatEntry heartbeat =
+                ClusterNodeHeartbeatSupport.parseHeartbeatValue(rawHeartbeat);
+        return heartbeat != null && !ClusterNodeHeartbeatSupport.isExpired(heartbeat, nowMillis, expireMillis);
+    }
+
+    private void cleanupStaleUserNodes(RMap<String, String> userNodeMap,
+                                       List<String> staleNodeIds,
+                                       boolean removeEmptyHash) {
+        if (userNodeMap == null || staleNodeIds == null || staleNodeIds.isEmpty()) {
+            return;
+        }
+        for (String staleNodeId : staleNodeIds) {
+            try {
+                userNodeMap.remove(staleNodeId);
+            } catch (Exception ex) {
+                log.debug("[Realtime-Cluster] 清理死节点用户在线残留异常: staleNodeId={}, error={}",
+                        staleNodeId, ex.getMessage());
+            }
+        }
+        if (removeEmptyHash) {
+            try {
+                userNodeMap.delete();
+            } catch (Exception ex) {
+                log.debug("[Realtime-Cluster] 删除已清空的用户节点状态 Hash 失败: error={}", ex.getMessage());
+            }
+        }
+    }
+
+    private int parsePositiveCount(String rawCount) {
+        ClusterNodeHeartbeatSupport.HeartbeatEntry entry = ClusterNodeHeartbeatSupport.parseHeartbeatValue(rawCount);
+        return entry != null ? entry.count() : 0;
+    }
+
+    private ReentrantLock lockForUser(String userKey) {
+        int stripe = (userKey.hashCode() & Integer.MAX_VALUE) % userSyncLocks.length;
+        return userSyncLocks[stripe];
+    }
+
+    private String getUserPresenceHashKey(String userId) {
+        return ClusterNodeHeartbeatSupport.resolveUserPresenceHashKey(properties, userId);
     }
 
     @Override
@@ -166,6 +305,29 @@ public class RedissonRealtimeClusterBroadcaster implements RealtimeClusterBroadc
             } catch (Exception e) {
                 log.warn("[Realtime] 注销 Redisson 监听器异常: {}", e.getMessage());
             }
+        }
+        for (String userKey : new ArrayList<>(localUserSessions.keySet())) {
+            ReentrantLock lock = lockForUser(userKey);
+            lock.lock();
+            try {
+                localUserSessions.remove(userKey);
+                syncUserPresence(userKey, 0);
+            } catch (Exception ex) {
+                log.warn("[Realtime-Cluster] 停机注销本节点用户在线状态异常: userId={}, error={}", userKey, ex.getMessage());
+            } finally {
+                if (lock.isHeldByCurrentThread()) {
+                    lock.unlock();
+                }
+            }
+        }
+        try {
+            RSet<String> nodeUsersSet = redissonClient.getSet(
+                    ClusterNodeHeartbeatSupport.resolveNodeUsersSetKey(properties, this.nodeId), StringCodec.INSTANCE);
+            if (nodeUsersSet != null) {
+                nodeUsersSet.delete();
+            }
+        } catch (Exception ex) {
+            log.debug("[Realtime-Cluster] 停机删除节点用户反向索引失败: nodeId={}, error={}", this.nodeId, ex.getMessage());
         }
     }
 

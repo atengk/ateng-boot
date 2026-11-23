@@ -48,4 +48,23 @@ public @interface HttpClient {
      */
     String url() default "";
 
+    /**
+     * 声明式本地优雅降级实现类
+     * 必须实现目标客户端接口，并注册为 Spring 容器中的受管 Bean。
+     * 当发生网络故障、连接超时或远端异常（如 HttpRemoteException、ResourceAccessException 等）时自动委托执行。
+     * 默认 void.class 表示不启用降级。
+     *
+     * @return 降级实现类类型
+     */
+    Class<?> fallback() default void.class;
+
+    /**
+     * 是否将当前声明式客户端代理 Bean 注册为 Primary Bean
+     * 默认 true，用于存在 fallback 本地降级实现类时，业务服务按接口类型自动装配能够无歧义优先注入代理门面对象。
+     * 若存在多个同接口同级实现且需通过 @Qualifier 精准区分时，可显式配置为 false。
+     *
+     * @return true 声明为 Primary，false 不声明
+     */
+    boolean primary() default true;
+
 }

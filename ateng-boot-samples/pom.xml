@@ -7,7 +7,7 @@
     <parent>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot</artifactId>
-        <version>1.0.0</version>
+        <version>1.2.0</version>
     </parent>
 
     <artifactId>ateng-boot-samples</artifactId>
@@ -40,12 +40,20 @@
         <module>ateng-boot-sample-mqtt</module>
         <module>ateng-boot-sample-pay</module>
         <module>ateng-boot-sample-datasource</module>
+        <module>ateng-boot-sample-flyway</module>
         <module>ateng-boot-sample-encrypt</module>
         <module>ateng-boot-sample-statemachine</module>
         <module>ateng-boot-sample-job-local</module>
         <module>ateng-boot-sample-search</module>
         <module>ateng-boot-sample-tcp</module>
         <module>ateng-boot-sample-admin</module>
+        <module>ateng-boot-sample-job-xxl</module>
+        <module>ateng-boot-sample-job-snail</module>
+        <module>ateng-boot-sample-sms</module>
+        <module>ateng-boot-sample-social</module>
+        <module>ateng-boot-sample-liteflow</module>
+        <module>ateng-boot-sample-ai</module>
+        <module>ateng-boot-sample-milvus</module>
     </modules>
 
     <properties>
@@ -61,6 +69,30 @@
                 <version>${project.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+
+            <!-- 仅限内部 Sample 工程复用且严禁暴露至外部 BOM 的测试/可选增强依赖 -->
+            <dependency>
+                <groupId>org.mockftpserver</groupId>
+                <artifactId>MockFtpServer</artifactId>
+                <version>${mockftpserver.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.icegreen</groupId>
+                <artifactId>greenmail-junit5</artifactId>
+                <version>${greenmail.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-redis</artifactId>
+                <version>${langchain4j.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-pgvector</artifactId>
+                <version>${langchain4j.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

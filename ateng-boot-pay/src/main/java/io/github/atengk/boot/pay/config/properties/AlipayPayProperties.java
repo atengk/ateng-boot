@@ -38,4 +38,10 @@ public class AlipayPayProperties implements Serializable {
      */
     @NestedConfigurationProperty
     private Map<String, AlipayAppProperties> apps = new HashMap<>();
+
+    /**
+     * HTTP 客户端网络超时配置
+     */
+    @NestedConfigurationProperty
+    private PayHttpProperties http = new PayHttpProperties();
 }

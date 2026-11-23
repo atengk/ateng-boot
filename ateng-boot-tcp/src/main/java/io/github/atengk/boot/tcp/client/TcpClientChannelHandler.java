@@ -1,8 +1,11 @@
 package io.github.atengk.boot.tcp.client;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.enums.CloseReason;
+import io.github.atengk.boot.tcp.event.TcpChannelWritabilityChangedEvent;
 import io.github.atengk.boot.tcp.event.TcpSessionClosedEvent;
 import io.github.atengk.boot.tcp.event.TcpSessionConnectedEvent;
 import io.github.atengk.boot.tcp.exception.TcpException;
@@ -76,6 +79,10 @@ public class TcpClientChannelHandler extends ChannelDuplexHandler {
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
         String sessionId = IdUtil.fastSimpleUUID();
         TcpSession session = new TcpSession(sessionId, ctx.channel());
+        if (properties != null) {
+            session.setBackpressurePolicy(properties.getBackpressurePolicy());
+            session.setBackpressureTimeout(properties.getBackpressureTimeout());
+        }
         ctx.channel().attr(TcpSession.SESSION_KEY).set(session);
 
         client.onConnected(ctx.channel(), session);
@@ -137,6 +144,18 @@ public class TcpClientChannelHandler extends ChannelDuplexHandler {
     }
 
     @Override
+    public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
+        TcpSession session = ctx.channel().attr(TcpSession.SESSION_KEY).get();
+        if (session != null && eventPublisher != null) {
+            boolean writable = ctx.channel().isWritable();
+            log.debug("TCP 客户端通道可写状态变迁: sessionId={}, writable={}, pendingWriteBytes={}",
+                    session.getSessionId(), writable, session.getPendingWriteBytes());
+            eventPublisher.publishEvent(new TcpChannelWritabilityChangedEvent(client, session, writable));
+        }
+        super.channelWritabilityChanged(ctx);
+    }
+
+    @Override
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         TcpSession session = ctx.channel().attr(TcpSession.SESSION_KEY).get();
         CloseReason reason = session != null && session.getCloseReason() != null
@@ -160,13 +179,14 @@ public class TcpClientChannelHandler extends ChannelDuplexHandler {
 
     @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
-        if (evt instanceof IdleStateEvent) {
-            IdleStateEvent idleEvent = (IdleStateEvent) evt;
+        if (evt instanceof IdleStateEvent idleEvent) {
             if (idleEvent.state() == IdleState.WRITER_IDLE || idleEvent.state() == IdleState.ALL_IDLE) {
-                if (properties.getHeartbeat().isEnabled()) {
+                if (properties != null && properties.getHeartbeat() != null && properties.getHeartbeat().isEnabled()) {
                     String ping = properties.getHeartbeat().getPayload();
-                    log.debug("TCP 客户端触发写空闲心跳，发送探测包: payload={}", ping);
-                    ctx.writeAndFlush(ping);
+                    if (ping != null && !ping.isEmpty()) {
+                        log.debug("TCP 客户端触发写空闲心跳，发送探测包: payload={}", ping);
+                        ctx.writeAndFlush(ping);
+                    }
                 }
             }
         }
@@ -184,17 +204,93 @@ public class TcpClientChannelHandler extends ChannelDuplexHandler {
     }
 
     private boolean isHeartbeatResponse(Object msg) {
-        if (!properties.getHeartbeat().isEnabled()) {
+        if (properties == null || properties.getHeartbeat() == null || !properties.getHeartbeat().isEnabled()) {
             return false;
         }
-        if (msg instanceof TcpPayload) {
-            String text = ((TcpPayload) msg).asString();
-            return "PONG".equalsIgnoreCase(text != null ? text.trim() : "");
+        String configured = properties.getHeartbeat().getResponsePayload();
+        String expected = (configured != null && !configured.isBlank()) ? configured.trim() : "PONG";
+        if (!isJsonText(expected) && msg instanceof TcpPacket packet
+                && (packet.getRequestId() == null || packet.getRequestId().isBlank())
+                && packet.getCommand() != null
+                && expected.equalsIgnoreCase(packet.getCommand().trim())) {
+            return true;
         }
-        if (msg instanceof String) {
-            return "PONG".equalsIgnoreCase(((String) msg).trim());
+        String actual = extractInboundText(msg);
+        if (actual == null || actual.isBlank()) {
+            return false;
         }
-        return false;
+        String trimmedActual = actual.trim();
+        if (expected.equalsIgnoreCase(trimmedActual)) {
+            return true;
+        }
+        if (isJsonText(expected)) {
+            return isJsonText(trimmedActual) && jsonEquals(expected, trimmedActual);
+        }
+        return isJsonText(trimmedActual) && matchesJsonHeartbeatToken(trimmedActual, expected);
+    }
+
+    private static boolean isJsonText(String text) {
+        return (text.startsWith("{") && text.endsWith("}")) || (text.startsWith("[") && text.endsWith("]"));
+    }
+
+    private static boolean jsonEquals(String expectedJson, String actualJson) {
+        try {
+            JsonNode expectedNode = JsonUtil.parseObject(expectedJson, JsonNode.class);
+            JsonNode actualNode = JsonUtil.parseObject(actualJson, JsonNode.class);
+            return expectedNode != null && expectedNode.equals(actualNode);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean matchesJsonHeartbeatToken(String actualJson, String expectedToken) {
+        if (!actualJson.startsWith("{")) {
+            return false;
+        }
+        try {
+            JsonNode node = JsonUtil.parseObject(actualJson, JsonNode.class);
+            if (node == null || !node.isObject()) {
+                return false;
+            }
+            // 携带有效 requestId 的 RPC 报文不应被静默当作心跳消费
+            JsonNode requestIdNode = node.get("requestId");
+            if (requestIdNode != null && !requestIdNode.isNull() && !requestIdNode.asText("").isBlank()) {
+                return false;
+            }
+            // 优先检查标准路由/类型键；若报文显式携带路由键但值不匹配，避免误吞业务消息
+            for (String routeKey : new String[]{"command", "cmd", "type", "action"}) {
+                JsonNode routeNode = node.get(routeKey);
+                if (routeNode != null && routeNode.isTextual()) {
+                    return expectedToken.equalsIgnoreCase(routeNode.asText().trim());
+                }
+            }
+            for (String fallbackKey : new String[]{"heartbeat", "status", "payload", "message"}) {
+                JsonNode fallbackNode = node.get(fallbackKey);
+                if (fallbackNode != null && fallbackNode.isTextual()
+                        && expectedToken.equalsIgnoreCase(fallbackNode.asText().trim())) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static String extractInboundText(Object msg) {
+        if (msg instanceof TcpPayload payload) {
+            return payload.asString();
+        }
+        if (msg instanceof TcpPacket packet && packet.getPayload() != null) {
+            return packet.getPayload().asString();
+        }
+        if (msg instanceof byte[] bytes) {
+            return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        }
+        if (msg instanceof String str) {
+            return str;
+        }
+        return null;
     }
 
     private TcpPacket toTcpPacket(Object msg) {

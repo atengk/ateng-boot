@@ -13,6 +13,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -146,6 +147,57 @@ class StorageTemplateGuardTest {
         StorageObject obj = template.upload("files/script.txt", new ByteArrayInputStream("hello world".getBytes(StandardCharsets.UTF_8)));
         assertThat(obj).isNotNull();
         assertThat(template.exists("files/script.txt")).isTrue();
+    }
+
+    @Test
+    @DisplayName("通过 getResource().getOutputStream() 写入受 StorageGuard 前置扩展名与魔数守卫保护")
+    void testGetResourceOutputStreamEnforcesGuard() throws Exception {
+        StorageGuardProperties props = new StorageGuardProperties();
+        props.setEnabled(true);
+        props.setStrictMagicCheck(true);
+        props.setDisallowedExtensions(Set.of("bat"));
+        template.setStorageGuard(new StorageGuard(props));
+
+        // 1. 黑名单扩展名在 getOutputStream 阶段前置快速失败
+        assertThatThrownBy(() -> template.getResource("scripts/deploy.bat").getOutputStream())
+                .isInstanceOf(StorageException.class)
+                .satisfies(e -> assertThat(((StorageException) e).getResultCode()).isEqualTo(StorageResultCode.STORAGE_FILE_NOT_ALLOWED));
+
+        // 2. 伪装恶意文件在 close 阶段被魔数拦截且不写入存储
+        OutputStream fakeOut = template.getResource("images/disguised.png").getOutputStream();
+        fakeOut.write(EXE_HEADER);
+        assertThatThrownBy(fakeOut::close)
+                .isInstanceOf(StorageException.class)
+                .satisfies(e -> assertThat(((StorageException) e).getResultCode()).isEqualTo(StorageResultCode.STORAGE_FILE_TYPE_MISMATCH));
+        assertThat(template.exists("images/disguised.png")).isFalse();
+
+        // 3. 合法文件写入并关闭成功
+        try (OutputStream validOut = template.getResource("images/valid.png").getOutputStream()) {
+            validOut.write(PNG_HEADER);
+        }
+        assertThat(template.exists("images/valid.png")).isTrue();
+    }
+
+    @Test
+    @DisplayName("跨存储源 moveTo 在目标侧触发 StorageGuard 魔数拦截时中止并完好保留源对象")
+    void testCrossSourceMoveToAbortedByTargetGuardLeavesSourceIntact(@TempDir Path archiveDir) {
+        LocalDriver archiveDriver = new LocalDriver(archiveDir.toString());
+        // 源对象以原始驱动态（绕过旧库防卫）提前写入了伪装扩展名内容
+        driver.upload("legacy/disguised.png", new ByteArrayInputStream(EXE_HEADER), "image/png", EXE_HEADER.length);
+
+        StorageGuardProperties props = new StorageGuardProperties();
+        props.setEnabled(true);
+        props.setStrictMagicCheck(true);
+        StorageTemplate guardedMulti = new StorageTemplate(driver, java.util.Map.of("primary", driver, "archive", archiveDriver));
+        guardedMulti.setStorageGuard(new StorageGuard(props));
+
+        assertThatThrownBy(() -> guardedMulti.moveTo("legacy/disguised.png", "archive", "safe/disguised.png"))
+                .isInstanceOf(StorageException.class)
+                .satisfies(e -> assertThat(((StorageException) e).getResultCode()).isEqualTo(StorageResultCode.STORAGE_FILE_TYPE_MISMATCH));
+
+        // 目标源不得落盘，且源对象必须完好无损保留
+        assertThat(archiveDriver.exists("safe/disguised.png")).isFalse();
+        assertThat(driver.exists("legacy/disguised.png")).isTrue();
     }
 
     private String md5Hex(byte[] data) throws Exception {

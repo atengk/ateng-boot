@@ -53,6 +53,16 @@ public class MqttSslProperties {
      */
     private String keyStorePassword;
 
+    /**
+     * 加密 PKCS#8 PEM 私钥解密口令
+     */
+    private String clientKeyPassword;
+
+    /**
+     * 是否开启 TLS 服务器证书主机名校验（生产默认 true，仅自签内网调试显式关闭）
+     */
+    private boolean hostnameVerificationEnabled = true;
+
     public boolean isEnabled() {
         return enabled;
     }
@@ -123,5 +133,21 @@ public class MqttSslProperties {
 
     public void setKeyStorePassword(String keyStorePassword) {
         this.keyStorePassword = keyStorePassword;
+    }
+
+    public String getClientKeyPassword() {
+        return clientKeyPassword;
+    }
+
+    public void setClientKeyPassword(String clientKeyPassword) {
+        this.clientKeyPassword = clientKeyPassword;
+    }
+
+    public boolean isHostnameVerificationEnabled() {
+        return hostnameVerificationEnabled;
+    }
+
+    public void setHostnameVerificationEnabled(boolean hostnameVerificationEnabled) {
+        this.hostnameVerificationEnabled = hostnameVerificationEnabled;
     }
 }

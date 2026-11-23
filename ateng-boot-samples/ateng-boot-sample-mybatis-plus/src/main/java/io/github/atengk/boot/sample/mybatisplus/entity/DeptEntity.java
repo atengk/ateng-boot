@@ -1,7 +1,7 @@
 package io.github.atengk.boot.sample.mybatisplus.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
-import io.github.atengk.boot.mybatisplus.entity.BaseFullEntity;
+import io.github.atengk.boot.mybatisplus.entity.BaseLogicEntity;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -9,7 +9,7 @@ import lombok.ToString;
 
 /**
  * 系统部门实体对象
- * 继承 BaseFullEntity（包含主键 ID、时间戳、操作人、乐观锁与逻辑删除）
+ * 继承 BaseLogicEntity（包含主键 ID、时间戳、操作人及 64 位 ID 占位软删除，无需乐观锁）
  *
  * @author Ateng
  * @since 2026-10-28
@@ -19,7 +19,7 @@ import lombok.ToString;
 @NoArgsConstructor
 @ToString(callSuper = true)
 @TableName("sys_dept")
-public class DeptEntity extends BaseFullEntity {
+public class DeptEntity extends BaseLogicEntity {
 
     private static final long serialVersionUID = 1L;
 

@@ -21,7 +21,7 @@ import java.util.List;
  */
 @Tag(name = "移动端 - 文章资讯", description = "面向移动终端与小程序端的信息流推荐、分类阅读与文章详情接口")
 @RestController
-@RequestMapping("/api/app/articles")
+@RequestMapping("/sample/openapi/app/articles")
 public class AppArticleController {
 
     /**

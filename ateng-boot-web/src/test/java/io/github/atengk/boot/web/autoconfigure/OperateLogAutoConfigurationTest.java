@@ -2,8 +2,10 @@ package io.github.atengk.boot.web.autoconfigure;
 
 import io.github.atengk.boot.core.audit.OperateLogModel;
 import io.github.atengk.boot.web.aspect.OperateLogAspect;
+import io.github.atengk.boot.web.aspect.WebLogAspect;
 import io.github.atengk.boot.web.audit.DefaultOperateLogStorageProvider;
 import io.github.atengk.boot.web.audit.OperateLogStorageProvider;
+import io.github.atengk.boot.web.properties.WebProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -54,6 +56,60 @@ class OperateLogAutoConfigurationTest {
         contextRunner.withPropertyValues("ateng.boot.web.operate-log.enabled=false")
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(OperateLogAspect.class);
+                });
+    }
+
+    @Test
+    @DisplayName("默认加载 11 个敏感排除词基线，且支持通过配置文件覆盖 operate-log/log default-exclude-params")
+    void shouldBindDefaultAndCustomExcludeParamsProperties() {
+        contextRunner.withPropertyValues("ateng.boot.web.log.enabled=true")
+                .run(context -> {
+                    WebProperties properties = context.getBean(WebProperties.class);
+                    assertThat(properties.getOperateLog().getDefaultExcludeParams())
+                            .containsExactly("password", "passwd", "pwd", "oldPassword", "newPassword",
+                                    "confirmPassword", "secret", "token", "accessToken", "refreshToken", "authorization");
+                    assertThat(properties.getLog().getDefaultExcludeParams())
+                            .containsExactlyElementsOf(properties.getOperateLog().getDefaultExcludeParams());
+                    assertThat(context).hasSingleBean(WebLogAspect.class);
+
+                    OperateLogStorageProvider provider = context.getBean(OperateLogStorageProvider.class);
+                    OperateLogModel model = new OperateLogModel();
+                    model.setModule("autowire-check");
+                    provider.store(model);
+                });
+
+        contextRunner.withPropertyValues(
+                        "ateng.boot.web.log.enabled=true",
+                        "ateng.boot.web.operate-log.default-exclude-params[0]=customPin",
+                        "ateng.boot.web.log.default-exclude-params[0]=customSecret"
+                )
+                .run(context -> {
+                    WebProperties properties = context.getBean(WebProperties.class);
+                    assertThat(properties.getOperateLog().getDefaultExcludeParams()).containsExactly("customPin");
+                    assertThat(properties.getLog().getDefaultExcludeParams()).containsExactly("customSecret");
+                });
+    }
+
+    @Test
+    @DisplayName("默认开启 User-Agent 同步采集与解析，支持通过配置覆盖开关与最大长度")
+    void shouldBindUserAgentProperties() {
+        contextRunner.run(context -> {
+            WebProperties properties = context.getBean(WebProperties.class);
+            assertThat(properties.getOperateLog().isCollectUserAgent()).isTrue();
+            assertThat(properties.getOperateLog().isParseUserAgent()).isTrue();
+            assertThat(properties.getOperateLog().getUserAgentMaxLength()).isEqualTo(512);
+        });
+
+        contextRunner.withPropertyValues(
+                        "ateng.boot.web.operate-log.collect-user-agent=false",
+                        "ateng.boot.web.operate-log.parse-user-agent=false",
+                        "ateng.boot.web.operate-log.user-agent-max-length=128"
+                )
+                .run(context -> {
+                    WebProperties properties = context.getBean(WebProperties.class);
+                    assertThat(properties.getOperateLog().isCollectUserAgent()).isFalse();
+                    assertThat(properties.getOperateLog().isParseUserAgent()).isFalse();
+                    assertThat(properties.getOperateLog().getUserAgentMaxLength()).isEqualTo(128);
                 });
     }
 }

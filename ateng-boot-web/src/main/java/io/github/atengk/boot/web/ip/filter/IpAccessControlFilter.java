@@ -36,7 +36,7 @@ public class IpAccessControlFilter extends OncePerRequestFilter implements Order
     /**
      * 过滤器执行优先级：置于 TraceFilter 之后，保证 MDC traceId 已初始化
      */
-    public static final int ORDER = TraceFilter.ORDER + 1;
+    public static final int ORDER = TraceFilter.ORDER + 10;
 
     private final IpAccessControlProperties properties;
 
@@ -66,8 +66,8 @@ public class IpAccessControlFilter extends OncePerRequestFilter implements Order
             return;
         }
 
-        // 3. 提取客户端 IP 并判定规则
-        String clientIp = IpUtil.getClientIp(request);
+        // 3. 提取客户端 IP 并判定规则（模块显式配置授信代理时优先使用，否则继承全局默认授信代理防伪造）
+        String clientIp = IpUtil.getClientIpWithDefaultFallback(request, properties.getTrustedProxies());
         IpAccessMode mode = filterProps.getEffectiveMode(properties.getMode());
         List<String> rules = filterProps.getEffectiveRules(properties.getRules());
 

@@ -1,0 +1,16 @@
+# ===================================================================
+# ateng-boot-sample-mqtt 本地/联调真实 MQTT Broker 连接配置模板
+#
+# 使用说明：
+# 1. 复制本文件为 application-local.yml（该文件已被 .gitignore 自动忽略，严禁提交到 Git）
+# 2. 将大写的语义占位符（如 YOUR_MQTT_HOST）替换为您本地或联调环境的真实配置
+# 3. 运行测试或启动应用时，Spring Boot 会自动加载 application-local.yml 覆盖默认配置
+# ===================================================================
+ateng:
+  boot:
+    mqtt:
+      clients:
+        primary:
+          server-uri: tcp://YOUR_MQTT_HOST:1883
+          username: YOUR_MQTT_USERNAME
+          password: YOUR_MQTT_PASSWORD

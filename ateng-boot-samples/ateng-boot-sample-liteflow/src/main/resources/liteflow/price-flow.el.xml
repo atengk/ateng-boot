@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<flow>
+    <!-- 电商复合营销算价业务编排：串行参数校验 -> 并行查券与用户等级 -> 营销优惠汇总 -> 运费与终审算价 -->
+    <chain name="price-calc-flow">
+        THEN(
+            validateOrderCmp,
+            WHEN(queryCouponCmp, queryUserLevelCmp),
+            calculateDiscountCmp,
+            calculatePostageCmp
+        );
+    </chain>
+</flow>

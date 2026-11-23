@@ -82,7 +82,22 @@ public enum SshResultCode implements IResultCode {
     /**
      * SSH 交互式终端操作失败
      */
-    SHELL_OPERATION_FAILED(56014, "SSH交互式终端操作失败");
+    SHELL_OPERATION_FAILED(56014, "SSH交互式终端操作失败"),
+
+    /**
+     * SSH 集群批量命令执行异常
+     */
+    BATCH_EXEC_FAILED(56015, "SSH集群批量命令执行异常"),
+
+    /**
+     * SSH 服务节点连通性探测失败
+     */
+    PROBE_FAILED(56016, "SSH服务节点连通性探测失败"),
+
+    /**
+     * SSH 高危命令被安全策略阻断
+     */
+    COMMAND_FORBIDDEN(56017, "SSH高危命令被安全策略阻断");
 
     /**
      * 业务状态码

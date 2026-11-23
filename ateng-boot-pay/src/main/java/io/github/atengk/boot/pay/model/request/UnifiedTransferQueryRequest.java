@@ -56,4 +56,9 @@ public class UnifiedTransferQueryRequest implements Serializable {
      * 支付宝业务场景（可选，默认 DIRECT_TRANSFER）
      */
     private String bizScene;
+
+    /**
+     * 是否查询旧版微信商家批次转账（/v3/transfer/batches），默认 false/null 查询新版转账单
+     */
+    private Boolean legacyBatchMode;
 }

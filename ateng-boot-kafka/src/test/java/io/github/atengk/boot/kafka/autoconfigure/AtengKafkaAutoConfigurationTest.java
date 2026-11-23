@@ -4,8 +4,13 @@ import io.github.atengk.boot.kafka.constant.KafkaConstants;
 import io.github.atengk.boot.kafka.executor.KafkaRecordExecutor;
 import io.github.atengk.boot.kafka.interceptor.KafkaBatchInterceptor;
 import io.github.atengk.boot.kafka.interceptor.KafkaRecordInterceptor;
+import io.github.atengk.boot.kafka.manager.KafkaOffsetManager;
 import io.github.atengk.boot.kafka.properties.AtengKafkaProperties;
+import io.github.atengk.boot.kafka.spi.KafkaAdminClientFactory;
+import io.github.atengk.boot.kafka.template.KafkaDeadLetterReplayTemplate;
 import io.github.atengk.boot.kafka.template.KafkaReliableTemplate;
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -192,6 +197,122 @@ class AtengKafkaAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasBean("kafkaListenerContainerFactoryPostProcessor");
                     assertThat(context).hasBean("kafkaAdminPostProcessor");
+                });
+    }
+
+    @Test
+    @DisplayName("后置处理器守卫 batchKafkaListenerContainerFactory 维持 AckMode.BATCH 与 batchListener=true")
+    void testPostProcessorPreservesBatchAckMode() {
+        contextRunner
+                .withUserConfiguration(MockKafkaConsumerConfiguration.class)
+                .run(context -> {
+                    ConcurrentKafkaListenerContainerFactory<?, ?> batchFactory =
+                            context.getBean(KafkaConstants.BATCH_CONTAINER_FACTORY, ConcurrentKafkaListenerContainerFactory.class);
+                    batchFactory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+                    batchFactory.setBatchListener(false);
+
+                    org.springframework.beans.factory.config.BeanPostProcessor pp =
+                            context.getBean("kafkaListenerContainerFactoryPostProcessor",
+                                    org.springframework.beans.factory.config.BeanPostProcessor.class);
+                    pp.postProcessAfterInitialization(batchFactory, KafkaConstants.BATCH_CONTAINER_FACTORY);
+
+                    assertThat(batchFactory.isBatchListener()).isTrue();
+                    assertThat(batchFactory.getContainerProperties().getAckMode()).isEqualTo(ContainerProperties.AckMode.BATCH);
+                });
+    }
+
+    @Test
+    @DisplayName("自定义 KafkaAdminClientFactory SPI Bean 自动注入 KafkaOffsetManager 与 KafkaDeadLetterReplayTemplate")
+    void testCustomKafkaAdminClientFactoryWiring() {
+        AdminClient mockAdminClient = mock(AdminClient.class);
+        org.apache.kafka.clients.admin.ListConsumerGroupOffsetsResult offsetsResult =
+                mock(org.apache.kafka.clients.admin.ListConsumerGroupOffsetsResult.class);
+        org.mockito.Mockito.when(offsetsResult.partitionsToOffsetAndMetadata())
+                .thenReturn(org.apache.kafka.common.KafkaFuture.completedFuture(java.util.Collections.emptyMap()));
+        org.mockito.Mockito.when(mockAdminClient.listConsumerGroupOffsets("g1")).thenReturn(offsetsResult);
+
+        org.apache.kafka.clients.admin.DescribeTopicsResult describeTopicsResult =
+                mock(org.apache.kafka.clients.admin.DescribeTopicsResult.class);
+        org.apache.kafka.clients.admin.TopicDescription emptyDescription =
+                new org.apache.kafka.clients.admin.TopicDescription("orders.DLT", false, java.util.Collections.emptyList());
+        org.mockito.Mockito.when(describeTopicsResult.values())
+                .thenReturn(java.util.Collections.singletonMap(
+                        "orders.DLT", org.apache.kafka.common.KafkaFuture.completedFuture(emptyDescription)));
+        org.mockito.Mockito.when(mockAdminClient.describeTopics(java.util.Collections.singletonList("orders.DLT")))
+                .thenReturn(describeTopicsResult);
+
+        contextRunner
+                .withUserConfiguration(MockKafkaConsumerConfiguration.class, MockKafkaTemplateConfiguration.class, MockKafkaAdminConfiguration.class)
+                .withBean(KafkaAdminClientFactory.class, () -> props -> mockAdminClient)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(KafkaOffsetManager.class);
+                    assertThat(context).hasSingleBean(KafkaDeadLetterReplayTemplate.class);
+                    KafkaOffsetManager offsetManager = context.getBean(KafkaOffsetManager.class);
+                    java.util.Map<TopicPartition, org.apache.kafka.clients.consumer.OffsetAndMetadata> offsets =
+                            offsetManager.getConsumerGroupOffsets("g1");
+                    assertThat(offsets).isEmpty();
+
+                    KafkaDeadLetterReplayTemplate replayTemplate = context.getBean(KafkaDeadLetterReplayTemplate.class);
+                    replayTemplate.purge("orders.DLT");
+                    org.mockito.Mockito.verify(mockAdminClient)
+                            .describeTopics(java.util.Collections.singletonList("orders.DLT"));
+                });
+    }
+
+    @Test
+    @DisplayName("外置生产端与消费端调优配置通过自动装配真实生效且不覆盖显式 Spring 配置")
+    void testExternalizedTuningPropertiesAutoConfiguration() {
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.kafka.producer.batch-size=64KB",
+                        "ateng.boot.kafka.producer.linger=25ms",
+                        "ateng.boot.kafka.producer.compression-type=zstd",
+                        "ateng.boot.kafka.producer.buffer-memory=64MB",
+                        "ateng.boot.kafka.producer.max-block=15s",
+                        "ateng.boot.kafka.consumer.retry-interval=1s",
+                        "ateng.boot.kafka.consumer.retry-multiplier=4.0",
+                        "ateng.boot.kafka.consumer.max-retry-interval=2500ms"
+                )
+                .run(context -> {
+                    AtengKafkaProperties properties = context.getBean(AtengKafkaProperties.class);
+                    assertThat(properties.getProducer().getBatchSize())
+                            .isEqualTo(org.springframework.util.unit.DataSize.ofKilobytes(64));
+                    assertThat(properties.getProducer().getLinger())
+                            .isEqualTo(java.time.Duration.ofMillis(25));
+                    assertThat(properties.getProducer().getCompressionType()).isEqualTo("zstd");
+                    assertThat(properties.getProducer().getBufferMemory())
+                            .isEqualTo(org.springframework.util.unit.DataSize.ofMegabytes(64));
+                    assertThat(properties.getProducer().getMaxBlock())
+                            .isEqualTo(java.time.Duration.ofSeconds(15));
+                    assertThat(properties.getConsumer().getMaxRetryInterval())
+                            .isEqualTo(java.time.Duration.ofMillis(2500));
+
+                    DefaultKafkaProducerFactoryCustomizer customizer =
+                            context.getBean(DefaultKafkaProducerFactoryCustomizer.class);
+                    java.util.Map<String, Object> baseConfigs = new HashMap<>();
+                    baseConfigs.put(org.apache.kafka.clients.producer.ProducerConfig.LINGER_MS_CONFIG, 50);
+                    org.springframework.kafka.core.DefaultKafkaProducerFactory<Object, Object> factory =
+                            new org.springframework.kafka.core.DefaultKafkaProducerFactory<>(baseConfigs);
+                    customizer.customize(factory);
+
+                    java.util.Map<String, Object> applied = factory.getConfigurationProperties();
+                    assertThat(applied.get(org.apache.kafka.clients.producer.ProducerConfig.BATCH_SIZE_CONFIG)).isEqualTo(65536);
+                    assertThat(applied.get(org.apache.kafka.clients.producer.ProducerConfig.LINGER_MS_CONFIG)).isEqualTo(50);
+                    assertThat(applied.get(org.apache.kafka.clients.producer.ProducerConfig.COMPRESSION_TYPE_CONFIG)).isEqualTo("zstd");
+                    assertThat(applied.get(org.apache.kafka.clients.producer.ProducerConfig.BUFFER_MEMORY_CONFIG)).isEqualTo(67108864L);
+                    assertThat(applied.get(org.apache.kafka.clients.producer.ProducerConfig.MAX_BLOCK_MS_CONFIG)).isEqualTo(15000L);
+
+                    CommonErrorHandler errorHandler = context.getBean(CommonErrorHandler.class);
+                    assertThat(errorHandler).isInstanceOf(io.github.atengk.boot.kafka.listener.AtengKafkaErrorHandler.class);
+                    io.github.atengk.boot.kafka.listener.AtengKafkaErrorHandler atengErrorHandler =
+                            (io.github.atengk.boot.kafka.listener.AtengKafkaErrorHandler) errorHandler;
+                    org.springframework.util.backoff.BackOffExecution execution = atengErrorHandler
+                            .getCustomBackOffFunction()
+                            .apply(new org.apache.kafka.clients.consumer.ConsumerRecord<>("t", 0, 0L, "k", "v"),
+                                    new RuntimeException("transient"))
+                            .start();
+                    assertThat(execution.nextBackOff()).isEqualTo(1000L);
+                    assertThat(execution.nextBackOff()).isEqualTo(2500L);
                 });
     }
 

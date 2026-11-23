@@ -35,4 +35,14 @@ public class PayBillQueryDTO implements Serializable {
     private String billType;
 
     private String tarType;
+
+    /**
+     * 微信特约商户号（服务商模式下载特约商户账单时填写）
+     */
+    private String subMchid;
+
+    /**
+     * 支付宝二级商户 smid
+     */
+    private String smid;
 }

@@ -2,8 +2,12 @@ package io.github.atengk.boot.encrypt.guard;
 
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
 import io.github.atengk.boot.encrypt.config.EncryptProperties;
+import io.github.atengk.boot.encrypt.decryptor.ConfigDecryptor;
+import io.github.atengk.boot.encrypt.decryptor.ConfigDecryptorFactory;
 import io.github.atengk.boot.encrypt.detector.KeyDetector;
+import io.github.atengk.boot.encrypt.env.EncryptEnvironmentSupport;
 import io.github.atengk.boot.encrypt.exception.ConfigSecurityException;
+import io.github.atengk.boot.encrypt.key.MultiKeyRegistry;
 import io.github.atengk.boot.encrypt.parser.CiphertextParser;
 import io.github.atengk.boot.encrypt.wrapper.EncryptPropertySourceWrapper;
 import org.slf4j.Logger;
@@ -18,7 +22,10 @@ import org.springframework.core.env.PropertySource;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -37,15 +44,49 @@ public class PlaintextIngressGuard implements ApplicationListener<ApplicationEve
 
     private final EncryptProperties properties;
     private final CiphertextParser parser;
+    private final MultiKeyRegistry multiKeyRegistry;
+    private final List<ConfigDecryptor> customDecryptors;
     private volatile ConfigurableEnvironment environment;
 
     public PlaintextIngressGuard(EncryptProperties properties, CiphertextParser parser) {
+        this(properties, parser, null, null);
+    }
+
+    /**
+     * 构造复用容器受管多密钥注册表的动态热更新守卫
+     *
+     * @param properties       加解密配置属性
+     * @param parser           密文格式解析器
+     * @param multiKeyRegistry 容器受管多密钥注册表单例（为 null 时退回从环境探测独立实例）
+     */
+    public PlaintextIngressGuard(EncryptProperties properties,
+                                 CiphertextParser parser,
+                                 MultiKeyRegistry multiKeyRegistry) {
+        this(properties, parser, multiKeyRegistry, null);
+    }
+
+    /**
+     * 构造复用容器受管多密钥注册表与容器解密器的动态热更新守卫
+     *
+     * @param properties       加解密配置属性
+     * @param parser           密文格式解析器
+     * @param multiKeyRegistry 容器受管多密钥注册表单例（为 null 时退回从环境探测独立实例）
+     * @param customDecryptors 容器级自定义解密器列表（为 null 时保留各属性源原有解密器或使用默认 SPI 装配）
+     */
+    public PlaintextIngressGuard(EncryptProperties properties,
+                                 CiphertextParser parser,
+                                 MultiKeyRegistry multiKeyRegistry,
+                                 List<ConfigDecryptor> customDecryptors) {
         this.properties = properties != null ? properties : new EncryptProperties();
         this.parser = parser != null ? parser : new CiphertextParser();
+        this.multiKeyRegistry = multiKeyRegistry;
+        this.customDecryptors = customDecryptors != null
+                ? Collections.unmodifiableList(customDecryptors.stream().filter(Objects::nonNull).toList())
+                : null;
     }
 
     public PlaintextIngressGuard() {
-        this(new EncryptProperties(), new CiphertextParser());
+        this(new EncryptProperties(), new CiphertextParser(), null, null);
     }
 
     @Override
@@ -92,17 +133,29 @@ public class PlaintextIngressGuard implements ApplicationListener<ApplicationEve
             return;
         }
 
-        // 1. 重新包装外部配置中心新推入的未包装属性源，并原子置换清空存量解密缓存
-        KeyDetector keyDetector = KeyDetector.detect(env);
-        String algoCode = env.getProperty("ateng.boot.encrypt.algorithm");
-        EncryptAlgorithm configuredAlgorithm = EncryptAlgorithm.fromCode(algoCode);
-        EncryptAlgorithm defaultAlgorithm = configuredAlgorithm != null ? configuredAlgorithm : EncryptAlgorithm.AES_GCM;
+        // 1. 重新包装外部配置中心新推入的未包装属性源，同步存量包装器配置并原子置换清空解密缓存
+        KeyDetector detectedKeyDetector = KeyDetector.detect(env);
+        KeyDetector managedKeyDetector = null;
+        if (this.multiKeyRegistry != null) {
+            mergeDetectedKeysIntoManagedRegistry(detectedKeyDetector.getRegistry());
+            managedKeyDetector = new KeyDetector(this.multiKeyRegistry);
+        }
+        KeyDetector newWrapperKeyDetector = managedKeyDetector != null ? managedKeyDetector : detectedKeyDetector;
+        List<ConfigDecryptor> resolvedDecryptors = this.customDecryptors != null
+                ? ConfigDecryptorFactory.createDefaultDecryptors(this.customDecryptors, properties.getRetry())
+                : null;
+
+        EncryptAlgorithm fallbackAlgorithm = properties.getAlgorithm() != null ? properties.getAlgorithm() : EncryptAlgorithm.AES_GCM;
+        EncryptAlgorithm defaultAlgorithm = EncryptEnvironmentSupport.resolveDefaultAlgorithm(env, null, fallbackAlgorithm);
+        boolean failOnError = EncryptEnvironmentSupport.resolveBooleanProperty(
+                env, EncryptEnvironmentSupport.PROPERTY_FAIL_ON_ERROR,
+                EncryptEnvironmentSupport.ENV_FAIL_ON_ERROR, properties.isFailOnError());
 
         int wrapperCount = 0;
         List<PropertySource<?>> toWrap = new ArrayList<>();
         for (PropertySource<?> source : env.getPropertySources()) {
             if (source instanceof EncryptPropertySourceWrapper wrapper) {
-                wrapper.clearCache();
+                wrapper.updateRuntimeConfig(parser, managedKeyDetector, resolvedDecryptors, defaultAlgorithm, failOnError);
                 wrapperCount++;
             } else if (source != null && !EnforceEncryptionPolicy.shouldSkipPropertySource(source)) {
                 toWrap.add(source);
@@ -110,7 +163,7 @@ public class PlaintextIngressGuard implements ApplicationListener<ApplicationEve
         }
         for (PropertySource<?> source : toWrap) {
             EncryptPropertySourceWrapper wrapper = new EncryptPropertySourceWrapper(
-                    source, parser, keyDetector, null, defaultAlgorithm, true);
+                    source, parser, newWrapperKeyDetector, resolvedDecryptors, defaultAlgorithm, failOnError);
             env.getPropertySources().replace(source.getName(), wrapper);
             wrapperCount++;
         }
@@ -134,13 +187,30 @@ public class PlaintextIngressGuard implements ApplicationListener<ApplicationEve
                     }
                 }
             } else {
-                EnforceEncryptionPolicy.enforce(env, patternStr, parser);
+                EnforceEncryptionPolicy.enforce(env, patternStr, properties.getIgnoredKeys(), parser);
             }
         }
     }
 
+    private void mergeDetectedKeysIntoManagedRegistry(MultiKeyRegistry detectedRegistry) {
+        if (this.multiKeyRegistry == null || detectedRegistry == null) {
+            return;
+        }
+        if (this.multiKeyRegistry.getDefaultKey() == null && detectedRegistry.getDefaultKey() != null) {
+            this.multiKeyRegistry.setDefaultKey(detectedRegistry.getDefaultKey());
+        }
+        Map<String, String> detectedKeys = detectedRegistry.getAllKeys();
+        if (detectedKeys != null && !detectedKeys.isEmpty()) {
+            detectedKeys.forEach((keyId, secret) -> {
+                if (!this.multiKeyRegistry.hasKey(keyId)) {
+                    this.multiKeyRegistry.registerKey(keyId, secret);
+                }
+            });
+        }
+    }
+
     private void validateKey(String key, ConfigurableEnvironment env) {
-        if (EnforceEncryptionPolicy.isIgnoredKey(key)) {
+        if (EnforceEncryptionPolicy.isIgnoredKey(key, properties.getIgnoredKeys())) {
             return;
         }
         for (PropertySource<?> source : env.getPropertySources()) {
@@ -148,11 +218,13 @@ public class PlaintextIngressGuard implements ApplicationListener<ApplicationEve
                 continue;
             }
             if (source.containsProperty(key)) {
-                Object raw = (source instanceof EncryptPropertySourceWrapper wrapper)
-                        ? wrapper.getDelegate().getProperty(key)
-                        : source.getProperty(key);
+                Object raw = EnforceEncryptionPolicy.getRawProperty(source, key);
+                String strVal = EnforceEncryptionPolicy.extractStringValue(raw);
 
-                if (raw instanceof String strVal && !strVal.trim().isEmpty()) {
+                if (strVal != null && !strVal.trim().isEmpty()) {
+                    if (EnforceEncryptionPolicy.isExemptedValue(strVal)) {
+                        break;
+                    }
                     if (!parser.hasEncrypted(strVal)) {
                         throw new ConfigSecurityException(String.format(
                                 "配置中心热更新防倒灌拦截 (enforce-encrypted=true)！检测到敏感配置字段被动态推送为裸明文: '%s'，已拒绝更新",

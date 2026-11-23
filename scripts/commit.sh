@@ -71,6 +71,18 @@ append_issue_footers() {
   done
 }
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/git-remote-guard.sh
+source "${SCRIPT_DIR}/lib/git-remote-guard.sh"
+
+# 辅助函数：判断是否存在尚未结束的 Rebase 中间态
+is_rebase_in_progress() {
+  local rebase_merge rebase_apply
+  rebase_merge=$(git rev-parse --git-path rebase-merge 2>/dev/null | tr -d '\r' || echo "")
+  rebase_apply=$(git rev-parse --git-path rebase-apply 2>/dev/null | tr -d '\r' || echo "")
+  { [ -n "$rebase_merge" ] && [ -d "$rebase_merge" ]; } || { [ -n "$rebase_apply" ] && [ -d "$rebase_apply" ]; }
+}
+
 # ==============================================================================
 # 1. 命令行参数解析 (支持非交互式调用)
 # ==============================================================================
@@ -85,6 +97,7 @@ CLI_BREAKING=false
 CLI_STAGE_ALL=false
 CLI_DRY_RUN=false
 CLI_PUSH=false
+CLI_REBASE=false
 AUTO_CONFIRM=false
 IS_NON_INTERACTIVE=false
 
@@ -103,6 +116,7 @@ show_help() {
   printf "%b\n" "  -a, --all               自动暂存全部变动 (⚠️ [高危/不推荐] 相当于 git add -A，严禁日常或 Agent 自动化使用)"
   printf "%b\n" "  -n, --dry-run           演练空跑模式 (仅预览拟生成的提交信息与暂存区，不实际执行提交与推送)"
   printf "%b\n" "  -p, --push              提交成功后自动推送到当前分支远程仓库"
+  printf "%b\n" "  -r, --rebase            推送前若落后远端且工作区干净，自动执行 git pull --rebase 同步 (需配合 -p)"
   printf "%b\n" "  -y, --yes               跳过确认提示，直接执行提交"
   printf "%b\n" "  -h, --help              显示帮助信息"
   printf "%b\n" ""
@@ -124,6 +138,9 @@ show_help() {
   printf "%b\n" ""
   printf "%b\n" "  # 4. 空跑演练示例 (验证提交信息组装，不真正执行提交)"
   printf "%b\n" "  bash scripts/commit.sh -t feat -s core -m \"验证提交信息\" -c 10 -n"
+  printf "%b\n" ""
+  printf "%b\n" "  # 5. 自动变基同步推送示例 (远端有更新且工作区干净时安全同步)"
+  printf "%b\n" "  bash scripts/commit.sh -t feat -s core -m \"同步远端并推送\" -p -r -y"
 }
 
 while [ $# -gt 0 ]; do
@@ -172,6 +189,10 @@ while [ $# -gt 0 ]; do
       ;;
     -p|--push)
       CLI_PUSH=true
+      shift
+      ;;
+    -r|--rebase)
+      CLI_REBASE=true
       shift
       ;;
     -y|--yes)
@@ -493,7 +514,234 @@ append_issue_footers "Closes" "${CLI_CLOSES[@]}" "${INTERACTIVE_CLOSES[@]}"
 append_issue_footers "Refs" "${CLI_REFS[@]}" "${INTERACTIVE_REFS[@]}"
 
 # ==============================================================================
-# 5. 预览与确认
+# 远端状态前置预检、受控变基与推送防拒守卫辅助函数
+# ==============================================================================
+REMOTE_BRANCH_EXISTS=true
+BEHIND_COUNT=0
+NEED_REBASE=false
+
+# 提交前远端状态探测、脏工作区熔断与双模变基决策
+check_remote_and_sync_strategy() {
+  if [ "$CURRENT_BRANCH" = "HEAD" ]; then
+    log_error "当前处于游离 HEAD 状态 (Detached HEAD)，无法执行远程同步与推送，请先切换至具体分支。"
+    exit 1
+  fi
+
+  if ! git remote get-url origin >/dev/null 2>&1; then
+    log_error "未检测到远程仓库 origin 配置，无法执行推送预检。若仅需本地提交请去掉 -p 参数。"
+    exit 1
+  fi
+
+  log_info "正在探测远程仓库 origin/${CURRENT_BRANCH} 状态 (超时上限 ${REMOTE_PROBE_TIMEOUT_SECONDS}s)..."
+  local ls_rc=0
+  if run_git_with_timeout "$REMOTE_PROBE_TIMEOUT_SECONDS" ls-remote --exit-code --heads origin "refs/heads/${CURRENT_BRANCH}"; then
+    ls_rc=0
+  else
+    ls_rc=$?
+  fi
+
+  if [ "$ls_rc" -eq "$GIT_EXIT_REMOTE_MISSING" ]; then
+    REMOTE_BRANCH_EXISTS=false
+    BEHIND_COUNT=0
+    log_info "远端尚无分支 origin/${CURRENT_BRANCH}，提交后将自动使用 git push -u 建立上游追踪。"
+    return 0
+  elif [ "$ls_rc" -eq "$GIT_EXIT_TIMEOUT" ]; then
+    log_error "连接远程仓库超时 (>${REMOTE_PROBE_TIMEOUT_SECONDS}s)，已安全中止本次提交以防分支分叉。"
+    log_info "提示: 请检查网络或代理设置；若仅需单机离线提交，请移除 -p 参数。"
+    exit 1
+  elif [ "$ls_rc" -ne 0 ]; then
+    log_error "无法探测远程仓库 origin 状态 (可能处于离线环境、网络异常或鉴权失败)，已中止本次提交。"
+    print_remote_stderr_tail
+    log_info "提示: 若需离线纯本地提交，请移除 -p 参数。"
+    exit 1
+  fi
+
+  REMOTE_BRANCH_EXISTS=true
+
+  if ! git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    log_error "当前仓库尚无本地初始提交，但远端 origin/${CURRENT_BRANCH} 已存在历史记录，请先拉取远端后再提交。"
+    exit 1
+  fi
+
+  # 仅解析纯净 stdout 中精确匹配目标分支引用的 SHA，避免 stderr 告警干扰
+  local remote_sha local_remote_sha
+  remote_sha=$(printf "%s\n" "$GIT_REMOTE_STDOUT" | awk -v ref="refs/heads/${CURRENT_BRANCH}" '$2 == ref {print $1; exit}' | tr -d '\r')
+  local_remote_sha=$(git rev-parse --verify -q "refs/remotes/origin/${CURRENT_BRANCH}" 2>/dev/null | tr -d '\r' || echo "")
+
+  if [ -z "$remote_sha" ] || [ "$remote_sha" != "$local_remote_sha" ] || ! git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+    local fetch_rc=0
+    if run_git_with_timeout "$REMOTE_PROBE_TIMEOUT_SECONDS" fetch origin "+refs/heads/${CURRENT_BRANCH}:refs/remotes/origin/${CURRENT_BRANCH}"; then
+      fetch_rc=0
+    else
+      fetch_rc=$?
+    fi
+
+    if [ "$fetch_rc" -eq "$GIT_EXIT_TIMEOUT" ]; then
+      log_error "拉取远端分支 origin/${CURRENT_BRANCH} 超时 (>${REMOTE_PROBE_TIMEOUT_SECONDS}s)，已安全中止提交。"
+      exit 1
+    elif [ "$fetch_rc" -ne 0 ]; then
+      log_error "拉取远端分支 origin/${CURRENT_BRANCH} 失败，已安全中止提交。"
+      print_remote_stderr_tail
+      exit 1
+    fi
+  fi
+
+  BEHIND_COUNT=$(git rev-list "HEAD..refs/remotes/origin/${CURRENT_BRANCH}" --count 2>/dev/null | tr -d '\r' || echo "0")
+  if [ "${BEHIND_COUNT:-0}" -eq 0 ]; then
+    log_success "远端预检通过: 本地分支已与 origin/${CURRENT_BRANCH} 保持最新同步。"
+    return 0
+  fi
+
+  log_warn "检测到本地分支落后于 origin/${CURRENT_BRANCH} (${BEHIND_COUNT} 个提交)！"
+
+  # 脏工作区防卫: 存在未暂存修改时严禁变基，直接安全熔断
+  if ! git diff --quiet; then
+    log_error "【安全熔断】工作区存在未暂存修改，为防变基污染，请先暂存或 stash！"
+    git diff --name-only | sed 's/^/  - /'
+    log_info "处理建议: 先执行 'git add <file>' 精准暂存，或执行 'git stash push -m \"wip\"' 后再重试。"
+    exit 1
+  fi
+
+  # 双模受控变基决策
+  if [ "$AUTO_CONFIRM" = true ] || [ ! -t 0 ]; then
+    if [ "$CLI_REBASE" = true ]; then
+      log_info "已显式开启 -r/--rebase 且工作区干净，将在提交后执行静默 Rebase 同步。"
+      NEED_REBASE=true
+    else
+      log_error "【Fail-Fast 熔断】自动化模式下本地落后于远端 ${BEHIND_COUNT} 个提交，默认禁止隐式变基！"
+      log_info "可选处理方式:"
+      log_info "  1) 手动同步后重新提交: git pull --rebase origin ${CURRENT_BRANCH}"
+      log_info "  2) 显式授权自动变基推送: 追加 -r/--rebase 参数 (仅工作区干净时生效)"
+      exit 1
+    fi
+  elif [ "$CLI_REBASE" = true ]; then
+    log_info "已指定 -r/--rebase 且工作区干净，将在提交后自动执行 Rebase 同步。"
+    NEED_REBASE=true
+  else
+    printf "%b检测到远端有更新，是否尝试自动执行 git pull --rebase 同步? [Y/n]: %b" "${COLOR_BOLD}" "${COLOR_RESET}"
+    local rebase_choice
+    read -r rebase_choice
+    rebase_choice=$(echo "$rebase_choice" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    case "$rebase_choice" in
+      [nN][oO]|[nN])
+        log_info "已取消提交，避免本地与远端提交分叉。请先执行 'git pull --rebase origin ${CURRENT_BRANCH}' 同步后再提交。"
+        exit 1
+        ;;
+      *)
+        NEED_REBASE=true
+        ;;
+    esac
+  fi
+}
+
+# 将本地刚创建的 Commit 回滚至提交前起点，保持暂存区完全无损
+rollback_to_pre_commit() {
+  local pre_sha="$1"
+  if [ -n "$pre_sha" ]; then
+    local cur_sha
+    cur_sha=$(git rev-parse HEAD 2>/dev/null | tr -d '\r' || echo "")
+    if [ "$cur_sha" != "$pre_sha" ]; then
+      git reset --soft "$pre_sha" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+# 执行受控 Rebase 同步并在冲突时原子回滚至脚本运行前起点
+execute_controlled_rebase() {
+  local pre_sha="$1"
+  log_info "正在执行变基同步: git pull --rebase origin ${CURRENT_BRANCH}..."
+
+  # 网络阶段独立受 5s 超时保护，避免直接超时误杀大型仓库本地重放过程
+  local fetch_rc=0
+  if run_git_with_timeout "$REMOTE_PROBE_TIMEOUT_SECONDS" fetch origin "+refs/heads/${CURRENT_BRANCH}:refs/remotes/origin/${CURRENT_BRANCH}"; then
+    fetch_rc=0
+  else
+    fetch_rc=$?
+  fi
+  if [ "$fetch_rc" -ne 0 ]; then
+    log_error "同步拉取远端最新提交失败，正在回滚至脚本运行前起点..."
+    print_remote_stderr_tail
+    rollback_to_pre_commit "$pre_sha"
+    exit 1
+  fi
+
+  local rebase_out="" rebase_rc=0
+  if rebase_out=$(git rebase "refs/remotes/origin/${CURRENT_BRANCH}" 2>&1); then
+    rebase_rc=0
+  else
+    rebase_rc=$?
+  fi
+
+  if [ "$rebase_rc" -ne 0 ]; then
+    local conflict_files=""
+    conflict_files=$(git diff --name-only --diff-filter=U 2>/dev/null | tr -d '\r' || true)
+
+    log_error "自动 Rebase 同步失败，正在执行原子回滚 (git rebase --abort)..."
+    if is_rebase_in_progress; then
+      git rebase --abort >/dev/null 2>&1 || true
+    fi
+    rollback_to_pre_commit "$pre_sha"
+
+    if [ -n "$conflict_files" ]; then
+      log_error "检测到以下文件存在合并冲突，已 100% 还原工作区与暂存区至脚本执行前起点:"
+      printf "%s\n" "$conflict_files" | sed 's/^/  - /'
+    else
+      log_error "Rebase 异常终止，已 100% 还原工作区与暂存区至脚本执行前起点:"
+      printf "%s\n" "$rebase_out" | tail -n 5
+    fi
+    log_info "手动排查建议:"
+    log_info "  1) 先暂存或执行: git pull --rebase --autostash origin ${CURRENT_BRANCH} 并在工作区解决冲突"
+    log_info "  2) 解决冲突并重新 git add 后，再次执行 bash scripts/commit.sh 提交推送。"
+    exit 1
+  fi
+
+  log_success "变基同步成功！本地提交已线性置于 origin/${CURRENT_BRANCH} 最新提交之上。"
+}
+
+# 执行远程推送（支持新分支自动 -u 追踪及并发竞态安全兜底）
+execute_remote_push() {
+  local push_args=(origin "$CURRENT_BRANCH")
+  local need_upstream=false
+
+  if [ "$REMOTE_BRANCH_EXISTS" = false ]; then
+    need_upstream=true
+  elif ! git rev-parse --abbrev-ref --symbolic-full-name "@{u}" >/dev/null 2>&1; then
+    need_upstream=true
+  fi
+
+  if [ "$need_upstream" = true ]; then
+    push_args=(-u origin "$CURRENT_BRANCH")
+    log_info "正在推送并建立上游追踪 (git push -u origin ${CURRENT_BRANCH})..."
+  else
+    log_info "正在推送到 origin/${CURRENT_BRANCH}..."
+  fi
+
+  local push_rc=0
+  if run_git_push_guarded "$AUTO_CONFIRM" "${push_args[@]}"; then
+    push_rc=0
+  else
+    push_rc=$?
+  fi
+
+  if [ "$push_rc" -ne 0 ]; then
+    if [ "$push_rc" -eq "$GIT_EXIT_TIMEOUT" ]; then
+      log_error "远程推送到 origin/${CURRENT_BRANCH} 超时 (>${REMOTE_PUSH_TIMEOUT_SECONDS}s 或传输低速假死)！"
+      log_warn "【重要提示】本地 Commit 已安全落盘在分支 [${CURRENT_BRANCH}] 上，脚本未执行二次隐式变基。"
+      log_info "请在网络恢复后手动执行推送: git push origin ${CURRENT_BRANCH}"
+    else
+      log_error "远程推送到 origin/${CURRENT_BRANCH} 失败！"
+      log_warn "【重要提示】本地 Commit 已安全落盘在分支 [${CURRENT_BRANCH}] 上，脚本未执行二次隐式变基。"
+      log_info "若因并发极短窗口导致远端已有新提交，请手动执行以下命令完成同步与推送:"
+      printf "  git pull --rebase origin %s && git push origin %s\n" "$CURRENT_BRANCH" "$CURRENT_BRANCH"
+    fi
+    exit 1
+  fi
+
+  log_success "推送成功！"
+}
+
+# ==============================================================================
+# 5. 预览、确认与提交前远端同步预检
 # ==============================================================================
 printf "\n%b\n" "${COLOR_BOLD}${COLOR_CYAN}------------------- 拟生成的提交信息预览 -------------------${COLOR_RESET}"
 printf "%b\n" "${COLOR_BOLD}${COLOR_GREEN}${COMMIT_HEADER}${COLOR_RESET}"
@@ -505,7 +753,7 @@ if [ -n "$COMMIT_FOOTER" ]; then
 fi
 printf "%b\n\n" "${COLOR_BOLD}${COLOR_CYAN}------------------------------------------------------------${COLOR_RESET}"
 
-# 若处于 Dry Run 模式，直接安全退出，不执行真实提交与推送
+# 若处于 Dry Run 模式，直接安全退出，不执行真实提交与推送（保持零网络调用）
 if [ "$CLI_DRY_RUN" = true ]; then
   log_info "【Dry Run 演练模式】提交信息组装与格式校验完成，已安全跳过实际提交与远程推送。"
   exit 0
@@ -527,9 +775,41 @@ else
   esac
 fi
 
+# 在执行 git commit 前确定本次是否需要推送，从而按需触发远端预检
+SHOULD_PUSH=false
+if [ "$CLI_PUSH" = true ]; then
+  SHOULD_PUSH=true
+elif [ -t 0 ] && [ "$AUTO_CONFIRM" = false ]; then
+  printf "\n%b是否提交后立即推送到远程分支 (origin/%s)? [y/N]: %b" "${COLOR_BOLD}" "$CURRENT_BRANCH" "${COLOR_RESET}"
+  read -r CONFIRM_PUSH
+  CONFIRM_PUSH=$(echo "$CONFIRM_PUSH" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  case "$CONFIRM_PUSH" in
+    [yY][eE][sS]|[yY])
+      SHOULD_PUSH=true
+      ;;
+    *)
+      SHOULD_PUSH=false
+      ;;
+  esac
+fi
+
+if [ "$SHOULD_PUSH" = false ] && [ "$CLI_REBASE" = true ]; then
+  log_warn "提示: -r/--rebase 仅在推送时生效，本次纯本地提交保持零网络调用。"
+fi
+
+# 仅在明确意图推送时触发远端状态预检，纯本地提交 100% 零网络调用
+if [ "$SHOULD_PUSH" = true ]; then
+  check_remote_and_sync_strategy
+fi
+
 # ==============================================================================
 # 6. 执行 Git Commit (严格遵循 Conventional Commits 段落分离)
 # ==============================================================================
+PRE_COMMIT_SHA=""
+if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  PRE_COMMIT_SHA=$(git rev-parse HEAD | tr -d '\r')
+fi
+
 if [ -n "$COMMIT_BODY" ] && [ -n "$COMMIT_FOOTER" ]; then
   git commit -m "$COMMIT_HEADER" -m "$COMMIT_BODY" -m "$COMMIT_FOOTER"
 elif [ -n "$COMMIT_BODY" ]; then
@@ -541,25 +821,16 @@ else
 fi
 log_success "代码提交成功！"
 
+# 若预检检测到落后远端且已获变基授权，执行受控 Rebase 同步
+if [ "$SHOULD_PUSH" = true ] && [ "$NEED_REBASE" = true ]; then
+  execute_controlled_rebase "$PRE_COMMIT_SHA"
+fi
+
 # ==============================================================================
 # 7. 远程推送
 # ==============================================================================
-if [ "$CLI_PUSH" = true ]; then
-  log_info "正在自动推送到 origin/${CURRENT_BRANCH}..."
-  git push origin "$CURRENT_BRANCH"
-  log_success "推送成功！"
-elif [ -t 0 ] && [ "$AUTO_CONFIRM" = false ]; then
-  printf "\n%b是否立即推送到远程分支 (origin/%s)? [y/N]: %b" "${COLOR_BOLD}" "$CURRENT_BRANCH" "${COLOR_RESET}"
-  read -r CONFIRM_PUSH
-  CONFIRM_PUSH=$(echo "$CONFIRM_PUSH" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-  case "$CONFIRM_PUSH" in
-    [yY][eE][sS]|[yY])
-      log_info "正在推送到 origin/${CURRENT_BRANCH}..."
-      git push origin "$CURRENT_BRANCH"
-      log_success "推送成功！"
-      ;;
-    *)
-      log_info "已跳过远程推送。你可以在就绪后随时运行 'git push origin ${CURRENT_BRANCH}'。"
-      ;;
-  esac
+if [ "$SHOULD_PUSH" = true ]; then
+  execute_remote_push
+else
+  log_info "已跳过远程推送。你可以在就绪后随时运行 'git push origin ${CURRENT_BRANCH}'。"
 fi

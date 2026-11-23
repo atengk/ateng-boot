@@ -24,17 +24,17 @@ public abstract class GenericJsonTypeHandler<T> extends AtengJacksonTypeHandler<
 
     public GenericJsonTypeHandler() {
         super(Object.class);
-        Type genType = findGenericType(getClass());
-        this.targetType = genType;
-        this.genericType = genType;
+        applyResolvedGenericType();
     }
 
     public GenericJsonTypeHandler(Class<?> type) {
         super(type);
+        applyResolvedGenericType();
     }
 
     public GenericJsonTypeHandler(Class<?> type, Field field) {
         super(type, field);
+        applyResolvedGenericType();
     }
 
     public GenericJsonTypeHandler(TypeReference<T> typeReference) {
@@ -42,6 +42,14 @@ public abstract class GenericJsonTypeHandler<T> extends AtengJacksonTypeHandler<
         Type genType = (typeReference != null) ? typeReference.getType() : Object.class;
         this.targetType = genType;
         this.genericType = genType;
+    }
+
+    private void applyResolvedGenericType() {
+        Type genType = findGenericType(getClass());
+        if (genType != null && genType != Object.class) {
+            this.targetType = genType;
+            this.genericType = genType;
+        }
     }
 
     /**

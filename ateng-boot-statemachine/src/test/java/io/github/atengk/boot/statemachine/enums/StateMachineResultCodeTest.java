@@ -33,5 +33,11 @@ class StateMachineResultCodeTest {
 
         assertThat(StateMachineResultCode.MACHINE_NOT_FOUND.getCode()).isEqualTo(59006);
         assertThat(StateMachineResultCode.MACHINE_NOT_FOUND.getMsg()).isEqualTo("未找到指定标识的状态机实例");
+
+        assertThat(StateMachineResultCode.STATE_LIFECYCLE_FAILED.getCode()).isEqualTo(59007);
+        assertThat(StateMachineResultCode.STATE_LIFECYCLE_FAILED.getMsg()).isEqualTo("状态生命周期动作执行失败");
+
+        assertThat(StateMachineResultCode.BATCH_TRANSITION_FAILED.getCode()).isEqualTo(59008);
+        assertThat(StateMachineResultCode.BATCH_TRANSITION_FAILED.getMsg()).isEqualTo("大批量状态跃迁执行中断失败");
     }
 }

@@ -1,5 +1,6 @@
 package io.github.atengk.boot.tcp.cluster;
 
+import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.model.TcpPayload;
 import lombok.Getter;
@@ -25,9 +26,14 @@ public class TcpClusterBroadcastMessage implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
-     * 目标设备唯一标识（为 null 表示集群全量广播）
+     * 目标设备唯一标识（为 null 表示集群全量广播或分组组播）
      */
     private String deviceId;
+
+    /**
+     * 目标业务逻辑分组标识（为 null 表示非分组广播；非 null 时表示针对指定分组的集群组播）
+     */
+    private String group;
 
     /**
      * 发起广播的源节点唯一标识（防回环过滤）
@@ -70,6 +76,11 @@ public class TcpClusterBroadcastMessage implements Serializable {
     private Map<String, Object> packetHeaders;
 
     /**
+     * 跨节点透传的四维上下文头字典（X-Trace-Id / X-Tenant-Id / X-User-Id / X-Ignore-Tenant）
+     */
+    private Map<String, Object> contextHeaders;
+
+    /**
      * 消息产生的时间戳
      */
     private long timestamp = System.currentTimeMillis();
@@ -78,6 +89,17 @@ public class TcpClusterBroadcastMessage implements Serializable {
         TcpClusterBroadcastMessage message = new TcpClusterBroadcastMessage();
         message.setDeviceId(deviceId);
         message.setSourceNodeId(sourceNodeId);
+
+        Map<String, Object> capturedContext = new LinkedHashMap<>();
+        MessageContextPropagator.inject(capturedContext, deviceId);
+        if (payload instanceof TcpPacket packet && packet.getHeaders() != null && !packet.getHeaders().isEmpty()) {
+            for (Map.Entry<String, Object> entry : packet.getHeaders().entrySet()) {
+                if (entry.getKey() != null && entry.getValue() != null) {
+                    capturedContext.putIfAbsent(entry.getKey(), entry.getValue());
+                }
+            }
+        }
+        message.setContextHeaders(capturedContext);
 
         if (payload instanceof byte[] bytes) {
             message.setPayloadType("BYTES");
@@ -105,6 +127,20 @@ public class TcpClusterBroadcastMessage implements Serializable {
             message.setTextContent(io.github.atengk.boot.core.util.JsonUtil.toJsonString(payload));
         }
 
+        return message;
+    }
+
+    /**
+     * 构造集群跨节点分组组播消息
+     *
+     * @param group        目标业务逻辑分组
+     * @param sourceNodeId 发起组播的当前节点 ID（防回环）
+     * @param payload      下发报文载荷
+     * @return 分组组播消息实体
+     */
+    public static TcpClusterBroadcastMessage ofGroup(String group, String sourceNodeId, Object payload) {
+        TcpClusterBroadcastMessage message = of(null, sourceNodeId, payload);
+        message.setGroup(group);
         return message;
     }
 

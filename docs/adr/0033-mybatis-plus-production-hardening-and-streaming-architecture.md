@@ -1,5 +1,7 @@
 # 33. 持久层生产级加固与流式游标防 OOM 架构决策 (MyBatis-Plus Production Hardening & Streaming Architecture)
 
+> **演进注记 (Superseding Note)**：本文第 1、2 节及权衡节中关于 `BaseDeleteIdEntity`、`BaseFullEntity` 保留 `0/1` 软删双轨、`BatchUtil` 基于具体父类硬编码判断及 `version` 初始补偿为 `1` 的约定，已由 [ADR-0109](./0109-mybatis-plus-orthogonal-contracts-and-dual-entity-ladder-architecture.md) 正式净切取代（统一收敛为正交能力接口、双轨实体阶梯与 `BaseLogicEntity` / `BaseFullEntity` 统一主键占位软删及 `version = 0` 约定）。
+
 ## 背景与痛点
 
 在企业级高并发、微服务与大规模数据处理演进过程中，持久层面临着一系列极其隐蔽但破坏力极强的生产痛点：

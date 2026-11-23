@@ -10,6 +10,7 @@ import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadPoolExecutor;
 
@@ -89,7 +90,7 @@ public final class AsyncExecutorFactory {
         executor.setCorePoolSize(pool.getCorePoolSize());
         executor.setMaxPoolSize(pool.getMaxPoolSize());
         executor.setQueueCapacity(pool.getQueueCapacity());
-        executor.setKeepAliveSeconds(pool.getKeepAliveSeconds());
+        executor.setKeepAliveSeconds(resolveSeconds(pool.getKeepAlive(), 60));
         if (StringUtils.hasText(poolName)) {
             executor.setThreadNamePrefix(pool.resolveThreadNamePrefix(poolName));
         } else {
@@ -99,9 +100,13 @@ public final class AsyncExecutorFactory {
                 ? pool.getRejectedPolicy().getHandler()
                 : new ThreadPoolExecutor.CallerRunsPolicy());
         executor.setWaitForTasksToCompleteOnShutdown(pool.isWaitForTasksToCompleteOnShutdown());
-        executor.setAwaitTerminationSeconds(pool.getAwaitTerminationSeconds());
+        executor.setAwaitTerminationSeconds(resolveSeconds(pool.getAwaitTermination(), 60));
         executor.setTaskDecorator(new ContextCopyingTaskDecorator());
         return executor;
+    }
+
+    private static int resolveSeconds(Duration duration, int defaultSeconds) {
+        return duration != null ? (int) Math.max(0L, duration.toSeconds()) : defaultSeconds;
     }
 
     /**

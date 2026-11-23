@@ -1,6 +1,8 @@
 package io.github.atengk.boot.notification;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.notification.channel.NotificationChannel;
 import io.github.atengk.boot.notification.channel.NotificationChannelRegistry;
 import io.github.atengk.boot.notification.context.NotificationContextHolder;
@@ -8,11 +10,15 @@ import io.github.atengk.boot.notification.event.NotificationSendEvent;
 import io.github.atengk.boot.notification.event.NotificationSendFailedEvent;
 import io.github.atengk.boot.notification.event.NotificationSendingEvent;
 import io.github.atengk.boot.notification.event.NotificationSentEvent;
+import io.github.atengk.boot.notification.exception.NotificationException;
 import io.github.atengk.boot.notification.exception.NotificationRateLimitException;
+import io.github.atengk.boot.notification.exception.NotificationResultCode;
 import io.github.atengk.boot.notification.exception.NotificationSendException;
 import io.github.atengk.boot.notification.handler.NotificationSendFailureHandler;
 import io.github.atengk.boot.notification.limiter.InMemoryNotificationRateLimiter;
 import io.github.atengk.boot.notification.model.CardMessage;
+import io.github.atengk.boot.notification.model.ImageMessage;
+import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.NotificationSendResult;
 import io.github.atengk.boot.notification.model.Platform;
@@ -26,7 +32,10 @@ import io.github.atengk.boot.notification.provider.NotificationProvider;
 import io.github.atengk.boot.notification.provider.WeComNotificationProvider;
 import io.github.atengk.boot.notification.renderer.SimpleNotificationTemplateRenderer;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
+import okhttp3.mockwebserver.Dispatcher;
+import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.RecordedRequest;
+import okhttp3.mockwebserver.SocketPolicy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -37,11 +46,15 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.util.unit.DataSize;
 import org.springframework.web.client.RestClient;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -158,6 +171,7 @@ class NotificationTemplateTest extends BaseNotificationTest {
         }
         MDC.clear();
         UserContextHolder.clear();
+        TenantContextHolder.clear();
         NotificationContextHolder.clear();
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.clearSynchronization();
@@ -360,6 +374,34 @@ class NotificationTemplateTest extends BaseNotificationTest {
     }
 
     @Test
+    @DisplayName("验证基于图文链接消息 LinkMessage 的 sendTemplate 复合动态插值与发送")
+    void testSendTemplateLinkMessage() throws InterruptedException {
+        enqueueOkJson("{\"errcode\":0,\"errmsg\":\"ok\"}");
+
+        LinkMessage linkTemplate = LinkMessage.of("项目 ${projectName} 构建通报", "版本 ${version} 已部署至 ${env}", "https://ci.example.com/job/${buildId}", "https://img.example.com/${env}.png");
+
+        Map<String, Object> variables = Map.of(
+                "projectName", "ateng-boot",
+                "version", "v1.2.0",
+                "env", "production",
+                "buildId", "1024"
+        );
+
+        NotificationSendResult result = template.sendTemplate("default-dingtalk", linkTemplate, variables);
+
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+
+        RecordedRequest request = takeRequest();
+        assertNotNull(request);
+        String body = request.getBody().readUtf8();
+        assertThat(body).contains("项目 ateng-boot 构建通报");
+        assertThat(body).contains("版本 v1.2.0 已部署至 production");
+        assertThat(body).contains("https://ci.example.com/job/1024");
+        assertThat(body).contains("https://img.example.com/production.png");
+    }
+
+    @Test
     @DisplayName("验证频控超限时阻断物理发信并发布 NotificationSendFailedEvent 事件")
     void testSendRateLimitExceeded() {
         // 创建配额仅为 1 的限流渠道
@@ -422,5 +464,666 @@ class NotificationTemplateTest extends BaseNotificationTest {
 
         // 3. 无上下文时兜底默认渠道
         assertEquals("default-dingtalk", template.resolveChannelName(null));
+    }
+
+    @Test
+    @DisplayName("验证主渠道遭遇 HTTP 500 服务端瞬态异常时自动平滑故障转移至备用渠道并成功发信")
+    void testFailoverOnHttp500() throws InterruptedException {
+        NotificationChannel backup = NotificationChannel.builder()
+                .name("backup-wecom-500")
+                .platform(Platform.WECOM)
+                .webhook(getWebhookUrl("backup/wecom/500"))
+                .build();
+        NotificationChannel primary = NotificationChannel.builder()
+                .name("primary-dingtalk-500")
+                .platform(Platform.DINGTALK)
+                .webhook(getWebhookUrl("primary/dingtalk/500"))
+                .backupChannels(List.of("backup-wecom-500"))
+                .build();
+        registry.register(backup);
+        registry.register(primary);
+
+        // 主渠道返回 HTTP 500 瞬态服务端故障
+        enqueueResponse(500, "{\"errcode\":500,\"errmsg\":\"Internal Server Error\"}");
+        // 备用渠道正常返回 200 OK
+        enqueueOkJson("{\"errcode\":0,\"errmsg\":\"ok\"}");
+
+        NotificationSendResult result = template.send("primary-dingtalk-500", TextMessage.of("500故障转移测试"));
+
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+        assertEquals("backup-wecom-500", result.getChannel());
+        assertEquals(Platform.WECOM, result.getPlatform());
+
+        // 验证主备渠道各接收到 1 次物理请求
+        RecordedRequest req1 = takeRequest();
+        assertNotNull(req1);
+        assertThat(req1.getPath()).contains("primary/dingtalk/500");
+
+        RecordedRequest req2 = takeRequest();
+        assertNotNull(req2);
+        assertThat(req2.getPath()).contains("backup/wecom/500");
+
+        // 验证事件链：主渠道失败事件 + 备用渠道成功事件
+        assertThat(publishedEvents)
+                .filteredOn(event -> event instanceof NotificationSendFailedEvent failed && failed.getChannel().getName().equals("primary-dingtalk-500"))
+                .hasSize(1);
+        assertThat(publishedEvents)
+                .filteredOn(event -> event instanceof NotificationSentEvent sent && sent.getChannel().getName().equals("backup-wecom-500"))
+                .hasSize(1);
+    }
+
+    @Test
+    @DisplayName("验证主渠道遭遇 HTTP 429 频控封控时自动平滑故障转移至备用渠道并成功发信")
+    void testFailoverOnHttp429() throws InterruptedException {
+        NotificationChannel backup = NotificationChannel.builder()
+                .name("backup-feishu-429")
+                .platform(Platform.FEISHU)
+                .webhook(getWebhookUrl("backup/feishu/429"))
+                .build();
+        NotificationChannel primary = NotificationChannel.builder()
+                .name("primary-dingtalk-429")
+                .platform(Platform.DINGTALK)
+                .webhook(getWebhookUrl("primary/dingtalk/429"))
+                .backupChannels(List.of("backup-feishu-429"))
+                .build();
+        registry.register(backup);
+        registry.register(primary);
+
+        // 主渠道返回 HTTP 429 限流
+        enqueueResponse(429, "{\"errcode\":429,\"errmsg\":\"Too Many Requests\"}");
+        // 备用渠道正常返回 200 OK
+        enqueueOkJson("{\"code\":0,\"msg\":\"ok\"}");
+
+        NotificationSendResult result = template.send("primary-dingtalk-429", TextMessage.of("429故障转移测试"));
+
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+        assertEquals("backup-feishu-429", result.getChannel());
+        assertEquals(Platform.FEISHU, result.getPlatform());
+
+        RecordedRequest req1 = takeRequest();
+        assertNotNull(req1);
+        assertThat(req1.getPath()).contains("primary/dingtalk/429");
+
+        RecordedRequest req2 = takeRequest();
+        assertNotNull(req2);
+        assertThat(req2.getPath()).contains("backup/feishu/429");
+    }
+
+    @Test
+    @DisplayName("验证多备用渠道链式故障转移：主渠道与第一备用均失败，第二备用最终成功")
+    void testFailoverOnMultipleBackupsChain() throws InterruptedException {
+        NotificationChannel backup2 = NotificationChannel.builder()
+                .name("backup-generic-chain2")
+                .platform(Platform.GENERIC)
+                .webhook(getWebhookUrl("backup/generic/chain2"))
+                .build();
+        NotificationChannel backup1 = NotificationChannel.builder()
+                .name("backup-wecom-chain1")
+                .platform(Platform.WECOM)
+                .webhook(getWebhookUrl("backup/wecom/chain1"))
+                .build();
+        NotificationChannel primary = NotificationChannel.builder()
+                .name("primary-chain")
+                .platform(Platform.DINGTALK)
+                .webhook(getWebhookUrl("primary/chain"))
+                .backupChannels(List.of("backup-wecom-chain1", "backup-generic-chain2"))
+                .build();
+        registry.register(backup2);
+        registry.register(backup1);
+        registry.register(primary);
+
+        // 主渠道返回 500
+        enqueueResponse(500, "Internal Server Error");
+        // 第一备用返回 502
+        enqueueResponse(502, "Bad Gateway");
+        // 第二备用返回 200 OK
+        enqueueOkJson("{\"status\":\"ok\"}");
+
+        NotificationSendResult result = template.send("primary-chain", TextMessage.of("多级链式故障转移"));
+
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+        assertEquals("backup-generic-chain2", result.getChannel());
+        assertEquals(Platform.GENERIC, result.getPlatform());
+
+        // 依次产生 3 次物理请求
+        RecordedRequest r1 = takeRequest();
+        assertThat(r1.getPath()).contains("primary/chain");
+        RecordedRequest r2 = takeRequest();
+        assertThat(r2.getPath()).contains("backup/wecom/chain1");
+        RecordedRequest r3 = takeRequest();
+        assertThat(r3.getPath()).contains("backup/generic/chain2");
+    }
+
+    @Test
+    @DisplayName("验证主渠道遭遇网络超时或连接中断 (ResourceAccessException) 时自动平滑故障转移至备用渠道并成功发信")
+    void testFailoverOnNetworkTimeout() throws InterruptedException {
+        NotificationChannel backup = NotificationChannel.builder()
+                .name("backup-timeout")
+                .platform(Platform.WECOM)
+                .webhook(getWebhookUrl("backup/timeout"))
+                .build();
+        NotificationChannel primary = NotificationChannel.builder()
+                .name("primary-timeout")
+                .platform(Platform.DINGTALK)
+                .webhook(getWebhookUrl("primary/timeout"))
+                .backupChannels(List.of("backup-timeout"))
+                .build();
+        registry.register(backup);
+        registry.register(primary);
+
+        // 主渠道模拟底层网络断开/重置，抛出 ResourceAccessException
+        server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST));
+        // 备用渠道正常返回 200 OK
+        enqueueOkJson("{\"errcode\":0,\"errmsg\":\"ok\"}");
+
+        NotificationSendResult result = template.send("primary-timeout", TextMessage.of("超时故障转移测试"));
+
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+        assertEquals("backup-timeout", result.getChannel());
+        assertEquals(Platform.WECOM, result.getPlatform());
+
+        RecordedRequest req1 = takeRequest();
+        assertNotNull(req1);
+        assertThat(req1.getPath()).contains("primary/timeout");
+
+        RecordedRequest req2 = takeRequest();
+        assertNotNull(req2);
+        assertThat(req2.getPath()).contains("backup/timeout");
+
+        assertThat(publishedEvents)
+                .filteredOn(event -> event instanceof NotificationSendFailedEvent failed
+                        && failed.getChannel().getName().equals("primary-timeout"))
+                .hasSize(1);
+        assertThat(publishedEvents)
+                .filteredOn(event -> event instanceof NotificationSentEvent sent
+                        && sent.getChannel().getName().equals("backup-timeout"))
+                .hasSize(1);
+    }
+
+    @Test
+    @DisplayName("验证所有备用渠道全部耗尽失败时抛出最终业务异常并聚合完整渠道调用链")
+    void testFailoverAllBackupsExhausted() throws InterruptedException {
+        NotificationChannel backup = NotificationChannel.builder()
+                .name("backup-exhausted")
+                .platform(Platform.WECOM)
+                .webhook(getWebhookUrl("backup/exhausted"))
+                .build();
+        NotificationChannel primary = NotificationChannel.builder()
+                .name("primary-exhausted")
+                .platform(Platform.DINGTALK)
+                .webhook(getWebhookUrl("primary/exhausted"))
+                .backupChannels(List.of("backup-exhausted"))
+                .build();
+        registry.register(backup);
+        registry.register(primary);
+
+        enqueueResponse(500, "Primary 500");
+        enqueueResponse(503, "Backup 503");
+
+        assertThatThrownBy(() -> template.send("primary-exhausted", TextMessage.of("全部熔断")))
+                .isInstanceOf(NotificationSendException.class)
+                .satisfies(ex -> {
+                    NotificationSendException sendEx = (NotificationSendException) ex;
+                    assertEquals("backup-exhausted", sendEx.getChannelName());
+                    assertEquals(Platform.WECOM.name(), sendEx.getPlatform());
+                    assertThat(sendEx.getMessage()).contains("primary-exhausted -> backup-exhausted");
+                    assertThat(sendEx.getMessage()).contains("通知多渠道故障转移耗尽");
+                });
+
+        // 确认主备均已尝试
+        RecordedRequest r1 = takeRequest();
+        assertThat(r1.getPath()).contains("primary/exhausted");
+        RecordedRequest r2 = takeRequest();
+        assertThat(r2.getPath()).contains("backup/exhausted");
+    }
+
+    @Test
+    @DisplayName("验证入参为空等确定性错误直接快速失败，严禁进行无意义的备用渠道重试")
+    void testDeterministicErrorDoesNotTriggerFailover() {
+        NotificationChannel backup = NotificationChannel.builder()
+                .name("backup-deterministic")
+                .platform(Platform.WECOM)
+                .webhook(getWebhookUrl("backup/deterministic"))
+                .backupChannels(List.of("backup-deterministic"))
+                .build();
+        NotificationChannel primary = NotificationChannel.builder()
+                .name("primary-deterministic")
+                .platform(Platform.DINGTALK)
+                .webhook(getWebhookUrl("primary/deterministic"))
+                .backupChannels(List.of("backup-deterministic"))
+                .build();
+        registry.register(backup);
+        registry.register(primary);
+
+        // 空消息抛出 NotificationException(NOTIFICATION_MESSAGE_EMPTY)
+        TextMessage emptyMsg = new TextMessage("   ");
+
+        assertThatThrownBy(() -> template.send("primary-deterministic", emptyMsg))
+                .isInstanceOf(NotificationException.class)
+                .satisfies(ex -> assertEquals(NotificationResultCode.NOTIFICATION_MESSAGE_EMPTY.getCode(), ((NotificationException) ex).getCode()));
+
+        // 确认未发起任何网络出站请求，快速失败
+        assertEquals(0, server.getRequestCount());
+    }
+
+    @Test
+    @DisplayName("验证故障转移全链路无损透传四维上下文快照与 traceId")
+    void testFailoverWith4DContextPropagation() {
+        NotificationChannel backup = NotificationChannel.builder()
+                .name("backup-context")
+                .platform(Platform.WECOM)
+                .webhook(getWebhookUrl("backup/context"))
+                .build();
+        NotificationChannel primary = NotificationChannel.builder()
+                .name("primary-context")
+                .platform(Platform.DINGTALK)
+                .webhook(getWebhookUrl("primary/context"))
+                .backupChannels(List.of("backup-context"))
+                .build();
+        registry.register(backup);
+        registry.register(primary);
+
+        enqueueResponse(500, "Server Error");
+        enqueueOkJson("{\"errcode\":0,\"errmsg\":\"ok\"}");
+
+        // 设置四维上下文快照
+        MDC.put("traceId", "trace-failover-8888");
+        UserContextHolder.set("user-operator-99");
+
+        List<String> eventTraceIds = new CopyOnWriteArrayList<>();
+        List<String> eventUserIds = new CopyOnWriteArrayList<>();
+
+        template.setApplicationEventPublisher(event -> {
+            eventTraceIds.add(MDC.get("traceId"));
+            eventUserIds.add(UserContextHolder.get());
+        });
+
+        NotificationSendResult result = template.send("primary-context", TextMessage.of("四维透传故障转移"));
+
+        assertTrue(result.isSuccess());
+        assertEquals("backup-context", result.getChannel());
+
+        // 强断言：主备尝试全链路生命周期事件中 100% 完整继承了初始 MDC traceId 与 UserContext 快照
+        assertFalse(eventTraceIds.isEmpty());
+        assertTrue(eventTraceIds.stream().allMatch("trace-failover-8888"::equals));
+        assertTrue(eventUserIds.stream().allMatch("user-operator-99"::equals));
+    }
+
+    @Test
+    @DisplayName("验证飞书 19021 认证错误不触发故障转移，飞书 11232 频控错误触发故障转移")
+    void testFeishuErrorCodeFailoverDiscrimination() throws InterruptedException {
+        NotificationChannel backup = NotificationChannel.builder()
+                .name("backup-feishu-err-discrim")
+                .platform(Platform.WECOM)
+                .webhook(getWebhookUrl("backup/wecom/discrim"))
+                .build();
+        NotificationChannel primary = NotificationChannel.builder()
+                .name("primary-feishu-err-discrim")
+                .platform(Platform.FEISHU)
+                .webhook(getWebhookUrl("primary/feishu/discrim"))
+                .backupChannels(List.of("backup-feishu-err-discrim"))
+                .build();
+        registry.register(backup);
+        registry.register(primary);
+
+        // 1. 认证失败 (19021) 应立即熔断，严禁切换备用渠道
+        enqueueOkJson("{\"code\":19021,\"msg\":\"sign match fail\"}");
+        assertThatThrownBy(() -> template.send("primary-feishu-err-discrim", TextMessage.of("认证拦截测试")))
+                .isInstanceOf(NotificationSendException.class)
+                .satisfies(ex -> assertEquals(NotificationResultCode.NOTIFICATION_AUTHENTICATION_ERROR,
+                        ((NotificationSendException) ex).getResultCode()));
+        assertEquals(1, server.getRequestCount());
+        takeRequest();
+
+        // 2. 频控超限 (11232) 应平滑转移至备用渠道并成功送达
+        enqueueOkJson("{\"code\":11232,\"msg\":\"create message service trigger rate limit\"}");
+        enqueueOkJson("{\"errcode\":0,\"errmsg\":\"ok\"}");
+
+        NotificationSendResult result = template.send("primary-feishu-err-discrim", TextMessage.of("频控故障转移测试"));
+        assertTrue(result.isSuccess());
+        assertEquals("backup-feishu-err-discrim", result.getChannel());
+
+        RecordedRequest req1 = takeRequest();
+        assertThat(req1.getPath()).contains("primary/feishu/discrim");
+        RecordedRequest req2 = takeRequest();
+        assertThat(req2.getPath()).contains("backup/wecom/discrim");
+    }
+
+    @Test
+    @DisplayName("验证钉钉加签通过 NotificationTemplate 最高门面出站时 Query 签名严格一致且无 %25 二次编码")
+    void testDingTalkSignatureNotDoubleEncodedViaTemplate() throws InterruptedException {
+        enqueueOkJson("{\"errcode\":0,\"errmsg\":\"ok\"}");
+
+        NotificationSendResult result = template.send("default-dingtalk", TextMessage.of("验签无二次编码测试"));
+        assertTrue(result.isSuccess());
+
+        RecordedRequest req = takeRequest();
+        assertNotNull(req);
+        String path = req.getPath();
+        assertNotNull(path);
+        assertThat(path).contains("timestamp=").contains("sign=").doesNotContain("%25");
+
+        okhttp3.HttpUrl url = req.getRequestUrl();
+        assertNotNull(url);
+        String tsParam = url.queryParameter("timestamp");
+        assertNotNull(tsParam);
+
+        String expectedRawSign = io.github.atengk.boot.notification.util.NotificationSignUtil
+                .signDingTalk("test-secret", Long.parseLong(tsParam));
+        assertNotNull(expectedRawSign);
+        assertThat(path).contains("sign=" + expectedRawSign);
+    }
+
+    @Test
+    @DisplayName("验证 NotificationTemplate 支持跨端 ImageMessage 发送并在出站前拦截超限体积")
+    void testCrossPlatformImageAndMaxSizeGuard() throws InterruptedException {
+        enqueueOkJson("{\"code\":0,\"msg\":\"ok\"}");
+        NotificationSendResult feishuRes = template.send("feishu-alert", ImageMessage.ofFeishuKey("img_v2_cross"));
+        assertTrue(feishuRes.isSuccess());
+        RecordedRequest feishuReq = takeRequest();
+        assertThat(feishuReq.getBody().readUtf8()).contains("\"msg_type\":\"image\"").contains("img_v2_cross");
+
+        enqueueOkJson("{\"errcode\":0,\"errmsg\":\"ok\"}");
+        NotificationSendResult dingRes = template.send("default-dingtalk", ImageMessage.ofUrl("https://img.example.com/ok.png"));
+        assertTrue(dingRes.isSuccess());
+        RecordedRequest dingReq = takeRequest();
+        assertThat(dingReq.getBody().readUtf8()).contains("\"msgtype\":\"markdown\"").contains("https://img.example.com/ok.png");
+
+        // 调整全局上限为 4 字节后，发送 5 字节图片必须在出站前 Fail-Fast 阻断，零网络请求
+        properties.setMaxImageSize(DataSize.ofBytes(4));
+        ImageMessage overLimitImg = ImageMessage.fromBytes("hello".getBytes(StandardCharsets.UTF_8));
+        assertThatThrownBy(() -> template.send("wecom-alert", overLimitImg))
+                .isInstanceOf(NotificationException.class)
+                .satisfies(ex -> assertEquals(NotificationResultCode.NOTIFICATION_PARAMETER_INVALID,
+                        ((NotificationException) ex).getResultCode()));
+        assertEquals(2, server.getRequestCount());
+
+        // 非法 Base64 编码字符串必须在出站前快速失败（恢复 2MB 上限确保走入解码 format 校验），零网络请求
+        properties.setMaxImageSize(DataSize.ofMegabytes(2));
+        ImageMessage invalidB64 = ImageMessage.ofBase64("not!valid!base64", "5d41402abc4b2a76b9719d911017c592");
+        assertThatThrownBy(() -> template.send("wecom-alert", invalidB64))
+                .isInstanceOf(NotificationException.class)
+                .satisfies(ex -> assertEquals(NotificationResultCode.NOTIFICATION_PARAMETER_INVALID,
+                        ((NotificationException) ex).getResultCode()));
+        assertEquals(2, server.getRequestCount());
+
+        // 显式配置非正数 maxImageSize 时快速失败，零网络请求
+        properties.setMaxImageSize(DataSize.ofBytes(0));
+        ImageMessage smallImg = ImageMessage.fromBytes("hi".getBytes(StandardCharsets.UTF_8));
+        assertThatThrownBy(() -> template.send("wecom-alert", smallImg))
+                .isInstanceOf(NotificationException.class)
+                .satisfies(ex -> assertEquals(NotificationResultCode.NOTIFICATION_PARAMETER_INVALID,
+                        ((NotificationException) ex).getResultCode()));
+        assertEquals(2, server.getRequestCount());
+
+        // 异步 sendAsync 发送超限图片同样在出站前拦截并回调 failureHandler，零网络请求
+        NotificationProperties asyncProps = new NotificationProperties();
+        asyncProps.setDefaultChannel("wecom-alert");
+        asyncProps.setMaxImageSize(DataSize.ofBytes(4));
+        AtomicBoolean asyncFailureCalled = new AtomicBoolean(false);
+        NotificationTemplate asyncTemplate = new NotificationTemplate(
+                asyncProps, registry, providers, rateLimiter, restClient,
+                templateRenderer, (ch, msg, ex) -> asyncFailureCalled.set(true), eventPublisher, asyncExecutor);
+        CompletableFuture<NotificationSendResult> future = asyncTemplate.sendAsync("wecom-alert", overLimitImg);
+        assertThatThrownBy(() -> future.get(5, TimeUnit.SECONDS))
+                .isInstanceOf(ExecutionException.class)
+                .hasCauseInstanceOf(NotificationException.class);
+        assertTrue(asyncFailureCalled.get());
+        assertEquals(2, server.getRequestCount());
+    }
+
+    @Test
+    @DisplayName("验证多渠道广播 Fail-Fast 前置校验、空白清理、去重与保序 LinkedHashMap 返回")
+    void testSendBroadcastValidationAndNormalization() throws Exception {
+        TextMessage validMsg = TextMessage.of("广播前置校验测试");
+
+        // 1. 渠道集合为 null / 空 / 全空白时同步与异步均立即快速失败，零网络请求
+        assertThatThrownBy(() -> template.sendBroadcast(null, validMsg))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> template.sendBroadcast(Collections.emptyList(), validMsg))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> template.sendBroadcast(Arrays.asList(" ", "\t", null), validMsg))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> template.sendBroadcastAsync(Collections.emptyList(), validMsg))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> template.sendBroadcastAsync(Arrays.asList(" ", null), validMsg))
+                .isInstanceOf(BusinessException.class);
+
+        // 2. 消息为空 / 校验不合法 / 图片体积超限时均立即快速失败，零网络请求
+        assertThatThrownBy(() -> template.sendBroadcast(List.of("wecom-alert"), null))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> template.sendBroadcast(List.of("wecom-alert"), new TextMessage("   ")))
+                .isInstanceOf(NotificationException.class);
+        assertThatThrownBy(() -> template.sendBroadcastAsync(List.of("wecom-alert"), new TextMessage("   ")))
+                .isInstanceOf(NotificationException.class);
+
+        properties.setMaxImageSize(DataSize.ofBytes(4));
+        ImageMessage overLimitImg = ImageMessage.fromBytes("hello".getBytes(StandardCharsets.UTF_8));
+        assertThatThrownBy(() -> template.sendBroadcast(List.of("wecom-alert"), overLimitImg))
+                .isInstanceOf(NotificationException.class);
+        properties.setMaxImageSize(DataSize.ofMegabytes(2));
+        assertEquals(0, server.getRequestCount());
+
+        // 3. 混合空白、null 与重复渠道名时，自动清理并按首次出现顺序去重保序返回
+        configureMultiPlatformDispatcher(false);
+
+        List<String> noisyChannels = Arrays.asList("  wecom-alert ", "", null, "feishu-alert", "wecom-alert", " generic-alert ");
+        Map<String, NotificationSendResult> results = template.sendBroadcast(noisyChannels, validMsg);
+
+        assertInstanceOf(LinkedHashMap.class, results);
+        assertThat(results.keySet()).containsExactly("wecom-alert", "feishu-alert", "generic-alert");
+        assertThat(results.values()).allSatisfy(res -> assertTrue(res.isSuccess()));
+        assertEquals(3, server.getRequestCount());
+
+        // 异步广播同样遵守清理去重保序
+        Map<String, NotificationSendResult> asyncResults = template.sendBroadcastAsync(noisyChannels, validMsg)
+                .get(5, TimeUnit.SECONDS);
+        assertInstanceOf(LinkedHashMap.class, asyncResults);
+        assertThat(asyncResults.keySet()).containsExactly("wecom-alert", "feishu-alert", "generic-alert");
+        assertThat(asyncResults.values()).allSatisfy(res -> assertTrue(res.isSuccess()));
+        assertEquals(6, server.getRequestCount());
+    }
+
+    @Test
+    @DisplayName("验证异构多平台并发广播单点故障隔离：HTTP 500、客户端频控拦截与不存在渠道均不阻断其余渠道送达")
+    void testSendBroadcastFailureIsolationAcrossPlatforms() throws Exception {
+        // 1. MockWebServer 按路径分发：钉钉成功、企微成功、飞书返回 HTTP 500（无备用渠道）
+        configureMultiPlatformDispatcher(true);
+
+        // 1A. 同步广播 3 个异构平台：default-dingtalk(成功) + feishu-alert(500失败) + wecom-alert(成功)
+        List<String> threePlatforms = List.of("default-dingtalk", "feishu-alert", "wecom-alert");
+        Map<String, NotificationSendResult> http500Result = template.sendBroadcast(threePlatforms, TextMessage.of("异构广播 HTTP 500 隔离"));
+
+        assertThat(http500Result.keySet()).containsExactly("default-dingtalk", "feishu-alert", "wecom-alert");
+        assertTrue(http500Result.get("default-dingtalk").isSuccess());
+        assertEquals(Platform.DINGTALK, http500Result.get("default-dingtalk").getPlatform());
+        assertTrue(http500Result.get("wecom-alert").isSuccess());
+        assertEquals(Platform.WECOM, http500Result.get("wecom-alert").getPlatform());
+
+        NotificationSendResult feishuFailed = http500Result.get("feishu-alert");
+        assertFalse(feishuFailed.isSuccess());
+        assertEquals("feishu-alert", feishuFailed.getChannel());
+        assertEquals(Platform.FEISHU, feishuFailed.getPlatform());
+        assertNotNull(feishuFailed.getCostDuration());
+        assertThat(feishuFailed.getRawResponse()).contains("Feishu Gateway Down");
+        assertThat(feishuFailed.getErrorMessage()).isNotBlank();
+
+        // 1B. 异步广播同样保持 2 success + 1 failure 隔离
+        Map<String, NotificationSendResult> asyncHttp500Result = template
+                .sendBroadcastAsync(threePlatforms, TextMessage.of("异步异构广播 HTTP 500 隔离"))
+                .get(5, TimeUnit.SECONDS);
+        assertThat(asyncHttp500Result.keySet()).containsExactly("default-dingtalk", "feishu-alert", "wecom-alert");
+        assertEquals(2, asyncHttp500Result.values().stream().filter(NotificationSendResult::isSuccess).count());
+        assertFalse(asyncHttp500Result.get("feishu-alert").isSuccess());
+        assertThat(asyncHttp500Result.get("feishu-alert").getErrorMessage()).isNotBlank();
+
+        // 2. 触发客户端频控拦截时隔离（strict-broadcast 配额=1，先耗尽再广播）
+        NotificationChannel strictBroadcast = NotificationChannel.builder()
+                .name("strict-broadcast")
+                .platform(Platform.DINGTALK)
+                .webhook(getWebhookUrl("dingtalk/strict"))
+                .permitsPerMinute(1)
+                .build();
+        registry.register(strictBroadcast);
+        template.send("strict-broadcast", TextMessage.of("耗尽配额"));
+
+        List<String> rateLimitChannels = List.of("wecom-alert", "strict-broadcast", "generic-alert");
+        Map<String, NotificationSendResult> rateLimitResult = template.sendBroadcast(rateLimitChannels, TextMessage.of("频控单点隔离"));
+        assertThat(rateLimitResult.keySet()).containsExactly("wecom-alert", "strict-broadcast", "generic-alert");
+        assertTrue(rateLimitResult.get("wecom-alert").isSuccess());
+        assertTrue(rateLimitResult.get("generic-alert").isSuccess());
+
+        NotificationSendResult limited = rateLimitResult.get("strict-broadcast");
+        assertFalse(limited.isSuccess());
+        assertEquals("strict-broadcast", limited.getChannel());
+        assertEquals(Platform.DINGTALK, limited.getPlatform());
+        assertThat(limited.getErrorMessage()).isNotBlank();
+
+        // 3. 包含不存在渠道时隔离，其余渠道正常送达
+        List<String> withMissingChannel = List.of("wecom-alert", "non-existent-channel", "generic-alert");
+        Map<String, NotificationSendResult> missingResult = template.sendBroadcast(withMissingChannel, TextMessage.of("缺省渠道隔离"));
+        assertThat(missingResult.keySet()).containsExactly("wecom-alert", "non-existent-channel", "generic-alert");
+        assertTrue(missingResult.get("wecom-alert").isSuccess());
+        assertTrue(missingResult.get("generic-alert").isSuccess());
+
+        NotificationSendResult missing = missingResult.get("non-existent-channel");
+        assertFalse(missing.isSuccess());
+        assertEquals("non-existent-channel", missing.getChannel());
+        assertNull(missing.getPlatform());
+        assertThat(missing.getErrorMessage()).contains("non-existent-channel");
+
+        // 4. 传入 "default" 别名触发频控拦截时，失败结果仍能正确解析出底层平台类型
+        registry.setDefaultChannelName("strict-broadcast");
+        Map<String, NotificationSendResult> defaultAliasResult = template.sendBroadcast(
+                List.of("wecom-alert", "default"), TextMessage.of("默认别名频控隔离"));
+        assertTrue(defaultAliasResult.get("wecom-alert").isSuccess());
+        NotificationSendResult defaultFailed = defaultAliasResult.get("default");
+        assertFalse(defaultFailed.isSuccess());
+        assertEquals("default", defaultFailed.getChannel());
+        assertEquals(Platform.DINGTALK, defaultFailed.getPlatform());
+        assertThat(defaultFailed.getErrorMessage()).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("验证同步与异步多渠道广播在受管工作线程中无损透传四维上下文并在 finally 严格清理现场")
+    void testSendBroadcastContextPropagationAndWorkerCleanup() throws Exception {
+        configureMultiPlatformDispatcher(false);
+
+        MDC.put("traceId", "trace-broadcast-7777");
+        UserContextHolder.set("user-broadcast-66");
+        TenantContextHolder.setTenantId("tenant-broadcast-99");
+        TenantContextHolder.setIgnoreTenant(true);
+
+        List<String> capturedTraceIds = new CopyOnWriteArrayList<>();
+        List<String> capturedUserIds = new CopyOnWriteArrayList<>();
+        List<String> capturedTenantIds = new CopyOnWriteArrayList<>();
+        List<Boolean> capturedIgnoreTenants = new CopyOnWriteArrayList<>();
+        List<String> workerThreadNames = new CopyOnWriteArrayList<>();
+
+        template.setApplicationEventPublisher(event -> {
+            if (event instanceof NotificationSendingEvent) {
+                capturedTraceIds.add(MDC.get("traceId"));
+                capturedUserIds.add(UserContextHolder.get());
+                capturedTenantIds.add(TenantContextHolder.getExplicit());
+                capturedIgnoreTenants.add(TenantContextHolder.isIgnoreTenant());
+                workerThreadNames.add(Thread.currentThread().getName());
+            }
+        });
+
+        List<String> channels = List.of("default-dingtalk", "wecom-alert", "feishu-alert");
+
+        // 1. 验证同步并发广播四维上下文透传
+        Map<String, NotificationSendResult> syncResult = template.sendBroadcast(channels, TextMessage.of("同步广播四维透传"));
+        assertAndClearCapturedContext(syncResult, capturedTraceIds, capturedUserIds,
+                capturedTenantIds, capturedIgnoreTenants, workerThreadNames);
+
+        // 验证异步并发广播四维上下文透传
+        Map<String, NotificationSendResult> asyncResult = template
+                .sendBroadcastAsync(channels, TextMessage.of("异步广播四维透传"))
+                .get(5, TimeUnit.SECONDS);
+        assertAndClearCapturedContext(asyncResult, capturedTraceIds, capturedUserIds,
+                capturedTenantIds, capturedIgnoreTenants, workerThreadNames);
+
+        // 2. 验证工作线程在 finally 中严格清理/恢复现场，无 ThreadLocal 残留污染线程池
+        List<CompletableFuture<Boolean>> cleanupChecks = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            cleanupChecks.add(CompletableFuture.supplyAsync(() ->
+                    MDC.get("traceId") == null
+                            && UserContextHolder.get() == null
+                            && TenantContextHolder.getExplicit() == null
+                            && !TenantContextHolder.isIgnoreTenant(),
+                    asyncExecutor));
+        }
+        for (CompletableFuture<Boolean> check : cleanupChecks) {
+            assertTrue(check.get(5, TimeUnit.SECONDS), "工作线程执行完毕后必须彻底清理四维上下文快照");
+        }
+
+        // 3. 验证未显式注入 asyncExecutor 时回退 Core AsyncUtil 受管线程池，严禁沦陷至 ForkJoinPool.commonPool
+        NotificationTemplate fallbackExecutorTemplate = new NotificationTemplate(
+                properties, registry, providers, rateLimiter, restClient,
+                templateRenderer, null, event -> {
+            if (event instanceof NotificationSendingEvent) {
+                assertThat(Thread.currentThread().getName()).doesNotContain("ForkJoinPool.commonPool");
+                assertEquals("trace-broadcast-7777", MDC.get("traceId"));
+            }
+        }, null);
+        Map<String, NotificationSendResult> fallbackResult = fallbackExecutorTemplate
+                .sendBroadcastAsync(List.of("wecom-alert", "generic-alert"), TextMessage.of("Core受管兜底线程池验证"))
+                .get(5, TimeUnit.SECONDS);
+        assertEquals(2, fallbackResult.size());
+        assertThat(fallbackResult.values()).allSatisfy(res -> assertTrue(res.isSuccess()));
+    }
+
+    private void assertAndClearCapturedContext(
+            Map<String, NotificationSendResult> results,
+            List<String> capturedTraceIds,
+            List<String> capturedUserIds,
+            List<String> capturedTenantIds,
+            List<Boolean> capturedIgnoreTenants,
+            List<String> workerThreadNames) {
+        assertEquals(3, results.size());
+        assertThat(results.values()).allSatisfy(res -> assertTrue(res.isSuccess()));
+        assertEquals(3, capturedTraceIds.size());
+        assertThat(capturedTraceIds).containsOnly("trace-broadcast-7777");
+        assertThat(capturedUserIds).containsOnly("user-broadcast-66");
+        assertThat(capturedTenantIds).containsOnly("tenant-broadcast-99");
+        assertThat(capturedIgnoreTenants).containsOnly(true);
+        assertThat(workerThreadNames).allSatisfy(name -> assertThat(name).doesNotContain("ForkJoinPool.commonPool"));
+        capturedTraceIds.clear();
+        capturedUserIds.clear();
+        capturedTenantIds.clear();
+        capturedIgnoreTenants.clear();
+        workerThreadNames.clear();
+    }
+
+    private void configureMultiPlatformDispatcher(boolean failFeishu) {
+        server.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                String path = request.getPath();
+                if (path != null && path.startsWith("/feishu/")) {
+                    if (failFeishu) {
+                        return new MockResponse().setResponseCode(500)
+                                .setHeader("Content-Type", "application/json; charset=utf-8")
+                                .setBody("{\"code\":500,\"msg\":\"Feishu Gateway Down\"}");
+                    }
+                    return new MockResponse().setResponseCode(200)
+                            .setHeader("Content-Type", "application/json; charset=utf-8")
+                            .setBody("{\"code\":0,\"msg\":\"ok\"}");
+                }
+                if (path != null && path.startsWith("/generic/")) {
+                    return new MockResponse().setResponseCode(200)
+                            .setHeader("Content-Type", "application/json; charset=utf-8")
+                            .setBody("{\"status\":\"ok\"}");
+                }
+                return new MockResponse().setResponseCode(200)
+                        .setHeader("Content-Type", "application/json; charset=utf-8")
+                        .setBody("{\"errcode\":0,\"errmsg\":\"ok\"}");
+            }
+        });
     }
 }

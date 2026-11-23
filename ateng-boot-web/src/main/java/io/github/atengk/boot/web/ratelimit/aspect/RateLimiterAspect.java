@@ -6,6 +6,8 @@ import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.web.ratelimit.annotation.LimitType;
 import io.github.atengk.boot.web.ratelimit.annotation.RateLimiter;
+import io.github.atengk.boot.web.ratelimit.properties.RateLimiterProperties;
+import io.github.atengk.boot.web.ratelimit.store.InMemoryRateLimiterStore;
 import io.github.atengk.boot.web.ratelimit.store.RateLimiterStore;
 import io.github.atengk.boot.web.util.IpUtil;
 import io.github.atengk.boot.web.util.ServletUtil;
@@ -16,7 +18,9 @@ import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.core.DefaultParameterNameDiscoverer;
+import org.springframework.core.Ordered;
 import org.springframework.core.ParameterNameDiscoverer;
 import org.springframework.expression.EvaluationContext;
 import org.springframework.expression.Expression;
@@ -29,6 +33,7 @@ import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 接口限流防刷 AOP 切面
@@ -38,39 +43,97 @@ import java.util.concurrent.ConcurrentHashMap;
  * @since 2026-10-16
  */
 @Aspect
-public class RateLimiterAspect {
+public class RateLimiterAspect implements Ordered, DisposableBean {
+
+    /**
+     * 切面优先级：置于 IP 访问控制之后，防重幂等与签名之前
+     */
+    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 200;
+
+    public static final String HEADER_RATE_LIMIT = "X-RateLimit-Limit";
+    public static final String HEADER_RATE_LIMIT_REMAINING = "X-RateLimit-Remaining";
+    public static final String HEADER_RETRY_AFTER = "Retry-After";
 
     private static final Logger log = LoggerFactory.getLogger(RateLimiterAspect.class);
+    private static final String DEFAULT_ANNOTATION_PREFIX = "rate_limit:";
 
     private final RateLimiterStore rateLimiterStore;
+    private final RateLimiterProperties properties;
+    private final AtomicReference<RateLimiterStore> fallbackStoreRef = new AtomicReference<>();
     private final ExpressionParser expressionParser = new SpelExpressionParser();
     private final ParameterNameDiscoverer parameterNameDiscoverer = new DefaultParameterNameDiscoverer();
     private final Map<String, Expression> expressionCache = new ConcurrentHashMap<>();
 
     public RateLimiterAspect(RateLimiterStore rateLimiterStore) {
+        this(rateLimiterStore, new RateLimiterProperties());
+    }
+
+    public RateLimiterAspect(RateLimiterStore rateLimiterStore, RateLimiterProperties properties) {
         this.rateLimiterStore = Objects.requireNonNull(rateLimiterStore, "RateLimiterStore must not be null");
+        this.properties = properties != null ? properties : new RateLimiterProperties();
+    }
+
+    private RateLimiterStore getFallbackStore() {
+        RateLimiterStore existing = fallbackStoreRef.get();
+        if (existing != null) {
+            return existing;
+        }
+        RateLimiterStore created = new InMemoryRateLimiterStore();
+        if (fallbackStoreRef.compareAndSet(null, created)) {
+            return created;
+        }
+        return fallbackStoreRef.get();
+    }
+
+    @Override
+    public void destroy() throws Exception {
+        RateLimiterStore fallbackStore = fallbackStoreRef.getAndSet(null);
+        if (fallbackStore instanceof DisposableBean disposable) {
+            disposable.destroy();
+        }
+    }
+
+    @Override
+    public int getOrder() {
+        return ORDER;
     }
 
     @Around("@annotation(rateLimiter)")
     public Object around(ProceedingJoinPoint joinPoint, RateLimiter rateLimiter) throws Throwable {
         String fullKey = resolveFullKey(joinPoint, rateLimiter);
 
-        // 1. 尝试原子获取令牌许可
-        boolean acquired = rateLimiterStore.tryAcquire(
-                fullKey,
-                rateLimiter.count(),
-                rateLimiter.time(),
-                rateLimiter.timeUnit()
-        );
+        // 1. 尝试原子获取令牌许可（支持底层驱动故障时的 failOpen 降级）
+        RateLimiterStore activeStore = rateLimiterStore;
+        boolean acquired;
+        try {
+            acquired = activeStore.tryAcquire(
+                    fullKey,
+                    rateLimiter.count(),
+                    rateLimiter.time(),
+                    rateLimiter.timeUnit()
+            );
+        } catch (Exception ex) {
+            if (properties.isFailOpen()) {
+                log.warn("RateLimiter store execution failed, falling back to in-memory store due to failOpen=true, key: {}", fullKey, ex);
+                activeStore = getFallbackStore();
+                acquired = activeStore.tryAcquire(
+                        fullKey,
+                        rateLimiter.count(),
+                        rateLimiter.time(),
+                        rateLimiter.timeUnit()
+                );
+            } else {
+                throw ex;
+            }
+        }
+
+        // 2. 注入标准限流响应头（X-RateLimit-Limit / X-RateLimit-Remaining，超限时同步回写 Retry-After）
+        HttpServletResponse response = ServletUtil.getResponse();
+        if (response != null) {
+            writeRateLimitHeaders(response, activeStore, fullKey, rateLimiter, acquired);
+        }
 
         if (!acquired) {
-            // 2. 计算 Retry-After 窗口建议秒数并写入响应头
-            long retryAfterSeconds = Math.max(1, rateLimiter.timeUnit().toSeconds(rateLimiter.time()));
-            HttpServletResponse response = ServletUtil.getResponse();
-            if (response != null) {
-                response.setHeader("Retry-After", String.valueOf(retryAfterSeconds));
-            }
-
             // 3. 记录日志并抛出受控业务异常
             String message = StringUtils.hasText(rateLimiter.message())
                     ? rateLimiter.message()
@@ -84,13 +147,40 @@ public class RateLimiterAspect {
         return joinPoint.proceed();
     }
 
+    private void writeRateLimitHeaders(HttpServletResponse response,
+                                       RateLimiterStore activeStore,
+                                       String fullKey,
+                                       RateLimiter rateLimiter,
+                                       boolean acquired) {
+        if (!acquired) {
+            long retryAfterSeconds = Math.max(1, rateLimiter.timeUnit().toSeconds(rateLimiter.time()));
+            response.setHeader(HEADER_RETRY_AFTER, String.valueOf(retryAfterSeconds));
+        }
+        if (!properties.isIncludeHeaders() || rateLimiter.count() <= 0 || rateLimiter.time() <= 0) {
+            return;
+        }
+        response.setHeader(HEADER_RATE_LIMIT, String.valueOf(rateLimiter.count()));
+        if (!acquired) {
+            response.setHeader(HEADER_RATE_LIMIT_REMAINING, "0");
+            return;
+        }
+        try {
+            long remaining = activeStore.getAvailablePermits(
+                    fullKey, rateLimiter.count(), rateLimiter.time(), rateLimiter.timeUnit());
+            response.setHeader(HEADER_RATE_LIMIT_REMAINING, String.valueOf(remaining));
+        } catch (Exception ex) {
+            log.warn("RateLimiter failed to query remaining permits for response header, key: {}", fullKey, ex);
+        }
+    }
+
     /**
      * 解析生成完整限流键
      */
     private String resolveFullKey(ProceedingJoinPoint joinPoint, RateLimiter rateLimiter) {
         StringBuilder sb = new StringBuilder();
-        if (StringUtils.hasText(rateLimiter.prefix())) {
-            sb.append(rateLimiter.prefix());
+        String prefix = resolvePrefix(rateLimiter);
+        if (StringUtils.hasText(prefix)) {
+            sb.append(prefix);
         }
 
         // 1. 维度键解析
@@ -128,6 +218,20 @@ public class RateLimiterAspect {
         }
 
         return sb.toString();
+    }
+
+    /**
+     * 解析限流键前缀：注解显式覆盖（非默认值）优先，否则采用全局配置前缀
+     */
+    private String resolvePrefix(RateLimiter rateLimiter) {
+        String annotationPrefix = rateLimiter.prefix();
+        if (!DEFAULT_ANNOTATION_PREFIX.equals(annotationPrefix)) {
+            return annotationPrefix;
+        }
+        if (properties != null && StringUtils.hasText(properties.getKeyPrefix())) {
+            return properties.getKeyPrefix();
+        }
+        return DEFAULT_ANNOTATION_PREFIX;
     }
 
     /**

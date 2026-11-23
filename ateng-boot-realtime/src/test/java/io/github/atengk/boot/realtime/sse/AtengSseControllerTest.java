@@ -20,6 +20,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -180,5 +181,38 @@ class AtengSseControllerTest {
         RealtimeSession session = sessionManager.getSession(key);
         assertThat(session).isNotNull();
         assertThat(session.getTenantId()).isEqualTo(777L);
+    }
+
+    @Test
+    @DisplayName("重连携带 Last-Event-ID 触发离线消息只读重放")
+    void testLastEventIdReplay() {
+        RealtimeProperties properties = new RealtimeProperties();
+        RealtimeSessionManager sessionManager = new RealtimeSessionManager(properties);
+        io.github.atengk.boot.realtime.spi.RealtimeOfflineMessageProvider mockOfflineProvider =
+                mock(io.github.atengk.boot.realtime.spi.RealtimeOfflineMessageProvider.class);
+
+        io.github.atengk.boot.realtime.model.RealtimeMessage<String> missedMsg =
+                io.github.atengk.boot.realtime.model.RealtimeMessage.of("news", "missed update");
+        when(mockOfflineProvider.getOfflineMessagesSince("u-replay", "1700000000000"))
+                .thenReturn(java.util.List.of(missedMsg));
+
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        beanFactory.addBean("offlineProvider", mockOfflineProvider);
+
+        AtengSseController controller = new AtengSseController(
+                properties,
+                sessionManager,
+                null,
+                null,
+                beanFactory.getBeanProvider(io.github.atengk.boot.realtime.spi.RealtimeOfflineMessageProvider.class)
+        );
+
+        HttpServletRequest request = mock(HttpServletRequest.class);
+        when(request.getHeader("Last-Event-ID")).thenReturn("1700000000000");
+
+        SseEmitter emitter = controller.connect("c-replay", "u-replay", "web", null, request);
+        assertThat(emitter).isNotNull();
+
+        verify(mockOfflineProvider).getOfflineMessagesSince("u-replay", "1700000000000");
     }
 }

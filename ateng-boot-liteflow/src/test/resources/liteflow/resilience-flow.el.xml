@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<flow>
+    <!-- Saga 逆序反向补偿流程 -->
+    <chain name="testSagaReverseRollback">
+        THEN(orderCreateNode, inventoryDeductNode, paymentFailNode);
+    </chain>
+
+    <!-- 回滚自身抛出次生异常防穿透流程 -->
+    <chain name="testRollbackSecondaryExceptionSafety">
+        THEN(flakyRollbackNode, failingNode);
+    </chain>
+
+    <!-- 节点异常就地优雅降级流程 -->
+    <chain name="testInPlaceGracefulDegradation">
+        THEN(degradeNode, followUpNode);
+    </chain>
+
+    <!-- 并行硬超时熔断与协同子线程中断流程 -->
+    <chain name="testParallelTimeoutAndInterruption">
+        WHEN(fastNode, slowHangNode).maxWaitMilliseconds(300);
+    </chain>
+</flow>

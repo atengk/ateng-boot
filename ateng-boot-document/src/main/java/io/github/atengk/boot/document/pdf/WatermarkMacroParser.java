@@ -1,5 +1,6 @@
 package io.github.atengk.boot.document.pdf;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import org.slf4j.MDC;
@@ -83,7 +84,7 @@ public final class WatermarkMacroParser {
             }
         }
 
-        // 2. 处理 traceId
+        // 2. 处理 traceId 与 tenantId
         if ("traceId".equals(expr) || "trace_id".equals(expr)) {
             Object val = getVariableValue("traceId", variables);
             if (val == null) {
@@ -97,6 +98,24 @@ public final class WatermarkMacroParser {
             }
             return val != null ? String.valueOf(val) : defaultValue;
         }
+        if ("tenantId".equals(expr) || "tenant_id".equals(expr)) {
+            Object val = getVariableValue("tenantId", variables);
+            if (val == null) {
+                val = getVariableValue("tenant_id", variables);
+            }
+            if (val != null) {
+                return String.valueOf(val);
+            }
+            String tenantId = TenantContextHolder.get();
+            if (tenantId != null && !tenantId.isBlank()) {
+                return tenantId;
+            }
+            String mdcTenant = MDC.get("tenantId");
+            if (mdcTenant == null || mdcTenant.isBlank()) {
+                mdcTenant = MDC.get("tenant_id");
+            }
+            return mdcTenant != null && !mdcTenant.isBlank() ? mdcTenant : defaultValue;
+        }
 
         // 3. 处理 user.* 变量
         if (expr.startsWith("user.")) {
@@ -104,8 +123,16 @@ public final class WatermarkMacroParser {
             Object userObj = getVariableValue("user", variables);
             String attrVal = extractUserAttribute(userObj, attr);
 
-            // 若上下文无 userMap，保底从 UserContextHolder 中获取
-            if ((attrVal == null || attrVal.isEmpty()) && ("username".equals(attr) || "nickname".equals(attr))) {
+            // 属性别名与上下文兜底：name -> nickname -> UserContextHolder；code -> username
+            if (attrVal == null || attrVal.isEmpty()) {
+                if ("name".equals(attr)) {
+                    attrVal = extractUserAttribute(userObj, "nickname");
+                } else if ("code".equals(attr)) {
+                    attrVal = extractUserAttribute(userObj, "username");
+                }
+            }
+            if ((attrVal == null || attrVal.isEmpty())
+                    && ("username".equals(attr) || "nickname".equals(attr) || "name".equals(attr))) {
                 String ctxUser = UserContextHolder.get();
                 if (ctxUser != null && !ctxUser.isBlank()) {
                     attrVal = ctxUser;

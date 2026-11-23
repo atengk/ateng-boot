@@ -2,13 +2,23 @@ package io.github.atengk.boot.mqtt.autoconfigure;
 
 import io.github.atengk.boot.mqtt.actuator.MqttHealthIndicator;
 import io.github.atengk.boot.mqtt.codec.CompositeMqttMessageConverter;
+import io.github.atengk.boot.mqtt.credentials.MqttCredentials;
+import io.github.atengk.boot.mqtt.credentials.MqttCredentialsProvider;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
+import io.github.atengk.boot.mqtt.dlt.InMemoryMqttDeadLetterStore;
+import io.github.atengk.boot.mqtt.dlt.MqttDeadLetterStore;
 import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
+import io.github.atengk.boot.mqtt.listener.MqttConnectionEventDispatcher;
+import io.github.atengk.boot.mqtt.listener.MqttContainerManager;
 import io.github.atengk.boot.mqtt.listener.MqttListenerAnnotationBeanPostProcessor;
 import io.github.atengk.boot.mqtt.listener.MqttListenerEndpointRegistry;
 import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
+import io.github.atengk.boot.mqtt.model.MqttDeadLetterRecord;
+import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
+import io.github.atengk.boot.mqtt.properties.MqttDltProperties;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
+import io.github.atengk.boot.mqtt.template.MqttDeadLetterReplayTemplate;
 import io.github.atengk.boot.mqtt.template.MqttTemplate;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -17,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -40,9 +51,14 @@ class AtengMqttAutoConfigurationTest {
             assertThat(context).hasSingleBean(MqttSendFailureHandler.class);
             assertThat(context).hasSingleBean(CompositeMqttMessageConverter.class);
             assertThat(context).hasSingleBean(ThreadPoolTaskExecutor.class);
+            assertThat(context).hasSingleBean(ThreadPoolTaskScheduler.class);
+            assertThat(context).hasBean("mqttTaskScheduler");
             assertThat(context).hasSingleBean(MqttRequestReplyManager.class);
             assertThat(context).hasSingleBean(MqttTemplate.class);
+            assertThat(context).hasSingleBean(MqttDeadLetterReplayTemplate.class);
             assertThat(context).hasSingleBean(MqttListenerEndpointRegistry.class);
+            assertThat(context).hasSingleBean(MqttContainerManager.class);
+            assertThat(context).hasSingleBean(MqttConnectionEventDispatcher.class);
             assertThat(context).hasSingleBean(MqttListenerAnnotationBeanPostProcessor.class);
             assertThat(context).hasSingleBean(MqttHealthIndicator.class);
         });
@@ -58,7 +74,10 @@ class AtengMqttAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(MqttSendFailureHandler.class);
                     assertThat(context).doesNotHaveBean(MqttRequestReplyManager.class);
                     assertThat(context).doesNotHaveBean(MqttTemplate.class);
+                    assertThat(context).doesNotHaveBean(MqttDeadLetterReplayTemplate.class);
                     assertThat(context).doesNotHaveBean(MqttListenerEndpointRegistry.class);
+                    assertThat(context).doesNotHaveBean(MqttContainerManager.class);
+                    assertThat(context).doesNotHaveBean(MqttConnectionEventDispatcher.class);
                     assertThat(context).doesNotHaveBean(MqttListenerAnnotationBeanPostProcessor.class);
                 });
     }
@@ -80,6 +99,137 @@ class AtengMqttAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(MqttMetrics.class);
                     assertThat(context).doesNotHaveBean(MqttHealthIndicator.class);
+                });
+    }
+
+    @Test
+    @DisplayName("测试自定义属性装配：max-replay-count 正确透传给 ReplayTemplate 与 EndpointRegistry")
+    void testCustomMaxReplayCountAutoConfiguration() {
+        contextRunner.withPropertyValues("ateng.boot.mqtt.max-replay-count=3")
+                .run(context -> {
+                    MqttDeadLetterReplayTemplate replayTemplate = context.getBean(MqttDeadLetterReplayTemplate.class);
+                    assertThat(replayTemplate.getMaxReplayCount()).isEqualTo(3);
+                    MqttListenerEndpointRegistry registry = context.getBean(MqttListenerEndpointRegistry.class);
+                    assertThat(registry.getMaxReplayCount()).isEqualTo(3);
+                });
+    }
+
+    @Test
+    @DisplayName("测试 MqttCredentialsProvider 自定义 Bean 自动装配注入")
+    void testCredentialsProviderBeanAutoConfiguration() {
+        MqttCredentialsProvider customProvider = (clientName, props, reconnect) ->
+                MqttCredentials.of("spi-user", "spi-secret");
+        contextRunner.withBean(MqttCredentialsProvider.class, () -> customProvider)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MqttCredentialsProvider.class);
+                    assertThat(context).hasSingleBean(NamedMqttClientRegistry.class);
+                });
+    }
+
+    @Test
+    @DisplayName("测试自定义 ThreadPoolTaskScheduler Bean 复用：任意名称的调度器均优先复用而不重复创建 mqttTaskScheduler")
+    void testCustomThreadPoolTaskSchedulerReuse() {
+        ThreadPoolTaskScheduler customScheduler = new ThreadPoolTaskScheduler();
+        customScheduler.setPoolSize(1);
+        customScheduler.setThreadNamePrefix("custom-app-scheduler-");
+        customScheduler.initialize();
+        try {
+            contextRunner.withBean("customAppScheduler", ThreadPoolTaskScheduler.class, () -> customScheduler)
+                    .run(context -> {
+                        assertThat(context).hasSingleBean(ThreadPoolTaskScheduler.class);
+                        assertThat(context).doesNotHaveBean("mqttTaskScheduler");
+                        assertThat(context).hasSingleBean(MqttRequestReplyManager.class);
+                    });
+        } finally {
+            customScheduler.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("测试低基数度量属性组装配与注入：默认屏蔽 topic 标签，显式开启并透传基数上限")
+    void testMetricsPropertiesAutoConfiguration() {
+        contextRunner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .run(context -> {
+                    AtengMqttProperties props = context.getBean(AtengMqttProperties.class);
+                    assertThat(props.getMetrics().isIncludeTopicTag()).isFalse();
+                    assertThat(props.getMetrics().getMaxTopicCardinality()).isEqualTo(200);
+
+                    MqttMetrics metrics = context.getBean(MqttMetrics.class);
+                    MeterRegistry registry = context.getBean(MeterRegistry.class);
+                    metrics.recordPublished("primary", "dev/001/data", 1);
+                    var counter = registry.find("mqtt.message.published").tag("client", "primary").counter();
+                    assertThat(counter).isNotNull();
+                    assertThat(counter.getId().getTag("topic")).isNull();
+                });
+
+        contextRunner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .withPropertyValues(
+                        "ateng.boot.mqtt.metrics.include-topic-tag=true",
+                        "ateng.boot.mqtt.metrics.max-topic-cardinality=1"
+                )
+                .run(context -> {
+                    MqttMetrics metrics = context.getBean(MqttMetrics.class);
+                    MeterRegistry registry = context.getBean(MeterRegistry.class);
+                    metrics.recordPublished("primary", "dev/001/data", 1);
+                    metrics.recordPublished("primary", "dev/002/data", 1);
+                    assertThat(registry.find("mqtt.message.published").tag("topic", "dev/001/data").counter()).isNotNull();
+                    assertThat(registry.find("mqtt.message.published").tag("topic", "dev/002/data").counter()).isNull();
+                    assertThat(registry.find("mqtt.message.published").tag("topic", "__overflow__").counter()).isNotNull();
+                });
+    }
+
+    @Test
+    @DisplayName("测试死信存储属性与 MqttDeadLetterStore SPI 自动装配及覆盖替换")
+    void testDltPropertiesAndStoreAutoConfiguration() {
+        contextRunner.run(context -> {
+            AtengMqttProperties props = context.getBean(AtengMqttProperties.class);
+            MqttDltProperties dltProps = props.getDlt();
+            assertThat(dltProps.isRetained()).isFalse();
+            assertThat(dltProps.isPeekBrokerFallback()).isTrue();
+            assertThat(dltProps.getMaxRecordsPerTopic()).isEqualTo(1000);
+            assertThat(dltProps.getMaxTotalRecords()).isEqualTo(10000);
+            assertThat(context).hasSingleBean(MqttDeadLetterStore.class);
+            assertThat(context.getBean(MqttDeadLetterStore.class)).isInstanceOf(InMemoryMqttDeadLetterStore.class);
+        });
+
+        contextRunner.withPropertyValues(
+                        "ateng.boot.mqtt.dlt.retained=true",
+                        "ateng.boot.mqtt.dlt.peek-broker-fallback=false",
+                        "ateng.boot.mqtt.dlt.max-records-per-topic=50",
+                        "ateng.boot.mqtt.dlt.max-total-records=200"
+                )
+                .run(context -> {
+                    MqttDltProperties dltProps = context.getBean(AtengMqttProperties.class).getDlt();
+                    assertThat(dltProps.isRetained()).isTrue();
+                    assertThat(dltProps.isPeekBrokerFallback()).isFalse();
+                    assertThat(dltProps.getMaxRecordsPerTopic()).isEqualTo(50);
+                    assertThat(dltProps.getMaxTotalRecords()).isEqualTo(200);
+                });
+
+        MqttDeadLetterStore customStore = new MqttDeadLetterStore() {
+            @Override
+            public void save(MqttDeadLetterRecord record) {
+            }
+
+            @Override
+            public java.util.List<MqttDeadLetterRecord> peek(String dltTopic, int limit) {
+                return java.util.Collections.emptyList();
+            }
+
+            @Override
+            public boolean remove(String dltTopic, String recordId) {
+                return false;
+            }
+
+            @Override
+            public int purge(String dltTopic) {
+                return 0;
+            }
+        };
+        contextRunner.withBean(MqttDeadLetterStore.class, () -> customStore)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MqttDeadLetterStore.class);
+                    assertThat(context.getBean(MqttDeadLetterStore.class)).isSameAs(customStore);
                 });
     }
 }

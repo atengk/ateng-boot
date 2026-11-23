@@ -12,6 +12,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -161,5 +163,67 @@ class NotificationChannelRegistryTest {
         assertThat(capturedEvent.get()).isNotNull();
         assertThat(capturedEvent.get().getChannelName()).isEqualTo("test-evict-channel");
         assertThat(capturedEvent.get().getEvictedChannel()).isEqualTo(channel);
+    }
+
+    @Test
+    @DisplayName("测试热更新同名渠道时自动发布 NotificationChannelEvictEvent 驱逐旧配置")
+    void testChannelOverwritePublishesEvictEvent() {
+        AtomicReference<NotificationChannelEvictEvent> capturedEvent = new AtomicReference<>();
+        registry.setEventPublisher(event -> {
+            if (event instanceof NotificationChannelEvictEvent evictEvent) {
+                capturedEvent.set(evictEvent);
+            }
+        });
+
+        NotificationChannel oldChannel = NotificationChannel.builder()
+                .name("hot-update-channel")
+                .platform(Platform.DINGTALK)
+                .webhook("https://oapi.dingtalk.com/robot/send?access_token=old")
+                .build();
+        NotificationChannel newChannel = NotificationChannel.builder()
+                .name("hot-update-channel")
+                .platform(Platform.DINGTALK)
+                .webhook("https://oapi.dingtalk.com/robot/send?access_token=new")
+                .build();
+
+        registry.register(oldChannel);
+        assertThat(capturedEvent.get()).isNull();
+
+        registry.register(newChannel);
+        assertThat(capturedEvent.get()).isNotNull();
+        assertThat(capturedEvent.get().getChannelName()).isEqualTo("hot-update-channel");
+        assertThat(capturedEvent.get().getEvictedChannel()).isEqualTo(oldChannel);
+    }
+
+    @Test
+    @DisplayName("测试清空全部渠道时为所有已缓存渠道发布 NotificationChannelEvictEvent 事件")
+    void testChannelClearPublishesEvictEventsForAllEntries() {
+        List<NotificationChannelEvictEvent> capturedEvents = new ArrayList<>();
+        registry.setEventPublisher(event -> {
+            if (event instanceof NotificationChannelEvictEvent evictEvent) {
+                capturedEvents.add(evictEvent);
+            }
+        });
+
+        NotificationChannel ch1 = NotificationChannel.builder()
+                .name("clear-channel-1")
+                .platform(Platform.WECOM)
+                .webhook("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=111")
+                .build();
+        NotificationChannel ch2 = NotificationChannel.builder()
+                .name("clear-channel-2")
+                .platform(Platform.FEISHU)
+                .webhook("https://open.feishu.cn/open-apis/bot/v2/hook/222")
+                .build();
+
+        registry.register(ch1);
+        registry.register(ch2);
+        assertThat(capturedEvents).isEmpty();
+
+        registry.clear();
+        assertThat(registry.size()).isEqualTo(0);
+        assertThat(capturedEvents)
+                .extracting(NotificationChannelEvictEvent::getChannelName)
+                .containsExactlyInAnyOrder("clear-channel-1", "clear-channel-2");
     }
 }

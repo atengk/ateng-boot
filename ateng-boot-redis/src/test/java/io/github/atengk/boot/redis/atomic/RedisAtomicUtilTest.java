@@ -1,5 +1,6 @@
 package io.github.atengk.boot.redis.atomic;
 
+import io.github.atengk.boot.redis.properties.RedisProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -16,6 +17,7 @@ import org.springframework.data.redis.serializer.RedisSerializer;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -54,6 +56,17 @@ class RedisAtomicUtilTest {
         org.mockito.Mockito.lenient().when(redisTemplate.opsForValue()).thenReturn(valueOperations);
         org.mockito.Mockito.lenient().when(redisTemplate.opsForZSet()).thenReturn(zSetOperations);
         atomicUtil = new RedisAtomicUtil(redisTemplate);
+    }
+
+    @Test
+    @DisplayName("测试无参构造器向后兼容实例化且传入 init 不清空既有静态门面模板")
+    void testNoArgConstructorCompatibility() {
+        RedisAtomicUtil util = new RedisAtomicUtil();
+        assertThat(util).isNotNull();
+
+        when(valueOperations.increment("counter:safe-init", 1L)).thenReturn(42L);
+        RedisAtomicUtil.init(util);
+        assertThat(RedisAtomicUtil.incr("counter:safe-init")).isEqualTo(42L);
     }
 
     @Test
@@ -186,5 +199,67 @@ class RedisAtomicUtilTest {
 
         assertThatThrownBy(() -> atomicUtil.slidingWindowCheck("key", 0, Duration.ofSeconds(1)))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("测试全局 keyPrefix 配置下的原子键名与流水号拼接")
+    void testKeyPrefixFormatting() {
+        RedisProperties props = new RedisProperties();
+        props.setKeyPrefix("ateng-sample:");
+        RedisAtomicUtil prefixedUtil = new RedisAtomicUtil(redisTemplate, props);
+
+        when(valueOperations.increment("ateng-sample:counter:hits", 1L)).thenReturn(10L);
+        assertThat(prefixedUtil.increment("counter:hits")).isEqualTo(10L);
+
+        String today = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> keysCaptor = ArgumentCaptor.forClass(List.class);
+        when(redisTemplate.execute(any(RedisScript.class), any(RedisSerializer.class), isNull(), keysCaptor.capture(), eq(String.valueOf(Duration.ofDays(2).toSeconds()))))
+                .thenReturn(1L);
+
+        String seq = prefixedUtil.generateDailySeq("ORD", 6);
+        assertThat(seq).isEqualTo("ORD" + today + "000001");
+        assertThat(keysCaptor.getValue()).containsExactly("ateng-sample:seq:ORD:" + today);
+    }
+
+    @Test
+    @DisplayName("测试 incrWithExpire 别名方法与静态门面委托")
+    void testIncrWithExpireAndStaticFacades() {
+        when(redisTemplate.execute(any(RedisScript.class), any(RedisSerializer.class), isNull(), anyList(), eq("1"), eq("60")))
+                .thenReturn(5L);
+
+        Long val = atomicUtil.incrWithExpire("counter:expire", 1L, Duration.ofSeconds(60));
+        assertThat(val).isEqualTo(5L);
+
+        // 验证静态门面委托
+        Long staticVal = RedisAtomicUtil.incr("counter:expire", 1L, Duration.ofSeconds(60));
+        assertThat(staticVal).isEqualTo(5L);
+
+        when(valueOperations.increment("counter:static", 1L)).thenReturn(88L);
+        assertThat(RedisAtomicUtil.incr("counter:static")).isEqualTo(88L);
+
+        when(valueOperations.increment("counter:static:delta", 2L)).thenReturn(90L);
+        assertThat(RedisAtomicUtil.incr("counter:static:delta", 2L)).isEqualTo(90L);
+
+        when(valueOperations.decrement("counter:static:decr", 1L)).thenReturn(89L);
+        assertThat(RedisAtomicUtil.decr("counter:static:decr")).isEqualTo(89L);
+
+        when(valueOperations.decrement("counter:static:decr", 5L)).thenReturn(84L);
+        assertThat(RedisAtomicUtil.decr("counter:static:decr", 5L)).isEqualTo(84L);
+    }
+
+    @Test
+    @DisplayName("测试 formatKey 无冒号前缀规范化与幂等去重")
+    void testFormatKeyIdempotentNormalization() {
+        RedisProperties props = new RedisProperties();
+        props.setKeyPrefix("prod");
+        new RedisAtomicUtil(redisTemplate, props);
+        try {
+            assertThat(RedisAtomicUtil.formatKey("counter:hits")).isEqualTo("prod:counter:hits");
+            assertThat(RedisAtomicUtil.formatKey("prod:counter:hits")).isEqualTo("prod:counter:hits");
+            assertThat(RedisAtomicUtil.formatKey(":counter:hits")).isEqualTo("prod:counter:hits");
+        } finally {
+            new RedisAtomicUtil(redisTemplate, new RedisProperties());
+        }
     }
 }

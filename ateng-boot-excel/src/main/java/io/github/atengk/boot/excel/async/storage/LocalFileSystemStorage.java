@@ -1,6 +1,8 @@
 package io.github.atengk.boot.excel.async.storage;
 
+import io.github.atengk.boot.excel.exception.ExcelValidationException;
 import io.github.atengk.boot.excel.properties.ExcelProperties;
+import io.github.atengk.boot.excel.util.ExcelSecurityUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,6 +25,7 @@ public class LocalFileSystemStorage implements ExportFileStorage {
     private static final Logger log = LoggerFactory.getLogger(LocalFileSystemStorage.class);
 
     private final Path basePath;
+    private final String downloadUrlPrefix;
 
     public LocalFileSystemStorage() {
         this(new ExcelProperties());
@@ -39,6 +42,13 @@ public class LocalFileSystemStorage implements ExportFileStorage {
             this.basePath = Paths.get(dir);
         }
 
+        String prefix = (properties != null && properties.getAsyncExport() != null)
+                ? properties.getAsyncExport().getDownloadUrlPrefix()
+                : null;
+        this.downloadUrlPrefix = (prefix != null && !prefix.isBlank())
+                ? prefix
+                : "/api/excel/async-download?taskId=";
+
         try {
             Files.createDirectories(this.basePath);
         } catch (IOException e) {
@@ -52,8 +62,13 @@ public class LocalFileSystemStorage implements ExportFileStorage {
 
     @Override
     public String store(String taskId, File tempFile, String fileName) throws IOException {
-        Path targetPath = basePath.resolve(taskId + ".xlsx");
-        if (!tempFile.toPath().equals(targetPath)) {
+        Path normalizedBase = this.basePath.toAbsolutePath().normalize();
+        Path targetPath = resolveSafeTaskTarget(normalizedBase, taskId);
+        Path parent = targetPath.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+        if (!tempFile.toPath().toAbsolutePath().normalize().equals(targetPath)) {
             Files.move(tempFile.toPath(), targetPath, StandardCopyOption.REPLACE_EXISTING);
         }
         return targetPath.toAbsolutePath().toString();
@@ -70,7 +85,7 @@ public class LocalFileSystemStorage implements ExportFileStorage {
 
     @Override
     public String getDownloadUrl(String taskId, String storageKey) {
-        return "/api/excel/async-download?taskId=" + taskId;
+        return downloadUrlPrefix + taskId;
     }
 
     @Override
@@ -84,13 +99,17 @@ public class LocalFileSystemStorage implements ExportFileStorage {
     }
 
     private Path resolvePath(String taskId, String storageKey) {
+        Path normalizedBase = this.basePath.toAbsolutePath().normalize();
         if (storageKey != null && !storageKey.isBlank()) {
-            Path p = Paths.get(storageKey);
-            if (p.isAbsolute()) {
-                return p;
-            }
-            return basePath.resolve(storageKey);
+            return ExcelSecurityUtil.resolveContainedPath(normalizedBase, storageKey);
         }
-        return basePath.resolve(taskId + ".xlsx");
+        return resolveSafeTaskTarget(normalizedBase, taskId);
+    }
+
+    private static Path resolveSafeTaskTarget(Path normalizedBase, String taskId) {
+        if (taskId == null || taskId.isBlank()) {
+            throw new ExcelValidationException("导出任务标识不能为空");
+        }
+        return ExcelSecurityUtil.resolveContainedPath(normalizedBase, taskId + ".xlsx");
     }
 }

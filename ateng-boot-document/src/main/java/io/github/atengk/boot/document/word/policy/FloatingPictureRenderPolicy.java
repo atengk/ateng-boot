@@ -40,34 +40,69 @@ public class FloatingPictureRenderPolicy extends PictureRenderPolicy {
     private final int defaultDx;
     private final int defaultDy;
     private final boolean defaultAboveText;
+    private final STRelFromH.Enum defaultRelativeFromH;
+    private final STRelFromV.Enum defaultRelativeFromV;
 
     public FloatingPictureRenderPolicy() {
-        this(0, 0, true);
+        this(0, 0, true, STRelFromH.CHARACTER, STRelFromV.PARAGRAPH);
     }
 
     public FloatingPictureRenderPolicy(int defaultDx, int defaultDy) {
-        this(defaultDx, defaultDy, true);
+        this(defaultDx, defaultDy, true, STRelFromH.CHARACTER, STRelFromV.PARAGRAPH);
     }
 
     public FloatingPictureRenderPolicy(int defaultDx, int defaultDy, boolean defaultAboveText) {
+        this(defaultDx, defaultDy, defaultAboveText, STRelFromH.CHARACTER, STRelFromV.PARAGRAPH);
+    }
+
+    public FloatingPictureRenderPolicy(int defaultDx, int defaultDy, boolean defaultAboveText,
+                                       STRelFromH.Enum defaultRelativeFromH, STRelFromV.Enum defaultRelativeFromV) {
         this.defaultDx = defaultDx;
         this.defaultDy = defaultDy;
         this.defaultAboveText = defaultAboveText;
+        this.defaultRelativeFromH = defaultRelativeFromH != null ? defaultRelativeFromH : STRelFromH.CHARACTER;
+        this.defaultRelativeFromV = defaultRelativeFromV != null ? defaultRelativeFromV : STRelFromV.PARAGRAPH;
     }
 
     @Override
     public PictureRenderData cast(Object data) throws Exception {
         currentFloating.remove();
+        if (data == null) {
+            return null;
+        }
         if (data instanceof FloatingPicture fp) {
             currentFloating.set(fp);
-            try {
-                return fp.getPictureData();
-            } catch (Exception e) {
+            PictureRenderData picData = fp.getPictureData();
+            if (!isPictureDataValid(picData)) {
+                log.warn("FloatingPicture 图片数据为空或不可读，将优雅清空占位符");
                 currentFloating.remove();
-                throw e;
+                return null;
             }
+            return picData;
         }
-        return super.cast(data);
+        try {
+            PictureRenderData picData = super.cast(data);
+            if (!isPictureDataValid(picData)) {
+                return null;
+            }
+            return picData;
+        } catch (Exception e) {
+            log.warn("转换图片渲染数据异常，将优雅清空占位符: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private static boolean isPictureDataValid(PictureRenderData picData) {
+        if (picData == null) {
+            return false;
+        }
+        try {
+            byte[] bytes = picData.readPictureData();
+            return bytes != null && bytes.length > 0;
+        } catch (Exception e) {
+            log.warn("读取图片数据异常: {}", e.getMessage());
+            return false;
+        }
     }
 
     /**
@@ -79,6 +114,10 @@ public class FloatingPictureRenderPolicy extends PictureRenderPolicy {
 
     @Override
     public void doRender(RenderContext<PictureRenderData> context) throws Exception {
+        if (context == null || context.getData() == null) {
+            currentFloating.remove();
+            return;
+        }
         try {
             // 1. 先通过父类逻辑将图片写入当前 Run（此时为默认 CTInline 行内模式）
             super.doRender(context);
@@ -92,21 +131,30 @@ public class FloatingPictureRenderPolicy extends PictureRenderPolicy {
             int dx = defaultDx;
             int dy = defaultDy;
             boolean aboveText = defaultAboveText;
+            STRelFromH.Enum relativeFromH = defaultRelativeFromH;
+            STRelFromV.Enum relativeFromV = defaultRelativeFromV;
 
             FloatingPicture fp = currentFloating.get();
             if (fp != null) {
                 dx = fp.getDx();
                 dy = fp.getDy();
                 aboveText = fp.isAboveText();
+                if (fp.getRelativeFromH() != null) {
+                    relativeFromH = fp.getRelativeFromH();
+                }
+                if (fp.getRelativeFromV() != null) {
+                    relativeFromV = fp.getRelativeFromV();
+                }
             }
 
-            convertToAnchor(run, dx, dy, aboveText);
+            convertToAnchor(run, dx, dy, aboveText, relativeFromH, relativeFromV);
         } finally {
             currentFloating.remove();
         }
     }
 
-    private void convertToAnchor(XWPFRun run, int dx, int dy, boolean aboveText) {
+    private void convertToAnchor(XWPFRun run, int dx, int dy, boolean aboveText,
+                                 STRelFromH.Enum relativeFromH, STRelFromV.Enum relativeFromV) {
         if (run.getCTR().sizeOfDrawingArray() == 0) {
             return;
         }
@@ -142,12 +190,12 @@ public class FloatingPictureRenderPolicy extends PictureRenderPolicy {
 
         // ② positionH 水平相对定位
         CTPosH posH = anchor.addNewPositionH();
-        posH.setRelativeFrom(STRelFromH.COLUMN);
+        posH.setRelativeFrom(relativeFromH);
         posH.setPosOffset(Units.toEMU(dx));
 
         // ③ positionV 垂直相对定位
         CTPosV posV = anchor.addNewPositionV();
-        posV.setRelativeFrom(STRelFromV.PARAGRAPH);
+        posV.setRelativeFrom(relativeFromV);
         posV.setPosOffset(Units.toEMU(dy));
 
         // ④ extent 尺寸定义

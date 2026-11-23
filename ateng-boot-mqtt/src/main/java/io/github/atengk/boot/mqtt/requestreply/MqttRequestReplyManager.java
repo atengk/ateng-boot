@@ -2,8 +2,6 @@ package io.github.atengk.boot.mqtt.requestreply;
 
 import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.core.context.MessageContextPropagator;
-import io.github.atengk.boot.core.context.TenantContextHolder;
-import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.exception.MessageDeliveryException;
 import io.github.atengk.boot.core.util.IdUtil;
@@ -14,6 +12,7 @@ import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.util.MqttHeaderUtils;
+import io.github.atengk.boot.mqtt.util.MqttSchedulerSupport;
 import org.eclipse.paho.mqttv5.client.IMqttMessageListener;
 import org.eclipse.paho.mqttv5.client.IMqttToken;
 import org.eclipse.paho.mqttv5.common.MqttException;
@@ -25,7 +24,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.context.SmartLifecycle;
-import org.springframework.scheduling.concurrent.CustomizableThreadFactory;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.util.StringUtils;
 
 import java.nio.charset.StandardCharsets;
@@ -40,10 +39,11 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * MQTT 请求-响应模式核心管理引擎
@@ -63,10 +63,15 @@ public class MqttRequestReplyManager implements SmartLifecycle {
 
     private final Map<String, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
     private final Set<String> subscribedClientNames = ConcurrentHashMap.newKeySet();
+    private final Map<String, MqttClientHandle> boundConnectHandles = new ConcurrentHashMap<>();
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean registryHooksRegistered = new AtomicBoolean(false);
+    private final ReentrantLock subscriptionLock = new ReentrantLock();
 
     private final boolean externalScanner;
+    private ThreadPoolTaskScheduler ownedTaskScheduler;
     private ScheduledExecutorService timeoutScanner;
+    private volatile ScheduledFuture<?> timeoutScannerFuture;
 
     public MqttRequestReplyManager(NamedMqttClientRegistry clientRegistry,
                                   PayloadGuard payloadGuard,
@@ -99,22 +104,43 @@ public class MqttRequestReplyManager implements SmartLifecycle {
         if (running.compareAndSet(false, true)) {
             log.info("[MQTT] Starting MqttRequestReplyManager, initializing aggregated response subscriptions");
             if (this.timeoutScanner == null) {
-                CustomizableThreadFactory factory = new CustomizableThreadFactory("ateng-mqtt-request-reply-cleaner-");
-                factory.setDaemon(true);
-                this.timeoutScanner = Executors.newSingleThreadScheduledExecutor(factory);
+                this.ownedTaskScheduler = MqttSchedulerSupport.createDaemonScheduler(1, "ateng-mqtt-request-reply-cleaner-");
+                this.timeoutScanner = this.ownedTaskScheduler.getScheduledExecutor();
             }
             // 启动定时超时安全扫描器（每 500ms 扫描一次），防范无界内存挂起
-            this.timeoutScanner.scheduleWithFixedDelay(this::scanAndCleanExpiredRequests, 500, 500, TimeUnit.MILLISECONDS);
+            this.timeoutScannerFuture = this.timeoutScanner.scheduleWithFixedDelay(
+                    this::scanAndCleanExpiredRequests, 500, 500, TimeUnit.MILLISECONDS);
 
-            // 预订阅所有已配置客户端的私有聚合响应主题
+            // 预订阅所有已配置客户端的私有聚合响应主题并绑定重连与热插拔联动监听（幂等防重）
             for (MqttClientHandle handle : clientRegistry.getClientHandles().values()) {
-                try {
-                    ensureSubscribed(handle);
-                } catch (Exception e) {
-                    log.error("[MQTT] Failed to pre-subscribe aggregated response topic for client [{}]: {}",
-                            handle.getClientName(), e.getMessage(), e);
-                }
+                bindClientForRequestReply(handle);
             }
+            if (registryHooksRegistered.compareAndSet(false, true)) {
+                clientRegistry.addClientRegisteredListener(this::bindClientForRequestReply);
+                clientRegistry.addClientUnregisterListener(this::handleClientRemoved);
+            }
+        }
+    }
+
+    private void bindClientForRequestReply(MqttClientHandle handle) {
+        if (handle == null) {
+            return;
+        }
+        try {
+            ensureSubscribed(handle);
+            boundConnectHandles.compute(handle.getClientName(), (name, existing) -> {
+                if (existing != handle) {
+                    handle.addConnectCompleteListener((reconnect, serverURI) -> {
+                        if (reconnect) {
+                            handleReconnect(handle.getClientName());
+                        }
+                    });
+                }
+                return handle;
+            });
+        } catch (Exception e) {
+            log.error("[MQTT] Failed to pre-subscribe aggregated response topic for client [{}]: {}",
+                    handle.getClientName(), e.getMessage(), e);
         }
     }
 
@@ -122,8 +148,15 @@ public class MqttRequestReplyManager implements SmartLifecycle {
     public void stop() {
         if (running.compareAndSet(true, false)) {
             log.info("[MQTT] Stopping MqttRequestReplyManager, cleaning [{}] pending requests", pendingRequests.size());
-            if (!externalScanner && timeoutScanner != null) {
-                timeoutScanner.shutdownNow();
+            ScheduledFuture<?> future = this.timeoutScannerFuture;
+            this.timeoutScannerFuture = null;
+            if (future != null) {
+                future.cancel(false);
+            }
+            if (!externalScanner && ownedTaskScheduler != null) {
+                ownedTaskScheduler.shutdown();
+                ownedTaskScheduler = null;
+                timeoutScanner = null;
             }
             // 终止所有未决的请求 Future
             for (PendingRequest pending : pendingRequests.values()) {
@@ -149,20 +182,202 @@ public class MqttRequestReplyManager implements SmartLifecycle {
      *
      * @param handle 客户端句柄
      */
-    public synchronized void ensureSubscribed(MqttClientHandle handle) {
+    public void ensureSubscribed(MqttClientHandle handle) {
         if (handle == null || subscribedClientNames.contains(handle.getClientName())) {
             return;
         }
-        String responseTopic = handle.getResponseTopic();
+        subscriptionLock.lock();
         try {
-            IMqttMessageListener listener = (topic, message) -> handleInboundResponse(handle, topic, message);
-            handle.subscribe(responseTopic, 1, listener);
-            subscribedClientNames.add(handle.getClientName());
-            log.info("[MQTT] Client [{}] successfully pre-subscribed to private response topic [{}]",
-                    handle.getClientName(), responseTopic);
-        } catch (MqttException e) {
-            throw new BusinessException("Failed to subscribe response topic [" + responseTopic + "] on client [" + handle.getClientName() + "]: " + e.getMessage(), e);
+            if (subscribedClientNames.contains(handle.getClientName())) {
+                return;
+            }
+            String responseTopic = handle.getResponseTopic();
+            try {
+                IMqttMessageListener listener = (topic, message) -> handleInboundResponse(handle, topic, message);
+                handle.subscribe(responseTopic, 1, listener);
+                subscribedClientNames.add(handle.getClientName());
+                log.info("[MQTT] Client [{}] successfully pre-subscribed to private response topic [{}]",
+                        handle.getClientName(), responseTopic);
+            } catch (MqttException e) {
+                throw new BusinessException("Failed to subscribe response topic [" + responseTopic + "] on client [" + handle.getClientName() + "]: " + e.getMessage(), e);
+            }
+        } finally {
+            subscriptionLock.unlock();
         }
+    }
+
+    /**
+     * 重连响应主题自愈：清除已缓存的订阅标记并重新预订阅私有响应主题
+     *
+     * @param clientName 客户端逻辑名称
+     */
+    public void handleReconnect(String clientName) {
+        String effectiveName = StringUtils.hasText(clientName) ? clientName : clientRegistry.getDefaultClientName();
+        subscriptionLock.lock();
+        try {
+            log.info("[MQTT] Triggering response topic self-healing for client [{}] on reconnect", effectiveName);
+            subscribedClientNames.remove(effectiveName);
+            // 主动触发扫描清理已过期的挂起请求，避免网络闪断前超时的请求堆积
+            scanAndCleanExpiredRequests();
+            if (clientRegistry.containsClient(effectiveName)) {
+                MqttClientHandle handle = clientRegistry.getClientHandle(effectiveName);
+                if (handle.isConnected()) {
+                    ensureSubscribed(handle);
+                }
+            }
+        } finally {
+            subscriptionLock.unlock();
+        }
+    }
+
+    /**
+     * 清理指定已注销客户端的响应订阅状态与挂起请求
+     *
+     * @param clientName 客户端逻辑名称
+     */
+    public void handleClientRemoved(String clientName) {
+        if (!StringUtils.hasText(clientName)) {
+            return;
+        }
+        boundConnectHandles.remove(clientName);
+        subscriptionLock.lock();
+        try {
+            subscribedClientNames.remove(clientName);
+            for (PendingRequest pending : pendingRequests.values()) {
+                if (clientName.equals(pending.clientName) && pendingRequests.remove(pending.correlationId, pending)) {
+                    pending.future.completeExceptionally(
+                            new BusinessException("MQTT client [" + clientName + "] has been unregistered"));
+                }
+            }
+        } finally {
+            subscriptionLock.unlock();
+        }
+    }
+
+    /**
+     * 判断指定客户端是否已完成私有聚合响应主题预订阅
+     *
+     * @param clientName 客户端逻辑名称
+     * @return true 若已预订阅
+     */
+    public boolean isSubscribed(String clientName) {
+        if (!StringUtils.hasText(clientName)) {
+            clientName = clientRegistry.getDefaultClientName();
+        }
+        return subscribedClientNames.contains(clientName);
+    }
+
+    /**
+     * 发起请求并等待响应（默认客户端，QoS 1，异步非阻塞）
+     *
+     * @param topic   目标请求主题
+     * @param payload 请求载荷
+     * @param timeout 等待超时阈值
+     * @return 响应报文 CompletableFuture
+     */
+    public CompletableFuture<MqttMessage> sendAndReceiveAsync(String topic, Object payload, Duration timeout) {
+        return sendAndReceiveAsync(null, topic, payload, 1, timeout);
+    }
+
+    /**
+     * 发起请求并等待响应（默认客户端，异步非阻塞）
+     *
+     * @param topic   目标请求主题
+     * @param payload 请求载荷
+     * @param qos     QoS 等级
+     * @param timeout 等待超时阈值
+     * @return 响应报文 CompletableFuture
+     */
+    public CompletableFuture<MqttMessage> sendAndReceiveAsync(String topic, Object payload, int qos, Duration timeout) {
+        return sendAndReceiveAsync(null, topic, payload, qos, timeout);
+    }
+
+    /**
+     * 发起请求并等待强类型响应（默认客户端，QoS 1，异步非阻塞）
+     *
+     * @param topic        目标请求主题
+     * @param payload      请求载荷
+     * @param responseType 期望返回的目标对象类型
+     * @param timeout      等待超时阈值
+     * @param <T>          泛型类型
+     * @return 响应对象 CompletableFuture
+     */
+    public <T> CompletableFuture<T> sendAndReceiveAsync(String topic, Object payload, Class<T> responseType, Duration timeout) {
+        return sendAndReceiveAsync(null, topic, payload, 1, responseType, timeout);
+    }
+
+    /**
+     * 发起请求并等待强类型响应（默认客户端，异步非阻塞）
+     *
+     * @param topic        目标请求主题
+     * @param payload      请求载荷
+     * @param qos          QoS 等级
+     * @param responseType 期望返回的目标对象类型
+     * @param timeout      等待超时阈值
+     * @param <T>          泛型类型
+     * @return 响应对象 CompletableFuture
+     */
+    public <T> CompletableFuture<T> sendAndReceiveAsync(String topic, Object payload, int qos, Class<T> responseType, Duration timeout) {
+        return sendAndReceiveAsync(null, topic, payload, qos, responseType, timeout);
+    }
+
+    /**
+     * 指定客户端发起请求并等待强类型响应（QoS 1，异步非阻塞）
+     *
+     * @param clientName   客户端逻辑名称
+     * @param topic        目标请求主题
+     * @param payload      请求载荷
+     * @param responseType 期望返回的目标对象类型
+     * @param timeout      等待超时阈值
+     * @param <T>          泛型类型
+     * @return 响应对象 CompletableFuture
+     */
+    public <T> CompletableFuture<T> sendAndReceiveAsync(String clientName, String topic, Object payload, Class<T> responseType, Duration timeout) {
+        return sendAndReceiveAsync(clientName, topic, payload, 1, responseType, timeout);
+    }
+
+    /**
+     * 指定客户端发起请求并等待强类型响应（异步非阻塞）
+     *
+     * @param clientName   客户端逻辑名称
+     * @param topic        目标请求主题
+     * @param payload      请求载荷
+     * @param qos          QoS 等级
+     * @param responseType 期望返回的目标对象类型
+     * @param timeout      等待超时阈值
+     * @param <T>          泛型类型
+     * @return 响应对象 CompletableFuture
+     */
+    public <T> CompletableFuture<T> sendAndReceiveAsync(String clientName,
+                                                        String topic,
+                                                        Object payload,
+                                                        int qos,
+                                                        Class<T> responseType,
+                                                        Duration timeout) {
+        Objects.requireNonNull(responseType, "responseType must not be null");
+        return sendAndReceiveAsync(clientName, topic, payload, qos, timeout)
+                .thenApply(msg -> convertResponse(msg, responseType));
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T convertResponse(MqttMessage message, Class<T> responseType) {
+        if (message == null || responseType == null) {
+            return null;
+        }
+        if (responseType.isAssignableFrom(MqttMessage.class)) {
+            return (T) message;
+        }
+        byte[] payload = message.getPayload();
+        if (responseType == byte[].class) {
+            return (T) (payload != null ? payload : new byte[0]);
+        }
+        if (responseType == String.class) {
+            return (T) (payload != null ? new String(payload, StandardCharsets.UTF_8) : "");
+        }
+        if (payload == null || payload.length == 0) {
+            return null;
+        }
+        return JsonUtil.parseObject(payload, responseType);
     }
 
     /**
@@ -183,7 +398,7 @@ public class MqttRequestReplyManager implements SmartLifecycle {
         validateTopic(topic);
         validateTimeout(timeout);
 
-        MqttClientHandle handle = clientRegistry.getClientHandle(clientName);
+        MqttClientHandle handle = clientRegistry.getConnectedClientHandle(clientName);
         ensureSubscribed(handle);
 
         // 1. 生成基于 UUID 的关联标识 Correlation Data
@@ -237,36 +452,40 @@ public class MqttRequestReplyManager implements SmartLifecycle {
      * 处理响应主题接收到的入站报文
      */
     private void handleInboundResponse(MqttClientHandle handle, String actualTopic, MqttMessage message) {
-        byte[] correlationBytes = null;
-        if (message.getProperties() != null) {
-            correlationBytes = message.getProperties().getCorrelationData();
-        }
-        if (correlationBytes == null || correlationBytes.length == 0) {
-            log.warn("[MQTT] Inbound response received on topic [{}] without correlationData, discarded", actualTopic);
-            return;
-        }
+        try {
+            byte[] correlationBytes = null;
+            if (message.getProperties() != null) {
+                correlationBytes = message.getProperties().getCorrelationData();
+            }
+            if (correlationBytes == null || correlationBytes.length == 0) {
+                log.warn("[MQTT] Inbound response received on topic [{}] without correlationData, discarded", actualTopic);
+                return;
+            }
 
-        String correlationId = new String(correlationBytes, StandardCharsets.UTF_8);
-        PendingRequest pending = pendingRequests.remove(correlationId);
-        if (pending == null) {
-            log.debug("[MQTT] Response arrived for correlationId [{}] on topic [{}] but no active pending request found (expired or already handled)",
-                    correlationId, actualTopic);
-            return;
-        }
+            String correlationId = new String(correlationBytes, StandardCharsets.UTF_8);
+            PendingRequest pending = pendingRequests.remove(correlationId);
+            if (pending == null) {
+                log.debug("[MQTT] Response arrived for correlationId [{}] on topic [{}] but no active pending request found (expired or already handled)",
+                        correlationId, actualTopic);
+                return;
+            }
 
-        Runnable completeTask = () -> {
-            Map<String, Object> headers = extractHeaders(message);
-            MessageContextPropagator.runInContext(headers, () -> {
-                pending.future.complete(message);
-                log.debug("[MQTT] Successfully completed request-response for correlationId [{}] on topic [{}]",
-                        correlationId, pending.topic);
-            });
-        };
+            Runnable completeTask = () -> {
+                Map<String, Object> headers = extractHeaders(message);
+                MessageContextPropagator.runInContext(headers, () -> {
+                    pending.future.complete(message);
+                    log.debug("[MQTT] Successfully completed request-response for correlationId [{}] on topic [{}]",
+                            correlationId, pending.topic);
+                });
+            };
 
-        if (executor != null) {
-            executor.execute(completeTask);
-        } else {
-            completeTask.run();
+            if (executor != null) {
+                executor.execute(completeTask);
+            } else {
+                completeTask.run();
+            }
+        } finally {
+            handle.acknowledgeMessage(message);
         }
     }
 
@@ -295,27 +514,7 @@ public class MqttRequestReplyManager implements SmartLifecycle {
 
     private void injectContextUserProperties(MqttProperties props) {
         List<UserProperty> userProperties = new ArrayList<>();
-
-        String traceId = MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY);
-        if (!StringUtils.hasText(traceId)) {
-            traceId = IdUtil.fastSimpleUUID();
-        }
-        userProperties.add(new UserProperty(MessageHeaderConstants.TRACE_ID, traceId));
-
-        String userId = UserContextHolder.get();
-        if (StringUtils.hasText(userId)) {
-            userProperties.add(new UserProperty(MessageHeaderConstants.USER_ID, userId));
-        }
-
-        String tenantId = TenantContextHolder.getTenantId();
-        if (StringUtils.hasText(tenantId)) {
-            userProperties.add(new UserProperty(MessageHeaderConstants.TENANT_ID, tenantId));
-        }
-
-        if (TenantContextHolder.isIgnoreTenant()) {
-            userProperties.add(new UserProperty(MessageHeaderConstants.IGNORE_TENANT, "true"));
-        }
-
+        MqttHeaderUtils.appendCurrentContextUserProperties(userProperties);
         props.setUserProperties(userProperties);
     }
 

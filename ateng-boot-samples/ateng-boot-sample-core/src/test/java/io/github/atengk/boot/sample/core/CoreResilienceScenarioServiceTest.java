@@ -11,6 +11,7 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.model.Triple;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.sample.core.service.CoreResilienceScenarioService;
+import io.github.atengk.boot.sample.core.vo.RemoteTraceUnpackVO;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -233,5 +234,18 @@ class CoreResilienceScenarioServiceTest {
         assertThat(triple.left()).isPositive();
         assertThat(triple.middle()).isEqualTo(1L);
         assertThat(triple.right()).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("测试跨进程异常解包透传远端 traceId 至 BusinessException")
+    void testUnpackRemoteFailureWithTraceId() {
+        RemoteTraceUnpackVO vo = resilienceScenarioService.unpackRemoteFailureWithTraceId(
+                "ORD-20261119-888",
+                "rpc-order-trace-888"
+        );
+        assertThat(vo.getOrderNo()).isEqualTo("ORD-20261119-888");
+        assertThat(vo.getCode()).isEqualTo(4001);
+        assertThat(vo.getMsg()).contains("ORD-20261119-888");
+        assertThat(vo.getPropagatedTraceId()).isEqualTo("rpc-order-trace-888");
     }
 }

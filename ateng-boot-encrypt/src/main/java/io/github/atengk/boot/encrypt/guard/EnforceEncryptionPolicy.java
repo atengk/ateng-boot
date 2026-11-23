@@ -3,11 +3,19 @@ package io.github.atengk.boot.encrypt.guard;
 import io.github.atengk.boot.encrypt.exception.ConfigSecurityException;
 import io.github.atengk.boot.encrypt.parser.CiphertextParser;
 import io.github.atengk.boot.encrypt.wrapper.EncryptPropertySourceWrapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.EnumerablePropertySource;
 import org.springframework.core.env.PropertySource;
 import org.springframework.core.env.StandardEnvironment;
 
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -20,7 +28,17 @@ import java.util.regex.Pattern;
  */
 public final class EnforceEncryptionPolicy {
 
+    private static final Logger log = LoggerFactory.getLogger(EnforceEncryptionPolicy.class);
+
     public static final String DEFAULT_SENSITIVE_KEY_PATTERN = ".*password.*|.*secret.*|.*token.*|.*private-key.*";
+
+    private static final String[] EXEMPTED_URI_SCHEMES = {
+            "http://", "https://", "classpath:", "file:", "ws://", "wss://"
+    };
+
+    private static final Set<String> EXEMPTED_LOG_LEVELS = Set.of(
+            "DEBUG", "INFO", "WARN", "ERROR", "TRACE"
+    );
 
     private EnforceEncryptionPolicy() {
     }
@@ -33,6 +51,21 @@ public final class EnforceEncryptionPolicy {
      * @param parser           密文语法解析器
      */
     public static void enforce(ConfigurableEnvironment environment, String sensitivePattern, CiphertextParser parser) {
+        enforce(environment, sensitivePattern, null, parser);
+    }
+
+    /**
+     * 执行环境敏感属性明文检测与安全阻断（支持显式属性白名单）
+     *
+     * @param environment      Spring 可配置环境
+     * @param sensitivePattern 敏感属性键名正则表达式
+     * @param ignoredKeys      白名单键名集合（可为 null）
+     * @param parser           密文语法解析器
+     */
+    public static void enforce(ConfigurableEnvironment environment,
+                               String sensitivePattern,
+                               Set<String> ignoredKeys,
+                               CiphertextParser parser) {
         if (environment == null) {
             return;
         }
@@ -42,23 +75,51 @@ public final class EnforceEncryptionPolicy {
         Pattern pattern = Pattern.compile(patternStr, Pattern.CASE_INSENSITIVE);
         CiphertextParser tokenParser = parser != null ? parser : new CiphertextParser();
 
+        Set<String> effectiveIgnoredKeys = resolveEffectiveIgnoredKeys(environment, ignoredKeys);
+
         for (PropertySource<?> source : environment.getPropertySources()) {
             if (shouldSkipPropertySource(source)) {
                 continue;
             }
-            scanAndValidate(source, pattern, tokenParser);
+            scanAndValidate(source, pattern, effectiveIgnoredKeys, tokenParser);
         }
     }
 
-    private static void scanAndValidate(PropertySource<?> source, Pattern pattern, CiphertextParser parser) {
+    private static Set<String> resolveEffectiveIgnoredKeys(ConfigurableEnvironment environment, Set<String> ignoredKeys) {
+        Set<String> result = new HashSet<>();
+        if (ignoredKeys != null) {
+            result.addAll(ignoredKeys);
+        }
+        if (environment != null) {
+            try {
+                Set<String> bound = Binder.get(environment)
+                        .bind("ateng.boot.encrypt.ignored-keys", Bindable.setOf(String.class))
+                        .orElse(Collections.emptySet());
+                result.addAll(bound);
+            } catch (Exception e) {
+                log.debug("[ateng-boot-encrypt] 读取自定义豁免键列表失败或环境属性源尚未就绪: {}", e.getMessage());
+            }
+        }
+        return result;
+    }
+
+    private static void scanAndValidate(PropertySource<?> source,
+                                        Pattern pattern,
+                                        Set<String> ignoredKeys,
+                                        CiphertextParser parser) {
         if (source instanceof EnumerablePropertySource<?> enumerableSource) {
             for (String key : enumerableSource.getPropertyNames()) {
-                if (isIgnoredKey(key)) {
+                if (isIgnoredKey(key, ignoredKeys)) {
                     continue;
                 }
                 if (pattern.matcher(key).matches()) {
                     Object rawValue = getRawProperty(source, key);
-                    if (rawValue instanceof String strVal && !strVal.trim().isEmpty()) {
+                    String strVal = extractStringValue(rawValue);
+                    if (strVal != null && !strVal.trim().isEmpty()) {
+                        // 协议与日志级别等特征防误伤豁免
+                        if (isExemptedValue(strVal)) {
+                            continue;
+                        }
                         if (!parser.hasEncrypted(strVal)) {
                             throw new ConfigSecurityException(String.format(
                                     "生产环境强制要求敏感配置必须加密 (enforce-encrypted=true)！检测到明文敏感配置属性: '%s'，已被安全策略刚性拦截",
@@ -71,11 +132,67 @@ public final class EnforceEncryptionPolicy {
         }
     }
 
-    private static Object getRawProperty(PropertySource<?> source, String key) {
+    /**
+     * 判断属性值是否属于协议路径或标准日志级别等安全防误伤豁免值
+     *
+     * @param value 属性值字符串
+     * @return 若符合豁免特征返回 true
+     */
+    public static boolean isExemptedValue(String value) {
+        if (value == null) {
+            return false;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
+            return false;
+        }
+        // 1. URI 协议特征豁免（http://, https://, classpath:, file:, ws://, wss://）
+        for (String prefix : EXEMPTED_URI_SCHEMES) {
+            if (trimmed.regionMatches(true, 0, prefix, 0, prefix.length())) {
+                return true;
+            }
+        }
+        // 2. 真实多级绝对文件路径特征豁免
+        if (isPathLike(trimmed)) {
+            return true;
+        }
+        // 3. 标准日志级别特征豁免（DEBUG, INFO, WARN, ERROR, TRACE）
+        return EXEMPTED_LOG_LEVELS.contains(trimmed.toUpperCase(Locale.ROOT));
+    }
+
+    private static boolean isPathLike(String val) {
+        // Unix 绝对路径：以 / 开头且至少存在二级目录，如 /etc/ssl/cert.pem，防止 /Secret2026 单层明文逃逸
+        if (val.startsWith("/") && val.indexOf('/', 1) > 0) {
+            return true;
+        }
+        // Windows 绝对路径：以盘符开头，如 C:/certs/app.p12 或 C:\certs\app.p12
+        if (val.length() >= 3 && Character.isLetter(val.charAt(0)) && val.charAt(1) == ':'
+                && (val.charAt(2) == '/' || val.charAt(2) == '\\')) {
+            return true;
+        }
+        return false;
+    }
+
+    public static Object getRawProperty(PropertySource<?> source, String key) {
         if (source instanceof EncryptPropertySourceWrapper wrapper) {
             return wrapper.getDelegate().getProperty(key);
         }
         return source.getProperty(key);
+    }
+
+    /**
+     * 从任意原始属性值中提取规范化字符串（兼容 CharSequence 与未加引号的 Number）
+     *
+     * @param rawValue 原始属性对象
+     * @return 转换后的字符串，若非文本或数值类型则返回 null
+     */
+    public static String extractStringValue(Object rawValue) {
+        if (rawValue instanceof CharSequence cs) {
+            return cs.toString();
+        } else if (rawValue instanceof Number num) {
+            return num.toString();
+        }
+        return null;
     }
 
     static boolean shouldSkipPropertySource(PropertySource<?> source) {
@@ -93,15 +210,26 @@ public final class EnforceEncryptionPolicy {
                 || name.startsWith("stub");
     }
 
-    static boolean isIgnoredKey(String key) {
+    public static boolean isIgnoredKey(String key, Set<String> ignoredKeys) {
         if (key == null) {
             return true;
         }
-        // 忽略框架自身解密配置项（主密钥与多 Key 映射表等）
-        if (key.startsWith("ateng.boot.encrypt.")) {
+        // 1. 忽略框架自身解密配置项（主密钥与多 Key 映射表等）
+        if (key.startsWith("ateng.boot.encrypt.") || "ateng.boot.encrypt".equals(key)) {
             return true;
         }
-        // 忽略 Spring Boot 与 JVM 内部变量
-        return key.startsWith("java.") || key.startsWith("sun.") || key.startsWith("user.");
+        // 2. 忽略 Spring Boot 与 JVM 内部变量
+        if (key.startsWith("java.") || key.startsWith("sun.") || key.startsWith("user.")) {
+            return true;
+        }
+        // 3. 显式白名单机制
+        if (ignoredKeys != null && ignoredKeys.contains(key)) {
+            return true;
+        }
+        return false;
+    }
+
+    public static boolean isIgnoredKey(String key) {
+        return isIgnoredKey(key, null);
     }
 }

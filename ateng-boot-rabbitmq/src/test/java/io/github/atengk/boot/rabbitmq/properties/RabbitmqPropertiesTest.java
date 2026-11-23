@@ -51,6 +51,11 @@ class RabbitmqPropertiesTest {
         assertEquals(2.0, properties.getConsumer().getRetry().getMultiplier());
         assertEquals(Duration.ofSeconds(10), properties.getConsumer().getRetry().getMaxInterval());
 
+        // Consumer Batch
+        assertFalse(properties.getConsumer().getBatch().isEnabled());
+        assertEquals(50, properties.getConsumer().getBatch().getSize());
+        assertEquals(Duration.ofMillis(500), properties.getConsumer().getBatch().getMaxWaitTime());
+
         // Topology
         assertTrue(properties.getTopology().isAutoDeclare());
 
@@ -72,6 +77,9 @@ class RabbitmqPropertiesTest {
         map.put("ateng.boot.rabbitmq.consumer.max-concurrency", "16");
         map.put("ateng.boot.rabbitmq.consumer.shutdown-timeout", "45s");
         map.put("ateng.boot.rabbitmq.consumer.retry.max-attempts", "5");
+        map.put("ateng.boot.rabbitmq.consumer.batch.enabled", "true");
+        map.put("ateng.boot.rabbitmq.consumer.batch.size", "100");
+        map.put("ateng.boot.rabbitmq.consumer.batch.max-wait-time", "1s");
         map.put("ateng.boot.rabbitmq.topology.auto-declare", "false");
 
         ConfigurationPropertySource source = new MapConfigurationPropertySource(map);
@@ -88,6 +96,9 @@ class RabbitmqPropertiesTest {
         assertEquals(16, properties.getConsumer().getMaxConcurrency());
         assertEquals(Duration.ofSeconds(45), properties.getConsumer().getShutdownTimeout());
         assertEquals(5, properties.getConsumer().getRetry().getMaxAttempts());
+        assertTrue(properties.getConsumer().getBatch().isEnabled());
+        assertEquals(100, properties.getConsumer().getBatch().getSize());
+        assertEquals(Duration.ofSeconds(1), properties.getConsumer().getBatch().getMaxWaitTime());
         assertFalse(properties.getTopology().isAutoDeclare());
     }
 }

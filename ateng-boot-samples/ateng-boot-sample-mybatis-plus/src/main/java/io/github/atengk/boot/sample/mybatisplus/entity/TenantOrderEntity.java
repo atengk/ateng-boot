@@ -5,7 +5,8 @@ import com.baomidou.mybatisplus.annotation.Version;
 import io.github.atengk.boot.mybatisplus.annotation.AuditChange;
 import io.github.atengk.boot.mybatisplus.annotation.ConflictKeys;
 import io.github.atengk.boot.mybatisplus.entity.BaseEntity;
-import io.github.atengk.boot.mybatisplus.entity.TenantEntity;
+import io.github.atengk.boot.mybatisplus.entity.TenantAware;
+import io.github.atengk.boot.mybatisplus.entity.Versioned;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -15,7 +16,7 @@ import java.math.BigDecimal;
 
 /**
  * 租户订单实体对象
- * 继承四要素全审计业务基类 BaseEntity，实现 TenantEntity 多租户隔离，
+ * 继承四要素全审计业务基类 BaseEntity，组合实现 {@link TenantAware}{@code <String>} 与 {@link Versioned} 正交能力接口，
  * 声明 @ConflictKeys 双方言批量 Upsert 与 @AuditChange 数据变更 Diff 审计
  *
  * @author Ateng
@@ -28,7 +29,7 @@ import java.math.BigDecimal;
 @TableName("tenant_order")
 @ConflictKeys({"order_no"})
 @AuditChange(description = "订单变更审计")
-public class TenantOrderEntity extends BaseEntity implements TenantEntity {
+public class TenantOrderEntity extends BaseEntity implements TenantAware<String>, Versioned {
 
     private static final long serialVersionUID = 1L;
 

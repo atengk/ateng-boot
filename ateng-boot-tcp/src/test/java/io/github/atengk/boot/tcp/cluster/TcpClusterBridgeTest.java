@@ -1,23 +1,33 @@
 package io.github.atengk.boot.tcp.cluster;
 
+import io.github.atengk.boot.core.constant.MessageHeaderConstants;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.model.TcpPayload;
 import io.github.atengk.boot.tcp.properties.TcpClusterProperties;
 import io.github.atengk.boot.tcp.session.TcpSession;
 import io.github.atengk.boot.tcp.session.TcpSessionManager;
+import io.github.atengk.boot.tcp.template.TcpServerTemplate;
 import io.netty.channel.embedded.EmbeddedChannel;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.slf4j.MDC;
 import org.springframework.data.redis.connection.DefaultMessage;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
 
 /**
@@ -27,6 +37,13 @@ import static org.mockito.Mockito.verify;
  * @since 2026-10-26
  */
 class TcpClusterBridgeTest {
+
+    @AfterEach
+    void cleanupContext() {
+        MDC.clear();
+        TenantContextHolder.clear();
+        UserContextHolder.clear();
+    }
 
     @Test
     @DisplayName("LocalTcpClusterBridge 本地直发成功与未命中降级")
@@ -148,5 +165,178 @@ class TcpClusterBridgeTest {
         assertThat(packet.getDeviceId()).isEqualTo("DEV-DEVICE-999");
         assertThat(packet.getPayload().asString()).isEqualTo("{\"sampleKey\":\"sampleVal\"}");
         assertThat(packet.getHeaders()).containsEntry("traceId", "T-123456");
+    }
+
+    @Test
+    @DisplayName("验证 LocalTcpClusterBridge 单机分组组播逻辑")
+    void testLocalTcpClusterBridgeGroupMulticast() {
+        TcpSessionManager sessionManager = new TcpSessionManager();
+        LocalTcpClusterBridge bridge = new LocalTcpClusterBridge(sessionManager);
+
+        EmbeddedChannel ch1 = new EmbeddedChannel();
+        TcpSession session1 = new TcpSession("ses-1", ch1);
+        sessionManager.register(session1);
+        sessionManager.addToGroup("FLEET_A", "ses-1");
+
+        EmbeddedChannel ch2 = new EmbeddedChannel();
+        TcpSession session2 = new TcpSession("ses-2", ch2);
+        sessionManager.register(session2);
+        sessionManager.addToGroup("FLEET_B", "ses-2");
+
+        // 1. 向 FLEET_A 组播 -> 仅 session1 收到
+        boolean sent = bridge.sendGroupToCluster("FLEET_A", "FLEET_A_MSG");
+        assertThat(sent).isTrue();
+        assertThat(ch1.outboundMessages()).isNotEmpty();
+        assertThat(ch2.outboundMessages()).isEmpty();
+
+        // 2. 向不存在的分组组播 -> 返回 false
+        boolean notSent = bridge.sendGroupToCluster("FLEET_UNKNOWN", "EMPTY_MSG");
+        assertThat(notSent).isFalse();
+    }
+
+    @Test
+    @DisplayName("验证 RedisPubSubTcpClusterBridge 跨节点分组组播发信、对端接收路由与防回环守卫")
+    void testRedisPubSubGroupMulticastSendAndReceive() {
+        TcpSessionManager sessionManager = new TcpSessionManager();
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        TcpClusterProperties clusterProperties = new TcpClusterProperties();
+        clusterProperties.getRedis().setEnabled(true);
+        clusterProperties.getRedis().setTopic("test:cluster:topic");
+
+        RedisPubSubTcpClusterBridge bridge = new RedisPubSubTcpClusterBridge(sessionManager, redisTemplate, clusterProperties);
+
+        // 注册两个会话，分别加入 FLEET_ALPHA 与 FLEET_BETA
+        EmbeddedChannel chAlpha = new EmbeddedChannel();
+        TcpSession sessionAlpha = new TcpSession("ses-alpha", chAlpha);
+        sessionManager.register(sessionAlpha);
+        sessionManager.addToGroup("FLEET_ALPHA", "ses-alpha");
+
+        EmbeddedChannel chBeta = new EmbeddedChannel();
+        TcpSession sessionBeta = new TcpSession("ses-beta", chBeta);
+        sessionManager.register(sessionBeta);
+        sessionManager.addToGroup("FLEET_BETA", "ses-beta");
+
+        // 1. 发起 FLEET_ALPHA 组播 -> 本地直发 + Redis 跨节点广播
+        boolean sent = bridge.sendGroupToCluster("FLEET_ALPHA", "DISPATCH_ALPHA");
+        assertThat(sent).isTrue();
+        assertThat(chAlpha.outboundMessages()).isNotEmpty();
+        assertThat(chBeta.outboundMessages()).isEmpty();
+        verify(redisTemplate).convertAndSend(eq("test:cluster:topic"), anyString());
+
+        chAlpha.outboundMessages().clear();
+
+        // 2. 模拟从 Redis 收到其它节点广播的分组组播 (group = FLEET_BETA)
+        TcpClusterBroadcastMessage remoteGroupMsg = TcpClusterBroadcastMessage.ofGroup("FLEET_BETA", "node-remote-99", "BROADCAST_TO_BETA");
+        String json = JsonUtil.toJsonString(remoteGroupMsg);
+        bridge.onMessage(new DefaultMessage("test:cluster:topic".getBytes(StandardCharsets.UTF_8), json.getBytes(StandardCharsets.UTF_8)), null);
+
+        // 验证 FLEET_BETA 收到，FLEET_ALPHA 未收到
+        assertThat(chBeta.outboundMessages()).isNotEmpty();
+        assertThat(chAlpha.outboundMessages()).isEmpty();
+
+        chBeta.outboundMessages().clear();
+
+        // 3. 模拟自身节点的防回环守卫
+        TcpClusterBroadcastMessage selfLoopMsg = TcpClusterBroadcastMessage.ofGroup("FLEET_BETA", bridge.getNodeId(), "LOOP_MSG");
+        String loopJson = JsonUtil.toJsonString(selfLoopMsg);
+        bridge.onMessage(new DefaultMessage("test:cluster:topic".getBytes(StandardCharsets.UTF_8), loopJson.getBytes(StandardCharsets.UTF_8)), null);
+
+        assertThat(chBeta.outboundMessages()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("验证 TcpServerTemplate 门面 sendGroupToCluster 方法")
+    void testTcpServerTemplateSendGroupToCluster() {
+        TcpSessionManager sessionManager = new TcpSessionManager();
+        TcpServerTemplate template = new TcpServerTemplate(sessionManager);
+
+        EmbeddedChannel ch = new EmbeddedChannel();
+        TcpSession session = new TcpSession("ses-group-1", ch);
+        sessionManager.register(session);
+        sessionManager.addToGroup("ZONE_1", "ses-group-1");
+
+        // 无 clusterBridge 时退化为本地组播
+        boolean sent = template.sendGroupToCluster("ZONE_1", "ZONE_PAYLOAD");
+        assertThat(sent).isTrue();
+        assertThat(ch.outboundMessages()).isNotEmpty();
+
+        // group 为 null 时防御
+        boolean nullGroupSent = template.sendGroupToCluster(null, "FAIL_MSG");
+        assertThat(nullGroupSent).isFalse();
+    }
+
+    @Test
+    @DisplayName("验证跨节点集群广播透传四维上下文并在接收处理后无条件清理恢复现场")
+    void testRedisPubSubPropagatesAndCleansUpFourDimensionalContext() {
+        TcpSessionManager sessionManager = new TcpSessionManager();
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        TcpClusterProperties clusterProperties = new TcpClusterProperties();
+        clusterProperties.getRedis().setEnabled(true);
+        clusterProperties.getRedis().setTopic("test:ctx:topic");
+
+        RedisPubSubTcpClusterBridge bridge = new RedisPubSubTcpClusterBridge(sessionManager, redisTemplate, clusterProperties);
+
+        // 1. 在节点 A 线程设置四维上下文，构造跨节点广播消息并序列化
+        MDC.put("traceId", "trace-cluster-999");
+        TenantContextHolder.setTenantId("tenant-alpha");
+        TenantContextHolder.setIgnoreTenant(true);
+        UserContextHolder.set("user-admin-01");
+
+        TcpClusterBroadcastMessage outboundMsg = TcpClusterBroadcastMessage.ofGroup("GRP-CTX", "node-source-A", "CTX_PAYLOAD");
+        assertThat(outboundMsg.getContextHeaders())
+                .containsEntry(MessageHeaderConstants.TRACE_ID, "trace-cluster-999")
+                .containsEntry(MessageHeaderConstants.TENANT_ID, "tenant-alpha")
+                .containsEntry(MessageHeaderConstants.USER_ID, "user-admin-01")
+                .containsEntry(MessageHeaderConstants.IGNORE_TENANT, "true");
+
+        String wireJson = JsonUtil.toJsonString(outboundMsg);
+
+        // 2. 模拟节点 B（先预设完全不同的工作线程原始现场，再验证执行中激活、执行后恢复且另一场景零残留）
+        EmbeddedChannel ch = new EmbeddedChannel();
+        TcpSession spySession = Mockito.spy(new TcpSession("ses-ctx-1", ch));
+        AtomicReference<String> observedTrace = new AtomicReference<>();
+        AtomicReference<String> observedTenant = new AtomicReference<>();
+        AtomicReference<String> observedUser = new AtomicReference<>();
+        AtomicBoolean observedIgnore = new AtomicBoolean(false);
+
+        doAnswer(invocation -> {
+            observedTrace.set(MDC.get("traceId"));
+            observedTenant.set(TenantContextHolder.getTenantId());
+            observedUser.set(UserContextHolder.get());
+            observedIgnore.set(TenantContextHolder.isIgnoreTenant());
+            return invocation.callRealMethod();
+        }).when(spySession).send(any());
+
+        sessionManager.register(spySession);
+        sessionManager.addToGroup("GRP-CTX", "ses-ctx-1");
+
+        // 场景 A：空现场接收线程，执行中激活远端四维上下文，执行后零残留
+        MDC.clear();
+        TenantContextHolder.clear();
+        UserContextHolder.clear();
+
+        bridge.onMessage(new DefaultMessage("test:ctx:topic".getBytes(StandardCharsets.UTF_8), wireJson.getBytes(StandardCharsets.UTF_8)), null);
+
+        assertThat(observedTrace.get()).isEqualTo("trace-cluster-999");
+        assertThat(observedTenant.get()).isEqualTo("tenant-alpha");
+        assertThat(observedUser.get()).isEqualTo("user-admin-01");
+        assertThat(observedIgnore.get()).isTrue();
+        assertThat(MDC.get("traceId")).isNull();
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+        assertThat(TenantContextHolder.isIgnoreTenant()).isFalse();
+        assertThat(UserContextHolder.get()).isNull();
+
+        // 场景 B：有预设原始现场的工作线程，执行后精确恢复原始现场
+        MDC.put("traceId", "prev-trace");
+        TenantContextHolder.setTenantId("prev-tenant");
+        UserContextHolder.set("prev-user");
+        TenantContextHolder.setIgnoreTenant(false);
+
+        bridge.onMessage(new DefaultMessage("test:ctx:topic".getBytes(StandardCharsets.UTF_8), wireJson.getBytes(StandardCharsets.UTF_8)), null);
+
+        assertThat(MDC.get("traceId")).isEqualTo("prev-trace");
+        assertThat(TenantContextHolder.getTenantId()).isEqualTo("prev-tenant");
+        assertThat(UserContextHolder.get()).isEqualTo("prev-user");
+        assertThat(TenantContextHolder.isIgnoreTenant()).isFalse();
     }
 }

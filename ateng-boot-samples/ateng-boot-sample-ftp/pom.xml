@@ -7,7 +7,7 @@
     <parent>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot-samples</artifactId>
-        <version>1.0.0</version>
+        <version>1.2.0</version>
     </parent>
 
     <artifactId>ateng-boot-sample-ftp</artifactId>
@@ -17,16 +17,16 @@
     <description>ateng-boot FTP 客户端自验集成样例（连接池复用、多节点动态切源、原子上传与文件系统操作）</description>
 
     <dependencies>
-        <!-- Web 运行时增强 Starter (显式 Result<T> 响应、统一异常拦截等) -->
-        <dependency>
-            <groupId>io.github.atengk</groupId>
-            <artifactId>ateng-boot-web</artifactId>
-        </dependency>
-
         <!-- FTP 核心 Starter -->
         <dependency>
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-ftp</artifactId>
+        </dependency>
+
+        <!-- Web 运行时增强 Starter (契约响应 Result<T> 与参数校验) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
         </dependency>
 
         <!-- Spring Boot Actuator 健康检查与监控 -->
@@ -35,11 +35,11 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
-        <!-- MockFtpServer (用于离线端到端测试) -->
+        <!-- MockFtpServer (支撑 @Profile("!local") 离线嵌入式自洽体验与端到端测试) -->
         <dependency>
             <groupId>org.mockftpserver</groupId>
             <artifactId>MockFtpServer</artifactId>
-            <scope>test</scope>
+            <scope>compile</scope>
         </dependency>
     </dependencies>
 

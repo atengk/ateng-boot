@@ -4,6 +4,7 @@ import io.github.atengk.boot.job.local.enums.JobStatus;
 import io.github.atengk.boot.job.local.enums.OverlappingStrategy;
 import io.github.atengk.boot.job.local.enums.TriggerType;
 import io.github.atengk.boot.job.local.lifecycle.LocalJobLifecycleManager;
+import io.github.atengk.boot.job.local.model.JobContext;
 import io.github.atengk.boot.job.local.model.JobDefinition;
 import io.github.atengk.boot.job.local.model.JobExecutionRecord;
 import io.github.atengk.boot.job.local.model.JobInfo;
@@ -297,8 +298,168 @@ class LocalJobStorageAndLifecycleTest {
         assertThat(metadataRepository.updateStatus("notExist", null)).isFalse();
         assertThat(metadataRepository.updateCron(null, "0 0 1 * * ?")).isFalse();
         assertThat(metadataRepository.updateCron("notExist", "")).isFalse();
+        assertThat(metadataRepository.updateFixedRate(null, Duration.ofSeconds(5))).isFalse();
+        assertThat(metadataRepository.updateFixedRate("notExist", Duration.ZERO)).isFalse();
+        assertThat(metadataRepository.updateFixedRate("notExist", Duration.ofSeconds(-1))).isFalse();
+        assertThat(metadataRepository.updateFixedDelay(null, Duration.ofSeconds(5))).isFalse();
+        assertThat(metadataRepository.updateFixedDelay("notExist", Duration.ZERO)).isFalse();
+        assertThat(metadataRepository.updateFixedDelay("notExist", Duration.ofSeconds(-1))).isFalse();
         assertThat(metadataRepository.delete(null)).isFalse();
         assertThat(metadataRepository.delete("notExist")).isFalse();
         assertThat(metadataRepository.findAll()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("元数据仓储对称闭环：通过 LocalJobTemplate 动态更新 FixedRate 与 FixedDelay 同步持久化至 JobMetadataRepository")
+    void testDynamicPeriodUpdatePersistsToMetadataRepository() {
+        String jobName = "symmetricMetadataJob";
+        jobTemplate.registerCron(jobName, "0 0 2 * * ?", () -> {});
+
+        // 1. 切换为 FixedRate
+        assertThat(jobTemplate.updateFixedRate(jobName, Duration.ofSeconds(30))).isTrue();
+        JobDefinition afterRate = metadataRepository.findByJobName(jobName).orElseThrow();
+        assertThat(afterRate.getTriggerType()).isEqualTo(TriggerType.FIXED_RATE);
+        assertThat(afterRate.getFixedRate()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(afterRate.getCron()).isNull();
+
+        // 2. 切换为 FixedDelay
+        assertThat(jobTemplate.updateFixedDelay(jobName, Duration.ofMinutes(2))).isTrue();
+        JobDefinition afterDelay = metadataRepository.findByJobName(jobName).orElseThrow();
+        assertThat(afterDelay.getTriggerType()).isEqualTo(TriggerType.FIXED_DELAY);
+        assertThat(afterDelay.getFixedDelay()).isEqualTo(Duration.ofMinutes(2));
+        assertThat(afterDelay.getFixedRate()).isNull();
+
+        // 3. 切换回 Cron
+        assertThat(jobTemplate.updateCron(jobName, "0 0 4 * * ?")).isTrue();
+        JobDefinition afterCron = metadataRepository.findByJobName(jobName).orElseThrow();
+        assertThat(afterCron.getTriggerType()).isEqualTo(TriggerType.CRON);
+        assertThat(afterCron.getCron()).isEqualTo("0 0 4 * * ?");
+        assertThat(afterCron.getFixedDelay()).isNull();
+
+        // 4. 注销后任务进入 STOPPED 状态，nextExecutionTime 为 null
+        ScheduledJobTask task = registry.getTaskMap().get(jobName);
+        assertThat(task).isNotNull();
+        assertThat(jobTemplate.remove(jobName)).isTrue();
+        assertThat(task.getStatus()).isEqualTo(JobStatus.STOPPED);
+        assertThat(task.toJobInfo().getNextExecutionTime()).isNull();
+    }
+
+    @Test
+    @DisplayName("并发安全（ReentrantLock 防 Pinning）：多线程高并发写入、读取与过期清理环形日志队列无竞争损坏")
+    void testConcurrentLogStorageAccess() throws Exception {
+        int workers = 8;
+        int recordsPerWorker = 50;
+        String jobName = "concurrentLogJob";
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(workers);
+        ThreadPoolTaskExecutor concurrentPool = new ThreadPoolTaskExecutor();
+        concurrentPool.setCorePoolSize(workers);
+        concurrentPool.setMaxPoolSize(workers);
+        concurrentPool.setThreadNamePrefix("log-stress-");
+        concurrentPool.initialize();
+
+        try {
+            for (int w = 0; w < workers; w++) {
+                final int workerId = w;
+                concurrentPool.execute(() -> {
+                    try {
+                        startLatch.await(3, TimeUnit.SECONDS);
+                        for (int i = 0; i < recordsPerWorker; i++) {
+                            logStorageProvider.saveLog(JobExecutionRecord.builder()
+                                    .jobName(jobName)
+                                    .traceId("w-" + workerId + "-" + i)
+                                    .fireTime(Instant.now())
+                                    .status("SUCCESS")
+                                    .resultMsg("msg-" + workerId + "-" + i)
+                                    .build());
+                            logStorageProvider.listLogs(jobName, 20);
+                            if (i % 10 == 0) {
+                                logStorageProvider.cleanExpiredLogs(Instant.now().minusSeconds(60));
+                            }
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } finally {
+                        doneLatch.countDown();
+                    }
+                });
+            }
+
+            startLatch.countDown();
+            assertThat(doneLatch.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(logStorageProvider.getLogCount(jobName)).isEqualTo(100);
+            assertThat(logStorageProvider.listLogs(jobName, 100)).hasSize(100);
+        } finally {
+            concurrentPool.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("单次执行日志行数有界防 OOM：超出 maxLogLinesPerExecution 时自动截断并仅在末行附加截断提示")
+    void testMaxLogLinesPerExecutionTruncation() {
+        properties.setMaxLogLinesPerExecution(5);
+        String jobName = "boundedLogLinesJob";
+        registry.register(JobDefinition.builder()
+                .jobName(jobName)
+                .triggerType(TriggerType.MANUAL)
+                .build(), context -> {
+            for (int i = 1; i <= 50; i++) {
+                context.log("processing item " + i);
+            }
+            return JobResult.success("Done");
+        });
+
+        JobResult result = jobTemplate.trigger(jobName);
+        assertThat(result.isSuccess()).isTrue();
+
+        List<JobExecutionRecord> records = jobTemplate.listRecentLogs(jobName, 1);
+        assertThat(records).hasSize(1);
+        List<String> logs = records.get(0).getLogs();
+        assertThat(logs).hasSize(6);
+        assertThat(logs.get(0)).contains("processing item 1");
+        assertThat(logs.get(4)).contains("processing item 5");
+        assertThat(logs.get(5)).contains(JobContext.LOG_TRUNCATED_MARKER);
+
+        // 验证默认构建的 JobContext 同样具备 500 行默认有界防卫
+        JobContext defaultContext = JobContext.builder().jobName("defaultCtx").build();
+        for (int i = 1; i <= 600; i++) {
+            defaultContext.log("line-" + i);
+        }
+        assertThat(defaultContext.getLogs()).hasSize(JobContext.DEFAULT_MAX_LOG_LINES + 1);
+        assertThat(defaultContext.getLogs().get(JobContext.DEFAULT_MAX_LOG_LINES))
+                .contains(JobContext.LOG_TRUNCATED_MARKER);
+    }
+
+    @Test
+    @DisplayName("日志保留期惰性过期清理：保存新执行记录时自动按 logRetention 清理过期历史记录")
+    void testLazyLogRetentionCleanupOnExecutionSave() {
+        properties.setLogRetention(Duration.ofDays(3));
+        String jobName = "lazyRetentionJob";
+        Instant now = Instant.now();
+
+        logStorageProvider.saveLog(JobExecutionRecord.builder()
+                .jobName(jobName)
+                .fireTime(now.minus(5, ChronoUnit.DAYS))
+                .status("SUCCESS")
+                .resultMsg("expired-5-days")
+                .build());
+        logStorageProvider.saveLog(JobExecutionRecord.builder()
+                .jobName(jobName)
+                .fireTime(now.minus(1, ChronoUnit.HOURS))
+                .status("SUCCESS")
+                .resultMsg("fresh-1-hour")
+                .build());
+        assertThat(logStorageProvider.getLogCount(jobName)).isEqualTo(2);
+
+        registry.register(JobDefinition.builder()
+                .jobName(jobName)
+                .triggerType(TriggerType.MANUAL)
+                .build(), context -> JobResult.success("latest-run"));
+
+        jobTemplate.trigger(jobName);
+
+        List<JobExecutionRecord> remaining = jobTemplate.listRecentLogs(jobName, 10);
+        assertThat(remaining).extracting(JobExecutionRecord::getResultMsg)
+                .containsExactly("latest-run", "fresh-1-hour");
     }
 }

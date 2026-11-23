@@ -93,4 +93,47 @@ class RealtimeGroupManagerTest {
         assertThat(manager.getGroupMemberCount("room-101")).isEqualTo(0);
         assertThat(manager.getGroupMemberCount("room-102")).isEqualTo(0);
     }
+
+    @Test
+    @DisplayName("解散群组: dismissGroup 移出全量成员并清理反向索引")
+    void testDismissGroup() {
+        RealtimeGroupManager manager = new RealtimeGroupManager();
+
+        SessionKey k1 = SessionKey.of("u1", "c1");
+        SessionKey k2 = SessionKey.of("u2", "c2");
+
+        manager.joinGroup("room-dismiss", k1);
+        manager.joinGroup("room-dismiss", k2);
+        manager.joinGroup("room-keep", k1);
+
+        assertThat(manager.getGroupMemberCount("room-dismiss")).isEqualTo(2);
+        assertThat(manager.getSessionGroups(k1)).containsExactlyInAnyOrder("room-dismiss", "room-keep");
+
+        // 解散 room-dismiss
+        Set<SessionKey> ejected = manager.dismissGroup("room-dismiss");
+        assertThat(ejected).containsExactlyInAnyOrder(k1, k2);
+
+        // 验证 room-dismiss 已清空，k1 的 room-keep 仍保留
+        assertThat(manager.getGroupMemberCount("room-dismiss")).isZero();
+        assertThat(manager.getGroupSessions("room-dismiss")).isEmpty();
+        assertThat(manager.getSessionGroups(k1)).containsExactly("room-keep");
+        assertThat(manager.getSessionGroups(k2)).isEmpty();
+
+        // 对不存在或空群组解散保底返回空集合
+        assertThat(manager.dismissGroup("non-existing")).isEmpty();
+        assertThat(manager.dismissGroup(null)).isEmpty();
+        assertThat(manager.dismissGroup("   ")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("集群群组透传方法单机模式保底测试")
+    void testClusterGroupMethodsStandalone() {
+        RealtimeGroupManager manager = new RealtimeGroupManager();
+
+        SessionKey k1 = SessionKey.of("u1", "c1");
+        manager.joinGroup("room-cluster", k1);
+
+        assertThat(manager.getClusterGroupMemberCount("room-cluster")).isEqualTo(1);
+        assertThat(manager.getClusterGroupMembers("room-cluster")).containsExactly(k1);
+    }
 }

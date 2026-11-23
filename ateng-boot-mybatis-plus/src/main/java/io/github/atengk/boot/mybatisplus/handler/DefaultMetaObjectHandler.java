@@ -1,9 +1,13 @@
 package io.github.atengk.boot.mybatisplus.handler;
 
 import com.baomidou.mybatisplus.core.handlers.MetaObjectHandler;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
-import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.mybatisplus.entity.Auditable;
+import io.github.atengk.boot.mybatisplus.entity.TenantAware;
+import io.github.atengk.boot.mybatisplus.entity.TimeAuditable;
+import io.github.atengk.boot.mybatisplus.util.EntityContractHelper;
 import org.apache.ibatis.reflection.MetaObject;
 
 import java.time.LocalDateTime;
@@ -42,30 +46,65 @@ public class DefaultMetaObjectHandler implements MetaObjectHandler {
 
     @Override
     public void insertFill(MetaObject metaObject) {
+        if (metaObject == null) {
+            return;
+        }
         LocalDateTime now = LocalDateTime.now();
         String operator = resolveCurrentUser();
+        Object original = metaObject.getOriginalObject();
 
-        // 防御性填充：仅当属性存在且当前为 null 时进行自动填充，保留开发者显式赋的值
-        fillPropertyIfNull(FIELD_CREATE_TIME, now, metaObject);
-        fillPropertyIfNull(FIELD_UPDATE_TIME, now, metaObject);
-        fillPropertyIfNull(FIELD_CREATE_BY, operator, metaObject);
-        fillPropertyIfNull(FIELD_UPDATE_BY, operator, metaObject);
+        // 防御性填充：优先走正交能力接口快速通道，未实现接口的普通 POJO 降级为属性名探测
+        if (original instanceof TimeAuditable timeAuditable) {
+            if (timeAuditable.getCreateTime() == null) {
+                timeAuditable.setCreateTime(now);
+            }
+            if (timeAuditable.getUpdateTime() == null) {
+                timeAuditable.setUpdateTime(now);
+            }
+        } else {
+            fillPropertyIfNull(FIELD_CREATE_TIME, now, metaObject);
+            fillPropertyIfNull(FIELD_UPDATE_TIME, now, metaObject);
+        }
 
-        // 多租户 ID 自动填充：仅当属性存在且当前为 null，且上下文有租户标识时填充
-        fillTenantIdIfNull(metaObject);
+        if (original instanceof Auditable auditable) {
+            if (auditable.getCreateBy() == null) {
+                auditable.setCreateBy(operator);
+            }
+            if (auditable.getUpdateBy() == null) {
+                auditable.setUpdateBy(operator);
+            }
+        } else {
+            fillPropertyIfNull(FIELD_CREATE_BY, operator, metaObject);
+            fillPropertyIfNull(FIELD_UPDATE_BY, operator, metaObject);
+        }
+
+        // 多租户 ID 自动填充：支持 TenantAware<Long/String> 泛型直传及普通 POJO 降级，并在类型冲突时 Fail-Fast
+        if (original instanceof TenantAware<?> tenantAware) {
+            EntityContractHelper.fillTenantIdIfNull(tenantAware);
+        } else {
+            fillTenantIdIfNull(metaObject);
+        }
     }
-
 
     @Override
     public void updateFill(MetaObject metaObject) {
+        if (metaObject == null) {
+            return;
+        }
         LocalDateTime now = LocalDateTime.now();
         String operator = resolveCurrentUser();
+        Object original = metaObject.getOriginalObject();
 
         // 更新时始终刷新修改时间与修改人，不受实体原有旧时间阻碍
-        if (metaObject != null && metaObject.hasSetter(FIELD_UPDATE_TIME)) {
+        if (original instanceof TimeAuditable timeAuditable) {
+            timeAuditable.setUpdateTime(now);
+        } else if (metaObject.hasSetter(FIELD_UPDATE_TIME)) {
             setFieldValByName(FIELD_UPDATE_TIME, now, metaObject);
         }
-        if (metaObject != null && metaObject.hasSetter(FIELD_UPDATE_BY)) {
+
+        if (original instanceof Auditable auditable) {
+            auditable.setUpdateBy(operator);
+        } else if (metaObject.hasSetter(FIELD_UPDATE_BY)) {
             setFieldValByName(FIELD_UPDATE_BY, operator, metaObject);
         }
     }
@@ -131,14 +170,9 @@ public class DefaultMetaObjectHandler implements MetaObjectHandler {
             return;
         }
         Class<?> getterType = metaObject.getGetterType(FIELD_TENANT_ID);
-        if (Long.class.equals(getterType)) {
-            try {
-                setFieldValByName(FIELD_TENANT_ID, Long.parseLong(tenantId), metaObject);
-            } catch (NumberFormatException ignored) {
-                // 上下文为非纯数字格式时静默跳过，避免类型转换异常
-            }
-        } else if (String.class.equals(getterType)) {
-            setFieldValByName(FIELD_TENANT_ID, tenantId, metaObject);
+        Object converted = EntityContractHelper.convertTenantId(getterType, tenantId);
+        if (converted != null) {
+            setFieldValByName(FIELD_TENANT_ID, converted, metaObject);
         }
     }
 }

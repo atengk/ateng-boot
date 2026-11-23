@@ -28,6 +28,7 @@ public class RedisBloomFilter {
     private static final Logger log = LoggerFactory.getLogger(RedisBloomFilter.class);
 
     private static volatile RedisBloomFilter instance;
+    private static final RedisProperties DEFAULT_PROPERTIES = new RedisProperties();
 
     private final RedissonClient redissonClient;
     private final RedisProperties redisProperties;
@@ -43,6 +44,15 @@ public class RedisBloomFilter {
         this.redissonClient = redissonClient;
         this.redisProperties = redisProperties != null ? redisProperties : new RedisProperties();
         instance = this;
+    }
+
+    /**
+     * 绑定静态门面实例（供自动装配统一收口初始化）
+     *
+     * @param bloomFilter 受管布隆过滤器实例
+     */
+    public static void init(RedisBloomFilter bloomFilter) {
+        instance = bloomFilter;
     }
 
     /**
@@ -82,12 +92,8 @@ public class RedisBloomFilter {
      */
     public String buildKey(String filterName) {
         Assert.hasText(filterName, "filterName 不能为空");
-        String prefix = redisProperties != null ? redisProperties.getKeyPrefix() : "";
-        String baseName = filterName.startsWith("bloom:") ? filterName : "bloom:" + filterName;
-        if (StringUtils.hasText(prefix) && !baseName.startsWith(prefix)) {
-            return prefix + baseName;
-        }
-        return baseName;
+        RedisProperties props = redisProperties != null ? redisProperties : DEFAULT_PROPERTIES;
+        return props.buildKey("bloom:", filterName);
     }
 
     /**

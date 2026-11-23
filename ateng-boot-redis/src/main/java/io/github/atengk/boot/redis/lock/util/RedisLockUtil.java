@@ -5,6 +5,7 @@ import io.github.atengk.boot.redis.lock.template.DistributedLockTemplate;
 import io.github.atengk.boot.redis.lock.template.LockAction;
 import io.github.atengk.boot.redis.lock.template.LockSupplier;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -104,10 +105,24 @@ public final class RedisLockUtil {
     }
 
     /**
+     * 单键自定义超时（Duration 强类型）与锁模式加锁执行（带返回值）
+     */
+    public static <T, E extends Throwable> T execute(String key, LockMode mode, Duration waitTime, Duration leaseTime, LockSupplier<T, E> supplier) throws E {
+        return getTemplate().execute(key, mode, waitTime, leaseTime, supplier);
+    }
+
+    /**
      * 单键自定义超时与锁模式加锁执行（无返回值）
      */
     public static <E extends Throwable> void execute(String key, LockMode mode, long waitTime, long leaseTime, TimeUnit timeUnit, LockAction<E> action) throws E {
         getTemplate().execute(key, mode, waitTime, leaseTime, timeUnit, action);
+    }
+
+    /**
+     * 单键自定义超时（Duration 强类型）与锁模式加锁执行（无返回值）
+     */
+    public static <E extends Throwable> void execute(String key, LockMode mode, Duration waitTime, Duration leaseTime, LockAction<E> action) throws E {
+        getTemplate().execute(key, mode, waitTime, leaseTime, action);
     }
 
     /**
@@ -118,10 +133,24 @@ public final class RedisLockUtil {
     }
 
     /**
+     * 多键联锁自定义超时（Duration 强类型）与锁模式加锁执行（带返回值）
+     */
+    public static <T, E extends Throwable> T execute(List<String> keys, LockMode mode, Duration waitTime, Duration leaseTime, LockSupplier<T, E> supplier) throws E {
+        return getTemplate().execute(keys, mode, waitTime, leaseTime, supplier);
+    }
+
+    /**
      * 多键联锁加锁执行（无返回值）
      */
     public static <E extends Throwable> void execute(List<String> keys, LockMode mode, long waitTime, long leaseTime, TimeUnit timeUnit, LockAction<E> action) throws E {
         getTemplate().execute(keys, mode, waitTime, leaseTime, timeUnit, action);
+    }
+
+    /**
+     * 多键联锁自定义超时（Duration 强类型）与锁模式加锁执行（无返回值）
+     */
+    public static <E extends Throwable> void execute(List<String> keys, LockMode mode, Duration waitTime, Duration leaseTime, LockAction<E> action) throws E {
+        getTemplate().execute(keys, mode, waitTime, leaseTime, action);
     }
 
     /**
@@ -153,9 +182,30 @@ public final class RedisLockUtil {
     }
 
     /**
+     * 争锁试探执行（Duration 强类型等待时间）：争锁成功执行闭包并返回 true；争锁超时不抛异常直接返回 false
+     *
+     * @param key 业务锁键
+     * @param waitTime 等待时长
+     * @param action 受保护业务闭包
+     * @param <E> 异常类型
+     * @return 是否成功获取锁并执行
+     * @throws E 业务抛出的异常
+     */
+    public static <E extends Throwable> boolean tryExecute(String key, Duration waitTime, LockAction<E> action) throws E {
+        return getTemplate().tryExecute(key, waitTime, action);
+    }
+
+    /**
      * 多键联锁争锁试探执行
      */
     public static <E extends Throwable> boolean tryExecute(List<String> keys, LockMode mode, long waitTime, long leaseTime, TimeUnit timeUnit, LockAction<E> action) throws E {
         return getTemplate().tryExecute(keys, mode, waitTime, leaseTime, timeUnit, action);
+    }
+
+    /**
+     * 多键联锁争锁试探执行（Duration 强类型）
+     */
+    public static <E extends Throwable> boolean tryExecute(List<String> keys, LockMode mode, Duration waitTime, Duration leaseTime, LockAction<E> action) throws E {
+        return getTemplate().tryExecute(keys, mode, waitTime, leaseTime, action);
     }
 }

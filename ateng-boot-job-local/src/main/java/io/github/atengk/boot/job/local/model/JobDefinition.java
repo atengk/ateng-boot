@@ -1,6 +1,7 @@
 package io.github.atengk.boot.job.local.model;
 
 import io.github.atengk.boot.job.local.enums.JobStatus;
+import io.github.atengk.boot.job.local.enums.JobTenantMode;
 import io.github.atengk.boot.job.local.enums.OverlappingStrategy;
 import io.github.atengk.boot.job.local.enums.TriggerType;
 import lombok.Builder;
@@ -86,6 +87,11 @@ public class JobDefinition {
     private Duration clusterLockLeaseTime;
 
     /**
+     * 集群互斥锁最小持有时长（防时钟漂移重复执行）
+     */
+    private Duration clusterLockMinHoldTime;
+
+    /**
      * 任务业务描述
      */
     private String description;
@@ -95,6 +101,23 @@ public class JobDefinition {
      */
     @Builder.Default
     private boolean enabled = true;
+
+    /**
+     * 超时熔断降级补偿方法名
+     */
+    private String fallbackMethod;
+
+    /**
+     * SaaS 多租户并发遍历度（<=0 归一化为 1）
+     */
+    @Builder.Default
+    private int tenantConcurrency = 1;
+
+    /**
+     * SaaS 多租户调度模态
+     */
+    @Builder.Default
+    private JobTenantMode tenantMode = JobTenantMode.IGNORE;
 
     /**
      * 运行时生命周期状态

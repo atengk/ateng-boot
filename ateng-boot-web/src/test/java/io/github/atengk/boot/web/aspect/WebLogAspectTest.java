@@ -1,7 +1,11 @@
 package io.github.atengk.boot.web.aspect;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.web.annotation.WebLog;
+import io.github.atengk.boot.web.properties.WebProperties;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -11,6 +15,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.slf4j.LoggerFactory;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.mock.web.MockMultipartFile;
@@ -21,6 +26,8 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.lang.reflect.Method;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,6 +46,8 @@ class WebLogAspectTest {
 
     private WebLogAspect aspect;
     private MockHttpServletRequest request;
+    private Logger webLogLogger;
+    private ListAppender<ILoggingEvent> logAppender;
 
     @BeforeEach
     void setUp() {
@@ -46,10 +55,19 @@ class WebLogAspectTest {
         request = new MockHttpServletRequest("POST", "/api/test");
         request.setRemoteAddr("192.0.2.1");
         RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request, new MockHttpServletResponse()));
+
+        webLogLogger = (Logger) LoggerFactory.getLogger(WebLogAspect.class);
+        logAppender = new ListAppender<>();
+        logAppender.start();
+        webLogLogger.addAppender(logAppender);
     }
 
     @AfterEach
     void tearDown() {
+        if (webLogLogger != null && logAppender != null) {
+            webLogLogger.detachAppender(logAppender);
+            logAppender.stop();
+        }
         RequestContextHolder.resetRequestAttributes();
     }
 
@@ -78,6 +96,16 @@ class WebLogAspectTest {
         @WebLog(value = "静默接口", printParams = false, printResult = false, printCostTime = false)
         public String quiet(String data) {
             return "quiet:" + data;
+        }
+
+        @WebLog(value = "默认基线脱敏接口")
+        public String authWithDefaults(Map<String, Object> payload, String secret) {
+            return "ok";
+        }
+
+        @WebLog(value = "叠加排除接口", excludeParams = {"customSecret"})
+        public String mergeExcludes(Map<String, Object> payload) {
+            return "ok";
         }
 
         public String noAnnotation(String data) {
@@ -198,6 +226,130 @@ class WebLogAspectTest {
 
         Object result = aspect.around(pjp);
         assertThat(result).isEqualTo("plain:normal");
+    }
+
+    @Test
+    @DisplayName("默认敏感参数脱敏基线：未显式配置 excludeParams 时自动掩码全部默认敏感字段及直传同名参数")
+    void shouldMaskDefaultSensitiveParamsWithoutAnnotationExcludes() throws Throwable {
+        SampleController target = new SampleController();
+        Method method = SampleController.class.getMethod("authWithDefaults", Map.class, String.class);
+
+        Map<String, Object> nested = new LinkedHashMap<>();
+        nested.put("refreshToken", "nested-refresh-secret");
+        nested.put("remark", "visible-remark");
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("account", "alice");
+        payload.put("password", "p1");
+        payload.put("passwd", "p2");
+        payload.put("pwd", "p3");
+        payload.put("oldPassword", "p4");
+        payload.put("newPassword", "p5");
+        payload.put("confirmPassword", "p6");
+        payload.put("token", "t1");
+        payload.put("accessToken", "t2");
+        payload.put("Authorization", "Bearer topSecret");
+        payload.put("nested", nested);
+
+        ProceedingJoinPoint pjp = createJoinPoint(
+                target, method,
+                new String[]{"payload", "secret"},
+                new Object[]{payload, "rawArgSecret"}
+        );
+        when(pjp.proceed()).thenReturn("ok");
+
+        aspect.around(pjp);
+
+        String logs = logAppender.list.stream()
+                .map(ILoggingEvent::getFormattedMessage)
+                .reduce("", (a, b) -> a + "\n" + b);
+        assertThat(logs).contains("\"account\":\"alice\"");
+        assertThat(logs).contains("\"remark\":\"visible-remark\"");
+        assertThat(logs).contains("\"secret\":\"[EXCLUDED]\"");
+        assertThat(logs).contains("\"password\":\"[EXCLUDED]\"");
+        assertThat(logs).contains("\"Authorization\":\"[EXCLUDED]\"");
+        assertThat(logs).contains("\"refreshToken\":\"[EXCLUDED]\"");
+        assertThat(logs).doesNotContain("rawArgSecret");
+        assertThat(logs).doesNotContain("Bearer topSecret");
+        assertThat(logs).doesNotContain("nested-refresh-secret");
+    }
+
+    @Test
+    @DisplayName("全局 defaultExcludeParams 与注解 excludeParams 叠加生效，并支持自定义覆盖")
+    void shouldMergeAnnotationExcludesAndAllowCustomDefaultOverride() throws Throwable {
+        SampleController target = new SampleController();
+        Method method = SampleController.class.getMethod("mergeExcludes", Map.class);
+
+        Map<String, Object> merged = new LinkedHashMap<>();
+        merged.put("password", "raw-pass");
+        merged.put("customSecret", "raw-custom");
+        merged.put("city", "hangzhou");
+
+        ProceedingJoinPoint pjp = createJoinPoint(target, method, new String[]{"payload"}, new Object[]{merged});
+        when(pjp.proceed()).thenReturn("ok");
+        aspect.around(pjp);
+
+        String firstLogs = logAppender.list.get(0).getFormattedMessage();
+        assertThat(firstLogs).contains("\"password\":\"[EXCLUDED]\"");
+        assertThat(firstLogs).contains("\"customSecret\":\"[EXCLUDED]\"");
+        assertThat(firstLogs).contains("\"city\":\"hangzhou\"");
+
+        // 自定义覆盖全局列表为仅 [apiKey]（与注解 customSecret 叠加）
+        logAppender.list.clear();
+        WebProperties customProps = new WebProperties();
+        customProps.getLog().setDefaultExcludeParams(List.of("apiKey"));
+        WebLogAspect customAspect = new WebLogAspect(new ObjectMapper(), customProps);
+
+        Map<String, Object> customPayload = new LinkedHashMap<>();
+        customPayload.put("apiKey", "ak-999");
+        customPayload.put("customSecret", "cs-888");
+        customPayload.put("password", "kept-after-override");
+
+        ProceedingJoinPoint customPjp = createJoinPoint(target, method, new String[]{"payload"}, new Object[]{customPayload});
+        when(customPjp.proceed()).thenReturn("ok");
+        customAspect.around(customPjp);
+
+        String customLogs = logAppender.list.get(0).getFormattedMessage();
+        assertThat(customLogs).contains("\"apiKey\":\"[EXCLUDED]\"");
+        assertThat(customLogs).contains("\"customSecret\":\"[EXCLUDED]\"");
+        assertThat(customLogs).contains("\"password\":\"kept-after-override\"");
+
+        // null 防御不抛空指针
+        logAppender.list.clear();
+        customProps.getLog().setDefaultExcludeParams(null);
+        ProceedingJoinPoint nullPjp = createJoinPoint(target, method, new String[]{"payload"}, new Object[]{Map.of("ok", "1")});
+        when(nullPjp.proceed()).thenReturn("ok");
+        customAspect.around(nullPjp);
+        assertThat(logAppender.list.get(0).getFormattedMessage()).contains("\"ok\":\"1\"");
+        // emptyList 覆盖且包含 MultipartFile 与 Date/UUID 标量时，依然完成不可序列化占位替换不报错
+        logAppender.list.clear();
+        customProps.getLog().setDefaultExcludeParams(List.of());
+        Map<String, Object> emptyExcludeMap = new LinkedHashMap<>();
+        emptyExcludeMap.put("files", List.of(new MockMultipartFile("f", "doc.txt", "text/plain", new byte[]{1, 2})));
+        emptyExcludeMap.put("requestId", java.util.UUID.fromString("00000000-0000-0000-0000-000000000001"));
+        emptyExcludeMap.put("bytes", new byte[]{1, 2, 3});
+        ProceedingJoinPoint emptyListPjp = createJoinPoint(target, method, new String[]{"payload"}, new Object[]{emptyExcludeMap});
+        when(emptyListPjp.proceed()).thenReturn("ok");
+        customAspect.around(emptyListPjp);
+        String emptyListLogs = logAppender.list.get(0).getFormattedMessage();
+        assertThat(emptyListLogs).contains("[MultipartFile: name=doc.txt, size=2]");
+        assertThat(emptyListLogs).contains("00000000-0000-0000-0000-000000000001");
+
+        // 无参构造 WebLogAspect() 同样默认开启 11 个敏感字段脱敏基线
+        logAppender.list.clear();
+        WebLogAspect defaultCtorAspect = new WebLogAspect();
+        Method defaultsMethod = SampleController.class.getMethod("authWithDefaults", Map.class, String.class);
+        ProceedingJoinPoint defaultCtorPjp = createJoinPoint(
+                target, defaultsMethod,
+                new String[]{"payload", "secret"},
+                new Object[]{Map.of("authorization", "Bearer default-ctor"), "argSecret"}
+        );
+        when(defaultCtorPjp.proceed()).thenReturn("ok");
+        defaultCtorAspect.around(defaultCtorPjp);
+        String defaultCtorLog = logAppender.list.get(0).getFormattedMessage();
+        assertThat(defaultCtorLog).contains("\"authorization\":\"[EXCLUDED]\"");
+        assertThat(defaultCtorLog).contains("\"secret\":\"[EXCLUDED]\"");
+        assertThat(defaultCtorLog).doesNotContain("Bearer default-ctor", "argSecret");
     }
 
     private ProceedingJoinPoint createJoinPoint(Object target, Method method, String[] paramNames, Object[] args) {

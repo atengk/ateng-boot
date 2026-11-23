@@ -5,8 +5,10 @@ import io.github.atengk.boot.realtime.constant.RealtimeCloseStatus;
 import io.github.atengk.boot.realtime.enums.ChannelType;
 import io.github.atengk.boot.realtime.model.RealtimeMessage;
 import io.github.atengk.boot.realtime.model.SessionKey;
+import io.github.atengk.boot.realtime.ratelimit.SessionRateLimiter;
 import io.github.atengk.boot.realtime.sse.SseStreamHelper;
 import lombok.Getter;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.socket.CloseStatus;
@@ -42,6 +44,8 @@ public class RealtimeSession implements Serializable {
     private final transient Object rawSession;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private volatile long lastActiveTime;
+    @Setter
+    private transient volatile SessionRateLimiter rateLimiter;
 
     /**
      * 受保护构造函数
@@ -184,6 +188,26 @@ public class RealtimeSession implements Serializable {
                 markClosed();
                 throw new IOException("Failed to send message via SSE session: " + sessionKey);
             }
+        }
+    }
+
+    /**
+     * 向当前物理会话下发原生二进制数据帧（仅 WebSocket 通道支持）
+     *
+     * @param payload 二进制字节数组载荷
+     * @throws IOException 当底层通道关闭或发送失败时抛出
+     * @throws UnsupportedOperationException 当通道类型不支持二进制帧时抛出（如半双工文本协议 SSE）
+     */
+    public void sendBinary(byte[] payload) throws IOException {
+        Objects.requireNonNull(payload, "payload must not be null");
+        if (!isOpen()) {
+            throw new IOException("Session is closed: " + sessionKey);
+        }
+        updateActiveTime();
+        if (channelType == ChannelType.WEBSOCKET && rawSession instanceof WebSocketSession ws) {
+            ws.sendMessage(new org.springframework.web.socket.BinaryMessage(payload));
+        } else {
+            throw new UnsupportedOperationException("Channel type [" + channelType + "] does not support binary messages: " + sessionKey);
         }
     }
 

@@ -1,5 +1,7 @@
 package io.github.atengk.boot.pay.model.request;
 
+import com.alipay.api.domain.ExtendParams;
+import com.alipay.api.domain.SettleInfo;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -45,6 +47,16 @@ public class AlipayPayRequest implements Serializable {
      * 支付宝交易号 (查询、关单、撤销订单时可选)
      */
     private String tradeNo;
+
+    /**
+     * 买家支付宝用户 ID (以 2088 开头的 16 位纯数字，支付宝小程序与 buyerOpenId 二选一必填)
+     */
+    private String buyerId;
+
+    /**
+     * 买家支付宝用户唯一标识 (应用级 open_id，支付宝小程序与 buyerId 二选一必填)
+     */
+    private String buyerOpenId;
 
     /**
      * 订单标题 / 商品标题 (收单场景必填，如 "iPhone 16 Pro 256G")
@@ -108,4 +120,21 @@ public class AlipayPayRequest implements Serializable {
      * 第三方应用授权令牌 (服务商代特约商家发起交易时的令牌，app_auth_token)
      */
     private String appAuthToken;
+
+    // ================= 分账前置冻结与可选结算扩展 =================
+
+    /**
+     * 前置分账冻结声明（true 时在 extend_params 中透传 royalty_freeze=true 冻结交易资金等待后续分账）
+     */
+    private Boolean royaltyFreeze;
+
+    /**
+     * 支付宝官方扩展业务参数（可选，高阶参数扩展逃生舱）
+     */
+    private ExtendParams extendParams;
+
+    /**
+     * 支付宝官方结算信息（可选，配置 settleDetailInfos 与 settlePeriodTime）
+     */
+    private SettleInfo settleInfo;
 }

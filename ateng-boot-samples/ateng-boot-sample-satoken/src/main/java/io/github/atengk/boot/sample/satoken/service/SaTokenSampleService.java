@@ -44,8 +44,38 @@ public class SaTokenSampleService {
         TenantOrderEntity order = new TenantOrderEntity();
         order.setOrderNo(orderNo);
         order.setAmount(amount);
+        String tenantId = io.github.atengk.boot.core.context.TenantContextHolder.getTenantId();
+        if (tenantId != null && !tenantId.isBlank()) {
+            order.setTenantId(tenantId);
+        }
         orderMapper.insert(order);
         return order.getId();
+    }
+
+    /**
+     * 根据主键查询租户订单详情并转换为 VO（严格遵循零实体泄露原则）
+     *
+     * @param orderId 订单标识
+     * @return 订单展示视图对象
+     */
+    public io.github.atengk.boot.sample.satoken.vo.TenantOrderVO getOrderById(Long orderId) {
+        if (orderId == null) {
+            return null;
+        }
+        TenantOrderEntity entity = orderMapper.selectById(orderId);
+        if (entity == null) {
+            return null;
+        }
+        return io.github.atengk.boot.sample.satoken.vo.TenantOrderVO.builder()
+                .id(entity.getId())
+                .orderNo(entity.getOrderNo())
+                .amount(entity.getAmount())
+                .tenantId(entity.getTenantId())
+                .createBy(entity.getCreateBy())
+                .createTime(entity.getCreateTime())
+                .updateBy(entity.getUpdateBy())
+                .updateTime(entity.getUpdateTime())
+                .build();
     }
 
     /**
@@ -53,7 +83,7 @@ public class SaTokenSampleService {
      *
      * @return 业务结果
      */
-    @SaCheckRole("super_admin")
+    @SaCheckRole("finance_director")
     public String checkServiceRole() {
         return "Service 角色校验通过";
     }
@@ -119,13 +149,30 @@ public class SaTokenSampleService {
      * @return 状态展示对象
      */
     public DefenseStatusVO getDefenseStatus(String username) {
+        return getDefenseStatus(username, null);
+    }
+
+    /**
+     * 查询账号与 IP 双轨防暴力破解安全状态
+     *
+     * @param username 账号名称
+     * @param clientIp 客户端 IP（可选，不传时自动嗅探）
+     * @return 状态展示对象
+     */
+    public DefenseStatusVO getDefenseStatus(String username, String clientIp) {
         LoginFailureLockService lockService = loginDefenseServiceProvider.getIfAvailable();
         if (lockService != null) {
+            String resolvedIp = lockService.resolveClientIp(clientIp);
+            boolean ipLocked = resolvedIp != null && lockService.isIpLocked(resolvedIp);
+            int ipFailCount = resolvedIp != null ? lockService.getIpFailureCount(resolvedIp) : 0;
+
             return DefenseStatusVO.builder()
                     .isLocked(lockService.isLocked(username))
                     .remainRetryCount(lockService.getRemainRetryCount(username))
                     .failureCount(lockService.getFailureCount(username))
                     .disableTime(lockService.getDisableTime(username))
+                    .isIpLocked(ipLocked)
+                    .ipFailureCount(ipFailCount)
                     .enabled(true)
                     .build();
         }
@@ -134,6 +181,8 @@ public class SaTokenSampleService {
                 .remainRetryCount(0)
                 .failureCount(0)
                 .disableTime(0L)
+                .isIpLocked(false)
+                .ipFailureCount(0)
                 .enabled(false)
                 .build();
     }

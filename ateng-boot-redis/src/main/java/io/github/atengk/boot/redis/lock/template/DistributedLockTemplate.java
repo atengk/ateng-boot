@@ -109,6 +109,13 @@ public class DistributedLockTemplate {
     }
 
     /**
+     * 单键自定义超时（Duration 强类型）与锁模式加锁执行（带返回值）
+     */
+    public <T, E extends Throwable> T execute(String key, LockMode mode, Duration waitTime, Duration leaseTime, LockSupplier<T, E> supplier) throws E {
+        return execute(Collections.singletonList(key), mode, waitTime, leaseTime, supplier);
+    }
+
+    /**
      * 单键自定义超时与锁模式加锁执行（无返回值）
      */
     public <E extends Throwable> void execute(String key, LockMode mode, long waitTime, long leaseTime, TimeUnit timeUnit, LockAction<E> action) throws E {
@@ -119,10 +126,38 @@ public class DistributedLockTemplate {
     }
 
     /**
+     * 单键自定义超时（Duration 强类型）与锁模式加锁执行（无返回值）
+     */
+    public <E extends Throwable> void execute(String key, LockMode mode, Duration waitTime, Duration leaseTime, LockAction<E> action) throws E {
+        execute(Collections.singletonList(key), mode, waitTime, leaseTime, action);
+    }
+
+    /**
      * 多键联锁加锁执行（带返回值）
      */
     public <T, E extends Throwable> T execute(List<String> keys, LockMode mode, long waitTime, long leaseTime, TimeUnit timeUnit, LockSupplier<T, E> supplier) throws E {
         return execute(keys, mode, waitTime, leaseTime, timeUnit, null, supplier, null);
+    }
+
+    /**
+     * 多键联锁自定义超时（Duration 强类型）与锁模式加锁执行（带返回值）
+     */
+    public <T, E extends Throwable> T execute(List<String> keys, LockMode mode, Duration waitTime, Duration leaseTime, LockSupplier<T, E> supplier) throws E {
+        if (waitTime == null) {
+            throw new IllegalArgumentException("waitTime must not be null");
+        }
+        if (waitTime.isNegative()) {
+            throw new IllegalArgumentException("waitTime must not be negative");
+        }
+        if (leaseTime == null) {
+            throw new IllegalArgumentException("leaseTime must not be null");
+        }
+        if (leaseTime.isNegative()) {
+            throw new IllegalArgumentException("leaseTime must not be negative");
+        }
+        long waitMillis = waitTime.toMillis();
+        long leaseMillis = leaseTime.isZero() ? -1L : leaseTime.toMillis();
+        return execute(keys, mode, waitMillis, leaseMillis, TimeUnit.MILLISECONDS, supplier);
     }
 
     /**
@@ -133,6 +168,16 @@ public class DistributedLockTemplate {
             action.run();
             return null;
         }, null);
+    }
+
+    /**
+     * 多键联锁自定义超时（Duration 强类型）与锁模式加锁执行（无返回值）
+     */
+    public <E extends Throwable> void execute(List<String> keys, LockMode mode, Duration waitTime, Duration leaseTime, LockAction<E> action) throws E {
+        execute(keys, mode, waitTime, leaseTime, () -> {
+            action.run();
+            return null;
+        });
     }
 
     /**
@@ -164,6 +209,27 @@ public class DistributedLockTemplate {
     }
 
     /**
+     * 争锁试探执行（Duration 强类型等待时间）：争锁成功执行闭包并返回 true；争锁超时不抛异常直接返回 false
+     *
+     * @param key 业务锁键
+     * @param waitTime 等待时长
+     * @param action 受保护业务闭包
+     * @param <E> 异常类型
+     * @return 是否成功获取锁并执行
+     * @throws E 业务抛出的异常
+     */
+    public <E extends Throwable> boolean tryExecute(String key, Duration waitTime, LockAction<E> action) throws E {
+        if (waitTime == null) {
+            throw new IllegalArgumentException("waitTime must not be null");
+        }
+        if (waitTime.isNegative()) {
+            throw new IllegalArgumentException("waitTime must not be negative");
+        }
+        long waitMillis = waitTime.toMillis();
+        return tryExecute(key, waitMillis, TimeUnit.MILLISECONDS, action);
+    }
+
+    /**
      * 多键联锁争锁试探执行
      */
     public <E extends Throwable> boolean tryExecute(List<String> keys, LockMode mode, long waitTime, long leaseTime, TimeUnit timeUnit, LockAction<E> action) throws E {
@@ -174,6 +240,27 @@ public class DistributedLockTemplate {
             return null;
         }, () -> null);
         return executed.get();
+    }
+
+    /**
+     * 多键联锁争锁试探执行（Duration 强类型）
+     */
+    public <E extends Throwable> boolean tryExecute(List<String> keys, LockMode mode, Duration waitTime, Duration leaseTime, LockAction<E> action) throws E {
+        if (waitTime == null) {
+            throw new IllegalArgumentException("waitTime must not be null");
+        }
+        if (waitTime.isNegative()) {
+            throw new IllegalArgumentException("waitTime must not be negative");
+        }
+        if (leaseTime == null) {
+            throw new IllegalArgumentException("leaseTime must not be null");
+        }
+        if (leaseTime.isNegative()) {
+            throw new IllegalArgumentException("leaseTime must not be negative");
+        }
+        long waitMillis = waitTime.toMillis();
+        long leaseMillis = leaseTime.isZero() ? -1L : leaseTime.toMillis();
+        return tryExecute(keys, mode, waitMillis, leaseMillis, TimeUnit.MILLISECONDS, action);
     }
 
     /**
@@ -218,7 +305,7 @@ public class DistributedLockTemplate {
         Objects.requireNonNull(supplier, "supplier must not be null");
 
         LockMode actualMode = mode != null ? mode : LockMode.REENTRANT;
-        TimeUnit actualTimeUnit = timeUnit != null ? timeUnit : (redisProperties.getLock().getTimeUnit() != null ? redisProperties.getLock().getTimeUnit() : TimeUnit.SECONDS);
+        TimeUnit actualTimeUnit = timeUnit != null ? timeUnit : TimeUnit.MILLISECONDS;
 
         long actualWaitTime;
         if (waitTime >= 0) {
@@ -276,7 +363,7 @@ public class DistributedLockTemplate {
         }
 
         long acquireCost = System.currentTimeMillis() - acquireStart;
-        long slowThreshold = redisProperties.getLock().getSlowThresholdMs();
+        long slowThreshold = resolveSlowThresholdMs();
         if (slowThreshold > 0 && acquireCost >= slowThreshold) {
             log.warn("[DistributedLock] 检测到慢分布式锁争锁: keys={}, mode={}, acquireCost={}ms, slowThreshold={}ms",
                     resolvedKeys, actualMode, acquireCost, slowThreshold);
@@ -304,12 +391,17 @@ public class DistributedLockTemplate {
         }
     }
 
+    private long resolveSlowThresholdMs() {
+        Duration slowThreshold = redisProperties.getLock().getSlowThreshold();
+        return slowThreshold != null ? slowThreshold.toMillis() : 0L;
+    }
+
     /**
      * 安全持锁释放与慢锁耗时审计
      */
     private void safeUnlockAndAudit(RLock rLock, List<String> keys, LockMode mode, long startTime) {
         long cost = System.currentTimeMillis() - startTime;
-        long slowThreshold = redisProperties.getLock().getSlowThresholdMs();
+        long slowThreshold = resolveSlowThresholdMs();
         if (slowThreshold > 0 && cost >= slowThreshold) {
             log.warn("[DistributedLock] 检测到慢分布式锁持锁: keys={}, mode={}, holdCost={}ms, slowThreshold={}ms",
                     keys, mode, cost, slowThreshold);
@@ -379,34 +471,23 @@ public class DistributedLockTemplate {
      * 补全全局与锁模块统一前缀
      */
     private List<String> resolveKeys(List<String> keys, String customPrefix) {
-        String globalPrefix = redisProperties.getKeyPrefix();
         String lockPrefix = StringUtils.hasText(customPrefix)
                 ? customPrefix
-                : redisProperties.getLock().getPrefix();
-        if (lockPrefix == null) {
-            lockPrefix = "lock:";
-        }
+                : (redisProperties.getLock() != null && redisProperties.getLock().getPrefix() != null
+                        ? redisProperties.getLock().getPrefix()
+                        : "lock:");
 
         List<String> resolved = new ArrayList<>(keys.size());
         for (String key : keys) {
             if (!StringUtils.hasText(key)) {
                 continue;
             }
-            String resolvedKey;
-            if (key.startsWith(lockPrefix) || (StringUtils.hasText(globalPrefix) && key.startsWith(globalPrefix))) {
-                resolvedKey = key;
-            } else {
-                StringBuilder sb = new StringBuilder();
-                if (StringUtils.hasText(globalPrefix)) {
-                    sb.append(globalPrefix);
-                }
-                sb.append(lockPrefix).append(key);
-                resolvedKey = sb.toString();
-            }
+            String resolvedKey = redisProperties.buildKey(lockPrefix, key);
             if (!resolved.contains(resolvedKey)) {
                 resolved.add(resolvedKey);
             }
         }
+        Collections.sort(resolved);
         return resolved;
     }
 }

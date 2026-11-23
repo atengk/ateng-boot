@@ -7,6 +7,7 @@ import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.redis.properties.RedisProperties;
 import io.github.atengk.boot.redis.pubsub.annotation.ChannelTopicListener;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
+import io.github.atengk.boot.redis.util.RedisConsumptionContext;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.aop.framework.autoproxy.AutoProxyUtils;
@@ -18,6 +19,7 @@ import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.EmbeddedValueResolverAware;
+import org.springframework.context.SmartLifecycle;
 import org.springframework.core.MethodIntrospector;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.data.redis.connection.Message;
@@ -57,7 +59,7 @@ import java.util.concurrent.ThreadPoolExecutor;
  * @since 2026-10-19
  */
 @Slf4j
-public class ChannelTopicBootstrap implements SmartInitializingSingleton, DisposableBean,
+public class ChannelTopicBootstrap implements SmartInitializingSingleton, SmartLifecycle, DisposableBean,
         EmbeddedValueResolverAware, ApplicationContextAware {
 
     public static final String MDC_TRACE_ID_KEY = "traceId";
@@ -214,12 +216,9 @@ public class ChannelTopicBootstrap implements SmartInitializingSingleton, Dispos
         // 3. 构建 MessageListener
         MessageListener messageListener = (message, pattern) -> {
             executor.submit(() -> {
-                String existingTraceId = MDC.get(MDC_TRACE_ID_KEY);
-                boolean traceGenerated = false;
-                if (!StringUtils.hasText(existingTraceId)) {
-                    MDC.put(MDC_TRACE_ID_KEY, IdUtil.fastSimpleUUID());
-                    traceGenerated = true;
-                }
+                // 清理 Dispatcher 可能经 TaskDecorator 复制过来的全部历史上下文，并为单次广播消费生成独立 traceId
+                RedisConsumptionContext.clearAll();
+                MDC.put(MDC_TRACE_ID_KEY, IdUtil.fastSimpleUUID());
                 try {
                     invokeListenerMethod(bean, method, parameters, parameterCount, finalParam0Type, finalJavaType, message, pattern);
                 } catch (Throwable ex) {
@@ -229,9 +228,7 @@ public class ChannelTopicBootstrap implements SmartInitializingSingleton, Dispos
                     log.error("Redis Pub/Sub 广播消息消费异常: channel={}, method={}#{}, error={}",
                             ch, bean.getClass().getSimpleName(), method.getName(), cause.getMessage(), cause);
                 } finally {
-                    if (traceGenerated) {
-                        MDC.remove(MDC_TRACE_ID_KEY);
-                    }
+                    RedisConsumptionContext.clearAll();
                 }
             });
         };
@@ -368,6 +365,42 @@ public class ChannelTopicBootstrap implements SmartInitializingSingleton, Dispos
             }
         }
         return resolvedContainer;
+    }
+
+    private volatile boolean running = true;
+
+    @Override
+    public boolean isAutoStartup() {
+        return true;
+    }
+
+    @Override
+    public void start() {
+        this.running = true;
+    }
+
+    @Override
+    public void stop() {
+        this.running = false;
+        destroy();
+    }
+
+    @Override
+    public void stop(Runnable callback) {
+        stop();
+        if (callback != null) {
+            callback.run();
+        }
+    }
+
+    @Override
+    public boolean isRunning() {
+        return this.running;
+    }
+
+    @Override
+    public int getPhase() {
+        return Integer.MAX_VALUE - 1000;
     }
 
     @Override

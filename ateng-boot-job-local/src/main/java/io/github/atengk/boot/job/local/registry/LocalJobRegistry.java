@@ -2,7 +2,9 @@ package io.github.atengk.boot.job.local.registry;
 
 import io.github.atengk.boot.job.local.enums.JobStatus;
 import io.github.atengk.boot.job.local.enums.TriggerType;
+import io.github.atengk.boot.job.local.fallback.LocalJobTimeoutFallbackHandler;
 import io.github.atengk.boot.job.local.handler.JobHandler;
+import io.github.atengk.boot.job.local.interceptor.LocalJobInterceptor;
 import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
 import io.github.atengk.boot.job.local.model.JobDefinition;
 import io.github.atengk.boot.job.local.model.JobExecutionRecord;
@@ -11,11 +13,15 @@ import io.github.atengk.boot.job.local.model.JobResult;
 import io.github.atengk.boot.job.local.properties.JobLocalProperties;
 import io.github.atengk.boot.job.local.storage.JobLogStorageProvider;
 import io.github.atengk.boot.job.local.storage.JobMetadataRepository;
+import io.github.atengk.boot.job.local.tenant.DefaultTenantProvider;
+import io.github.atengk.boot.job.local.tenant.TenantProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.ApplicationEventPublisherAware;
+import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.scheduling.Trigger;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
@@ -33,6 +39,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * 单机定时任务注册中心与调度运行时持有者
@@ -43,7 +53,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * @author Ateng
  * @since 2026-10-25
  */
-public class LocalJobRegistry implements DisposableBean, ApplicationEventPublisherAware {
+public class LocalJobRegistry implements DisposableBean, ApplicationEventPublisherAware, SmartInitializingSingleton {
 
     private static final Logger log = LoggerFactory.getLogger(LocalJobRegistry.class);
 
@@ -54,15 +64,20 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
     private final JobLogStorageProvider logStorageProvider;
     private final JobClusterLockProvider clusterLockProvider;
     private final JobLocalProperties properties;
+    private final TenantProvider tenantProvider;
+    private final Supplier<List<LocalJobInterceptor>> interceptorsProvider;
+    private final Supplier<LocalJobTimeoutFallbackHandler> timeoutFallbackHandlerProvider;
+    private final AtomicReference<List<LocalJobInterceptor>> resolvedInterceptors = new AtomicReference<>();
+    private final AtomicReference<Optional<LocalJobTimeoutFallbackHandler>> resolvedFallbackHandler = new AtomicReference<>();
     private final AtomicBoolean started = new AtomicBoolean(false);
     private ApplicationEventPublisher eventPublisher;
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler) {
-        this(taskScheduler, null, null, null, null, null);
+        this(taskScheduler, null, null, null, null, null, null, Collections.emptyList(), null);
     }
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler, AsyncTaskExecutor workerExecutor) {
-        this(taskScheduler, workerExecutor, null, null, null, null);
+        this(taskScheduler, workerExecutor, null, null, null, null, null, Collections.emptyList(), null);
     }
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler,
@@ -70,7 +85,8 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
                             JobMetadataRepository metadataRepository,
                             JobLogStorageProvider logStorageProvider,
                             JobLocalProperties properties) {
-        this(taskScheduler, workerExecutor, metadataRepository, logStorageProvider, null, properties);
+        this(taskScheduler, workerExecutor, metadataRepository, logStorageProvider, null, properties, null,
+                Collections.emptyList(), null);
     }
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler,
@@ -79,12 +95,92 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
                             JobLogStorageProvider logStorageProvider,
                             JobClusterLockProvider clusterLockProvider,
                             JobLocalProperties properties) {
+        this(taskScheduler, workerExecutor, metadataRepository, logStorageProvider, clusterLockProvider, properties, null,
+                Collections.emptyList(), null);
+    }
+
+    public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler,
+                            AsyncTaskExecutor workerExecutor,
+                            JobMetadataRepository metadataRepository,
+                            JobLogStorageProvider logStorageProvider,
+                            JobClusterLockProvider clusterLockProvider,
+                            JobLocalProperties properties,
+                            TenantProvider tenantProvider) {
+        this(taskScheduler, workerExecutor, metadataRepository, logStorageProvider, clusterLockProvider, properties,
+                tenantProvider, Collections.emptyList(), null);
+    }
+
+    public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler,
+                            AsyncTaskExecutor workerExecutor,
+                            JobMetadataRepository metadataRepository,
+                            JobLogStorageProvider logStorageProvider,
+                            JobClusterLockProvider clusterLockProvider,
+                            JobLocalProperties properties,
+                            TenantProvider tenantProvider,
+                            List<LocalJobInterceptor> interceptors,
+                            LocalJobTimeoutFallbackHandler timeoutFallbackHandler) {
+        this(taskScheduler, workerExecutor, metadataRepository, logStorageProvider, clusterLockProvider, properties,
+                tenantProvider, () -> interceptors, () -> timeoutFallbackHandler);
+        resolveInterceptors();
+        resolveTimeoutFallbackHandler();
+    }
+
+    public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler,
+                            AsyncTaskExecutor workerExecutor,
+                            JobMetadataRepository metadataRepository,
+                            JobLogStorageProvider logStorageProvider,
+                            JobClusterLockProvider clusterLockProvider,
+                            JobLocalProperties properties,
+                            TenantProvider tenantProvider,
+                            Supplier<List<LocalJobInterceptor>> interceptorsProvider,
+                            Supplier<LocalJobTimeoutFallbackHandler> timeoutFallbackHandlerProvider) {
         this.taskScheduler = taskScheduler;
         this.workerExecutor = workerExecutor;
         this.metadataRepository = metadataRepository;
         this.logStorageProvider = logStorageProvider;
         this.clusterLockProvider = clusterLockProvider;
         this.properties = properties;
+        this.tenantProvider = tenantProvider != null ? tenantProvider : new DefaultTenantProvider();
+        this.interceptorsProvider = interceptorsProvider;
+        this.timeoutFallbackHandlerProvider = timeoutFallbackHandlerProvider;
+    }
+
+    @Override
+    public void afterSingletonsInstantiated() {
+        resolveInterceptors();
+        resolveTimeoutFallbackHandler();
+    }
+
+    private List<LocalJobInterceptor> resolveInterceptors() {
+        List<LocalJobInterceptor> cached = resolvedInterceptors.get();
+        if (cached != null) {
+            return cached;
+        }
+        List<LocalJobInterceptor> raw = interceptorsProvider != null ? interceptorsProvider.get() : Collections.emptyList();
+        List<LocalJobInterceptor> normalized = normalizeInterceptors(raw);
+        resolvedInterceptors.compareAndSet(null, normalized);
+        return resolvedInterceptors.get();
+    }
+
+    static List<LocalJobInterceptor> normalizeInterceptors(List<LocalJobInterceptor> interceptors) {
+        if (interceptors == null || interceptors.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<LocalJobInterceptor> sorted = new ArrayList<>(interceptors);
+        AnnotationAwareOrderComparator.sort(sorted);
+        return Collections.unmodifiableList(sorted);
+    }
+
+    private LocalJobTimeoutFallbackHandler resolveTimeoutFallbackHandler() {
+        Optional<LocalJobTimeoutFallbackHandler> cached = resolvedFallbackHandler.get();
+        if (cached != null) {
+            return cached.orElse(null);
+        }
+        LocalJobTimeoutFallbackHandler handler = timeoutFallbackHandlerProvider != null
+                ? timeoutFallbackHandlerProvider.get()
+                : null;
+        resolvedFallbackHandler.compareAndSet(null, Optional.ofNullable(handler));
+        return resolvedFallbackHandler.get().orElse(null);
     }
 
     /**
@@ -134,7 +230,8 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
         }
 
         ScheduledJobTask task = new ScheduledJobTask(definition, handler, taskScheduler, workerExecutor,
-                logStorageProvider, clusterLockProvider, eventPublisher);
+                logStorageProvider, clusterLockProvider, eventPublisher, tenantProvider, properties,
+                this::resolveInterceptors, this::resolveTimeoutFallbackHandler);
         ScheduledJobTask existing = taskMap.putIfAbsent(jobName, task);
         if (existing != null) {
             throw new IllegalArgumentException("Duplicate job registration detected for job name: " + jobName);
@@ -299,24 +396,19 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
     public boolean updateCron(String jobName, String newCron) {
         Assert.hasText(jobName, "jobName must not be empty");
         Assert.hasText(newCron, "newCron must not be empty");
-        ScheduledJobTask task = taskMap.get(jobName);
-        if (task == null) {
-            return false;
-        }
+        String trimmedCron = newCron.trim();
         // 先实例化并校验 Cron 表达式合法性，防御语法错误导致取消原调度后任务悬挂
-        CronTrigger newTrigger = new CronTrigger(newCron);
-        cancelSchedule(task);
-        task.getDefinition().setCron(newCron);
-        task.getDefinition().setTriggerType(TriggerType.CRON);
-        task.setTrigger(newTrigger);
-        if (metadataRepository != null) {
-            metadataRepository.updateCron(jobName, newCron);
+        CronTrigger newTrigger = new CronTrigger(trimmedCron);
+        boolean updated = applyScheduleUpdate(jobName, newTrigger, def -> {
+            def.setCron(trimmedCron);
+            def.setFixedRate(null);
+            def.setFixedDelay(null);
+            def.setTriggerType(TriggerType.CRON);
+        }, () -> metadataRepository.updateCron(jobName, trimmedCron));
+        if (updated) {
+            log.info("Updated Cron expression for local job [{}] to [{}]", jobName, trimmedCron);
         }
-        if (started.get() && task.getStatus() == JobStatus.RUNNING && taskScheduler != null) {
-            scheduleTask(task);
-        }
-        log.info("Updated Cron expression for local job [{}] to [{}]", jobName, newCron);
-        return true;
+        return updated;
     }
 
     /**
@@ -330,24 +422,18 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
         Assert.hasText(jobName, "jobName must not be empty");
         Assert.notNull(newFixedRate, "newFixedRate must not be null");
         Assert.isTrue(!newFixedRate.isZero() && !newFixedRate.isNegative(), "newFixedRate must be positive");
-        ScheduledJobTask task = taskMap.get(jobName);
-        if (task == null) {
-            return false;
-        }
         PeriodicTrigger newTrigger = new PeriodicTrigger(newFixedRate);
         newTrigger.setFixedRate(true);
-        if (task.getDefinition().getInitialDelay() != null) {
-            newTrigger.setInitialDelay(task.getDefinition().getInitialDelay());
+        boolean updated = applyScheduleUpdate(jobName, newTrigger, def -> {
+            def.setFixedRate(newFixedRate);
+            def.setFixedDelay(null);
+            def.setCron(null);
+            def.setTriggerType(TriggerType.FIXED_RATE);
+        }, () -> metadataRepository.updateFixedRate(jobName, newFixedRate));
+        if (updated) {
+            log.info("Updated fixedRate for local job [{}] to [{}]", jobName, newFixedRate);
         }
-        cancelSchedule(task);
-        task.getDefinition().setFixedRate(newFixedRate);
-        task.getDefinition().setTriggerType(TriggerType.FIXED_RATE);
-        task.setTrigger(newTrigger);
-        if (started.get() && task.getStatus() == JobStatus.RUNNING && taskScheduler != null) {
-            scheduleTask(task);
-        }
-        log.info("Updated fixedRate for local job [{}] to [{}]", jobName, newFixedRate);
-        return true;
+        return updated;
     }
 
     /**
@@ -361,23 +447,39 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
         Assert.hasText(jobName, "jobName must not be empty");
         Assert.notNull(newFixedDelay, "newFixedDelay must not be null");
         Assert.isTrue(!newFixedDelay.isZero() && !newFixedDelay.isNegative(), "newFixedDelay must be positive");
+        PeriodicTrigger newTrigger = new PeriodicTrigger(newFixedDelay);
+        newTrigger.setFixedRate(false);
+        boolean updated = applyScheduleUpdate(jobName, newTrigger, def -> {
+            def.setFixedDelay(newFixedDelay);
+            def.setFixedRate(null);
+            def.setCron(null);
+            def.setTriggerType(TriggerType.FIXED_DELAY);
+        }, () -> metadataRepository.updateFixedDelay(jobName, newFixedDelay));
+        if (updated) {
+            log.info("Updated fixedDelay for local job [{}] to [{}]", jobName, newFixedDelay);
+        }
+        return updated;
+    }
+
+    private boolean applyScheduleUpdate(String jobName, Trigger newTrigger,
+                                        Consumer<JobDefinition> definitionUpdater,
+                                        BooleanSupplier metadataUpdater) {
         ScheduledJobTask task = taskMap.get(jobName);
         if (task == null) {
             return false;
         }
-        PeriodicTrigger newTrigger = new PeriodicTrigger(newFixedDelay);
-        newTrigger.setFixedRate(false);
-        if (task.getDefinition().getInitialDelay() != null) {
-            newTrigger.setInitialDelay(task.getDefinition().getInitialDelay());
+        if (newTrigger instanceof PeriodicTrigger periodic && task.getDefinition().getInitialDelay() != null) {
+            periodic.setInitialDelay(task.getDefinition().getInitialDelay());
         }
         cancelSchedule(task);
-        task.getDefinition().setFixedDelay(newFixedDelay);
-        task.getDefinition().setTriggerType(TriggerType.FIXED_DELAY);
+        definitionUpdater.accept(task.getDefinition());
         task.setTrigger(newTrigger);
+        if (metadataRepository != null && !metadataUpdater.getAsBoolean()) {
+            log.debug("JobMetadataRepository returned false when persisting trigger update for job [{}]", jobName);
+        }
         if (started.get() && task.getStatus() == JobStatus.RUNNING && taskScheduler != null) {
             scheduleTask(task);
         }
-        log.info("Updated fixedDelay for local job [{}] to [{}]", jobName, newFixedDelay);
         return true;
     }
 
@@ -399,6 +501,59 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
             return true;
         }
         return false;
+    }
+
+    /**
+     * 判断指定任务是否存在于注册表中
+     *
+     * @param jobName 任务名称
+     * @return 是否存在
+     */
+    public boolean exists(String jobName) {
+        if (jobName == null || jobName.isBlank()) {
+            return false;
+        }
+        return taskMap.containsKey(jobName.trim());
+    }
+
+    /**
+     * 判断指定任务当前是否正在 Worker 线程池中处于活跃执行状态
+     *
+     * @param jobName 任务名称
+     * @return 是否正在执行中
+     */
+    public boolean isExecuting(String jobName) {
+        if (jobName == null || jobName.isBlank()) {
+            return false;
+        }
+        ScheduledJobTask task = taskMap.get(jobName.trim());
+        return task != null && task.isExecuting();
+    }
+
+    /**
+     * 判断指定任务当前是否正持有集群互斥锁
+     *
+     * @param jobName 任务名称
+     * @return 是否正持有集群互斥锁
+     */
+    public boolean isClusterLocked(String jobName) {
+        if (jobName == null || jobName.isBlank() || clusterLockProvider == null) {
+            return false;
+        }
+        return clusterLockProvider.isLocked(jobName.trim());
+    }
+
+    /**
+     * 获取全局所有本地任务正在运行中的活跃并发执行总数
+     *
+     * @return 活跃并发执行总数
+     */
+    public int getActiveExecutionCount() {
+        int count = 0;
+        for (ScheduledJobTask task : taskMap.values()) {
+            count += task.getActiveCount();
+        }
+        return count;
     }
 
     /**

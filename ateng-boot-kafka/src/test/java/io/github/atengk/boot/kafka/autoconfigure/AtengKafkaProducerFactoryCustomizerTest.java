@@ -5,7 +5,9 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.util.unit.DataSize;
 
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -86,5 +88,32 @@ class AtengKafkaProducerFactoryCustomizerTest {
         Map<String, Object> configs = factory.getConfigurationProperties();
         assertNull(configs.get(ProducerConfig.ACKS_CONFIG));
         assertNull(configs.get(ProducerConfig.BATCH_SIZE_CONFIG));
+    }
+
+    @Test
+    @DisplayName("外置 Producer 调优配置生效，同时保留用户显式配置优先级")
+    void testExternalizedProducerTuningPropertiesApplied() {
+        AtengKafkaProperties properties = new AtengKafkaProperties();
+        properties.getProducer().setBatchSize(DataSize.ofKilobytes(64));
+        properties.getProducer().setLinger(Duration.ofMillis(25));
+        properties.getProducer().setCompressionType("lz4");
+        properties.getProducer().setBufferMemory(DataSize.ofMegabytes(64));
+        properties.getProducer().setMaxBlock(Duration.ofSeconds(15));
+
+        AtengKafkaProducerFactoryCustomizer customizer = new AtengKafkaProducerFactoryCustomizer(properties);
+
+        Map<String, Object> baseConfigs = new HashMap<>();
+        baseConfigs.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+        baseConfigs.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, "gzip");
+        DefaultKafkaProducerFactory<Object, Object> factory = new DefaultKafkaProducerFactory<>(baseConfigs);
+
+        customizer.customize(factory);
+
+        Map<String, Object> configs = factory.getConfigurationProperties();
+        assertEquals(65536, configs.get(ProducerConfig.BATCH_SIZE_CONFIG));
+        assertEquals(25, configs.get(ProducerConfig.LINGER_MS_CONFIG));
+        assertEquals("gzip", configs.get(ProducerConfig.COMPRESSION_TYPE_CONFIG));
+        assertEquals(67108864L, configs.get(ProducerConfig.BUFFER_MEMORY_CONFIG));
+        assertEquals(15000L, configs.get(ProducerConfig.MAX_BLOCK_MS_CONFIG));
     }
 }

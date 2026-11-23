@@ -12,8 +12,17 @@ import org.junit.jupiter.api.Test;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -220,5 +229,57 @@ class RealtimeOfflineMessageProviderTest {
         when(mockBroadcaster.isUserOnline("user-all-offline")).thenReturn(false);
         template.sendToUser("user-all-offline", persistentMsg);
         verify(mockProvider, times(1)).saveOfflineMessage("user-all-offline", persistentMsg);
+    }
+
+    @Test
+    @DisplayName("虚拟线程防 Pinning：InMemoryRealtimeOfflineMessageProvider 源码严禁包含 synchronized 关键字")
+    void testInMemoryProviderContainsNoSynchronizedKeyword() throws Exception {
+        Path directPath = Path.of("src/main/java/io/github/atengk/boot/realtime/spi/InMemoryRealtimeOfflineMessageProvider.java");
+        Path modulePath = Files.exists(directPath)
+                ? directPath
+                : Path.of("ateng-boot-realtime/src/main/java/io/github/atengk/boot/realtime/spi/InMemoryRealtimeOfflineMessageProvider.java");
+        assertThat(Files.exists(modulePath)).isTrue();
+        String source = Files.readString(modulePath, StandardCharsets.UTF_8);
+        assertThat(source).doesNotContain("synchronized");
+    }
+
+    @Test
+    @DisplayName("并发读写与 FIFO 淘汰：ReentrantLock 保护下多线并发写入与拉取无丢锁/越界异常")
+    void testInMemoryProviderConcurrentReadWriteAndFifoEviction() throws Exception {
+        int maxMessages = 10;
+        InMemoryRealtimeOfflineMessageProvider provider =
+                new InMemoryRealtimeOfflineMessageProvider(maxMessages, Duration.ofMinutes(5));
+        int threads = 8;
+        int opsPerThread = 50;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
+            CountDownLatch startLatch = new CountDownLatch(1);
+            List<Future<?>> futures = new ArrayList<>();
+            for (int t = 0; t < threads; t++) {
+                final int workerId = t;
+                futures.add(pool.submit(() -> {
+                    startLatch.await();
+                    for (int i = 0; i < opsPerThread; i++) {
+                        provider.saveOfflineMessage("concurrent-user",
+                                RealtimeMessage.ofPersistent("chat", "w" + workerId + "-" + i));
+                        if (i % 10 == 0) {
+                            List<RealtimeMessage<?>> snapshot = provider.getOfflineMessages("concurrent-user");
+                            assertThat(snapshot.size()).isLessThanOrEqualTo(maxMessages);
+                            assertThat(provider.getOfflineMessageCount("concurrent-user")).isLessThanOrEqualTo(maxMessages);
+                        }
+                    }
+                    return null;
+                }));
+            }
+            startLatch.countDown();
+            for (Future<?> future : futures) {
+                future.get(10, TimeUnit.SECONDS);
+            }
+            List<RealtimeMessage<?>> remaining = provider.pullAndClearOfflineMessages("concurrent-user");
+            assertThat(remaining).hasSize(maxMessages);
+            assertThat(provider.getOfflineMessageCount("concurrent-user")).isZero();
+        } finally {
+            pool.shutdownNow();
+        }
     }
 }

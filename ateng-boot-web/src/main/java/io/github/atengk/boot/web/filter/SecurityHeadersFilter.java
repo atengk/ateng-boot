@@ -27,9 +27,9 @@ import java.util.Objects;
 public class SecurityHeadersFilter extends OncePerRequestFilter implements Ordered {
 
     /**
-     * 过滤器执行优先级，紧随链路追踪与运行时监控过滤器之后
+     * 过滤器执行优先级：紧随链路追踪与运行时监控过滤器之后，位于 ETag(+70) 与 XssFilter(+80) 之前
      */
-    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 4;
+    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 60;
 
     public static final String HEADER_X_CONTENT_TYPE_OPTIONS = "X-Content-Type-Options";
     public static final String HEADER_X_FRAME_OPTIONS = "X-Frame-Options";

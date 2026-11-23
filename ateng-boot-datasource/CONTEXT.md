@@ -21,8 +21,8 @@ _Avoid_: 租户拦截器, 租户解析器, TenantSwitch
 _Avoid_: 主备分流, 读写路由, MasterSlaveRouter
 
 **Read-After-Write Consistency (写后即读一致性防延迟)**:
-当某个会话或线程发生写操作后，在设定的时间窗口或请求周期内，强制其后续读请求回退路由至主库，以避免主从复制延迟引发的脏读与数据不一致。
-_Avoid_: 强制主库读, 主库透传, 同步等待, ForceMaster
+当某个会话、租户或线程发生写操作后，在设定的滑动时间窗口（`WINDOW`）或单请求周期（`REQUEST`）内，强制其后续只读查询自适应回退路由至主库，以避免主从复制延迟引发的脏读与数据不一致。
+_Avoid_: 强制主库读, 主库透传, 同步等待, ForceMaster, Write-After-Read, 读后写, 主库兜底, 读从延迟重定向
 
 **False DataSource Switch (事务内假切源)**:
 在基于单物理连接的本地事务（如 Spring `DataSourceTransactionManager`）内部尝试切换数据源时，由于事务已锁定初次获取的连接，导致后续切源注解或指令被静默忽略而实际上依然操作旧连接的隐性数据串库缺陷。
@@ -43,3 +43,39 @@ _Avoid_: 故障转移策略, 探针策略, CircuitBreakerStrategy
 **Zero-Secret Decryption (零明文凭据安全解密)**:
 在动态数据源初始化与连接池创建前，对配置中的国密 SM4（`enc:sm4:`）或国际 AES（`enc:aes:`）密文密码进行内存瞬态解密，杜绝配置中心与日志泄露明文密码的安全机制。
 _Avoid_: 密码脱敏, 动态密码, 密钥还原, PasswordDecrypt
+
+**Tenant Read-Write Splitting (租户级读写分离)**:
+大租户独享物理数据库集群时，租户库内部结合事务只读状态透明路由至租户主库或租户从库集群的机制。
+_Avoid_: 租户从库路由, 多租户读写分流, TenantSlaveRouter
+
+**Active Probing Strategy (主动探活自愈策略)**:
+从库发生网络或物理异常被熔断后，由后台受管任务定期执行轻量物理探测，确认完全自愈后再安全恢复放行流量的防御机制。
+_Avoid_: 定时检查, 自动恢复, BackgroundHealthCheck
+
+**DataSource Pre-Warming (数据源连接池预热)**:
+在动态数据源挂载至路由表并对外开放流量前，并发预先建立并验证指定数量的物理连接以消除冷启动延迟抖动的机制。
+_Avoid_: 连接池初始化, 预加载, PoolPreload
+
+**Dynamic DataSource Metrics (动态数据源指标度量)**:
+对运行时动态挂载与注销的连接池活跃、空闲、等待连接数等实时状态进行指标采集与监控暴露的机制。
+_Avoid_: 连接池统计, 数据源监控, PoolMonitor
+
+**Dynamic DataSource Loader (动态数据源外部同步加载器)**:
+从业务数据库表或分布式配置中心拉取外部数据源配置，并在运行时执行差量增减与平滑同步的 SPI 扩展契约。
+_Avoid_: 数据源同步器, 租户库同步, DataSourceSync
+
+**Smart Diff Sync (智能三向差量同步)**:
+从外部数据源加载最新配置并与当前运行态进行三向比对，自动完成新增、热重载与优雅排空注销，同时受核心库绝对白名单保护的平滑同步机制。
+_Avoid_: 动态同步, 数据源差量刷新, AutoRefreshDs
+
+**Graceful Draining (连接池超时优雅排空)**:
+注销或下线动态数据源时，优先从路由表中摘除流量入口，并设置超时窗口等待在途事务连接归还，超时后再安全物理销毁连接池的资源治理机制。
+_Avoid_: 强制关闭, 暴力注销, 延迟销毁, ForceClose
+
+**Hot Reload DataSource (数据源无损热重载)**:
+当已挂载动态数据源的连接配置发生变更时，先创建新连接池并完成连通性预检与并发预热，随后原子切换路由流量、清理旧熔断状态，并对旧连接池执行优雅排空后物理关闭的零停机更新机制。
+_Avoid_: 重启数据源, 暴力重连, 配置重刷, ForceReload
+
+**Batch Result Aggregation (全库批处理结果聚合)**:
+在跨物理数据源或跨全量租户执行批量巡检与统计计算时，统一执行沙箱容错隔离（`FAIL_SAFE` / `FAIL_FAST`），并将各目标库的业务返回值映射表（`results`）与异常失败详情（`failures`）结构化汇聚的批处理模型。
+_Avoid_: 循环查库, 手工遍历汇总, MultiDbMapReduce

@@ -2,16 +2,13 @@ package io.github.atengk.boot.excel.listener;
 
 import io.github.atengk.boot.excel.enums.HeaderValidationStrategy;
 import io.github.atengk.boot.excel.exception.ExcelHeaderValidationException;
-import org.apache.fesod.sheet.annotation.ExcelIgnore;
-import org.apache.fesod.sheet.annotation.ExcelProperty;
+import io.github.atengk.boot.excel.util.ExcelColumnMetadataResolver;
 import org.apache.fesod.sheet.context.AnalysisContext;
 import org.apache.fesod.sheet.event.AnalysisEventListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.util.Assert;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -36,6 +33,7 @@ public class ExcelHeaderValidator<T> extends AnalysisEventListener<T> {
     private final Class<T> targetClass;
     private final HeaderValidationStrategy strategy;
     private final int expectedHeadRowCount;
+    private final boolean stopAfterHeadValidation;
     private final List<Map<Integer, String>> actualHeadRows = new ArrayList<>();
     private boolean validated = false;
 
@@ -45,20 +43,32 @@ public class ExcelHeaderValidator<T> extends AnalysisEventListener<T> {
      * @param targetClass 数据模型 Class（不可为空）
      */
     public ExcelHeaderValidator(Class<T> targetClass) {
-        this(targetClass, HeaderValidationStrategy.LOOSE);
+        this(targetClass, HeaderValidationStrategy.LOOSE, true);
     }
 
     /**
-     * 构造指定策略的表头拦截器
+     * 构造指定策略的表头拦截器（校验完成即停止扫描后续行）
      *
      * @param targetClass 数据模型 Class（不可为空）
      * @param strategy    表头契约校验策略（不可为空）
      */
     public ExcelHeaderValidator(Class<T> targetClass, HeaderValidationStrategy strategy) {
+        this(targetClass, strategy, true);
+    }
+
+    /**
+     * 构造支持控制表头校验后是否终止扫描的拦截器
+     *
+     * @param targetClass             数据模型 Class（不可为空）
+     * @param strategy                表头契约校验策略（不可为空）
+     * @param stopAfterHeadValidation true 表示独立使用时表头校验通过即终止后续行扫描；false 表示仅作为前置契约门禁继续放行数据行
+     */
+    public ExcelHeaderValidator(Class<T> targetClass, HeaderValidationStrategy strategy, boolean stopAfterHeadValidation) {
         Assert.notNull(targetClass, "targetClass 数据模型类型不可为空");
         Assert.notNull(strategy, "HeaderValidationStrategy 表头校验策略不可为空");
         this.targetClass = targetClass;
         this.strategy = strategy;
+        this.stopAfterHeadValidation = stopAfterHeadValidation;
         ModelHeaderMeta meta = getOrComputeModelHeader(targetClass);
         this.expectedHeadRowCount = meta.headRowCount();
     }
@@ -92,8 +102,8 @@ public class ExcelHeaderValidator<T> extends AnalysisEventListener<T> {
 
     @Override
     public boolean hasNext(AnalysisContext context) {
-        // 独立作为监听器使用时，表头校验通过后立即终止后续数据行流式扫描，秒级退出
-        return !validated;
+        // 独立作为监听器使用时，表头校验通过后立即终止后续数据行流式扫描；作为构建器协同门禁时不阻断后续数据行
+        return !(stopAfterHeadValidation && validated);
     }
 
     @Override
@@ -168,19 +178,21 @@ public class ExcelHeaderValidator<T> extends AnalysisEventListener<T> {
             actualSummary.add(lastActualRow.getOrDefault(i, ""));
         }
 
-        for (int i = 0; i < expectedColumns.size(); i++) {
-            ModelHeaderColumn expectedCol = expectedColumns.get(i);
+        Set<Integer> expectedColIndices = new HashSet<>(expectedColumns.size() * 2);
+        for (ModelHeaderColumn expectedCol : expectedColumns) {
+            int colIdx = expectedCol.columnIndex();
+            expectedColIndices.add(colIdx);
             String[] expectedPath = expectedCol.path();
 
             for (int r = 0; r < expectedPath.length; r++) {
                 Map<Integer, String> rowMap = (r < actualHeadRows.size()) ? actualHeadRows.get(r) : Collections.emptyMap();
-                String actualVal = rowMap.getOrDefault(i, "").trim();
+                String actualVal = rowMap.getOrDefault(colIdx, "").trim();
                 String expectedVal = expectedPath[r].trim();
 
                 if (!expectedVal.equals(actualVal)) {
                     throw new ExcelHeaderValidationException(
                             String.format("Excel 表头契约校验失败 (STRICT 模式)：第 %d 列表头不匹配。期望: [%s]，实际为: [%s]（预期表头: %s，实际表头: %s）",
-                                    i + 1, expectedVal, actualVal, expectedSummary, actualSummary),
+                                    colIdx + 1, expectedVal, actualVal, expectedSummary, actualSummary),
                             HeaderValidationStrategy.STRICT,
                             expectedSummary,
                             actualSummary,
@@ -190,9 +202,12 @@ public class ExcelHeaderValidator<T> extends AnalysisEventListener<T> {
             }
         }
 
-        // 校验是否存在多余冗余列（STRICT 模式严禁多列）
+        // 校验是否存在多余冗余列（STRICT 模式严禁多列，按真实列索引集合比对以兼容稀疏 @ExcelProperty(index)）
         List<String> redundantColumns = new ArrayList<>();
-        for (int colIndex = expectedColumns.size(); colIndex <= maxActualCol; colIndex++) {
+        for (int colIndex = 0; colIndex <= maxActualCol; colIndex++) {
+            if (expectedColIndices.contains(colIndex)) {
+                continue;
+            }
             for (Map<Integer, String> rowMap : actualHeadRows) {
                 String val = rowMap.getOrDefault(colIndex, "").trim();
                 if (!val.isEmpty()) {
@@ -254,47 +269,12 @@ public class ExcelHeaderValidator<T> extends AnalysisEventListener<T> {
             return new ModelHeaderMeta(1, Collections.emptyList());
         }
         return MODEL_HEADER_CACHE.computeIfAbsent(clazz, c -> {
-            List<Field> allFields = new ArrayList<>();
-            Class<?> current = c;
-            List<Class<?>> hierarchy = new ArrayList<>();
-            while (current != null && current != Object.class) {
-                hierarchy.add(0, current); // 顶层父类优先在前
-                current = current.getSuperclass();
+            ExcelColumnMetadataResolver.EntityColumnMetadata entityMeta = ExcelColumnMetadataResolver.resolve(c);
+            List<ModelHeaderColumn> columns = new ArrayList<>(entityMeta.columns().size());
+            for (ExcelColumnMetadataResolver.ColumnMetadata col : entityMeta.columns()) {
+                columns.add(new ModelHeaderColumn(col.columnIndex(), col.fieldName(), col.headerPath().toArray(String[]::new), col.leafHeaderName()));
             }
-            for (Class<?> clz : hierarchy) {
-                for (Field field : clz.getDeclaredFields()) {
-                    if (Modifier.isStatic(field.getModifiers())
-                            || Modifier.isTransient(field.getModifiers())
-                            || field.isAnnotationPresent(ExcelIgnore.class)) {
-                        continue;
-                    }
-                    allFields.add(field);
-                }
-            }
-
-            List<ModelHeaderColumn> columns = new ArrayList<>();
-            int defaultIndex = 0;
-            int maxDepth = 1;
-
-            for (Field field : allFields) {
-                ExcelProperty excelProperty = field.getAnnotation(ExcelProperty.class);
-                int colIndex = (excelProperty != null && excelProperty.index() >= 0)
-                        ? excelProperty.index()
-                        : defaultIndex;
-
-                String[] values = (excelProperty != null && excelProperty.value() != null && excelProperty.value().length > 0)
-                        ? excelProperty.value()
-                        : new String[]{field.getName()};
-
-                maxDepth = Math.max(maxDepth, values.length);
-                String leafName = values[values.length - 1];
-
-                columns.add(new ModelHeaderColumn(colIndex, field.getName(), values, leafName));
-                defaultIndex++;
-            }
-
-            columns.sort(Comparator.comparingInt(ModelHeaderColumn::columnIndex));
-            return new ModelHeaderMeta(maxDepth, Collections.unmodifiableList(columns));
+            return new ModelHeaderMeta(entityMeta.maxHeadDepth(), Collections.unmodifiableList(columns));
         });
     }
 

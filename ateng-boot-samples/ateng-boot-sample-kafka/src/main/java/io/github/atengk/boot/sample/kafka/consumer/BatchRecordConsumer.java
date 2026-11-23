@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.kafka.consumer;
 
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.kafka.constant.KafkaConstants;
 import io.github.atengk.boot.kafka.executor.KafkaRecordExecutor;
 import io.github.atengk.boot.sample.kafka.config.KafkaScenarioTopologyConfig;
@@ -32,17 +33,38 @@ public class BatchRecordConsumer {
             topics = KafkaScenarioTopologyConfig.TOPIC_BATCH,
             containerFactory = KafkaConstants.BATCH_CONTAINER_FACTORY
     )
-    public void onBatchRecords(List<ConsumerRecord<String, OrderMessage>> records) {
+    public void onBatchRecords(List<ConsumerRecord<String, Object>> records) {
         log.info("[SAMPLE-CONSUME-BATCH] 收到批量拉取消息批次: size={}", records.size());
 
         // 使用 KafkaRecordExecutor 实施每条记录的租户上下文隔离与异常熔断隔离
-        KafkaRecordExecutor.processBatchSafely(records, (record, payload) -> {
+        KafkaRecordExecutor.processBatchSafely(records, (record, rawPayload) -> {
+            OrderMessage payload = resolveOrderMessage(rawPayload);
             String currentTenant = TenantContextHolder.getTenantId();
             log.info("[BATCH-RECORD-ITEM] 处理单条记录: key={}, offset={}, currentTenant={}, payloadTenant={}",
                     record.key(), record.offset(), currentTenant, payload != null ? payload.getTenantId() : "null");
 
             processedItems.add(new BatchItemResult(record.key(), record.offset(), payload, currentTenant));
         });
+    }
+
+    private static OrderMessage resolveOrderMessage(Object rawPayload) {
+        if (rawPayload == null) {
+            return null;
+        }
+        if (rawPayload instanceof OrderMessage order) {
+            return order;
+        }
+        try {
+            if (rawPayload instanceof byte[] bytes) {
+                return JsonUtil.getObjectMapper().readValue(bytes, OrderMessage.class);
+            }
+            if (rawPayload instanceof String text) {
+                return JsonUtil.getObjectMapper().readValue(text, OrderMessage.class);
+            }
+            return JsonUtil.getObjectMapper().convertValue(rawPayload, OrderMessage.class);
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("批量订单消息 JSON 解码失败", ex);
+        }
     }
 
     public void clear() {

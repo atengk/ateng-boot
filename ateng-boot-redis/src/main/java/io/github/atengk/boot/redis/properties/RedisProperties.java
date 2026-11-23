@@ -7,7 +7,6 @@ import org.springframework.boot.context.properties.NestedConfigurationProperty;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Redis 增强基础设施与分布式协同配置属性
@@ -83,6 +82,12 @@ public class RedisProperties {
     private StreamProperties stream = new StreamProperties();
 
     /**
+     * 分布式信号量配置属性
+     */
+    @NestedConfigurationProperty
+    private SemaphoreProperties semaphore = new SemaphoreProperties();
+
+    /**
      * 分布式锁配置详情
      */
     @Data
@@ -104,11 +109,6 @@ public class RedisProperties {
         private Duration leaseTime = Duration.ofMillis(-1);
 
         /**
-         * 默认时间单位（向后兼容保留，建议优先在配置中使用标准 Duration 格式如 3s、500ms）
-         */
-        private TimeUnit timeUnit = TimeUnit.SECONDS;
-
-        /**
          * 分布式锁统一键名前缀（默认 "lock:"）
          */
         private String prefix = "lock:";
@@ -118,29 +118,17 @@ public class RedisProperties {
          */
         private Duration slowThreshold = Duration.ofMillis(3000L);
 
+        /**
+         * 分布式锁 Redisson 看门狗超时覆盖时长（可选；未配置时回落至 ateng.boot.redis.redisson.lock-watchdog-timeout，默认为空）
+         */
+        private Duration watchdogTimeout;
+
         public Duration getWaitTime() {
             return waitTime;
         }
 
         public void setWaitTime(Duration waitTime) {
             this.waitTime = waitTime;
-        }
-
-        /**
-         * 兼容旧版秒级/数值设置
-         *
-         * @param waitTimeSeconds 等待超时秒数
-         */
-        public void setWaitTime(long waitTimeSeconds) {
-            this.waitTime = Duration.ofSeconds(waitTimeSeconds);
-        }
-
-        public long getWaitTimeSeconds() {
-            return waitTime != null ? waitTime.toSeconds() : 3L;
-        }
-
-        public void setWaitTimeSeconds(long waitTimeSeconds) {
-            this.waitTime = Duration.ofSeconds(waitTimeSeconds);
         }
 
         public Duration getLeaseTime() {
@@ -151,45 +139,12 @@ public class RedisProperties {
             this.leaseTime = leaseTime;
         }
 
-        /**
-         * 兼容旧版秒级/数值设置
-         *
-         * @param leaseTimeSeconds 租约超时秒数（-1 表示看门狗）
-         */
-        public void setLeaseTime(long leaseTimeSeconds) {
-            this.leaseTime = leaseTimeSeconds < 0 ? Duration.ofMillis(-1) : Duration.ofSeconds(leaseTimeSeconds);
-        }
-
-        public long getLeaseTimeSeconds() {
-            return leaseTime != null ? (leaseTime.isNegative() ? -1L : leaseTime.toSeconds()) : -1L;
-        }
-
-        public void setLeaseTimeSeconds(long leaseTimeSeconds) {
-            this.leaseTime = leaseTimeSeconds < 0 ? Duration.ofMillis(-1) : Duration.ofSeconds(leaseTimeSeconds);
-        }
-
-        public long getSlowThresholdMs() {
-            return slowThreshold != null ? slowThreshold.toMillis() : 0L;
-        }
-
-        public void setSlowThresholdMs(long slowThresholdMs) {
-            this.slowThreshold = Duration.ofMillis(slowThresholdMs);
-        }
-
         public Duration getSlowThreshold() {
             return slowThreshold;
         }
 
         public void setSlowThreshold(Duration slowThreshold) {
             this.slowThreshold = slowThreshold;
-        }
-
-        public Duration getSlowLockThreshold() {
-            return slowThreshold;
-        }
-
-        public void setSlowLockThreshold(Duration slowLockThreshold) {
-            this.slowThreshold = slowLockThreshold;
         }
     }
 
@@ -223,6 +178,11 @@ public class RedisProperties {
          * 死信队列名称后缀（默认 ":dlq"）
          */
         private String deadLetterSuffix = ":dlq";
+
+        /**
+         * 死信消息最大允许受控重放次数（默认 3 次，防止毒丸死信反复重放形成雪崩）
+         */
+        private int maxReplayAttempts = 3;
     }
 
     /**
@@ -329,6 +289,11 @@ public class RedisProperties {
          * 命令重试间隔时间（默认 1500ms）
          */
         private Duration retryInterval = Duration.ofMillis(1500);
+
+        /**
+         * Redisson 分布式锁看门狗默认续期检查超时时长（默认 30s）
+         */
+        private Duration lockWatchdogTimeout = Duration.ofSeconds(30);
     }
 
     /**
@@ -349,19 +314,58 @@ public class RedisProperties {
     }
 
     /**
-     * 构建受管全局键名前缀
+     * 规范化键名前缀，去除首尾空白并确保非空前缀以英文冒号结尾
+     *
+     * @param prefix 原始前缀
+     * @return 规范化后的前缀；为空或全空白时返回空字符串
+     */
+    public static String normalizePrefix(String prefix) {
+        if (!org.springframework.util.StringUtils.hasText(prefix)) {
+            return "";
+        }
+        String trimmed = prefix.trim();
+        return trimmed.endsWith(":") ? trimmed : trimmed + ":";
+    }
+
+    /**
+     * 构建受管全局键名，自动规范化 keyPrefix 并幂等避免重复拼接
      *
      * @param rawKey 原始键名
-     * @return 附加 keyPrefix 后的最终键名
+     * @return 附加 keyPrefix 后的最终键名；入参为 null 时返回 null
      */
     public String buildKey(String rawKey) {
+        return buildKey(null, rawKey);
+    }
+
+    /**
+     * 构建受管两级键名（全局 keyPrefix + 模块前缀 + 原始键名），自动规范化冒号并幂等防重
+     *
+     * @param modulePrefix 模块级前缀（可为空或省略尾部冒号）
+     * @param rawKey       原始键名
+     * @return 合成后的完整键名；入参 rawKey 为 null 时返回 null
+     */
+    public String buildKey(String modulePrefix, String rawKey) {
         if (rawKey == null) {
             return null;
         }
-        if (org.springframework.util.StringUtils.hasText(keyPrefix) && !rawKey.startsWith(keyPrefix)) {
-            return keyPrefix + rawKey;
+        String global = normalizePrefix(this.keyPrefix);
+        String module = normalizePrefix(modulePrefix);
+
+        // 先剥离已存在的全局前缀，再判断是否已包含模块前缀，避免锁/布隆等二级前缀与缓存数据键混淆
+        String effectiveKey = rawKey;
+        if (!global.isEmpty() && effectiveKey.startsWith(global)) {
+            effectiveKey = effectiveKey.substring(global.length());
+            if (effectiveKey.isEmpty()) {
+                return rawKey;
+            }
         }
-        return rawKey;
+        if (!module.isEmpty() && effectiveKey.startsWith(module)) {
+            return global + effectiveKey;
+        }
+        if ((!module.isEmpty() || !global.isEmpty()) && effectiveKey.startsWith(":")) {
+            effectiveKey = effectiveKey.substring(1);
+        }
+        return global + module + effectiveKey;
     }
 
     /**
@@ -490,14 +494,6 @@ public class RedisProperties {
         public void setDefaultExpire(Duration defaultExpire) {
             this.defaultExpire = defaultExpire;
         }
-
-        public void setDefaultExpireSeconds(long seconds) {
-            this.defaultExpire = Duration.ofSeconds(seconds);
-        }
-
-        public long getDefaultExpireSeconds() {
-            return defaultExpire != null ? defaultExpire.toSeconds() : 600L;
-        }
     }
 
     /**
@@ -532,9 +528,32 @@ public class RedisProperties {
         private String dlqSuffix = ":dlq";
 
         /**
+         * 死信消息最大允许受控重放次数（默认 3 次，防止毒丸死信反复重放形成雪崩）
+         */
+        private int maxReplayAttempts = 3;
+
+        /**
+         * PEL 孤儿消息最小闲置超时时长（默认 1 分钟，超时未确认将被自动认领自愈）
+         */
+        private Duration claimIdleTime = Duration.ofMinutes(1);
+
+        /**
+         * 单次认领 PEL 孤儿消息最大条数（默认 20 条）
+         */
+        private int claimBatchSize = 20;
+
+        /**
          * 实例标识（用于隔离不同节点消费者命名，默认自动生成）
          */
         private String instanceId;
+
+        public Duration getClaimIdleTime() {
+            return claimIdleTime;
+        }
+
+        public void setClaimIdleTime(Duration claimIdleTime) {
+            this.claimIdleTime = claimIdleTime;
+        }
 
         public Duration getPollTimeout() {
             return pollTimeout;
@@ -543,14 +562,28 @@ public class RedisProperties {
         public void setPollTimeout(Duration pollTimeout) {
             this.pollTimeout = pollTimeout;
         }
+    }
 
-        public void setPollTimeoutSeconds(long seconds) {
-            this.pollTimeout = Duration.ofSeconds(seconds);
-        }
+    /**
+     * 分布式信号量配置详情
+     */
+    @Data
+    public static class SemaphoreProperties {
 
-        public long getPollTimeoutSeconds() {
-            return pollTimeout != null ? pollTimeout.toSeconds() : 2L;
-        }
+        /**
+         * 信号量默认键名前缀常量
+         */
+        public static final String DEFAULT_PREFIX = "semaphore:";
+
+        /**
+         * 是否启用分布式信号量模板（默认 true）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 分布式信号量键名前缀（默认 "semaphore:"）
+         */
+        private String prefix = DEFAULT_PREFIX;
     }
 }
 

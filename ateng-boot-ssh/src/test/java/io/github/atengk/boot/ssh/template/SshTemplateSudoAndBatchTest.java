@@ -4,6 +4,10 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.ssh.context.SshContextHolder;
 import io.github.atengk.boot.ssh.enums.HostKeyPolicy;
+import io.github.atengk.boot.ssh.exception.SshOperationException;
+import io.github.atengk.boot.ssh.exception.SshResultCode;
+import io.github.atengk.boot.ssh.model.SshBatchExecResult;
+import io.github.atengk.boot.ssh.model.SshBatchOptions;
 import io.github.atengk.boot.ssh.model.SshExecOptions;
 import io.github.atengk.boot.ssh.model.SshExecResult;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
@@ -43,6 +47,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * SshTemplate 原生 Sudo 提权管道与集群批量并发巡检端到端测试
@@ -382,6 +387,109 @@ class SshTemplateSudoAndBatchTest {
 
         Map<SshServerInfo, SshExecResult> nullResult = template.execBatch(null, "whoami");
         assertThat(nullResult).isNotNull().isEmpty();
+    }
+
+    @Test
+    @DisplayName("测试集群批量高级巡检全量成功 (execBatchAdvanced)")
+    void testExecBatchAdvancedSuccess() {
+        List<SshServerInfo> servers = Arrays.asList(
+                SshServerInfo.builder().host("127.0.0.1").port(serverPort).username(VALID_USER + "-adv1").password(VALID_PASS).build(),
+                SshServerInfo.builder().host("127.0.0.1").port(serverPort).username(VALID_USER + "-adv2").password(VALID_PASS).build()
+        );
+
+        SshBatchExecResult batchResult = template.execBatchAdvanced(servers, "echo advanced-ok");
+
+        assertThat(batchResult.isAllSuccess()).isTrue();
+        assertThat(batchResult.getTotalCount()).isEqualTo(2);
+        assertThat(batchResult.getSuccessCount()).isEqualTo(2);
+        assertThat(batchResult.getFailureCount()).isEqualTo(0);
+        assertThat(batchResult.getFailedServers()).isEmpty();
+        assertThat(batchResult.getResults()).hasSize(2);
+        assertThat(batchResult.getErrors()).isEmpty();
+        for (SshExecResult result : batchResult.getResults().values()) {
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.getStdout().trim()).isEqualTo("advanced-ok");
+        }
+    }
+
+    @Test
+    @DisplayName("测试集群批量高级巡检部分失败容错隔离 (Fail-At-End 默认模式)")
+    void testExecBatchAdvancedFailAtEnd() {
+        SshServerInfo validServer = SshServerInfo.builder()
+                .host("127.0.0.1").port(serverPort).username(VALID_USER + "-ok").password(VALID_PASS).build();
+        // 故意配置一个错误的端口导致连接失败
+        SshServerInfo badServer = SshServerInfo.builder()
+                .host("127.0.0.1").port(1).username("bad-user").password("bad-pass")
+                .connectTimeout(Duration.ofMillis(500)).build();
+
+        List<SshServerInfo> servers = Arrays.asList(validServer, badServer);
+
+        SshBatchOptions options = SshBatchOptions.builder()
+                .failFast(false)
+                .build();
+
+        SshBatchExecResult batchResult = template.execBatchAdvanced(servers, "whoami", options);
+
+        assertThat(batchResult.isAllSuccess()).isFalse();
+        assertThat(batchResult.getTotalCount()).isEqualTo(2);
+        assertThat(batchResult.getSuccessCount()).isEqualTo(1);
+        assertThat(batchResult.getFailureCount()).isEqualTo(1);
+        assertThat(batchResult.getSuccessServers()).containsExactly(validServer);
+        assertThat(batchResult.getFailedServers()).containsExactly(badServer);
+        assertThat(batchResult.getErrors()).containsKey(badServer);
+        assertThat(batchResult.getResults().get(validServer).isSuccess()).isTrue();
+        assertThat(batchResult.getResults().get(badServer).isSuccess()).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试集群批量高级巡检快速熔断 (Fail-Fast 模式)")
+    void testExecBatchAdvancedFailFast() {
+        SshServerInfo badServer = SshServerInfo.builder()
+                .host("127.0.0.1").port(1).username("bad-user").password("bad-pass")
+                .connectTimeout(Duration.ofMillis(500)).build();
+        SshServerInfo validServer = SshServerInfo.builder()
+                .host("127.0.0.1").port(serverPort).username(VALID_USER + "-ff").password(VALID_PASS).build();
+
+        List<SshServerInfo> servers = Arrays.asList(badServer, validServer);
+
+        SshBatchOptions options = SshBatchOptions.ofFailFast(true);
+
+        assertThatThrownBy(() -> template.execBatchAdvanced(servers, "whoami", options))
+                .isInstanceOf(SshOperationException.class)
+                .extracting("resultCode")
+                .isEqualTo(SshResultCode.BATCH_EXEC_FAILED);
+    }
+
+    @Test
+    @DisplayName("测试集群批量高级巡检具名节点重载 (execBatchAdvancedNamed)")
+    void testExecBatchAdvancedNamed() {
+        clientRegistry.register("batch-node-1", SshServerInfo.builder().host("127.0.0.1").port(serverPort).username(VALID_USER + "-n1").password(VALID_PASS).build());
+        clientRegistry.register("batch-node-2", SshServerInfo.builder().host("127.0.0.1").port(serverPort).username(VALID_USER + "-n2").password(VALID_PASS).build());
+
+        SshBatchExecResult batchResult = template.execBatchAdvancedNamed(Arrays.asList("batch-node-1", "batch-node-2"), "echo named-adv");
+
+        assertThat(batchResult.isAllSuccess()).isTrue();
+        assertThat(batchResult.getTotalCount()).isEqualTo(2);
+        assertThat(batchResult.getSuccessCount()).isEqualTo(2);
+        assertThat(batchResult.getNamedResults()).hasSize(2);
+        assertThat(batchResult.getNamedResults().get("batch-node-1").getStdout().trim()).isEqualTo("named-adv");
+        assertThat(batchResult.getNamedResults().get("batch-node-2").getStdout().trim()).isEqualTo("named-adv");
+    }
+
+    @Test
+    @DisplayName("测试集群批量高级巡检基于 Semaphore 的并发度控流")
+    void testExecBatchAdvancedConcurrency() {
+        List<SshServerInfo> servers = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            servers.add(SshServerInfo.builder().host("127.0.0.1").port(serverPort).username(VALID_USER + "-cc" + i).password(VALID_PASS).build());
+        }
+
+        SshBatchOptions options = SshBatchOptions.ofConcurrency(2);
+        SshBatchExecResult batchResult = template.execBatchAdvanced(servers, "whoami", options);
+
+        assertThat(batchResult.isAllSuccess()).isTrue();
+        assertThat(batchResult.getTotalCount()).isEqualTo(5);
+        assertThat(batchResult.getSuccessCount()).isEqualTo(5);
     }
 
     // ==========================================

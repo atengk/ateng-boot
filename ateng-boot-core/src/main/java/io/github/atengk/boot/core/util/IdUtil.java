@@ -18,6 +18,11 @@ public final class IdUtil {
 
     private static final Snowflake DEFAULT_SNOWFLAKE = new Snowflake();
 
+    /**
+     * 容器受管或外部显式注入的活动雪花发号器实例（为 null 时平滑回退至 DEFAULT_SNOWFLAKE）
+     */
+    private static volatile Snowflake customSnowflake;
+
     private static final char[] HEX_DIGITS = "0123456789abcdef".toCharArray();
 
     /**
@@ -38,12 +43,34 @@ public final class IdUtil {
     // ==================== Snowflake 雪花算法发号门面 ====================
 
     /**
-     * 获取全局默认单例雪花发号器实例（自适应推导节点 ID，默认 2026 纪元）
+     * 显式设置当前全局活动的雪花发号器实例（通常由 Spring 自动配置自动桥接注入，亦支持手动覆盖）
      *
-     * @return 全局单例 Snowflake 实例
+     * @param snowflake 待注入的 Snowflake 发号器实例（不可为 null）
+     */
+    public static void setSnowflake(Snowflake snowflake) {
+        BusinessAssert.notNull(snowflake, "Snowflake 实例不能为空");
+        customSnowflake = snowflake;
+    }
+
+    /**
+     * 重置全局活动雪花发号器，恢复为内建自适应默认实例（用于测试隔离或生命周期清理）
+     */
+    public static void resetSnowflake() {
+        customSnowflake = null;
+    }
+
+    private static Snowflake activeSnowflake() {
+        Snowflake current = customSnowflake;
+        return current != null ? current : DEFAULT_SNOWFLAKE;
+    }
+
+    /**
+     * 获取当前全局活动的雪花发号器实例（优先返回容器注入实例，否则回退为默认自适应实例）
+     *
+     * @return 当前活动的 Snowflake 实例
      */
     public static Snowflake getSnowflake() {
-        return DEFAULT_SNOWFLAKE;
+        return activeSnowflake();
     }
 
     /**
@@ -70,49 +97,49 @@ public final class IdUtil {
     }
 
     /**
-     * 基于默认单例雪花实例获取下一个长整型唯一 ID
+     * 基于当前活动雪花发号器获取下一个长整型唯一 ID
      *
      * @return 64 位全局唯一递增雪花 ID
      */
     public static long getSnowflakeNextId() {
-        return DEFAULT_SNOWFLAKE.nextId();
+        return activeSnowflake().nextId();
     }
 
     /**
-     * 基于默认单例雪花实例获取下一个长整型唯一 ID（{@link #getSnowflakeNextId()} 的便捷别名）
+     * 基于当前活动雪花发号器获取下一个长整型唯一 ID（{@link #getSnowflakeNextId()} 的便捷别名）
      *
      * @return 64 位全局唯一递增雪花 ID
      */
     public static long nextId() {
-        return DEFAULT_SNOWFLAKE.nextId();
+        return activeSnowflake().nextId();
     }
 
     /**
-     * 基于默认单例雪花实例获取下一个字符串形式的唯一 ID
+     * 基于当前活动雪花发号器获取下一个字符串形式的唯一 ID
      *
      * @return 字符串形式的全局唯一雪花 ID
      */
     public static String getSnowflakeNextIdStr() {
-        return DEFAULT_SNOWFLAKE.nextIdStr();
+        return activeSnowflake().nextIdStr();
     }
 
     /**
-     * 基于默认单例雪花实例获取下一个字符串形式的唯一 ID（{@link #getSnowflakeNextIdStr()} 的便捷别名）
+     * 基于当前活动雪花发号器获取下一个字符串形式的唯一 ID（{@link #getSnowflakeNextIdStr()} 的便捷别名）
      *
      * @return 字符串形式的全局唯一雪花 ID
      */
     public static String nextIdStr() {
-        return DEFAULT_SNOWFLAKE.nextIdStr();
+        return activeSnowflake().nextIdStr();
     }
 
     /**
-     * 基于默认单例雪花发号器反解雪花 ID 结构化信息
+     * 基于当前活动雪花发号器反解雪花 ID 结构化信息（同步继承容器自定义基准纪元）
      *
      * @param id 待反解的雪花长整型 ID
      * @return 包含发号时间戳、Instant、LocalDateTime、数据中心、节点与序列号的结构化信息
      */
     public static SnowflakeIdInfo parseSnowflake(long id) {
-        return DEFAULT_SNOWFLAKE.parse(id);
+        return activeSnowflake().parse(id);
     }
 
     // ==================== 高性能 UUID 门面 ====================

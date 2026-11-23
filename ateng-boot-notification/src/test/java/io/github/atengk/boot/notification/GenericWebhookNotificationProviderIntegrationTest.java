@@ -7,6 +7,7 @@ import io.github.atengk.boot.notification.model.NotificationSendResult;
 import io.github.atengk.boot.notification.model.Platform;
 import io.github.atengk.boot.notification.model.TextMessage;
 import io.github.atengk.boot.notification.provider.GenericWebhookNotificationProvider;
+import io.github.atengk.boot.notification.util.NotificationSignUtil;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
@@ -54,7 +55,7 @@ class GenericWebhookNotificationProviderIntegrationTest {
     }
 
     @Test
-    @DisplayName("测试通用 Webhook 发送并校验 X-Webhook-Secret 与 X-Signature-SHA256 请求头")
+    @DisplayName("测试通用 Webhook 发送严禁携带明文密钥头，并校验 X-Webhook-Timestamp 与 X-Signature-SHA256 防重放签名")
     void testSendWithSecretHeaders() throws Exception {
         server.enqueue(new MockResponse()
                 .setResponseCode(200)
@@ -80,9 +81,12 @@ class GenericWebhookNotificationProviderIntegrationTest {
         RecordedRequest request = server.takeRequest(3, TimeUnit.SECONDS);
         assertThat(request).isNotNull();
         assertThat(request.getMethod()).isEqualTo("POST");
-        assertThat(request.getHeader(GenericWebhookNotificationProvider.HEADER_WEBHOOK_SECRET))
-                .isEqualTo("my_super_secret_key");
-        assertThat(request.getHeader(GenericWebhookNotificationProvider.HEADER_SIGNATURE_SHA256))
+        assertThat(request.getHeader("X-Webhook-Secret")).isNull();
+
+        String timestampHeader = request.getHeader(GenericWebhookNotificationProvider.HEADER_WEBHOOK_TIMESTAMP);
+        String signatureHeader = request.getHeader(GenericWebhookNotificationProvider.HEADER_SIGNATURE_SHA256);
+        assertThat(timestampHeader).isNotBlank();
+        assertThat(signatureHeader)
                 .isNotBlank()
                 .hasSize(64);
 
@@ -90,6 +94,12 @@ class GenericWebhookNotificationProviderIntegrationTest {
         assertThat(requestBody)
                 .contains("\"msgType\":\"text\"")
                 .contains("通用告警通知");
+        assertThat(NotificationSignUtil.verifyGenericWebhook(
+                "my_super_secret_key",
+                Long.parseLong(timestampHeader),
+                requestBody,
+                signatureHeader
+        )).isTrue();
     }
 
     @Test

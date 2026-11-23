@@ -10,6 +10,7 @@ import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -51,13 +52,16 @@ public class NotificationChannelRegistry {
     }
 
     /**
-     * 注册新的运行时渠道配置
+     * 注册新的运行时渠道配置（同名覆盖更新时触发驱逐事件通知下游清理缓存）
      *
      * @param channel 渠道配置对象
      */
     public void register(NotificationChannel channel) {
         BusinessAssert.notNull(channel, "待注册的渠道配置不能为 null");
-        channels.put(channel.getName(), channel);
+        NotificationChannel previous = channels.put(channel.getName(), channel);
+        if (previous != null && eventPublisher != null) {
+            eventPublisher.publishEvent(new NotificationChannelEvictEvent(this, channel.getName(), previous));
+        }
         if (log.isDebugEnabled()) {
             log.debug("Registered notification channel: name={}, platform={}, webhook={}",
                     channel.getName(), channel.getPlatform(), NotificationDesensitizeUtil.maskWebhook(channel.getWebhook()));
@@ -158,10 +162,18 @@ public class NotificationChannelRegistry {
     }
 
     /**
-     * 清空当前所有缓存的渠道配置
+     * 清空当前所有缓存的渠道配置，并联动发布渠道驱逐事件清理下游缓存
      */
     public void clear() {
-        channels.clear();
+        if (channels.isEmpty()) {
+            return;
+        }
+        for (String name : new ArrayList<>(channels.keySet())) {
+            NotificationChannel removed = channels.remove(name);
+            if (removed != null && eventPublisher != null) {
+                eventPublisher.publishEvent(new NotificationChannelEvictEvent(this, name, removed));
+            }
+        }
     }
 
     /**

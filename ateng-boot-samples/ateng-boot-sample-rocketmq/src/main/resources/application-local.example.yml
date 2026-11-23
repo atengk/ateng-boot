@@ -1,0 +1,40 @@
+# ==============================================================================
+# ateng-boot-sample-rocketmq 本地真实中间件联调模板 (Local Integration Template)
+# 复制此文件为 application-local.yml 并在本地按需修改真实 RocketMQ gRPC Proxy 连接信息
+# 注意：application-local.yml 已被 .gitignore 忽略，绝对严禁提交真实凭据至 Git
+# ==============================================================================
+spring:
+  config:
+    activate:
+      on-profile: local
+
+ateng:
+  boot:
+    rocketmq:
+      enabled: true
+      endpoints: "YOUR_ROCKETMQ_PROXY_HOST:8081"
+      access-key: "YOUR_ROCKETMQ_ACCESS_KEY"
+      secret-key: "YOUR_ROCKETMQ_SECRET_KEY"
+      request-timeout: 5s
+      producer:
+        send-timeout: 3s
+        max-attempts: 3
+        max-batch-size: 500
+        topics:
+          - sample_order_topic
+          - sample_delay_topic
+          - sample_fifo_topic
+          - sample_tx_topic
+          - sample_sql_topic
+      consumer:
+        consumption-thread-count: 20
+        max-cache-message-count: 1024
+      simple-consumer:
+        invisible-duration: 30s
+        max-message-num: 32
+        await-duration: 5s
+      dead-letter:
+        max-replay-attempts: 3
+        default-batch-size: 32
+        max-batch-size: 100
+        invisible-duration: 30s

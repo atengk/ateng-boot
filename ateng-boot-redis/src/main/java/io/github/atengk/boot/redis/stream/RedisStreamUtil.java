@@ -127,4 +127,57 @@ public final class RedisStreamUtil {
     public static String formatStreamKey(String stream) {
         return getTemplate().formatStreamKey(stream);
     }
+
+    public static List<MapRecord<String, Object, Object>> readGroup(String stream, String group, String consumer,
+                                                                    int count, Duration blockTimeout) {
+        return getTemplate().readGroup(stream, group, consumer, count, blockTimeout);
+    }
+
+    public static Long ack(String stream, String group, String... recordIds) {
+        return getTemplate().ack(stream, group, recordIds);
+    }
+
+    public static Long ack(String stream, String group, RecordId... recordIds) {
+        return getTemplate().ack(stream, group, recordIds);
+    }
+
+    public static PendingMessages getPendingMessages(String stream, String group, int count) {
+        return getTemplate().getPendingMessages(stream, group, count);
+    }
+
+    public static List<MapRecord<String, Object, Object>> claimPendingMessages(String stream,
+                                                                                String group,
+                                                                                String consumer,
+                                                                                Duration minIdleTime,
+                                                                                int count) {
+        return getTemplate().claimPendingMessages(stream, group, consumer, minIdleTime, count);
+    }
+
+    public static String resolveDeadLetterStream(String stream) {
+        return getTemplate().resolveDeadLetterStream(stream);
+    }
+
+    public static String formatDeadLetterStreamKey(String stream) {
+        return getTemplate().formatDeadLetterStreamKey(stream);
+    }
+
+    public static Long deadLetterSize(String stream) {
+        return getTemplate().deadLetterSize(stream);
+    }
+
+    public static List<MapRecord<String, Object, Object>> peekDeadLetters(String stream, int count) {
+        return getTemplate().peekDeadLetters(stream, count);
+    }
+
+    public static boolean replayDeadLetter(String stream, String deadLetterRecordId) {
+        return getTemplate().replayDeadLetter(stream, deadLetterRecordId);
+    }
+
+    public static int replayDeadLetters(String stream, int maxCount) {
+        return getTemplate().replayDeadLetters(stream, maxCount);
+    }
+
+    public static Boolean clearDeadLetters(String stream) {
+        return getTemplate().clearDeadLetters(stream);
+    }
 }

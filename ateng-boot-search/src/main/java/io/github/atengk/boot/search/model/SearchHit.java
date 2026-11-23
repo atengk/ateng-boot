@@ -1,5 +1,6 @@
 package io.github.atengk.boot.search.model;
 
+import io.github.atengk.boot.search.util.SearchMetadataHelper;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -9,6 +10,8 @@ import java.io.Serializable;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.function.Function;
 
 /**
  * 搜索引擎强类型文档命中载荷模型
@@ -20,7 +23,7 @@ import java.util.Map;
  * @since 2026-10-25
  */
 @Data
-@Builder
+@Builder(toBuilder = true)
 @NoArgsConstructor
 @AllArgsConstructor
 public class SearchHit<T> implements Serializable {
@@ -80,6 +83,12 @@ public class SearchHit<T> implements Serializable {
     private Map<String, List<String>> highlightFields = Collections.emptyMap();
 
     /**
+     * 嵌套或折叠查询的内部命中文档集合（Key 为 inner_hits 名称，Value 为内部命中文档列表）
+     */
+    @Builder.Default
+    private Map<String, List<SearchInnerHit>> innerHits = Collections.emptyMap();
+
+    /**
      * 获取文档实体本体（等价于 getContent）
      *
      * @return 文档实体
@@ -104,5 +113,58 @@ public class SearchHit<T> implements Serializable {
      */
     public Map<String, List<String>> getHighlights() {
         return this.highlightFields != null ? this.highlightFields : Collections.emptyMap();
+    }
+
+    /**
+     * 获取 OCC 乐观锁版本凭据
+     *
+     * @return OccVersion 实例
+     */
+    public OccVersion getOccVersion() {
+        return OccVersion.fromHit(this);
+    }
+
+    /**
+     * 按名称获取嵌套或折叠内部命中文档列表
+     *
+     * @param name inner_hits 名称
+     * @return 内部命中文档列表（保底返回空集合）
+     */
+    public List<SearchInnerHit> getInnerHits(String name) {
+        if (name == null || innerHits == null || innerHits.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<SearchInnerHit> list = innerHits.get(name);
+        return list != null ? list : Collections.emptyList();
+    }
+
+    /**
+     * 将命中文档安全投影转换为视图对象 (VO) 并自动回填 {@code @HighlightField} 高亮富文本
+     * <p>
+     * 严格遵守“内存真明文”不变量：仅向转换生成的目标 VO 回填高亮片段，绝不篡改原实体属性。
+     *
+     * @param mapper 实体到视图对象的转换函数
+     * @param <V>    目标视图对象泛型
+     * @return 投影后的 {@link SearchHit} 容器
+     */
+    public <V> SearchHit<V> map(Function<T, V> mapper) {
+        Objects.requireNonNull(mapper, "mapper must not be null");
+        V mappedContent = this.content != null ? mapper.apply(this.content) : null;
+        if (mappedContent != null && this.highlightFields != null && !this.highlightFields.isEmpty()) {
+            SearchMetadataHelper.populateHighlights(mappedContent, this.highlightFields);
+        }
+        return SearchHit.<V>builder()
+                .id(this.id)
+                .index(this.index)
+                .content(mappedContent)
+                .score(this.score)
+                .seqNo(this.seqNo)
+                .primaryTerm(this.primaryTerm)
+                .version(this.version)
+                .routing(this.routing)
+                .sortValues(this.sortValues)
+                .highlightFields(this.highlightFields)
+                .innerHits(this.innerHits != null ? this.innerHits : Collections.emptyMap())
+                .build();
     }
 }

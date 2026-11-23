@@ -1,5 +1,7 @@
 package io.github.atengk.boot.pay.config.properties;
 
+import io.github.atengk.boot.pay.enums.PayResultCode;
+import io.github.atengk.boot.pay.exception.PayException;
 import lombok.Data;
 
 import java.io.Serializable;
@@ -61,9 +63,66 @@ public class WechatMerchantProperties implements Serializable {
     private String wechatPayPublicKey;
 
     /**
+     * 微信支付平台公钥文件路径，支持 file: 物理绝对路径或 classpath: 类路径资源（适合 Kubernetes Secret 挂载或集中配置文件）
+     */
+    private String wechatPayPublicKeyPath;
+
+    /**
      * 微信支付平台公钥 ID
      */
     private String wechatPayPublicKeyId;
+
+    /**
+     * 解析微信支付平台公钥配置源（优先使用行内文本，其次使用路径）
+     *
+     * @return 公钥源文本或路径，若未配置返回 null
+     */
+    public String resolvePublicKeySource() {
+        if (wechatPayPublicKey != null && !wechatPayPublicKey.isBlank()) {
+            return wechatPayPublicKey.trim();
+        }
+        if (wechatPayPublicKeyPath != null && !wechatPayPublicKeyPath.isBlank()) {
+            return wechatPayPublicKeyPath.trim();
+        }
+        return null;
+    }
+
+    /**
+     * 是否配置了微信支付平台公钥
+     *
+     * @return true 若配置了公钥文本或公钥路径
+     */
+    public boolean hasPublicKey() {
+        return resolvePublicKeySource() != null;
+    }
+
+    /**
+     * 解析微信商户私钥配置源（优先使用行内 PEM 文本，其次使用路径）
+     *
+     * @return 私钥源文本或路径，若未配置返回 null
+     */
+    public String resolvePrivateKeySource() {
+        if (privateKeyPem != null && !privateKeyPem.isBlank()) {
+            return privateKeyPem.trim();
+        }
+        if (privateKeyPath != null && !privateKeyPath.isBlank()) {
+            return privateKeyPath.trim();
+        }
+        return null;
+    }
+
+    /**
+     * 强校验并返回微信支付平台公钥 ID，缺失或空白时快速失败而不回退商户序列号
+     *
+     * @return 去除首尾空白的微信支付平台公钥 ID
+     */
+    public String requirePublicKeyId() {
+        if (wechatPayPublicKeyId == null || wechatPayPublicKeyId.isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID,
+                    "微信支付平台公钥 ID [wechatPayPublicKeyId] 不能为空");
+        }
+        return wechatPayPublicKeyId.trim();
+    }
 
     /**
      * 服务商商户号 (服务商模式专用)

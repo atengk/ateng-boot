@@ -1,5 +1,7 @@
 # 17. 企业级行级多租户安全隔离与自动填充架构决策
 
+- **状态**：`Accepted`（注：第 4 节中关于 `TenantEntity` 与非数字租户写入 `Long` 字段时的静默跳过约定，已由 [ADR-0109](./0109-mybatis-plus-orthogonal-contracts-and-dual-entity-ladder-architecture.md) 演进取代为泛型接口 `TenantAware<T>` 与 Fail-Fast 类型守卫）
+
 ## 背景与痛点
 
 在 SaaS 多租户架构、集团多组织协同以及共享资源平台中，确保租户间数据物理与逻辑层面的绝对隔离，是持久层的核心安全红线。传统持久层多租户方案普遍面临以下痛点：
@@ -75,7 +77,7 @@ flowchart TD
 ### 4. 数据插入防越权自动填充
 - 深度联动 `DefaultMetaObjectHandler`，插入记录时若实体拥有 `tenantId` 属性且当前值为 `null`，自动从 `TenantContextHolder` 获取当前租户 ID 并安全写入；
 - 遵循防御性赋值哲学：若调用方显式为实体的 `tenantId` 赋值（如数据清洗、系统特权导入等场景），则尊重显式值不予覆盖；
-- 可选提供 `TenantEntity` 标记接口，提供类型安全的编译期读写契约。
+- 可选提供泛型契约接口 `TenantAware<T>`（已由 [ADR-0109](./0109-mybatis-plus-orthogonal-contracts-and-dual-entity-ladder-architecture.md) 取代原 `String` 绑定的 `TenantEntity`），同时支持 `Long` 与 `String` 租户标识的编译期类型安全读写；当上下文存在非空且非纯数字文本试图写入 `Long tenantId` 时触发 Fail-Fast 阻断，防止写入 `tenant_id = NULL` 脏数据。
 
 ---
 

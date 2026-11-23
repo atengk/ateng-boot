@@ -1,0 +1,5 @@
+CREATE TABLE sample_order (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    order_no VARCHAR(64) NOT NULL,
+    amount DECIMAL(12, 2) NOT NULL
+);

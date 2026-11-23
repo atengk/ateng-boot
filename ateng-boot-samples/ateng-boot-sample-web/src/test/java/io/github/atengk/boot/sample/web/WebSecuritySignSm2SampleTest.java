@@ -71,7 +71,7 @@ class WebSecuritySignSm2SampleTest {
 
         String canonical = SignCanonicalUtil.buildRequestCanonicalString(
                 "POST",
-                "/api/sample/security/sign/sm2",
+                "/sample/web/security/sign/sm2",
                 timestamp,
                 nonce,
                 Map.of(),
@@ -81,7 +81,7 @@ class WebSecuritySignSm2SampleTest {
         // 客户端私钥生成 SM2 数字签名
         String clientSignature = sm2Signer.sign(canonical, KEY_PAIR.privateKeyHex());
 
-        MvcResult mvcResult = mockMvc.perform(post("/api/sample/security/sign/sm2")
+        MvcResult mvcResult = mockMvc.perform(post("/sample/web/security/sign/sm2")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(jsonBody)
                         .header(ApiSignAspect.HEADER_TIMESTAMP, timestamp)
@@ -89,7 +89,8 @@ class WebSecuritySignSm2SampleTest {
                         .header(ApiSignAspect.HEADER_SIGNATURE, clientSignature))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("SM2_SIGNED_ORD_SM2_001"))
+                .andExpect(jsonPath("$.data.orderNo").value("ORD_SM2_001"))
+                .andExpect(jsonPath("$.data.algorithm").value("SM2"))
                 .andExpect(header().exists(ApiSignAspect.HEADER_SIGNATURE))
                 .andExpect(header().exists(ApiSignAspect.HEADER_TIMESTAMP))
                 .andExpect(header().exists(ApiSignAspect.HEADER_NONCE))
@@ -121,7 +122,7 @@ class WebSecuritySignSm2SampleTest {
 
         String canonical = SignCanonicalUtil.buildRequestCanonicalString(
                 "POST",
-                "/api/sample/security/sign/sm2",
+                "/sample/web/security/sign/sm2",
                 timestamp,
                 nonce,
                 Map.of(),
@@ -132,7 +133,7 @@ class WebSecuritySignSm2SampleTest {
         // 篡改请求体金额：由 10.00 改为 10000.00
         String tamperedBody = jsonBody.replace("10.00", "10000.00");
 
-        mockMvc.perform(post("/api/sample/security/sign/sm2")
+        mockMvc.perform(post("/sample/web/security/sign/sm2")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(tamperedBody)
                         .header(ApiSignAspect.HEADER_TIMESTAMP, timestamp)
@@ -157,7 +158,7 @@ class WebSecuritySignSm2SampleTest {
         // 伪造非法签名串
         String fakeSignature = "MEQCIAyFakeSignatureAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
 
-        mockMvc.perform(post("/api/sample/security/sign/sm2")
+        mockMvc.perform(post("/sample/web/security/sign/sm2")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(jsonBody)
                         .header(ApiSignAspect.HEADER_TIMESTAMP, timestamp)
@@ -176,7 +177,7 @@ class WebSecuritySignSm2SampleTest {
         dto.setAmount(new BigDecimal("60.00"));
         String jsonBody = objectMapper.writeValueAsString(dto);
 
-        mockMvc.perform(post("/api/sample/security/sign/sm2")
+        mockMvc.perform(post("/sample/web/security/sign/sm2")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(jsonBody))
                 .andExpect(status().isOk())

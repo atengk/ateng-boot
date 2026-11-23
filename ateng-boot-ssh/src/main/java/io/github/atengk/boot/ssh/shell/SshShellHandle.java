@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 /**
@@ -56,6 +57,8 @@ public class SshShellHandle implements AutoCloseable {
     private final CopyOnWriteArrayList<Consumer<byte[]>> outputListeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<Integer>> exitCallbacks = new ArrayList<>();
     private final List<Runnable> closeCallbacks = new ArrayList<>();
+    private final ReentrantLock inputLock = new ReentrantLock();
+    private final ReentrantLock callbackLock = new ReentrantLock();
 
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicBoolean exitTriggered = new AtomicBoolean(false);
@@ -131,13 +134,16 @@ public class SshShellHandle implements AutoCloseable {
             throw new SshOperationException(SshResultCode.SHELL_OPERATION_FAILED,
                     "SSH 终端输入管道尚未就绪或已关闭");
         }
-        synchronized (this) {
-            try {
-                outStream.write(data, off, len);
-                outStream.flush();
-            } catch (IOException e) {
-                throw new SshOperationException(SshResultCode.SHELL_OPERATION_FAILED,
-                        "向 SSH 伪终端发送字节流失败: " + e.getMessage(), e);
+        inputLock.lock();
+        try {
+            outStream.write(data, off, len);
+            outStream.flush();
+        } catch (IOException e) {
+            throw new SshOperationException(SshResultCode.SHELL_OPERATION_FAILED,
+                    "向 SSH 伪终端发送字节流失败: " + e.getMessage(), e);
+        } finally {
+            if (inputLock.isHeldByCurrentThread()) {
+                inputLock.unlock();
             }
         }
     }
@@ -242,12 +248,17 @@ public class SshShellHandle implements AutoCloseable {
         }
         boolean runImmediately = false;
         Integer statusToRun = null;
-        synchronized (exitCallbacks) {
+        callbackLock.lock();
+        try {
             if (exitTriggered.get()) {
                 runImmediately = true;
                 statusToRun = cachedExitStatus.get();
             } else {
                 exitCallbacks.add(callback);
+            }
+        } finally {
+            if (callbackLock.isHeldByCurrentThread()) {
+                callbackLock.unlock();
             }
         }
         if (runImmediately && statusToRun != null) {
@@ -274,11 +285,16 @@ public class SshShellHandle implements AutoCloseable {
             return this;
         }
         boolean runImmediately = false;
-        synchronized (closeCallbacks) {
+        callbackLock.lock();
+        try {
             if (closeTriggered.get()) {
                 runImmediately = true;
             } else {
                 closeCallbacks.add(callback);
+            }
+        } finally {
+            if (callbackLock.isHeldByCurrentThread()) {
+                callbackLock.unlock();
             }
         }
         if (runImmediately) {
@@ -392,11 +408,16 @@ public class SshShellHandle implements AutoCloseable {
             return;
         }
         List<Consumer<Integer>> toRun = new ArrayList<>();
-        synchronized (exitCallbacks) {
+        callbackLock.lock();
+        try {
             if (exitTriggered.compareAndSet(false, true)) {
                 cachedExitStatus.set(exitStatus);
                 toRun.addAll(exitCallbacks);
                 exitCallbacks.clear();
+            }
+        } finally {
+            if (callbackLock.isHeldByCurrentThread()) {
+                callbackLock.unlock();
             }
         }
         for (Consumer<Integer> callback : toRun) {
@@ -410,10 +431,15 @@ public class SshShellHandle implements AutoCloseable {
 
     private void triggerCloseCallbacks() {
         List<Runnable> toRun = new ArrayList<>();
-        synchronized (closeCallbacks) {
+        callbackLock.lock();
+        try {
             if (closeTriggered.compareAndSet(false, true)) {
                 toRun.addAll(closeCallbacks);
                 closeCallbacks.clear();
+            }
+        } finally {
+            if (callbackLock.isHeldByCurrentThread()) {
+                callbackLock.unlock();
             }
         }
         for (Runnable callback : toRun) {

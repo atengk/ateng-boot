@@ -15,10 +15,51 @@ import java.util.HexFormat;
 public final class DigestUtil {
 
     private static final String ALGORITHM_SHA256 = "SHA-256";
+    private static final String ALGORITHM_SHA1 = "SHA-1";
     private static final String ALGORITHM_MD5 = "MD5";
     private static final byte[] EMPTY_BYTES = new byte[0];
 
     private DigestUtil() {
+    }
+
+    /**
+     * 计算数据的 SHA-1 摘要字节数组
+     *
+     * @param data 输入数据字节数组
+     * @return 20 字节 SHA-1 摘要
+     */
+    public static byte[] sha1(byte[] data) {
+        return digest(ALGORITHM_SHA1, data != null ? data : EMPTY_BYTES);
+    }
+
+    /**
+     * 计算字符串的 SHA-1 摘要字节数组（UTF-8）
+     *
+     * @param data 输入字符串
+     * @return 20 字节 SHA-1 摘要
+     */
+    public static byte[] sha1(String data) {
+        return sha1(data != null ? data.getBytes(StandardCharsets.UTF_8) : EMPTY_BYTES);
+    }
+
+    /**
+     * 计算数据的 SHA-1 小写十六进制摘要字符串
+     *
+     * @param data 输入数据字节数组
+     * @return 40 位小写十六进制摘要字符串
+     */
+    public static String sha1Hex(byte[] data) {
+        return HexFormat.of().formatHex(sha1(data));
+    }
+
+    /**
+     * 计算字符串的 SHA-1 小写十六进制摘要字符串（UTF-8）
+     *
+     * @param data 输入字符串
+     * @return 40 位小写十六进制摘要字符串
+     */
+    public static String sha1Hex(String data) {
+        return HexFormat.of().formatHex(sha1(data));
     }
 
     /**

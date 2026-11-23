@@ -1,12 +1,15 @@
 package io.github.atengk.boot.redis.autoconfigure;
 
+import io.github.atengk.boot.core.autoconfigure.AtengCoreAutoConfiguration;
 import io.github.atengk.boot.redis.atomic.RedisAtomicUtil;
 import io.github.atengk.boot.redis.bloom.BloomFilterBootstrap;
 import io.github.atengk.boot.redis.bloom.RedisBloomFilter;
+import io.github.atengk.boot.redis.bloom.RedisBloomUtil;
 import io.github.atengk.boot.redis.cache.JitterTtlFunction;
 import io.github.atengk.boot.redis.cache.template.RedisCacheTemplate;
 import io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager;
 import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
+import io.github.atengk.boot.redis.delay.RedisDelayedQueueUtil;
 import io.github.atengk.boot.redis.delay.bootstrap.DelayedQueueBootstrap;
 import io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler;
 import io.github.atengk.boot.redis.delay.spi.LoggingDelayedQueueFailureHandler;
@@ -43,11 +46,16 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
+import org.springframework.boot.autoconfigure.AutoConfigureBefore;
+import org.springframework.boot.autoconfigure.cache.CacheAutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
@@ -60,6 +68,7 @@ import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
+import org.springframework.util.Assert;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
@@ -79,6 +88,8 @@ import java.util.Map;
  * @since 2026-10-16
  */
 @AutoConfiguration
+@AutoConfigureAfter(AtengCoreAutoConfiguration.class)
+@AutoConfigureBefore({RedisAutoConfiguration.class, CacheAutoConfiguration.class})
 @ConditionalOnClass({RedisOperations.class, RedissonClient.class})
 @ConditionalOnProperty(prefix = "ateng.boot.redis", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(RedisProperties.class)
@@ -157,6 +168,7 @@ public class AtengRedisAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(RedisSemaphoreTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.semaphore", name = "enabled", havingValue = "true", matchIfMissing = true)
     public RedisSemaphoreTemplate redisSemaphoreTemplate(RedissonClient redissonClient, RedisProperties redisProperties) {
         RedisSemaphoreTemplate template = new RedisSemaphoreTemplate(redissonClient, redisProperties);
         RedisSemaphoreUtil.init(template);
@@ -227,22 +239,36 @@ public class AtengRedisAutoConfiguration {
      * 容器单例初始化完成后，统一将容器中最终生效的受管模板绑定至各全局静态操作门面
      * 保障下游开发者自定义声明同类型 Bean 覆盖默认装配时，静态门面仍能正确无缝接管
      *
-     * @param semaphoreTemplateProvider 分布式信号量模板提供者
-     * @param lockTemplateProvider 分布式锁模板提供者
+     * @param redisUtilProvider          全能 Redis 操作门面提供者
+     * @param atomicUtilProvider         原子计数器工具提供者
+     * @param bloomFilterProvider        分布式布隆过滤器提供者
+     * @param semaphoreTemplateProvider  分布式信号量模板提供者
+     * @param lockTemplateProvider       分布式锁模板提供者
      * @param idempotentTemplateProvider 防重幂等模板提供者
+     * @param streamTemplateProvider     Redis Stream 模板提供者
+     * @param delayedQueueProvider       分布式延时队列提供者
      * @return 静态门面生命周期初始化器
      */
     @Bean
+    @ConditionalOnMissingBean(name = "redisStaticFacadesInitializer")
     public SmartInitializingSingleton redisStaticFacadesInitializer(
+            ObjectProvider<RedisUtil> redisUtilProvider,
+            ObjectProvider<RedisAtomicUtil> atomicUtilProvider,
+            ObjectProvider<RedisBloomFilter> bloomFilterProvider,
             ObjectProvider<RedisSemaphoreTemplate> semaphoreTemplateProvider,
             ObjectProvider<DistributedLockTemplate> lockTemplateProvider,
             ObjectProvider<RedisIdempotentTemplate> idempotentTemplateProvider,
-            ObjectProvider<RedisStreamTemplate> streamTemplateProvider) {
+            ObjectProvider<RedisStreamTemplate> streamTemplateProvider,
+            ObjectProvider<RedisDelayedQueue> delayedQueueProvider) {
         return () -> {
+            redisUtilProvider.ifAvailable(RedisUtil::init);
+            atomicUtilProvider.ifAvailable(RedisAtomicUtil::init);
+            bloomFilterProvider.ifAvailable(RedisBloomUtil::init);
             semaphoreTemplateProvider.ifAvailable(RedisSemaphoreUtil::init);
             lockTemplateProvider.ifAvailable(RedisLockUtil::init);
             idempotentTemplateProvider.ifAvailable(RedisIdempotentUtil::init);
             streamTemplateProvider.ifAvailable(RedisStreamUtil::init);
+            delayedQueueProvider.ifAvailable(RedisDelayedQueueUtil::init);
         };
     }
 
@@ -297,7 +323,8 @@ public class AtengRedisAutoConfiguration {
      * @return 监听容器
      */
     @Bean
-    @org.springframework.context.annotation.Lazy
+    @Primary
+    @Lazy
     @ConditionalOnMissingBean(RedisMessageListenerContainer.class)
     @ConditionalOnProperty(prefix = "ateng.boot.redis.pub-sub", name = "enabled", havingValue = "true", matchIfMissing = true)
     public RedisMessageListenerContainer redisMessageListenerContainer(RedisConnectionFactory connectionFactory) {
@@ -387,24 +414,26 @@ public class AtengRedisAutoConfiguration {
      * 装配分布式业务级并发限流客户端 RedisRateLimiterClient
      *
      * @param redissonClient Redisson 客户端
+     * @param redisProperties 属性配置
      * @return RedisRateLimiterClient 门面
      */
     @Bean
     @ConditionalOnMissingBean(RedisRateLimiterClient.class)
-    public RedisRateLimiterClient redisRateLimiterClient(RedissonClient redissonClient) {
-        return new RedisRateLimiterClient(redissonClient);
+    public RedisRateLimiterClient redisRateLimiterClient(RedissonClient redissonClient, RedisProperties redisProperties) {
+        return new RedisRateLimiterClient(redissonClient, redisProperties);
     }
 
     /**
      * 装配分布式原子自增、发号与滑动窗口工具 RedisAtomicUtil
      *
      * @param redisTemplate RedisTemplate 实例
+     * @param redisProperties 属性配置
      * @return RedisAtomicUtil 门面
      */
     @Bean
     @ConditionalOnMissingBean(RedisAtomicUtil.class)
-    public RedisAtomicUtil redisAtomicUtil(RedisTemplate<String, Object> redisTemplate) {
-        return new RedisAtomicUtil(redisTemplate);
+    public RedisAtomicUtil redisAtomicUtil(RedisTemplate<String, Object> redisTemplate, RedisProperties redisProperties) {
+        return new RedisAtomicUtil(redisTemplate, redisProperties);
     }
 
     /**
@@ -453,6 +482,11 @@ public class AtengRedisAutoConfiguration {
         RedisCacheConfiguration defaultConfig = RedisCacheConfiguration.defaultCacheConfig()
                 .serializeKeysWith(RedisSerializationContext.SerializationPair.fromSerializer(new StringRedisSerializer()))
                 .serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(redisValueSerializer));
+
+        // 注入全局 key-prefix 前缀（非空时挂载，空时严格保持原生 cacheName:: 行为）
+        if (org.springframework.util.StringUtils.hasText(redisProperties.getKeyPrefix())) {
+            defaultConfig = defaultConfig.computePrefixWith(cacheName -> redisProperties.buildKey(cacheName + "::"));
+        }
 
         // 2. 注入带随机抖动的 TtlFunction
         Duration defaultTtl = cacheProps.getDefaultTtl();
@@ -545,6 +579,7 @@ public class AtengRedisAutoConfiguration {
             try (InputStream inputStream = resource.getInputStream()) {
                 config = Config.fromYAML(inputStream);
             }
+            applyLockWatchdogTimeout(config, atengProperties);
         } else {
             // 2. 否则自动解析 Spring 官方数据源配置进行映射
             config = createRedissonConfigFromSpringProperties(springRedisProperties, atengProperties);
@@ -577,6 +612,7 @@ public class AtengRedisAutoConfiguration {
     Config createRedissonConfigFromSpringProperties(org.springframework.boot.autoconfigure.data.redis.RedisProperties properties,
                                                     RedisProperties atengProperties) {
         Config config = new Config();
+        applyLockWatchdogTimeout(config, atengProperties);
         boolean isSsl = properties.getSsl() != null && properties.getSsl().isEnabled();
         String prefix = isSsl ? SCHEMA_SSL_PREFIX : SCHEMA_PREFIX;
         RedisProperties.RedissonProperties rp = (atengProperties != null && atengProperties.getRedisson() != null)
@@ -631,6 +667,24 @@ public class AtengRedisAutoConfiguration {
         }
 
         return config;
+    }
+
+    private void applyLockWatchdogTimeout(Config config, RedisProperties atengProperties) {
+        if (config == null || atengProperties == null) {
+            return;
+        }
+        Duration lockOverride = atengProperties.getLock() != null
+                ? atengProperties.getLock().getWatchdogTimeout()
+                : null;
+        Duration redissonDefault = atengProperties.getRedisson() != null
+                ? atengProperties.getRedisson().getLockWatchdogTimeout()
+                : null;
+        Duration effectiveTimeout = lockOverride != null ? lockOverride : redissonDefault;
+        if (effectiveTimeout != null) {
+            long timeoutMillis = effectiveTimeout.toMillis();
+            Assert.isTrue(timeoutMillis > 0, "lockWatchdogTimeout 必须大于 0ms");
+            config.setLockWatchdogTimeout(timeoutMillis);
+        }
     }
 
     private void applyBaseServerConfig(BaseConfig<?> serverConfig,

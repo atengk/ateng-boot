@@ -1,672 +1,87 @@
-# ateng-boot-redis 分布式协同与缓存增强套件
+# ateng-boot-redis 企业级双核 Redis 与分布式协同 Starter
 
-> 提供 Spring Data Redis (Lettuce) 与 Redisson 双核融合底座、无 `@class` 污染纯净安全 JSON 序列化、全能 `RedisUtil` 操作门面、声明式四阶分布式锁、双模轻量延时队列、Redis 5.0+ Stream 流式消息、非 Web 分布式防重幂等、受管分布式信号量、原子 Lua 脚本执行器、Pub/Sub 广播引擎、两级缓存、工业级缓存三防模板及连接池治理。
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.13-brightgreen.svg)](https://spring.io/projects/spring-boot)
+[![JDK](https://img.shields.io/badge/JDK-17%2B%20(21%20VT%20Ready)-blue.svg)](https://openjdk.org/)
+[![Dual Core](https://img.shields.io/badge/Engine-Lettuce%20%2B%20Redisson-red.svg)](#2-双核架构全局前缀契约与核心不变量)
+[![Serialization](https://img.shields.io/badge/Codec-Pure%20JSON%20(No%20%40class)-orange.svg)](#21-双核引擎与纯净序列化拓扑)
+
+`ateng-boot-redis` 是面向生产环境的企业级 Redis 基础设施与分布式协同 Starter。基于 **Spring Data Redis (Lettuce) + Redisson** 双核原生融合架构，消除跨语言 `@class` 类型污染与网关空闲断连隐患；收敛基础数据结构、受管 Lua / 原子原语、四阶分布式锁、可靠延时队列、Stream 流式消息、防重幂等、信号量与限流、Pub/Sub 广播以及多级协同缓存防卫体系，全栈遵循 `Duration` 强类型与虚拟线程防 Pinning 规范。
 
 ---
 
 ## 0. 特性与公共 API 全景速查矩阵
 
-| 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **基础运维** | 自动装配与主配置 | `RedisProperties` / `AtengRedisAutoConfiguration` | `ateng.boot.redis.enabled`<br>`ateng.boot.redis.key-prefix` | 统管双核装配开关与全局统一 Key 命名前缀隔离 | `AtengRedisAutoConfigurationTest` |
-| **基础运维** | Redisson 连接保活与连接池治理 | `RedissonClient` / `AtengRedisAutoConfiguration` | `ateng.boot.redis.redisson.ping-connection-interval`<br>`ateng.boot.redis.redisson.connection-pool-size`<br>`ateng.boot.redis.redisson.connection-minimum-idle-size`<br>`ateng.boot.redis.redisson.retry-attempts`<br>`ateng.boot.redis.redisson.retry-interval`<br>`ateng.boot.redis.redisson.threads`<br>`ateng.boot.redis.redisson.netty-threads`<br>`ateng.boot.redis.redisson.config` | TCP 心跳 PING 保活机制（默认 30s）防御云原生 NAT 网关静默切断连接；单机/集群/哨兵连接池容量与超时重试统管 | `AtengRedisAutoConfigurationTest` |
-| **数据操作** | 全能操作门面 | `RedisUtil` | `ateng.boot.redis.key-prefix` | `hasKey(key)` / `expire(key, duration)` / `scanKeys(pattern, count)` / `get(key, clazz)` / `set(key, val, duration)` / `buildKey(key)` / `hScan` / `executePipelined`：纯游标分批拉取彻底杜绝 `keys *` 阻塞 | `RedisUtilTest`<br>`SampleRedisIntegrationTest` |
-| **序列化** | 纯净安全序列化工厂 | `RedisSerializerFactory` | - | `createSafeObjectMapper()` / `createJsonSerializer()` / `stringSerializer()`：无 `@class` 多态 RCE 漏洞，内置 JSR-310 与 Long 精度保护 | `RedisSerializerFactoryTest` |
-| **分布式锁** | 声明式分布式锁 | `@DistributedLock` / `DistributedLockAspect` | `ateng.boot.redis.lock.enabled`<br>`ateng.boot.redis.lock.prefix`<br>`ateng.boot.redis.lock.wait-time`<br>`ateng.boot.redis.lock.lease-time`<br>`ateng.boot.redis.lock.time-unit`<br>`ateng.boot.redis.lock.slow-threshold` | `@DistributedLock(key, keys, mode, waitTime, leaseTime, timeUnit, message)`：支持 SpEL、四阶锁模式、看门狗自动续期、防误删释放与慢锁审计 | `DistributedLockAspectTest`<br>`SampleRedisIntegrationTest` |
-| **分布式锁** | 编程式锁受管模板 | `DistributedLockTemplate` | `ateng.boot.redis.lock.wait-time`<br>`ateng.boot.redis.lock.lease-time`<br>`ateng.boot.redis.lock.slow-threshold` | `execute(key, supplier)` / `execute(key, supplier, fallback)` / `execute(keys, mode, wait, lease, unit, supplier, fallback)` / `tryExecute(key, action)`：闭包内业务异常无损透传 | `DistributedLockTemplateTest`<br>`SampleRedisIntegrationTest` |
-| **分布式锁** | 静态锁操作门面 | `RedisLockUtil` | `ateng.boot.redis.lock.*` | `RedisLockUtil.execute(key, supplier)` / `RedisLockUtil.execute(key, supplier, fallback)` / `RedisLockUtil.tryExecute(key, action)`：静态上下文无需注入 Spring Bean 一键安全加锁 | `RedisLockUtilTest`<br>`SampleRedisIntegrationTest` |
-| **分布式锁** | 锁模式枚举与闭包 | `LockMode` / `LockSupplier<T, E>` / `LockAction<E>` | - | `REENTRANT`, `FAIR`, `READ`, `WRITE`；支持受检与非受检异常穿透声明 | `DistributedLockTemplateTest`<br>`SampleRedisIntegrationTest` |
-| **延时队列** | 编程式延时任务 | `RedisDelayedQueue` | `ateng.boot.redis.delay-queue.enabled`<br>`ateng.boot.redis.delay-queue.dead-letter-enabled`<br>`ateng.boot.redis.delay-queue.dead-letter-suffix` | `offer(queue, msg, delay)` / `poll(queue, clazz)` / `take(queue, clazz)` / `remove(queue, msg)` / `destroy()`<br>DLQ 运维：`peekDeadLetter` / `pollDeadLetter` / `getDeadLetterSize` / `clearDeadLetter` / `sendToDeadLetter` | `RedisDelayedQueueTest`<br>`SampleRedisIntegrationTest` |
-| **延时队列** | 声明式消费监听 | `@DelayedQueueListener` / `DelayedQueueBootstrap` | `ateng.boot.redis.delay-queue.retry-times`<br>`ateng.boot.redis.delay-queue.retry-delay` | `@DelayedQueueListener(queue, concurrency)`：受管 `ThreadPoolTaskExecutor` 并发驱动、`ContextCopyingTaskDecorator` 上下文透传、重试退避与平滑优雅停机 | `DelayedQueueBootstrapTest`<br>`SampleRedisIntegrationTest` |
-| **延时队列** | 死信流转与失败 SPI | `DeadLetterMessage<T>` / `DelayedQueueFailureHandler` | `ateng.boot.redis.delay-queue.dead-letter-enabled`<br>`ateng.boot.redis.delay-queue.dead-letter-suffix` | `onFailed(deadLetterMessage, cause)`：重试耗尽后封装完整因果堆栈转入死信队列，默认 `LoggingDelayedQueueFailureHandler` 告警，支持自定义 SPI 无缝接管 | `DelayedQueueBootstrapTest`<br>`AtengRedisAutoConfigurationTest` |
-| **流式消息** | Redis 5.0+ Stream 消息流引擎 | `RedisStreamTemplate` | `ateng.boot.redis.stream.enabled`<br>`ateng.boot.redis.stream.poll-timeout`<br>`ateng.boot.redis.stream.batch-size`<br>`ateng.boot.redis.stream.retry-times`<br>`ateng.boot.redis.stream.dlq-suffix`<br>`ateng.boot.redis.stream.instance-id` | `send(stream, payload)` / `createGroup(stream, group)` / `readGroup(stream, group, consumer, count, timeout)` / `ack(stream, group, recordIds)` / `getPendingMessages(stream, group, count)` / `claim(stream, group, newConsumer, minIdle, recordIds)` / `size(stream)` / `trim(stream, count)` / `trim(stream, count, approximate)`：支持可靠流生产、消费组运维、PEL 待决积压排查与孤儿消息认领 | `RedisStreamTemplateTest`<br>`SampleRedisIntegrationTest` |
-| **流式消息** | 声明式 Stream 消费组监听 | `@RedisStreamListener` / `StreamBootstrap` | `ateng.boot.redis.stream.*` | `@RedisStreamListener(stream, group, concurrency, autoAck, autoCreateGroup)`：受管 `ThreadPoolTaskExecutor` 异步消费、自动创建消费组、自动/手动 ACK、MDC `traceId` 透传与优雅停机 | `StreamBootstrapTest`<br>`SampleRedisIntegrationTest` |
-| **流式消息** | Stream 失败补偿与死信流 SPI | `StreamDeadLetterMessage<T>` / `StreamFailureHandler` | `ateng.boot.redis.stream.retry-times`<br>`ateng.boot.redis.stream.dlq-suffix` | `onFailed(deadLetterMessage, cause)`：重试耗尽后封装完整因果链转入死信流 `${stream}:dlq`，默认 `LoggingStreamFailureHandler` 告警，支持自定义 SPI 业务告警与持久化 | `StreamBootstrapTest`<br>`AtengRedisAutoConfigurationTest` |
-| **业务防重** | 声明式业务防重幂等 | `@RedisIdempotent` / `RedisIdempotentAspect` | `ateng.boot.redis.idempotent.enabled`<br>`ateng.boot.redis.idempotent.prefix`<br>`ateng.boot.redis.idempotent.default-expire`<br>`ateng.boot.redis.idempotent.delete-on-failure` | `@RedisIdempotent(key, expire, message, deleteOnFailure)`：支持 SpEL 动态解析业务唯一键、防重复提交/重复消费、业务异常时由 `deleteOnFailure=true` 自动释放凭据以支持上游重试 | `RedisIdempotentAspectTest`<br>`SampleRedisIntegrationTest` |
-| **业务防重** | 编程式防重受管模板 | `RedisIdempotentTemplate` | `ateng.boot.redis.idempotent.*` | `execute(key, supplier)` / `execute(key, timeout, supplier)` / `execute(key, timeout, deleteOnFailure, message, supplier)`：函数式闭包受管防重，防重失败阻断并抛出 `BusinessException` | `RedisIdempotentTemplateTest`<br>`SampleRedisIntegrationTest` |
-| **业务防重** | 静态防重操作门面 | `RedisIdempotentUtil` | `ateng.boot.redis.idempotent.*` | `RedisIdempotentUtil.execute(key, supplier)` / `RedisIdempotentUtil.execute(key, timeout, supplier)`：静态上下文无需注入 Spring Bean 一键安全执行防重逻辑 | `RedisIdempotentUtilTest`<br>`SampleRedisIntegrationTest` |
-| **并发治理** | 分布式受管信号量模板 | `RedisSemaphoreTemplate` | `ateng.boot.redis.key-prefix` | `execute(key, totalPermits, acquirePermits, waitTime, supplier, fallback)` / `tryAcquire(key, permits, timeout)` / `release(key, permits)` / `availablePermits(key)` / `resetPermits(key, newPermits)`：集群全局并发硬阈值控制、自动初始化配额、争锁超时优雅降级与动态扩缩容 | `RedisSemaphoreTemplateTest`<br>`SampleRedisIntegrationTest` |
-| **并发治理** | 静态信号量操作门面 | `RedisSemaphoreUtil` | `ateng.boot.redis.key-prefix` | `RedisSemaphoreUtil.execute(key, totalPermits, waitTime, supplier, fallback)` / `RedisSemaphoreUtil.resetPermits(key, newPermits)`：静态上下文轻量并发度治理 | `RedisSemaphoreUtilTest`<br>`SampleRedisIntegrationTest` |
-| **脚本执行** | 受管原子 Lua 脚本执行器 | `RedisScriptExecutor` | - | `execute(script, resultType, keys, args)` / `executeClasspath(path, resultType, keys, args)`：自动 SHA1 预编译缓存、EVALSHA 优先执行、底层脚本加载异常安全转译 | `RedisScriptExecutorTest`<br>`SampleRedisIntegrationTest` |
-| **广播订阅** | 主题广播发布者 | `RedisMessagePublisher` | `ateng.boot.redis.pub-sub.enabled` | `publish(channel, message)` / `subscribe(listener, channel)` / `unsubscribe(listener, channel)`：跨节点广播通知与动态订阅 | `RedisMessagePublisherTest` |
-| **广播订阅** | 声明式频道监听 | `@ChannelTopicListener` / `ChannelTopicBootstrap` | `ateng.boot.redis.pub-sub.enabled` | `@ChannelTopicListener(topics, patterns, concurrency)`：支持 `${...}` 占位符、精确主题与通配模式，支持单参 POJO/String/byte[]/Message、双参及三参多态安全反序列化，受管 `ThreadPoolTaskExecutor` 并发驱动与 MDC `traceId` 透传 | `ChannelTopicBootstrapTest`<br>`SampleRedisIntegrationTest` |
-| **布隆过滤** | 分布式布隆过滤器 | `RedisBloomFilter` | `ateng.boot.redis.key-prefix`<br>`ateng.boot.redis.bloom-filters.<name>.expected-insertions`<br>`ateng.boot.redis.bloom-filters.<name>.false-probability` | `tryInit(name, expected, prob)` / `add(name, val)` / `addAll(name, coll)` / `contains(name, val)` / `containsAll(name, coll)` / `count(name)` / `getUsageRate(name)` / `isOverCapacity(name, threshold)` / `delete(name)`：支持依赖注入操作范式、80% 容量安全预警与全局 KeyPrefix 隔离 | `RedisBloomFilterTest`<br>`SampleRedisIntegrationTest` |
-| **布隆过滤** | 声明式自动预热调度器 | `BloomFilterBootstrap` | `ateng.boot.redis.bloom-filters.*` | 容器就绪后自动遍历 YAML 中声明的规则，原子幂等调用 `tryInit` 完成预热 | `RedisBloomFilterTest`<br>`AtengRedisAutoConfigurationTest` |
-| **布隆过滤** | 静态布隆过滤门面 | `RedisBloomUtil` | `ateng.boot.redis.key-prefix`<br>`ateng.boot.redis.bloom-filters.*` | `tryInit(name, expected, prob)` / `add(name, val)` / `addAll(name, coll)` / `contains(name, val)` / `containsAll(name, coll)` / `count(name)` / `getUsageRate(name)` / `isOverCapacity(name, threshold)` / `delete(name)`：静态上下文开箱即用门面，底层统一委托受管单例 `RedisBloomFilter` | `RedisBloomFilterTest`<br>`SampleRedisIntegrationTest` |
-| **原子发号** | 结构化发号与自增 | `RedisAtomicUtil` | `ateng.boot.redis.key-prefix` | `generateDailySeq(bizPrefix, length)`：跨天自重置且带 48h TTL 防泄露流水号；`incrWithExpire(key, delta, duration)` / `compareAndSet(key, expect, update)` / `getAndSet(key, update)` | `RedisAtomicUtilTest`<br>`SampleRedisIntegrationTest` |
-| **并发流控** | 滑动窗口严格限流 | `RedisAtomicUtil` | - | `isAllowedBySlidingWindow(key, maxLimit, window)`：基于 ZSet 毫秒级时间戳实现精准滑动窗口防突刺 | `RedisAtomicUtilTest`<br>`SampleRedisIntegrationTest` |
-| **并发流控** | 分布式令牌桶流控 | `RedisRateLimiterClient` | - | `tryAcquire(key, rate, interval)` / `tryAcquire(key, rate, interval, permits, timeout)` / `acquire` / `delete`：基于 Redisson 令牌桶平滑流控 | `RedisRateLimiterClientTest`<br>`SampleRedisIntegrationTest` |
-| **缓存增强** | 多级 TTL 缓存管理 | `RedisCacheManager` / `AtengRedisAutoConfiguration` | `ateng.boot.redis.cache.enabled`<br>`ateng.boot.redis.cache.default-ttl`<br>`ateng.boot.redis.cache.expires` | 个性化为不同 `@Cacheable(value = "...")` 声明独立 TTL；支持空值防穿透 | `AtengRedisAutoConfigurationTest` |
-| **缓存防卫** | 统一缓存执行模板 | `RedisCacheTemplate` | `ateng.boot.redis.cache.enabled`<br>`ateng.boot.redis.cache.default-ttl`<br>`ateng.boot.redis.cache.null-ttl`<br>`ateng.boot.redis.cache.max-jitter`<br>`ateng.boot.redis.cache.jitter-enabled`<br>`ateng.boot.redis.cache.cache-null-values`<br>`ateng.boot.redis.cache.lock-wait-time` | `getOrLoad(key, clazz, loader)` / `getOrLoad(key, typeRef, loader)`：单键 DCL + 互斥锁防击穿 + 短 TTL 空哨兵防穿透 + 随机抖动防雪崩 + 争锁超时降级<br>`batchGetOrLoad(keys, mapper, clazz/typeRef, batchLoader)`：批量 MGET 探测 + 字典序排序锁去重 + 降级自愈回填 + Pipeline 回写彻底杜绝 N+1<br>`get` / `put` / `evict` / `batchEvict` / `hasKey`：对称运维门面 | `RedisCacheTemplateTest`<br>`SampleRedisIntegrationTest` |
-| **两级缓存** | 两级缓存核心门面 | `TwoLevelCache` / `DefaultTwoLevelCache` | `ateng.boot.redis.two-level.*`<br>`ateng.boot.redis.key-prefix` | `getName()` / `get(key)` / `get(key, clazz)` / `get(key, loader)` / `put(key, val, ttl)` / `putIfAbsent` / `evict(key)` / `evictLocal(key)` / `clear()` / `clearLocal()`：纳秒级 L1 本地命中、分布式 L2 兜底、空哨兵防穿透与游标安全 scan 清理 | `TwoLevelCacheTest`<br>`SampleRedisIntegrationTest` |
-| **两级缓存** | Spring Cache 适配器 | `TwoLevelCacheManager` | `ateng.boot.redis.two-level.enabled`<br>`ateng.boot.redis.two-level.topic`<br>`ateng.boot.redis.two-level.l1.*`<br>`ateng.boot.redis.two-level.l2.*` | `@Cacheable` / `@CacheEvict` 无缝注解驱动、动态按需创建缓存空间、`instanceId` 唯一标识防环、`ateng:cache:evict:topic` 跨节点集中广播协同失效 | `TwoLevelCacheManagerTest`<br>`SampleRedisIntegrationTest` |
-| **两级缓存** | L1 内存缓存与退化工厂 | `L1MemoryCacheFactory` / `L1MemoryCache` / `ConcurrentLruMemoryCache` | `ateng.boot.redis.two-level.l1.default-max-size`<br>`ateng.boot.redis.two-level.l1.default-ttl` | 自动探测 Caffeine，存在时启用 W-TinyLFU 高性能缓存，缺失时自动退化为内置 LRU 内存结构并受 `default-max-size` 严格限制防 OOM | `ConcurrentLruMemoryCacheTest`<br>`L1MemoryCacheFactoryTest` |
-| **两级缓存** | 跨节点广播失效载荷 | `CacheEvictMessage` | `ateng.boot.redis.two-level.topic` | `cacheName` / `key` / `instanceId` / `clearAll`：跨实例失效广播数据契约 | `TwoLevelCacheTest`<br>`TwoLevelCacheManagerTest` |
-| **缓存增强** | 随机抖动防雪崩 | `JitterTtlFunction` | `ateng.boot.redis.cache.jitter-enabled`<br>`ateng.boot.redis.cache.max-jitter` | 实现 `RedisCacheWriter.TtlFunction`，在基准 TTL 上叠加 0 ~ `maxJitter` 动态偏移量打散失效时刻 | `JitterTtlFunctionTest`<br>`AtengRedisAutoConfigurationTest` |
+> 阅读下文前，可通过下表在 30 秒内定位目标能力的核心组件、公共 API、配置属性与验证锚点（100% 对齐模块公共接口与 [示例工程 README](../ateng-boot-samples/ateng-boot-sample-redis/README.md)）。
+
+| 能力域 | 核心注解 / 受管组件 | 关键公共方法 / 配置属性（`ateng.boot.redis.*`） | 典型应用场景 | 锚定验证源头（`*Test` / Sample） |
+| :--- | :--- | :--- | :--- | :--- |
+| **基础数据与序列化** | `RedisTemplate<String, Object>`<br>`RedisUtil`<br>`RedisSerializerFactory` | `buildKey`、`hasKey`、`expire`、`getExpire`、`persist`、`delete`、`scan` / `scanKeys` / `scanCursor`、`set` / `get`、`hSet` / `hGet` / `hGetAll` / `hDel` / `hScan`、`lPush` / `lRange`、`sAdd` / `sMembers`、`zAdd` / `zIncrBy` / `zRevRangeWithScores`、`geoAdd`、`setBit`、`pfAdd`、`executePipelined`、`init` | 购物车 Hash、排行榜 ZSet、安全游标 `SCAN`、Pipeline 预热 | `RedisUtilTest`<br>`RedisSerializerFactoryTest`<br>`RedisOpsAndScriptController` |
+| **受管 Lua 与原子原语** | `RedisScriptExecutor`<br>`RedisAtomicUtil` | `execute(script, type, keys, args)`、`executeClasspath(path, type, keys, args)`；`increment` / `decrement`、`compareAndSet`、`getAndSet`、`generateDailySeq`、`slidingWindowCheck`、`isAllowedBySlidingWindow`、`getSlidingWindowCount`、`init` | 优惠券原子核销、按日重置流水号、CAS 水位更新 | `RedisScriptExecutorTest`<br>`RedisAtomicUtilTest`<br>`RedisOpsAndScriptController` |
+| **双模分布式锁** | `@DistributedLock`<br>`DistributedLockAspect`<br>`DistributedLockTemplate`<br>`RedisLockUtil` / `LockMode` | `@DistributedLock(key, keys, prefix, mode, waitTime, leaseTime, timeUnit, message)`；`LockMode`: `REENTRANT` / `FAIR` / `READ` / `WRITE`；`execute` (含 `fallback` 与 `List<String>` 联锁)、`tryExecute`；`lock.enabled`、`lock.prefix`、`lock.wait-time`、`lock.lease-time`、`lock.slow-threshold`、`lock.watchdog-timeout`、`redisson.lock-watchdog-timeout` | 秒杀防超卖、跨服务可重入结算、读写规则保护、多 SKU 联锁、争锁降级 | `DistributedLockTemplateTest`<br>`DistributedLockAspectTest`<br>`RedisLockUtilTest`<br>`RedisLockController` |
+| **轻量可靠延时队列** | `RedisDelayedQueue`<br>`RedisDelayedQueueUtil`<br>`@DelayedQueueListener`<br>`DelayedQueueFailureHandler` | `offer`、`poll`、`size` / `delayedSize`、`getDeadLetterSize`、`pollDeadLetter`、`peekDeadLetters`、`replayDeadLetter` / `replayDeadLetters`、`clearDeadLetterQueue`、`init`；`DelayedQueueFailureHandler.onFailed(deadLetterMessage, cause)`；`delay-queue.enabled`、`delay-queue.retry-times`、`delay-queue.retry-delay`、`delay-queue.dead-letter-enabled`、`delay-queue.dead-letter-suffix`、`delay-queue.max-replay-attempts` | 订单超时关单、失败退避重试、DLQ 死信检视重放与 SPI 告警 | `RedisDelayedQueueTest`<br>`DelayedQueueBootstrapTest`<br>`RedisDelayQueueController` |
+| **Stream 流消息引擎** | `RedisStreamTemplate`<br>`RedisStreamUtil`<br>`@RedisStreamListener`<br>`StreamFailureHandler` | `send`、`createGroup` / `destroyGroup`、`acknowledge`、`read`、`pendingSummary` / `pending`、`claim` / `claimPendingMessages`、`size` / `trim`、`peekDeadLetters`、`replayDeadLetter` / `replayDeadLetters`、`clearDeadLetters`、`init`；`StreamFailureHandler.onFailure` / `onFailed(deadLetterMessage, cause)`；`stream.enabled`、`stream.retry-times`、`stream.poll-timeout`、`stream.batch-size`、`stream.dlq-suffix`、`stream.max-replay-attempts`、`stream.claim-idle-time`、`stream.claim-batch-size`、`stream.instance-id` | 订单领域事件异步解耦、PEL 孤儿消息 `XCLAIM` 自愈、跨节点四维上下文透传 | `RedisStreamTemplateTest`<br>`RedisStreamUtilTest`<br>`StreamBootstrapTest`<br>`RedisStreamController` |
+| **分布式防重幂等** | `@RedisIdempotent`<br>`RedisIdempotentAspect`<br>`RedisIdempotentTemplate`<br>`RedisIdempotentUtil` | `@RedisIdempotent(key, prefix, expire, deleteOnFailure, message)`；`execute`、`tryAcquire`、`setSuccess`、`setFailed`、`delete`、`getStatus`、`isSuccess` / `isTrying` / `isFailed`、`getBucket`、`formatKey`、`init`；`idempotent.enabled`、`idempotent.prefix`、`idempotent.default-expire`、`idempotent.delete-on-failure` | 支付异步回调防重、异常删除凭据重试、退款核销幂等 | `RedisIdempotentTemplateTest`<br>`RedisIdempotentAspectTest`<br>`RedisIdempotentUtilTest`<br>`RedisIdempotentController` |
+| **流控与在途信号量** | `RedisSemaphoreTemplate`<br>`RedisSemaphoreUtil`<br>`RedisRateLimiterClient`<br>`RedisAtomicUtil` | `RedisSemaphoreTemplate` / `Util`: `execute`、`tryAcquire`、`release`、`trySetPermits`、`addPermits`、`resetPermits`、`availablePermits`、`delete`、`init`；`RedisRateLimiterClient`: `tryAcquire`、`acquire`、`getAvailablePermits`、`reset`、`delete`、`getRateLimiter`；`semaphore.enabled`、`semaphore.prefix` | 下游通道在途并发隔离、动态扩缩容、令牌桶网关流控、短信滑动窗口防刷 | `RedisSemaphoreTemplateTest`<br>`RedisRateLimiterClientTest`<br>`RedisTrafficController` |
+| **Pub/Sub 主题广播** | `RedisMessagePublisher`<br>`@ChannelTopicListener` | `publish`、`subscribe`、`subscribeChannel`、`unsubscribe`、`getListenerContainer`；`@ChannelTopicListener(value / topics / topic / patterns, concurrency)`；`pub-sub.enabled` | 全站维护公告广播、通配模式配置刷新、动态订阅注销 | `RedisMessagePublisherTest`<br>`ChannelTopicBootstrapTest`<br>`RedisPubSubController` |
+| **单级 / 防卫 / 两级缓存** | `RedisCacheManager`<br>`RedisCacheTemplate`<br>`TwoLevelCacheManager`<br>`TwoLevelCache` | `RedisCacheTemplate`: `getOrLoad`、`batchGetOrLoad`、`put` / `evict` / `batchEvict` / `hasKey`、`buildKey` / `buildLockKey` / `calculateTtl`；`TwoLevelCache`: `put(k, v, ttl)`、`evictLocal`、`clearLocal`、`get(k, type)`；`cache.enabled`、`cache.default-ttl`、`cache.cache-null-values`、`cache.null-ttl`、`cache.jitter-enabled`、`cache.max-jitter`、`cache.expires`、`cache.lock-wait-time`；`two-level.enabled`、`two-level.topic`、`two-level.l1.*`、`two-level.l2.*` | 字典独立 TTL 缓存、DCL + 空哨兵防穿透/击穿/雪崩、L1+L2 纳秒命中与广播失效 | `JitterTtlFunctionTest`<br>`RedisCacheTemplateTest`<br>`TwoLevelCacheManagerTest`<br>`TwoLevelCacheTest`<br>`L1MemoryCacheFactoryTest`<br>`RedisCacheController` |
+| **分布式布隆过滤器** | `RedisBloomFilter`<br>`RedisBloomUtil`<br>`BloomFilterBootstrap` | `tryInit`、`add` / `addAll`、`contains` / `containsAll`、`count`、`getExpectedInsertions`、`getFalseProbability`、`getUsageRate`、`isOverCapacity`、`delete`、`buildKey`、`init`；`bloom-filters.<name>.expected-insertions`、`bloom-filters.<name>.false-probability` | 黑名单海量元素毫秒级拦截、启动声明式预热、80% 容量水位预警 | `RedisBloomFilterTest`<br>`RedisCacheController` |
+| **双核装配与 Redisson 扩展** | `AtengRedisAutoConfiguration`<br>`RedisProperties` | `enabled`、`key-prefix`、`redisson.config`、`redisson.threads`、`redisson.netty-threads`、`redisson.ping-connection-interval`、`redisson.connection-pool-size`、`redisson.connection-minimum-idle-size`、`redisson.retry-attempts`、`redisson.retry-interval`、`redisson.lock-watchdog-timeout` | NAT 心跳保活、外部 `redisson.yaml` 接管、`@ConditionalOnMissingBean` 定制 | `AtengRedisAutoConfigurationTest`<br>`RedisPropertiesTest`<br>`SampleRedisIntegrationTest` |
 
 ---
 
-## 1. 模块定位与 Maven 坐标
+## 1. 模块定位与快速起步
 
-`ateng-boot-redis` 坚持双核融合架构，摒弃“Spring Data Redis 与 Redisson 二选一”的传统割裂思维，同时规避了官方 `redisson-spring-boot-starter` 强行覆盖官方 `RedisConnectionFactory` 带来的隐式冲突与序列化漂移。
+### 1.1 模块定位
+
+- **核心底座依赖**：依赖 `ateng-boot-core`，复用全局唯一安全异常体系 `BusinessException` / `IdempotentException` / `CommonResultCode`、高精度 JSON 定制规约以及四维上下文持有器 `UserContextHolder` / `TenantContextHolder`。
+- **双核零侵入融合**：同时托管 Spring Data Redis (`LettuceConnectionFactory`) 与 `RedissonClient`（标注 `@ConditionalOnMissingBean`），默认无缝继承 Spring Boot 原生 `spring.data.redis.*` 单机 / 哨兵 / 集群 / SSL 连接参数，无需维护两套数据源连接池。
+- **防御性自动装配顺序**：[`AtengRedisAutoConfiguration`](./src/main/java/io/github/atengk/boot/redis/autoconfigure/AtengRedisAutoConfiguration.java) 显式标注 `@AutoConfigureAfter(AtengCoreAutoConfiguration.class)` 与 `@AutoConfigureBefore({RedisAutoConfiguration.class, CacheAutoConfiguration.class})`，并在容器就绪后通过 `SmartInitializingSingleton` 命名 `redisStaticFacadesInitializer` Bean 统一初始化 8 个全局静态工具门面。
+
+### 1.2 Maven 引入坐标
+
+**方式一：通过 `ateng-boot-bom` 统一纳管版本（推荐）**
 
 ```xml
-<dependency>
-    <groupId>io.github.atengk</groupId>
-    <artifactId>ateng-boot-redis</artifactId>
-</dependency>
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-bom</artifactId>
+            <version>1.2.0</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+
+<dependencies>
+    <dependency>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot-redis</artifactId>
+    </dependency>
+    <!-- 可选：开启两级缓存高性能 Caffeine L1 时引入（缺类时自动降级为原生 JVM LRU） -->
+    <dependency>
+        <groupId>com.github.ben-manes.caffeine</groupId>
+        <artifactId>caffeine</artifactId>
+    </dependency>
+</dependencies>
 ```
 
----
+**方式二：独立显式版本号引入**
 
-## 2. 双核架构与安全序列化不变量
-
-### 场景痛点
-默认 Spring Data Redis 序列化方案要么使用 JDK 原生二进制（无法跨语言排查、性能低下），要么使用 GenericJackson2JsonRedisSerializer / DefaultTyping 自动写入 `@class` 类全限定名属性，极易引发严重的多态反序列化 RCE 安全漏洞，且在重构类路径时导致历史缓存全部反序列化崩溃。
-
-### 双核架构拓扑
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                          业务应用 Service / Component 层                │
-└────────────────────────────────────┬───────────────────────────────────┘
-                                     │
-           ┌─────────────────────────┴─────────────────────────┐
-           ▼                                                   ▼
-┌──────────────────────┐                           ┌──────────────────────┐
-│  Spring Data Redis   │                           │       Redisson       │
-│  (Lettuce 高性能驱动) │                           │   (原生分布式协调内核) │
-├──────────────────────┤                           ├──────────────────────┤
-│ • RedisTemplate      │                           │ • RedissonClient     │
-│ • RedisUtil (全能门面)│                           │ • @DistributedLock  │
-│ • RedisAtomicUtil    │                           │ • RedisDelayedQueue  │
-│ • RedisStreamTemplate│                           │ • RedisSemaphore     │
-│ • RedisCacheManager  │                           │ • RedisIdempotent    │
-│ • RedisScriptExecutor│                           │ • RRateLimiter 流控  │
-└──────────┬───────────┘                           └──────────┬───────────┘
-           │                                                   │
-           └─────────────────────────┬─────────────────────────┘
-                                     ▼
-                ┌────────────────────────────────────────┐
-                │ 统一纯净安全 JSON 序列化器                │
-                │ (零 @class 污染 / JSR-310 / Long精度保护)│
-                └────────────────────────────────────────┘
+```xml
+<dependencies>
+    <dependency>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot-redis</artifactId>
+        <version>1.2.0</version>
+    </dependency>
+</dependencies>
 ```
 
-### 统一序列化规范
-- **Key 序列化**：统一采用 `StringRedisSerializer`，保证所有键名在 Redis 控制台原生可读；
-- **Value 序列化**：统一采用无 `@class` 污染的纯净 `Jackson2JsonRedisSerializer`，集成 Java 8 日期模块（JSR-310，默认格式 `yyyy-MM-dd HH:mm:ss`）、统一东八区时区，并将超出 JavaScript 安全整数范围的 Long/BigInteger 序列化为 String 防前端精度丢失。
+### 1.3 最小可用配置与极简实战代码
 
----
-
-## 3. 全能 RedisUtil 操作门面与安全游标扫描
-
-### 场景痛点
-生产环境严禁直接调用 `KEYS *`、`HKEYS` 或 `SMEMBERS`，当集合包含百万级大 Key 时会导致单线程 Redis 发生秒级阻塞停机。`RedisUtil` 彻底封装了游标分批扫描算法，对外暴露安全流式 API。
-
-### 核心代码示例（逆向自 `ScriptExecutionScenarioService`）
-```java
-@Service
-@RequiredArgsConstructor
-public class ScriptExecutionScenarioService {
-
-    private final RedisAtomicUtil redisAtomicUtil;
-
-    /**
-     * 基于 RedisUtil 安全游标扫描匹配的键集合（底层 SCAN 游标分批拉取，杜绝阻塞 Redis）
-     */
-    public Set<String> scanKeys(String pattern, long count) {
-        Set<String> keys = RedisUtil.scanKeys(pattern, count);
-        log.info("[ScriptExecution] 游标扫描完成: pattern={}, count={}, matchedSize={}", pattern, count, keys.size());
-        return keys;
-    }
-}
-```
-
-### 预期控制台日志呈现
-```text
-2026-10-27 16:55:12.158 INFO  [main] [ea52411c7e479cd39e04bbf3f0f9317e] i.g.a.b.s.r.s.ScriptExecutionScenarioService : 游标扫描完成: pattern=sample:user:*, count=50, matchedSize=2
-```
-
----
-
-## 4. 双模一体化分布式锁 (`@DistributedLock` & `RedisLockUtil` & `DistributedLockTemplate`)
-
-### 场景痛点
-手动调用分布式锁容易发生死锁、异常时未在 `finally` 块释放、锁重入计数紊乱、锁超时后误删其他线程持有的锁，以及并发大事务锁持有时间过长拖垮数据库。
-
-### 特性矩阵
-- **双模同构内核**：声明式切面与编程式门面均全量委托 `DistributedLockTemplate`，保证锁前缀拼接、看门狗自动续期、安全持锁释放与慢锁审计 100% 规则自洽；
-- **极简静态门面 (`RedisLockUtil`)**：无需注入 Spring Bean，在任意上下文一行代码安全执行闭包加锁；
-- **无损异常穿透**：定制 `LockSupplier<T, E>` 与 `LockAction<E>` 声明 `throws Throwable`，闭包内自由抛出业务异常，模板安全释放锁后原样透传；
-- **弹性容灾机制**：支持争锁超时降级闭包 `fallback` 以及默认 0 等待即时非阻塞试探 `tryExecute`；
-- **四阶锁模式与多键联锁**：支持可重入锁 (`REENTRANT`)、公平锁 (`FAIR`)、共享读锁 (`READ`)、排他写锁 (`WRITE`) 以及跨资源原子联锁 (`MultiLock`，自动键去重)；
-- **智能租期守护**：缺省 `leaseTime = -1` 自动启用 Redisson 看门狗 (Watchdog) 30s 自动续期；指定具体租期则强制超时熔断防死锁；
-- **慢锁告警网关**：锁持有耗时超过阈值（默认 3 秒）自动输出 WARN 级别慢锁审计日志。
-
-### 核心代码示例（1:1 逆向自 `StockDeductScenarioService`）
-```java
-@Slf4j
-@Service
-@RequiredArgsConstructor
-public class StockDeductScenarioService {
-
-    private final DistributedLockTemplate distributedLockTemplate;
-
-    /**
-     * 1. 声明式分布式锁扣减库存（防超卖）
-     */
-    @DistributedLock(key = "'product:' + #productId", waitTime = 3000, leaseTime = 5000, mode = LockMode.REENTRANT)
-    public int deductStock(Long productId, int count) {
-        log.info("[StockDeduct] 获取分布式锁成功，开始扣减库存: productId={}, count={}", productId, count);
-        Integer currentStock = stockTable.get(productId);
-        if (currentStock == null || currentStock < count) {
-            throw new BusinessException("库存不足，当前库存: " + currentStock + ", 拟扣减: " + count);
-        }
-        int remaining = currentStock - count;
-        stockTable.put(productId, remaining);
-        return remaining;
-    }
-
-    /**
-     * 2. 分布式锁可重入自验（外层注解加锁，内层通过 DistributedLockTemplate 同一线程重入同一锁）
-     */
-    @DistributedLock(key = "'reentrant:' + #orderId", mode = LockMode.REENTRANT)
-    public String executeReentrantBusiness(String orderId) {
-        log.info("[StockDeduct] 外层方法获取分布式锁成功: orderId={}", orderId);
-        return distributedLockTemplate.execute("reentrant:" + orderId, () -> {
-            log.info("[StockDeduct] 内层闭包同一线程重入同一锁成功: orderId={}", orderId);
-            return "REENTRANT_SUCCESS_" + orderId;
-        });
-    }
-
-    /**
-     * 3. 分布式锁争锁超时降级演示（利用 fallback 闭包防御并发风暴）
-     */
-    public String executeWithFallback(String resourceId) {
-        return distributedLockTemplate.execute(
-                "resource:" + resourceId,
-                () -> "NORMAL_SUCCESS_" + resourceId,
-                () -> "FALLBACK_TRIGGERED_" + resourceId
-        );
-    }
-
-    /**
-     * 4. 看门狗自动续期长事务业务自验（leaseTime = -1）
-     */
-    @DistributedLock(key = "'watchdog:' + #taskId", leaseTime = -1)
-    public String executeWithWatchdog(String taskId) {
-        log.info("[StockDeduct] 激活 Redisson 看门狗持锁执行长事务: taskId={}", taskId);
-        return "WATCHDOG_SUCCESS_" + taskId;
-    }
-
-    /**
-     * 5. 编程式批量多锁执行 (MultiLock)
-     */
-    public String executeMultiLock(String orderId, Long productId) {
-        return distributedLockTemplate.execute(
-                List.of("lock:order:" + orderId, "lock:product:" + productId),
-                LockMode.REENTRANT,
-                3000L,
-                5000L,
-                TimeUnit.MILLISECONDS,
-                () -> "MULTI_LOCK_SUCCESS_" + orderId + "_" + productId
-        );
-    }
-}
-```
-
-### 预期控制台呈现
-```text
-2026-10-27 16:55:12.029 DEBUG [main] [NO-TRACE] i.g.a.b.r.l.t.DistributedLockTemplate    : [DistributedLock] 加锁成功: keys=[lock:product:1001], mode=REENTRANT
-2026-10-27 16:55:12.031 INFO  [main] [NO-TRACE] i.g.a.b.s.r.s.StockDeductScenarioService : [StockDeduct] 获取分布式锁成功，开始扣减库存: productId=1001, count=2
-2026-10-27 16:55:12.032 DEBUG [main] [NO-TRACE] i.g.a.b.r.l.t.DistributedLockTemplate    : [DistributedLock] 释放分布式锁成功: keys=[lock:product:1001]
-```
-
----
-
-## 5. 轻量可靠延时队列 (`RedisDelayedQueue` & `@DelayedQueueListener`)
-
-### 场景痛点
-在超时自动取消订单、订单未支付催付提醒等延时场景中，直接轮询数据库性能低下，而引入 RocketMQ/Kafka 延时队列又极大增加了运维复杂度。
-
-### 核心代码示例（1:1 逆向自 `OrderDelayScenarioService`）
-```java
-@Slf4j
-@Service
-@RequiredArgsConstructor
-public class OrderDelayScenarioService {
-
-    public static final String QUEUE_ORDER_CANCEL = "sample:order:cancel";
-
-    private final RedisDelayedQueue redisDelayedQueue;
-
-    // 1. 编程式投递订单延时取消任务
-    public void sendOrderCancelTask(String orderId, Duration delay) {
-        OrderDelayPayload payload = new OrderDelayPayload(orderId, "订单未支付超时自动取消", System.currentTimeMillis());
-        log.info("[OrderDelay] 编程式投递延时取消任务: queue={}, orderId={}, delay={}", QUEUE_ORDER_CANCEL, orderId, delay);
-        redisDelayedQueue.offer(QUEUE_ORDER_CANCEL, payload, delay);
-    }
-
-    // 2. 声明式监听延时队列到期消费（支持受管线程池并发驱动）
-    @DelayedQueueListener(queue = QUEUE_ORDER_CANCEL, concurrency = 1)
-    public void onOrderCancel(OrderDelayPayload payload) {
-        log.info("[OrderDelay] 声明式监听到期消费: orderId={}, reason={}", payload.getOrderId(), payload.getReason());
-    }
-
-    // 3. 死信队列运维与排查拉取
-    public DeadLetterMessage<OrderDelayPayload> pollCancelOrderDeadLetter() {
-        return redisDelayedQueue.pollDeadLetter(QUEUE_ORDER_CANCEL, OrderDelayPayload.class);
-    }
-}
-```
-
-### 预期控制台呈现
-```text
-2026-10-27 16:55:12.499 INFO  [main] [NO-TRACE] i.g.a.b.s.r.s.OrderDelayScenarioService : [OrderDelay] 编程式投递延时取消任务: queue=sample:order:cancel, orderId=ORD_DELAY_999, delay=PT1S
-2026-10-27 16:55:13.513 INFO  [:order:cancel-1] [cff82f2353553ebd092601e87767de84] i.g.a.b.s.r.s.OrderDelayScenarioService : [OrderDelay] 声明式监听到期消费: orderId=ORD_DELAY_999, reason=订单未支付超时自动取消
-```
-
----
-
-## 6. Redis 5.0+ Stream 可靠流式消息引擎 (`RedisStreamTemplate` & `@RedisStreamListener`)
-
-### 场景痛点
-Pub/Sub 模式虽然轻量，但不支持持久化、不支持 ACK 确认、无法追溯历史消费偏离且缺少消费组集群均衡模型。一旦订阅者短暂网络抖动断线，期间发布的所有通知全部静默丢失。
-
-### 增强解决方案
-- **消费组模型与自动创建**：支持分布式消费组（Consumer Group），通过 `@RedisStreamListener(autoCreateGroup = true)` 自动幂等创建目标消费组，多实例集群协同消费分摊负载；
-- **显式与自动 ACK 治理**：支持 `autoAck = true`（消费成功由框架自动执行 XACK）以及手动 ACK 模式，保证消息 At-Least-Once 可靠投递；
-- **PEL 积压排查与孤儿认领**：`RedisStreamTemplate` 原生提供 `getPendingMessages` 与 `claim` 接口，支持对超时挂起消息实施安全抢占补偿；
-- **流长度自动裁剪 (XTRIM)**：支持 `trim(stream, maxLen)` 对流式队列进行物理定长裁剪，防止流历史无限膨胀占用过多内存；
-- **死信流转 (DLQ)**：消费重试耗尽后封装 `StreamDeadLetterMessage<T>` 流转至目标死信流（默认 `${stream}:dlq`），同时触发 `StreamFailureHandler` SPI。
-
-### 核心代码示例（1:1 逆向自 `StreamEventScenarioService`）
-```java
-@Slf4j
-@Service
-@RequiredArgsConstructor
-public class StreamEventScenarioService {
-
-    public static final String STREAM_ORDER_EVENTS = "stream:order:events";
-    public static final String GROUP_ORDER_PROCESSOR = "group:order:processor";
-
-    private final RedisStreamTemplate redisStreamTemplate;
-
-    // 1. 发送订单 Stream 事件消息
-    public RecordId sendOrderEvent(OrderStreamEvent event) {
-        log.info("[StreamEvent] 投递订单流事件: stream={}, event={}", STREAM_ORDER_EVENTS, event);
-        return redisStreamTemplate.send(STREAM_ORDER_EVENTS, event);
-    }
-
-    // 2. 声明式监听 Stream 消费组消费（自动 XACK 与上下文透传）
-    @RedisStreamListener(stream = STREAM_ORDER_EVENTS, group = GROUP_ORDER_PROCESSOR, concurrency = 1, autoAck = true)
-    public void onOrderEvent(OrderStreamEvent event) {
-        log.info("[StreamEvent] 监听到消费组流事件: orderId={}, eventType={}, amount={}",
-                event.getOrderId(), event.getEventType(), event.getAmount());
-    }
-
-    // 3. 裁剪 Stream 长度 (XTRIM)
-    public Long trimStream(long maxLen) {
-        return redisStreamTemplate.trim(STREAM_ORDER_EVENTS, maxLen);
-    }
-}
-```
-
-### 预期控制台呈现
-```text
-2026-10-27 16:55:12.710 INFO  [main] [NO-TRACE] i.g.a.b.s.r.s.StreamEventScenarioService : [StreamEvent] 投递订单流事件: stream=stream:order:events, event=OrderStreamEvent(orderId=ORD_STREAM_1001, eventType=ORDER_CREATED, amount=199.00)
-2026-10-27 16:55:12.725 INFO  [stream:order:events-1] [f821b017b20349bcae2837bc901a88c2] i.g.a.b.s.r.s.StreamEventScenarioService : [StreamEvent] 监听到消费组流事件: orderId=ORD_STREAM_1001, eventType=ORDER_CREATED, amount=199.00
-```
-
----
-
-## 7. 通用业务级分布式防重幂等 (`@RedisIdempotent` & `RedisIdempotentTemplate` & `RedisIdempotentUtil`)
-
-### 场景痛点
-在非 Web 链路（MQ 消费者、定时任务批处理、分布式 RPC 调用）中，重复投递与重试是常态。若单纯依赖数据库唯一键，会引发大量的死锁或数据库回滚开销；若手写 Redis `SETNX`，极易发生业务执行失败时未删除防重 Key 导致上游永远无法再次重试的“假死锁”故障。
-
-### 增强解决方案
-- **三模一体化支持**：声明式切面 `@RedisIdempotent`、编程式模板 `RedisIdempotentTemplate` 与静态门面 `RedisIdempotentUtil`；
-- **SpEL 动态业务键**：支持基于方法入参表达式动态拼装全局防重唯一标识；
-- **`deleteOnFailure` 故障自愈机制**：业务成功执行后保留防重 Key 直至 TTL 超时；当业务方法抛出异常时，模板自动识别并**原子删除防重 Key**，确保上游重试机制能够平滑再次触发执行；
-- **异常语义清晰**：并发防重冲突时抛出语义明确的 `BusinessException`。
-
-### 核心代码示例（1:1 逆向自 `IdempotentScenarioService`）
-```java
-@Slf4j
-@Service
-@RequiredArgsConstructor
-public class IdempotentScenarioService {
-
-    private final RedisIdempotentTemplate redisIdempotentTemplate;
-
-    /**
-     * 1. 声明式防重处理订单（deleteOnFailure = true 支持异常自动释放凭据以供重试）
-     */
-    @RedisIdempotent(key = "'idemp:order:' + #orderId", expire = "30s", deleteOnFailure = true)
-    public String processOrder(String orderId, boolean shouldFail) {
-        log.info("[IdempotentScenario] 进入幂等业务执行: orderId={}, shouldFail={}", orderId, shouldFail);
-        if (shouldFail) {
-            throw new BusinessException("模拟业务处理失败，自动释放幂等凭据以供重试: orderId=" + orderId);
-        }
-        return "SUCCESS_" + orderId;
-    }
-
-    /**
-     * 2. 编程式防重幂等模板执行
-     */
-    public <T, E extends Throwable> T executeProgrammatic(String key, Duration timeout, IdempotentSupplier<T, E> supplier) throws E {
-        return redisIdempotentTemplate.execute(key, timeout, supplier);
-    }
-
-    /**
-     * 3. 静态门面防重幂等执行
-     */
-    public <T, E extends Throwable> T executeStatic(String key, IdempotentSupplier<T, E> supplier) throws E {
-        return RedisIdempotentUtil.execute(key, supplier);
-    }
-}
-```
-
----
-
-## 8. 分布式受管信号量与并发度治理 (`RedisSemaphoreTemplate` & `RedisSemaphoreUtil`)
-
-### 场景痛点
-当调用外部计费 API、高负载推理服务或有限并发配额的第三方接口时，传统的限流仅能限制单位时间内的 QPS，无法限制**同一时刻正在处理中的最大并发线程数（Concurrency In-Flight）**。一旦外部接口耗时变慢，请求在服务端持续堆积导致连接池迅速枯竭。
-
-### 增强解决方案
-- **受管闭包安全释放**：底层封装 Redisson `RSemaphore`，在 `finally` 块中通过状态判断保证许可证安全归还；
-- **动态配额调配 (`resetPermits`)**：支持在运行时原子调整总许可证配额；
-- **争抢超时优雅降级 (`fallback`)**：在等待超时后不抛出异常打断业务，平滑触发降级闭包返回兜底结果；
-- **静态操作门面 (`RedisSemaphoreUtil`)**：免注入快速接入。
-
-### 核心代码示例（1:1 逆向自 `SemaphoreThrottlingScenarioService`）
-```java
-@Slf4j
-@Service
-@RequiredArgsConstructor
-public class SemaphoreThrottlingScenarioService {
-
-    private final RedisSemaphoreTemplate redisSemaphoreTemplate;
-
-    /**
-     * 1. 模拟高昂下游接口调用，带并发度治理与超时降级
-     */
-    public String callHeavyDownstream(String serviceName, int totalPermits, Duration timeout) {
-        String semaphoreKey = "sem:heavy:" + serviceName;
-        return redisSemaphoreTemplate.execute(
-                semaphoreKey,
-                totalPermits,
-                1,
-                timeout,
-                () -> {
-                    log.info("[Semaphore] 成功获取信号量许可证，执行高并发下游调用: service={}", serviceName);
-                    return "SUCCESS_DOWNSTREAM_" + serviceName;
-                },
-                () -> {
-                    log.warn("[Semaphore] 获取信号量许可证超时，触发兜底降级响应: service={}", serviceName);
-                    return "FALLBACK_DOWNSTREAM_" + serviceName;
-                }
-        );
-    }
-
-    /**
-     * 2. 动态设置/重置信号量总许可证配额
-     */
-    public boolean resetPermits(String serviceName, int newPermits) {
-        String semaphoreKey = "sem:heavy:" + serviceName;
-        return redisSemaphoreTemplate.resetPermits(semaphoreKey, newPermits);
-    }
-}
-```
-
----
-
-## 9. 受管原子 Lua 脚本执行器与对称原语 (`RedisScriptExecutor` & `RedisAtomicUtil`)
-
-### 场景痛点
-执行复杂复合原子逻辑（如 CAS 比较并替换、按日发号并绑定 TTL）时，分步执行会发生严重的数据并发竞争与脏读，而每次手动编写 `RedisScript` 存在重复加载、缺乏 SHA1 缓存以及异常未受管转译等问题。
-
-### 增强解决方案
-- **`RedisScriptExecutor` 脚本执行门面**：支持内联 Lua 源码与 Classpath 资源脚本加载，内置 SHA1 摘要自动计算与缓存，优先通过 `EVALSHA` 协议通信减少网络带宽占用；
-- **对称 CAS 与发号原语 (`RedisAtomicUtil`)**：提供 `compareAndSet(key, expect, update)`、`getAndSet(key, update)` 以及带 48h 自动清理防孤儿 Key 的 `generateDailySeq(prefix, length)`。
-
-### 核心代码示例（1:1 逆向自 `ScriptExecutionScenarioService`）
-```java
-@Slf4j
-@Service
-@RequiredArgsConstructor
-public class ScriptExecutionScenarioService {
-
-    private final RedisScriptExecutor redisScriptExecutor;
-    private final RedisAtomicUtil redisAtomicUtil;
-
-    // 1. 执行受管 Classpath Lua 脚本
-    public <T> T executeClasspathScript(String path, Class<T> resultType, List<String> keys, Object... args) {
-        return redisScriptExecutor.executeClasspath(path, resultType, keys, args);
-    }
-
-    // 2. 基于 RedisAtomicUtil 执行 CAS 原子比较替换
-    public boolean compareAndSet(String key, Long expect, Long update) {
-        return redisAtomicUtil.compareAndSet(key, expect, update);
-    }
-
-    // 3. 基于 RedisAtomicUtil 执行原子获取并设置 (GetAndSet)
-    public Long getAndSet(String key, Long update) {
-        return redisAtomicUtil.getAndSet(key, update);
-    }
-
-    // 4. 生成按日自重置带日期前缀的原子流水号 (如 ORD20261027000001)
-    public String generateDailyOrderNo(String prefix, int length) {
-        return redisAtomicUtil.generateDailySeq(prefix, length);
-    }
-}
-```
-
----
-
-## 10. 广播发布与订阅引擎 (Pub/Sub)
-
-### 场景痛点
-在集群部署中，某个节点更新了本地 JVM 缓存或系统配置后，需要即时同步给所有集群节点刷新内存。传统手写 Spring Data Redis `MessageListener` 配置繁琐、缺乏统一类型反序列化，且在监听回调线程中直接执行阻塞业务容易导致监听连接假死。
-
-### 核心代码示例（1:1 逆向自 `NoticeBroadcastScenarioService`）
-```java
-@Slf4j
-@Service
-@RequiredArgsConstructor
-public class NoticeBroadcastScenarioService {
-
-    public static final String TOPIC_NOTICE_BROADCAST = "sample:notice:broadcast";
-    public static final String PATTERN_SYSTEM_EVENT = "sample:system:*";
-
-    private final RedisMessagePublisher redisMessagePublisher;
-
-    /**
-     * 1. 广播发布系统通知
-     */
-    public Long publishNotice(NoticeBroadcastPayload notice) {
-        log.info("[NoticeBroadcast] 广播发布系统通知: topic={}, noticeId={}", TOPIC_NOTICE_BROADCAST, notice.getNoticeId());
-        return redisMessagePublisher.publish(TOPIC_NOTICE_BROADCAST, notice);
-    }
-
-    /**
-     * 2. 声明式精确主题监听：自动反序列化为强类型 POJO
-     */
-    @ChannelTopicListener(topics = TOPIC_NOTICE_BROADCAST, concurrency = 1)
-    public void onNoticeBroadcast(NoticeBroadcastPayload notice) {
-        log.info("[NoticeBroadcast] 声明式接收系统公告广播: noticeId={}, title={}", notice.getNoticeId(), notice.getTitle());
-    }
-
-    /**
-     * 3. 声明式通配模式监听：多参数接收 payload 与触发频道
-     */
-    @ChannelTopicListener(patterns = PATTERN_SYSTEM_EVENT, concurrency = 1)
-    public void onSystemEvent(String eventData, String channel) {
-        log.info("[NoticeBroadcast] 声明式通配监听到系统事件: channel={}, data={}", channel, eventData);
-    }
-}
-```
-
----
-
-## 11. 分布式布隆过滤器 (`RedisBloomFilter` & `RedisBloomUtil`)
-
-### 场景痛点
-海量用户判重、防爬虫 IP 过滤与防止非法 Key 穿透至数据库时，直接存入 Redis Set 占用巨大内存，且原生 Redisson 布隆过滤器缺乏启动预热机制与容量逼近 80% 安全告警。
-
-### 核心代码示例（1:1 逆向自 `CacheScenarioService`）
-```java
-@Slf4j
-@Service
-@RequiredArgsConstructor
-public class CacheScenarioService {
-
-    private final RedisBloomFilter redisBloomFilter;
-
-    // 1. 将元素添加至布隆过滤器（亦支持 RedisBloomUtil.add 静态门面）
-    public boolean addBlacklist(String userId) {
-        return redisBloomFilter.add("user-blacklist", userId);
-    }
-
-    // 2. 判定元素是否可能存在
-    public boolean checkBlacklist(String userId) {
-        return redisBloomFilter.contains("user-blacklist", userId);
-    }
-
-    // 3. 查询布隆过滤器健康指标（元素数、预估容量、使用率、误判率）
-    public BloomFilterMetricsVO getBlacklistMetrics() {
-        return BloomFilterMetricsVO.builder()
-                .filterName("user-blacklist")
-                .count(redisBloomFilter.count("user-blacklist"))
-                .expectedInsertions(redisBloomFilter.getExpectedInsertions("user-blacklist"))
-                .usageRate(redisBloomFilter.getUsageRate("user-blacklist"))
-                .falseProbability(redisBloomFilter.getFalseProbability("user-blacklist"))
-                .build();
-    }
-}
-```
-
----
-
-## 12. 工业级增强缓存管理器 (`RedisCacheManager`)
-
-### 核心增强
-1. **分 Cache 个性化 TTL**：通过 YAML 配置为每个 `@Cacheable(value = "...")` 指定专属过期时间；
-2. **防穿透空对象缓存**：默认启用空值缓存，防止空 Key 重复穿透；
-3. **原生随机抖动防雪崩 (`JitterTtlFunction`)**：在基准 TTL 基础上自适应随机叠加抖动偏移量，打散热点失效时间。
-
-```yaml
-ateng:
-  boot:
-    redis:
-      cache:
-        enabled: true
-        default-ttl: 30m
-        jitter-enabled: true
-        max-jitter: 5m
-        cache-null-values: true
-        expires:
-          sys_dict: 24h
-          user_profile: 2h
-          sms_code: 5m
-```
-
----
-
-## 13. 全景缓存防卫模板 (`RedisCacheTemplate`)
-
-### 核心能力
-单键与批量防击穿（互斥锁 + DCL）、防穿透（短 TTL 空哨兵 `__ATENG_CACHE_NULL__`）、防雪崩（随机抖动 Jitter）、批量 MGET 探测 + 字典序排序锁去重，彻底杜绝 N+1 查询。
-
-### 核心代码示例（1:1 逆向自 `CacheScenarioService`）
-```java
-@Slf4j
-@Service
-@RequiredArgsConstructor
-public class CacheScenarioService {
-
-    private final RedisCacheTemplate redisCacheTemplate;
-
-    // 1. 单商品安全查询（防击穿 + 防穿透 + 防雪崩）
-    public ProductVO getProduct(Long productId) {
-        return redisCacheTemplate.getOrLoad(
-                "product:" + productId,
-                ProductVO.class,
-                key -> mockProductDb.get(productId)
-        );
-    }
-
-    // 2. 批量商品安全查询（MGET + 字典序排序锁 + Pipeline 批量回写，彻底杜绝 N+1）
-    public Map<Long, ProductVO> batchGetProducts(List<Long> productIds) {
-        return redisCacheTemplate.batchGetOrLoad(
-                productIds,
-                id -> "product:" + id,
-                ProductVO.class,
-                missingIds -> {
-                    Map<Long, ProductVO> result = new LinkedHashMap<>();
-                    for (Long id : missingIds) {
-                        ProductVO p = mockProductDb.get(id);
-                        if (p != null) {
-                            result.put(id, p);
-                        }
-                    }
-                    return result;
-                }
-        );
-    }
-
-    // 3. 对称缓存驱逐
-    public void evictProduct(Long productId) {
-        redisCacheTemplate.evict("product:" + productId);
-    }
-}
-```
-
----
-
-## 14. 生产级内存+Redis 两级缓存体系 (`TwoLevelCache` & `TwoLevelCacheManager`)
-
-### 场景痛点
-微服务单用 Redis 存在网络 I/O 往返延迟，单用本地 JVM 堆缓存存在多节点脏读；跨节点广播失效若不加防环会引发自重入死循环。
-
-### 增强解决方案
-- **纳秒级 L1 内存直读**：优先探测可选依赖 Caffeine（W-TinyLFU）；缺依赖时自动平滑退化为内置有界 `ConcurrentLruMemoryCache`，严格限制容量防 OOM；
-- **集中式 Pub/Sub 广播失效**：淘汰时集中向 `ateng:cache:evict:topic` 广播携带 `instanceId` 的失效消息；
-- **`instanceId` 防自重入防环机制**：各节点监听到广播时比对 `instanceId`，主动忽略自身发出的失效消息，杜绝自身二次淘汰与死循环。
-
-### 核心代码示例（1:1 逆向自 `CacheScenarioService`）
-```java
-@Slf4j
-@Service
-@RequiredArgsConstructor
-public class CacheScenarioService {
-
-    // 1. Spring Cache 声明式两级缓存查询（首次查库回填 L1 与 L2，后续直接从本地 L1 纳秒级返回）
-    @Cacheable(cacheNames = "user-profile", key = "#userId")
-    public String getUserProfile(Long userId) {
-        log.info("[CacheScenario] 两级缓存未命中，执行模拟数据库查询: userId={}", userId);
-        return "Role_VIP_" + userId;
-    }
-
-    // 2. Spring Cache 声明式定向淘汰（清除本地 L1 与 L2，并广播协同淘汰集群其他节点 L1）
-    @CacheEvict(cacheNames = "user-profile", key = "#userId")
-    public void evictUserProfile(Long userId) {
-        log.info("[CacheScenario] 淘汰用户档案两级缓存: userId={}", userId);
-    }
-
-    // 3. Spring Cache 声明式全量清空
-    @CacheEvict(cacheNames = "user-profile", allEntries = true)
-    public void clearUserProfileCache() {
-        log.info("[CacheScenario] 清空用户档案全量两级缓存");
-    }
-}
-```
-
----
-
-## 15. 完整 YAML 配置属性清单
+只需配置标准 `spring.data.redis.*` 连接参数（按需附加 `ateng.boot.redis.key-prefix`），即可零样板代码直接注入并调用基础操作、声明式锁与防雪崩缓存：
 
 ```yaml
 spring:
@@ -674,229 +89,1058 @@ spring:
     redis:
       host: 127.0.0.1
       port: 6379
-      password: ""
       database: 0
       timeout: 3000ms
 
 ateng:
   boot:
     redis:
-      enabled: true                     # 是否启用 Redis 增强基础设施 (默认 true)
-      key-prefix: ""                    # 全局 Redis 键统一命名前缀 (默认空，不加前缀)
-      redisson:
-        config: ""                      # 可选自定义 Redisson 外部配置文件路径 (如 classpath:redisson.yaml)
-        threads: 0                      # Redisson 通用线程池大小 (默认 0 表示 CPU*2)
-        netty-threads: 0                # Redisson Netty 线程池大小 (默认 0 表示 CPU*2)
-        ping-connection-interval: 30s   # TCP 连接心跳保活检测间隔 (默认 30s，防御云原生 NAT 网关静默切断连接)
-        connection-pool-size: 64        # 主连接池最大连接数 (默认 64)
-        connection-minimum-idle-size: 16 # 主连接池最小空闲连接数 (默认 16)
-        retry-attempts: 3               # 命令重试次数 (默认 3)
-        retry-interval: 1500ms          # 命令重试间隔时间 (默认 1500ms)
-      lock:
-        enabled: true                   # 是否启用声明式分布式锁切面 (默认 true)
-        prefix: "lock:"                 # 分布式锁 Key 统配全局前缀 (默认 "lock:")
-        wait-time: 3s                   # 默认获取锁最大阻塞等待时长 (默认 3s)
-        lease-time: -1ms                # 默认持锁租约超时时长 (-1ms 启用看门狗自动续期)
-        time-unit: SECONDS              # 默认时间单位 (默认 SECONDS)
-        slow-threshold: 3s              # 慢锁监控告警阈值 (默认 3s，超出记录 WARN 日志)
-      delay-queue:
-        enabled: true                   # 是否启用延时队列支持 (默认 true)
-        retry-times: 3                  # 延时消费失败最大重试次数 (默认 3)
-        retry-delay: 3s                 # 延时消费失败重试间隔 (默认 3s)
-        dead-letter-enabled: true       # 是否启用消费重试耗尽转入死信队列 (默认 true)
-        dead-letter-suffix: ":dlq"      # 死信队列统配名称后缀 (默认 ":dlq")
-      stream:
-        enabled: true                   # 是否启用 Redis Stream 流式消息支持 (默认 true)
-        retry-times: 3                  # 消费失败最大重试次数 (默认 3)
-        poll-timeout: 2s                # 消费拉取阻塞超时时长 (默认 2s)
-        batch-size: 10                  # 单次拉取最大消息条数 (默认 10)
-        dlq-suffix: ":dlq"              # 死信流统一后缀 (默认 ":dlq")
-        instance-id: ""                 # 消费者实例标识 (留空则自动生成)
-      idempotent:
-        enabled: true                   # 是否启用分布式防重幂等切面与模板 (默认 true)
-        prefix: "idempotent:"           # 防重幂等键统一前缀 (默认 "idempotent:")
-        default-expire: 10m             # 默认幂等凭证保留时长 (默认 10m)
-        delete-on-failure: true         # 业务异常时是否默认自动删除防重 Key 以便重试 (默认 true)
-      pub-sub:
-        enabled: true                   # 是否启用 Pub/Sub 广播引擎 (默认 true)
-      bloom-filters:                    # 分布式布隆过滤器声明式预热配置映射 (`Map<String, BloomFilterConfig>`)
-        user-blacklist:
-          expected-insertions: 50000    # 预估元素插入总量 (默认 100,000)
-          false-probability: 0.01       # 期望误判率 (默认 0.01 即 1%)
-      cache:
-        enabled: true                   # 是否启用增强单级 Redis 缓存基础设施 (默认 true)
-        default-ttl: 30m                # 缓存默认生存时间 (默认 30m)
-        jitter-enabled: true            # 是否启用随机抖动防雪崩 (默认 true)
-        max-jitter: 60s                 # 随机抖动最大时间跨度 (默认 60s)
-        cache-null-values: true         # 是否缓存 null 防穿透 (默认 true)
-        null-ttl: 5m                    # 空对象防穿透独立短过期时间 (默认 5m)
-        lock-wait-time: 3s              # 缓存防击穿互斥锁最大等待时长 (默认 3s)
-        expires:                        # 针对不同 CacheName 的个性化 TTL (`Map<String, Duration>`)
-          short_cache: 10m
-          long_cache: 24h
-      two-level:
-        enabled: false                  # 是否启用生产级两级缓存 (L1 JVM + L2 Redis，默认 false)
-        topic: "ateng:cache:evict:topic"# 跨节点两级缓存失效广播主题 (默认 "ateng:cache:evict:topic")
-        l1:
-          default-ttl: 5m               # L1 堆内存本地缓存默认过期时间 (默认 5m)
-          default-max-size: 10000       # L1 堆内存最大元素容量，严格防 OOM (默认 10000)
-          expires:                      # 针对特定 CacheName 的 L1 独立 TTL
-            user-profile: 2m
-        l2:
-          default-ttl: 30m              # L2 集中式 Redis 缓存默认过期时间 (默认 30m)
-          jitter-enabled: true          # L2 写入是否启用随机抖动防雪崩 (默认 true)
-          max-jitter: 60s               # L2 随机抖动最大时间跨度 (默认 60s)
-          cache-null-values: true       # L2 是否缓存空哨兵防穿透 (默认 true)
-          null-ttl: 5m                  # L2 空对象防穿透独立短过期时间 (默认 5m)
-          expires:                      # 针对特定 CacheName 的 L2 独立 TTL
-            user-profile: 1h
+      key-prefix: demo
+```
+
+```java
+// 截取自 StockDeductScenarioService：声明式可重入锁防超卖（@DistributedLock）
+@DistributedLock(key = "'product:' + #request.productId", waitTime = 3000, leaseTime = 5000, mode = LockMode.REENTRANT)
+public StockDeductResultVO deductStock(StockDeductRequest request) {
+    Long productId = request.getProductId();
+    int count = request.getCount();
+    Integer currentStock = stockTable.get(productId);
+    if (currentStock == null) {
+        throw new BusinessException("商品不存在: " + productId);
+    }
+    if (currentStock < count) {
+        throw new BusinessException("库存不足，当前库存: " + currentStock + ", 拟扣减: " + count);
+    }
+    int remaining = currentStock - count;
+    stockTable.put(productId, remaining);
+    return StockDeductResultVO.builder()
+            .productId(productId)
+            .remainingStock(remaining)
+            .success(true)
+            .message("库存扣减成功")
+            .build();
+}
 ```
 
 ---
 
-## 16. 生产扩展与高阶定制 (Customization & Extensibility)
+## 2. 双核架构、全局前缀契约与核心不变量
 
-`ateng-boot-redis` 坚持 `@ConditionalOnMissingBean` 缺省守卫铁律，支持企业级生产场景深度定制与平滑无缝接管：
+### 2.1 双核引擎与纯净序列化拓扑
 
-### 16.1 自定义 RedissonClient 接管
-当现有自动化配置无法满足集群特异性参数（如特定 SSL 证书、自定义编解码管道或监控指标导出）时，下游应用仅需声明同类型 Bean 即可 100% 接管 Redisson 装配：
+```text
+                       [ spring.data.redis.* (单机 / 哨兵 / 集群 / SSL) ]
+                                            │
+                       ┌────────────────────┴────────────────────┐
+                       ▼                                         ▼
+        Spring Data Redis (Lettuce)                   Redisson (Netty Pool)
+       ┌───────────────────────────┐             ┌───────────────────────────┐
+       │ RedisTemplate / CacheMgr  │             │ RLock / RDelayedQueue     │
+       │ PubSub / Stream / Atomic  │             │ RRateLimiter / RSemaphore │
+       │ Lua Script / TwoLevel L2  │             │ RBloomFilter / Watchdog   │
+       └─────────────┬─────────────┘             └─────────────┬─────────────┘
+                     └────────────────────┬────────────────────┘
+                                          ▼
+          [ 统一纯净 JSON Codec: RedisSerializerFactory.createSafeObjectMapper() ]
+             - 剔除 GenericJackson2JsonRedisSerializer 默认的 @class 全限定类名
+             - 强制使用 Jackson JavaTimeModule (LocalDateTime -> "yyyy-MM-dd HH:mm:ss")
+             - 对标东八区 (GMT+8) 与大数字精度保护
+```
+
+### 2.2 全局键前缀 `key-prefix` 幂等合成规范与生效范围
+
+[`RedisProperties.buildKey(modulePrefix, rawKey)`](./src/main/java/io/github/atengk/boot/redis/properties/RedisProperties.java) 在拼接键名时严格执行 **幂等去重解析（Idempotent Key Prefix Resolution）**：自动规范化末尾英文冒号 `:`，若调用方传入的键已携带全局前缀 `key-prefix` 或二级模块前缀（如 `lock:`、`idempotent:`、`semaphore:`、`bloom:`），自动剥离避免生成 `sample:sample:` 或 `sample:lock:lock:` 等冗余前缀。
+
+| 组件 / 入口 | 是否自动挂载全局 `key-prefix` | 二级模块前缀来源 | 当配置 `key-prefix: sample` 且业务入参为 `<k>` 时最终物理 Key |
+| :--- | :--- | :--- | :--- |
+| **`RedisUtil` 原生数据操作** (`set` / `hSet` / `zAdd` / `scan`) | ❌ 保留调用方原始键 | 无（按业务显式传入或显式调用 `RedisUtil.buildKey(k)`） | `<k>`（若显式调用 `RedisUtil.buildKey(k)` 则为 `sample:<k>`） |
+| **`RedisAtomicUtil`** (`incr` / `compareAndSet` / `slidingWindowCheck` / `generateDailySeq`) | ✅ 全量方法通过 `formatKey` 自动挂载 | 无 | `sample:<k>` |
+| **`RedisScriptExecutor`** (`execute` / `executeClasspath`) | ❌ 保持传入 `keys` 列表原样 | 由业务显式传入（如 `RedisUtil.buildKey(...)` 或常量前缀） | `<k>`（透传脚本 `KEYS[i]`） |
+| **`@DistributedLock` / `DistributedLockTemplate` / `RedisLockUtil`** | ✅ 自动挂载 | `ateng.boot.redis.lock.prefix`（默认 `lock:`）或注解 `prefix` | `sample:lock:<k>` |
+| **`@RedisIdempotent` / `RedisIdempotentTemplate` / `RedisIdempotentUtil`** | ✅ 自动挂载 | `ateng.boot.redis.idempotent.prefix`（默认 `idempotent:`） | `sample:idempotent:<k>` |
+| **`RedisSemaphoreTemplate` / `RedisSemaphoreUtil`** | ✅ 自动挂载 | `ateng.boot.redis.semaphore.prefix`（默认 `semaphore:`） | `sample:semaphore:<k>` |
+| **`RedisRateLimiterClient`** (`tryAcquire` / `acquire` / `reset`) | ✅ 自动挂载 | 无 | `sample:<k>` |
+| **`RedisBloomFilter` / `RedisBloomUtil`** (`tryInit` / `add` / `contains`) | ✅ 自动挂载 | 固定二级前缀 `bloom:` | `sample:bloom:<filterName>` |
+| **`RedisDelayedQueue` / `RedisDelayedQueueUtil`** | ✅ 全队列通过 `resolveQueueName` 自动挂载 | 死信队列额外追加 `delay-queue.dead-letter-suffix`（默认 `:dlq`） | `sample:<queueName>`（死信：`sample:<queueName>:dlq`） |
+| **`RedisStreamTemplate` / `RedisStreamUtil`** | ✅ 主流与死信流通过 `formatStreamKey` 自动挂载 | 死信流额外追加 `stream.dlq-suffix`（默认 `:dlq`） | `sample:<stream>`（死信：`sample:<stream>:dlq`） |
+| **`RedisCacheManager`** (`@Cacheable` 等) | ✅ `key-prefix` 非空时通过 `computePrefixWith` 自动挂载 | Spring Cache 规范 `cacheName::` | `sample:<cacheName>::<key>`（未配 `key-prefix` 时为 `<cacheName>::<key>`） |
+| **`RedisCacheTemplate`** (`getOrLoad` / `batchGetOrLoad`) | ✅ 自动挂载 | 防击穿互斥锁固定二级前缀 `lock:cache:` | 数据键 `sample:<k>`；互斥锁 `sample:lock:cache:<k>` |
+| **`TwoLevelCacheManager` / `DefaultTwoLevelCache`** | ✅ L2 数据键与跨节点广播 `topic` 均自动挂载 | L2 格式 `<cacheName>:<key>` | L2 键 `sample:<cacheName>:<key>`；广播频道 `sample:<topic>` |
+
+### 2.3 跨组件上下文传播分级
+
+| 上下文维度 | Redis Stream (`RedisStreamTemplate` + `StreamBootstrap`) | 延时队列 (`DelayedQueueBootstrap`) & 广播 (`ChannelTopicBootstrap`) |
+| :--- | :--- | :--- |
+| **跨节点透传维度** | **全四维上下文跨节点透传**：发送端自动注入 `traceId`、`__ateng_tenant_id`、`__ateng_ignore_tenant`、`__ateng_user_ctx`；消费端先恢复四维上下文、剥离 `__ateng_*` 元字段后再反序列化绑定 POJO | **纯净业务载荷**：不将用户登录态或租户身份序列化至 Redis 消息体 |
+| **消费侧线程隔离** | 消费前恢复消息内携带的四维快照（若无 `traceId` 则由消费侧兜底生成），`finally` 中通过 `RedisConsumptionContext.clearAll()` 无条件执行 `MDC.clear()`、`TenantContextHolder.clear()`、`UserContextHolder.clear()` | 消费前先清理历史残余上下文并强制生成独立新 UUID `traceId`（严禁复用分发线程或启动线程残留上下文），`finally` 中通过 `RedisConsumptionContext.clearAll()` 全量清理 |
+
+### 2.4 全局工程不变量与客户端接管
+
+- **Redisson 客户端接管与 NAT 保活**：业务未自建 `RedissonClient` Bean 时自动按 `spring.data.redis.*` 装配并默认开启 **30 秒 TCP 心跳保活**（`pingConnectionInterval`）防御云原生 NAT 网关静默断连；锁看门狗默认 `30s`（优先级：`ateng.boot.redis.lock.watchdog-timeout` > `ateng.boot.redis.redisson.lock-watchdog-timeout`）；支持配置 `redisson.config` 外部 YAML 接管。
+- **空安全与并发规约**：查询类集合返回值遇空统一保底空集合，严禁返回 `null`；核心临界区同步统一采用 `ReentrantLock` 替代 `synchronized`，杜绝 JDK 21+ 虚拟线程 Carrier Pinning。
+
+---
+
+## 3. 基础数据操作与受管 Lua / 原子原语
+
+对应示例控制器：[`RedisOpsAndScriptController`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/controller/RedisOpsAndScriptController.java) & [`ScriptExecutionScenarioService`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/service/ScriptExecutionScenarioService.java)
+
+> 将 `RedisUtil` 多数据结构基础操作、受管 `RedisScriptExecutor` Lua 执行器与 `RedisAtomicUtil` 对称原子原语统一收敛至日常高频数据层。
+
+### 3.1 局部专属 YAML 配置
+
+```yaml
+spring:
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      database: 0
+      timeout: 3000ms
+
+ateng:
+  boot:
+    redis:
+      enabled: true
+      key-prefix: sample
+```
+
+### 3.2 1:1 真实 Sample 核心代码
+
+**1）Classpath 优惠券原子扣减脚本 (`scripts/coupon_deduct.lua`)**
+
+```lua
+-- scripts/coupon_deduct.lua
+-- 优惠券原子库存扣减 Lua 脚本
+-- KEYS[1]: 优惠券库存键 (如 sample:coupon:stock:{couponId})
+-- ARGV[1]: 扣减数量 (通常为正整数)
+local key = KEYS[1]
+local deduct = tonumber(ARGV[1])
+local raw = redis.call('get', key)
+local current = 0
+if raw then
+    if type(raw) == 'string' then
+        raw = string.gsub(raw, '^"*(.-)"*$', '%1')
+    end
+    current = tonumber(raw) or 0
+end
+
+if current >= deduct then
+    local remaining = current - deduct
+    redis.call('set', key, tostring(remaining))
+    return remaining
+else
+    return -1
+end
+```
+
+**2）基础 Hash/ZSet/SCAN/Pipeline 与受管 Lua/CAS 场景编排（截取自真实 Sample）**
 
 ```java
-@Configuration(proxyBeanMethods = false)
-public class CustomRedissonConfiguration {
+// 1. 购物车 Hash、热销榜 ZSet、安全 SCAN 与 Pipeline 批量预热（截取自 RedisOpsAndScriptController）
+private static final String CART_PREFIX = "sample:cart:";
+private static final String RANK_KEY = "sample:rank:hot-products";
+private static final String STOCK_PREFIX = "sample:stock:";
+private static final String COUPON_STOCK_PREFIX = "sample:coupon:stock:";
 
-    @Bean
-    public RedissonClient redissonClient() {
-        Config config = new Config();
-        config.useSingleServer()
-                .setAddress("redis://127.0.0.1:6379")
-                .setConnectionMinimumIdleSize(10)
-                .setConnectionPoolSize(64);
-        return Redisson.create(config);
-    }
+String cartKey = CART_PREFIX + request.getUserId();
+RedisUtil.hSet(cartKey, request.getSkuId(), item);
+
+String member = request.getProductId() + ":" + request.getProductName();
+Double newScore = RedisUtil.zIncrBy(RANK_KEY, member, request.getDeltaScore());
+Set<ZSetOperations.TypedTuple<Object>> tupleSet = RedisUtil.zRevRangeWithScores(RANK_KEY, 0, limit - 1);
+
+Set<String> matched = scriptExecutionScenarioService.scanKeys(pattern, count);
+RedisUtil.executePipelined(ops -> {
+    stockMap.forEach((skuId, stock) -> {
+        String key = STOCK_PREFIX + skuId;
+        ops.opsForValue().set(key, stock);
+    });
+});
+
+// 2. Classpath Lua 预编译缓存执行（避免优惠券库存查改并发竞态）
+String couponKey = COUPON_STOCK_PREFIX + request.getCouponId();
+if (RedisUtil.get(couponKey) == null) {
+    RedisUtil.set(couponKey, 100L);
+}
+Long remaining = scriptExecutionScenarioService.executeClasspathScript(
+        "scripts/coupon_deduct.lua",
+        Long.class,
+        List.of(couponKey),
+        request.getDeductCount()
+);
+
+// 3. 跨天自动重置单号 & 原子 CAS 水位切换（ScriptExecutionScenarioService）
+public String generateDailyOrderNo(String prefix, int length) {
+    String seq = redisAtomicUtil.generateDailySeq(prefix, length);
+    log.info("[ScriptExecution] 生成按日原子流水号成功: prefix={}, length={}, seq={}", prefix, length, seq);
+    return seq;
+}
+
+public boolean compareAndSet(String key, Long expect, Long update) {
+    boolean success = redisAtomicUtil.compareAndSet(key, expect, update);
+    log.info("[ScriptExecution] CAS 执行结果: key={}, expect={}, update={}, success={}", key, expect, update, success);
+    return success;
 }
 ```
 
-### 16.2 编程式延时队列平滑接管
-`RedisDelayedQueue` 既支持作为 Spring 托管单例由容器注入，也支持在离线测试或轻量客户端中通过构造器原生初始化：
+### 3.3 核心机制与边界防御
 
-```java
-RedisDelayedQueue delayedQueue = new RedisDelayedQueue(redissonClient, objectMapper, redisProperties);
-delayedQueue.offer("custom_queue", new TaskPayload(1001L), Duration.ofMinutes(10));
+- **禁绝 `KEYS *` 阻塞主线程**：`RedisUtil.scan(pattern, count)` / `scanKeys` / `scanCursor` 底层统一采用 `ScanOptions` 游标增量遍历并封装自动释放资源，杜绝大 Key 空间扫描引发的 Redis 单线程卡顿。
+- **Lua 脚本兼容 JSON 引号清洗与 SHA1 预编译缓存**：`RedisScriptExecutor` 通过脚本源码或 Classpath 路径自动计算 SHA1 并缓存 `DefaultRedisScript`，内部自动适配 `Integer.class` 与 Redis 原生 `Long` 返回类型转换；脚本内显式兼容 Jackson JSON 序列化写入的引号包裹数值。
+- **按日原子流水号与前缀约束**：`RedisAtomicUtil.generateDailySeq(prefix, length)` 内部通过 `RedisAtomicUtil.formatKey(...)` 挂载全局 `key-prefix`，并在当日首次初始化后自动附加跨天失效 TTL 防止历史序列键无限堆积。
+
+### 3.4 预期控制台呈现
+
+```text
+INFO  [           main] [b132281c21571059c72552313f2973a0] a.b.s.r.s.ScriptExecutionScenarioService : [ScriptExecution] 执行受管 Classpath Lua 脚本: path=scripts/coupon_deduct.lua, keys=[sample:coupon:stock:COUPON_NEW_USER]
+INFO  [           main] [NO-TRACE] a.b.s.r.s.ScriptExecutionScenarioService : [ScriptExecution] CAS 执行结果: key=atomic:cas:order1001, expect=10, update=20, success=true
+INFO  [           main] [NO-TRACE] a.b.s.r.s.ScriptExecutionScenarioService : [ScriptExecution] 生成按日原子流水号成功: prefix=PAY, length=6, seq=PAY20261113000001
+INFO  [           main] [NO-TRACE] a.b.s.r.s.ScriptExecutionScenarioService : [ScriptExecution] 游标扫描完成: pattern=sample:user:*, count=100, matchedSize=1
 ```
 
-### 16.3 自定义死信失败处理 SPI 接管 (`DelayedQueueFailureHandler`)
-框架默认注入 `LoggingDelayedQueueFailureHandler` 打印 ERROR 堆栈日志。当下游需要对接企业微信/钉钉报警、流转告警中心或落库持久化时，仅需声明同类型 Bean 即可一键接管：
+---
+
+## 4. 双模一体化分布式锁
+
+对应示例控制器：[`RedisLockController`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/controller/RedisLockController.java) & [`StockDeductScenarioService`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/service/StockDeductScenarioService.java) & [`OrderSettlementService`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/service/OrderSettlementService.java)
+
+> 同时提供声明式 `@DistributedLock`、编程式 `DistributedLockTemplate` 与静态门面 `RedisLockUtil`，统一覆盖可重入锁、公平锁、读写锁、MultiLock 多键联锁与争锁降级。
+
+### 4.1 局部专属 YAML 配置
+
+```yaml
+ateng:
+  boot:
+    redis:
+      key-prefix: sample
+      redisson:
+        # 全局 Redisson 看门狗检查周期（默认 30s）
+        lock-watchdog-timeout: 30s
+      lock:
+        enabled: true
+        prefix: "lock:"
+        wait-time: 3s
+        # -1ms 代表激活 Redisson 看门狗自动续期
+        lease-time: -1ms
+        slow-threshold: 3000ms
+        # 锁子模块看门狗覆盖时长（可选；未配置时继承 redisson.lock-watchdog-timeout）
+        watchdog-timeout: 30s
+```
+
+### 4.2 1:1 真实 Sample 核心代码
 
 ```java
+// 1. 声明式可重入排他锁与跨 Bean 真实重入调用（OrderSettlementService -> StockDeductScenarioService）
+@DistributedLock(key = "'product:' + #request.productId", waitTime = 3000, leaseTime = 5000, mode = LockMode.REENTRANT)
+public OrderSettleVO settleOrder(OrderSettleRequest request) {
+    // 同一线程内跨 Bean 调用同样声明锁定 'product:' + #request.productId 的 deductStock，平滑重入不死锁
+    StockDeductResultVO deductResult = stockDeductScenarioService.deductStock(
+            StockDeductRequest.builder()
+                    .productId(request.getProductId())
+                    .count(request.getQuantity())
+                    .build());
+    return OrderSettleVO.builder()
+            .orderId(request.getOrderId())
+            .productId(request.getProductId())
+            .remainingStock(deductResult.getRemainingStock())
+            .status("SETTLED")
+            .build();
+}
+
+// 2. 公平排队 / 共享读锁 / MultiLock 多 SKU 联锁（StockDeductScenarioService）
+@DistributedLock(key = "'fair:activity:' + #request.activityId", waitTime = 3000, leaseTime = 5000, mode = LockMode.FAIR)
+public FairQuotaVO acquireFairQuota(FairQuotaRequest request) {
+    int queueNo = fairQueueCounter.incrementAndGet();
+    return FairQuotaVO.builder()
+            .activityId(request.getActivityId())
+            .userId(request.getUserId())
+            .queueNumber(queueNo)
+            .acquired(true)
+            .build();
+}
+
+public PromotionRuleVO getPromotionRule(String ruleId) {
+    String lockKey = "promo:rule:" + ruleId;
+    return distributedLockTemplate.execute(lockKey, LockMode.READ, 3000L, 5000L, TimeUnit.MILLISECONDS, () -> {
+        PromotionRuleVO rule = promoRuleTable.get(ruleId);
+        if (rule == null) {
+            throw new BusinessException("促销规则不存在: " + ruleId);
+        }
+        return rule;
+    });
+}
+
+public MultiSkuDeductVO deductMultiSku(MultiSkuDeductRequest request) {
+    List<String> lockKeys = request.getProductIds().stream()
+            .map(id -> "product:" + id)
+            .toList();
+    return distributedLockTemplate.execute(lockKeys, LockMode.REENTRANT, 3000L, 5000L, TimeUnit.MILLISECONDS, () -> {
+        for (Long productId : request.getProductIds()) {
+            Integer current = stockTable.get(productId);
+            if (current == null || current < request.getQuantity()) {
+                throw new BusinessException("商品库存不足，扣减终止: productId=" + productId);
+            }
+        }
+        for (Long productId : request.getProductIds()) {
+            stockTable.computeIfPresent(productId, (k, v) -> v - request.getQuantity());
+        }
+        return MultiSkuDeductVO.builder()
+                .comboId(request.getComboId())
+                .productIds(request.getProductIds())
+                .success(true)
+                .message("组合套餐全量商品联锁扣减成功")
+                .build();
+    });
+}
+
+// 3. 高峰争锁失败平滑 fallback 降级 & RedisLockUtil 静态门面一键加锁
+public LockFallbackVO executeWithFallback(LockFallbackRequest request) {
+    String resourceId = request.getResourceId();
+    return distributedLockTemplate.execute("resource:" + resourceId,
+            () -> LockFallbackVO.builder().resourceId(resourceId).fallbackTriggered(false).result("NORMAL_SUCCESS").build(),
+            () -> LockFallbackVO.builder().resourceId(resourceId).fallbackTriggered(true).result("FALLBACK_TRIGGERED").build());
+}
+
+public StaticLockVO executeStaticLock(StaticLockRequest request) {
+    String key = "static:" + request.getResourceId();
+    return RedisLockUtil.execute(key, () -> {
+        log.info("[StockDeduct] 静态工具 RedisLockUtil 加锁成功: key={}", key);
+        return StaticLockVO.builder()
+                .resourceId(request.getResourceId())
+                .locked(true)
+                .message("静态门面锁执行成功")
+                .build();
+    });
+}
+```
+
+### 4.3 核心机制与边界防御
+
+- **可重入与安全释放**：`DistributedLockTemplate` 解锁前严格校验 `lock.isHeldByCurrentThread()`，杜绝异常超时后误删其他线程持有的分布式锁；同一线程对同一 Key 多次重入仅增减 Redisson Hash 计数，最后一次退出才物理释放。
+- **MultiLock 自动去重与防死锁**：多键联锁内部统一按唯一键集合编排加锁与解锁，杜绝业务传入重复 SKU ID 或并发逆序加锁造成的死锁风险；非阻塞探测提供 `tryExecute` 重载链。
+- **Watchdog 续期与慢锁可观测**：当 `leaseTime <= 0`（或注解默认 `-1L`）时激活 Redisson Watchdog 自动续期（超时周期支持通过 `ateng.boot.redis.lock.watchdog-timeout` 覆写），持锁耗时超过 `slow-threshold` 自动输出 `WARN` 慢锁审计日志。
+
+### 4.4 预期控制台呈现
+
+```text
+INFO  [           main] [aa41bf6fa8646483384e9488e93c7c6a] i.g.a.b.s.r.s.OrderSettlementService     : [OrderSettle] 外层服务获取商品锁成功，进入订单结算流程: orderId=ORD_SETTLE_2001, productId=1001
+INFO  [           main] [4549c0dd9769a3a055b436a0a0d5334b] i.g.a.b.s.r.s.StockDeductScenarioService : [StockDeduct] 获取分布式锁成功，开始扣减库存: productId=1001, count=10
+INFO  [           main] [aa41bf6fa8646483384e9488e93c7c6a] i.g.a.b.s.r.s.OrderSettlementService     : [OrderSettle] 跨 Bean 重入扣减库存成功: orderId=ORD_SETTLE_2001, remainingStock=95
+INFO  [           main] [NO-TRACE] i.g.a.b.s.r.s.StockDeductScenarioService : [StockDeduct] 批量联锁获取成功，扣减组合套餐商品: comboId=ORD_MULTI_1, products=[1001]
+```
+
+---
+
+## 5. 轻量可靠延时队列与受控重放
+
+对应示例控制器：[`RedisDelayQueueController`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/controller/RedisDelayQueueController.java) & [`OrderDelayScenarioService`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/service/OrderDelayScenarioService.java) & [`SampleDelayedQueueFailureHandler`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/handler/SampleDelayedQueueFailureHandler.java)
+
+> 基于 Redisson `RDelayedQueue + RBlockingQueue` 构建极简高可靠延时任务引擎，内置退避重试、DLQ 死信流转、有界受控重放与失败告警 SPI。
+
+### 5.1 局部专属 YAML 配置
+
+```yaml
+ateng:
+  boot:
+    redis:
+      key-prefix: sample
+      delay-queue:
+        enabled: true
+        retry-times: 3
+        retry-delay: 3s
+        dead-letter-enabled: true
+        dead-letter-suffix: ":dlq"
+        # 防止毒丸死信无限重放形成雪崩的上限门禁
+        max-replay-attempts: 3
+```
+
+### 5.2 1:1 真实 Sample 核心代码
+
+```java
+// 1. 编程式投递与声明式监听消费（OrderDelayScenarioService）
+public static final String QUEUE_ORDER_CANCEL = "sample:order:cancel";
+
+public void sendOrderCancelTask(String orderId, Duration delay, String reason) {
+    String effectiveReason = StringUtils.hasText(reason) ? reason : "订单未支付超时自动取消";
+    OrderDelayPayload payload = new OrderDelayPayload(orderId, effectiveReason, System.currentTimeMillis());
+    log.info("[OrderDelay] 编程式投递延时取消任务: queue={}, orderId={}, delay={}", QUEUE_ORDER_CANCEL, orderId, delay);
+    redisDelayedQueue.offer(QUEUE_ORDER_CANCEL, payload, delay);
+}
+
+@DelayedQueueListener(queue = QUEUE_ORDER_CANCEL, concurrency = 1)
+public void onOrderCancel(OrderDelayPayload payload) {
+    if (payload != null && payload.getOrderId() != null && payload.getOrderId().contains("POISON")) {
+        log.error("[OrderDelay] 声明式监听捕获毒丸订单，抛出异常触发重试: orderId={}", payload.getOrderId());
+        throw new BusinessException("毒丸订单触发模拟异常: orderId=" + payload.getOrderId());
+    }
+    log.info("[OrderDelay] 声明式监听到期消费: orderId={}, reason={}", payload.getOrderId(), payload.getReason());
+    consumedOrders.add(payload);
+    latch.countDown();
+}
+
+// 2. 非破坏性检视 DLQ 与受控重放（OrderDelayScenarioService）
+public List<DeadLetterMessage<OrderDelayPayload>> peekCancelOrderDeadLetters(int limit) {
+    return redisDelayedQueue.peekDeadLetters(QUEUE_ORDER_CANCEL, limit, OrderDelayPayload.class);
+}
+
+public int replayCancelOrderDeadLetters(int maxCount, Duration delay) {
+    return redisDelayedQueue.replayDeadLetters(QUEUE_ORDER_CANCEL, maxCount, delay);
+}
+
+// 3. 自定义 DelayedQueueFailureHandler SPI 告警捕获（SampleDelayedQueueFailureHandler）
 @Component
-public class AlertDelayedQueueFailureHandler implements DelayedQueueFailureHandler {
+public class SampleDelayedQueueFailureHandler implements DelayedQueueFailureHandler {
+
+    private static final int MAX_CAPACITY = 50;
+    private final Queue<DeadLetterMessage<?>> recentAlerts = new ConcurrentLinkedQueue<>();
 
     @Override
     public void onFailed(DeadLetterMessage<?> deadLetterMessage, Throwable cause) {
-        log.error("延时队列死信告警触发: queue={}, retryTimes={}", deadLetterMessage.originalQueue(), deadLetterMessage.retryTimes(), cause);
-        // 发送钉钉机器人告警通知...
+        log.warn("[DelayedQueueAlert] 捕获延时任务重试耗尽告警: queue={}, retryCount={}, error={}",
+                deadLetterMessage.originalQueue(), deadLetterMessage.retryTimes(), deadLetterMessage.errorMessage(), cause);
+        while (recentAlerts.size() >= MAX_CAPACITY) {
+            recentAlerts.poll();
+        }
+        recentAlerts.offer(deadLetterMessage);
     }
 }
 ```
 
-### 16.4 自定义 Stream 失败处理 SPI 接管 (`StreamFailureHandler`)
-Stream 消费组重试耗尽后默认由 `LoggingStreamFailureHandler` 打印错误堆栈。若需要将失败事件存入审计数据库或发送告警卡片，只需声明实现类 Bean：
+### 5.3 核心机制与边界防御
 
-```java
-@Component
-public class CustomStreamFailureHandler implements StreamFailureHandler {
+- **退避重试与死信隔离**：`DelayedQueueBootstrap` 消费异常时按 `retry-delay` 执行退避并最多重试 `retry-times` 次；耗尽后若 `dead-letter-enabled=true`，自动封装 `DeadLetterMessage`（含异常摘要与堆栈快照）移送 `{global}{queueName}:dlq` 并触发 `DelayedQueueFailureHandler.onFailed(deadLetterMessage, cause)` SPI。
+- **非破坏检视与有界重放**：`peekDeadLetters` 允许在不移出队列的情况下审阅死信内容；`replayDeadLetters` 严格校验 `max-replay-attempts` 重放计数门禁，超限毒丸直接拦截拒绝重放，避免故障自循环。
+- **消费侧独立链路隔离**：工作线程前缀为 `redis-delay-queue-{queueName}-`，每条延时任务拉起消费前自动清理工作线程历史残余上下文并生成独立 `traceId`，在 `finally` 全量清理 MDC / Tenant / User 上下文，杜绝线程池上下文污染。
 
-    @Override
-    public void onFailed(StreamDeadLetterMessage<?> deadLetterMessage, Throwable cause) {
-        log.error("Stream 消费组死信触发: stream={}, group={}, recordId={}",
-                deadLetterMessage.originalStream(), deadLetterMessage.group(), deadLetterMessage.recordId(), cause);
-        // 执行持久化或告警...
-    }
-}
-```
+### 5.4 预期控制台呈现
 
-### 16.5 编程式动态布隆过滤器与原生 Redisson 句柄扩展
-除了在 YAML 中静态声明，`RedisBloomFilter` 亦完全支持在动态业务运行时按需初始化与底层句柄扩展：
+> 注：受管消费者线程名格式为 `redis-delay-queue-{queueName}-{n}`（以下日志遵循 `%-15.15thread` 格式截断展示）。
 
-```java
-// 1. 动态按需原子初始化
-boolean initialized = redisBloomFilter.tryInit("dynamic_promo_users", 200_000L, 0.005);
-
-// 2. 获取原生 Redisson 句柄以进行异步操作或高级监听
-RBloomFilter<String> nativeFilter = redisBloomFilter.getFilter("dynamic_promo_users");
-RFuture<Boolean> future = nativeFilter.containsAsync("user_10086");
-```
-
-### 16.6 两级缓存 L1 内存引擎平滑退化与 SPI 适配
-`ateng-boot-redis` 在设计两级缓存 L1 抽象时恪守零臃肿与底座优先原则：
-- **编译期可选依赖 (Optional Dependency)**：`com.github.ben-manes.caffeine:caffeine` 标配 `<optional>true</optional>`，下游可按需引入享受 Caffeine 的 W-TinyLFU 高命中淘汰算法；
-- **纯原生 JVM 零依赖平滑退化**：若下游未引入 Caffeine，`L1MemoryCacheFactory` 在类加载期通过 `ClassUtils.isPresent` 与私有静态内部类完成隔离探测，自动退化为内置的 `ConcurrentLruMemoryCache`，基于原生 `LinkedHashMap`（写锁防护、`accessOrder = true`）与 `l1.default-max-size` 严格容量控制，保障生产环境无外部重依赖下平稳运行且绝不 OOM。
-
-### 16.7 受管 Lua 脚本原子执行器与自定义加载扩展
-`RedisScriptExecutor` 允许将常用脚本收敛至 `resources/scripts/*.lua`，避免代码中硬编码字符串：
-
-```java
-@Autowired
-private RedisScriptExecutor redisScriptExecutor;
-
-public Long executeCustomLua(String key, Long delta) {
-    return redisScriptExecutor.executeClasspath("scripts/custom_counter.lua", Long.class, List.of(key), delta);
-}
-```
-
-### 16.8 分布式信号量配额治理与动态扩缩容
-针对外部突发流量与服务升降级，可随时通过模板动态调配许可证总数：
-
-```java
-@Autowired
-private RedisSemaphoreTemplate redisSemaphoreTemplate;
-
-public void adjustCapacity(String serviceKey, int newQuota) {
-    redisSemaphoreTemplate.resetPermits(serviceKey, newQuota);
-}
+```text
+INFO  [           main] [NO-TRACE] i.g.a.b.s.r.s.OrderDelayScenarioService  : [OrderDelay] 编程式投递延时取消任务: queue=sample:order:cancel, orderId=POISON_ORD_DLQ_002, delay=PT0S
+ERROR [:order:cancel-1] [4bb5739307363a4536b67227f56c317b] i.g.a.b.s.r.s.OrderDelayScenarioService  : [OrderDelay] 声明式监听捕获毒丸订单，抛出异常触发重试: orderId=POISON_ORD_DLQ_002
+WARN  [:order:cancel-1] [4bb5739307363a4536b67227f56c317b] b.s.r.h.SampleDelayedQueueFailureHandler : [DelayedQueueAlert] 捕获延时任务重试耗尽告警: queue=sample:order:cancel, retryCount=3, error=毒丸订单触发模拟异常: orderId=POISON_ORD_DLQ_002
 ```
 
 ---
 
-## 17. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
+## 6. Redis 5.0+ Stream 可靠流消息与自愈引擎
 
-### 17.1 分布式锁防御性释放与防误删不变量
-- **状态判断释放范式**：在 `DistributedLockTemplate.safeUnlockAndAudit` 释放锁前，强制通过 `rLock.isHeldByCurrentThread()` 校验当前线程是否真正持有锁；若因业务耗时严重超出 `leaseTime` 导致锁已被 Redis 自动过期并由其他节点的线程获取，当前线程会主动跳过 `unlock()` 并记录 WARN 日志，**绝对杜绝误删其他线程持有的锁造成级联并发穿透**。
-- **次生异常彻底隔离**：锁释放逻辑在 `finally` 块中受到全面保护并捕获底层网络断开等偶发异常，确保业务方法本身抛出的原始业务异常（如业务断言失败、校验未通过等）不被次生异常冲刷掩盖。
+对应示例控制器：[`RedisStreamController`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/controller/RedisStreamController.java) & [`StreamEventScenarioService`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/service/StreamEventScenarioService.java) & [`SampleStreamFailureHandler`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/handler/SampleStreamFailureHandler.java)
 
-### 17.2 看门狗自动续期与固定租期选择策略
-- **`leaseTime <= 0`（推荐）**：默认 `leaseTime = -1ms`，此时 Redisson 会自动激活看门狗（Watchdog，默认每隔 10s 自动续期至 30s）。适合绝大多数长事务与复杂业务逻辑，只要业务节点存活即可确保持锁不中断，进程宕机后 30s 自动失效。
-- **`leaseTime > 0`（显式固定时长）**：一旦显式指定具体租期（例如 `leaseTime = 10`），Redisson 将**彻底禁用看门狗自动延期**。若业务执行耗时超出指定租期，锁将强制自动释放；请确保设置的租期显著大于业务最大可能耗时。
+> 依托 Redis 5.0+ Stream 原生持久化与消费组语义，集成自动建组、四维全链路上下文透传、PEL 孤儿待决消息 `XCLAIM` 自愈、DLQ 死信转移重放与双参告警 SPI。
 
-### 17.3 延时队列生命周期消费、受管线程池与死信流转
-- **受管线程池与四维上下文透传**：`DelayedQueueBootstrap` 消费轮询彻底淘汰裸 `Executors`，接入 Spring 容器受管的 `ThreadPoolTaskExecutor` 并挂载 `ContextCopyingTaskDecorator`，确保 TraceId、TenantId 等上下文在延时队列消费线程中合规生效；
-- **死信流转与错误隔离**：内置异常受控重试；重试耗尽后若 `deadLetterEnabled=true` 则将包装完整的 `DeadLetterMessage<T>` 投递至 `${queueName}:dlq` 并触发 `DelayedQueueFailureHandler` SPI，杜绝毒药消息阻塞队列并保障可追溯审计；
-- **平滑优雅停机**：监听容器实现了 `DisposableBean`，在 JVM 或 Spring 容器销毁时首先停止拉取新消息，等待在途任务执行完成并注销内部阻塞循环与受管线程池，保障零消息悬挂。
+### 6.1 局部专属 YAML 配置
 
-### 17.4 布隆过滤器容量 80% 安全预警与生命周期清理
-- **元素填充率实时预警**：布隆过滤器的误判率由预估容量与已插入元素数决定。当实际元素数超过预估容量的 80%（`getUsageRate() >= 0.8`）时，`RedisBloomFilter` 在添加操作后自动记录 WARN 日志告警，提示运维及时扩容或重建双过滤器平滑迁移；
-- **对称物理销毁**：通过 `RedisBloomFilter.delete(filterName)` 可一键原子销毁底层 Redis 位图，释放内存占用。
+```yaml
+ateng:
+  boot:
+    redis:
+      # 可选：开启全局 key-prefix: sample 可统一前置环境隔离前缀（默认 ""，以下示例日志按默认配置运行）
+      # key-prefix: sample
+      stream:
+        enabled: true
+        retry-times: 3
+        poll-timeout: 2s
+        batch-size: 10
+        dlq-suffix: ":dlq"
+        max-replay-attempts: 3
+        claim-idle-time: 1m
+        claim-batch-size: 20
+        # 多节点部署可显式指定实例标识隔离消费者命名，留空时自动生成 UUID
+        # instance-id: order-node-01
+```
 
-### 17.5 RedisCacheTemplate 争锁超时容灾与死锁防御
-- **争锁超时平滑降级（Resilience Pass-Through）**：当极端高并发争抢热点 Key 时，若等待互斥锁超时（超出 `lockWaitTime`，默认 3s），模板记录 WARN 日志后平滑降级穿透查库，并将查库结果异步尝试回填 Redis，严禁向外抛出异常阻断正常业务流；
-- **批量缺失键字典序排序加锁**：在 `batchGetOrLoad` 处理并发缺失多键时，所有物理锁 Key 严格执行字典序升序排序（`Collections.sort(lockKeys)`）后再申请 MultiLock，从数学机制上杜绝并发请求中不同顺序加锁引发的死锁悬挂隐患。
+### 6.2 1:1 真实 Sample 核心代码
 
-### 17.6 两级缓存广播失效、反自重入与雪崩/穿透防御语义
-- **全局唯一实例 ID 与自重入防环机制**：`TwoLevelCacheManager` 在初始化时分配全局递增无锁 `instanceId`。当业务线程执行 `@CacheEvict` 或 `cache.evict(...)` 时，本地优先清除 L1 与 L2 并向 Redis 集中频道（默认 `ateng:cache:evict:topic`）广播 `CacheEvictMessage`。各实例的消息监听器收到消息后比对 `instanceId`，若等于当前实例 ID 则立即判定为本地自身触发的广播并主动丢弃，仅对其他实例的本地 L1 触发清除，**从拓扑机制上 100% 杜绝自身二次淘汰、广播回环与自重入死锁**；
-- **防穿透空哨兵机制**：当查库为空时，`DefaultTwoLevelCache` 向 Redis 写入专用空哨兵标识符 `__ATENG_CACHE_NULL__`（带有独立短过期时间 `l2.null-ttl`，默认 5m），并发请求命中空哨兵时立即返回 `null`，严防恶意不存在 Key 击穿底层存储；
-- **防雪崩随机抖动 (Jitter)**：回填 L2 Redis 缓存时，系统自动在基准 TTL 基础上叠加 0 ~ `max-jitter` 的随机动态偏移，打散相同批次热点数据的集中过期时间。
+```java
+// 1. 模板 / 静态双门面投递与声明式消费组监听（StreamEventScenarioService）
+public static final String STREAM_ORDER_EVENTS = "stream:order:events";
+public static final String GROUP_ORDER_PROCESSOR = "group:order:processor";
 
-### 17.7 Stream ACK 确认、PEL 挂起排查与孤儿消息认领机制
-- **At-Least-Once 可靠交付保证**：消费者从消费组拉取消息后，消息自动进入该消费者的挂起列表（Pending Entries List, PEL）。仅当业务消费方法成功返回且通过 `redisStreamTemplate.ack(stream, group, recordId)` 确认后，消息才从 PEL 中移除；
-- **孤儿挂起消息自动/手动抢占 (Claim)**：若某个消费者节点在消费中途崩溃宕机，未 ACK 的消息将长期滞留在 PEL 中。通过 `RedisStreamTemplate.claim`，健康的存活节点可指定最小空闲时间（`minIdle`）将孤儿消息转移至自身名下重新处理，防止消息永久悬挂。
+public RecordId sendOrderEvent(OrderStreamEvent event) {
+    return redisStreamTemplate.send(STREAM_ORDER_EVENTS, event);
+}
 
-### 17.8 分布式信号量持有人防误还与状态判断归还保底
-- **槽位释放防御**：`RedisSemaphoreTemplate` 统一管理信号量许可证的申请与归还；业务代码执行完毕或异常中断时，在 `finally` 块中严格确保仅当本线程成功获取了相应数量许可证时才调用 `release(permits)`，严禁未持锁或超额释放导致许可证虚假膨胀。
+public RecordId sendOrderEventStatic(OrderStreamEvent event) {
+    return RedisStreamUtil.send(STREAM_ORDER_EVENTS, event);
+}
 
-### 17.9 分布式防重幂等 deleteOnFailure 故障自愈机制与业务隔离
-- **业务失败自动回滚凭据**：传统 SETNX 防重若在业务异常后不释放，会导致上游重试机制因防重拦截而失败。`@RedisIdempotent` 标配 `deleteOnFailure = true`，当捕获到业务抛出异常时立即安全清理防重键，允许外部系统（如消息队列、支付网关）重新发起补偿调用；
-- **成功持久留存**：仅当方法正常无异常返回时，防重键才会在 Redis 中留存完整的 `expire` 时长，抵御后续重复提交。
+@RedisStreamListener(stream = STREAM_ORDER_EVENTS, group = GROUP_ORDER_PROCESSOR, concurrency = 1, autoAck = true)
+public void onOrderEvent(OrderStreamEvent event) {
+    if (event != null && event.getOrderId() != null && event.getOrderId().contains("POISON")) {
+        throw new BusinessException("Stream 流事件毒丸订单触发模拟异常: orderId=" + event.getOrderId());
+    }
+    receivedEvents.add(event);
+    latch.countDown();
+}
 
-### 17.10 Redisson TCP 心跳保活与云原生 NAT 静默切断弹性防御机制
-- **PING 心跳保活机制**：在云原生容器网络、跨可用区专线或公有云 NAT 网关环境下，长时间无数据通信的空闲 TCP 连接常被防火墙或网关静默切断（Silent Drop），导致应用在下一次发起 Redis 命令时因使用失效连接出现 `Connection reset by peer` 错误。`AtengRedisAutoConfiguration` 统一配置 `pingConnectionInterval`（默认 30s），由 Redisson 客户端后台定期向 Redis 服务端发送 PING 命令检测并维系物理链路活跃，彻底解决长连接偶发断开难题。
+// 2. PEL 巡检认领、Stream 裁剪与 DLQ 受控重放
+public List<MapRecord<String, Object, Object>> claimPendingMessages(String newConsumer, Duration minIdleTime, int count) {
+    return redisStreamTemplate.claimPendingMessages(
+            STREAM_ORDER_EVENTS, GROUP_ORDER_PROCESSOR, newConsumer, minIdleTime, count);
+}
+
+public Long trimStream(long maxLen) {
+    return redisStreamTemplate.trim(STREAM_ORDER_EVENTS, maxLen);
+}
+
+public int replayDeadLetters(int count) {
+    return redisStreamTemplate.replayDeadLetters(STREAM_ORDER_EVENTS, count);
+}
+
+// 3. SPI 失败告警回调实现（SampleStreamFailureHandler）
+@Component
+public class SampleStreamFailureHandler implements StreamFailureHandler {
+
+    private static final int MAX_CAPACITY = 50;
+    private final Queue<StreamDeadLetterMessage> recentAlerts = new ConcurrentLinkedQueue<>();
+
+    @Override
+    public void onFailure(StreamDeadLetterMessage deadLetterMessage) {
+        log.warn("[StreamAlert] 捕获 Stream 消费重试耗尽告警: stream={}, group={}, consumer={}, recordId={}, error={}",
+                deadLetterMessage.getStream(), deadLetterMessage.getGroup(), deadLetterMessage.getConsumer(),
+                deadLetterMessage.getRecordId(), deadLetterMessage.getExceptionMessage());
+        while (recentAlerts.size() >= MAX_CAPACITY) {
+            recentAlerts.poll();
+        }
+        recentAlerts.offer(deadLetterMessage);
+    }
+}
+```
+
+### 6.3 核心机制与边界防御
+
+- **跨节点四维上下文无缝续传**：`RedisStreamTemplate.send` 自动把 `traceId`、`TenantContextHolder`（租户 ID 与忽略标识）、`UserContextHolder`（登录用户快照）随 `__ateng_*` 元字段写入流记录；`StreamBootstrap` 消费前置恢复四维上下文、剥离 `__ateng_*` 元字段后再向业务方法反序列化注入纯净 POJO，执行结束后在 `finally` 彻底清理避免 ThreadLocal 泄露。
+- **PEL 孤儿消息自动认领自愈**：当某节点宕机遗留未 `XACK` 消息在 Pending Entries List（PEL）且闲置超过 `claim-idle-time` 时，`claimPendingMessages` / `claim` 自动转移认领至存活消费者，兼顾 `autoAck = false` 显式确认模式。
+- **原因链完备的双参 SPI**：`StreamFailureHandler` 保留函数式单参 `onFailure(StreamDeadLetterMessage)` 向后兼容，新增默认方法 `onFailed(StreamDeadLetterMessage deadLetterMessage, Throwable cause)` 供 `StreamBootstrap` 直接传递完整异常原因链 `lastError`；受管工作线程前缀为 `redis-stream-{stream}-{group}-`。
+
+### 6.4 预期控制台呈现
+
+> 注：工作线程全名格式为 `redis-stream-stream_order_events-group_order_processor-{n}`（下述截断前缀 `der_processor-1`），同一次请求与消费完整透传相同 `traceId`。
+
+```text
+INFO  [           main] [e57448352734645857360b4728d696a7] i.g.a.b.s.r.s.StreamEventScenarioService : [StreamEvent] 模板门面投递订单流事件: stream=stream:order:events, event=OrderStreamEvent(orderId=ORD_STREAM_CTRL_001, amount=199.99, eventType=ORDER_CREATED, timestamp=1794541589489)
+INFO  [der_processor-1] [e57448352734645857360b4728d696a7] i.g.a.b.s.r.s.StreamEventScenarioService : [StreamEvent] 监听到消费组流事件: orderId=ORD_STREAM_CTRL_001, eventType=ORDER_CREATED, amount=199.99
+WARN  [der_processor-1] [47cc5e83d0749e68c4fae880006d54bd] i.g.a.b.s.r.h.SampleStreamFailureHandler : [StreamAlert] 捕获 Stream 消费重试耗尽告警: stream=stream:order:events, group=group:order:processor, consumer=80274a460dac89be4b648ba24659dbfb:1, recordId=1794541589569-0, error=Stream 流事件毒丸订单触发模拟异常: orderId=POISON_STREAM_CTRL_001
+```
+
+---
+
+## 7. 通用业务级分布式防重幂等
+
+对应示例控制器：[`RedisIdempotentController`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/controller/RedisIdempotentController.java) & [`IdempotentScenarioService`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/service/IdempotentScenarioService.java)
+
+> 声明式 `@RedisIdempotent` 切面 + 编程式 `RedisIdempotentTemplate` + 静态门面 `RedisIdempotentUtil`，基于 Redisson `RBucket.setIfAbsent` 原子抢占与 `TRYING / SUCCESS / FAILED` 三态状态机防御并发重入。
+
+### 7.1 局部专属 YAML 配置
+
+```yaml
+ateng:
+  boot:
+    redis:
+      # 可选：开启全局 key-prefix: sample 可统一前置环境隔离前缀（默认 ""，以下示例日志按默认配置运行）
+      # key-prefix: sample
+      idempotent:
+        enabled: true
+        prefix: "idempotent:"
+        default-expire: 10m
+        # 业务抛出异常时默认删除防重凭证以便上游合法重试
+        delete-on-failure: true
+```
+
+### 7.2 1:1 真实 Sample 核心代码
+
+```java
+// 1. 声明式支付回调并发防重与异常自动释放重试（IdempotentScenarioService）
+@RedisIdempotent(
+        key = "'idemp:pay:' + #request.paymentNo",
+        expire = "60s",
+        deleteOnFailure = true,
+        message = "支付回调正在处理中或已处理完成，请勿重复通知"
+)
+public PaymentCallbackVO handlePaymentCallback(PaymentCallbackRequest request) {
+    successProcessCount.incrementAndGet();
+    return PaymentCallbackVO.builder()
+            .paymentNo(request.getPaymentNo())
+            .orderId(request.getOrderId())
+            .processed(true)
+            .message("支付回调处理成功，账务已入账")
+            .build();
+}
+
+// 2. 编程式模板防重退款核销（RedisIdempotentTemplate）
+public RefundVO executeRefundTemplate(RefundRequest request) {
+    String key = "idemp:refund:tpl:" + request.getRefundNo();
+    return redisIdempotentTemplate.execute(key, Duration.ofMinutes(1), () -> {
+        successProcessCount.incrementAndGet();
+        return RefundVO.builder()
+                .refundNo(request.getRefundNo())
+                .refundAmount(request.getRefundAmount())
+                .success(true)
+                .message("编程式模板退款核销成功")
+                .build();
+    });
+}
+
+// 3. 静态门面防重核销退款（RedisIdempotentUtil）
+public RefundVO executeRefundStatic(RefundRequest request) {
+    String key = "idemp:refund:sta:" + request.getRefundNo();
+    return RedisIdempotentUtil.execute(key, () -> {
+        log.info("[IdempotentScenario] 静态门面防重处理退款: refundNo={}, amount={}",
+                request.getRefundNo(), request.getRefundAmount());
+        successProcessCount.incrementAndGet();
+
+        return RefundVO.builder()
+                .refundNo(request.getRefundNo())
+                .refundAmount(request.getRefundAmount())
+                .success(true)
+                .message("静态门面退款核销成功")
+                .build();
+    });
+}
+```
+
+### 7.3 核心机制与边界防御
+
+- **Redisson `RBucket` 原子占坑与三态状态机**：`RedisIdempotentTemplate` 底层获取 `redissonClient.getBucket(fullKey, StringCodec.INSTANCE)`，通过 `bucket.setIfAbsent(IdempotentStatus.TRYING.name(), effectiveTtl)` 原子抢占并发坑位；业务正常返回后写入 `IdempotentStatus.SUCCESS`；当执行抛出异常时，若 `deleteOnFailure = true` 则调用 `bucket.delete()` 立即释放防重凭证以允许上游合法重试，否则流转为 `IdempotentStatus.FAILED`。
+- **幂等键前缀合成与降级兜底**：注解未填写 `key` 时自动按方法全限定签名生成兜底键；键合成严格遵守 `{global}{idempotent.prefix}{key}` 幂等解析逻辑，不重复拼接 `idempotent:idempotent:`；同时提供 `tryAcquire`、`setSuccess`、`setFailed`、`getStatus`、`isSuccess` / `isTrying` / `isFailed` 与 `formatKey` 全生命周期控制原语。
+- **统一响应码映射**：并发重复请求被拦截后抛出 `IdempotentException(errorMsg)`（继承自 `BusinessException`，默认错误码映射 `CommonResultCode.REPEAT_SUBMIT`），由上层 Web 统一异常体系转换为标准业务错误响应。
+
+### 7.4 预期控制台呈现
+
+```text
+INFO  [           main] [fab9505585da0e6c6a4e4190c779493e] i.g.a.b.s.r.s.IdempotentScenarioService  : [IdempotentScenario] 收到支付异步回调通知: paymentNo=PAY_NOTIFY_1001, orderId=ORD_NOTIFY_1001, amount=99.00
+INFO  [           main] [NO-TRACE] i.g.a.b.s.r.s.IdempotentScenarioService  : [IdempotentScenario] 编程式模板防重处理退款: refundNo=PAY_20261027_001, amount=88.88
+WARN  [           main] [NO-TRACE] i.g.a.b.r.i.RedisIdempotentTemplate      : [RedisIdempotent] 重复操作已被拦截: key=idempotent:idemp:order:ORD_IDEMP_001
+```
+
+---
+
+## 8. 分布式流控与在途信号量治理
+
+对应示例控制器：[`RedisTrafficController`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/controller/RedisTrafficController.java) & [`SemaphoreThrottlingScenarioService`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/service/SemaphoreThrottlingScenarioService.java)
+
+> 收敛 `RedisSemaphoreTemplate` / `RedisSemaphoreUtil` 并发槽位信号量、`RedisRateLimiterClient` 令牌桶限流与 `RedisAtomicUtil` 毫秒级滑动窗口防刷三大流控护城河。
+
+### 8.1 局部专属 YAML 配置
+
+```yaml
+ateng:
+  boot:
+    redis:
+      key-prefix: sample
+      semaphore:
+        enabled: true
+        prefix: "semaphore:"
+```
+
+### 8.2 1:1 真实 Sample 核心代码
+
+```java
+// 1. 信号量并发槽位管控与超时兜底降级（SemaphoreThrottlingScenarioService）
+public CreditCheckVO checkCredit(CreditCheckRequest request) {
+    return redisSemaphoreTemplate.execute(
+            "sem:credit:eval",
+            10,
+            1,
+            Duration.ofMillis(500),
+            () -> CreditCheckVO.builder().idCard(masked).customerName(request.getCustomerName())
+                    .creditScore(750).fallback(false).message("征信评估成功，信用等级极佳").build(),
+            () -> CreditCheckVO.builder().idCard(masked).customerName(request.getCustomerName())
+                    .creditScore(null).fallback(true).message("征信下游通道在途并发饱和，已触发弹性降级保护").build());
+}
+
+// 动态调整槽位配额 & 静态门面调用
+public boolean resetPermits(String serviceName, int newPermits) {
+    String semaphoreKey = serviceName.startsWith("sem:") ? serviceName : "sem:heavy:" + serviceName;
+    return redisSemaphoreTemplate.resetPermits(semaphoreKey, newPermits);
+}
+
+// 2. 分布式令牌桶限流 & 动态配置重置（RedisTrafficController）
+boolean allowed = redisRateLimiterClient.tryAcquire(
+        request.getApiKey(), request.getRate(), Duration.ofSeconds(request.getIntervalSeconds()));
+long remaining = redisRateLimiterClient.getAvailablePermits(request.getApiKey());
+boolean reset = redisRateLimiterClient.reset(request.getApiKey());
+
+// 3. 短信 ZSet 毫秒级滑动窗口频控
+boolean allowed = redisAtomicUtil.slidingWindowCheck(
+        "rate:sms:" + request.getPhoneNumber(),
+        request.getMaxAttempts(),
+        Duration.ofSeconds(request.getWindowSeconds()));
+```
+
+### 8.3 核心机制与边界防御
+
+- **并发槽位必释放**：`RedisSemaphoreTemplate.execute` 无论目标闭包正常完成还是抛出异常，都在 `finally` 块准确归还等量 `permits`；支持直接通过 `resetPermits` / `addPermits` 热调下游服务并发配额。
+- **令牌桶动态重设**：`RedisRateLimiterClient.reset(key, rate, rateInterval)` 支持线上热修改速率窗口参数而不依赖应用重启，且全方法通过 `RedisProperties.buildKey` 纳入全局前缀体系。
+- **无临界毛刺的毫秒滑动窗口**：`RedisAtomicUtil.slidingWindowCheck` 依托 Redis ZSet 时间戳分数清理历史窗口、统计并写入当次唯一成员，彻底规避固定整点窗口的双倍突发穿透漏洞。
+
+### 8.4 预期控制台呈现
+
+```text
+INFO  [           main] [0abde0740ae88e7c8b597b0a8629ba0b] s.r.s.SemaphoreThrottlingScenarioService : [SemaphoreThrottling] 成功获取信号量槽位，执行征信评估: customerName=张三, idCard=110******2345
+INFO  [           main] [f52d5393d337762ae874e12724a09315] s.r.s.SemaphoreThrottlingScenarioService : [SemaphoreThrottling] 静态门面获取信号量成功: customerName=张三, idCard=110******2345
+WARN  [           main] [NO-TRACE] s.r.s.SemaphoreThrottlingScenarioService : [Semaphore] 获取信号量许可证超时，触发兜底降级响应: service=timeout-gateway
+```
+
+---
+
+## 9. 广播发布与订阅引擎
+
+对应示例控制器：[`RedisPubSubController`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/controller/RedisPubSubController.java) & [`NoticeBroadcastScenarioService`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/service/NoticeBroadcastScenarioService.java)
+
+> 声明式 `@ChannelTopicListener` 零样板注册 + 编程式 `RedisMessagePublisher` 动态发布与监听，支持强类型 POJO 自动反序列化与 `PatternTopic` 通配广播。
+
+### 9.1 局部专属 YAML 配置
+
+```yaml
+ateng:
+  boot:
+    redis:
+      enabled: true
+      pub-sub:
+        enabled: true
+```
+
+### 9.2 1:1 真实 Sample 核心代码
+
+```java
+// NoticeBroadcastScenarioService：发布广播 & 声明式精确/通配双模监听
+public static final String TOPIC_NOTICE_BROADCAST = "sample:notice:broadcast";
+public static final String PATTERN_SYSTEM_EVENT = "sample:system:*";
+
+public Long publishNotice(NoticeBroadcastPayload notice) {
+    return redisMessagePublisher.publish(TOPIC_NOTICE_BROADCAST, notice);
+}
+
+public Long publishSystemEvent(String eventType, String eventData) {
+    String channel = "sample:system:" + eventType;
+    log.info("[NoticeBroadcast] 广播发布系统事件: channel={}, data={}", channel, eventData);
+    return redisMessagePublisher.publish(channel, eventData);
+}
+
+@ChannelTopicListener(topics = TOPIC_NOTICE_BROADCAST, concurrency = 1)
+public void onNoticeBroadcast(NoticeBroadcastPayload notice) {
+    receivedNotices.add(notice);
+    noticeLatch.countDown();
+}
+
+@ChannelTopicListener(patterns = PATTERN_SYSTEM_EVENT, concurrency = 1)
+public void onSystemEvent(String eventData, String channel) {
+    receivedSystemEvents.add(channel + "=" + eventData);
+    eventLatch.countDown();
+}
+```
+
+### 9.3 核心机制与边界防御
+
+- **多参数签名智能绑定与动态取消订阅**：`@ChannelTopicListener` 由 `ChannelTopicBootstrap` 自动扫描，支持 `onMessage(T payload)`、`onMessage(T payload, String channel)` 与 `onMessage(T payload, String channel, String pattern)` 三种参数形式，自动按目标参数泛型执行 JSON 反序列化或原生 `String` / `byte[]` 透传；编程式同时提供 `subscribeChannel`、`unsubscribe` 与 `getListenerContainer` 控制原语。
+- **事件循环与业务线程解耦**：可按监听器独立配置 `concurrency` 并发度分发至受管执行器（线程前缀 `redis-pubsub-{cleanTopicName}-`），防止慢消费阻塞 Netty Redis 连接订阅通道。
+- **多实例子节点广播隔离**：广播频道保持 `RedisMessagePublisher` 指定频道名原样路由，各实例节点消费回调进入前通过 `RedisConsumptionContext.clearAll()` 清理工作线程历史残余 MDC / Tenant / User 上下文，为单次广播消费生成独立 `traceId` 并在 `finally` 立即清理。
+
+### 9.4 预期控制台呈现
+
+> 注：受管广播工作线程前缀为 `redis-pubsub-{cleanTopicName}-`（以下展示独立消费侧 `traceId` 隔离与 `%-15.15thread` 截断格式）。
+
+```text
+INFO  [           main] [cb61c7121d9b3f5698f0ce04bc95a9fe] a.b.s.r.s.NoticeBroadcastScenarioService : [NoticeBroadcast] 广播发布系统通知: topic=sample:notice:broadcast, noticeId=NOT_CTRL_001, title=全站停机维护公告
+INFO  [ice_broadcast-1] [9a3e71b40c8241d9a2b46e10d5f3c812] a.b.s.r.s.NoticeBroadcastScenarioService : [NoticeBroadcast] 声明式接收系统公告广播: noticeId=NOT_CTRL_001, title=全站停机维护公告
+INFO  [           main] [4452c5b5aeeac233e74683d39a48c2e7] a.b.s.r.s.NoticeBroadcastScenarioService : [NoticeBroadcast] 广播发布系统事件: channel=sample:system:config_refresh, data={"refreshKey":"ALL_CACHE"}
+INFO  [mple_system__-1] [7d12c48f31094e5ab8e291c6a430df59] a.b.s.r.s.NoticeBroadcastScenarioService : [NoticeBroadcast] 声明式通配监听到系统事件: channel=sample:system:config_refresh, data={"refreshKey":"ALL_CACHE"}
+```
+
+---
+
+## 10. 多级缓存防卫体系与布隆过滤器
+
+对应示例控制器：[`RedisCacheController`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/controller/RedisCacheController.java) & [`CacheScenarioService`](../ateng-boot-samples/ateng-boot-sample-redis/src/main/java/io/github/atengk/boot/sample/redis/service/CacheScenarioService.java)
+
+> 将 **单级 Spring Cache (`RedisCacheManager`) + 防击穿/穿透/雪崩模板 (`RedisCacheTemplate`) + L1/L2 两级联动缓存 (`TwoLevelCacheManager`) + 分布式布隆过滤器 (`RedisBloomFilter` / `BloomFilterBootstrap`)** 完整闭环收敛于统一缓存治理体系。
+
+### 10.1 局部专属 YAML 配置
+
+```yaml
+ateng:
+  boot:
+    redis:
+      key-prefix: sample
+      # 1. Spring Cache 单级与 RedisCacheTemplate 共用防卫参数
+      cache:
+        enabled: true
+        default-ttl: 30m
+        cache-null-values: true
+        null-ttl: 5m
+        jitter-enabled: true
+        max-jitter: 60s
+        lock-wait-time: 3s
+        expires:
+          sys-dict: 2h
+      # 2. L1 (Caffeine/LRU) + L2 (Redis) 两级缓存与跨节点广播淘汰
+      two-level:
+        enabled: true
+        topic: "ateng:cache:evict:topic"
+        l1:
+          default-max-size: 10000
+          default-ttl: 5m
+          max-sizes:
+            user-profile: 50000
+          ttls:
+            user-profile: 3m
+        l2:
+          default-ttl: 30m
+          cache-null-values: true
+          null-ttl: 5m
+          jitter-enabled: true
+          max-jitter: 60s
+          ttls:
+            user-profile: 1h
+      # 3. 分布式布隆过滤器启动声明式预热（与 Sample application.yml 对齐）
+      bloom-filters:
+        user-blacklist:
+          expected-insertions: 50000
+          false-probability: 0.01
+```
+
+### 10.2 1:1 真实 Sample 核心代码
+
+```java
+// 1. 单级独立 TTL 字典缓存：显式指向 redisCacheManager（绕开 @Primary 的两级缓存）
+@Cacheable(cacheNames = "sys-dict", key = "#dictCode", cacheManager = "redisCacheManager")
+public SysDictVO getSysDict(String dictCode) {
+    dbQueryCount.incrementAndGet();
+    return SysDictVO.builder()
+            .dictCode(dictCode)
+            .dictName("字典_" + dictCode)
+            .dictValue("VAL_" + dictCode)
+            .sortOrder(1)
+            .build();
+}
+
+@CacheEvict(cacheNames = "sys-dict", key = "#dictCode", cacheManager = "redisCacheManager")
+public void evictSysDict(String dictCode) {
+    log.info("[CacheScenario] 淘汰单级字典缓存: dictCode={}", dictCode);
+}
+
+// 2. RedisCacheTemplate 单键防击穿/穿透/雪崩 与 批量 MGET 防 N+1 查询
+public ProductVO getProduct(Long productId) {
+    return redisCacheTemplate.getOrLoad(
+            "product:" + productId,
+            ProductVO.class,
+            key -> {
+                dbQueryCount.incrementAndGet();
+                return MOCK_PRODUCT_DB.get(productId);
+            });
+}
+
+public Map<Long, ProductVO> batchGetProducts(List<Long> productIds) {
+    return redisCacheTemplate.batchGetOrLoad(
+            productIds,
+            id -> "product:" + id,
+            ProductVO.class,
+            missingIds -> {
+                dbQueryCount.incrementAndGet();
+                Map<Long, ProductVO> result = new LinkedHashMap<>();
+                for (Long id : missingIds) {
+                    ProductVO p = MOCK_PRODUCT_DB.get(id);
+                    if (p != null) {
+                        result.put(id, p);
+                    }
+                }
+                return result;
+            });
+}
+
+// 3. L1 + L2 两级缓存：默认走 @Primary TwoLevelCacheManager，@CacheEvict 触发全集群 Pub/Sub 淘汰
+@Cacheable(cacheNames = "user-profile", key = "#userId")
+public UserProfileVO getUserProfileVO(Long userId) {
+    dbQueryCount.incrementAndGet();
+    return UserProfileVO.builder()
+            .userId(userId)
+            .username("user_" + userId)
+            .membershipTier("VIP")
+            .points(1000)
+            .build();
+}
+
+@CacheEvict(cacheNames = {"user-profile", "user-profile-legacy"}, key = "#userId")
+public void evictUserProfile(Long userId) {
+    log.info("[CacheScenario] 淘汰用户档案两级缓存: userId={}", userId);
+}
+
+// 4. 分布式布隆过滤器拦截与 80% 容量水位巡检
+public boolean addBlacklist(String userId) {
+    return redisBloomFilter.add("user-blacklist", userId);
+}
+
+public boolean checkBlacklist(String userId) {
+    return redisBloomFilter.contains("user-blacklist", userId);
+}
+```
+
+### 10.3 核心机制与边界防御
+
+- **`@Primary` 两级接管与单级显式指定**：开启 `two-level.enabled=true` 时，`TwoLevelCacheManager` 作为默认 `@Primary` `CacheManager` 生效；单级场景只需通过 `@Cacheable(..., cacheManager = "redisCacheManager")` 即可精准分流至纯 Redis 缓存空间，避免不必要占用本机 L1 堆内存。
+- **`RedisCacheTemplate` 四重防卫与反 N+1**：
+  - **防穿透**：空结果自动写入短周期哨兵 `__ATENG_CACHE_NULL__`（`null-ttl` 默认 `5m`）并直接拦截后续空查；
+  - **防击穿**：按字典序排好 `MultiLock` 锁顺序与单键 DCL 双重检查互斥锁防止并发缓存击穿死锁；
+  - **防雪崩**：借助 `JitterTtlFunction` 在基准 TTL 之上叠加 `[0, max-jitter]` 随机抖动偏移；
+  - **防 N+1**：`batchGetOrLoad` 使用一次网络 `multiGet` 提取命中项，仅针对未命中子集加锁与单次批量回源并 Pipeline 回写；内部提供 `buildKey`、`buildLockKey` 与 `calculateTtl` 公开计算入口。
+- **布隆过滤器声明式预热与容量预警**：`BloomFilterBootstrap` 在单例就绪阶段自动为 YAML `bloom-filters.*` 执行幂等 `tryInit`；当 `getUsageRate(name)` 接近安全阈值（如 80%）时应主动触发重建扩容量化。
+
+### 10.4 预期控制台呈现
+
+```text
+INFO  [           main] [NO-TRACE] i.g.a.b.r.bloom.BloomFilterBootstrap     : 分布式布隆过滤器 [user-blacklist] 声明式预热初始化成功: expectedInsertions=50000, falseProbability=0.01
+INFO  [           main] [NO-TRACE] i.g.a.b.s.r.s.CacheScenarioService       : [CacheScenario] 缓存未命中，回源模拟数据库查询: productId=1001
+INFO  [           main] [38ebe7013367becc660fa914f0378772] i.g.a.b.s.r.s.CacheScenarioService       : [CacheScenario] 两级缓存未命中，执行模拟数据库查询: userId=3001
+INFO  [           main] [59e804f19e581bac7d0d32b4ac249bb4] i.g.a.b.s.r.s.CacheScenarioService       : [CacheScenario] 淘汰用户档案两级缓存: userId=3001
+```
+
+---
+
+## 11. 生产扩展接管与核心非功能边界
+
+### 11.1 生产级 SPI 契约扩展点
+
+下游业务仅需在 Spring 容器中声明以下接口实现 Bean（无需修改 Starter 源码），即可无缝接管终态告警或自定义两级缓存实例：
+
+| SPI 接口 | 核心契约方法 | 触发时机与默认实现 |
+| :--- | :--- | :--- |
+| **`DelayedQueueFailureHandler`** | `void onFailed(DeadLetterMessage<?> deadLetterMessage, Throwable cause)` | 延时消息重试耗尽写入 DLQ 后触发（默认 `LoggingDelayedQueueFailureHandler`） |
+| **`StreamFailureHandler`** | `void onFailure(StreamDeadLetterMessage deadLetterMessage)`<br>`default void onFailed(StreamDeadLetterMessage deadLetterMessage, Throwable cause)` | Stream 消息消费重试耗尽写入 `:dlq` 后触发，容器优先调用双参 `onFailed` 传递 `cause` 原因链（默认 `LoggingStreamFailureHandler`） |
+| **`TwoLevelCache`** | `put(key, value, ttl)`、`evictLocal(key)`、`clearLocal()`、`get(key, type)` | L1+L2 两级缓存扩展与跨节点剔除本地缓存协议，避免广播消息重入死循环（默认 `DefaultTwoLevelCache`） |
+
+### 11.2 `@ConditionalOnMissingBean` 基础设施接管与静态门面联动
+
+[`AtengRedisAutoConfiguration`](./src/main/java/io/github/atengk/boot/redis/autoconfigure/AtengRedisAutoConfiguration.java) 所有核心组件均标注 `@ConditionalOnMissingBean`，支持按需局部替换：
+
+- **外部配置文件接管 Redisson**：配置 `ateng.boot.redis.redisson.config=classpath:redisson.yaml`，Starter 将加载外部 YAML 并在其之上合并看门狗覆盖与纯净 JSON Codec，适用于精细控制读写分离拓扑；
+- **自定义 Bean 覆盖**：直接声明自定义 `RedissonClient`、`RedisTemplate<String, Object>`、`redisValueSerializer`、`RedisCacheManager`、`TwoLevelCacheManager` 或任意受管 `*Template` Bean 即可自动覆盖默认装配；
+- **8 大静态门面联动刷新**：容器生命周期 Bean `redisStaticFacadesInitializer` 实现 `SmartInitializingSingleton`，在所有单例初始化完成并最终确定用户覆盖 Bean 后，统一将生效实例绑定至 `RedisUtil`、`RedisAtomicUtil`、`RedisBloomUtil`、`RedisSemaphoreUtil`、`RedisLockUtil`、`RedisIdempotentUtil`、`RedisStreamUtil` 与 `RedisDelayedQueueUtil`，确保静态工具调用与自定义模板行为一致。
+
+### 11.3 核心非功能边界与生产防线矩阵
+
+| 风险类别 | 内置工程防线与边界机制 |
+| :--- | :--- |
+| **JDK 21+ 虚拟线程 Pinning** | 两级缓存分段条带锁及消费容器临界区全部使用 `ReentrantLock`，杜绝 `synchronized` 在 I/O 场景引发载体线程固定（Carrier Pinning） |
+| **阻塞主线程风险** | 禁用高危 `KEYS *`，`RedisUtil` 与 `DefaultTwoLevelCache.clear()` 统一采用游标 `SCAN`（默认分片批次大小 100）安全清理 |
+| **L1 本地堆内存 OOM** | 引入 Caffeine 时按 `max-sizes` / `default-max-size`（默认 10,000 条）执行 W-TinyLFU 淘汰；未引入 Caffeine 时 `L1MemoryCacheFactory` 平滑退化为内置有界 `ConcurrentLruMemoryCache` |
+| **云原生 NAT 空闲断连** | `RedissonClient` 默认以 `pingConnectionInterval = 30s` 发送心跳 `PING`，并配合 `retryAttempts = 3`、`retryInterval = 1500ms` 抵御瞬时网络抖动 |
+| **死信雪崩与毒丸循环** | 延时队列与 Stream 重放均强制校验 `max-replay-attempts`（默认 3 次），超限毒丸拒绝重回业务通道 |
+| **因果异常链与驱动解耦** | 底层 Redisson / Redis 数据访问异常在各门面边界统一转译为 `BusinessException`（幂等拦截抛出 `IdempotentException`），完整保留原始 `cause` 异常链 |
+
+---
+
+## 12. 完整 YAML 配置属性清单
+
+以下全量属性严格对应 [`RedisProperties`](./src/main/java/io/github/atengk/boot/redis/properties/RedisProperties.java) 中的强类型定义与默认值：
+
+```yaml
+ateng:
+  boot:
+    redis:
+      # 是否启用 Redis 增强基础设施自动装配（默认 true）
+      enabled: true
+      # 全局 Redis 键统一命名前缀（默认空字符串，保留原生键结构）
+      key-prefix: ""
+
+      # 1. 分布式锁配置
+      lock:
+        enabled: true
+        prefix: "lock:"
+        wait-time: 3s
+        lease-time: -1ms
+        slow-threshold: 3000ms
+        # 可选覆盖全局 Redisson 看门狗超时；未配置时继承 redisson.lock-watchdog-timeout
+        watchdog-timeout:
+
+      # 2. 分布式信号量配置
+      semaphore:
+        enabled: true
+        prefix: "semaphore:"
+
+      # 3. 分布式防重幂等配置
+      idempotent:
+        enabled: true
+        prefix: "idempotent:"
+        default-expire: 10m
+        delete-on-failure: true
+
+      # 4. 延时队列配置
+      delay-queue:
+        enabled: true
+        retry-times: 3
+        retry-delay: 3s
+        dead-letter-enabled: true
+        dead-letter-suffix: ":dlq"
+        max-replay-attempts: 3
+
+      # 5. Stream 流式消息配置
+      stream:
+        enabled: true
+        retry-times: 3
+        poll-timeout: 2s
+        batch-size: 10
+        dlq-suffix: ":dlq"
+        max-replay-attempts: 3
+        claim-idle-time: 1m
+        claim-batch-size: 20
+        instance-id:
+
+      # 6. Pub/Sub 主题广播配置
+      pub-sub:
+        enabled: true
+
+      # 7. Spring Cache 与防卫模板共用配置
+      cache:
+        enabled: true
+        default-ttl: 30m
+        cache-null-values: true
+        null-ttl: 5m
+        jitter-enabled: true
+        max-jitter: 60s
+        lock-wait-time: 3s
+        expires: {}
+
+      # 8. L1 + L2 两级缓存配置（按需开启）
+      two-level:
+        enabled: false
+        topic: "ateng:cache:evict:topic"
+        l1:
+          default-max-size: 10000
+          default-ttl: 5m
+          max-sizes: {}
+          ttls: {}
+        l2:
+          default-ttl: 30m
+          cache-null-values: true
+          null-ttl: 5m
+          jitter-enabled: true
+          max-jitter: 60s
+          ttls: {}
+
+      # 9. 分布式布隆过滤器预热映射
+      bloom-filters: {}
+
+      # 10. Redisson 底层扩展与连接保活配置
+      redisson:
+        config:
+        threads: 0
+        netty-threads: 0
+        ping-connection-interval: 30s
+        connection-pool-size: 64
+        connection-minimum-idle-size: 16
+        retry-attempts: 3
+        retry-interval: 1500ms
+        lock-watchdog-timeout: 30s
+```
+
+---
+
+## 13. 相关文档与架构决策
+
+- [体验沙箱工程 README](../ateng-boot-samples/ateng-boot-sample-redis/README.md) — `ateng-boot-sample-redis` 一键运行与 8 大控制器 cURL 验证清单
+- [模块领域词汇表 CONTEXT.md](./CONTEXT.md) — `ateng-boot-redis` 核心受控概念与禁用反义词表
+- [双核驱动与分布式协同架构 ADR-0022](../docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md) — 演进阶段、不变量及架构决策记录

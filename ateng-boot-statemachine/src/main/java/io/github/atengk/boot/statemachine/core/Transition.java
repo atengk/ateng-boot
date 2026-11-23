@@ -3,6 +3,7 @@ package io.github.atengk.boot.statemachine.core;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 状态机跃迁路由规则实体
@@ -21,8 +22,18 @@ public class Transition<S, E, C> {
     private final TransitionType type;
     private final List<Condition<C>> conditions;
     private final List<Action<S, E, C>> actions;
+    private final List<Action<S, E, C>> postCommitActions;
+    private final boolean idempotent;
 
     public Transition(S sourceState, S targetState, E event, TransitionType type, List<Condition<C>> conditions, List<Action<S, E, C>> actions) {
+        this(sourceState, targetState, event, type, conditions, actions, Collections.emptyList(), false);
+    }
+
+    public Transition(S sourceState, S targetState, E event, TransitionType type, List<Condition<C>> conditions, List<Action<S, E, C>> actions, List<Action<S, E, C>> postCommitActions) {
+        this(sourceState, targetState, event, type, conditions, actions, postCommitActions, false);
+    }
+
+    public Transition(S sourceState, S targetState, E event, TransitionType type, List<Condition<C>> conditions, List<Action<S, E, C>> actions, List<Action<S, E, C>> postCommitActions, boolean idempotent) {
         if (sourceState == null) {
             throw new IllegalArgumentException("sourceState must not be null");
         }
@@ -35,6 +46,8 @@ public class Transition<S, E, C> {
         this.type = type != null ? type : TransitionType.EXTERNAL;
         this.conditions = conditions != null ? Collections.unmodifiableList(new ArrayList<>(conditions)) : Collections.emptyList();
         this.actions = actions != null ? Collections.unmodifiableList(new ArrayList<>(actions)) : Collections.emptyList();
+        this.postCommitActions = postCommitActions != null ? Collections.unmodifiableList(new ArrayList<>(postCommitActions)) : Collections.emptyList();
+        this.idempotent = idempotent;
     }
 
     public S getSourceState() {
@@ -59,6 +72,26 @@ public class Transition<S, E, C> {
 
     public List<Action<S, E, C>> getActions() {
         return actions;
+    }
+
+    public List<Action<S, E, C>> getPostCommitActions() {
+        return postCommitActions;
+    }
+
+    public boolean isIdempotent() {
+        return idempotent;
+    }
+
+    /**
+     * 获取当前跃迁可能涉及的所有目标状态候选集合（多态收敛，消除下转型）
+     *
+     * @return 可能的目标状态集合
+     */
+    public Set<S> getPossibleTargetStates() {
+        if (type == TransitionType.INTERNAL) {
+            return Collections.singleton(sourceState);
+        }
+        return targetState != null ? Collections.singleton(targetState) : Collections.emptySet();
     }
 
     /**

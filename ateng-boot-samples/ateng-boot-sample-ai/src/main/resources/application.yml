@@ -1,0 +1,53 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-ai
+  config:
+    import: "optional:classpath:application-local.yml"
+
+ateng:
+  boot:
+    milvus:
+      enabled: false
+      langchain4j:
+        enabled: false
+    storage:
+      primary: default
+      sources:
+        default:
+          type: local
+          local:
+            base-path: target/sample-ai-storage/default
+            domain: http://localhost:8080
+            secret-key: sample-ai-test-secret-key-32-bytes!
+            download-endpoint: /storage/local/download
+            upload-endpoint: /storage/local/upload
+    ai:
+      enabled: true
+      model:
+        base-url: https://api.openai.com/v1
+        model-name: gpt-4o
+        temperature: 0.7
+        timeout: 60s
+      guardrail:
+        enabled: true
+        mode: FAIL_FAST
+        max-prompt-length: 5000
+        banned-keywords:
+          - 涉黄涉暴
+          - 违禁品
+          - 枪支
+          - 毒品
+        whitelist:
+          - 枪支管理条例
+      rag:
+        enabled: true
+        max-results: 3
+        min-score: 0.6
+        model-name: text-embedding-3-small
+        parser:
+          multimodal:
+            enabled: true
+            storage-upload: true

@@ -1,0 +1,256 @@
+package io.github.atengk.boot.sample.mqtt.service;
+
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.mqtt.annotation.MqttHeader;
+import io.github.atengk.boot.mqtt.annotation.MqttListener;
+import io.github.atengk.boot.mqtt.annotation.MqttTopic;
+import io.github.atengk.boot.mqtt.annotation.MqttVariable;
+import io.github.atengk.boot.mqtt.template.MqttTemplate;
+import io.github.atengk.boot.sample.mqtt.dto.TelemetryInspectionRecord;
+import io.github.atengk.boot.sample.mqtt.dto.TelemetryPublishRequest;
+import io.github.atengk.boot.sample.mqtt.model.DeviceTelemetry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+import java.time.Duration;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
+
+/**
+ * 场景业务服务 1：设备遥测上行、主题通配提取、4D 上下文透传与集群共享订阅
+ *
+ * <p>演示特性：
+ * <ul>
+ *   <li>主题通配符变量提取：{@code iot/devices/{deviceId}/telemetry} 自动强类型绑定</li>
+ *   <li>MQTT 5.0 标头与四维上下文（TraceId、TenantId、UserId）透传与沙箱还原</li>
+ *   <li>全量标头 Map 字典无缝注入（{@code @MqttHeader Map<String, Object>}）</li>
+ *   <li>集群共享订阅（{@code $share/telemetry-worker/...}）多实例无锁均衡轮询</li>
+ * </ul>
+ * </p>
+ *
+ * @author Ateng
+ * @since 2026-10-31
+ */
+@Service
+public class DeviceTelemetryScenarioService {
+
+    private static final Logger log = LoggerFactory.getLogger(DeviceTelemetryScenarioService.class);
+
+    private final MqttTemplate mqttTemplate;
+    private final TelemetryInspectionHolder inspectionHolder;
+
+    private final List<DeviceTelemetry> receivedTelemetries = new CopyOnWriteArrayList<>();
+    private final Map<String, String> receivedTopics = new ConcurrentHashMap<>();
+    private final Map<String, String> receivedVariables = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, Object>> receivedHeaders = new ConcurrentHashMap<>();
+    private final AtomicReference<String> lastTraceId = new AtomicReference<>();
+    private final AtomicReference<String> lastTenantId = new AtomicReference<>();
+    private final AtomicReference<String> lastUserId = new AtomicReference<>();
+
+    private final List<String> receivedClusterMetrics = new CopyOnWriteArrayList<>();
+
+    public DeviceTelemetryScenarioService(MqttTemplate mqttTemplate, TelemetryInspectionHolder inspectionHolder) {
+        this.mqttTemplate = mqttTemplate;
+        this.inspectionHolder = inspectionHolder;
+    }
+
+    /**
+     * 发布设备遥测数据 (默认 QoS 1)
+     */
+    public void publishTelemetry(String deviceId, double temp, double humidity) {
+        publishTelemetry(deviceId, temp, humidity, 1);
+    }
+
+    /**
+     * 发布设备遥测数据并指定 QoS
+     */
+    public void publishTelemetry(String deviceId, double temp, double humidity, int qos) {
+        DeviceTelemetry telemetry = new DeviceTelemetry(deviceId, temp, humidity, System.currentTimeMillis());
+        mqttTemplate.publish("iot/devices/" + deviceId + "/telemetry", telemetry, qos);
+        log.info("[SCENARIO-TELEMETRY] Published telemetry for device [{}]: temp={}, humidity={}, qos={}",
+                deviceId, temp, humidity, qos);
+    }
+
+    /**
+     * 发布带有自定义标头的设备遥测数据 (默认 QoS 1)
+     */
+    public void publishTelemetryWithHeaders(String deviceId, double temp, double humidity, Map<String, String> headers) {
+        publishTelemetryWithHeaders(deviceId, temp, humidity, 1, headers);
+    }
+
+    /**
+     * 发布带有自定义标头的设备遥测数据并指定 QoS
+     */
+    public void publishTelemetryWithHeaders(String deviceId, double temp, double humidity, int qos, Map<String, String> headers) {
+        DeviceTelemetry telemetry = new DeviceTelemetry(deviceId, temp, humidity, System.currentTimeMillis());
+        mqttTemplate.publish("iot/devices/" + deviceId + "/telemetry", telemetry, qos, false, headers);
+        log.info("[SCENARIO-TELEMETRY] Published telemetry with headers for device [{}]: qos={}, headers={}",
+                deviceId, qos, headers);
+    }
+
+    /**
+     * 发布遥测数据并短时等待监听回显（供 Web 体验端统一调度）
+     *
+     * @param request 遥测上报请求
+     * @param timeout 等待超时时长
+     * @return 捕获的消费记录
+     */
+    public TelemetryInspectionRecord publishAndAwait(TelemetryPublishRequest request, Duration timeout) {
+        String deviceId = request.getDeviceId();
+        int qos = request.getQos() != null ? request.getQos() : 1;
+        CompletableFuture<TelemetryInspectionRecord> waitFuture = inspectionHolder.registerWait(deviceId);
+        try {
+            if (request.getHeaders() != null && !request.getHeaders().isEmpty()) {
+                publishTelemetryWithHeaders(deviceId, request.getTemp(), request.getHumidity(), qos, request.getHeaders());
+            } else {
+                publishTelemetry(deviceId, request.getTemp(), request.getHumidity(), qos);
+            }
+            long timeoutMs = timeout != null ? timeout.toMillis() : 3000L;
+            return waitFuture.get(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            log.warn("[SCENARIO-TELEMETRY] 等待设备 [{}] 监听消费回显超时，返回已投递快照", deviceId);
+            return new TelemetryInspectionRecord(
+                    deviceId,
+                    "iot/devices/" + deviceId + "/telemetry",
+                    new DeviceTelemetry(deviceId, request.getTemp(), request.getHumidity(), System.currentTimeMillis()),
+                    null,
+                    null,
+                    null,
+                    null,
+                    System.currentTimeMillis()
+            );
+        } catch (Exception e) {
+            log.error("[SCENARIO-TELEMETRY] 设备 [{}] 遥测投递等待异常", deviceId, e);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "遥测投递或回显异常: " + e.getMessage(), e);
+        } finally {
+            inspectionHolder.cancelWait(deviceId, waitFuture);
+        }
+    }
+
+    /**
+     * 获取指定设备或最新的遥测消费记录
+     *
+     * @param deviceId 设备标识
+     * @return 消费记录
+     */
+    public TelemetryInspectionRecord getLatestTelemetry(String deviceId) {
+        return inspectionHolder.getLatest(deviceId);
+    }
+
+    /**
+     * 发布集群度量数据至共享订阅主题
+     */
+    public void publishClusterMetric(String metricJson) {
+        mqttTemplate.publish("iot/cluster/metrics", metricJson, 1);
+        log.info("[SCENARIO-TELEMETRY] Published cluster metric: {}", metricJson);
+    }
+
+    /**
+     * 1. 声明式设备遥测上行监听器
+     */
+    @MqttListener(topics = "iot/devices/{deviceId}/telemetry", qos = 1)
+    public void onDeviceTelemetry(DeviceTelemetry telemetry,
+                                  @MqttTopic String topic,
+                                  @MqttVariable("deviceId") String deviceId,
+                                  @MqttHeader(value = "x-trace-id", required = false) String traceId,
+                                  @MqttHeader Map<String, Object> allHeaders) {
+        log.info("[SCENARIO-TELEMETRY] Received telemetry: deviceId={}, topic={}, traceId={}, allHeaders={}",
+                deviceId, topic, traceId, allHeaders);
+
+        receivedTelemetries.add(telemetry);
+        receivedTopics.put(deviceId, topic);
+        receivedVariables.put(deviceId, deviceId);
+        if (traceId != null) {
+            lastTraceId.set(traceId);
+        }
+        if (allHeaders != null) {
+            receivedHeaders.put(deviceId, allHeaders);
+        }
+
+        // 还原受管 4D 上下文（由 MessageContextPropagator 自动透传）
+        String tenantId = TenantContextHolder.getTenantId();
+        if (tenantId != null) {
+            lastTenantId.set(tenantId);
+        }
+        String userId = UserContextHolder.getUserId();
+        if (userId != null) {
+            lastUserId.set(userId);
+        }
+
+        TelemetryInspectionRecord record = new TelemetryInspectionRecord(
+                deviceId,
+                topic,
+                telemetry,
+                traceId,
+                tenantId,
+                userId,
+                allHeaders,
+                System.currentTimeMillis()
+        );
+        inspectionHolder.record(record);
+    }
+
+    /**
+     * 2. 集群共享订阅监听器
+     */
+    @MqttListener(topics = "iot/cluster/metrics", sharedGroup = "telemetry-worker", qos = 1)
+    public void onClusterMetric(String metricJson) {
+        log.info("[SCENARIO-TELEMETRY] Cluster worker consumed shared metric: {}", metricJson);
+        receivedClusterMetrics.add(metricJson);
+    }
+
+    public List<DeviceTelemetry> getReceivedTelemetries() {
+        return Collections.unmodifiableList(receivedTelemetries);
+    }
+
+    public String getReceivedTopic(String deviceId) {
+        return receivedTopics.get(deviceId);
+    }
+
+    public String getReceivedVariable(String deviceId) {
+        return receivedVariables.get(deviceId);
+    }
+
+    public Map<String, Object> getReceivedHeaders(String deviceId) {
+        return receivedHeaders.get(deviceId);
+    }
+
+    public String getLastTraceId() {
+        return lastTraceId.get();
+    }
+
+    public String getLastTenantId() {
+        return lastTenantId.get();
+    }
+
+    public String getLastUserId() {
+        return lastUserId.get();
+    }
+
+    public List<String> getReceivedClusterMetrics() {
+        return Collections.unmodifiableList(receivedClusterMetrics);
+    }
+
+    public void clear() {
+        receivedTelemetries.clear();
+        receivedTopics.clear();
+        receivedVariables.clear();
+        receivedHeaders.clear();
+        lastTraceId.set(null);
+        lastTenantId.set(null);
+        lastUserId.set(null);
+        receivedClusterMetrics.clear();
+        inspectionHolder.clear();
+    }
+}

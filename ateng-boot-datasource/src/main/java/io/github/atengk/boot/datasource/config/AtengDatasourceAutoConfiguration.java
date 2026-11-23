@@ -16,7 +16,12 @@ import com.baomidou.dynamic.datasource.spring.boot.autoconfigure.DynamicDataSour
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.datasource.context.DataSourceAsyncContextSnapshotProvider;
 import io.github.atengk.boot.datasource.guard.AtengDynamicDataSourceAnnotationInterceptor;
+import io.github.atengk.boot.datasource.guard.AtengTransactionExecutionListener;
 import io.github.atengk.boot.datasource.guard.DynamicDatasourceGuard;
+import io.github.atengk.boot.datasource.listener.DynamicDatasourceLifecycleListener;
+import io.github.atengk.boot.datasource.loader.DynamicDataSourceLoader;
+import io.github.atengk.boot.datasource.loader.DynamicDataSourceSyncManager;
+import io.github.atengk.boot.datasource.metrics.DynamicDatasourceMetricsBinder;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
 import io.github.atengk.boot.datasource.readwrite.DefaultWriteOccurredResolver;
 import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteFilter;
@@ -30,12 +35,14 @@ import io.github.atengk.boot.datasource.strategy.HealthAwareDynamicDataSourceStr
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.datasource.tenant.DefaultTenantDataSourceProvider;
 import io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.Filter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.aop.Advisor;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.support.BeanDefinitionRegistryPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -47,11 +54,16 @@ import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.expression.BeanFactoryResolver;
 import org.springframework.core.Ordered;
+import org.springframework.scheduling.TaskScheduler;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
+import org.springframework.transaction.TransactionExecutionListener;
 import org.springframework.util.ClassUtils;
 
 import javax.sql.DataSource;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ScheduledExecutorService;
 
 /**
  * ateng-boot-datasource 核心自动装配入口
@@ -127,14 +139,37 @@ public class AtengDatasourceAutoConfiguration {
     /**
      * 注册动态数据源事务切源安全守卫
      *
-     * @param datasourceProperties 数据源配置属性
+     * @param datasourceProperties          数据源配置属性
+     * @param tenantDataSourceProvider      租户数据源解析器提供者
+     * @param readAfterWriteManagerProvider 写后即读协调管理器提供者
+     * @param routingDataSourceProvider     动态路由数据源提供者
      * @return 事务切源安全守卫实例
      */
     @Bean
     @ConditionalOnMissingBean(DynamicDatasourceGuard.class)
-    public DynamicDatasourceGuard datasourceGuard(DatasourceProperties datasourceProperties) {
+    public DynamicDatasourceGuard datasourceGuard(DatasourceProperties datasourceProperties,
+                                                  ObjectProvider<TenantDataSourceProvider> tenantDataSourceProvider,
+                                                  ObjectProvider<ReadAfterWriteManager> readAfterWriteManagerProvider,
+                                                  ObjectProvider<DynamicRoutingDataSource> routingDataSourceProvider) {
         log.info("装配 DynamicDatasourceGuard 动态数据源事务切源安全守卫");
-        return new DynamicDatasourceGuard(datasourceProperties);
+        return new DynamicDatasourceGuard(
+                datasourceProperties,
+                tenantDataSourceProvider::getIfAvailable,
+                readAfterWriteManagerProvider::getIfAvailable,
+                routingDataSourceProvider::getIfAvailable
+        );
+    }
+
+    /**
+     * 注册 Spring 事务启动阶段路由感知与初始数据源绑定监听器
+     *
+     * @return 事务执行监听器实例
+     */
+    @Bean
+    @ConditionalOnClass(TransactionExecutionListener.class)
+    @ConditionalOnMissingBean(AtengTransactionExecutionListener.class)
+    public AtengTransactionExecutionListener atengTransactionExecutionListener() {
+        return new AtengTransactionExecutionListener();
     }
 
     /**
@@ -222,13 +257,25 @@ public class AtengDatasourceAutoConfiguration {
     /**
      * 注册具备从库故障感知与自动黑名单熔断自愈能力的高可用数据源策略
      *
-     * @param datasourceProperties 数据源配置属性
+     * @param datasourceProperties      数据源配置属性
+     * @param scheduledExecutorProvider 调度执行器 Provider
+     * @param taskSchedulerProvider     Spring 任务调度器 Provider
      * @return 高可用数据源策略实例
      */
-    @Bean
+    @Bean(destroyMethod = "destroy")
     @ConditionalOnMissingBean(HealthAwareDynamicDataSourceStrategy.class)
-    public HealthAwareDynamicDataSourceStrategy healthAwareDynamicDataSourceStrategy(DatasourceProperties datasourceProperties) {
-        return new HealthAwareDynamicDataSourceStrategy(datasourceProperties);
+    public HealthAwareDynamicDataSourceStrategy healthAwareDynamicDataSourceStrategy(
+            DatasourceProperties datasourceProperties,
+            ObjectProvider<ScheduledExecutorService> scheduledExecutorProvider,
+            ObjectProvider<TaskScheduler> taskSchedulerProvider) {
+        ScheduledExecutorService scheduler = scheduledExecutorProvider != null ? scheduledExecutorProvider.getIfAvailable() : null;
+        if (scheduler == null && taskSchedulerProvider != null) {
+            TaskScheduler taskScheduler = taskSchedulerProvider.getIfAvailable();
+            if (taskScheduler instanceof ThreadPoolTaskScheduler tpts) {
+                scheduler = tpts.getScheduledExecutor();
+            }
+        }
+        return new HealthAwareDynamicDataSourceStrategy(datasourceProperties, scheduler);
     }
 
     /**
@@ -239,6 +286,7 @@ public class AtengDatasourceAutoConfiguration {
      * @param tenantDataSourceProvider 租户数据源解析器
      * @param guard                    事务切源安全守卫
      * @param creatorProvider          动态数据源创建器 Provider
+     * @param executorProvider         异步任务执行器 Provider (用于并发连接预热)
      * @return 编程式切源门面实例
      */
     @Bean
@@ -247,10 +295,88 @@ public class AtengDatasourceAutoConfiguration {
                                                                DatasourceProperties datasourceProperties,
                                                                TenantDataSourceProvider tenantDataSourceProvider,
                                                                DynamicDatasourceGuard guard,
-                                                               ObjectProvider<DefaultDataSourceCreator> creatorProvider) {
+                                                               ObjectProvider<DefaultDataSourceCreator> creatorProvider,
+                                                               ObjectProvider<Executor> executorProvider) {
         log.info("装配 DynamicDatasourceTemplate 编程式切源对称门面与批处理沙箱");
         return new DynamicDatasourceTemplate(dataSource, datasourceProperties, tenantDataSourceProvider, guard,
-                creatorProvider != null ? creatorProvider.getIfAvailable() : null);
+                creatorProvider != null ? creatorProvider.getIfAvailable() : null,
+                executorProvider != null ? executorProvider.getIfAvailable() : null);
+    }
+
+    /**
+     * 注册动态数据源生命周期监听器自动探测绑定初始化器
+     * 通过 SmartInitializingSingleton 在全部单例就绪后绑定，彻底规避循环依赖
+     *
+     * @param dynamicDatasourceTemplate  动态数据源门面
+     * @param lifecycleListenersProvider 生命周期监听器 Provider (可选)
+     * @return 监听器初始化器
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "dynamicDatasourceLifecycleListenersInitializer")
+    public SmartInitializingSingleton dynamicDatasourceLifecycleListenersInitializer(
+            DynamicDatasourceTemplate dynamicDatasourceTemplate,
+            ObjectProvider<List<DynamicDatasourceLifecycleListener>> lifecycleListenersProvider) {
+        return () -> {
+            if (lifecycleListenersProvider != null) {
+                List<DynamicDatasourceLifecycleListener> listeners = lifecycleListenersProvider.getIfAvailable();
+                if (listeners != null) {
+                    for (DynamicDatasourceLifecycleListener listener : listeners) {
+                        if (listener != null) {
+                            dynamicDatasourceTemplate.addLifecycleListener(listener);
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    /**
+     * 注册动态多数据源 Micrometer 指标自动透视与生命周期绑定器
+     *
+     * @param dynamicDatasourceTemplate 动态数据源门面
+     * @return 度量绑定器实例
+     */
+    @Bean(destroyMethod = "destroy")
+    @ConditionalOnClass(MeterRegistry.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.datasource.metrics", name = "enabled", havingValue = "true", matchIfMissing = true)
+    @ConditionalOnMissingBean(DynamicDatasourceMetricsBinder.class)
+    public DynamicDatasourceMetricsBinder dynamicDatasourceMetricsBinder(DynamicDatasourceTemplate dynamicDatasourceTemplate) {
+        log.info("装配 DynamicDatasourceMetricsBinder 动态多数据源 Micrometer 度量监控绑定器");
+        return new DynamicDatasourceMetricsBinder(dynamicDatasourceTemplate);
+    }
+
+    /**
+     * 注册外部动态数据源差量同步协调管理器
+     *
+     * @param dynamicDatasourceTemplate 动态数据源门面
+     * @param datasourceProperties      数据源配置属性
+     * @param loaderProvider            数据源加载器 SPI Provider (可选)
+     * @param scheduledExecutorProvider 调度执行器 Provider (可选)
+     * @param taskSchedulerProvider     Spring 任务调度器 Provider (可选)
+     * @return 差量同步协调管理器实例
+     */
+    @Bean(destroyMethod = "destroy")
+    @ConditionalOnMissingBean(DynamicDataSourceSyncManager.class)
+    public DynamicDataSourceSyncManager dynamicDataSourceSyncManager(
+            DynamicDatasourceTemplate dynamicDatasourceTemplate,
+            DatasourceProperties datasourceProperties,
+            ObjectProvider<DynamicDataSourceLoader> loaderProvider,
+            ObjectProvider<ScheduledExecutorService> scheduledExecutorProvider,
+            ObjectProvider<TaskScheduler> taskSchedulerProvider) {
+        log.info("装配 DynamicDataSourceSyncManager 外部数据源差量同步协调管理器");
+        ScheduledExecutorService scheduler = scheduledExecutorProvider != null ? scheduledExecutorProvider.getIfAvailable() : null;
+        if (scheduler == null && taskSchedulerProvider != null) {
+            TaskScheduler taskScheduler = taskSchedulerProvider.getIfAvailable();
+            if (taskScheduler instanceof ThreadPoolTaskScheduler tpts) {
+                scheduler = tpts.getScheduledExecutor();
+            }
+        }
+        return new DynamicDataSourceSyncManager(
+                dynamicDatasourceTemplate,
+                datasourceProperties,
+                loaderProvider != null ? loaderProvider.getIfAvailable() : null,
+                scheduler
+        );
     }
 
     /**

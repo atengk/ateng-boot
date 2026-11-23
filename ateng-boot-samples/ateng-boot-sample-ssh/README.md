@@ -1,53 +1,81 @@
-# ateng-boot-sample-ssh 基础设施自验集成工程
+# ateng-boot-sample-ssh SSH 与 SFTP 基础设施体验工程
 
-> 专一面向生产就绪的 SSH 协议远程命令执行与网络穿透自验沙箱：覆盖四位一体多主机拓扑、受管会话缓存池复用、RFC 4254 孤儿进程超时信号防卫、原生 Sudo 提权安全管道与密码内存抹零、集群多节点并发巡检、长任务流式日志捕获、本地端口转发受管句柄与两级 ProxyJump 跳板机级联穿透 100% 端到端实测验证。
-
----
-
-## 1. 场景定位与功能矩阵
-
-`ateng-boot-sample-ssh` 提供了工业级规范且完全离线自洽的集成验证沙箱：
-- **纯内存嵌入式 SshServer 极速自验**：零物理网络与外部主机依赖，秒级独立离线全绿运行；
-- **四位一体多主机拓扑**：透明打通缺省配置、YAML 命名注册表、线程上下文动态切源与 CMDB 纯内存值对象；
-- **原生 Sudo 提权安全管道**：基于 `-S -p ''` 协议管道，密码使用完毕即时执行内存物理擦除抹零；
-- **集群并发巡检**：基于受管线程池设施并发下发任务，全链路透传 Core 四维上下文快照；
-- **受管本地端口转发**：支持操作系统分配随机可用端口（`localPort=0`），句柄实现 `AutoCloseable` 并在停机时序 1/3 优先确定性释放；
-- **ProxyJump 级联穿透**：原生支持级联多跳跳板机（Client -> Jump1 -> Jump2 -> Target）拓扑路由与双向生命周期级联清理。
+> 专注于演示与自验 `ateng-boot-ssh` 核心特性在真实业务场景下的开箱使用：涵盖命令执行与高危防火墙拦截、有界输出截断、集群批量巡检与会话池快照、双向受管端口转发（`LOCAL`/`REMOTE`）与跳板机级联穿透、SFTP 全生命周期与软链接/断点续传下载、以及 WebSSH 交互式伪终端会话。
 
 ---
 
-## 2. 10 项端到端自验场景全景表
+## 1. 快速启动与服务端口
 
-| 序号 | 自验场景 | 覆盖核心机制 / API | 验证端点 / 动作 | 预期响应 / 校验点 |
+- **默认 HTTP 端口**：`8080` (可在 `application.yml` 中修改)
+- **启动方式**：
+  ```bash
+  # 方式一：IDE 中运行 SampleSshApplication.java 的 main 方法
+  # 方式二：命令行启动
+  mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-ssh
+  ```
+
+---
+
+## 2. 运行环境与双模切换
+
+- **默认/CI 模式**：内置 `EmbeddedSshTestConfig` 内存桩与自洽配置，无需任何外部物理 SSH 服务器即可直接启动并在秒级跑通全部回归测试；
+- **Local 真实模式**：若需连接真实生产或开发环境的 Linux 主机，复制 `src/main/resources/application-local.example.yml` 为 `src/main/resources/application-local.yml` 并配置真实服务器凭据（已被 `.gitignore` 忽略，CI 零泄露风险），激活 `local` Profile 启动即可直连真实环境。
+
+---
+
+## 3. 核心 Controller 接口与一键体验
+
+本样例工程按功能领域解耦为 5 大 REST 领域控制器与 1 个 WebSSH 终端诊断接口，所有接口统一采用强类型契约并显式返回 `Result<T>`：
+
+| 领域分类 | Controller 类 | 功能场景 | 请求方式与路径 | 快速体验 cURL 命令 |
 | :--- | :--- | :--- | :--- | :--- |
-| **01** | 同步短命令执行 | `SshTemplate.exec` | `POST /api/ssh/exec` | 强类型返回 `SshExecResult`，捕获 `exitCode=0` 与标准输出内容 |
-| **02** | 原生 Sudo 提权安全管道 | `SshTemplate.execSudo` | `POST /api/ssh/exec-sudo` | 建立标准输入提权管道，远端成功提权执行，密码内存即时抹零 |
-| **03** | 集群多主机并发巡检 | `SshTemplate.execBatchNamed` | `POST /api/ssh/exec-batch` | 联动 Core 受管线程池并发巡检多节点，返回节点映射字典 |
-| **04** | 长任务流式实时按行消费 | `SshTemplate.execStream` | `POST /api/ssh/stream-log` | 实时按行回调消费远端滚动日志，返回逐行捕获行列表 |
-| **05** | CMDB 纯内存资产动态直连 | `SshServerInfo` 不变值对象 | `POST /api/ssh/dynamic-connect` | 纯内存解析凭据与宽容自适应主机指纹，执行成功 |
-| **06** | 受管本地端口转发隧道 | `SshTemplate.openLocalTunnel` | `POST /api/ssh/tunnel/open` | 本地端口设为 0，由操作系统动态分配可用随机端口并成功反查 |
-| **07** | 受管端口转发对称释放 | `SshScenarioService.closeManagedTunnel` | `POST /api/ssh/tunnel/close` | 对称释放受管隧道，物理关闭底层 Socket 监听，防端口泄漏 |
-| **08** | 线程上下文动态切源 | `SshContextHolder.runWith` | `POST /api/ssh/context-switch` | 线程级透明切源至指定节点，作用域结束后自动复位 |
-| **09** | ProxyJump 两级跳板机级联穿透 | `SshServerInfo.jumpHost` | `SshScenarioService.runCascadingProxyJump` | 成功穿透两级跳板机（Jump1 -> Jump2 -> Target）并执行命令 |
-| **10** | 瞬态单次任务隔离执行 | `SshTemplate.execOnce` | `SshScenarioService.runTransientTask` | 执行完毕立即确定性物理关闭断开，零残留会话与句柄 |
-| **11** | 端口转发真实双向 TCP 流量 | `SshTunnelHandle` + `Socket` | `SshScenarioService.forwardAndQueryTcp` | 本地客户端向本地转发端口发起 TCP 请求，成功透传至远端 Echo 服务 |
-| **12** | JSR-303 参数格式校验 Fail-Fast | Spring MVC `@Validated` + `@NotBlank` | `POST /api/ssh/exec` 传入空白命令 | 前置卫语句拦截，Fail-Fast 触发参数校验异常，统一返回业务错误报文 |
+| **命令执行** | `SshCommandController` | 同步执行远程短命令（支持有界输出截断与高危命令阻断） | `POST /sample/ssh/command/exec` | `curl -s -X POST "http://localhost:8080/sample/ssh/command/exec" -H "Content-Type: application/json" -d '{"command":"uname -a","maxOutputBytes":65536}'` |
+| **命令执行** | `SshCommandController` | 异步下发命令 (Future) | `POST /sample/ssh/command/exec-async` | `curl -s -X POST "http://localhost:8080/sample/ssh/command/exec-async" -H "Content-Type: application/json" -d '{"command":"hostname"}'` |
+| **命令执行** | `SshCommandController` | 原生 Sudo 提权与密码抹零 | `POST /sample/ssh/command/exec-sudo` | `curl -s -X POST "http://localhost:8080/sample/ssh/command/exec-sudo" -H "Content-Type: application/json" -d '{"command":"whoami","sudoPassword":"YOUR_SUDO_PASSWORD"}'` |
+| **命令执行** | `SshCommandController` | 多行复杂运维脚本管道执行 | `POST /sample/ssh/command/exec-script` | `curl -s -X POST "http://localhost:8080/sample/ssh/command/exec-script" -H "Content-Type: application/json" -d '{"scriptBody":"echo line1\necho line2"}'` |
+| **命令执行** | `SshCommandController` | 长任务滚动日志按行流式消费 | `POST /sample/ssh/command/stream-log` | `curl -s -X POST "http://localhost:8080/sample/ssh/command/stream-log" -H "Content-Type: application/json" -d '{"command":"for i in 1 2 3; do echo item $i; done"}'` |
+| **命令执行** | `SshCommandController` | 节点连通性轻量无害探针 | `GET /sample/ssh/command/probe-health` | `curl -s -X GET "http://localhost:8080/sample/ssh/command/probe-health?serverName=node1"` |
+| **命令执行** | `SshCommandController` | 查询自定义命令拦截器 SPI 审计统计 | `GET /sample/ssh/command/audit-stats` | `curl -s -X GET "http://localhost:8080/sample/ssh/command/audit-stats"` |
+| **集群治理** | `SshClusterController` | 集群多节点高级批量并发巡检 | `POST /sample/ssh/cluster/batch-inspect` | `curl -s -X POST "http://localhost:8080/sample/ssh/cluster/batch-inspect" -H "Content-Type: application/json" -d '{"serverNames":["node1","node2"],"command":"uptime","concurrency":2,"failFast":false}'` |
+| **集群治理** | `SshClusterController` | CMDB 纯内存资产动态直连 | `POST /sample/ssh/cluster/dynamic-connect` | `curl -s -X POST "http://localhost:8080/sample/ssh/cluster/dynamic-connect" -H "Content-Type: application/json" -d '{"host":"127.0.0.1","port":2222,"username":"testuser","password":"YOUR_PASSWORD","command":"id"}'` |
+| **集群治理** | `SshClusterController` | 线程级上下文透明切源执行 | `POST /sample/ssh/cluster/context-switch` | `curl -s -X POST "http://localhost:8080/sample/ssh/cluster/context-switch" -H "Content-Type: application/json" -d '{"serverName":"node1","command":"hostname"}'` |
+| **集群治理** | `SshClusterController` | 查询会话池运行态统计快照 (`SshPoolStats`) | `GET /sample/ssh/cluster/pool-stats` | `curl -s -X GET "http://localhost:8080/sample/ssh/cluster/pool-stats"` |
+| **集群治理** | `SshClusterController` | 动态注册具名服务节点 (支持 `jumpHost`) | `POST /sample/ssh/cluster/register-node` | `curl -s -X POST "http://localhost:8080/sample/ssh/cluster/register-node" -H "Content-Type: application/json" -d '{"serverName":"edge-1","host":"127.0.0.1","port":2224,"username":"worker2","password":"YOUR_PASSWORD"}'` |
+| **集群治理** | `SshClusterController` | 动态注销节点并联动驱逐旧池化会话 | `POST /sample/ssh/cluster/unregister-node` | `curl -s -X POST "http://localhost:8080/sample/ssh/cluster/unregister-node" -H "Content-Type: application/json" -d '{"serverName":"edge-1"}'` |
+| **集群治理** | `SshClusterController` | 定点移除主机内存公钥指纹缓存 | `POST /sample/ssh/cluster/remove-known-key` | `curl -s -X POST "http://localhost:8080/sample/ssh/cluster/remove-known-key" -H "Content-Type: application/json" -d '{"host":"127.0.0.1","port":2224}'` |
+| **受管隧道** | `SshTunnelController` | 开启本地端口转发隧道 (`ssh -L`) | `POST /sample/ssh/tunnel/open-tunnel` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/open-tunnel" -H "Content-Type: application/json" -d '{"localPort":0,"remoteHost":"127.0.0.1","remotePort":80}'` |
+| **受管隧道** | `SshTunnelController` | 对称安全释放本地端口转发隧道 | `POST /sample/ssh/tunnel/close-tunnel` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/close-tunnel" -H "Content-Type: application/json" -d '{"localPort":8088}'` |
+| **受管隧道** | `SshTunnelController` | 开启远程端口转发隧道 (`ssh -R`) | `POST /sample/ssh/tunnel/open-remote-tunnel` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/open-remote-tunnel" -H "Content-Type: application/json" -d '{"remotePort":0,"localHost":"127.0.0.1","localPort":8080}'` |
+| **受管隧道** | `SshTunnelController` | 对称安全释放远程端口转发隧道 | `POST /sample/ssh/tunnel/close-remote-tunnel` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/close-remote-tunnel" -H "Content-Type: application/json" -d '{"remotePort":18080}'` |
+| **受管隧道** | `SshTunnelController` | ProxyJump 两级跳板机级联穿透 | `POST /sample/ssh/tunnel/proxy-jump` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/proxy-jump" -H "Content-Type: application/json" -d '{"targetHost":"172.16.0.10","targetPort":22,"jump1Host":"10.0.0.1","jump1Port":22,"jump2Host":"192.168.1.1","jump2Port":22,"command":"uptime"}'` |
+| **受管隧道** | `SshTunnelController` | 本地端口转发真实 TCP 流量交互 | `POST /sample/ssh/tunnel/tcp-echo` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/tcp-echo" -H "Content-Type: application/json" -d '{"remoteHost":"127.0.0.1","remotePort":7777,"message":"ping"}'` |
+| **受管隧道** | `SshTunnelController` | 远程端口转发反向 TCP 流量穿透 | `POST /sample/ssh/tunnel/remote-tcp-echo` | `curl -s -X POST "http://localhost:8080/sample/ssh/tunnel/remote-tcp-echo" -H "Content-Type: application/json" -d '{"remotePort":0,"localHost":"127.0.0.1","localPort":7777,"message":"reverse-ping"}'` |
+| **SFTP 文档** | `SftpDocumentController` | 表单文件原子上传 (.tmp+rename) | `POST /sample/ssh/sftp-doc/upload` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-doc/upload" -F "file=@local.txt" -F "remotePath=/upload/remote.txt"` |
+| **SFTP 文档** | `SftpDocumentController` | 对称流式下载远端文件 | `GET /sample/ssh/sftp-doc/download` | `curl -s -X GET "http://localhost:8080/sample/ssh/sftp-doc/download?remotePath=/upload/remote.txt" -o downloaded.txt` |
+| **SFTP 文档** | `SftpDocumentController` | 纯文本与 JSON 快捷写入（支持 `serverName` 具名路由） | `POST /sample/ssh/sftp-doc/write-text` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-doc/write-text" -H "Content-Type: application/json" -d '{"serverName":"node1","remotePath":"/app/config.json","content":"{\"env\":\"prod\"}"}'` |
+| **SFTP 文档** | `SftpDocumentController` | 纯文本与 JSON 快捷读取（支持 `serverName` 具名路由） | `GET /sample/ssh/sftp-doc/read-text` | `curl -s -X GET "http://localhost:8080/sample/ssh/sftp-doc/read-text?serverName=node1&remotePath=/app/config.json"` |
+| **SFTP 文档** | `SftpDocumentController` | 文件尾部增量追加写 | `POST /sample/ssh/sftp-doc/append-text` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-doc/append-text" -H "Content-Type: application/json" -d '{"remotePath":"/app/audit.log","content":"user logged in\n"}'` |
+| **SFTP 文档** | `SftpDocumentController` | 跨目录安全平移文件 | `POST /sample/ssh/sftp-doc/copy-move` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-doc/copy-move" -H "Content-Type: application/json" -d '{"sourcePath":"/app/config.json","targetPath":"/backup/config.json"}'` |
+| **SFTP 文档** | `SftpDocumentController` | 原地原子重命名文件 | `POST /sample/ssh/sftp-doc/rename` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-doc/rename" -H "Content-Type: application/json" -d '{"oldPath":"/backup/config.json","newPath":"/backup/config-v1.json"}'` |
+| **SFTP 文档** | `SftpDocumentController` | 创建远程符号链接 (`createSymlink`) | `POST /sample/ssh/sftp-doc/symlink` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-doc/symlink" -H "Content-Type: application/json" -d '{"linkPath":"/releases/current/app.conf","targetPath":"/releases/v1.0/app.conf"}'` |
+| **SFTP 文档** | `SftpDocumentController` | 读取远程符号链接目标 (`readLink`) | `GET /sample/ssh/sftp-doc/read-link` | `curl -s -X GET "http://localhost:8080/sample/ssh/sftp-doc/read-link?linkPath=/releases/current/app.conf"` |
+| **SFTP 文档** | `SftpDocumentController` | 查询文件详细元数据 | `GET /sample/ssh/sftp-doc/info` | `curl -s -X GET "http://localhost:8080/sample/ssh/sftp-doc/info?remotePath=/backup/config-v1.json"` |
+| **SFTP 文档** | `SftpDocumentController` | 探测远程文件路径是否存在 | `GET /sample/ssh/sftp-doc/exists` | `curl -s -X GET "http://localhost:8080/sample/ssh/sftp-doc/exists?remotePath=/backup/config-v1.json"` |
+| **SFTP 文档** | `SftpDocumentController` | 单文件确定性物理删除 | `POST /sample/ssh/sftp-doc/delete` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-doc/delete" -H "Content-Type: application/json" -d '{"remotePath":"/backup/config-v1.json"}'` |
+| **目录同步** | `SftpSyncController` | 目录树整包递归镜像上传同步 | `POST /sample/ssh/sftp-sync/upload-dir` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-sync/upload-dir" -H "Content-Type: application/json" -d '{"localDir":"/tmp/local-data","remoteDir":"/remote/sync-data"}'` |
+| **目录同步** | `SftpSyncController` | 目录树整包递归镜像下载同步 | `POST /sample/ssh/sftp-sync/download-dir` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-sync/download-dir" -H "Content-Type: application/json" -d '{"remoteDir":"/remote/sync-data","localDir":"/tmp/downloaded-data"}'` |
+| **目录同步** | `SftpSyncController` | DFS 递归清空删除非空目录树 | `POST /sample/ssh/sftp-sync/delete-dir` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-sync/delete-dir" -H "Content-Type: application/json" -d '{"remotePath":"/remote/sync-data","recursive":true}'` |
+| **目录同步** | `SftpSyncController` | 大文件带节流防抖进度流式上传 | `POST /sample/ssh/sftp-sync/upload-large` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-sync/upload-large" -H "Content-Type: application/json" -d '{"remotePath":"/remote/bigfile.bin","sizeKb":512}'` |
+| **目录同步** | `SftpSyncController` | 大文件断点续传下载 (`downloadResume`) | `POST /sample/ssh/sftp-sync/download-resume` | `curl -s -X POST "http://localhost:8080/sample/ssh/sftp-sync/download-resume" -H "Content-Type: application/json" -d '{"remotePath":"/remote/bigfile.bin","localPath":"/tmp/bigfile.bin"}'` |
+| **WebSSH** | `SshTerminalController` | WebSSH 终端规格与诊断指标 | `GET /sample/ssh/terminal/info` | `curl -s -X GET "http://localhost:8080/sample/ssh/terminal/info"` |
+| **WebSSH** | `WebSshWebSocketHandler` | 原生 WebSocket 实时终端交互 | `WS /ws/ssh` | 浏览器直连或使用 `wscat -c "ws://localhost:8080/ws/ssh"` |
 
 ---
 
-## 3. 本地启动与实测体验
+## 4. 全真自动化回归命令
 
-### 1. 启动服务
 ```bash
-mvn -pl ateng-boot-samples/ateng-boot-sample-ssh spring-boot:run
+mvn test -pl ateng-boot-ssh,ateng-boot-samples/ateng-boot-sample-ssh -am -T 1C -nsu -B
 ```
 
-### 2. 同步命令执行
-```bash
-curl -X POST -H "Content-Type: application/json" -d '{"command":"uname -a"}' http://localhost:8080/api/ssh/exec
-```
-
-### 3. Sudo 提权执行
-```bash
-curl -X POST -H "Content-Type: application/json" -d '{"command":"systemctl restart nginx","sudoPassword":"YOUR_PASSWORD"}' http://localhost:8080/api/ssh/exec-sudo
-```
+> 详细原理机制、配置清单与扩展定制，请参阅核心 Starter 文档：[ateng-boot-ssh README](../../ateng-boot-ssh/README.md)。

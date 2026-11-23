@@ -1,5 +1,7 @@
 package io.github.atengk.boot.web.idempotent.store;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -67,5 +69,20 @@ class RedissonIdempotentKeyStoreTest {
         keyStore.unlock("idempotent:test:2");
 
         verify(bucket, times(1)).delete();
+    }
+
+    @Test
+    @DisplayName("测试 isLocked 与异常因果链转译")
+    void shouldCheckIsLockedAndWrapException() {
+        when(bucket.isExists()).thenReturn(true);
+        assertThat(keyStore.isLocked("idempotent:test:2")).isTrue();
+
+        when(bucket.isExists()).thenThrow(new RuntimeException("Redisson connection failure"));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> keyStore.isLocked("idempotent:test:2"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Redisson idempotent isLocked failed")
+                .hasCauseInstanceOf(RuntimeException.class)
+                .extracting("code")
+                .isEqualTo(CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
     }
 }
