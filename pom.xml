@@ -84,46 +84,46 @@
 
         <!-- 依赖版本定义 -->
         <spring-boot.version>3.3.13</spring-boot.version>
-        <mybatis-plus.version>3.5.17</mybatis-plus.version>
-        <redisson.version>3.44.0</redisson.version>
+        <mybatis-plus.version>3.5.18.1</mybatis-plus.version>
+        <redisson.version>3.52.0</redisson.version>
         <fesod.version>2.1.0-incubating</fesod.version>
         <sa-token.version>1.46.0</sa-token.version>
-        <springdoc.version>2.6.0</springdoc.version>
-        <awssdk.version>2.25.70</awssdk.version>
+        <springdoc.version>2.10.0</springdoc.version>
+        <awssdk.version>2.59.5</awssdk.version>
         <rocketmq-client-java.version>5.2.2</rocketmq-client-java.version>
-        <greenmail.version>2.1.2</greenmail.version>
-        <commons-net.version>3.11.1</commons-net.version>
+        <greenmail.version>2.1.15</greenmail.version>
+        <commons-net.version>3.13.0</commons-net.version>
         <mockftpserver.version>3.2.0</mockftpserver.version>
-        <sshd.version>2.14.0</sshd.version>
+        <sshd.version>2.20.1</sshd.version>
         <poi-tl.version>1.12.2</poi-tl.version>
-        <pdfbox.version>3.0.4</pdfbox.version>
+        <pdfbox.version>3.0.8</pdfbox.version>
         <paho-mqttv5.version>1.2.5</paho-mqttv5.version>
         <wechatpay-java.version>0.2.17</wechatpay-java.version>
-        <alipay-sdk-java.version>4.40.1044.ALL</alipay-sdk-java.version>
+        <alipay-sdk-java.version>4.40.1067.ALL</alipay-sdk-java.version>
         <dynamic-datasource.version>4.6.0</dynamic-datasource.version>
-        <spring-boot-admin.version>3.3.4</spring-boot-admin.version>
+        <spring-boot-admin.version>3.5.11</spring-boot-admin.version>
         <xxl-job.version>3.5.0</xxl-job.version>
         <snail-job.version>1.10.0</snail-job.version>
         <dromara-anduin.version>2.3.0</dromara-anduin.version>
         <liteflow.version>2.16.3.1</liteflow.version>
         <langchain4j.version>0.36.2</langchain4j.version>
-        <langgraph4j.version>1.3.1</langgraph4j.version>
-        <milvus-sdk.version>2.4.4</milvus-sdk.version>
-        <commons-io.version>2.20.0</commons-io.version>
+        <langgraph4j.version>1.9.9</langgraph4j.version>
+        <milvus-sdk.version>2.6.28</milvus-sdk.version>
+        <commons-io.version>2.22.0</commons-io.version>
         <!-- 跨模块及 Social 核心兼容基线 (覆写 Spring Boot 3.3.13 默认的 3.14.0 / 2.17.3，确保开箱即用) -->
-        <commons-lang3.version>3.18.0</commons-lang3.version>
-        <jackson-annotations.version>2.22</jackson-annotations.version>
+        <commons-lang3.version>3.22.0</commons-lang3.version>
+        <jackson-annotations.version>2.23</jackson-annotations.version>
         <!-- 仅作为 ateng-boot-social 直属运行时支撑 dromara-anduin，严禁暴露至 ateng-boot-bom -->
-        <tools-jackson.version>3.2.4</tools-jackson.version>
-        <commons-collections4.version>4.4</commons-collections4.version>
-        <guava.version>33.4.0-jre</guava.version>
+        <tools-jackson.version>3.3.0</tools-jackson.version>
+        <commons-collections4.version>4.6.0</commons-collections4.version>
+        <guava.version>33.8.0-jre</guava.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
         <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
         <maven-javadoc-plugin.version>3.12.0</maven-javadoc-plugin.version>
         <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
-        <central-publishing-maven-plugin.version>0.11.0</central-publishing-maven-plugin.version>
+        <central-publishing-maven-plugin.version>0.12.0</central-publishing-maven-plugin.version>
 
         <!-- Surefire 测试参数 (Java 21+ 动态代理增强，默认空以兼容 Java 17) -->
         <argLine></argLine>
