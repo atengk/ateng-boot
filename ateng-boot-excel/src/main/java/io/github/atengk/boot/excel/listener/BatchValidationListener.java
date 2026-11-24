@@ -1,5 +1,7 @@
 package io.github.atengk.boot.excel.listener;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.SpringUtil;
 import io.github.atengk.boot.excel.enums.HeaderValidationStrategy;
 import io.github.atengk.boot.excel.exception.ExcelValidationException;
@@ -55,6 +57,7 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
     private final Class<T> targetClass;
     private final int batchSize;
     private final int maxErrorRows;
+    private final int maxSyncRows;
     private final boolean failFast;
     private final HeaderValidationStrategy headerStrategy;
     private final ExcelHeaderValidator<T> headerValidator;
@@ -64,6 +67,7 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
     private final List<T> validDataList = new ArrayList<>();
     private final List<ExcelRowData<T>> validRowRecords = new ArrayList<>();
     private final List<ExcelErrorRow> errorList = new ArrayList<>();
+    private int totalReadRows = 0;
     private int errorRowCount = 0;
     private volatile boolean circuitBroken = false;
 
@@ -174,10 +178,32 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
                                    Consumer<List<T>> dataConsumer,
                                    Consumer<List<ExcelErrorRow>> errorConsumer,
                                    Validator customValidator) {
+        this(targetClass, batchSize, failFast, maxErrorRows, 0, headerStrategy, dataConsumer, errorConsumer, customValidator);
+    }
+
+    /**
+     * 构造支持同步安全行数上限的全功能分批校验监听器
+     *
+     * @param targetClass     读取映射的目标实体 Class（不可为空）
+     * @param batchSize       合法数据分批消费大小（大于 0）
+     * @param failFast        是否快速失败（true: 首错即抛中断；false: 聚合错误）
+     * @param maxErrorRows    最大允许错误行数阈值（达到后触发熔断终止解析）
+     * @param maxSyncRows     同步全量聚合模式下的最大允许读取行数上限（<= 0 表示不限制，仅在 dataConsumer 为空时生效）
+     * @param headerStrategy  表头契约校验策略（为 null 时默认 DISABLED）
+     * @param dataConsumer    合法数据分批消费者（可为 null）
+     * @param errorConsumer   聚合错误消费者（可为 null）
+     * @param customValidator 自定义 Validator（为 null 时使用默认校验器单例）
+     */
+    public BatchValidationListener(Class<T> targetClass, int batchSize, boolean failFast,
+                                   int maxErrorRows, int maxSyncRows, HeaderValidationStrategy headerStrategy,
+                                   Consumer<List<T>> dataConsumer,
+                                   Consumer<List<ExcelErrorRow>> errorConsumer,
+                                   Validator customValidator) {
         Assert.notNull(targetClass, "targetClass 读取目标实体类型不可为空");
         this.targetClass = targetClass;
         this.batchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
         this.maxErrorRows = maxErrorRows > 0 ? maxErrorRows : DEFAULT_MAX_ERROR_ROWS;
+        this.maxSyncRows = Math.max(0, maxSyncRows);
         this.failFast = failFast;
         this.headerStrategy = headerStrategy != null ? headerStrategy : HeaderValidationStrategy.DISABLED;
         this.headerValidator = (this.headerStrategy != HeaderValidationStrategy.DISABLED)
@@ -204,6 +230,13 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
     public void invoke(T data, AnalysisContext context) {
         if (circuitBroken || data == null) {
             return;
+        }
+
+        // 0. 同步全量聚合模式安全行数上限防卫（流式消费 dataConsumer != null 时不限制）
+        totalReadRows++;
+        if (dataConsumer == null && maxSyncRows > 0 && totalReadRows > maxSyncRows) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
+                    "Excel 数据行数超出同步读取安全上限（" + maxSyncRows + " 行），当前已读取 " + totalReadRows + " 行，请改用 readBatchWithValidation 进行分批流式消费以防内存溢出");
         }
 
         // 1. 获取当前物理行号（从 1 开始，如表头占 1 行则首行数据为 2；多级表头及跳过空行均由 Fesod 原生行号精确对齐）
@@ -342,6 +375,24 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
      */
     public int getMaxErrorRows() {
         return maxErrorRows;
+    }
+
+    /**
+     * 获取当前生效的同步全量读取安全行数上限
+     *
+     * @return 安全行数上限（<= 0 表示不限制）
+     */
+    public int getMaxSyncRows() {
+        return maxSyncRows;
+    }
+
+    /**
+     * 获取累计解析的非空数据行总数
+     *
+     * @return 非空数据行总数
+     */
+    public int getTotalReadRows() {
+        return totalReadRows;
     }
 
     /**

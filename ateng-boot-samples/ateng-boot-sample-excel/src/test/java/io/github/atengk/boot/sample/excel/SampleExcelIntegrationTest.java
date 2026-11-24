@@ -446,6 +446,21 @@ class SampleExcelIntegrationTest {
         assertThat(dataNode.get("data").size()).isEqualTo(1); // 1 条合规
         assertThat(dataNode.get("errors").size()).isGreaterThanOrEqualTo(2); // 至少 2 行存在错误
         assertThat(dataNode.get("success").asBoolean()).isFalse();
+
+        // 验证 /import-result 受 max-sync-rows 安全上限防护（超过上限时返回 HTTP 200 + 业务码 400）
+        int previousLimit = ExcelUtil.getMaxSyncRows();
+        try {
+            ExcelUtil.setMaxSyncRows(2);
+            MvcResult exceededResult = mockMvc.perform(multipart("/sample/excel/onboarding/import-result")
+                            .file(dirtyFile))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            JsonNode exceededJson = objectMapper.readTree(exceededResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            assertThat(exceededJson.get("code").asInt()).isEqualTo(400);
+            assertThat(exceededJson.get("msg").asText()).contains("Excel 数据行数超出同步读取安全上限");
+        } finally {
+            ExcelUtil.setMaxSyncRows(previousLimit);
+        }
     }
 
     @Test

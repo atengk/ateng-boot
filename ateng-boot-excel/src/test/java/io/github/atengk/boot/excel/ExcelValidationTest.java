@@ -1,10 +1,16 @@
 package io.github.atengk.boot.excel;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.excel.enums.HeaderValidationStrategy;
 import io.github.atengk.boot.excel.exception.ExcelValidationException;
+import io.github.atengk.boot.excel.listener.BatchValidationListener;
 import io.github.atengk.boot.excel.model.ExcelErrorRow;
 import io.github.atengk.boot.excel.model.ExcelReadResult;
 import io.github.atengk.boot.excel.model.ImportUserVO;
+import io.github.atengk.boot.excel.properties.ExcelProperties;
 import io.github.atengk.boot.excel.util.ExcelUtil;
+import org.apache.fesod.sheet.FesodSheet;
 import org.apache.poi.ss.usermodel.*;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -197,5 +203,144 @@ class ExcelValidationTest {
             String commentText = comment.getString().getString();
             assertTrue(commentText.contains("手机号码格式不合法"), "批注内容必须包含 JSR-303 错误提示");
         }
+    }
+
+    @Test
+    @DisplayName("测试 readWithResult 超过 maxSyncRows 安全上限时 Fail-Fast 抛出 BusinessException")
+    void testReadWithResultExceedsMaxSyncRowsThrowsBusinessException() {
+        int previousLimit = ExcelUtil.getMaxSyncRows();
+        try {
+            ExcelUtil.setMaxSyncRows(5);
+
+            // 构造 6 条数据（3 条合法 + 3 条非法），总行数超过 5 行上限且未达 maxErrorRows=500
+            List<ImportUserVO> rows = List.of(
+                    ImportUserVO.builder().name("合法一").phone("13811111111").age(22).email("u1@test.com").build(),
+                    ImportUserVO.builder().name("非法一").phone("bad").age(22).email("u2@test.com").build(),
+                    ImportUserVO.builder().name("合法二").phone("13822222222").age(23).email("u3@test.com").build(),
+                    ImportUserVO.builder().name("非法二").phone("bad").age(24).email("u4@test.com").build(),
+                    ImportUserVO.builder().name("合法三").phone("13833333333").age(25).email("u5@test.com").build(),
+                    ImportUserVO.builder().name("非法三").phone("bad").age(26).email("u6@test.com").build()
+            );
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ExcelUtil.export(out, rows, ImportUserVO.class);
+
+            BusinessException ex = assertThrows(BusinessException.class, () ->
+                    ExcelUtil.readWithResult(new ByteArrayInputStream(out.toByteArray()), ImportUserVO.class)
+            );
+            assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex.getCode());
+            assertTrue(ex.getMessage().contains("Excel 数据行数超出同步读取安全上限"));
+            assertTrue(ex.getMessage().contains("5 行"));
+        } finally {
+            ExcelUtil.setMaxSyncRows(previousLimit);
+        }
+    }
+
+    @Test
+    @DisplayName("测试 readWithResult 恰好等于 maxSyncRows 及通过 initProperties 置 0 关闭限制")
+    void testReadWithResultAtExactMaxSyncRowsAndDisabledViaInitProperties() {
+        int previousLimit = ExcelUtil.getMaxSyncRows();
+        try {
+            List<ImportUserVO> rows = List.of(
+                    ImportUserVO.builder().name("合法一").phone("13811111111").age(22).email("u1@test.com").build(),
+                    ImportUserVO.builder().name("非法一").phone("bad").age(22).email("u2@test.com").build(),
+                    ImportUserVO.builder().name("合法二").phone("13822222222").age(23).email("u3@test.com").build(),
+                    ImportUserVO.builder().name("合法三").phone("13833333333").age(24).email("u4@test.com").build()
+            );
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ExcelUtil.export(out, rows, ImportUserVO.class);
+            byte[] excelBytes = out.toByteArray();
+
+            // 1. 恰好等于 maxSyncRows = 4 时允许通过
+            ExcelUtil.setMaxSyncRows(4);
+            ExcelReadResult<ImportUserVO> exactResult = ExcelUtil.readWithResult(
+                    new ByteArrayInputStream(excelBytes), ImportUserVO.class);
+            assertEquals(3, exactResult.getData().size());
+            assertEquals(1, exactResult.getErrors().size());
+
+            // 2. 通过 ExcelProperties 配置 maxSyncRows = 0 时应真正关闭限制
+            ExcelUtil.setMaxSyncRows(2);
+            ExcelProperties props = new ExcelProperties();
+            props.setMaxSyncRows(0);
+            ExcelUtil.initProperties(props);
+            assertEquals(0, ExcelUtil.getMaxSyncRows());
+
+            ExcelReadResult<ImportUserVO> disabledResult = ExcelUtil.readWithResult(
+                    new ByteArrayInputStream(excelBytes), ImportUserVO.class);
+            assertEquals(3, disabledResult.getData().size());
+            assertEquals(1, disabledResult.getErrors().size());
+        } finally {
+            ExcelUtil.setMaxSyncRows(previousLimit);
+        }
+    }
+
+    @Test
+    @DisplayName("测试 readWithValidation 前置拦截超限行且 readBatchWithValidation 流式消费不受限")
+    void testReadWithValidationFailFastAndBatchStreamingExemptFromMaxSyncRows() {
+        int previousLimit = ExcelUtil.getMaxSyncRows();
+        try {
+            ExcelUtil.setMaxSyncRows(3);
+
+            List<ImportUserVO> rows = List.of(
+                    ImportUserVO.builder().name("非法一").phone("bad").age(22).email("u1@test.com").build(),
+                    ImportUserVO.builder().name("合法一").phone("13811111111").age(23).email("u2@test.com").build(),
+                    ImportUserVO.builder().name("合法二").phone("13822222222").age(24).email("u3@test.com").build(),
+                    ImportUserVO.builder().name("合法三").phone("13833333333").age(25).email("u4@test.com").build()
+            );
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ExcelUtil.export(out, rows, ImportUserVO.class);
+            byte[] excelBytes = out.toByteArray();
+
+            // 1. readWithValidation 在第 4 行即前置抛出 BusinessException（而非读完全表再抛 ExcelValidationException）
+            BusinessException ex = assertThrows(BusinessException.class, () ->
+                    ExcelUtil.readWithValidation(new ByteArrayInputStream(excelBytes), ImportUserVO.class)
+            );
+            assertFalse(ex instanceof ExcelValidationException);
+            assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex.getCode());
+
+            // 2. readBatchWithValidation 传入 dataConsumer 流式消费时不受 maxSyncRows 限制
+            List<ImportUserVO> validBatch = new ArrayList<>();
+            List<ExcelErrorRow> errorBatch = new ArrayList<>();
+            ExcelUtil.readBatchWithValidation(
+                    new ByteArrayInputStream(excelBytes),
+                    ImportUserVO.class,
+                    2,
+                    HeaderValidationStrategy.LOOSE,
+                    100,
+                    validBatch::addAll,
+                    errorBatch::addAll
+            );
+            assertEquals(3, validBatch.size());
+            assertEquals(1, errorBatch.size());
+        } finally {
+            ExcelUtil.setMaxSyncRows(previousLimit);
+        }
+    }
+
+    @Test
+    @DisplayName("测试 BatchValidationListener 构造器向后兼容与显式 maxSyncRows 控制")
+    void testBatchValidationListenerMaxSyncRowsDirect() {
+        List<ImportUserVO> rows = List.of(
+                ImportUserVO.builder().name("一").phone("13811111111").age(22).email("u1@test.com").build(),
+                ImportUserVO.builder().name("二").phone("13822222222").age(23).email("u2@test.com").build(),
+                ImportUserVO.builder().name("三").phone("13833333333").age(24).email("u3@test.com").build()
+        );
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ExcelUtil.export(out, rows, ImportUserVO.class);
+        byte[] excelBytes = out.toByteArray();
+
+        // 1. 旧构造器默认 maxSyncRows = 0（不设限）
+        BatchValidationListener<ImportUserVO> legacyListener = new BatchValidationListener<>(ImportUserVO.class);
+        assertEquals(0, legacyListener.getMaxSyncRows());
+        FesodSheet.read(new ByteArrayInputStream(excelBytes), ImportUserVO.class, legacyListener).sheet().doRead();
+        assertEquals(3, legacyListener.getTotalReadRows());
+        assertEquals(3, legacyListener.getValidDataList().size());
+
+        // 2. 显式传入 maxSyncRows = 2 时在第 3 行触发上限异常
+        BatchValidationListener<ImportUserVO> boundedListener = new BatchValidationListener<>(
+                ImportUserVO.class, 100, false, 500, 2,
+                HeaderValidationStrategy.DISABLED, null, null, null);
+        assertThrows(BusinessException.class, () ->
+                FesodSheet.read(new ByteArrayInputStream(excelBytes), ImportUserVO.class, boundedListener).sheet().doRead());
     }
 }

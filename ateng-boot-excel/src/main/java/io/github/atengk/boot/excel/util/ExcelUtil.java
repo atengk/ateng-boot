@@ -167,9 +167,7 @@ public final class ExcelUtil {
             if (properties.getDefaultBatchSize() > 0) {
                 defaultBatchSize = properties.getDefaultBatchSize();
             }
-            if (properties.getMaxSyncRows() > 0) {
-                maxSyncRows = properties.getMaxSyncRows();
-            }
+            maxSyncRows = properties.getMaxSyncRows();
             if (properties.getTempDir() != null && !properties.getTempDir().isBlank()) {
                 Path dir = Paths.get(properties.getTempDir());
                 try {
@@ -1198,6 +1196,7 @@ public final class ExcelUtil {
                     defaultBatchSize,
                     failFast,
                     defaultValidationProperties.getMaxErrorRows(),
+                    maxSyncRows,
                     strategy,
                     null,
                     null,
@@ -1217,12 +1216,7 @@ public final class ExcelUtil {
                 throw new ExcelValidationException(listener.getErrorList());
             }
 
-            List<T> validDataList = listener.getValidDataList();
-            if (maxSyncRows > 0 && validDataList != null && validDataList.size() > maxSyncRows) {
-                throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
-                        "Excel 数据行数超出同步读取安全上限（" + maxSyncRows + " 行），当前共 " + validDataList.size() + " 行，请改用 readBatch 进行分批流式消费以防内存溢出");
-            }
-            return validDataList;
+            return listener.getValidDataList();
         });
     }
 
@@ -1302,6 +1296,10 @@ public final class ExcelUtil {
 
     /**
      * 强类型读取 Excel 并返回包含合法数据与全部错误行的复合结果（支持解密密码，指定表头校验策略与错误熔断阈值）
+     * <p>
+     * 常规行级 JSR-303 校验失败将聚合至 {@link ExcelReadResult} 不抛异常；
+     * 若表头契约失配、工作簿解密密码错误或总数据行数超出 {@code maxSyncRows} 安全上限，仍将快速失败抛出异常。
+     * </p>
      *
      * @param inputStream    输入流（不可为空）
      * @param clazz          读取映射的目标实体 Class（不可为空）
@@ -1327,6 +1325,7 @@ public final class ExcelUtil {
                 defaultBatchSize,
                 false,
                 maxErrors,
+                maxSyncRows,
                 strategy,
                 null,
                 null,

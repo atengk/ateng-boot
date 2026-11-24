@@ -14,7 +14,7 @@
 | **Web 门面** | Web `ResponseEntity` 与流式下载断连防卫 | `ExcelWebUtil` | - | 一等公民全面提供对称 `toResponseEntity*` 系列：`toResponseEntity`（含回调/`cleanupHook`/裁剪/AES 加密）、`toResponseEntityDynamic`、`toResponseEntityTemplate`、`toResponseEntityFailedRows`、`toResponseEntityErrorFeedback`、`toResponseEntityFill`、`toResponseEntityStreaming`、`toResponseEntityStreamingByCursor`、`toResponseEntityWithWatermark`；另含 `prepareWebResponse`、`createDownloadHeaders`、`export`、`builder`；RFC 5987 / 6266 防乱码与 `ClientAbortException`/`Broken pipe` 静默抑制 | `ExcelWebUtilTest`<br>`EmployeeRosterController`<br>`OnboardingImportController`<br>`WorkbookReportController`<br>`PayrollSecurityController`<br>`OrderStreamingController` |
 | **核心读取** | 同步全量与流式分批读取 | `ExcelUtil` | `default-batch-size`<br>`max-sync-rows` | `read(in, clazz)`（超限自动 Fail-Fast 阻断防 OOM）；`readBatch(in, clazz, batchSize, consumer)`（每次达到批次回调并即刻清空内存引用）；均支持带 `password` 透明解密重载 | `ExcelUtilTest`<br>`SampleExcelIntegrationTest` |
 | **多表流式读取** | 异构多工作表校验读取构建器 | `ExcelReaderBuilder`<br>`ExcelMultiSheetResult`<br>`ExcelUtil.reader` | `default-batch-size`<br>`max-sync-rows`<br>`validation.header-strategy`<br>`validation.max-error-rows` | `ExcelUtil.reader(in, [password]).validate().headerStrategy(s).maxErrorRows(n).sheet(0, ClassA).sheet(1, ClassB, consumer).read()`：按 Sheet 绑定独立 VO 与每 Sheet 专属校验配置（`validate`/`failFast`/`headerStrategy`）；通过 `ExcelMultiSheetResult` 的 `getSheetErrors`、`getAllErrors`、`hasErrors`、`isCircuitBroken` 聚合跨表误差；默认全局 `maxTotalRows` 上限 `200,000` 行 | `ExcelReaderBuilderTest`<br>`WorkbookReportController`<br>`SampleExcelIntegrationTest` |
-| **数据校验** | JSR-303 行级校验与物理行号追踪 | `ExcelUtil`<br>`BatchValidationListener`<br>`ExcelReadResult`<br>`ExcelRowData`<br>`ExcelRowAware`<br>`ExcelErrorRow` | `validation.max-error-rows` | `readWithValidation` / `readWithResult` / `readBatchWithValidation`：按 1-based 物理行号聚合错误并保留有效行视图 `ExcelReadResult#getRowRecords()`（兼容跳过空行与多级表头）及 `ExcelRowAware#setRowIndex` 回填；提供 `ExcelErrorRow.of(modelClass, rowIndex, fieldName\|PropertyFunc, ...)`（未知字段 Fail-Fast 防错回 A 列）与 `ofRow(rowIndex, message)` | `ExcelValidationTest`<br>`ExcelRowTrackingAndErrorFactoryTest`<br>`OnboardingImportController`<br>`SampleExcelIntegrationTest` |
+| **数据校验** | JSR-303 行级校验与物理行号追踪 | `ExcelUtil`<br>`BatchValidationListener`<br>`ExcelReadResult`<br>`ExcelRowData`<br>`ExcelRowAware`<br>`ExcelErrorRow` | `max-sync-rows`<br>`validation.max-error-rows` | `readWithValidation` / `readWithResult`（均在 `BatchValidationListener` 阶段前置受 `maxSyncRows` 安全上限防卫，流式 `readBatchWithValidation` 不受限）：按 1-based 物理行号聚合错误并保留有效行视图 `ExcelReadResult#getRowRecords()`（兼容跳过空行与多级表头）及 `ExcelRowAware#setRowIndex` 回填；提供 `ExcelErrorRow.of(modelClass, rowIndex, fieldName\|PropertyFunc, ...)`（未知字段 Fail-Fast 防错回 A 列）与 `ofRow(rowIndex, message)` | `ExcelValidationTest`<br>`ExcelRowTrackingAndErrorFactoryTest`<br>`OnboardingImportController`<br>`SampleExcelIntegrationTest` |
 | **错题集隔离** | 差错数据隔离提取与无损标红回写 | `ExcelUtil`<br>`ExcelWebUtil`<br>`ExcelFeedbackUtil`<br>`FailSplitRowWriteHandler`<br>`TypeConvertUtil` | - | `exportFailedRows` / `toResponseEntityFailedRows`（仅提取失败数据生成独立纠错文件并高亮）；`exportErrorFeedback` / `toResponseEntityErrorFeedback`（通过 `ExcelFeedbackUtil.getOrCreateErrorHighlightStyle` 复用单元格字体边框并填充 ROSE 浅粉底色与浮动批注回写） | `ExcelFailSplitTest`<br>`OnboardingImportController`<br>`SampleExcelIntegrationTest` |
 | **数据安全** | 导出动态脱敏 | `@ExcelSensitive`<br>`SensitiveCellWriteHandler` | - | `@ExcelSensitive(type, keepHead, keepTail, maskChar)`：写出时流式拦截掩码，源实体在 JVM 内存中 100% 保持原始明文不变量，彻底根除掩码脏写 | `ExcelSensitiveTest`<br>`EmployeeRosterController`<br>`SampleExcelIntegrationTest` |
 | **企业主题** | 模版主题与智能列宽 | `@ExcelTheme`<br>`ExcelThemeEnum`<br>`ExcelThemeWriteHandler`<br>`SmartAutoColumnWidthWriteHandler` | `style.enabled`<br>`style.theme`<br>`style.zebra-stripe`<br>`style.auto-column-width`<br>`style.min-column-width`<br>`style.max-column-width`<br>`style.padding-column-width`<br>`style.font-name` | 5 套企业级内置主题（`MINIMAL_CLEAN`, `BUSINESS_BLUE`, `CLASSIC_GREY`, `FRESH_GREEN`, `WARM_ORANGE`）；中英文双字节补偿列宽防数值变 `###` | `ExcelThemeWriteHandlerTest`<br>`EmployeeRosterController`<br>`SampleExcelIntegrationTest` |
@@ -128,7 +128,7 @@ ateng:
     excel:
       # 流式读取默认批次大小（默认 1000）
       default-batch-size: 1000
-      # 同步全量读取最大允许行数上限（默认 100,000，超过时快速失败以防御内存 OOM）
+      # 同步全量读取最大允许行数上限（默认 100,000；设为 0 或负数时关闭限制，超过时快速失败以防御内存 OOM）
       max-sync-rows: 100000
 ```
 
@@ -156,7 +156,7 @@ try (InputStream in = new FileInputStream("海量员工.xlsx")) {
 ```
 
 #### 核心机制与边界防御
-- **内存防爆阈值**：`ExcelUtil.read` 内置 `maxSyncRows`（默认 100,000 行）前置防卫，当单表行数超过阈值时立即抛出 `BusinessException` 快速失败，防止攻击者上传超大文件打爆堆内存；海量数据强制使用 `readBatch` 进行分批流式消费。
+- **内存防爆阈值**：`ExcelUtil.read`、`ExcelUtil.readWithValidation` 与 `ExcelUtil.readWithResult` 均内置 `maxSyncRows`（默认 100,000 行，置 `0` 或负数关闭限制）防卫；其中 `readWithValidation` 与 `readWithResult` 在 `BatchValidationListener` 解析阶段即对累计非空数据行前置 Fail-Fast 拦截，当总行数超过阈值时立即抛出 `BusinessException(400, ...)`，防止攻击者上传超大文件打爆堆内存；海量数据强制使用 `readBatch` / `readBatchWithValidation` 进行分批流式消费。
 
 ---
 
@@ -692,6 +692,8 @@ public Result<String> validateHeader(
 ateng:
   boot:
     excel:
+      # 同步全量读取最大允许行数上限（默认 100000；置 0 或负数表示关闭限制）
+      max-sync-rows: 100000
       validation:
         # 错误行数熔断阈值（默认 500 行，达到时触发熔断终止解析，避免 CPU 与内存耗尽）
         max-error-rows: 500
@@ -709,13 +711,16 @@ import io.github.atengk.boot.sample.excel.vo.OnboardingImportVO;
 public Result<ExcelReadResult<OnboardingImportVO>> importWithResult(
         @RequestParam("file") MultipartFile file) throws Exception {
     try (InputStream in = file.getInputStream()) {
-        // 结构化读取与行级校验（不抛异常，聚合全部合法数据与错误明细）
+        // 常规行级 JSR-303 校验失败聚合返回（不抛异常）；若表头失配、密码错误或总行数超出 max-sync-rows 则快速失败
         ExcelReadResult<OnboardingImportVO> result = 
                 ExcelUtil.readWithResult(in, OnboardingImportVO.class, HeaderValidationStrategy.LOOSE, 100);
         return Result.success(result);
     }
 }
 ```
+
+#### 核心机制与边界防御
+- **同步行数与错误阈值双防卫**：`readWithResult` 在解析阶段同时受 `max-sync-rows`（全量读取安全上限，超限直接抛出 `BusinessException(400)` 防 OOM）与 `max-error-rows`（连续错误行熔断上限，触发时标记 `circuitBroken = true` 停止解析）双重保护；大文件请改用 `readBatchWithValidation`。
 
 ---
 
@@ -1353,7 +1358,7 @@ ateng:
       enabled: true
       # 流式读取默认批次大小（默认 1000）
       default-batch-size: 1000
-      # 同步全量读取最大允许行数上限（默认 100,000，超过时快速失败以防御内存 OOM）
+      # 同步全量读取最大允许行数上限（默认 100,000；设为 0 或负数时关闭限制，超过时快速失败以防御内存 OOM）
       max-sync-rows: 100000
       # 大文件磁盘溢出与加解密临时隔离目录（留空时使用系统默认临时目录）
       temp-dir: /data/tmp/ateng-excel

@@ -17,7 +17,7 @@ _Avoid_: MultiSheetHelper, WorkbookBuilder, ExcelSession
 _Avoid_: DesensitizeInterceptor, MaskCellHandler, ExcelMaskProcessor
 
 **BatchValidationListener**:
-行级 JSR-303 数据校验读取监听器，继承 Fesod 原生 `AnalysisEventListener`，基于 Fesod 原生 0-based `readRowHolder().getRowIndex() + 1` 直接对齐真实 1-based Excel 物理行号（天然兼容跳过空行与多级表头），在通过格式校验时同步保留有效行物理行号视图（`getValidRowRecords()`）并支持为实现 `ExcelRowAware` 的模型自动回填 `rowIndex`；支持快速失败（`ExcelValidationException`）与全量错误聚合（`ExcelReadResult`）双重模式。
+行级 JSR-303 数据校验读取监听器，继承 Fesod 原生 `AnalysisEventListener`，基于 Fesod 原生 0-based `readRowHolder().getRowIndex() + 1` 直接对齐真实 1-based Excel 物理行号（天然兼容跳过空行与多级表头），在通过格式校验时同步保留有效行物理行号视图（`getValidRowRecords()`）并支持为实现 `ExcelRowAware` 的模型自动回填 `rowIndex`；支持快速失败（`ExcelValidationException`）、全量错误聚合（`ExcelReadResult`）及全量聚合模式下的同步行数安全上限（`maxSyncRows`）前置熔断防卫。
 _Avoid_: ValidateListener, ExcelImportListener, ValidationProcessor
 
 **ExcelFeedbackUtil**:
