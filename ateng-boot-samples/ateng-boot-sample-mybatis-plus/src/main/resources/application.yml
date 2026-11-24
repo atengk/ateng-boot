@@ -58,6 +58,7 @@ ateng:
           - sys_dept
       data-permission:
         enabled: true
+        failure-strategy: DENY_ALL
       audit-change:
         enabled: true
         publish-event: true

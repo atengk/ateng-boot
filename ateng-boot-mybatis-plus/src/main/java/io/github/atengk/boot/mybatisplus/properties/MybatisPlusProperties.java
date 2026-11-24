@@ -1,6 +1,7 @@
 package io.github.atengk.boot.mybatisplus.properties;
 
 import com.baomidou.mybatisplus.annotation.DbType;
+import io.github.atengk.boot.mybatisplus.enums.DataPermissionFailureStrategy;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
@@ -496,12 +497,25 @@ public class MybatisPlusProperties {
          */
         private boolean enabled = false;
 
+        /**
+         * 数据权限 SPI 发生非受控异常时的失败兜底策略（默认 DENY_ALL：注入 1 = 0 安全拒止条件）
+         */
+        private DataPermissionFailureStrategy failureStrategy = DataPermissionFailureStrategy.DENY_ALL;
+
         public boolean isEnabled() {
             return enabled;
         }
 
         public void setEnabled(boolean enabled) {
             this.enabled = enabled;
+        }
+
+        public DataPermissionFailureStrategy getFailureStrategy() {
+            return failureStrategy;
+        }
+
+        public void setFailureStrategy(DataPermissionFailureStrategy failureStrategy) {
+            this.failureStrategy = failureStrategy != null ? failureStrategy : DataPermissionFailureStrategy.DENY_ALL;
         }
     }
 

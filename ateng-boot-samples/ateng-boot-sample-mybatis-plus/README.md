@@ -63,9 +63,10 @@
 | 功能场景 | Controller 类 | 请求方式与路径 | 快速体验 cURL 命令 |
 | :--- | :--- | :--- | :--- |
 | **租户订单行级自动隔离查询** | `MpTenantAndPermissionController` | `GET /sample/mybatis-plus/governance/tenant/orders` | `curl "http://localhost:8080/sample/mybatis-plus/governance/tenant/orders?tenantId=tenant_A"` |
-| **多租户隔离与双轨豁免全量对比** | `MpTenantAndPermissionController` | `GET /sample/mybatis-plus/governance/tenant/compare` | `curl "http://localhost:8080/sample/mybatis-plus/governance/tenant/compare?currentTenantId=tenant_A"` |
-| **@DataScope 部门与本人数据权限过滤** | `MpTenantAndPermissionController` | `GET /sample/mybatis-plus/governance/data-permission/users` | `curl "http://localhost:8080/sample/mybatis-plus/governance/data-permission/users?deptIds=10&selfOperator=creator-bob"` |
-| **数据权限过滤、超管短路与闭包豁免对比** | `MpTenantAndPermissionController` | `GET /sample/mybatis-plus/governance/data-permission/compare` | `curl "http://localhost:8080/sample/mybatis-plus/governance/data-permission/compare?deptIds=10"` |
+| **多租户隔离与跨租户平台汇总对比** | `MpTenantAndPermissionController` | `GET /sample/mybatis-plus/governance/tenant/platform-summary` | `curl "http://localhost:8080/sample/mybatis-plus/governance/tenant/platform-summary?currentTenantId=tenant_A"` |
+| **@DataScope 部门与本人 OR 括号防卫过滤** | `MpTenantAndPermissionController` | `GET /sample/mybatis-plus/governance/permission/users` | `curl "http://localhost:8080/sample/mybatis-plus/governance/permission/users?deptIds=10&selfOperator=creator-bob&minAge=25"` |
+| **数据权限异常 Fail-Closed (`1 = 0`) 拒止** | `MpTenantAndPermissionController` | `GET /sample/mybatis-plus/governance/permission/fail-closed` | `curl "http://localhost:8080/sample/mybatis-plus/governance/permission/fail-closed"` |
+| **数据权限过滤、超管短路与闭包豁免对比** | `MpTenantAndPermissionController` | `GET /sample/mybatis-plus/governance/permission/bypass-compare` | `curl "http://localhost:8080/sample/mybatis-plus/governance/permission/bypass-compare?deptIds=10"` |
 | **多数据源上下文守卫纯净校验** | `MpTenantAndPermissionController` | `POST /sample/mybatis-plus/governance/datasource-guard/check` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/governance/datasource-guard/check?mode=clean"` |
 | **多数据源活跃事务内假切源阻断验证** | `MpTenantAndPermissionController` | `POST /sample/mybatis-plus/governance/datasource-guard/check` | `curl -X POST "http://localhost:8080/sample/mybatis-plus/governance/datasource-guard/check?mode=active-tx"` |
 

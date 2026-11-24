@@ -60,17 +60,29 @@ public class MpTenantAndPermissionController {
     }
 
     /**
-     * 基于 @DataScope AST 细粒度数据权限（部门列表 + 本人操作人）查询可见用户列表
+     * 基于 @DataScope AST 细粒度数据权限（部门列表 + 本人操作人，支持叠加业务最小年龄条件验证括号优先级）查询可见用户列表
      *
      * @param deptIds      授权可访问的部门 ID 列表（默认 10,20）
      * @param selfOperator 本人操作人标识（可选，传入时叠加 OR create_by = ? 本人数据权限）
+     * @param minAge       最小年龄过滤条件（可选，用于验证 WHERE age >= ? AND (dept_id IN (...) OR create_by = ?) 括号防卫）
      * @return 过滤后的可见用户视图列表
      */
     @GetMapping("/permission/users")
     public Result<List<UserVO>> listAccessibleUsers(
             @RequestParam(defaultValue = "10,20") List<Long> deptIds,
-            @RequestParam(required = false) String selfOperator) {
-        return Result.success(userService.listAccessibleUsersByDataScope(deptIds, selfOperator));
+            @RequestParam(required = false) String selfOperator,
+            @RequestParam(required = false) Integer minAge) {
+        return Result.success(userService.listAccessibleUsersByDataScope(deptIds, selfOperator, minAge));
+    }
+
+    /**
+     * 验证数据权限 SPI 解析异常时，按 DENY_ALL (Fail-Closed 注入 1 = 0) 策略安全拒止返回空集合
+     *
+     * @return 空用户视图列表（零越权泄漏）
+     */
+    @GetMapping("/permission/fail-closed")
+    public Result<List<UserVO>> listAccessibleUsersWithFailClosedFallback() {
+        return Result.success(userService.listAccessibleUsersWithFailClosedFallback());
     }
 
     /**

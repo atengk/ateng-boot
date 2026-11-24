@@ -137,8 +137,12 @@ _Avoid_: PermissionHandler, DataScopeHandler
 _Avoid_: DataScopeContextHolder, PermissionContext
 
 **AtengDataPermissionInnerInterceptor**:
-增强型细粒度数据权限拦截器，继承 MyBatis-Plus `DataPermissionInterceptor`，集成 `@DataScope` 纳秒级元数据缓存、多表别名校验与超管/闭包秒级短路放行。
+增强型细粒度数据权限拦截器，继承 MyBatis-Plus `DataPermissionInterceptor`，集成 `@DataScope` 纳秒级元数据缓存、多表别名校验、超管/闭包秒级短路放行、`OrExpression` AST 自动括号优先级防卫与基于 `DataPermissionFailureStrategy` 的可配置异常失败策略（透传显式 `BusinessException`）。
 _Avoid_: CustomDataPermissionInterceptor, DataScopeInterceptor
+
+**DataPermissionFailureStrategy**:
+数据权限 SPI 生成 AST 条件发生非受控异常时的失败兜底策略枚举（实现 `IBaseEnum<String>`），包含 `DENY_ALL`（安全拒止注入 `1 = 0` 条件，默认）、`THROW`（保留原始 `cause` 链抛出受控异常）与 `FAIL_OPEN`（记录日志降级放行）。
+_Avoid_: PermissionFallbackMode, FailOpenFlag, DataAuthErrorPolicy
 
 **AtengBaseMapper**:
 继承 MyBatis-Plus `BaseMapper` 的通用增强持久层接口，扩展原生单条多值批量插入（`insertBatchSomeColumn`）、批量/单条 Upsert（`upsertBatchSomeColumn` / `upsertSomeColumn`）、单条 CASE WHEN 批量更新（`updateBatchSomeColumn`）、受管游标查询（`selectCursor`）与穿透 `@TableLogic` 的物理硬删除（`deletePhysicallyById` / `deletePhysicallyBatchByIds` / `deletePhysically`）方法。

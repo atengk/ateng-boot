@@ -29,6 +29,23 @@ public interface UserService extends AtengBaseService<UserEntity> {
     List<UserVO> listAccessibleUsersByDataScope(List<Long> deptIds, String selfOperator);
 
     /**
+     * 结合业务 WHERE 条件（最小年龄）与 @DataScope 复合 OR 权限表达式查询可见用户列表，验证优先级括号防卫
+     *
+     * @param deptIds      授权可访问的部门 ID 列表
+     * @param selfOperator 本人操作人标识（可选）
+     * @param minAge       最小年龄过滤条件（可选）
+     * @return 过滤后的可见用户视图列表
+     */
+    List<UserVO> listAccessibleUsersByDataScope(List<Long> deptIds, String selfOperator, Integer minAge);
+
+    /**
+     * 演练当数据权限 SPI 解析异常时，默认 DENY_ALL (Fail-Closed 注入 1 = 0) 策略安全返回空集
+     *
+     * @return 空视图列表（绝不越权放行全表）
+     */
+    List<UserVO> listAccessibleUsersWithFailClosedFallback();
+
+    /**
      * 对比验证 @DataScope 权限过滤与 runAsSuperAdmin / runWithoutPermission 秒级短路放行
      *
      * @param deptIds      授权可访问的部门 ID 列表

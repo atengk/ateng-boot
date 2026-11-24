@@ -27,6 +27,9 @@ public class SampleDataPermissionHandler implements DataPermissionHandler {
 
     @Override
     public Expression getSqlSegment(Table table, Expression where, String mappedStatementId, DataScope dataScope) {
+        if (SampleSecurityContext.isPolicyLookupUnavailable()) {
+            throw new IllegalStateException("RBAC 权限中心策略服务不可用");
+        }
         List<Long> deptIds = SampleSecurityContext.getAccessibleDeptIds();
         String selfOperator = SampleSecurityContext.getSelfOperator();
         boolean hasDepts = deptIds != null && !deptIds.isEmpty();
@@ -60,7 +63,8 @@ public class SampleDataPermissionHandler implements DataPermissionHandler {
         }
 
         if (deptExpression != null && selfExpression != null) {
-            return new ParenthesedExpressionList<>(new OrExpression(deptExpression, selfExpression));
+            // 直接返回裸 OrExpression：由底座 AtengDataPermissionInnerInterceptor 自动补齐括号，彻底杜绝 AND/OR 优先级穿透
+            return new OrExpression(deptExpression, selfExpression);
         }
         return deptExpression != null ? deptExpression : selfExpression;
     }

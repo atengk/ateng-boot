@@ -75,13 +75,15 @@ flowchart TD
   - `type`: 自定义权限业务策略标识（供 SPI 识别不同场景）；
 - **表别名防御过滤**：当 SQL 涉及多表 JOIN 时，拦截器精准比对当前 AST 表节点的别名，仅对与 `alias` 一致的表节点追加条件，杜绝跨表字段混淆报错。
 
-### 2. 标准 SPI 契约解耦与安全参数化改写
+### 2. 标准 SPI 契约解耦、AST 优先级防卫与 Fail-Closed 失败策略
 - **高内聚 SPI 抽象**：定义 `DataPermissionHandler` SPI，解耦具体 RBAC 权限中心：
   ```java
   Expression getSqlSegment(Table table, Expression where, String mappedStatementId, DataScope dataScope);
   ```
   业务实现只需根据当前用户组织权限返回对应的 JSqlParser AST `Expression`（如 `InExpression`、`EqualsTo` 或复合 `OrExpression`）；
-- **AST 语法树级安全注入**：由 MyBatis-Plus `BaseMultiTableInnerInterceptor` 将 SPI 返回的表达式与既有 `WHERE` 条件以 `AND (...)` 形式合并，复杂表达式自动附加括号保护，100% 杜绝 SQL 注入漏洞。
+- **AST 优先级穿透自动括号防卫**：鉴于 MyBatis-Plus `3.5.17` `BaseMultiTableInnerInterceptor` 仅在既有 `where` 为 `OrExpression` 时包裹括号，不会对 `buildTableExpression` 新返回的 `OrExpression` 加括号，`AtengDataPermissionInnerInterceptor` 在返回前采用写时复制（Copy-on-Write）递归对顶层裸 `OrExpression` 及 `AndExpression`/`NotExpression` 子分支内直接裸露的 `OrExpression` 自动包裹 `ParenthesedExpressionList`（已包裹则跳过不嵌套双括号），从底座根治 `AND` 优先级高于 `OR` 导致的多租户与逻辑删除隔离穿透；
+- **可配 Fail-Closed 失败策略与显式异常透传（`DataPermissionFailureStrategy`）**：通过 `ateng.boot.mybatis-plus.data-permission.failure-strategy` 纳管异常兜底策略——默认 **`DENY_ALL`**（记录错误日志并注入 `1 = 0` 恒假 AST 条件，查询返回空集、更新/删除影响 0 行），同时提供 `THROW`（保留原始 `cause` 链抛出 `BusinessException`）与 `FAIL_OPEN`（仅记录错误日志并返回 `null` 兼容存量平滑过渡）；业务 `DataPermissionHandler` 主动抛出的显式 `BusinessException` 一律原样透传不被降级吞咽；
+- **AST 语法树级安全注入**：由 MyBatis-Plus `BaseMultiTableInnerInterceptor` 将经防卫处理后的表达式与既有 `WHERE` 条件以 `AND (...)` 形式合并，100% 杜绝 SQL 注入与优先级绕过漏洞。
 
 ### 3. 上下文管理器与受控编程式闭包
 - **独立上下文契约**：提供 `DataPermissionContextHolder`，基于深度计数器（`ThreadLocal<Integer>`）实现异常安全与状态恢复：

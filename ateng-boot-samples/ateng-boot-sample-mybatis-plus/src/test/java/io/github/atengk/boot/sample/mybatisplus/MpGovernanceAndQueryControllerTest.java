@@ -124,6 +124,22 @@ class MpGovernanceAndQueryControllerTest {
                 .andExpect(jsonPath("$.data.scopedCount", equalTo(1)))
                 .andExpect(jsonPath("$.data.superAdminCount", equalTo(3)))
                 .andExpect(jsonPath("$.data.withoutPermissionCount", equalTo(3)));
+
+        // 2.4 OrExpression 自动加括号优先级防卫实证（H2 端到端 SQL）：
+        // minAge=32 且 deptIds=10 + selfOperator=creator-alice，若无括号则张三(25)/李四(30)会穿透 age>=32 泄漏；加括号后严格返回 0 条
+        mockMvc.perform(get("/sample/mybatis-plus/governance/permission/users")
+                        .param("deptIds", "10")
+                        .param("selfOperator", "creator-alice")
+                        .param("minAge", "32"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", hasSize(0)));
+
+        // 2.5 Fail-Closed 默认 DENY_ALL (1 = 0) 策略实证：SPI 抛出异常时安全拒止返回空集合，严防泄漏全表 3 条记录
+        mockMvc.perform(get("/sample/mybatis-plus/governance/permission/fail-closed"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", equalTo(200)))
+                .andExpect(jsonPath("$.data", hasSize(0)));
     }
 
     @Test

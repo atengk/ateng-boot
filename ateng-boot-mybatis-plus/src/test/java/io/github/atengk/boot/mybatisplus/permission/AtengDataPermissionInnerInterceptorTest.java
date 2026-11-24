@@ -1,11 +1,21 @@
 package io.github.atengk.boot.mybatisplus.permission;
 
+import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
+import com.baomidou.mybatisplus.extension.plugins.handler.TenantLineHandler;
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.mybatisplus.annotation.DataScope;
 import io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder;
+import io.github.atengk.boot.mybatisplus.enums.DataPermissionFailureStrategy;
+import io.github.atengk.boot.mybatisplus.tenant.AtengTenantLineInnerInterceptor;
 import net.sf.jsqlparser.expression.Expression;
 import net.sf.jsqlparser.expression.LongValue;
+import net.sf.jsqlparser.expression.NotExpression;
 import net.sf.jsqlparser.expression.StringValue;
+import net.sf.jsqlparser.expression.operators.conditional.AndExpression;
+import net.sf.jsqlparser.expression.operators.conditional.OrExpression;
 import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
+import net.sf.jsqlparser.expression.operators.relational.ParenthesedExpressionList;
 import net.sf.jsqlparser.schema.Column;
 import net.sf.jsqlparser.schema.Table;
 import org.apache.ibatis.mapping.MappedStatement;
@@ -16,6 +26,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * AtengDataPermissionInnerInterceptor 增强拦截器单元测试
@@ -170,5 +181,172 @@ class AtengDataPermissionInnerInterceptorTest {
         Expression expr = interceptor.buildTableExpression(matchingTable, existingWhere, msId);
         assertThat(expr).isNotNull();
         assertThat(expr.toString()).isEqualTo("u.dept_id = '100'");
+    }
+
+    @Test
+    @DisplayName("10. OrExpression 自动加括号防卫：顶层裸 OrExpression 自动包裹括号，已包裹不重复嵌套双括号")
+    void shouldWrapTopLevelNakedOrExpressionWithoutDoubleWrapping() {
+        String msId = MethodScopeMapper.class.getName() + ".queryWithScope";
+        Table matchingTable = new Table("sys_user").withAlias(new net.sf.jsqlparser.expression.Alias("u"));
+
+        // 10.1 返回裸 OrExpression
+        AtengDataPermissionInnerInterceptor rawOrInterceptor = new AtengDataPermissionInnerInterceptor(
+                (table, where, mappedStatementId, dataScope) -> new OrExpression(
+                        new EqualsTo(new Column("u." + dataScope.deptColumn()), new LongValue(10L)),
+                        new EqualsTo(new Column("u." + dataScope.userColumn()), new LongValue(1001L))
+                )
+        );
+        Expression wrapped = rawOrInterceptor.buildTableExpression(matchingTable, null, msId);
+        assertThat(wrapped).isInstanceOf(ParenthesedExpressionList.class);
+        assertThat(wrapped.toString()).isEqualTo("(u.dept_id = 10 OR u.user_id = 1001)");
+
+        // 10.2 业务 SPI 已手动包裹 ParenthesedExpressionList 时，不再生成 ((...)) 双重括号
+        AtengDataPermissionInnerInterceptor preWrappedInterceptor = new AtengDataPermissionInnerInterceptor(
+                (table, where, mappedStatementId, dataScope) -> new ParenthesedExpressionList<>(new OrExpression(
+                        new EqualsTo(new Column("u." + dataScope.deptColumn()), new LongValue(10L)),
+                        new EqualsTo(new Column("u." + dataScope.userColumn()), new LongValue(1001L))
+                ))
+        );
+        Expression alreadyWrapped = preWrappedInterceptor.buildTableExpression(matchingTable, null, msId);
+        assertThat(alreadyWrapped.toString()).isEqualTo("(u.dept_id = 10 OR u.user_id = 1001)");
+    }
+
+    @Test
+    @DisplayName("11. 组合 AST 优先级递归防卫：AndExpression 与 NotExpression 内嵌裸 OrExpression 自动补齐括号且不篡改共享实例")
+    void shouldRecursivelyProtectOrExpressionInsideAndAndNotWithoutMutatingSharedAst() {
+        String msId = ClassLevelScopeMapper.class.getName() + ".queryDefault";
+        Table table = new Table("sys_user");
+
+        // 构造共享的未加括号嵌套表达式：status = 1 AND (dept_id = 10 OR user_id = 1001)
+        OrExpression sharedInnerOr = new OrExpression(
+                new EqualsTo(new Column("dept_id"), new LongValue(10L)),
+                new EqualsTo(new Column("user_id"), new LongValue(1001L))
+        );
+        AndExpression sharedAnd = new AndExpression(
+                new EqualsTo(new Column("status"), new LongValue(1L)),
+                sharedInnerOr
+        );
+
+        AtengDataPermissionInnerInterceptor andOrInterceptor = new AtengDataPermissionInnerInterceptor(
+                (t, w, id, ds) -> sharedAnd
+        );
+        Expression protectedAnd = andOrInterceptor.buildTableExpression(table, null, msId);
+        assertThat(protectedAnd).isNotSameAs(sharedAnd);
+        assertThat(protectedAnd.toString()).isEqualTo("status = 1 AND (dept_id = 10 OR user_id = 1001)");
+        // 原共享实例未被就地修改
+        assertThat(sharedAnd.toString()).isEqualTo("status = 1 AND dept_id = 10 OR user_id = 1001");
+
+        // NotExpression 内嵌裸 OrExpression 同样加括号保护
+        AtengDataPermissionInnerInterceptor notOrInterceptor = new AtengDataPermissionInnerInterceptor(
+                (t, w, id, ds) -> new NotExpression(sharedInnerOr)
+        );
+        Expression protectedNot = notOrInterceptor.buildTableExpression(table, null, msId);
+        assertThat(protectedNot.toString()).isEqualTo("NOT (dept_id = 10 OR user_id = 1001)");
+    }
+
+    @Test
+    @DisplayName("12. 全链 SQL 改写端到端 AST 断言：多租户 + 逻辑删除叠加裸 OrExpression 在 SELECT/UPDATE/DELETE 均安全隔离")
+    void shouldProtectTenantAndLogicDeletePrecedenceInRewrittenSqlStatements() {
+        String msId = MethodScopeMapper.class.getName() + ".queryWithScope";
+        AtengTenantLineInnerInterceptor tenantInterceptor = new AtengTenantLineInnerInterceptor(new TenantLineHandler() {
+            @Override
+            public Expression getTenantId() {
+                return new LongValue(1L);
+            }
+
+            @Override
+            public String getTenantIdColumn() {
+                return "tenant_id";
+            }
+        });
+        AtengDataPermissionInnerInterceptor dpInterceptor = new AtengDataPermissionInnerInterceptor(
+                (table, where, mappedStatementId, dataScope) -> new OrExpression(
+                        new EqualsTo(new Column("u." + dataScope.deptColumn()), new LongValue(10L)),
+                        new EqualsTo(new Column("u." + dataScope.userColumn()), new LongValue(1001L))
+                )
+        );
+
+        // 12.1 SELECT 语句：多租户 + 软删 + 裸 OrExpression 数据权限
+        String selectSql = "SELECT u.id, u.name FROM sys_user u WHERE u.deleted = 0";
+        String afterTenantSelect = tenantInterceptor.parserSingle(selectSql, msId);
+        String finalSelectSql = dpInterceptor.parserSingle(afterTenantSelect, msId);
+        assertThat(finalSelectSql).isEqualTo(
+                "SELECT u.id, u.name FROM sys_user u WHERE u.deleted = 0 AND u.tenant_id = 1 AND (u.dept_id = 10 OR u.user_id = 1001)"
+        );
+
+        // 12.2 UPDATE 语句
+        String updateSql = "UPDATE sys_user u SET u.name = 'updated' WHERE u.deleted = 0";
+        String afterTenantUpdate = tenantInterceptor.parserMulti(updateSql, msId);
+        String finalUpdateSql = dpInterceptor.parserMulti(afterTenantUpdate, msId);
+        assertThat(finalUpdateSql).isEqualTo(
+                "UPDATE sys_user u SET u.name = 'updated' WHERE u.deleted = 0 AND u.tenant_id = 1 AND (u.dept_id = 10 OR u.user_id = 1001)"
+        );
+
+        // 12.3 DELETE 语句
+        String deleteSql = "DELETE FROM sys_user u WHERE u.deleted = 0";
+        String afterTenantDelete = tenantInterceptor.parserMulti(deleteSql, msId);
+        String finalDeleteSql = dpInterceptor.parserMulti(afterTenantDelete, msId);
+        assertThat(finalDeleteSql).isEqualTo(
+                "DELETE FROM sys_user u WHERE u.deleted = 0 AND u.tenant_id = 1 AND (u.dept_id = 10 OR u.user_id = 1001)"
+        );
+    }
+
+    @Test
+    @DisplayName("13. 可配失败策略验证：默认及显式 DENY_ALL 返回 1 = 0；THROW 保留 cause 链；FAIL_OPEN 降级放行")
+    void shouldApplyConfiguredFailureStrategyOnUnexpectedHandlerException() {
+        String msId = MethodScopeMapper.class.getName() + ".queryWithScope";
+        Table matchingTable = new Table("sys_user").withAlias(new net.sf.jsqlparser.expression.Alias("u"));
+        IllegalStateException rootCause = new IllegalStateException("RBAC 权限中心连接超时");
+        DataPermissionHandler brokenHandler = (table, where, mappedStatementId, dataScope) -> {
+            throw rootCause;
+        };
+
+        // 13.1 1 参构造默认 DENY_ALL -> 1 = 0
+        AtengDataPermissionInnerInterceptor defaultDenyInterceptor = new AtengDataPermissionInnerInterceptor(brokenHandler);
+        assertThat(defaultDenyInterceptor.getFailureStrategy()).isEqualTo(DataPermissionFailureStrategy.DENY_ALL);
+        Expression denyExpr = defaultDenyInterceptor.buildTableExpression(matchingTable, null, msId);
+        assertThat(denyExpr).isNotNull();
+        assertThat(denyExpr.toString()).isEqualTo("1 = 0");
+
+        // 验证多租户叠加下 DENY_ALL 最终 SQL 含 AND 1 = 0
+        String rewrittenSql = defaultDenyInterceptor.parserSingle("SELECT u.id FROM sys_user u WHERE u.deleted = 0", msId);
+        assertThat(rewrittenSql).isEqualTo("SELECT u.id FROM sys_user u WHERE u.deleted = 0 AND 1 = 0");
+
+        // 13.2 THROW 策略 -> 抛出 BusinessException 并绑定 IResultCode 且完整保留原始 cause 链
+        AtengDataPermissionInnerInterceptor throwInterceptor = new AtengDataPermissionInnerInterceptor(
+                brokenHandler, DataPermissionFailureStrategy.THROW);
+        assertThatThrownBy(() -> throwInterceptor.buildTableExpression(matchingTable, null, msId))
+                .isInstanceOf(BusinessException.class)
+                .satisfies(ex -> assertThat(((BusinessException) ex).getResultCode())
+                        .isEqualTo(CommonResultCode.INTERNAL_SERVER_ERROR))
+                .hasMessageContaining("数据权限 AST 条件生成失败")
+                .hasCause(rootCause);
+
+        // 13.3 FAIL_OPEN 策略 -> 记录错误日志并返回 null（放行）
+        AtengDataPermissionInnerInterceptor failOpenInterceptor = new AtengDataPermissionInnerInterceptor(
+                brokenHandler, DataPermissionFailureStrategy.FAIL_OPEN);
+        Expression failOpenExpr = failOpenInterceptor.buildTableExpression(matchingTable, null, msId);
+        assertThat(failOpenExpr).isNull();
+    }
+
+    @Test
+    @DisplayName("14. BusinessException 原样透传防卫：SPI 主动抛出的显式鉴权/业务异常不被 DENY_ALL 或 FAIL_OPEN 吞咽")
+    void shouldRethrowExplicitBusinessExceptionWithoutDowngrade() {
+        String msId = MethodScopeMapper.class.getName() + ".queryWithScope";
+        Table matchingTable = new Table("sys_user").withAlias(new net.sf.jsqlparser.expression.Alias("u"));
+        BusinessException explicitAuthError = new BusinessException(CommonResultCode.FORBIDDEN.getCode(), "当前账号未分配组织数据域");
+        DataPermissionHandler authRejectHandler = (table, where, mappedStatementId, dataScope) -> {
+            throw explicitAuthError;
+        };
+
+        AtengDataPermissionInnerInterceptor denyInterceptor = new AtengDataPermissionInnerInterceptor(
+                authRejectHandler, DataPermissionFailureStrategy.DENY_ALL);
+        assertThatThrownBy(() -> denyInterceptor.buildTableExpression(matchingTable, null, msId))
+                .isSameAs(explicitAuthError);
+
+        AtengDataPermissionInnerInterceptor failOpenInterceptor = new AtengDataPermissionInnerInterceptor(
+                authRejectHandler, DataPermissionFailureStrategy.FAIL_OPEN);
+        assertThatThrownBy(() -> failOpenInterceptor.buildTableExpression(matchingTable, null, msId))
+                .isSameAs(explicitAuthError);
     }
 }

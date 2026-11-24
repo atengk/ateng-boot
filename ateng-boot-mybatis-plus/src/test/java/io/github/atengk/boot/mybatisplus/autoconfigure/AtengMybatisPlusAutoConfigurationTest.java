@@ -227,11 +227,41 @@ class AtengMybatisPlusAutoConfigurationTest {
                     List<InnerInterceptor> innerInterceptors = interceptor.getInterceptors();
                     assertThat(innerInterceptors).hasSize(5);
                     assertThat(innerInterceptors.get(0)).isInstanceOf(io.github.atengk.boot.mybatisplus.permission.AtengDataPermissionInnerInterceptor.class);
+                    io.github.atengk.boot.mybatisplus.permission.AtengDataPermissionInnerInterceptor dpInterceptor =
+                            (io.github.atengk.boot.mybatisplus.permission.AtengDataPermissionInnerInterceptor) innerInterceptors.get(0);
+                    assertThat(dpInterceptor.getFailureStrategy())
+                            .isEqualTo(io.github.atengk.boot.mybatisplus.enums.DataPermissionFailureStrategy.DENY_ALL);
                     assertThat(innerInterceptors.get(1)).isInstanceOf(io.github.atengk.boot.mybatisplus.logicdelete.AtengLogicDeleteInnerInterceptor.class);
                     assertThat(innerInterceptors.get(2)).isInstanceOf(PaginationInnerInterceptor.class);
                     assertThat(innerInterceptors.get(3)).isInstanceOf(BlockAttackInnerInterceptor.class);
                     assertThat(innerInterceptors.get(4)).isInstanceOf(OptimisticLockerInnerInterceptor.class);
                 });
+    }
+
+    @Test
+    @DisplayName("开启细粒度数据权限并显式配置 failure-strategy 时正确注入 THROW 与 FAIL_OPEN 策略")
+    void shouldBindConfiguredDataPermissionFailureStrategy() {
+        contextRunner.withPropertyValues(
+                "ateng.boot.mybatis-plus.data-permission.enabled=true",
+                "ateng.boot.mybatis-plus.data-permission.failure-strategy=THROW"
+        ).run(context -> {
+            MybatisPlusInterceptor interceptor = context.getBean(MybatisPlusInterceptor.class);
+            io.github.atengk.boot.mybatisplus.permission.AtengDataPermissionInnerInterceptor dpInterceptor =
+                    (io.github.atengk.boot.mybatisplus.permission.AtengDataPermissionInnerInterceptor) interceptor.getInterceptors().get(0);
+            assertThat(dpInterceptor.getFailureStrategy())
+                    .isEqualTo(io.github.atengk.boot.mybatisplus.enums.DataPermissionFailureStrategy.THROW);
+        });
+
+        contextRunner.withPropertyValues(
+                "ateng.boot.mybatis-plus.data-permission.enabled=true",
+                "ateng.boot.mybatis-plus.data-permission.failure-strategy=fail_open"
+        ).run(context -> {
+            MybatisPlusInterceptor interceptor = context.getBean(MybatisPlusInterceptor.class);
+            io.github.atengk.boot.mybatisplus.permission.AtengDataPermissionInnerInterceptor dpInterceptor =
+                    (io.github.atengk.boot.mybatisplus.permission.AtengDataPermissionInnerInterceptor) interceptor.getInterceptors().get(0);
+            assertThat(dpInterceptor.getFailureStrategy())
+                    .isEqualTo(io.github.atengk.boot.mybatisplus.enums.DataPermissionFailureStrategy.FAIL_OPEN);
+        });
     }
 
     @Test

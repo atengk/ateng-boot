@@ -239,7 +239,8 @@ public class AtengMybatisPlusAutoConfiguration {
             DataPermissionHandler dataPermissionHandler = dataPermissionHandlerProvider.getIfAvailable(
                     DefaultDataPermissionHandler::new
             );
-            interceptor.addInnerInterceptor(new AtengDataPermissionInnerInterceptor(dataPermissionHandler));
+            interceptor.addInnerInterceptor(new AtengDataPermissionInnerInterceptor(
+                    dataPermissionHandler, dataPermission.getFailureStrategy()));
         }
 
         // 3. 装配逻辑删除动态穿透与误删恢复插件（置于分页插件之前，保障穿透查询的分页 count 与数据列表均基于剥离后的 SQL 统计）

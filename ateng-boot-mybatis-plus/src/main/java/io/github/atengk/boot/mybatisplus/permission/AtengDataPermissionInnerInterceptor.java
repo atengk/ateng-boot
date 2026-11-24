@@ -3,10 +3,19 @@ package io.github.atengk.boot.mybatisplus.permission;
 import com.baomidou.mybatisplus.core.toolkit.PluginUtils;
 import com.baomidou.mybatisplus.extension.plugins.handler.MultiDataPermissionHandler;
 import com.baomidou.mybatisplus.extension.plugins.inner.DataPermissionInterceptor;
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.mybatisplus.annotation.DataScope;
 import io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder;
+import io.github.atengk.boot.mybatisplus.enums.DataPermissionFailureStrategy;
 import io.github.atengk.boot.mybatisplus.util.MybatisInterceptorUtil;
 import net.sf.jsqlparser.expression.Expression;
+import net.sf.jsqlparser.expression.LongValue;
+import net.sf.jsqlparser.expression.NotExpression;
+import net.sf.jsqlparser.expression.operators.conditional.AndExpression;
+import net.sf.jsqlparser.expression.operators.conditional.OrExpression;
+import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
+import net.sf.jsqlparser.expression.operators.relational.ParenthesedExpressionList;
 import net.sf.jsqlparser.schema.Table;
 import org.apache.ibatis.executor.Executor;
 import org.apache.ibatis.executor.statement.StatementHandler;
@@ -17,7 +26,6 @@ import org.apache.ibatis.session.RowBounds;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.reflect.Method;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.Optional;
@@ -25,7 +33,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 增强型细粒度数据权限拦截器
- * 继承 MyBatis-Plus DataPermissionInterceptor，提供 @DataScope 声明式解析、O(1) 纳秒级元数据缓存、超管及编程式闭包秒级短路放行
+ * 继承 MyBatis-Plus DataPermissionInterceptor，提供 @DataScope 声明式解析、O(1) 纳秒级元数据缓存、
+ * 超管及编程式闭包秒级短路放行、OrExpression 优先级防卫与 Fail-Closed 可配失败策略
  *
  * @author Ateng
  * @since 2026-10-16
@@ -44,13 +53,30 @@ public class AtengDataPermissionInnerInterceptor extends DataPermissionIntercept
      */
     private final DataPermissionHandler customHandler;
 
+    /**
+     * 数据权限 SPI 异常失败策略（默认 DENY_ALL 安全拒止）
+     */
+    private final DataPermissionFailureStrategy failureStrategy;
+
     public AtengDataPermissionInnerInterceptor() {
-        this(new DefaultDataPermissionHandler());
+        this(new DefaultDataPermissionHandler(), DataPermissionFailureStrategy.DENY_ALL);
     }
 
     public AtengDataPermissionInnerInterceptor(DataPermissionHandler customHandler) {
+        this(customHandler, DataPermissionFailureStrategy.DENY_ALL);
+    }
+
+    /**
+     * 构造带显式失败策略的数据权限拦截器
+     *
+     * @param customHandler   自定义数据权限 SPI 处理器
+     * @param failureStrategy 异常失败策略（为 null 时默认 {@link DataPermissionFailureStrategy#DENY_ALL}）
+     */
+    public AtengDataPermissionInnerInterceptor(DataPermissionHandler customHandler,
+                                               DataPermissionFailureStrategy failureStrategy) {
         super();
         this.customHandler = customHandler != null ? customHandler : new DefaultDataPermissionHandler();
+        this.failureStrategy = failureStrategy != null ? failureStrategy : DataPermissionFailureStrategy.DENY_ALL;
         // 桥接注册 MultiDataPermissionHandler 适配器，激活父类 AST 多表遍历处理
         super.setDataPermissionHandler(new MultiDataPermissionHandler() {
             @Override
@@ -58,6 +84,15 @@ public class AtengDataPermissionInnerInterceptor extends DataPermissionIntercept
                 return AtengDataPermissionInnerInterceptor.this.buildTableExpression(table, where, mappedStatementId);
             }
         });
+    }
+
+    /**
+     * 获取当前拦截器生效的异常失败策略
+     *
+     * @return 数据权限异常失败策略
+     */
+    public DataPermissionFailureStrategy getFailureStrategy() {
+        return failureStrategy;
     }
 
     @Override
@@ -104,14 +139,97 @@ public class AtengDataPermissionInnerInterceptor extends DataPermissionIntercept
             }
         }
 
-        // 3. 委派业务 SPI 处理器构造 JSqlParser AST 条件表达式，包裹异常防御
+        // 3. 委派业务 SPI 处理器构造 JSqlParser AST 条件表达式，执行 OrExpression 优先级防卫与可配失败策略
         try {
-            return customHandler.getSqlSegment(table, where, whereSegment, dataScope);
+            Expression sqlSegment = customHandler.getSqlSegment(table, where, whereSegment, dataScope);
+            return protectExpressionPrecedence(sqlSegment);
+        } catch (BusinessException ex) {
+            // 业务 SPI 主动抛出的显式鉴权或校验异常必须原样透传，严禁降级吞咽
+            throw ex;
         } catch (Exception ex) {
-            log.error("数据权限 AST 条件生成异常，安全跳过当前表拦截: table=[{}], ms=[{}], error=[{}]",
-                    table.getName(), whereSegment, ex.getMessage(), ex);
+            return handleFailure(table, whereSegment, ex);
+        }
+    }
+
+    /**
+     * 递归保护数据权限 AST 表达式的运算符优先级
+     * <p>
+     * MyBatis-Plus {@code BaseMultiTableInnerInterceptor} 仅对既有 {@code where} 为 {@link OrExpression} 时自动加括号，
+     * 不会对 {@link #buildTableExpression} 新返回的 {@link OrExpression} 加括号。
+     * 本方法对顶层裸 {@link OrExpression} 以及 {@link AndExpression} / {@link NotExpression} 直接子分支内的裸 {@link OrExpression}
+     * 自动包裹 {@link ParenthesedExpressionList}，防止 {@code AND} 绑定优先级高于 {@code OR} 引发多租户与软删隔离穿透；
+     * 采用写时复制（Copy-on-Write）保证并发场景下不篡改业务处理器缓存的共享 AST 实例。
+     * </p>
+     *
+     * @param expression 原始 AST 条件表达式
+     * @return 优先级安全保护后的 AST 表达式
+     */
+    private Expression protectExpressionPrecedence(Expression expression) {
+        return normalizePrecedence(expression, true);
+    }
+
+    private Expression normalizePrecedence(Expression expression, boolean wrapOr) {
+        if (expression == null) {
             return null;
         }
+        if (expression instanceof ParenthesedExpressionList<?> parenthesed) {
+            if (parenthesed.size() == 1) {
+                Expression inner = parenthesed.get(0);
+                Expression normalizedInner = normalizePrecedence(inner, false);
+                if (normalizedInner != inner) {
+                    return new ParenthesedExpressionList<>(normalizedInner);
+                }
+            }
+            return expression;
+        }
+        if (expression instanceof OrExpression orExpr) {
+            Expression left = normalizePrecedence(orExpr.getLeftExpression(), false);
+            Expression right = normalizePrecedence(orExpr.getRightExpression(), false);
+            OrExpression target = (left != orExpr.getLeftExpression() || right != orExpr.getRightExpression())
+                    ? new OrExpression(left, right)
+                    : orExpr;
+            return wrapOr ? new ParenthesedExpressionList<>(target) : target;
+        }
+        if (expression instanceof AndExpression andExpr) {
+            Expression left = normalizePrecedence(andExpr.getLeftExpression(), true);
+            Expression right = normalizePrecedence(andExpr.getRightExpression(), true);
+            if (left != andExpr.getLeftExpression() || right != andExpr.getRightExpression()) {
+                return new AndExpression(left, right).withUseOperator(andExpr.isUseOperator());
+            }
+            return expression;
+        }
+        if (expression instanceof NotExpression notExpr) {
+            Expression inner = normalizePrecedence(notExpr.getExpression(), true);
+            if (inner != notExpr.getExpression()) {
+                return new NotExpression(inner, notExpr.isExclamationMark());
+            }
+            return expression;
+        }
+        return expression;
+    }
+
+    /**
+     * 按配置失败策略处理 {@link DataPermissionHandler} 非受控异常
+     */
+    private Expression handleFailure(Table table, String whereSegment, Exception ex) {
+        String tableName = table != null ? table.getName() : "unknown";
+        return switch (failureStrategy) {
+            case THROW -> throw new BusinessException(
+                    CommonResultCode.INTERNAL_SERVER_ERROR,
+                    "数据权限 AST 条件生成失败: table=[" + tableName + "], ms=[" + whereSegment + "]",
+                    ex
+            );
+            case FAIL_OPEN -> {
+                log.error("数据权限 AST 条件生成异常，按 FAIL_OPEN 策略降级跳过当前表拦截: table=[{}], ms=[{}], error=[{}]",
+                        tableName, whereSegment, ex.getMessage(), ex);
+                yield null;
+            }
+            case DENY_ALL -> {
+                log.error("数据权限 AST 条件生成异常，按 DENY_ALL 策略注入 1 = 0 安全拒止条件: table=[{}], ms=[{}], error=[{}]",
+                        tableName, whereSegment, ex.getMessage(), ex);
+                yield new EqualsTo(new LongValue(1), new LongValue(0));
+            }
+        };
     }
 
     /**

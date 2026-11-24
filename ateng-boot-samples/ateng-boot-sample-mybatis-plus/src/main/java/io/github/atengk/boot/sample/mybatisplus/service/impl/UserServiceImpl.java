@@ -35,18 +35,41 @@ public class UserServiceImpl extends AtengServiceImpl<UserMapper, UserEntity> im
 
     @Override
     public List<UserVO> listAccessibleUsersByDataScope(List<Long> deptIds, String selfOperator) {
+        return listAccessibleUsersByDataScope(deptIds, selfOperator, null);
+    }
+
+    @Override
+    public List<UserVO> listAccessibleUsersByDataScope(List<Long> deptIds, String selfOperator, Integer minAge) {
         ensureSeedUsersIfEmpty();
         SampleSecurityContext.setAccessibleDeptIds(deptIds);
         SampleSecurityContext.setSelfOperator(selfOperator);
         try {
-            List<UserEntity> entities = baseMapper.selectAccessibleUsers(new QueryWrapper<>());
-            if (entities == null || entities.isEmpty()) {
-                return Collections.emptyList();
+            QueryWrapper<UserEntity> wrapper = new QueryWrapper<>();
+            if (minAge != null) {
+                wrapper.ge("age", minAge);
             }
-            return entities.stream().map(UserVO::fromEntity).toList();
+            return toUserVoList(baseMapper.selectAccessibleUsers(wrapper));
         } finally {
             SampleSecurityContext.clear();
         }
+    }
+
+    @Override
+    public List<UserVO> listAccessibleUsersWithFailClosedFallback() {
+        ensureSeedUsersIfEmpty();
+        SampleSecurityContext.setPolicyLookupUnavailable(true);
+        try {
+            return toUserVoList(baseMapper.selectAccessibleUsers(new QueryWrapper<>()));
+        } finally {
+            SampleSecurityContext.clear();
+        }
+    }
+
+    private List<UserVO> toUserVoList(List<UserEntity> entities) {
+        if (entities == null || entities.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return entities.stream().map(UserVO::fromEntity).toList();
     }
 
     @Override

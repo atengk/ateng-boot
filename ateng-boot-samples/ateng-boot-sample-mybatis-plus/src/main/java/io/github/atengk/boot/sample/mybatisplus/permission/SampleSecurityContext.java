@@ -13,6 +13,7 @@ public final class SampleSecurityContext {
 
     private static final ThreadLocal<List<Long>> ACCESSIBLE_DEPT_IDS = new ThreadLocal<>();
     private static final ThreadLocal<String> SELF_OPERATOR = new ThreadLocal<>();
+    private static final ThreadLocal<Boolean> POLICY_LOOKUP_UNAVAILABLE = new ThreadLocal<>();
 
     private SampleSecurityContext() {
     }
@@ -33,8 +34,21 @@ public final class SampleSecurityContext {
         return SELF_OPERATOR.get();
     }
 
+    public static void setPolicyLookupUnavailable(boolean unavailable) {
+        if (unavailable) {
+            POLICY_LOOKUP_UNAVAILABLE.set(Boolean.TRUE);
+        } else {
+            POLICY_LOOKUP_UNAVAILABLE.remove();
+        }
+    }
+
+    public static boolean isPolicyLookupUnavailable() {
+        return Boolean.TRUE.equals(POLICY_LOOKUP_UNAVAILABLE.get());
+    }
+
     public static void clear() {
         ACCESSIBLE_DEPT_IDS.remove();
         SELF_OPERATOR.remove();
+        POLICY_LOOKUP_UNAVAILABLE.remove();
     }
 }

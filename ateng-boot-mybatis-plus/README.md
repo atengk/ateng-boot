@@ -16,7 +16,7 @@
 | **多租户隔离** | AST 动态行级多租户拦截器 | `AtengTenantLineInnerInterceptor` | `ateng.boot.mybatis-plus.tenant.enabled`<br>`ateng.boot.mybatis-plus.tenant.column`<br>`ateng.boot.mybatis-plus.tenant.ignore-tables` | 基于 JSqlParser 在 AST 语法树层级改写 SQL，自动拼接 `tenant_id = ?` 条件，支持多表 JOIN 与子查询精准注入 | `AtengTenantLineInnerInterceptorTest` / `TenantOrderDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
 | **多租户解析** | 默认租户上下文处理器 | `DefaultTenantLineHandler` | `ateng.boot.mybatis-plus.tenant.column` | 桥接 `TenantContextHolder` 获取租户 ID，支持动态与静态表忽略过滤 | `DefaultTenantLineHandlerTest` / `TenantOrderDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
 | **多租户绕过** | 声明式租户忽略注解 | `@IgnoreTenant` | - | 声明于 Mapper 方法或类上，自动绕过多租户行级过滤；支持与 `TenantContextHolder.runWithoutTenant(...)` 协同 | `AtengTenantLineInnerInterceptorTest` / `TenantOrderDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
-| **数据权限** | AST 细粒度数据权限拦截器 | `AtengDataPermissionInnerInterceptor` | `ateng.boot.mybatis-plus.data-permission.enabled` | 基于 JSqlParser 在 AST 层级拦截改写 SQL，无缝拼接数据权限过滤表达式 | `AtengDataPermissionInnerInterceptorTest` / `UserDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
+| **数据权限** | AST 细粒度数据权限拦截器 | `AtengDataPermissionInnerInterceptor`<br>`DataPermissionFailureStrategy` | `ateng.boot.mybatis-plus.data-permission.enabled`<br>`ateng.boot.mybatis-plus.data-permission.failure-strategy` | 基于 JSqlParser 在 AST 层级拦截改写 SQL，提供 `getFailureStrategy()` 观察失效策略，自动包裹裸 `OrExpression` 括号防 `AND`/`OR` 优先级穿透；支持 `DENY_ALL`（默认 `1 = 0`）/ `THROW` / `FAIL_OPEN` 失败策略且透传显式 `BusinessException` | `AtengDataPermissionInnerInterceptorTest` / `UserDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
 | **数据权限** | 动态数据权限处理器 | `DataPermissionHandler` / `DefaultDataPermissionHandler` | - | 数据权限 SPI 与默认处理器，结合上下文提取注入数据过滤 SQL 片段 | `AtengDataPermissionInnerInterceptorTest` / `UserDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
 | **数据权限** | 声明式数据权限范围注解 | `@DataScope` | - | 细粒度声明式数据权限注解，支持按用户、部门或自定义表达式进行数据范围收敛 | `AtengDataPermissionInnerInterceptorTest` / `UserDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
 | **数据权限** | 数据权限上下文保持器 | `DataPermissionContextHolder` | - | 线程安全透传数据权限上下文与过滤表达式，支持链式构建与自动现场清理 | `DataPermissionContextHolderTest` / `UserDomainIntegrationTest` / `MpGovernanceAndQueryControllerTest` |
@@ -636,6 +636,7 @@ ateng:
     mybatis-plus:
       data-permission:
         enabled: true             # 是否启用基于 AST 的声明式细粒度数据权限拦截器（默认 false）
+        failure-strategy: DENY_ALL # SPI 非受控异常失败策略（DENY_ALL 默认注入 1 = 0 / THROW 抛保留 cause 异常 / FAIL_OPEN 降级放行）
 ```
 
 #### 实战代码示例
@@ -655,6 +656,9 @@ public class SampleDataPermissionHandler implements DataPermissionHandler {
 
     @Override
     public Expression getSqlSegment(Table table, Expression where, String mappedStatementId, DataScope dataScope) {
+        if (SampleSecurityContext.isPolicyLookupUnavailable()) {
+            throw new IllegalStateException("RBAC 权限中心策略服务不可用");
+        }
         List<Long> deptIds = SampleSecurityContext.getAccessibleDeptIds();
         String selfOperator = SampleSecurityContext.getSelfOperator();
         boolean hasDepts = deptIds != null && !deptIds.isEmpty();
@@ -685,14 +689,14 @@ public class SampleDataPermissionHandler implements DataPermissionHandler {
         }
 
         if (deptExpression != null && selfExpression != null) {
-            // 组合生成 (dept_id IN (...) OR create_by = '...') 强类型括号表达式
-            return new ParenthesedExpressionList<>(new OrExpression(deptExpression, selfExpression));
+            // 直接返回裸 OrExpression：由底座 AtengDataPermissionInnerInterceptor 自动补齐括号，彻底杜绝 AND/OR 优先级穿透
+            return new OrExpression(deptExpression, selfExpression);
         }
         return deptExpression != null ? deptExpression : selfExpression;
     }
 }
 
-// 3. Service 层常规权限过滤、超管短路与编程式豁免对比（锚定 Sample: UserServiceImpl）
+// 3. Service 层常规权限过滤、异常 Fail-Closed 拒止、超管短路与编程式豁免对比（锚定 Sample: UserServiceImpl）
 public DataPermissionCompareVO compareDataPermissionAndBypass(List<Long> deptIds, String selfOperator) {
     SampleSecurityContext.setAccessibleDeptIds(deptIds);
     SampleSecurityContext.setSelfOperator(selfOperator);
@@ -714,10 +718,23 @@ public DataPermissionCompareVO compareDataPermissionAndBypass(List<Long> deptIds
         SampleSecurityContext.clear();
     }
 }
+
+public List<UserVO> listAccessibleUsersWithFailClosedFallback() {
+    ensureSeedUsersIfEmpty();
+    // 当权限中心策略服务不可用触发 SPI 非受控异常时，底座按默认 DENY_ALL 注入 1 = 0 安全返回空集
+    SampleSecurityContext.setPolicyLookupUnavailable(true);
+    try {
+        return toUserVoList(baseMapper.selectAccessibleUsers(new QueryWrapper<>()));
+    } finally {
+        SampleSecurityContext.clear();
+    }
+}
 ```
 
 #### 核心机制与生产边界
 - **超管与忽略状态秒级短路**：`AtengDataPermissionInnerInterceptor` 在进入 AST 解析前优先检查 `DataPermissionContextHolder.isSuperAdmin()` 与 `isIgnore()`；一旦命中立即短路放行，零语法树解析开销；
+- **`OrExpression` AST 优先级穿透自动括号防卫**：拦截器在返回表达式前采用写时复制递归对顶层裸 `OrExpression` 及 `AndExpression`/`NotExpression` 子节点内裸露的 `OrExpression` 自动包裹 `ParenthesedExpressionList`（已包裹则跳过避免双层括号），防止 `AND` 优先级高于 `OR` 穿透多租户与逻辑删除边界；
+- **可配 Fail-Closed 失败策略与显式异常透传**：`DataPermissionHandler` 发生非受控异常时按 `failure-strategy` 处理——默认 `DENY_ALL`（记录日志并注入 `1 = 0` 安全拒止）、`THROW`（保留原始 `cause` 链抛出 `BusinessException`）、`FAIL_OPEN`（降级返回 `null` 仅作过渡兼容）；业务 `DataPermissionHandler` 主动抛出的显式 `BusinessException` 一律原样透传不被降级吞咽；
 - **分页 Count 与动态自适应后缀穿透**：当 MyBatis-Plus 分页插件生成 `_mpCount` 派生语句或动态查询生成 `$dynamicAdaptive` 派生语句时，拦截器自动剥离派生后缀还原原始 Mapper 方法名，确保 `COUNT(*)` 统计与数据列表 100% 遵循完全一致的 `@DataScope` 权限边界；
 - **多表 JOIN 别名精确定位**：在联表查询场景下，通过 `@DataScope(alias = "u", deptColumn = "dept_id")` 指定主表别名，防止多表同名字段引发 `Column 'dept_id' in where clause is ambiguous` 语法错误。
 
@@ -1867,6 +1884,7 @@ ateng:
       # 9. 细粒度数据权限配置 (DataPermissionProperties)
       data-permission:
         enabled: false                  # 是否启用细粒度数据权限拦截器（默认 false，按需开启）
+        failure-strategy: DENY_ALL      # SPI 非受控异常失败策略（DENY_ALL 默认注入 1 = 0 / THROW / FAIL_OPEN）
         
       # 10. 持久层守卫与诊断探针配置 (GuardProperties)
       guard:
