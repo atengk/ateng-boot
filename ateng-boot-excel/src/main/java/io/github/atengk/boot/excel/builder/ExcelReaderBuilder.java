@@ -7,6 +7,8 @@ import io.github.atengk.boot.excel.listener.BatchValidationListener;
 import io.github.atengk.boot.excel.listener.ExcelHeaderValidator;
 import io.github.atengk.boot.excel.model.ExcelErrorRow;
 import io.github.atengk.boot.excel.model.ExcelMultiSheetResult;
+import io.github.atengk.boot.excel.model.ExcelRowAware;
+import io.github.atengk.boot.excel.model.ExcelRowData;
 import io.github.atengk.boot.excel.util.ExcelSecurityUtil;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import org.apache.fesod.sheet.ExcelReader;
@@ -901,6 +903,7 @@ public class ExcelReaderBuilder implements AutoCloseable, Closeable {
         private final int maxTotalRows;
         private final AtomicInteger totalRowsCounter;
         private final List<T> dataList = new ArrayList<>();
+        private final List<ExcelRowData<T>> rowRecords = new ArrayList<>();
         private int currentSheetRows = 0;
 
         AggregatedListener(SheetDefinition<T> definition,
@@ -921,7 +924,12 @@ public class ExcelReaderBuilder implements AutoCloseable, Closeable {
                 return;
             }
             enforceRowLimits(definition, context, currentSheetRows, maxRows, maxTotalRows, totalRowsCounter);
+            int rowIndex = BatchValidationListener.resolvePhysicalRowIndex(context);
+            if (data instanceof ExcelRowAware rowAware) {
+                rowAware.setRowIndex(rowIndex);
+            }
             dataList.add(data);
+            rowRecords.add(new ExcelRowData<>(rowIndex, data));
             currentSheetRows++;
         }
 
@@ -929,6 +937,7 @@ public class ExcelReaderBuilder implements AutoCloseable, Closeable {
         public void doAfterAllAnalysed(AnalysisContext context) {
             SheetKeys keys = resolveSheetKeys(definition, context);
             result.recordSheetData(this.dataList, keys.sheetNos(), keys.sheetNames());
+            result.recordSheetRowRecords(this.rowRecords, keys.sheetNos(), keys.sheetNames());
         }
     }
 
@@ -955,6 +964,9 @@ public class ExcelReaderBuilder implements AutoCloseable, Closeable {
         public void invoke(T data, AnalysisContext context) {
             if (data == null) {
                 return;
+            }
+            if (data instanceof ExcelRowAware rowAware) {
+                rowAware.setRowIndex(BatchValidationListener.resolvePhysicalRowIndex(context));
             }
             buffer.add(data);
             rowCount++;
@@ -1069,6 +1081,7 @@ public class ExcelReaderBuilder implements AutoCloseable, Closeable {
         @Override
         protected void recordValidatedResult(SheetKeys keys) {
             result.recordSheetData(delegate.getValidDataList(), keys.sheetNos(), keys.sheetNames());
+            result.recordSheetRowRecords(delegate.getValidRowRecords(), keys.sheetNos(), keys.sheetNames());
         }
     }
 

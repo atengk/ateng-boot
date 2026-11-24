@@ -447,7 +447,17 @@ class SampleExcelIntegrationTest {
         assertThat(dataNode.get("errors").size()).isGreaterThanOrEqualTo(2); // 至少 2 行存在错误
         assertThat(dataNode.get("success").asBoolean()).isFalse();
 
-        // 验证 /import-result 受 max-sync-rows 安全上限防护（超过上限时返回 HTTP 200 + 业务码 400）
+        // 验证 /import-result 受 max-sync-rows 安全上限防护及单次调用覆写 maxSyncRows 重载（0 不限制 / N 严格截断）
+        // 1) 全局未超限时，按次传入 maxSyncRows=2 同样触发 400 快速失败
+        MvcResult perCallExceeded = mockMvc.perform(multipart("/sample/excel/onboarding/import-result")
+                        .file(dirtyFile)
+                        .param("maxSyncRows", "2"))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode perCallJson = objectMapper.readTree(perCallExceeded.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(perCallJson.get("code").asInt()).isEqualTo(400);
+        assertThat(perCallJson.get("msg").asText()).contains("2 行");
+
         int previousLimit = ExcelUtil.getMaxSyncRows();
         try {
             ExcelUtil.setMaxSyncRows(2);
@@ -458,6 +468,17 @@ class SampleExcelIntegrationTest {
             JsonNode exceededJson = objectMapper.readTree(exceededResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
             assertThat(exceededJson.get("code").asInt()).isEqualTo(400);
             assertThat(exceededJson.get("msg").asText()).contains("Excel 数据行数超出同步读取安全上限");
+
+            // 2) 全局阈值收紧为 2 时，按次传入 maxSyncRows=0 放开本次上限并成功读取全部 3 行
+            MvcResult perCallBypass = mockMvc.perform(multipart("/sample/excel/onboarding/import-result")
+                            .file(dirtyFile)
+                            .param("maxSyncRows", "0"))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            JsonNode bypassJson = objectMapper.readTree(perCallBypass.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            assertThat(bypassJson.get("code").asInt()).isEqualTo(200);
+            assertThat(bypassJson.get("data").get("data").size()).isEqualTo(1);
+            assertThat(bypassJson.get("data").get("errors").size()).isGreaterThanOrEqualTo(2);
         } finally {
             ExcelUtil.setMaxSyncRows(previousLimit);
         }
@@ -723,6 +744,8 @@ class SampleExcelIntegrationTest {
         assertThat(node.get("code").asInt()).isEqualTo(200);
         assertThat(node.get("data").get("rosterCount").asInt()).isEqualTo(2);
         assertThat(node.get("data").get("attendanceCount").asInt()).isEqualTo(3);
+        assertThat(node.get("data").get("rosterRowIndices").toString()).isEqualTo("[2,3]");
+        assertThat(node.get("data").get("attendanceRowIndices").toString()).isEqualTo("[2,3,4]");
         assertThat(node.get("data").get("totalRowCount").asInt()).isEqualTo(5);
     }
 
@@ -854,6 +877,8 @@ class SampleExcelIntegrationTest {
         assertThat(cleanNode.get("data").get("hasErrors").asBoolean()).isFalse();
         assertThat(cleanNode.get("data").get("onboardingValidCount").asInt()).isEqualTo(2);
         assertThat(cleanNode.get("data").get("attendanceCount").asInt()).isEqualTo(3);
+        assertThat(cleanNode.get("data").get("onboardingRowIndices").toString()).isEqualTo("[2,3]");
+        assertThat(cleanNode.get("data").get("attendanceRowIndices").toString()).isEqualTo("[2,3,4]");
 
         // 2. 导出含脏数据 AES-256 加密多 Sheet 工作簿并验证跨表错误聚合
         MvcResult dirtyEncryptResult = mockMvc.perform(get("/sample/excel/report/multi-sheet-encrypt")
@@ -879,6 +904,7 @@ class SampleExcelIntegrationTest {
         assertThat(dirtyNode.get("code").asInt()).isEqualTo(200);
         assertThat(dirtyNode.get("data").get("hasErrors").asBoolean()).isTrue();
         assertThat(dirtyNode.get("data").get("onboardingValidCount").asInt()).isEqualTo(1);
+        assertThat(dirtyNode.get("data").get("onboardingRowIndices").toString()).isEqualTo("[2]");
         assertThat(dirtyNode.get("data").get("sheet0ErrorCount").asInt()).isGreaterThanOrEqualTo(4);
         assertThat(dirtyNode.get("data").get("allErrors").size()).isGreaterThanOrEqualTo(4);
 
@@ -1444,10 +1470,16 @@ class SampleExcelIntegrationTest {
             List<UserExcelVO> users = result.getSheetData(0);
             assertThat(users).hasSize(3);
             assertThat(users.get(0).getUsername()).isEqualTo("张三");
+            assertThat(result.getSheetRowRecords(0, UserExcelVO.class))
+                    .extracting(io.github.atengk.boot.excel.model.ExcelRowData::rowIndex)
+                    .containsExactly(2, 3, 4);
 
             List<DepartmentUserMergeVO> departments = result.getSheetData(1);
             assertThat(departments).hasSize(5);
             assertThat(departments.get(0).getDepartment()).isEqualTo("研发部");
+            assertThat(result.getSheetRowRecords(1, DepartmentUserMergeVO.class))
+                    .extracting(io.github.atengk.boot.excel.model.ExcelRowData::rowIndex)
+                    .containsExactly(2, 3, 4, 5, 6);
         }
     }
 

@@ -32,6 +32,16 @@ public class ExcelMultiSheetResult implements Serializable {
     private final Map<String, List<?>> nameDataMap = new LinkedHashMap<>();
 
     /**
+     * 按 Sheet 索引（0-based）存储的携带 1-based 物理行号的有效行视图字典
+     */
+    private final Map<Integer, List<ExcelRowData<?>>> indexRowRecordsMap = new LinkedHashMap<>();
+
+    /**
+     * 按 Sheet 名称存储的携带 1-based 物理行号的有效行视图字典
+     */
+    private final Map<String, List<ExcelRowData<?>>> nameRowRecordsMap = new LinkedHashMap<>();
+
+    /**
      * 各 Sheet 实际解析数据行数统计字典（包含索引与名称两种寻址键）
      */
     private final Map<String, Integer> rowCountMap = new LinkedHashMap<>();
@@ -72,13 +82,8 @@ public class ExcelMultiSheetResult implements Serializable {
      * @param <T>     实体泛型
      * @return 强类型实体数据列表（不存在时保底返回空列表，绝不返回 null）
      */
-    @SuppressWarnings("unchecked")
     public <T> List<T> getSheetData(int sheetNo, Class<T> clazz) {
-        List<?> data = indexDataMap.get(sheetNo);
-        if (data == null || data.isEmpty()) {
-            return Collections.emptyList();
-        }
-        return (List<T>) data;
+        return getSheetData(sheetNo);
     }
 
     /**
@@ -89,16 +94,8 @@ public class ExcelMultiSheetResult implements Serializable {
      * @param <T>       实体泛型
      * @return 强类型实体数据列表（不存在时保底返回空列表，绝不返回 null）
      */
-    @SuppressWarnings("unchecked")
     public <T> List<T> getSheetData(String sheetName, Class<T> clazz) {
-        if (sheetName == null) {
-            return Collections.emptyList();
-        }
-        List<?> data = nameDataMap.get(sheetName);
-        if (data == null || data.isEmpty()) {
-            return Collections.emptyList();
-        }
-        return (List<T>) data;
+        return getSheetData(sheetName);
     }
 
     /**
@@ -108,13 +105,8 @@ public class ExcelMultiSheetResult implements Serializable {
      * @param <T>     推断泛型
      * @return 行数据列表（不存在时保底返回空列表，绝不返回 null）
      */
-    @SuppressWarnings("unchecked")
     public <T> List<T> getSheetData(int sheetNo) {
-        List<?> data = indexDataMap.get(sheetNo);
-        if (data == null || data.isEmpty()) {
-            return Collections.emptyList();
-        }
-        return (List<T>) data;
+        return safeListFromMap(indexDataMap, sheetNo);
     }
 
     /**
@@ -124,16 +116,11 @@ public class ExcelMultiSheetResult implements Serializable {
      * @param <T>       推断泛型
      * @return 行数据列表（不存在时保底返回空列表，绝不返回 null）
      */
-    @SuppressWarnings("unchecked")
     public <T> List<T> getSheetData(String sheetName) {
         if (sheetName == null) {
             return Collections.emptyList();
         }
-        List<?> data = nameDataMap.get(sheetName);
-        if (data == null || data.isEmpty()) {
-            return Collections.emptyList();
-        }
-        return (List<T>) data;
+        return safeListFromMap(nameDataMap, sheetName);
     }
 
     /**
@@ -222,6 +209,119 @@ public class ExcelMultiSheetResult implements Serializable {
     }
 
     /**
+     * 根据工作表索引（0-based）获取携带 1-based 物理行号的有效记录列表
+     *
+     * @param sheetNo 工作表索引（从 0 开始）
+     * @param clazz   目标实体类型 Class（用于类型绑定推断）
+     * @param <T>     实体泛型
+     * @return 携带物理行号的有效行记录列表（不存在、全错误或流式消费模式时保底返回空列表，绝不返回 null）
+     */
+    public <T> List<ExcelRowData<T>> getSheetRowRecords(int sheetNo, Class<T> clazz) {
+        return getSheetRowRecords(sheetNo);
+    }
+
+    /**
+     * 根据工作表名称获取携带 1-based 物理行号的有效记录列表
+     *
+     * @param sheetName 工作表名称
+     * @param clazz     目标实体类型 Class（用于类型绑定推断）
+     * @param <T>       实体泛型
+     * @return 携带物理行号的有效行记录列表（不存在、全错误或流式消费模式时保底返回空列表，绝不返回 null）
+     */
+    public <T> List<ExcelRowData<T>> getSheetRowRecords(String sheetName, Class<T> clazz) {
+        return getSheetRowRecords(sheetName);
+    }
+
+    /**
+     * 根据工作表索引（0-based）获取携带 1-based 物理行号的有效记录列表
+     *
+     * @param sheetNo 工作表索引（从 0 开始）
+     * @param <T>     推断泛型
+     * @return 携带物理行号的有效行记录列表（不存在时保底返回空列表，绝不返回 null）
+     */
+    public <T> List<ExcelRowData<T>> getSheetRowRecords(int sheetNo) {
+        return safeListFromMap(indexRowRecordsMap, sheetNo);
+    }
+
+    /**
+     * 根据工作表名称获取携带 1-based 物理行号的有效记录列表
+     *
+     * @param sheetName 工作表名称
+     * @param <T>       推断泛型
+     * @return 携带物理行号的有效行记录列表（不存在时保底返回空列表，绝不返回 null）
+     */
+    public <T> List<ExcelRowData<T>> getSheetRowRecords(String sheetName) {
+        if (sheetName == null || sheetName.isBlank()) {
+            return Collections.emptyList();
+        }
+        return safeListFromMap(nameRowRecordsMap, sheetName);
+    }
+
+    /**
+     * 获取按索引组织的所有工作表不可变物理行号记录视图字典
+     *
+     * @return 索引工作表物理行号记录字典
+     */
+    public Map<Integer, List<ExcelRowData<?>>> getIndexedRowRecords() {
+        return Collections.unmodifiableMap(indexRowRecordsMap);
+    }
+
+    /**
+     * 获取按表名组织的所有工作表不可变物理行号记录视图字典
+     *
+     * @return 名称工作表物理行号记录字典
+     */
+    public Map<String, List<ExcelRowData<?>>> getNamedRowRecords() {
+        return Collections.unmodifiableMap(nameRowRecordsMap);
+    }
+
+    /**
+     * 写入聚合工作表携带 1-based 物理行号的有效记录列表并统一绑定多维度键（序号、名称、别名等）
+     *
+     * @param rowRecords 携带物理行号的有效行记录列表
+     * @param sheetNos   需要绑定的所有工作表索引
+     * @param sheetNames 需要绑定的所有工作表名称
+     */
+    public void recordSheetRowRecords(List<? extends ExcelRowData<?>> rowRecords,
+                                      Iterable<Integer> sheetNos,
+                                      Iterable<String> sheetNames) {
+        List<ExcelRowData<?>> safeRecords = (rowRecords != null && !rowRecords.isEmpty())
+                ? Collections.unmodifiableList(new ArrayList<>(rowRecords))
+                : Collections.emptyList();
+        bindSheetKeys(indexRowRecordsMap, nameRowRecordsMap, safeRecords, sheetNos, sheetNames);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <E> List<E> safeListFromMap(Map<?, ? extends List<?>> map, Object key) {
+        if (key == null) {
+            return Collections.emptyList();
+        }
+        List<?> list = map.get(key);
+        return (list != null && !list.isEmpty()) ? (List<E>) list : Collections.emptyList();
+    }
+
+    private static <V> void bindSheetKeys(Map<Integer, V> indexMap,
+                                          Map<String, V> nameMap,
+                                          V value,
+                                          Iterable<Integer> sheetNos,
+                                          Iterable<String> sheetNames) {
+        if (sheetNos != null) {
+            for (Integer sheetNo : sheetNos) {
+                if (sheetNo != null) {
+                    indexMap.put(sheetNo, value);
+                }
+            }
+        }
+        if (sheetNames != null) {
+            for (String sheetName : sheetNames) {
+                if (sheetName != null && !sheetName.isBlank()) {
+                    nameMap.put(sheetName, value);
+                }
+            }
+        }
+    }
+
+    /**
      * 写入聚合工作表数据并统一绑定多维度键（序号、名称、别名等），且确保总行数仅精确累加一次
      *
      * @param data       行数据列表
@@ -231,10 +331,10 @@ public class ExcelMultiSheetResult implements Serializable {
     public void recordSheetData(List<?> data, Iterable<Integer> sheetNos, Iterable<String> sheetNames) {
         List<?> safeData = (data != null && !data.isEmpty()) ? Collections.unmodifiableList(data) : Collections.emptyList();
         int size = safeData.size();
+        bindSheetKeys(indexDataMap, nameDataMap, safeData, sheetNos, sheetNames);
         if (sheetNos != null) {
             for (Integer sheetNo : sheetNos) {
                 if (sheetNo != null) {
-                    indexDataMap.put(sheetNo, safeData);
                     rowCountMap.put(String.valueOf(sheetNo), size);
                 }
             }
@@ -242,7 +342,6 @@ public class ExcelMultiSheetResult implements Serializable {
         if (sheetNames != null) {
             for (String sheetName : sheetNames) {
                 if (sheetName != null && !sheetName.isBlank()) {
-                    nameDataMap.put(sheetName, safeData);
                     rowCountMap.put(sheetName, size);
                 }
             }
@@ -288,20 +387,7 @@ public class ExcelMultiSheetResult implements Serializable {
         List<ExcelErrorRow> safeErrors = (errors != null && !errors.isEmpty())
                 ? Collections.unmodifiableList(new ArrayList<>(errors))
                 : Collections.emptyList();
-        if (sheetNos != null) {
-            for (Integer sheetNo : sheetNos) {
-                if (sheetNo != null) {
-                    indexErrorMap.put(sheetNo, safeErrors);
-                }
-            }
-        }
-        if (sheetNames != null) {
-            for (String sheetName : sheetNames) {
-                if (sheetName != null && !sheetName.isBlank()) {
-                    nameErrorMap.put(sheetName, safeErrors);
-                }
-            }
-        }
+        bindSheetKeys(indexErrorMap, nameErrorMap, safeErrors, sheetNos, sheetNames);
         if (!safeErrors.isEmpty()) {
             this.allErrors.addAll(safeErrors);
         }

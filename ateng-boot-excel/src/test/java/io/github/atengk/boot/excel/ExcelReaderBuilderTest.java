@@ -7,12 +7,22 @@ import io.github.atengk.boot.excel.builder.ExcelReaderBuilder;
 import io.github.atengk.boot.excel.model.DemoUser;
 import io.github.atengk.boot.excel.model.EnumAndDictUserVO;
 import io.github.atengk.boot.excel.model.ExcelMultiSheetResult;
+import io.github.atengk.boot.excel.model.ExcelRowAware;
+import io.github.atengk.boot.excel.model.ExcelRowData;
 import io.github.atengk.boot.excel.model.ImportUserVO;
 import io.github.atengk.boot.excel.model.UserGenderEnum;
 import io.github.atengk.boot.excel.model.UserStatusEnum;
 import io.github.atengk.boot.excel.util.ExcelUtil;
+import jakarta.validation.constraints.NotBlank;
+import lombok.Data;
+import org.apache.fesod.sheet.annotation.ExcelIgnore;
+import org.apache.fesod.sheet.annotation.ExcelProperty;
 import org.apache.fesod.sheet.context.AnalysisContext;
 import org.apache.fesod.sheet.read.listener.ReadListener;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -391,5 +401,122 @@ class ExcelReaderBuilderTest {
         assertEquals(2, streamResult.getRowCount("用户表"), "流式分批下按表名查询必须为真实行数 2");
         assertEquals(3, streamResult.getRowCount(1), "流式分批下按索引 1 查询必须为真实行数 3");
         assertEquals(3, streamResult.getRowCount("导入人员表"), "流式分批下按实际表名查询必须为 3");
+    }
+
+    @Data
+    public static class RowTrackingSheetItem implements ExcelRowAware {
+        @ExcelProperty("编码")
+        @NotBlank(message = "编码不能为空")
+        private String code;
+
+        @ExcelProperty("名称")
+        private String title;
+
+        @ExcelIgnore
+        private Integer rowIndex;
+    }
+
+    @Test
+    @DisplayName("测试 多工作表物理行号追踪：校验聚合、非校验聚合、跳空行与流式消费常量内存边界")
+    void testMultiSheetRowRecordsTrackingAndRowAwareBackfill() throws Exception {
+        byte[] workbookBytes;
+        try (Workbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            // Sheet 0 (校验聚合): 第 1 行表头；第 2 行有效；第 3 行为空行；第 4 行非法(编码为空)；第 5 行有效
+            Sheet s0 = wb.createSheet("校验表");
+            Row s0Head = s0.createRow(0);
+            s0Head.createCell(0).setCellValue("编码");
+            s0Head.createCell(1).setCellValue("名称");
+            Row s0r2 = s0.createRow(1);
+            s0r2.createCell(0).setCellValue("C001");
+            s0r2.createCell(1).setCellValue("合法行2");
+            // row 2 (物理第 3 行) 留空
+            Row s0r4 = s0.createRow(3);
+            s0r4.createCell(0).setCellValue("");
+            s0r4.createCell(1).setCellValue("非法行4");
+            Row s0r5 = s0.createRow(4);
+            s0r5.createCell(0).setCellValue("C003");
+            s0r5.createCell(1).setCellValue("合法行5");
+
+            // Sheet 1 (非校验聚合): 第 1 行表头；第 2 行有效；第 3 行留空；第 4 行有效
+            Sheet s1 = wb.createSheet("普通表");
+            Row s1Head = s1.createRow(0);
+            s1Head.createCell(0).setCellValue("编码");
+            s1Head.createCell(1).setCellValue("名称");
+            Row s1r2 = s1.createRow(1);
+            s1r2.createCell(0).setCellValue("N001");
+            s1r2.createCell(1).setCellValue("普通行2");
+            Row s1r4 = s1.createRow(3);
+            s1r4.createCell(0).setCellValue("N002");
+            s1r4.createCell(1).setCellValue("普通行4");
+
+            // Sheet 2 (全错误行): 第 1 行表头；第 2 行非法
+            Sheet s2 = wb.createSheet("全错表");
+            Row s2Head = s2.createRow(0);
+            s2Head.createCell(0).setCellValue("编码");
+            s2Head.createCell(1).setCellValue("名称");
+            Row s2r2 = s2.createRow(1);
+            s2r2.createCell(0).setCellValue("");
+            s2r2.createCell(1).setCellValue("必错");
+
+            wb.write(out);
+            workbookBytes = out.toByteArray();
+        }
+
+        // 1. 聚合读取模式：混合校验 Sheet + 非校验 Sheet + 全错 Sheet
+        ExcelMultiSheetResult aggResult = ExcelUtil.reader(new ByteArrayInputStream(workbookBytes))
+                .sheet(0, RowTrackingSheetItem.class, true)
+                .sheet(1, RowTrackingSheetItem.class, false)
+                .sheet(2, RowTrackingSheetItem.class, true)
+                .read();
+
+        // Sheet 0 (校验聚合): 仅第 2、5 行合法，物理行号必须严格为 2 和 5，且 ExcelRowAware 同步回填
+        List<ExcelRowData<RowTrackingSheetItem>> s0RecordsByIndex = aggResult.getSheetRowRecords(0, RowTrackingSheetItem.class);
+        List<ExcelRowData<RowTrackingSheetItem>> s0RecordsByName = aggResult.getSheetRowRecords("校验表", RowTrackingSheetItem.class);
+        assertEquals(2, s0RecordsByIndex.size());
+        assertEquals(s0RecordsByIndex, s0RecordsByName);
+        assertEquals(2, s0RecordsByIndex.get(0).rowIndex());
+        assertEquals("C001", s0RecordsByIndex.get(0).data().getCode());
+        assertEquals(2, s0RecordsByIndex.get(0).data().getRowIndex());
+        assertEquals(5, s0RecordsByIndex.get(1).rowIndex());
+        assertEquals("C003", s0RecordsByIndex.get(1).data().getCode());
+        assertEquals(5, s0RecordsByIndex.get(1).data().getRowIndex());
+        assertEquals(1, aggResult.getSheetErrors(0).size());
+        assertEquals(4, aggResult.getSheetErrors(0).get(0).getRowIndex());
+
+        // Sheet 1 (非校验聚合): 跳过空行 3，物理行号必须为 2 和 4
+        List<ExcelRowData<RowTrackingSheetItem>> s1Records = aggResult.getSheetRowRecords("普通表");
+        assertEquals(2, s1Records.size());
+        assertEquals(2, s1Records.get(0).rowIndex());
+        assertEquals(2, s1Records.get(0).data().getRowIndex());
+        assertEquals(4, s1Records.get(1).rowIndex());
+        assertEquals(4, s1Records.get(1).data().getRowIndex());
+
+        // Sheet 2 (全错表) 与不存在的表：保底返回不可变空列表（绝不返回 null）
+        List<ExcelRowData<RowTrackingSheetItem>> s2Records = aggResult.getSheetRowRecords(2);
+        assertNotNull(s2Records);
+        assertTrue(s2Records.isEmpty());
+        assertNotNull(aggResult.getSheetRowRecords(999));
+        assertTrue(aggResult.getSheetRowRecords(999).isEmpty());
+        assertNotNull(aggResult.getSheetRowRecords("不存在"));
+        assertTrue(aggResult.getSheetRowRecords("不存在").isEmpty());
+        assertTrue(aggResult.getIndexedRowRecords().containsKey(0));
+        assertTrue(aggResult.getNamedRowRecords().containsKey("普通表"));
+
+        // 2. 流式分批模式：ExcelRowAware 回填物理行号，但结果容器不滞留 rowRecords 守住 O(1) 内存
+        List<RowTrackingSheetItem> validatedStreamed = new ArrayList<>();
+        List<RowTrackingSheetItem> plainStreamed = new ArrayList<>();
+        ExcelMultiSheetResult streamResult = ExcelUtil.reader(new ByteArrayInputStream(workbookBytes))
+                .sheet(0, RowTrackingSheetItem.class, 10, validatedStreamed::addAll, true)
+                .sheet(1, RowTrackingSheetItem.class, 10, plainStreamed::addAll, false)
+                .read();
+
+        assertEquals(2, validatedStreamed.size());
+        assertEquals(2, validatedStreamed.get(0).getRowIndex());
+        assertEquals(5, validatedStreamed.get(1).getRowIndex());
+        assertEquals(2, plainStreamed.size());
+        assertEquals(2, plainStreamed.get(0).getRowIndex());
+        assertEquals(4, plainStreamed.get(1).getRowIndex());
+        assertTrue(streamResult.getSheetRowRecords(0).isEmpty());
+        assertTrue(streamResult.getSheetRowRecords(1).isEmpty());
     }
 }

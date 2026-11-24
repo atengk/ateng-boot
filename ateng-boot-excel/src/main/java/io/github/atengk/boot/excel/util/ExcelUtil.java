@@ -1228,16 +1228,8 @@ public final class ExcelUtil {
      * @param <T>         实体数据泛型
      * @return 包含合法数据与错误行信息的 {@link ExcelReadResult}
      */
-    /**
-     * 强类型读取 Excel 并返回包含合法数据与全部错误行的复合结果（不抛异常，采用全局配置的表头策略与熔断阈值）
-     *
-     * @param inputStream 输入流（不可为空）
-     * @param clazz       读取映射的目标实体 Class（不可为空）
-     * @param <T>         实体数据泛型
-     * @return 包含合法数据与错误行信息的 {@link ExcelReadResult}
-     */
     public static <T> ExcelReadResult<T> readWithResult(InputStream inputStream, Class<T> clazz) {
-        return readWithResult(inputStream, clazz, defaultValidationProperties.getHeaderStrategy(), defaultValidationProperties.getMaxErrorRows(), null);
+        return readWithResult(inputStream, clazz, defaultValidationProperties.getHeaderStrategy(), defaultValidationProperties.getMaxErrorRows(), maxSyncRows, null);
     }
 
     /**
@@ -1250,7 +1242,34 @@ public final class ExcelUtil {
      * @return 包含合法数据与错误行信息的 {@link ExcelReadResult}
      */
     public static <T> ExcelReadResult<T> readWithResult(InputStream inputStream, Class<T> clazz, String password) {
-        return readWithResult(inputStream, clazz, defaultValidationProperties.getHeaderStrategy(), defaultValidationProperties.getMaxErrorRows(), password);
+        return readWithResult(inputStream, clazz, defaultValidationProperties.getHeaderStrategy(), defaultValidationProperties.getMaxErrorRows(), maxSyncRows, password);
+    }
+
+    /**
+     * 强类型读取 Excel 并返回包含合法数据与全部错误行的复合结果（支持按次覆写同步最大行数上限）
+     *
+     * @param inputStream 输入流（不可为空）
+     * @param clazz       读取映射的目标实体 Class（不可为空）
+     * @param maxSyncRows 本次调用的同步全量读取最大允许行数上限（{@code <= 0} 表示本次调用不限制）
+     * @param <T>         实体数据泛型
+     * @return 包含合法数据、错误行信息及熔断状态的 {@link ExcelReadResult}
+     */
+    public static <T> ExcelReadResult<T> readWithResult(InputStream inputStream, Class<T> clazz, int maxSyncRows) {
+        return readWithResult(inputStream, clazz, defaultValidationProperties.getHeaderStrategy(), defaultValidationProperties.getMaxErrorRows(), maxSyncRows, null);
+    }
+
+    /**
+     * 强类型读取 Excel 并返回包含合法数据与全部错误行的复合结果（支持按次覆写同步最大行数上限与解密密码）
+     *
+     * @param inputStream 输入流（不可为空）
+     * @param clazz       读取映射的目标实体 Class（不可为空）
+     * @param maxSyncRows 本次调用的同步全量读取最大允许行数上限（{@code <= 0} 表示本次调用不限制）
+     * @param password    工作簿解密密码（加密时必填，未加密时忽略）
+     * @param <T>         实体数据泛型
+     * @return 包含合法数据、错误行信息及熔断状态的 {@link ExcelReadResult}
+     */
+    public static <T> ExcelReadResult<T> readWithResult(InputStream inputStream, Class<T> clazz, int maxSyncRows, String password) {
+        return readWithResult(inputStream, clazz, defaultValidationProperties.getHeaderStrategy(), defaultValidationProperties.getMaxErrorRows(), maxSyncRows, password);
     }
 
     /**
@@ -1263,7 +1282,7 @@ public final class ExcelUtil {
      * @return 包含合法数据、错误行信息及熔断状态的 {@link ExcelReadResult}
      */
     public static <T> ExcelReadResult<T> readWithResult(InputStream inputStream, Class<T> clazz, HeaderValidationStrategy headerStrategy) {
-        return readWithResult(inputStream, clazz, headerStrategy, defaultValidationProperties.getMaxErrorRows(), null);
+        return readWithResult(inputStream, clazz, headerStrategy, defaultValidationProperties.getMaxErrorRows(), maxSyncRows, null);
     }
 
     /**
@@ -1277,7 +1296,7 @@ public final class ExcelUtil {
      * @return 包含合法数据、错误行信息及熔断状态的 {@link ExcelReadResult}
      */
     public static <T> ExcelReadResult<T> readWithResult(InputStream inputStream, Class<T> clazz, HeaderValidationStrategy headerStrategy, String password) {
-        return readWithResult(inputStream, clazz, headerStrategy, defaultValidationProperties.getMaxErrorRows(), password);
+        return readWithResult(inputStream, clazz, headerStrategy, defaultValidationProperties.getMaxErrorRows(), maxSyncRows, password);
     }
 
     /**
@@ -1291,15 +1310,11 @@ public final class ExcelUtil {
      * @return 包含合法数据、错误行信息及熔断状态的 {@link ExcelReadResult}
      */
     public static <T> ExcelReadResult<T> readWithResult(InputStream inputStream, Class<T> clazz, HeaderValidationStrategy headerStrategy, int maxErrorRows) {
-        return readWithResult(inputStream, clazz, headerStrategy, maxErrorRows, null);
+        return readWithResult(inputStream, clazz, headerStrategy, maxErrorRows, maxSyncRows, null);
     }
 
     /**
      * 强类型读取 Excel 并返回包含合法数据与全部错误行的复合结果（支持解密密码，指定表头校验策略与错误熔断阈值）
-     * <p>
-     * 常规行级 JSR-303 校验失败将聚合至 {@link ExcelReadResult} 不抛异常；
-     * 若表头契约失配、工作簿解密密码错误或总数据行数超出 {@code maxSyncRows} 安全上限，仍将快速失败抛出异常。
-     * </p>
      *
      * @param inputStream    输入流（不可为空）
      * @param clazz          读取映射的目标实体 Class（不可为空）
@@ -1314,18 +1329,63 @@ public final class ExcelUtil {
                                                         HeaderValidationStrategy headerStrategy,
                                                         int maxErrorRows,
                                                         String password) {
+        return readWithResult(inputStream, clazz, headerStrategy, maxErrorRows, maxSyncRows, password);
+    }
+
+    /**
+     * 强类型读取 Excel 并返回包含合法数据与全部错误行的复合结果（指定表头校验策略、错误熔断阈值与按次覆写同步行数上限）
+     *
+     * @param inputStream    输入流（不可为空）
+     * @param clazz          读取映射的目标实体 Class（不可为空）
+     * @param headerStrategy 表头契约校验策略
+     * @param maxErrorRows   最大错误熔断行数（{@code <= 0} 时沿用全局默认配置）
+     * @param maxSyncRows    本次调用的同步全量读取最大允许行数上限（{@code <= 0} 表示本次调用不限制）
+     * @param <T>            实体数据泛型
+     * @return 包含合法数据、错误行信息及熔断状态的 {@link ExcelReadResult}
+     */
+    public static <T> ExcelReadResult<T> readWithResult(InputStream inputStream,
+                                                        Class<T> clazz,
+                                                        HeaderValidationStrategy headerStrategy,
+                                                        int maxErrorRows,
+                                                        int maxSyncRows) {
+        return readWithResult(inputStream, clazz, headerStrategy, maxErrorRows, maxSyncRows, null);
+    }
+
+    /**
+     * 强类型读取 Excel 并返回包含合法数据与全部错误行的复合结果（全参数控制：表头策略、错误熔断阈值、按次覆写同步行数上限与解密密码）
+     * <p>
+     * 常规行级 JSR-303 校验失败将聚合至 {@link ExcelReadResult} 不抛异常；
+     * 若表头契约失配、工作簿解密密码错误或总数据行数超出本次生效的 {@code maxSyncRows} 安全上限，仍将快速失败抛出异常。
+     * </p>
+     *
+     * @param inputStream    输入流（不可为空）
+     * @param clazz          读取映射的目标实体 Class（不可为空）
+     * @param headerStrategy 表头契约校验策略
+     * @param maxErrorRows   最大错误熔断行数（{@code <= 0} 时沿用全局默认配置）
+     * @param maxSyncRows    本次调用的同步全量读取最大允许行数上限（{@code <= 0} 表示本次调用不限制）
+     * @param password       工作簿解密密码（加密时必填，未加密时忽略）
+     * @param <T>            实体数据泛型
+     * @return 包含合法数据、错误行信息及熔断状态的 {@link ExcelReadResult}
+     */
+    public static <T> ExcelReadResult<T> readWithResult(InputStream inputStream,
+                                                        Class<T> clazz,
+                                                        HeaderValidationStrategy headerStrategy,
+                                                        int maxErrorRows,
+                                                        int maxSyncRows,
+                                                        String password) {
         Assert.notNull(inputStream, "InputStream 输入流不可为空");
         Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
 
         HeaderValidationStrategy strategy = headerStrategy != null ? headerStrategy : defaultValidationProperties.getHeaderStrategy();
         int maxErrors = maxErrorRows > 0 ? maxErrorRows : defaultValidationProperties.getMaxErrorRows();
+        int effectiveMaxSyncRows = Math.max(0, maxSyncRows);
 
         BatchValidationListener<T> listener = new BatchValidationListener<>(
                 clazz,
                 defaultBatchSize,
                 false,
                 maxErrors,
-                maxSyncRows,
+                effectiveMaxSyncRows,
                 strategy,
                 null,
                 null,

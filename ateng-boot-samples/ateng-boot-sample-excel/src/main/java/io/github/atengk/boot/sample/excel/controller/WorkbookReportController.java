@@ -6,6 +6,7 @@ import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import io.github.atengk.boot.excel.enums.HeaderValidationStrategy;
 import io.github.atengk.boot.excel.model.ExcelErrorRow;
 import io.github.atengk.boot.excel.model.ExcelMultiSheetResult;
+import io.github.atengk.boot.excel.model.ExcelRowData;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.excel.util.ExcelWebUtil;
 import io.github.atengk.boot.sample.excel.enums.EmployeeStatusEnum;
@@ -172,6 +173,8 @@ public class WorkbookReportController {
 
             List<OnboardingImportVO> onboardingValidList = result.getSheetData(0);
             List<DepartmentAttendanceMergeVO> attendanceList = result.getSheetData(1);
+            List<ExcelRowData<OnboardingImportVO>> onboardingRowRecords = result.getSheetRowRecords(0, OnboardingImportVO.class);
+            List<ExcelRowData<DepartmentAttendanceMergeVO>> attendanceRowRecords = result.getSheetRowRecords(1, DepartmentAttendanceMergeVO.class);
             List<ExcelErrorRow> sheet0Errors = result.getSheetErrors(0);
             List<ExcelErrorRow> sheet1Errors = result.getSheetErrors(1);
 
@@ -180,6 +183,8 @@ public class WorkbookReportController {
             summary.put("totalRowCount", result.getTotalRowCount());
             summary.put("onboardingValidCount", onboardingValidList.size());
             summary.put("attendanceCount", attendanceList.size());
+            summary.put("onboardingRowIndices", onboardingRowRecords.stream().map(ExcelRowData::rowIndex).toList());
+            summary.put("attendanceRowIndices", attendanceRowRecords.stream().map(ExcelRowData::rowIndex).toList());
             summary.put("hasErrors", result.hasErrors());
             summary.put("circuitBroken", result.isCircuitBroken());
             summary.put("sheet0ErrorCount", sheet0Errors.size());
@@ -193,7 +198,7 @@ public class WorkbookReportController {
      * 端点 2：上传包含多工作表的 Excel 文件并执行异构多 Sheet 联合解析
      *
      * @param file 上传的 Excel 文件
-     * @return 提取各 Sheet 数据的摘要统计结果
+     * @return 提取各 Sheet 数据与 1-based 物理行号追踪摘要的统计结果
      * @throws IOException IO 异常
      */
     @PostMapping(value = "/multi-sheet-parse", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -207,10 +212,14 @@ public class WorkbookReportController {
 
             List<EmployeeRosterVO> rosters = result.getSheetData(0);
             List<DepartmentAttendanceMergeVO> attendances = result.getSheetData(1);
+            List<ExcelRowData<EmployeeRosterVO>> rosterRowRecords = result.getSheetRowRecords(0, EmployeeRosterVO.class);
+            List<ExcelRowData<DepartmentAttendanceMergeVO>> attendanceRowRecords = result.getSheetRowRecords(1, DepartmentAttendanceMergeVO.class);
 
             Map<String, Object> summary = new HashMap<>();
             summary.put("rosterCount", rosters.size());
             summary.put("attendanceCount", attendances.size());
+            summary.put("rosterRowIndices", rosterRowRecords.stream().map(ExcelRowData::rowIndex).toList());
+            summary.put("attendanceRowIndices", attendanceRowRecords.stream().map(ExcelRowData::rowIndex).toList());
             summary.put("totalRowCount", result.getTotalRowCount());
             return Result.success(summary);
         }

@@ -343,4 +343,67 @@ class ExcelValidationTest {
         assertThrows(BusinessException.class, () ->
                 FesodSheet.read(new ByteArrayInputStream(excelBytes), ImportUserVO.class, boundedListener).sheet().doRead());
     }
+
+    @Test
+    @DisplayName("测试 readWithResult 按次覆写 maxSyncRows 全部重载（严格上限拦截、0/-1 本次放行与加密工作簿）")
+    void testReadWithResultPerCallMaxSyncRowsOverloads() {
+        int previousLimit = ExcelUtil.getMaxSyncRows();
+        try {
+            List<ImportUserVO> rows = List.of(
+                    ImportUserVO.builder().name("一").phone("13811111111").age(22).email("u1@test.com").build(),
+                    ImportUserVO.builder().name("二").phone("13822222222").age(23).email("u2@test.com").build(),
+                    ImportUserVO.builder().name("非法三").phone("bad").age(24).email("u3@test.com").build(),
+                    ImportUserVO.builder().name("四").phone("13844444444").age(25).email("u4@test.com").build()
+            );
+            ByteArrayOutputStream plainOut = new ByteArrayOutputStream();
+            ExcelUtil.export(plainOut, rows, ImportUserVO.class);
+            byte[] plainBytes = plainOut.toByteArray();
+
+            ByteArrayOutputStream cipherOut = new ByteArrayOutputStream();
+            ExcelUtil.export(cipherOut, "Sheet1", rows, ImportUserVO.class, null, null, "SyncPwd@2026");
+            byte[] cipherBytes = cipherOut.toByteArray();
+
+            // 1. 全局阈值设为较宽松的 1000，单次重载传 maxSyncRows = 3 时应在读取第 4 行触发 BusinessException(400)
+            ExcelUtil.setMaxSyncRows(1000);
+            BusinessException ex3Arg = assertThrows(BusinessException.class, () ->
+                    ExcelUtil.readWithResult(new ByteArrayInputStream(plainBytes), ImportUserVO.class, 3));
+            assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex3Arg.getCode());
+            assertTrue(ex3Arg.getMessage().contains("3 行"));
+
+            BusinessException ex5Arg = assertThrows(BusinessException.class, () ->
+                    ExcelUtil.readWithResult(new ByteArrayInputStream(plainBytes), ImportUserVO.class,
+                            HeaderValidationStrategy.LOOSE, 100, 3));
+            assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex5Arg.getCode());
+
+            BusinessException exEncrypted = assertThrows(BusinessException.class, () ->
+                    ExcelUtil.readWithResult(new ByteArrayInputStream(cipherBytes), ImportUserVO.class,
+                            HeaderValidationStrategy.LOOSE, 0, 3, "SyncPwd@2026"));
+            assertEquals(CommonResultCode.BAD_REQUEST.getCode(), exEncrypted.getCode());
+
+            // 2. 全局阈值收紧为 2 时，不传 maxSyncRows 触发拦截；显式传 0 或 -1 则解除本次限制正常返回
+            ExcelUtil.setMaxSyncRows(2);
+            assertThrows(BusinessException.class, () ->
+                    ExcelUtil.readWithResult(new ByteArrayInputStream(plainBytes), ImportUserVO.class));
+
+            ExcelReadResult<ImportUserVO> unlimitedZero = ExcelUtil.readWithResult(
+                    new ByteArrayInputStream(plainBytes), ImportUserVO.class, 0);
+            assertEquals(3, unlimitedZero.getData().size());
+            assertEquals(1, unlimitedZero.getErrors().size());
+
+            ExcelReadResult<ImportUserVO> unlimitedNegative = ExcelUtil.readWithResult(
+                    new ByteArrayInputStream(cipherBytes), ImportUserVO.class, -1, "SyncPwd@2026");
+            assertEquals(3, unlimitedNegative.getData().size());
+            assertEquals(1, unlimitedNegative.getErrors().size());
+
+            // 3. 恰好等于单次上限 4 且 maxErrorRows <= 0 时自动沿用默认错误阈值，成功放行
+            ExcelReadResult<ImportUserVO> exactEncrypted = ExcelUtil.readWithResult(
+                    new ByteArrayInputStream(cipherBytes), ImportUserVO.class,
+                    HeaderValidationStrategy.STRICT, 0, 4, "SyncPwd@2026");
+            assertEquals(3, exactEncrypted.getData().size());
+            assertEquals(3, exactEncrypted.getRowRecords().size());
+            assertEquals(1, exactEncrypted.getErrors().size());
+        } finally {
+            ExcelUtil.setMaxSyncRows(previousLimit);
+        }
+    }
 }

@@ -240,9 +240,7 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
         }
 
         // 1. 获取当前物理行号（从 1 开始，如表头占 1 行则首行数据为 2；多级表头及跳过空行均由 Fesod 原生行号精确对齐）
-        int rowIndex = (context != null && context.readRowHolder() != null)
-                ? context.readRowHolder().getRowIndex() + 1
-                : 1;
+        int rowIndex = resolvePhysicalRowIndex(context);
         if (data instanceof ExcelRowAware rowAware) {
             rowAware.setRowIndex(rowIndex);
         }
@@ -400,6 +398,18 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
      */
     public HeaderValidationStrategy getHeaderStrategy() {
         return headerStrategy;
+    }
+
+    /**
+     * 解析当前解析上下文对应的 1-based Excel 物理行号
+     *
+     * @param context Apache Fesod 解析上下文
+     * @return 1-based 物理行号（上下文缺失时保底返回 1）
+     */
+    public static int resolvePhysicalRowIndex(AnalysisContext context) {
+        return (context != null && context.readRowHolder() != null)
+                ? context.readRowHolder().getRowIndex() + 1
+                : 1;
     }
 
     /**

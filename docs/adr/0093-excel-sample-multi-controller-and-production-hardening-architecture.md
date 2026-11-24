@@ -57,10 +57,11 @@ flowchart TD
 2. **下载前缀解耦与路径穿越防卫**：`ExcelAsyncExportProperties` 增加 `downloadUrlPrefix`（默认锁定为 `"/api/excel/async-download?taskId="`），`LocalFileSystemStorage` 统一读取该配置项拼装下载链接，并在 `resolvePath` 中通过 `FileUtil` 与 `normalize().startsWith(basePath.normalize())` 严格阻断 `taskId`/`storageKey` 路径穿越；
 3. **自动装配与受管并发防 Pinning 防卫**：`AtengExcelAutoConfiguration` 补充 `@AutoConfigureAfter` 显式对齐 Redis 与国际化装配时序，为初始化 Bean 挂载 `@ConditionalOnMissingBean`；取缔 `InMemoryAsyncExportTaskService` 与 `RedisAsyncExportTaskService` 中的 `Executors.newSingleThreadScheduledExecutor` 野线程，并将 `StreamingPageExportTemplate` 与 `BatchValidationListener` 中涉及 I/O 的 `synchronized` 全面替换为 `ReentrantLock`（防 JDK 21+ 虚拟线程 Carrier Pinning）；
 4. **水印角度与文档对齐**：统一修正 `ExcelWatermarkUtil` 与 `WatermarkSheetWriteHandler` Javadoc 默认旋转角为 `-30°`（并说明可配置重载）；
-5. **对称加解密与 Web 流式门面完备化**：
+5. **对称加解密、Web 流式门面与行数/行号完备化**：
    - 为 `readWithResult`、`readBatchWithValidation` 与 `validateHeader` 增补纯增量 `password` 重载；
+   - 为 `readWithResult` 补齐按次覆写同步读取行数上限的无歧义重载组（`readWithResult(in, clazz, maxSyncRows[, password])` 与 `readWithResult(in, clazz, headerStrategy, maxErrorRows, maxSyncRows[, password])`，规避与四参 `maxErrorRows` 签名冲突；显式传入 `<= 0` 表示本次不限制，未传时沿用全局 `ExcelProperties#maxSyncRows`）；
    - 为 `ExcelBuilder`（延迟初始化 `ExcelWriter` 并支持 `.encrypt(password)` 与 `ExcelUtil.builder(out, password)`）、`StreamingPageExportTemplate`（`.encrypt(password)`）、`ExcelUtil.fill(..., password)` 及 `ExcelUtil.exportDynamic(..., password)` 补齐整工作簿 AES-256 加密能力；
-   - 为 `ExcelReaderBuilder` 与 `ExcelMultiSheetResult` 补齐多 Sheet 表头契约校验与 JSR-303 行级校验聚合能力（`.validate()` / `.failFast(boolean)` / `.headerStrategy(...)`）；
+   - 为 `ExcelReaderBuilder` 与 `ExcelMultiSheetResult` 补齐多 Sheet 表头契约校验、JSR-303 行级校验聚合能力（`.validate()` / `.failFast(boolean)` / `.headerStrategy(...)`）及对称的 1-based 物理行号保留能力（聚合路径同步记录 `List<ExcelRowData<T>>` 并提供 `getSheetRowRecords` / `getIndexedRowRecords` / `getNamedRowRecords`，全路径兼容回填 `ExcelRowAware#setRowIndex`，流式分批消费路径不滞留 `rowRecords` 严守 `O(1)` 堆内存）；
    - 为 `ExcelWebUtil` 补齐缺失的 `ResponseEntity<StreamingResponseBody>` 对称重载（`toResponseEntityFailedRows`、`toResponseEntityFill`、`toResponseEntityStreaming`、`toResponseEntityStreamingByCursor`）；
 6. **异步任务分布式文件回收与实时进度上报**：`InMemoryAsyncExportTaskService` 与 `RedisAsyncExportTaskService`（基于 `keyPrefix + "expire-index"` ZSet 过期索引与 `ZREM` 原子抢占）在清理过期任务时对称触发 `fileStorage.delete(taskId, storageKey)`；并在 `AsyncExportTaskService` 与 `StreamingPageExportTemplate` 中支持实时进度百分比回调（`updateProgress`）；
 7. **超长下拉隐藏字典表与 Spring 容器 `DropdownProvider`**：`DropdownSheetWriteHandler` 优先通过 `SpringUtil.getBean` 解析 `DropdownProvider`（无容器或未注册时平滑回退反射实例化）；当下拉选项总长度突破 Excel 255 字符单行公式限制时，自动创建隐藏字典工作表（Hidden Sheet）并通过跨表名称引用实现超长下拉选单；
@@ -91,6 +92,6 @@ flowchart TD
 
 ## 演进落地状态与交付审计 (Delivery & Verification Audit)
 
-- **当前状态**：`Accepted (切片落地中)`
-- **关联工单**：#785（Parent Spec）、#786（Slice 1）、#787（Slice 2）、#788（Slice 3）、#941（九道防线加固与全场景门面对称扩容 Spec）、#942（Slice 1：列索引解析/无损样式克隆/超长下拉隐藏表）、#943（Slice 2：受管调度/分布式过期回收/进度上报/图片与存储安全护栏）、#944（Slice 3：全链路 AES-256 加密/多 Sheet 校验/Web 流式门面对称）、#945（Slice 4：Sample 6 大控制器体验演进与五维文档闭环）
+- **当前状态**：`Accepted`
+- **关联工单**：#785（Parent Spec）、#786（Slice 1）、#787（Slice 2）、#788（Slice 3）、#941（九道防线加固与全场景门面对称扩容 Spec）、#942（Slice 1：列索引解析/无损样式克隆/超长下拉隐藏表）、#943（Slice 2：受管调度/分布式过期回收/进度上报/图片与存储安全护栏）、#944（Slice 3：全链路 AES-256 加密/多 Sheet 校验/Web 流式门面对称）、#945（Slice 4：Sample 6 大控制器体验演进与五维文档闭环）、#1171（`readWithResult` `maxSyncRows` 防爆拦截）、#1174（`readWithResult` 按次覆写 `maxSyncRows` 重载与 `ExcelReaderBuilder`/`ExcelMultiSheetResult` 物理行号对称保留）
 - **前置修订追溯**：本决策全面演进并替代 [ADR-0057](./0057-excel-multi-sheet-streaming-and-native-workbook-encryption-architecture.md) 第 5 节。

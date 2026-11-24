@@ -129,11 +129,12 @@ public class OnboardingImportController {
     }
 
     /**
-     * 端点 5：强类型同步读取与 JSR-303 格式校验（返回合法数据与错误明细，不抛异常）
+     * 端点 5：强类型同步读取与 JSR-303 格式校验（返回合法数据与错误明细，支持按次覆写 maxSyncRows）
      *
      * @param file           上传的 Excel 文件
      * @param headerStrategy 表头校验策略（默认 LOOSE）
      * @param maxErrorRows   最大错误熔断行数（默认 100）
+     * @param maxSyncRows    本次调用覆写的同步读取安全行数上限（可选；{@code <= 0} 表示本次不限制）
      * @return 复合校验读取结果
      * @throws IOException IO 异常
      */
@@ -142,9 +143,12 @@ public class OnboardingImportController {
     public Result<ExcelReadResult<OnboardingImportVO>> importWithResult(
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "headerStrategy", defaultValue = "LOOSE") HeaderValidationStrategy headerStrategy,
-            @RequestParam(value = "maxErrorRows", defaultValue = "100") int maxErrorRows) throws IOException {
+            @RequestParam(value = "maxErrorRows", defaultValue = "100") int maxErrorRows,
+            @RequestParam(value = "maxSyncRows", required = false) Integer maxSyncRows) throws IOException {
         try (InputStream in = file.getInputStream()) {
-            ExcelReadResult<OnboardingImportVO> result = ExcelUtil.readWithResult(in, OnboardingImportVO.class, headerStrategy, maxErrorRows);
+            ExcelReadResult<OnboardingImportVO> result = maxSyncRows != null
+                    ? ExcelUtil.readWithResult(in, OnboardingImportVO.class, headerStrategy, maxErrorRows, maxSyncRows)
+                    : ExcelUtil.readWithResult(in, OnboardingImportVO.class, headerStrategy, maxErrorRows);
             return Result.success(result);
         }
     }

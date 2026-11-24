@@ -121,7 +121,7 @@ _Avoid_: RowIndexCapable, TrackableExcelModel
 _Avoid_: ValidationError, CellErrorInfo
 
 **ExcelMultiSheetResult**:
-异构多工作表流式解析与校验聚合结果容器载荷，按工作表序号或 Sheet 名称分别存放对应异构实体模型的数据列表与行级 JSR-303 校验错误明细（`ExcelErrorRow`），提供强类型泛型安全提取与跨表错误汇总方法。
+异构多工作表流式解析与校验聚合结果容器载荷，按工作表序号或 Sheet 名称分别存放对应异构实体模型的数据列表、携带真实 1-based 物理行号的有效行视图（`List<ExcelRowData<T>>`，`getSheetRowRecords` / `getIndexedRowRecords` / `getNamedRowRecords`）与行级 JSR-303 校验错误明细（`ExcelErrorRow`），提供强类型泛型安全提取与跨表错误汇总方法，无数据或流式消费模式下保底返回不可变空列表。
 _Avoid_: MultiSheetData, MultiSheetResponse
 
 **ExcelValidationException**:
@@ -153,7 +153,7 @@ _Avoid_: CellLockHandler, ColumnProtectWriter, EditableColumnStrategy, ColumnLoc
 _Avoid_: LocaleHeaderWriter, MultiLangHeaderHandler, TranslationInterceptor
 
 **ExcelReaderBuilder**:
-Fluent 链式多 Sheet 流式读取构建器，允许在单次 I/O 流生命周期内为同一个工作簿编排多个不同工作表（Sheet）的读取契约，支持按索引/表名寻址、异构数据模型映射、多 Sheet 表头契约校验与 JSR-303 行级校验、分批回调与全量聚合双模消费，实现读写对称完备性。默认总行数上限为 200,000 行防 OOM。
+Fluent 链式多 Sheet 流式读取构建器，允许在单次 I/O 流生命周期内为同一个工作簿编排多个不同工作表（Sheet）的读取契约，支持按索引/表名寻址、异构数据模型映射、多 Sheet 表头契约校验与 JSR-303 行级校验、分批回调与全量聚合双模消费，在聚合模式下同步保留 1-based 物理行号视图（`ExcelRowData`）并在全模式兼容回填 `ExcelRowAware#setRowIndex`（流式分批模式严守 O(1) 恒定内存不累积 `rowRecords`），实现读写对称完备性。默认单表行数上限 `100,000` 行、总行数上限 `200,000` 行防 OOM。
 _Avoid_: MultiSheetReader, SheetReaderHelper, ExcelStreamReader, ExcelReadSession
 
 **ExcelColumnMetadataResolver**:
