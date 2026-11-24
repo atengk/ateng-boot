@@ -729,9 +729,9 @@ public class LocalDriver implements StorageDriver {
 
         String effectiveSource = resolveEffectiveSource(request.getSource());
 
-        // 签名计算规则：cleanPath:expires:contentType:maxBytes[:source] 与 LocalStorageUploadController 保持严格对称
-        String signPayload = cleanPath + ":" + expires + ":" + contentType + ":" + maxBytes
-                + (effectiveSource != null ? ":" + effectiveSource : "");
+        // 签名计算规则：由 StorageSecurityUtil 统一构造并与 LocalStorageUploadController 保持严格对称
+        String signPayload = StorageSecurityUtil.buildPresignedUploadSignaturePayload(
+                cleanPath, expires, contentType, maxBytes, effectiveSource);
         String signature = StorageSecurityUtil.hmacSha256(signPayload, this.secretKey);
 
         StringBuilder urlBuilder = new StringBuilder();
@@ -781,9 +781,9 @@ public class LocalDriver implements StorageDriver {
 
         String effectiveSource = resolveEffectiveSource(null);
 
-        // 签名计算规则：cleanPath:expires:uploadId:chunkIndex[:source] 与 LocalStorageUploadController 严格对称
-        String signPayload = cleanPath + ":" + expires + ":" + uploadId + ":" + chunkIndex
-                + (effectiveSource != null ? ":" + effectiveSource : "");
+        // 签名计算规则：由 StorageSecurityUtil 统一构造并与 LocalStorageUploadController 严格对称
+        String signPayload = StorageSecurityUtil.buildPresignedUploadPartSignaturePayload(
+                cleanPath, expires, uploadId, chunkIndex, effectiveSource);
         String signature = StorageSecurityUtil.hmacSha256(signPayload, this.secretKey);
 
         StringBuilder urlBuilder = new StringBuilder();
@@ -833,11 +833,7 @@ public class LocalDriver implements StorageDriver {
         if (baseUrl.endsWith("/")) {
             baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
         }
-        String ep = (endpoint != null && !endpoint.isBlank()) ? endpoint.trim() : defaultEndpoint;
-        if (!ep.startsWith("/")) {
-            ep = "/" + ep;
-        }
-        return baseUrl + ep;
+        return baseUrl + StorageSecurityUtil.normalizeEndpointPath(endpoint, defaultEndpoint);
     }
 
     /**

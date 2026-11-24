@@ -49,11 +49,11 @@ _Avoid_: StorageThreadLocal, DynamicStorageManager
 _Avoid_: SwitchStorage, DS
 
 **LocalStorageDownloadController**:
-Local 存储内置的预签名防盗链只读安全下载端点，支持多存储源 `source` 动态路由，校验签名合法性与有效期限并执行流式输出。
+Local 存储内置的预签名防盗链只读安全下载端点，支持多存储源 `source` 动态路由，校验签名合法性与有效期限并执行流式输出；支持通过 `download-endpoint-enabled` 独立启停，以及在引入 `ateng-boot-satoken` 时通过 `whitelist-presigned-download`（默认 `false`）按需向 `SaTokenWhitelistProvider` 注册免登录白名单。
 _Avoid_: FileDownloadServlet, StaticFileServer
 
 **LocalStorageUploadController**:
-Local 存储内置的预签名直传写入安全端点，支持多存储源 `source` 动态路由，接收客户端 HTTP PUT 直传或分片直传数据并执行签名、配额与魔数校验。
+Local 存储内置的预签名直传写入安全端点，支持多存储源 `source` 动态路由，接收客户端 HTTP PUT 直传或分片直传数据并执行签名、配额与魔数校验；支持通过 `upload-endpoint-enabled` 独立关闭以便上层自建带自定义权限控制的上传 API，以及通过 `whitelist-presigned-upload`（默认 `false`）按需控制是否加入 Sa-Token 免登录白名单。
 _Avoid_: FileUploadServlet, LocalUploadReceiver
 
 **StorageGuard**:
@@ -77,7 +77,7 @@ _Avoid_: HashHelper, DigestUtil, ChecksumTool
 _Avoid_: DigestType, ChecksumMode
 
 **StorageSecurityUtil**:
-存储安全防卫与路径规范化工具，提供全路径归一化、防目录穿越清洗与 HMAC-SHA256 常量时间签名验签。
+存储安全防卫与路径规范化工具，提供全路径归一化、端点路径规范化、预签名下载/直传/分片签名载荷对称构造、防目录穿越清洗与 HMAC-SHA256 常量时间签名验签。
 _Avoid_: PathSecurityHelper, SafePathUtil
 
 **StorageEvent**:

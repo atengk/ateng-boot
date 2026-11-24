@@ -195,6 +195,10 @@ flowchart TD
 - `StorageResultCode` 新增结构化错误码：`STORAGE_SIGNATURE_INVALID (40018)`、`STORAGE_URL_EXPIRED (40019)`、`STORAGE_SIZE_EXCEEDED (40020)`、`STORAGE_HASH_MISMATCH (40021)`；
 - `StorageObject` 模型扩充 `Map<String, String> userMetadata` 属性，并在 `upload` 门面增加携带元数据的重载，S3 驱动原生映射为 `x-amz-meta-*`，兼顾云原生业务打标与合规审计。
 
+### 21. 演进注记：内置端点独立启停与 Sa-Token 白名单可选协同 (2026-11-24)
+- **端点装配拆分**：在总开关 `ateng.boot.storage.local.endpoint-enabled` 下增设 `download-endpoint-enabled` 与 `upload-endpoint-enabled`（均默认 `true`），允许上层关闭内置上传端点后自建带细粒度权限控制的上传 API，并在 `StorageSecurityUtil` 对称暴露 `buildPresignedUploadSignaturePayload` 与 `buildPresignedUploadPartSignaturePayload` 供上层复用验签契约；
+- **可选白名单协同**：通过类加载隔离的 `LocalStorageSaTokenWhitelistConfiguration` 与 `ateng-boot-satoken` 的 `SaTokenWhitelistProvider` SPI 协同，提供 `whitelist-presigned-download` 与 `whitelist-presigned-upload`（均默认 `false`，避免静默放宽安全边界），同时拦截一开一关条件下的同路径冲突穿透。
+
 ---
 
 ## 后果与权衡 (Consequences & Trade-offs)

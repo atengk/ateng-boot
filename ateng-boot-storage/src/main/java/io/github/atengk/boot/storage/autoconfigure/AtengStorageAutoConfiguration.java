@@ -29,6 +29,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Conditional;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
 import org.springframework.core.task.TaskDecorator;
 import org.springframework.scheduling.TaskScheduler;
 import software.amazon.awssdk.services.s3.S3Client;
@@ -44,10 +45,14 @@ import java.util.Map;
  * @since 2026-10-17
  */
 @AutoConfiguration
-@AutoConfigureBefore(AtengAsyncAutoConfiguration.class)
+@AutoConfigureBefore(
+        value = AtengAsyncAutoConfiguration.class,
+        name = "io.github.atengk.boot.satoken.autoconfigure.AtengSaTokenAutoConfiguration"
+)
 @ConditionalOnClass(StorageDriver.class)
 @ConditionalOnProperty(prefix = "ateng.boot.storage", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(StorageProperties.class)
+@Import(LocalStorageSaTokenWhitelistConfiguration.class)
 public class AtengStorageAutoConfiguration {
 
     /**
@@ -212,48 +217,54 @@ public class AtengStorageAutoConfiguration {
     }
 
     /**
-     * 本地存储预签名防盗链下载端点 Bean 装配（在 Servlet Web 环境下且存在 local 源、且 endpoint-enabled=true 时激活）
-     *
-     * @param properties            存储配置属性
-     * @param driverFactoryProvider 多存储源工厂提供者
-     * @param defaultDriverProvider 默认存储驱动提供者（可选兜底）
-     * @return LocalStorageDownloadController 端点控制器
+     * 本地存储预签名下载与直传端点自动装配配置
+     * 仅在 Servlet Web 环境、存在 local 存储源且总开关 endpoint-enabled=true 时激活；支持通过子开关独立停用下载或上传端点
      */
-    @Bean
-    @ConditionalOnMissingBean(LocalStorageDownloadController.class)
+    @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(name = "org.springframework.web.servlet.DispatcherServlet")
     @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
     @ConditionalOnProperty(prefix = "ateng.boot.storage.local", name = "endpoint-enabled", havingValue = "true", matchIfMissing = true)
     @Conditional(LocalStorageEndpointCondition.class)
-    public LocalStorageDownloadController localStorageDownloadController(
-            StorageProperties properties,
-            ObjectProvider<StorageDriverFactory> driverFactoryProvider,
-            ObjectProvider<StorageDriver> defaultDriverProvider) {
-        return new LocalStorageDownloadController(properties, driverFactoryProvider, defaultDriverProvider);
-    }
+    static class LocalStorageEndpointConfiguration {
 
-    /**
-     * 本地存储预签名直传写入端点 Bean 装配（在 Servlet Web 环境下且存在 local 源、且 endpoint-enabled=true 时激活）
-     *
-     * @param properties            存储配置属性
-     * @param defaultDriverProvider 默认活动存储驱动提供者
-     * @param driverFactoryProvider 多存储源工厂提供者
-     * @param storageGuardProvider  安全防卫嗅探器提供者
-     * @return LocalStorageUploadController 端点控制器
-     */
-    @Bean
-    @ConditionalOnMissingBean(LocalStorageUploadController.class)
-    @ConditionalOnClass(name = "org.springframework.web.servlet.DispatcherServlet")
-    @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
-    @ConditionalOnProperty(prefix = "ateng.boot.storage.local", name = "endpoint-enabled", havingValue = "true", matchIfMissing = true)
-    @Conditional(LocalStorageEndpointCondition.class)
-    public LocalStorageUploadController localStorageUploadController(
-            StorageProperties properties,
-            ObjectProvider<StorageDriver> defaultDriverProvider,
-            ObjectProvider<StorageDriverFactory> driverFactoryProvider,
-            ObjectProvider<StorageGuard> storageGuardProvider) {
-        return new LocalStorageUploadController(
-                properties, defaultDriverProvider.getIfAvailable(), driverFactoryProvider, storageGuardProvider);
+        /**
+         * 本地存储预签名防盗链下载端点 Bean 装配
+         *
+         * @param properties            存储配置属性
+         * @param driverFactoryProvider 多存储源工厂提供者
+         * @param defaultDriverProvider 默认存储驱动提供者（可选兜底）
+         * @return LocalStorageDownloadController 端点控制器
+         */
+        @Bean
+        @ConditionalOnMissingBean(LocalStorageDownloadController.class)
+        @ConditionalOnProperty(prefix = "ateng.boot.storage.local", name = "download-endpoint-enabled", havingValue = "true", matchIfMissing = true)
+        public LocalStorageDownloadController localStorageDownloadController(
+                StorageProperties properties,
+                ObjectProvider<StorageDriverFactory> driverFactoryProvider,
+                ObjectProvider<StorageDriver> defaultDriverProvider) {
+            return new LocalStorageDownloadController(properties, driverFactoryProvider, defaultDriverProvider);
+        }
+
+        /**
+         * 本地存储预签名直传写入端点 Bean 装配
+         *
+         * @param properties            存储配置属性
+         * @param defaultDriverProvider 默认活动存储驱动提供者
+         * @param driverFactoryProvider 多存储源工厂提供者
+         * @param storageGuardProvider  安全防卫嗅探器提供者
+         * @return LocalStorageUploadController 端点控制器
+         */
+        @Bean
+        @ConditionalOnMissingBean(LocalStorageUploadController.class)
+        @ConditionalOnProperty(prefix = "ateng.boot.storage.local", name = "upload-endpoint-enabled", havingValue = "true", matchIfMissing = true)
+        public LocalStorageUploadController localStorageUploadController(
+                StorageProperties properties,
+                ObjectProvider<StorageDriver> defaultDriverProvider,
+                ObjectProvider<StorageDriverFactory> driverFactoryProvider,
+                ObjectProvider<StorageGuard> storageGuardProvider) {
+            return new LocalStorageUploadController(
+                    properties, defaultDriverProvider.getIfAvailable(), driverFactoryProvider, storageGuardProvider);
+        }
     }
 
     /**

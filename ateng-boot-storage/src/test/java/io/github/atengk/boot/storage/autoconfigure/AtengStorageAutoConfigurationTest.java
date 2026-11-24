@@ -4,6 +4,10 @@ import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.core.context.AsyncContextSnapshotProvider;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.satoken.interceptor.AtengSaTokenInterceptor;
+import io.github.atengk.boot.satoken.processor.AnonymousUrlProcessor;
+import io.github.atengk.boot.satoken.properties.SaTokenProperties;
+import io.github.atengk.boot.satoken.spi.SaTokenWhitelistProvider;
 import io.github.atengk.boot.storage.context.StorageContextHolder;
 import io.github.atengk.boot.storage.controller.LocalStorageDownloadController;
 import io.github.atengk.boot.storage.controller.LocalStorageUploadController;
@@ -18,14 +22,19 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.AutoConfigureBefore;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.nio.file.Path;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
@@ -345,6 +354,215 @@ class AtengStorageAutoConfigurationTest {
         @Bean
         public StorageDriver customStorageDriver() {
             return new LocalDriver(System.getProperty("java.io.tmpdir"));
+        }
+    }
+
+    @Test
+    @DisplayName("支持单独关闭 upload-endpoint-enabled 或 download-endpoint-enabled 以便上层自建 API 权限控制")
+    void testIndependentEndpointEnabledSwitches(@TempDir Path archiveDir) {
+        new WebApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengStorageAutoConfiguration.class))
+                .withPropertyValues(
+                        "ateng.boot.storage.type=local",
+                        "ateng.boot.storage.local.base-path=" + archiveDir,
+                        "ateng.boot.storage.local.upload-endpoint-enabled=false"
+                )
+                .run(context -> {
+                    assertThat(context).hasSingleBean(LocalStorageDownloadController.class);
+                    assertThat(context).doesNotHaveBean(LocalStorageUploadController.class);
+                });
+
+        new WebApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengStorageAutoConfiguration.class))
+                .withPropertyValues(
+                        "ateng.boot.storage.type=local",
+                        "ateng.boot.storage.local.base-path=" + archiveDir,
+                        "ateng.boot.storage.local.download-endpoint-enabled=false"
+                )
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(LocalStorageDownloadController.class);
+                    assertThat(context).hasSingleBean(LocalStorageUploadController.class);
+                });
+    }
+
+    @Test
+    @DisplayName("默认不注册 Sa-Token 白名单提供者；显式开启开关时分别按需注册并规范化路径")
+    void testSaTokenWhitelistOptInSwitches(@TempDir Path archiveDir) {
+        // 1. 默认均关闭（向后兼容不放宽安全边界）
+        new WebApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengStorageAutoConfiguration.class))
+                .withPropertyValues(
+                        "ateng.boot.storage.type=local",
+                        "ateng.boot.storage.local.base-path=" + archiveDir
+                )
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(SaTokenWhitelistProvider.class);
+                });
+
+        // 2. 仅开启下载白名单并自定义端点路径（验证前导斜杠补齐与尾斜杠剔除）
+        new WebApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengStorageAutoConfiguration.class))
+                .withPropertyValues(
+                        "ateng.boot.storage.type=local",
+                        "ateng.boot.storage.local.base-path=" + archiveDir,
+                        "ateng.boot.storage.local.download-endpoint=files/download/",
+                        "ateng.boot.storage.local.whitelist-presigned-download=true"
+                )
+                .run(context -> {
+                    assertThat(context).hasBean("localStorageDownloadWhitelistProvider");
+                    assertThat(context).doesNotHaveBean("localStorageUploadWhitelistProvider");
+                    SaTokenWhitelistProvider provider = context.getBean("localStorageDownloadWhitelistProvider", SaTokenWhitelistProvider.class);
+                    assertThat(provider.getWhitelist()).containsExactly("/files/download");
+                });
+
+        // 3. 仅开启上传白名单
+        new WebApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengStorageAutoConfiguration.class))
+                .withPropertyValues(
+                        "ateng.boot.storage.type=local",
+                        "ateng.boot.storage.local.base-path=" + archiveDir,
+                        "ateng.boot.storage.local.upload-endpoint=/custom/upload",
+                        "ateng.boot.storage.local.whitelist-presigned-upload=true"
+                )
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean("localStorageDownloadWhitelistProvider");
+                    assertThat(context).hasBean("localStorageUploadWhitelistProvider");
+                    SaTokenWhitelistProvider provider = context.getBean("localStorageUploadWhitelistProvider", SaTokenWhitelistProvider.class);
+                    assertThat(provider.getWhitelist()).containsExactly("/custom/upload");
+                });
+
+        // 4. 对应端点被禁用或纯 S3 模式下，即使白名单开关为 true 也不注册白名单提供者
+        new WebApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengStorageAutoConfiguration.class))
+                .withPropertyValues(
+                        "ateng.boot.storage.type=local",
+                        "ateng.boot.storage.local.base-path=" + archiveDir,
+                        "ateng.boot.storage.local.download-endpoint-enabled=false",
+                        "ateng.boot.storage.local.upload-endpoint-enabled=false",
+                        "ateng.boot.storage.local.whitelist-presigned-download=true",
+                        "ateng.boot.storage.local.whitelist-presigned-upload=true"
+                )
+                .run(context -> assertThat(context).doesNotHaveBean(SaTokenWhitelistProvider.class));
+
+        new WebApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengStorageAutoConfiguration.class))
+                .withPropertyValues(
+                        "ateng.boot.storage.type=s3",
+                        "ateng.boot.storage.s3.bucket=test-bucket",
+                        "ateng.boot.storage.s3.endpoint=http://127.0.0.1:9000",
+                        "ateng.boot.storage.s3.access-key=minioadmin",
+                        "ateng.boot.storage.s3.secret-key=minioadmin",
+                        "ateng.boot.storage.s3.region=us-east-1",
+                        "ateng.boot.storage.local.whitelist-presigned-download=true",
+                        "ateng.boot.storage.local.whitelist-presigned-upload=true"
+                )
+                .run(context -> assertThat(context).doesNotHaveBean(SaTokenWhitelistProvider.class));
+    }
+
+    @Test
+    @DisplayName("下载与上传端点同路径且白名单开关一开一关时启动快速失败防穿透")
+    void testSameEndpointPathWhitelistConflictFailsFast(@TempDir Path archiveDir) {
+        new WebApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengStorageAutoConfiguration.class))
+                .withPropertyValues(
+                        "ateng.boot.storage.type=local",
+                        "ateng.boot.storage.local.base-path=" + archiveDir,
+                        "ateng.boot.storage.local.download-endpoint=/storage/local/shared",
+                        "ateng.boot.storage.local.upload-endpoint=/storage/local/shared/",
+                        "ateng.boot.storage.local.whitelist-presigned-download=true",
+                        "ateng.boot.storage.local.whitelist-presigned-upload=false"
+                )
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasRootCauseInstanceOf(IllegalStateException.class)
+                            .hasStackTraceContaining("同路径");
+                });
+
+        // 若两者同时开启白名单，或上传端点已单独关闭，则不构成意外穿透可正常启动
+        new WebApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengStorageAutoConfiguration.class))
+                .withPropertyValues(
+                        "ateng.boot.storage.type=local",
+                        "ateng.boot.storage.local.base-path=" + archiveDir,
+                        "ateng.boot.storage.local.download-endpoint=/storage/local/shared",
+                        "ateng.boot.storage.local.upload-endpoint=/storage/local/shared",
+                        "ateng.boot.storage.local.upload-endpoint-enabled=false",
+                        "ateng.boot.storage.local.whitelist-presigned-download=true",
+                        "ateng.boot.storage.local.whitelist-presigned-upload=false"
+                )
+                .run(context -> assertThat(context).hasNotFailed());
+    }
+
+    @Test
+    @DisplayName("未引入 ateng-boot-satoken 类路径时隔离类加载不触发 NoClassDefFoundError")
+    void testWithoutSaTokenClasspathIsolation(@TempDir Path archiveDir) {
+        FilteredClassLoader withoutSaToken = new FilteredClassLoader(
+                candidate -> candidate.startsWith("io.github.atengk.boot.satoken.")
+                        || candidate.startsWith("cn.dev33.satoken."));
+
+        new WebApplicationContextRunner()
+                .withClassLoader(withoutSaToken)
+                .withConfiguration(AutoConfigurations.of(AtengStorageAutoConfiguration.class))
+                .withPropertyValues(
+                        "ateng.boot.storage.type=local",
+                        "ateng.boot.storage.local.base-path=" + archiveDir,
+                        "ateng.boot.storage.local.whitelist-presigned-download=true",
+                        "ateng.boot.storage.local.whitelist-presigned-upload=true"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(LocalStorageDownloadController.class);
+                    assertThat(context).hasSingleBean(LocalStorageUploadController.class);
+                });
+    }
+
+    @Test
+    @DisplayName("联合 AnonymousUrlProcessor 时与业务自定义白名单叠加汇聚生效")
+    void testIntegrationWithAtengSaTokenAndCustomWhitelistProvider(@TempDir Path archiveDir) {
+        new WebApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengStorageAutoConfiguration.class))
+                .withUserConfiguration(SaTokenWhitelistBridgeTestConfig.class, CustomBusinessWhitelistConfig.class)
+                .withPropertyValues(
+                        "ateng.boot.storage.type=local",
+                        "ateng.boot.storage.local.base-path=" + archiveDir,
+                        "ateng.boot.storage.local.download-endpoint=/api/storage/download",
+                        "ateng.boot.storage.local.whitelist-presigned-download=true",
+                        "ateng.boot.storage.local.whitelist-presigned-upload=false",
+                        "ateng.boot.satoken.interceptor.check-login=true"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    AtengSaTokenInterceptor interceptor = context.getBean(AtengSaTokenInterceptor.class);
+                    assertThat(interceptor.isWhitelisted("/api/storage/download")).isTrue();
+                    assertThat(interceptor.isWhitelisted("/custom/public/ping")).isTrue();
+                    assertThat(interceptor.isWhitelisted("/storage/local/upload")).isFalse();
+                });
+    }
+
+    @Configuration
+    @EnableConfigurationProperties(SaTokenProperties.class)
+    static class SaTokenWhitelistBridgeTestConfig {
+        @Bean
+        public AtengSaTokenInterceptor atengSaTokenInterceptor(SaTokenProperties properties) {
+            return new AtengSaTokenInterceptor(properties);
+        }
+
+        @Bean
+        public AnonymousUrlProcessor anonymousUrlProcessor(
+                ApplicationContext applicationContext,
+                SaTokenProperties properties,
+                AtengSaTokenInterceptor interceptor,
+                ObjectProvider<SaTokenWhitelistProvider> providers) {
+            return new AnonymousUrlProcessor(applicationContext, properties, interceptor, providers);
+        }
+    }
+
+    @Configuration
+    static class CustomBusinessWhitelistConfig {
+        @Bean
+        public SaTokenWhitelistProvider customBusinessWhitelistProvider() {
+            return () -> Set.of("/custom/public/ping");
         }
     }
 }

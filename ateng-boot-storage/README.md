@@ -27,11 +27,11 @@
 | **客户端直传预签名** | 预签名安全直传写入外链凭据 | `StorageTemplate`<br>`PresignedUploadRequest`<br>`PresignedUrl` | `ateng.boot.storage.local.upload-endpoint` | `getPresignedUploadUrl(String, Duration)` / `getPresignedUploadUrl(PresignedUploadRequest)`，前端直接向存储端点发起 HTTP PUT 直传数据，完全绕过业务后端中转 | `LocalStorageUploadControllerTest` / `S3DriverTest` / `SampleStorageIntegrationTest` |
 | **分片直传预签名** | 端侧大文件分块直传预签名 | `StorageTemplate`<br>`StorageOperations` | `ateng.boot.storage.local.upload-endpoint` | `getPresignedUploadPartUrl(String, String, int, Duration)`，生成指定分片 PUT 写入外链，前端并发直传各分片后通知后端一键合并 | `LocalStorageUploadControllerTest` / `S3DriverTest` / `SampleStorageIntegrationTest` |
 | **公共读与永久直链** | 公开桶直链与公共读授权 | `StorageTemplate`<br>`StorageOperations` | `ateng.boot.storage.s3.domain`<br>`ateng.boot.storage.s3.path-style` | `getUrl(String)` 返回永久访问 URL；`uploadPublic(String, InputStream, ...)` / `uploadPublic(String, MultipartFile)` 自动挂载 `PUBLIC_READ`，三级拓扑自适应 | `StoragePublicUrlTest` / `S3DriverTest` / `SampleS3DualModeIntegrationTest` |
-| **本地受控端点** | 本地文件安全下载与直传端点 | `LocalStorageDownloadController`<br>`LocalStorageUploadController` | `ateng.boot.storage.local.endpoint-enabled`<br>`ateng.boot.storage.local.download-endpoint`<br>`ateng.boot.storage.local.upload-endpoint`<br>`ateng.boot.storage.local.secret-key` | 提供 `/storage/local/download` 与 `/storage/local/upload`（同时承接带 `uploadId` 与 `chunkIndex` 参数的分片直传），支持 `endpoint-enabled` 开关，基于 HMAC-SHA256 常量时间验签 | `LocalStorageDownloadControllerTest` / `LocalStorageUploadControllerTest` / `SampleStorageIntegrationTest` |
+| **本地受控端点** | 本地文件安全下载与直传端点 | `LocalStorageDownloadController`<br>`LocalStorageUploadController` | `ateng.boot.storage.local.endpoint-enabled`<br>`ateng.boot.storage.local.download-endpoint-enabled`<br>`ateng.boot.storage.local.upload-endpoint-enabled`<br>`ateng.boot.storage.local.download-endpoint`<br>`ateng.boot.storage.local.upload-endpoint`<br>`ateng.boot.storage.local.whitelist-presigned-download`<br>`ateng.boot.storage.local.whitelist-presigned-upload`<br>`ateng.boot.storage.local.secret-key` | 提供 `/storage/local/download` 与 `/storage/local/upload`（同时承接带 `uploadId` 与 `chunkIndex` 参数的分片直传），支持总开关与下载/上传独立启停（停用上传端点可由上层自建鉴权接口），支持按需将对应端点加入 Sa-Token 白名单（默认全关）并校验同路径冲突，基于 HMAC-SHA256 常量时间验签 | `LocalStorageDownloadControllerTest` / `LocalStorageUploadControllerTest` / `AtengStorageAutoConfigurationTest` / `SampleStorageIntegrationTest` |
 | **分片上传状态机** | 服务端大文件分片合并暂存 | `StorageTemplate`<br>`StorageOperations`<br>`S3ChunkTokenUtil` | `ateng.boot.storage.max-chunk-size` | `initiateChunkedUpload(String)` / `uploadChunk(String, int, InputStream, long)` / `uploadChunk(String, int, byte[])` / `completeChunkedUpload(String, String, int)` / `abortChunkedUpload(String)`，1-based 连续性与 `max-chunk-size` 强校验 | `StorageTemplateChunkedTest` / `SampleStorageIntegrationTest` |
 | **碎片治理守护** | 孤儿分片碎片生命周期治理 | `StorageChunkCleaner`<br>`StorageTemplate`<br>`ChunkCleanerProperties` | `ateng.boot.storage.chunk-cleaner.enabled`<br>`ateng.boot.storage.chunk-cleaner.interval`<br>`ateng.boot.storage.chunk-cleaner.max-age` | 后台守护定时扫描及门面手动方法 `cleanExpiredChunkSessions()` / `cleanExpiredChunkSessions(Duration)`，安全回收超期滞留的 `.chunks` 孤儿碎片目录 | `StorageChunkCleanerTest` |
 | **文件安全防卫** | 文件类型与魔数嗅探防卫器 | `StorageGuard`<br>`StorageFileType`<br>`StorageGuardProperties` | `ateng.boot.storage.guard.enabled`<br>`ateng.boot.storage.guard.strict-magic-check`<br>`ateng.boot.storage.guard.allowed-extensions`<br>`ateng.boot.storage.guard.disallowed-extensions`<br>`ateng.boot.storage.guard.max-file-size` | 识别 15+ 种标准魔数与高危 PE/ELF/Shell 脚本特征，执行黑名单一票否决（40011，`validatePathAndExtension`）、单文件大小配额拦截（40020，`validateFileSize` / `resolveMaxFileSizeBytes`）与 `mark/reset` 零流截断魔数检验（40010） | `StorageGuardTest` / `StorageResourceTest` / `StorageGovernanceController` / `SampleStorageIntegrationTest` |
-| **路径安全清洗** | 路径穿越防御与常量时间验签 | `StorageSecurityUtil`<br>`FileUtil` | - | `StorageSecurityUtil.normalizePath(String)` / `hmacSha256(String, String)` / `verifyHmacSha256(String, String, String)` / `isDangerousExtension(String)` 配合 `FileUtil.cleanFilename(String)`，拦截 `..` 逃逸、空字符与时序攻击 | `StorageSecurityUtilTest` |
+| **路径安全清洗** | 路径穿越防御与常量时间验签 | `StorageSecurityUtil`<br>`FileUtil` | - | `StorageSecurityUtil.normalizePath(String)` / `normalizeEndpointPath(String, String)` / `buildPresignedDownloadSignaturePayload(...)` / `buildPresignedUploadSignaturePayload(...)` / `buildPresignedUploadPartSignaturePayload(...)` / `hmacSha256(String, String)` / `verifyHmacSha256(String, String, String)` / `isDangerousExtension(String)` 配合 `FileUtil.cleanFilename(String)`，拦截 `..` 逃逸、空字符与时序攻击 | `StorageSecurityUtilTest` / `StoragePresignedController` |
 | **多源路由调度** | 编程式与声明式多存储源路由 | `StorageTemplate`<br>`@Storage`<br>`StorageAspect`<br>`StorageSourceProperties` | `ateng.boot.storage.primary`<br>`ateng.boot.storage.sources.*` | `storageTemplate.use(String)` 返回绑定目标源的不可变操作门面；`@Storage("source")` AOP 自动切换并在 `finally` 严密恢复 | `StorageRoutingTest` / `SampleStorageIntegrationTest` |
 | **多源作用域与透传** | 函数式切源与跨线程异步透传 | `StorageContextHolder`<br>`StorageAsyncContextSnapshotProvider`<br>`StorageTaskDecorator` | - | `executeWith(String, Supplier<T>)` / `runWith(String, Runnable)` 函数式作用域切源与自恢复；`set` / `get` / `getDataSource` / `clear` / `wrap` / `wrapSupplier` 配合 `StorageAsyncContextSnapshotProvider` 联动 Core 五维上下文跨线程透传 | `StorageContextHolderTest` / `AtengStorageAutoConfigurationTest` / `StorageGovernanceController` / `SampleStorageIntegrationTest` |
 | **对象标签治理** | 对象业务标签完整生命周期 | `StorageTemplate`<br>`StorageOperations` | - | `setObjectTags(String, Map<String, String>)` / `getObjectTags(String)` / `deleteObjectTags(String)`，打通云端生命周期冷热归档与部门财务审计 | `StorageTaggingAndHardeningTest` / `SampleS3DualModeIntegrationTest` |
@@ -770,6 +770,8 @@ ateng:
         base-path: /data/storage            # 本地存储根路径
         domain: http://localhost:8080       # 本地对外访问基准域名
         download-endpoint: /storage/local/download # 内置受控下载端点
+        download-endpoint-enabled: true     # 是否启用内置下载端点（默认 true）
+        whitelist-presigned-download: false # 是否将预签名下载端点自动加入 Sa-Token 免登录白名单（默认 false）
         secret-key: YOUR_HMAC_SECRET_KEY   # HMAC-SHA256 签名密钥（生产环境强制配置高强度随机串）
 ```
 
@@ -800,6 +802,7 @@ public class StoragePresignedController {
 #### 核心机制与边界防御
 - **双核驱动行为平替**：Local 驱动自动基于 HMAC-SHA256 对 `path` 与 `expires` 生成签名参数，输出指向内置受控端点（`/storage/local/download`）的外链；S3 驱动原生对接 AWS S3 SigV4 算法生成签名外链，双核对外返回统一强类型 `PresignedUrl`。
 - **时效与防篡改硬防御**：外部客户端访问本地受控端点时，控制器自动验证时间戳是否过期，并经由 `StorageSecurityUtil.verifyHmacSha256` 常量时间比对签名，若签名不符或参数被篡改立即返回 HTTP 403 Forbidden，路径逃逸拦截返回 400 Bad Request。
+- **Sa-Token 可选免登录白名单协同**：若项目同时引入 `ateng-boot-satoken` 并开启全域 `check-login=true`，浏览器 `<img>` / `<video>` / `<a>` 直链无法附加 Token 请求头。出于安全向后兼容，框架默认保持 `whitelist-presigned-download: false`；确认只读下载完全由 HMAC 签名防护时，显式置为 `true` 即可通过条件隔离装配的 `SaTokenWhitelistProvider` 动态放行规范化后的 `download-endpoint`（不放行上传端点；未引入 `ateng-boot-satoken` 时零类加载依赖）。
 
 ---
 
@@ -864,14 +867,14 @@ ateng:
         base-path: /data/storage
         domain: http://localhost:8080
         upload-endpoint: /storage/local/upload # 本地直传受控端点
+        upload-endpoint-enabled: true          # 是否启用内置直传端点（默认 true；设为 false 可关闭内置接口并自建带权限控制的上传端点）
+        whitelist-presigned-upload: false      # 是否将内置直传端点加入 Sa-Token 白名单（默认 false，保留 Sa-Token 登录与 path-permissions 校验）
         secret-key: YOUR_HMAC_SECRET_KEY
 ```
 
 #### 实战业务代码范式
 ```java
-/**
- * 获取客户端 HTTP PUT 预签名安全直传写入外链（支持限定 MIME 类型与最大字节配额）
- */
+// 1. 获取客户端 HTTP PUT 预签名安全直传写入外链（支持限定 MIME 类型与最大字节配额）
 @GetMapping("/upload-url")
 public Result<PresignedUrl> getPresignedUploadUrl(
         @RequestParam("path") @NotBlank(message = "目标路径不能为空") String path,
@@ -889,11 +892,60 @@ public Result<PresignedUrl> getPresignedUploadUrl(
     PresignedUrl presignedUrl = ops.getPresignedUploadUrl(request);
     return Result.success(presignedUrl);
 }
+
+// 2. 上层自建受控直传端点示例（关闭 upload-endpoint-enabled: false 时由业务控制器承接权限校验并复用对称验签）
+@PutMapping("/custom-upload")
+public Result<StorageObject> customAuthorizedUpload(
+        @RequestHeader(value = "X-Dept-Code", defaultValue = "finance") String department,
+        @RequestParam("path") @NotBlank String path,
+        @RequestParam("expires") long expires,
+        @RequestParam("signature") @NotBlank String signature,
+        @RequestParam(value = "contentType", required = false) String contentType,
+        @RequestParam(value = "maxBytes", defaultValue = "-1") long maxBytes,
+        @RequestParam(value = "source", required = false) String source,
+        HttpServletRequest request) throws IOException {
+    String cleanPath = StorageSecurityUtil.normalizePath(path);
+    if (Instant.now().getEpochSecond() > expires) {
+        throw new BusinessException(CommonResultCode.FORBIDDEN, "自定义直传外链已过期");
+    }
+    String requiredPrefix = "contracts/" + department.trim() + "/";
+    if (!cleanPath.startsWith(requiredPrefix)) {
+        throw new BusinessException(CommonResultCode.FORBIDDEN,
+                "无权上传至非所属部门目录: expectedPrefix=" + requiredPrefix);
+    }
+    StorageDriver driver = driverFactory.getDriver(source);
+    if (!(driver instanceof LocalDriver localDriver)) {
+        throw new BusinessException(CommonResultCode.BAD_REQUEST, "仅支持本地存储源自定义签名校验");
+    }
+    String normalizedSource = (source != null && !source.isBlank()) ? source.trim() : null;
+    String payload = StorageSecurityUtil.buildPresignedUploadSignaturePayload(
+            cleanPath, expires, contentType, maxBytes, normalizedSource);
+    if (!StorageSecurityUtil.verifyHmacSha256(payload, localDriver.getSecretKey(), signature)) {
+        throw new BusinessException(CommonResultCode.FORBIDDEN, "自定义直传签名校验失败");
+    }
+    String incomingContentType = request.getContentType();
+    if (contentType != null && !contentType.isBlank()) {
+        String actualMime = incomingContentType != null ? incomingContentType.split(";")[0].trim() : "";
+        if (!actualMime.equalsIgnoreCase(contentType.trim())) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "上传 Content-Type 与预签名限定不一致");
+        }
+    }
+    long contentLength = request.getContentLengthLong();
+    if (maxBytes > 0 && contentLength > maxBytes) {
+        throw new BusinessException(CommonResultCode.BAD_REQUEST, "上传字节数超出预签名允许上限");
+    }
+    try (InputStream in = request.getInputStream()) {
+        StorageObject object = getOperations(source).upload(
+                cleanPath, in, incomingContentType, contentLength);
+        return Result.success(object);
+    }
+}
 ```
 
 #### 核心机制与边界防御
 - **零中转直传体验**：前端调用端点获取凭据后，直接通过 HTTP PUT 将数据流写入存储端点，完全绕过业务后端转发，不占用应用服务器线程与公网下行带宽。
 - **配额与防篡改约束**：支持在预签名阶段限定 MIME 类型（`contentType`）与文件字节上限（`maxSizeBytes`），直传端点严格校验时效有效性与防篡改签名，超限时拒绝写入。
+- **上传权限双轨可编程控制**：内置直传端点默认不加入 Sa-Token 白名单（`whitelist-presigned-upload: false`），可直接通过 Sa-Token 的 `check-login` 与 `path-permissions` 控制上传权限；若需按业务数据归属、部门目录或租户配额精细鉴权，可配置 `upload-endpoint-enabled: false` 关闭内置端点，并在上层自建接口中复用 `StorageSecurityUtil.buildPresignedUploadSignaturePayload`（及分片载荷 `buildPresignedUploadPartSignaturePayload`）完成对称验签；注意当同时启用下载与上传内置端点且两项白名单开关一开一关时，两者不可配置为同一路径，否则启动阶段即快速失败阻断穿透。
 
 ---
 
@@ -1590,7 +1642,11 @@ ateng:
         domain: http://localhost:8080       # 本地存储对外访问基准域名（用于拼装外链）
         download-endpoint: /storage/local/download # 内置受控下载端点 URI（默认 /storage/local/download）
         upload-endpoint: /storage/local/upload     # 内置受控直传端点 URI（默认 /storage/local/upload）
-        endpoint-enabled: true              # 是否开启内置 Local 预签名下载与直传端点（默认 true）
+        endpoint-enabled: true              # 是否开启内置 Local 预签名下载与直传端点（总开关，默认 true）
+        download-endpoint-enabled: true     # 是否开启内置 Local 预签名只读下载端点（受总开关约束，默认 true）
+        upload-endpoint-enabled: true       # 是否开启内置 Local 预签名直传写入端点（受总开关约束，默认 true；置 false 可交由上层自建上传接口）
+        whitelist-presigned-download: false # 是否将内置下载端点加入 Sa-Token 免登录白名单（默认 false）
+        whitelist-presigned-upload: false   # 是否将内置上传端点加入 Sa-Token 免登录白名单（默认 false）
         secret-key: YOUR_HMAC_SECRET_KEY   # HMAC-SHA256 签名密钥（生产环境建议配置 32 位以上高强度字符）
 
       # 云原生 S3 兼容协议驱动专有属性 (S3StorageProperties)

@@ -57,6 +57,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Sa-Token 安全鉴权底座 (可选依赖，用于预签名下载/上传端点按需接入免登录白名单) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-satoken</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- AWS S3 兼容协议精简依赖（可选依赖，按需装配，版本统管已排除 Netty） -->
         <dependency>
             <groupId>software.amazon.awssdk</groupId>

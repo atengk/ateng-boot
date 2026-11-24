@@ -126,17 +126,11 @@ public class LocalStorageUploadController {
         String secretKey = LocalStorageEndpointSupport.resolveSecretKey(localDriver, properties);
         String normalizedSource = LocalStorageEndpointSupport.normalizeOptionalSource(source);
         boolean isChunked = (uploadId != null && !uploadId.isBlank() && chunkIndex > 0);
-        String signPayload;
-        if (isChunked) {
-            signPayload = cleanPath + ":" + expires + ":" + uploadId + ":" + chunkIndex
-                    + (normalizedSource != null ? ":" + normalizedSource : "");
-        } else {
-            String ct = (expectedContentType != null && !expectedContentType.isBlank())
-                    ? expectedContentType.trim()
-                    : "";
-            signPayload = cleanPath + ":" + expires + ":" + ct + ":" + maxBytes
-                    + (normalizedSource != null ? ":" + normalizedSource : "");
-        }
+        String signPayload = isChunked
+                ? StorageSecurityUtil.buildPresignedUploadPartSignaturePayload(
+                        cleanPath, expires, uploadId, chunkIndex, normalizedSource)
+                : StorageSecurityUtil.buildPresignedUploadSignaturePayload(
+                        cleanPath, expires, expectedContentType, maxBytes, normalizedSource);
 
         if (secretKey == null || secretKey.isBlank() || !StorageSecurityUtil.verifyHmacSha256(signPayload, secretKey, signature)) {
             log.warn("预签名直传外链签名校验失败或已被篡改: path={}, expires={}, isChunked={}", cleanPath, expires, isChunked);

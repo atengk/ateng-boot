@@ -996,4 +996,52 @@ class SampleStorageIntegrationTest {
                 .andExpect(jsonPath("$.data.objectPath").value(backupAsyncPath))
                 .andExpect(jsonPath("$.data.outerAfter").isEmpty());
     }
+
+    @Test
+    @DisplayName("端到端测试 27：上层自建受控直传接口复用对称签名载荷并实现部门级权限防越权")
+    void testCustomAuthorizedPresignedUpload() throws Exception {
+        String targetPath = "contracts/finance/q1-budget.txt";
+        String uploadUrlResult = mockMvc.perform(get("/sample/storage/presigned/upload-url")
+                        .param("path", targetPath)
+                        .param("contentType", "text/plain")
+                        .param("maxBytes", "1024"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn()
+                .getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+
+        JsonNode urlNode = objectMapper.readTree(uploadUrlResult);
+        java.net.URI uri = java.net.URI.create(urlNode.get("data").get("url").asText());
+        String query = uri.getQuery();
+
+        // 1. 跨部门越权访问 -> 返回业务码 403
+        mockMvc.perform(put("/sample/storage/presigned/custom-upload?" + query)
+                        .header("X-Dept-Code", "hr")
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content("Unauthorized Dept".getBytes(StandardCharsets.UTF_8)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(403));
+
+        // 2. 合法部门但签名被篡改 -> 返回业务码 403
+        String tamperedQuery = query.replaceFirst("signature=[a-f0-9]+", "signature=deadbeef");
+        mockMvc.perform(put("/sample/storage/presigned/custom-upload?" + tamperedQuery)
+                        .header("X-Dept-Code", "finance")
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content("Tampered".getBytes(StandardCharsets.UTF_8)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(403));
+
+        // 3. 合法部门 + 有效签名 -> 成功落盘并返回 Result<StorageObject>
+        byte[] payload = "2026 Q1 Finance Budget".getBytes(StandardCharsets.UTF_8);
+        mockMvc.perform(put("/sample/storage/presigned/custom-upload?" + query)
+                        .header("X-Dept-Code", "finance")
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.path").value(targetPath));
+
+        assertThat(storageTemplate.downloadString(targetPath)).isEqualTo("2026 Q1 Finance Budget");
+    }
 }

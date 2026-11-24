@@ -195,6 +195,75 @@ public final class StorageSecurityUtil {
     }
 
     /**
+     * 构建预签名直传写入 HMAC 签名摘要数据源载荷（无指定存储源便捷重载）
+     *
+     * @param cleanPath   规范化相对存储路径
+     * @param expires     Unix 秒级过期时间戳
+     * @param contentType 严格限定的内容类型（可选）
+     * @param maxBytes    允许上传的最大字节大小（-1 表示不限制，须与签名生成方保持一致）
+     * @return 待签名的载荷字符串
+     */
+    public static String buildPresignedUploadSignaturePayload(String cleanPath, long expires,
+                                                              String contentType, long maxBytes) {
+        return buildPresignedUploadSignaturePayload(cleanPath, expires, contentType, maxBytes, null);
+    }
+
+    /**
+     * 构建预签名直传写入 HMAC 签名摘要数据源载荷（支持绑定命名存储源 source 防止跨源重放篡改）
+     *
+     * @param cleanPath   规范化相对存储路径
+     * @param expires     Unix 秒级过期时间戳
+     * @param contentType 严格限定的内容类型（可选）
+     * @param maxBytes    允许上传的最大字节大小
+     * @param source      命名存储源标识（可选）
+     * @return 待签名的载荷字符串
+     */
+    public static String buildPresignedUploadSignaturePayload(String cleanPath, long expires,
+                                                              String contentType, long maxBytes, String source) {
+        String ct = (contentType != null && !contentType.isBlank()) ? contentType.trim() : "";
+        StringBuilder sb = new StringBuilder();
+        sb.append(cleanPath).append(":").append(expires).append(":").append(ct).append(":").append(maxBytes);
+        if (source != null && !source.isBlank()) {
+            sb.append(":").append(source.trim());
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 构建预签名分片直传 HMAC 签名摘要数据源载荷（无指定存储源便捷重载）
+     *
+     * @param cleanPath  规范化相对存储路径
+     * @param expires    Unix 秒级过期时间戳
+     * @param uploadId   分片上传会话标识
+     * @param chunkIndex 分片正序编号（1-based）
+     * @return 待签名的载荷字符串
+     */
+    public static String buildPresignedUploadPartSignaturePayload(String cleanPath, long expires,
+                                                                  String uploadId, int chunkIndex) {
+        return buildPresignedUploadPartSignaturePayload(cleanPath, expires, uploadId, chunkIndex, null);
+    }
+
+    /**
+     * 构建预签名分片直传 HMAC 签名摘要数据源载荷（支持绑定命名存储源 source 防止跨源重放篡改）
+     *
+     * @param cleanPath  规范化相对存储路径
+     * @param expires    Unix 秒级过期时间戳
+     * @param uploadId   分片上传会话标识
+     * @param chunkIndex 分片正序编号（1-based）
+     * @param source     命名存储源标识（可选）
+     * @return 待签名的载荷字符串
+     */
+    public static String buildPresignedUploadPartSignaturePayload(String cleanPath, long expires,
+                                                                  String uploadId, int chunkIndex, String source) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(cleanPath).append(":").append(expires).append(":").append(uploadId).append(":").append(chunkIndex);
+        if (source != null && !source.isBlank()) {
+            sb.append(":").append(source.trim());
+        }
+        return sb.toString();
+    }
+
+    /**
      * 根据文件名自动推导标准 MIME 内容类型 (Content-Type)
      *
      * @param filename 文件名或路径
@@ -339,6 +408,31 @@ public final class StorageSecurityUtil {
 
         String normalized = String.join("/", stack);
         return endsWithSlash ? normalized + "/" : normalized;
+    }
+
+    /**
+     * 规范化本地存储 Web 端点路径（补全前导斜杠、折叠连续斜杠并剥除尾部多余斜杠）
+     *
+     * @param endpoint        用户配置的端点路径
+     * @param defaultEndpoint 默认兜底端点路径
+     * @return 规范化后的端点路径（例如 "/storage/local/download"）
+     */
+    public static String normalizeEndpointPath(String endpoint, String defaultEndpoint) {
+        String raw = (endpoint != null && !endpoint.isBlank()) ? endpoint.trim() : defaultEndpoint;
+        if (raw == null || raw.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "本地存储端点路径不能为空");
+        }
+        String normalized = raw.replace('\\', '/').trim();
+        while (normalized.contains("//")) {
+            normalized = normalized.replace("//", "/");
+        }
+        if (!normalized.startsWith("/")) {
+            normalized = "/" + normalized;
+        }
+        while (normalized.length() > 1 && normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
     }
 
     /**

@@ -184,4 +184,25 @@ class StorageSecurityUtilTest {
         assertThrows(StorageException.class, () -> StorageSecurityUtil.formatDomainUrl("https://cdn.example.com", null));
         assertThrows(StorageException.class, () -> StorageSecurityUtil.formatDomainUrl("https://cdn.example.com", ""));
     }
+
+    @Test
+    @DisplayName("测试 normalizeEndpointPath 与预签名直传/分片签名载荷对称构造")
+    void testNormalizeEndpointPathAndUploadPayloads() {
+        assertEquals("/storage/local/download",
+                StorageSecurityUtil.normalizeEndpointPath(null, "/storage/local/download"));
+        assertEquals("/api/files/download",
+                StorageSecurityUtil.normalizeEndpointPath("api/files/download/", "/storage/local/download"));
+        assertEquals("/api/files/upload",
+                StorageSecurityUtil.normalizeEndpointPath("///api//files/upload///", "/storage/local/upload"));
+        assertThrows(StorageException.class, () -> StorageSecurityUtil.normalizeEndpointPath("  ", " "));
+
+        assertEquals("uploads/a.txt:1700000000:text/plain:1024",
+                StorageSecurityUtil.buildPresignedUploadSignaturePayload("uploads/a.txt", 1700000000L, " text/plain ", 1024L));
+        assertEquals("uploads/a.txt:1700000000::-1:archive",
+                StorageSecurityUtil.buildPresignedUploadSignaturePayload("uploads/a.txt", 1700000000L, null, -1L, " archive "));
+        assertEquals("uploads/big.zip:1700000000:upload-001:2",
+                StorageSecurityUtil.buildPresignedUploadPartSignaturePayload("uploads/big.zip", 1700000000L, "upload-001", 2));
+        assertEquals("uploads/big.zip:1700000000:upload-001:2:backup",
+                StorageSecurityUtil.buildPresignedUploadPartSignaturePayload("uploads/big.zip", 1700000000L, "upload-001", 2, " backup "));
+    }
 }
