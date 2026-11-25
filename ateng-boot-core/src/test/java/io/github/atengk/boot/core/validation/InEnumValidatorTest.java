@@ -1,8 +1,10 @@
 package io.github.atengk.boot.core.validation;
 
 import io.github.atengk.boot.core.annotation.InEnum;
+import io.github.atengk.boot.core.audit.OperateTypeEnum;
 import io.github.atengk.boot.core.enums.IBaseEnum;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.util.EnumUtil;
 import io.github.atengk.boot.core.util.ValidatorUtil;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.constraints.NotNull;
@@ -11,6 +13,7 @@ import lombok.Data;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -71,6 +74,11 @@ class InEnumValidatorTest {
         private Integer status;
     }
 
+    @AfterEach
+    void tearDown() {
+        EnumUtil.clearCache();
+    }
+
     @Test
     @DisplayName("测试入参合法时校验完全通过")
     void testValidationSuccess() {
@@ -124,5 +132,26 @@ class InEnumValidatorTest {
         assertThatThrownBy(() -> ValidatorUtil.validate(dto))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("角色编码不合法");
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    static class OperateAuditDTO {
+        @NotNull(message = "操作类型不能为空")
+        @InEnum(value = OperateTypeEnum.class, message = "操作动作类型编码不合法")
+        private Integer operateType;
+    }
+
+    @Test
+    @DisplayName("测试 @InEnum 校验 OperateTypeEnum 编码合法性与非法编码拦截")
+    void testOperateTypeEnumValidation() {
+        ValidatorUtil.validate(new OperateAuditDTO(0));
+        ValidatorUtil.validate(new OperateAuditDTO(1));
+        ValidatorUtil.validate(new OperateAuditDTO(10));
+
+        assertThatThrownBy(() -> ValidatorUtil.validate(new OperateAuditDTO(999)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("操作动作类型编码不合法");
     }
 }

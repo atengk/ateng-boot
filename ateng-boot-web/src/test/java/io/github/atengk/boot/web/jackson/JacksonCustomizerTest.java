@@ -3,6 +3,8 @@ package io.github.atengk.boot.web.jackson;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.exc.InvalidFormatException;
+import io.github.atengk.boot.core.audit.OperateTypeEnum;
 import io.github.atengk.boot.core.enums.IBaseEnum;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.model.Result;
@@ -142,8 +144,12 @@ class JacksonCustomizerTest {
 
     static class EnumContainerModel {
         private SampleStatus status;
+        private OperateTypeEnum operateType;
+
         public SampleStatus getStatus() { return status; }
         public void setStatus(SampleStatus status) { this.status = status; }
+        public OperateTypeEnum getOperateType() { return operateType; }
+        public void setOperateType(OperateTypeEnum operateType) { this.operateType = operateType; }
     }
 
     @Test
@@ -159,6 +165,42 @@ class JacksonCustomizerTest {
 
         EnumContainerModel model3 = mapper.readValue("{\"status\": \"INACTIVE\"}", EnumContainerModel.class);
         assertEquals(SampleStatus.INACTIVE, model3.getStatus());
+    }
+
+    @Test
+    @DisplayName("OperateTypeEnum 保持常量名序列化输出，Web 运行时由 BaseEnumDeserializer 支持编码与名称解析并拦截非法值")
+    void shouldSerializeOperateTypeAsNameAndDeserializeViaBaseEnumDeserializer() throws Exception {
+        ObjectMapper mapper = createConfiguredMapper(true);
+
+        // 1. 序列化保持常量名字符串（向后兼容 OperateLogModel，不输出数字 code）
+        EnumContainerModel source = new EnumContainerModel();
+        source.setOperateType(OperateTypeEnum.DELETE);
+        JsonNode node = mapper.readTree(mapper.writeValueAsString(source));
+        assertTrue(node.get("operateType").isTextual());
+        assertEquals("DELETE", node.get("operateType").asText());
+
+        // 2. 支持数字编码、字符串编码及大小写不敏感常量名反序列化
+        assertEquals(
+                OperateTypeEnum.INSERT,
+                mapper.readValue("{\"operateType\": 1}", EnumContainerModel.class).getOperateType()
+        );
+        assertEquals(
+                OperateTypeEnum.CLEAN,
+                mapper.readValue("{\"operateType\": \"10\"}", EnumContainerModel.class).getOperateType()
+        );
+        assertEquals(
+                OperateTypeEnum.QUERY,
+                mapper.readValue("{\"operateType\": \"query\"}", EnumContainerModel.class).getOperateType()
+        );
+
+        // 3. null 与空白串解析为 null，非法数值/字符串 Fail-Fast 抛出 InvalidFormatException
+        assertNull(mapper.readValue("{\"operateType\": null}", EnumContainerModel.class).getOperateType());
+        assertNull(mapper.readValue("{\"operateType\": \"\"}", EnumContainerModel.class).getOperateType());
+        assertNull(mapper.readValue("{\"operateType\": \"   \"}", EnumContainerModel.class).getOperateType());
+        assertThrows(InvalidFormatException.class,
+                () -> mapper.readValue("{\"operateType\": 999}", EnumContainerModel.class));
+        assertThrows(InvalidFormatException.class,
+                () -> mapper.readValue("{\"operateType\": \"unknown-action\"}", EnumContainerModel.class));
     }
 
     static class BigDecimalModel {

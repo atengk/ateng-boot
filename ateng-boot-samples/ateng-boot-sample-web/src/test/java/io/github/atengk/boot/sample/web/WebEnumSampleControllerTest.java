@@ -47,6 +47,8 @@ class WebEnumSampleControllerTest {
                 .andExpect(jsonPath("$.code", is(200)))
                 .andExpect(jsonPath("$.data.userStatus").exists())
                 .andExpect(jsonPath("$.data.orderType").exists())
+                .andExpect(jsonPath("$.data.operateType").exists())
+                .andExpect(jsonPath("$.data.operateType", hasSize(11)))
                 .andExpect(jsonPath("$.data.userStatus", hasSize(3)))
                 .andExpect(jsonPath("$.data.userStatus[0].code", is(1)))
                 .andExpect(jsonPath("$.data.userStatus[0].label", is("启用")))
@@ -70,6 +72,21 @@ class WebEnumSampleControllerTest {
                 .andExpect(jsonPath("$.data[0].label", is("启用")))
                 .andExpect(jsonPath("$.data[2].code", is(3)))
                 .andExpect(jsonPath("$.data[2].label", is("锁定")));
+    }
+
+    @Test
+    @DisplayName("GET /api/system/enums/operateType 查询扫描自 core.audit 的操作审计动作枚举字典")
+    void shouldGetOperateTypeEnumOptions() throws Exception {
+        mockMvc.perform(get("/api/system/enums/operateType"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.data", hasSize(11)))
+                .andExpect(jsonPath("$.data[0].code", is(0)))
+                .andExpect(jsonPath("$.data[0].label", is("其他")))
+                .andExpect(jsonPath("$.data[1].code", is(1)))
+                .andExpect(jsonPath("$.data[1].label", is("新增")))
+                .andExpect(jsonPath("$.data[10].code", is(10)))
+                .andExpect(jsonPath("$.data[10].label", is("清空")));
     }
 
     @Test

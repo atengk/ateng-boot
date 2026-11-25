@@ -1,6 +1,7 @@
 package io.github.atengk.boot.web.dict;
 
 import io.github.atengk.boot.core.annotation.EnumAlias;
+import io.github.atengk.boot.core.audit.OperateTypeEnum;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.enums.IBaseEnum;
 import io.github.atengk.boot.core.exception.BusinessException;
@@ -258,5 +259,41 @@ class EnumDictionaryTest {
 
         assertThat(registry.contains("sampleStatus")).isTrue();
         assertThat(registry.contains("userRole")).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试扫描 io.github.atengk.boot.core.audit 自动注册 OperateTypeEnum (operateType) 全量 11 项选项")
+    void shouldScanCoreAuditPackageAndRegisterOperateType() throws Exception {
+        EnumDictionaryProperties properties = new EnumDictionaryProperties();
+        properties.setScanPackages(List.of("io.github.atengk.boot.core.audit"));
+
+        EnumDictionaryRegistry registry = new EnumDictionaryRegistry(properties);
+        registry.afterPropertiesSet();
+
+        assertThat(registry.contains("operateType")).isTrue();
+        assertThat(registry.getEnumClass("operateType")).isEqualTo(OperateTypeEnum.class);
+
+        List<OptionItem<Object>> options = registry.getOptions("operateType");
+        assertThat(options).hasSize(11);
+        assertThat(options.get(0).getCode()).isEqualTo(0);
+        assertThat(options.get(0).getLabel()).isEqualTo("其他");
+        assertThat(options.get(1).getCode()).isEqualTo(1);
+        assertThat(options.get(1).getLabel()).isEqualTo("新增");
+        assertThat(options.get(10).getCode()).isEqualTo(10);
+        assertThat(options.get(10).getLabel()).isEqualTo("清空");
+
+        EnumDictionaryController controller = new EnumDictionaryController(registry);
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build();
+
+        mockMvc.perform(get("/api/system/enums/operateType"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(11))
+                .andExpect(jsonPath("$.data[0].code").value(0))
+                .andExpect(jsonPath("$.data[0].label").value("其他"))
+                .andExpect(jsonPath("$.data[10].code").value(10))
+                .andExpect(jsonPath("$.data[10].label").value("清空"));
     }
 }

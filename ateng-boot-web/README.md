@@ -607,9 +607,10 @@ ateng:
         path-prefix: /api/system/enums
         # 枚举命名策略（LOWER_CAMEL_CASE / SNAKE_CASE / ORIGINAL，默认 LOWER_CAMEL_CASE）
         naming-strategy: LOWER_CAMEL_CASE
-        # 枚举扫描包路径（建议配置具体业务包）
+        # 枚举扫描包路径（支持同时扫描业务枚举包与底座核心枚举包）
         scan-packages:
           - io.github.atengk.boot.sample.web.enums
+          - io.github.atengk.boot.core.audit
 ```
 
 #### 核心机制与五维生产模型
@@ -2742,6 +2743,7 @@ ateng:
         # 待扫描的枚举类基础包路径列表（启动期白名单扫描，为空时保持空注册表）
         scan-packages:
           - "io.github.atengk.boot.sample.web.enums"
+          - "io.github.atengk.boot.core.audit"
       ready-card:
         # 是否启用服务启动就绪一体化 ASCII 卡片输出（默认 true）
         enabled: true

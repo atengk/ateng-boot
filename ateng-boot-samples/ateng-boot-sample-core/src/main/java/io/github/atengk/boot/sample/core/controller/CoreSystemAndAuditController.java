@@ -1,7 +1,10 @@
 package io.github.atengk.boot.sample.core.controller;
 
+import io.github.atengk.boot.core.audit.OperateTypeEnum;
+import io.github.atengk.boot.core.model.OptionItem;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.model.UserAgentInfo;
+import io.github.atengk.boot.core.util.EnumUtil;
 import io.github.atengk.boot.core.util.UserAgentUtil;
 import io.github.atengk.boot.sample.core.dto.AuditAndDiagnoseRequest;
 import io.github.atengk.boot.sample.core.dto.SlowAlertAndFileRequest;
@@ -22,6 +25,8 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 /**
  * 系统基线防卫、网络探测、慢方法治理与审计诊断业务领域控制器
@@ -75,6 +80,17 @@ public class CoreSystemAndAuditController {
     @PostMapping("/audit-and-diagnose")
     public Result<AuditAndDiagnoseVO> executeAuditAndDiagnose(@RequestBody @Valid AuditAndDiagnoseRequest request) {
         return Result.success(systemScenarioService.executeAuditAndDiagnose(request));
+    }
+
+    /**
+     * 获取通用操作审计动作类型字典选项列表
+     * 演示 OperateTypeEnum 实现 IBaseEnum<Integer> 后通过 EnumUtil.toOptions 输出标准 OptionItem 列表
+     *
+     * @return 操作动作类型选项列表（共 11 项：0=其他 至 10=清空）
+     */
+    @GetMapping("/audit-operate-types")
+    public Result<List<OptionItem<Integer>>> listAuditOperateTypes() {
+        return Result.success(EnumUtil.toOptions(OperateTypeEnum.class));
     }
 
     /**

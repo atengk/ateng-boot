@@ -1,6 +1,7 @@
 package io.github.atengk.boot.core.audit;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import io.github.atengk.boot.core.enums.IBaseEnum;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 
@@ -8,14 +9,14 @@ import java.util.Objects;
 
 /**
  * 通用操作审计动作类型枚举
- * 涵盖 11 种通用操作动作，为跨层操作审计流转与日志消费提供强类型契约
+ * 涵盖 11 种通用操作动作，实现 {@link IBaseEnum} 强类型契约，为跨层操作审计流转、日志消费与枚举字典提供统一支撑
  *
  * @author Ateng
  * @since 2026-10-18
  */
 @Getter
 @AllArgsConstructor
-public enum OperateTypeEnum {
+public enum OperateTypeEnum implements IBaseEnum<Integer> {
 
     /**
      * 其他操作
@@ -81,6 +82,16 @@ public enum OperateTypeEnum {
      * 操作动作语义说明
      */
     private final String description;
+
+    /**
+     * 获取枚举展示标签（对齐 {@link IBaseEnum#getLabel()} 契约，委托返回 {@link #description}）
+     *
+     * @return 操作动作展示标签
+     */
+    @Override
+    public String getLabel() {
+        return description;
+    }
 
     /**
      * 根据数值编码安全匹配操作类型

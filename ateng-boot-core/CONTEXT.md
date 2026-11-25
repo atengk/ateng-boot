@@ -221,7 +221,7 @@ _Avoid_: ValidatedList, ValidationList, DTOList
 _Avoid_: TxUtil, TransactionHelper, TxHelper, TransactionalUtil
 
 **OperateTypeEnum**:
-通用操作审计动作类型枚举，集中收敛涵盖 11 种通用操作动作类型（OTHER、INSERT、UPDATE、DELETE、QUERY、EXPORT、IMPORT、LOGIN、LOGOUT、GRANT、CLEAN），为全反应堆跨层审计流转提供强类型契约与多源安全解析能力。
+遵循 `IBaseEnum<Integer>` 强类型契约的通用操作审计动作类型枚举，集中收敛 11 种通用操作动作（OTHER、INSERT、UPDATE、DELETE、QUERY、EXPORT、IMPORT、LOGIN、LOGOUT、GRANT、CLEAN），为全反应堆跨层审计流转与通用枚举字典消费提供统一编码及展示标签契约。
 _Avoid_: AuditActionEnum, LogTypeEnum, ActionType, OperationType, BusinessType
 
 **OperateLogModel**:

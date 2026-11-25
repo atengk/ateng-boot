@@ -1,11 +1,16 @@
 package io.github.atengk.boot.core.audit;
 
+import io.github.atengk.boot.core.enums.IBaseEnum;
+import io.github.atengk.boot.core.model.OptionItem;
+import io.github.atengk.boot.core.util.EnumUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -18,13 +23,21 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class OperateLogModelTest {
 
+    @AfterEach
+    void tearDown() {
+        EnumUtil.clearCache();
+    }
+
     @Test
     @DisplayName("验证 OperateTypeEnum 涵盖 11 种通用操作动作及其编码与描述")
     void shouldVerifyAllOperateTypeEnumConstants() {
         assertEquals(11, OperateTypeEnum.values().length);
+        assertInstanceOf(IBaseEnum.class, OperateTypeEnum.OTHER);
 
         assertEquals(0, OperateTypeEnum.OTHER.getCode());
         assertEquals("其他", OperateTypeEnum.OTHER.getDescription());
+        assertEquals("其他", OperateTypeEnum.OTHER.getLabel());
+        assertEquals(0, OperateTypeEnum.OTHER.getValue());
 
         assertEquals(1, OperateTypeEnum.INSERT.getCode());
         assertEquals("新增", OperateTypeEnum.INSERT.getDescription());
@@ -79,6 +92,44 @@ class OperateLogModelTest {
         assertEquals(OperateTypeEnum.DELETE, OperateTypeEnum.fromValue("delete"));
         assertEquals(OperateTypeEnum.QUERY, OperateTypeEnum.fromValue("4"));
         assertEquals(OperateTypeEnum.OTHER, OperateTypeEnum.fromValue("unknown-action"));
+    }
+
+    @Test
+    @DisplayName("验证 OperateTypeEnum 实现 IBaseEnum<Integer> 并兼容 EnumUtil 统一转换与选项生成")
+    void shouldSupportIBaseEnumAndEnumUtilConversions() {
+        // 1. EnumUtil.toOptions 输出全部 11 项 OptionItem (0=其他 至 10=清空)
+        List<OptionItem<Integer>> options = EnumUtil.toOptions(OperateTypeEnum.class);
+        assertEquals(11, options.size());
+        assertEquals(0, options.get(0).getCode());
+        assertEquals("其他", options.get(0).getLabel());
+        assertFalse(options.get(0).getDisabled());
+        assertTrue(options.get(0).getExtra().isEmpty());
+        assertEquals(10, options.get(10).getCode());
+        assertEquals("清空", options.get(10).getLabel());
+
+        for (OperateTypeEnum type : OperateTypeEnum.values()) {
+            assertEquals(type.getDescription(), type.getLabel());
+            assertEquals(type.getCode(), type.getValue());
+            assertTrue(type.matches(type.getCode()));
+            assertFalse(type.matches(null));
+            assertEquals(type, EnumUtil.fromCode(OperateTypeEnum.class, type.getCode()).orElseThrow());
+            assertEquals(type.getLabel(), EnumUtil.getLabelByCode(OperateTypeEnum.class, type.getCode()));
+            assertTrue(EnumUtil.isValidCode(OperateTypeEnum.class, type.getCode()));
+        }
+
+        // 2. 边界与越界校验
+        assertTrue(EnumUtil.fromCode(OperateTypeEnum.class, 999).isEmpty());
+        assertNull(EnumUtil.getLabelByCode(OperateTypeEnum.class, 999));
+        assertEquals("未知", EnumUtil.getLabelByCode(OperateTypeEnum.class, 999, "未知"));
+        assertFalse(EnumUtil.isValidCode(OperateTypeEnum.class, 999));
+        assertTrue(EnumUtil.isValidCode(OperateTypeEnum.class, (Object) "1"));
+        assertEquals(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10), EnumUtil.getAllCodes(OperateTypeEnum.class));
+
+        // 3. 纯 Core JsonUtil 仍保持 @JsonCreator fromValue 兼容解析（含数字、数字串、小写常量名与未知值兜底 OTHER）
+        assertEquals(OperateTypeEnum.INSERT, JsonUtil.parseObject("{\"operateType\":1}", OperateLogModel.class).getOperateType());
+        assertEquals(OperateTypeEnum.QUERY, JsonUtil.parseObject("{\"operateType\":\"4\"}", OperateLogModel.class).getOperateType());
+        assertEquals(OperateTypeEnum.DELETE, JsonUtil.parseObject("{\"operateType\":\"delete\"}", OperateLogModel.class).getOperateType());
+        assertEquals(OperateTypeEnum.OTHER, JsonUtil.parseObject("{\"operateType\":\"unknown-action\"}", OperateLogModel.class).getOperateType());
     }
 
     @Test

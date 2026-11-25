@@ -227,6 +227,89 @@ class CoreSystemAndAuditControllerTest {
     }
 
     @Test
+    @DisplayName("测试 OperateTypeEnum 枚举选项下发以及数字/字符串编码绑定与非法值拦截")
+    void testOperateTypeEnumOptionsAndBinding() throws Exception {
+        // 1. 查询通用操作审计动作类型选项列表（11 项：0=其他 至 10=清空）
+        mockMvc.perform(get("/sample/core/system/audit-operate-types"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.length()", is(11)))
+                .andExpect(jsonPath("$.data[0].code", is(0)))
+                .andExpect(jsonPath("$.data[0].label", is("其他")))
+                .andExpect(jsonPath("$.data[1].code", is(1)))
+                .andExpect(jsonPath("$.data[1].label", is("新增")))
+                .andExpect(jsonPath("$.data[10].code", is(10)))
+                .andExpect(jsonPath("$.data[10].label", is("清空")));
+
+        // 2. 数字编码、字符串编码与小写枚举常量名入参反序列化（序列化出参保持常量名字符串）
+        String numericPayload = """
+                {
+                    "module": "审计中心",
+                    "operateType": 10,
+                    "description": "清空过期日志",
+                    "sql": "DELETE FROM sys_log WHERE created_at < '2026-01-01'",
+                    "errorMessage": "模拟归档异常"
+                }
+                """;
+        mockMvc.perform(post("/sample/core/system/audit-and-diagnose")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(numericPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.data.operateLog.operateType", is("CLEAN")));
+
+        String stringCodePayload = """
+                {
+                    "module": "审计中心",
+                    "operateType": "1",
+                    "description": "字符串编码新增",
+                    "sql": "INSERT INTO sys_log VALUES (1)",
+                    "errorMessage": "模拟写入异常"
+                }
+                """;
+        mockMvc.perform(post("/sample/core/system/audit-and-diagnose")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(stringCodePayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.data.operateLog.operateType", is("INSERT")));
+
+        String lowerNamePayload = """
+                {
+                    "module": "审计中心",
+                    "operateType": "query",
+                    "description": "小写常量名查询",
+                    "sql": "SELECT 1 FROM sys_log",
+                    "errorMessage": "模拟查询异常"
+                }
+                """;
+        mockMvc.perform(post("/sample/core/system/audit-and-diagnose")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(lowerNamePayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.data.operateLog.operateType", is("QUERY")));
+
+        // 3. 非法枚举编码在 Web HTTP 边界触发 BaseEnumDeserializer Fail-Fast 拦截返回 400
+        String invalidPayload = """
+                {
+                    "module": "审计中心",
+                    "operateType": 999,
+                    "description": "非法操作类型",
+                    "sql": "SELECT 1",
+                    "errorMessage": "异常"
+                }
+                """;
+        mockMvc.perform(post("/sample/core/system/audit-and-diagnose")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(400)))
+                .andExpect(jsonPath("$.success", is(false)));
+    }
+
+    @Test
     @DisplayName("测试慢调用领域事件 SlowAlertEvent 消费与启动期慢 Bean 诊断闭环接口")
     void testExecuteSlowAlert_Success() throws Exception {
         SlowAlertSampleRequest request = SlowAlertSampleRequest.builder()

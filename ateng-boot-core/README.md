@@ -33,7 +33,7 @@
 | **高性能随机件** | 无锁安全随机与列表抽样洗牌 | `RandomUtil` | - | `RandomUtil.randomNumbers(len)`, `randomString(len)`, `randomInt(min, max)`, `randomEle(list)`, `randomEles(list, count)`, `shuffle(list)`, `shuffleNew(list)` | `RandomUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **通用辅助原语** | 对象属性安全拷贝、不可变元组与 Spring 容器门面 | `BeanUtil`, `Pair`, `Triple`, `SpringUtil`, `AtengCoreAutoConfiguration` | - | `BeanUtil.copy(...)`, `copyList(...)`, `BeanUtil.copyIgnoreNull(source, target)`, `Pair.of(...)`, `Triple.of(...)`, `SpringUtil.getBean(...)`, `containsBean(...)`, `isDev/isProd/isTest()`, `getServerPort()` | `BeanUtilTest.java`, `PairTripleTest.java`, `SpringUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **事务同步门面与状态枚举** | 事务生命周期门面、上下文穿透与事务状态枚举 | `TransactionUtil`, `TransactionCompletionStatus` | - | `executeBeforeCommit(task)`, `executeAfterCommit(task)`, `executeAfterRollback(task)`, `executeAfterCompletion(action)`, `executeAfterCommitAsync(task)` / `executeAfterCommitAsync(task, executor)`, `publishAfterCommit(event)`, `isActualTransactionActive()`, `isSynchronizationActive()`, `TransactionCompletionStatus.COMMITTED/ROLLED_BACK/UNKNOWN` | `TransactionUtilTest.java`, `CoreContextScenarioServiceTest.java`, `CoreAsyncAndContextControllerTest.java` |
-| **操作审计契约与事件发布** | 操作日志模型、操作动作枚举与解耦事件 | `OperateLogModel`, `OperateTypeEnum`, `OperateLogEvent` | - | `OperateLogModel.builder()`, `getUserAgent()/getBrowser()/getOs()`, `model.isSuccess()`, `model.addExtra(k, v)`, `OperateTypeEnum.of(code)`, `new OperateLogEvent(source, model)` 异步事件解耦发布（`costTime` 标配 `NumericLongSerializer`） | `OperateLogModelTest.java`, `NumericLongSerializerTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
+| **操作审计契约与事件发布** | 操作日志模型、操作动作枚举与解耦事件 | `OperateLogModel`, `OperateTypeEnum` (`IBaseEnum<Integer>`), `OperateLogEvent` | - | `OperateLogModel.builder()`, `getUserAgent()/getBrowser()/getOs()`, `model.isSuccess()`, `model.addExtra(k, v)`, `OperateTypeEnum.of(code)` / `fromValue(val)` / `getLabel()`、`EnumUtil.toOptions(OperateTypeEnum.class)` / `fromCode(...)` / `getLabelByCode(...)`、`new OperateLogEvent(source, model)` 异步事件解耦发布（`costTime` 标配 `NumericLongSerializer`） | `OperateLogModelTest.java`, `InEnumValidatorTest.java`, `NumericLongSerializerTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **客户端 UA 解析** | 纯 JDK 17 零外部依赖防 ReDoS User-Agent 净化与解析 | `UserAgentUtil`, `UserAgentInfo` | - | `UserAgentUtil.parse(ua[, maxLength])`, `sanitize(ua, maxLength)`, `parseBrowser(ua)`, `parseOs(ua)`, `isMobile(ua)`；`UserAgentInfo(browser, browserVersion, os, osVersion, deviceType, mobile, rawUserAgent)`（空值或未知保底返回 `"Unknown"`） | `UserAgentUtilTest.java`, `CoreSystemAndAuditControllerTest.java` (`GET /sample/core/system/user-agent`) |
 | **持久层无侵入 SQL 审计** | SQL 审计结构体与语法类型判定 | `SqlLogModel`, `SqlTypeEnum` | - | `SqlLogModel.builder()`, `model.getSql()`, `model.getCostTime()`, `SqlTypeEnum.of(code)`, `SqlTypeEnum.fromValue(value)`, `isDml()`, `isQuery()` 识别 SELECT/INSERT/UPDATE/DELETE/OTHER | `SqlLogModelTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **进程内滑动窗口流控** | 高性能单机内存滑动窗口限流器 | `SlidingWindowCounter` | - | `SlidingWindowCounter(duration, sliceCount)`, `incrementAndGet(delta)`, `tryAcquire(delta, threshold)`, `getCount()`, `reset()` (基于环形时间切片，零外部中间件平滑限流与防刷) | `SlidingWindowCounterTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
@@ -2132,7 +2132,7 @@ NamedThreadFactory daemonFactory = new NamedThreadFactory("mq-pull", true, (thre
 在全栈开发与分布式审计场景中，操作日志流转通常涉及 Web 切面拦截、MQ 消息异步削峰、领域事件分发以及持久层（MySQL / Elasticsearch / ClickHouse）消费落库。
 若各子系统或分层自行定义散落的 Map 或不规范 POJO，极易导致字段命名割裂、操作动作歧义、Jackson 序列化 `@class` 漏洞污染以及缺失租户和全链路 TraceId 透传。
 `ateng-boot-core` 下沉通用审计元数据标准契约：
-- **标准枚举与多源安全解析**：`OperateTypeEnum` 集中收敛 11 种通用操作动作（`OTHER(0)`、`INSERT(1)`、`UPDATE(2)`、`DELETE(3)`、`QUERY(4)`、`EXPORT(5)`、`IMPORT(6)`、`LOGIN(7)`、`LOGOUT(8)`、`GRANT(9)`、`CLEAN(10)`），支持按 code 数值或名称大小写安全匹配，提供 `@JsonCreator` 兼容解析；
+- **标准枚举与统一契约接入**：`OperateTypeEnum` 实现 `IBaseEnum<Integer>` 强类型契约，集中收敛 11 种通用操作动作（`OTHER(0)`、`INSERT(1)`、`UPDATE(2)`、`DELETE(3)`、`QUERY(4)`、`EXPORT(5)`、`IMPORT(6)`、`LOGIN(7)`、`LOGOUT(8)`、`GRANT(9)`、`CLEAN(10)`），`getLabel()` 委托返回 `description` 并完整保留 `getCode()` / `getDescription()` / `of(code)` / `@JsonCreator fromValue(value)` 向后兼容（JSON 序列化维持枚举常量名），无缝对接 `EnumUtil`、`@InEnum` 与 `ateng-boot-web` `EnumDictionaryRegistry`（扫描 `io.github.atengk.boot.core.audit` 自动注册别名 `operateType`）；
 - **全要素结构化元数据**：`OperateLogModel` 覆盖全链路追踪（`traceId`）、多租户（`tenantId`）、操作人（`userId`, `userName`, `originalUserId`）、功能模块与描述（`module`, `description`）、网络与客户端端点（`requestMethod`, `requestUrl`, `clientIp`, `userAgent`, `browser`, `os`, `operateLocation`）、出入参摘要（`requestParams`, `responseResult`）、执行度量（`status`, `costTime`, `errorMsg`）、扩展字典（`extra`）与时间戳（`operateTime`）；
 - **语法糖与无失真序列化**：提供 `isSuccess()` 语法糖判定（`status == 0`，标配 `@JsonIgnore` 防派生字段污染），支持 `addExtra(k, v)` 便捷链式扩展，100% 适配 Jackson 规范序列化与未知属性容错。
 
@@ -2140,9 +2140,12 @@ NamedThreadFactory daemonFactory = new NamedThreadFactory("mq-pull", true, (thre
 ```java
 import io.github.atengk.boot.core.audit.OperateLogModel;
 import io.github.atengk.boot.core.audit.OperateTypeEnum;
+import io.github.atengk.boot.core.model.OptionItem;
+import io.github.atengk.boot.core.util.EnumUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 // 1. 构建结构化操作审计日志模型
 OperateLogModel logModel = OperateLogModel.builder()
@@ -2179,6 +2182,9 @@ if (logModel.isSuccess()) {
 // 4. 纯净序列化与反序列化（零 @class 污染，时间格式自动对齐）
 String json = JsonUtil.toJsonString(logModel);
 OperateLogModel parsed = JsonUtil.parseObject(json, OperateLogModel.class);
+
+// 5. 接入通用枚举契约：一键生成 11 项下拉选项列表
+List<OptionItem<Integer>> operateOptions = EnumUtil.toOptions(OperateTypeEnum.class);
 ```
 
 ### 7.9 原生日期时间互转与跨度计算门面 (`DateTimeUtil`)

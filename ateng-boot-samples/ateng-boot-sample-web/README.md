@@ -37,6 +37,7 @@
 | **时间、雪花 ID 与高精度金额格式化** | `WebContractAndExceptionController` | `GET /sample/web/contract/datetime` | `curl "http://localhost:8080/sample/web/contract/datetime"` (校验 `BigDecimal("1E+7")` 输出为平原十进制 `10000000`) |
 | **枚举强类型双向反序列化** | `WebContractAndExceptionController` | `POST /sample/web/contract/enum-bind` | `curl -X POST "http://localhost:8080/sample/web/contract/enum-bind" -H "Content-Type: application/json" -d "{\"username\":\"王五\",\"statusCode\":1,\"status\":\"ACTIVE\",\"orderType\":\"normal\"}"` |
 | **单枚举字典查询 (只读端点)** | `EnumDictionaryController` (内置) | `GET /api/system/enums/userStatus` | `curl "http://localhost:8080/api/system/enums/userStatus"` |
+| **核心审计枚举字典查询 (只读端点)** | `EnumDictionaryController` (内置) | `GET /api/system/enums/operateType` | `curl "http://localhost:8080/api/system/enums/operateType"` |
 | **全量枚举字典索引 (只读端点)** | `EnumDictionaryController` (内置) | `GET /api/system/enums` | `curl "http://localhost:8080/api/system/enums"` |
 | **批量聚合枚举字典 (只读端点)** | `EnumDictionaryController` (内置) | `POST /api/system/enums/batch` | `curl -X POST "http://localhost:8080/api/system/enums/batch" -H "Content-Type: application/json" -d "[\"userStatus\",\"orderType\"]"` |
 | **上游自主接管枚举字典目录** | `WebContractAndExceptionController` | `GET /sample/web/contract/enums/custom-catalog` | `curl "http://localhost:8080/sample/web/contract/enums/custom-catalog?names=userStatus"` (`endpoint-enabled=false` 时禁用内置端点并由此接口接管) |
