@@ -8,11 +8,13 @@ import io.github.atengk.boot.sample.web.dto.AuditUserDTO;
 import io.github.atengk.boot.sample.web.vo.UserRegisterVO;
 import io.github.atengk.boot.web.annotation.OperateLog;
 import io.github.atengk.boot.web.annotation.WebLog;
+import io.github.atengk.boot.web.audit.OperateLogUrlStrategy;
 import io.github.atengk.boot.web.filter.CachedBodyHttpServletRequest;
 import io.github.atengk.boot.web.trace.TraceUtil;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -232,6 +234,67 @@ public class WebObservabilityAndAuditController {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("account", payload.get("account"));
         data.put("status", "MASKED");
+        return Result.success(data);
+    }
+
+    /**
+     * 强退在线会话操作审计（注解声明 BEST_MATCHING_PATTERN，采集路由模板并同步排除路径句柄参数）
+     *
+     * @param sessionHandle 在线会话句柄
+     * @return 强退结果摘要
+     */
+    @DeleteMapping("/audit/sessions/{sessionHandle}")
+    @OperateLog(
+            module = "在线会话",
+            type = OperateTypeEnum.DELETE,
+            description = "强退在线会话",
+            excludeParams = {"sessionHandle"},
+            urlStrategy = OperateLogUrlStrategy.BEST_MATCHING_PATTERN
+    )
+    public Result<Map<String, Object>> revokeOnlineSession(@PathVariable String sessionHandle) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("revoked", true);
+        data.put("handleLength", sessionHandle != null ? sessionHandle.length() : 0);
+        return Result.success(data);
+    }
+
+    /**
+     * 作废临时凭证工单操作审计（由全局 ateng.boot.web.operate-log.template-urls 规则命中自动采集路由模板）
+     *
+     * @param ticketNo 一次性凭证编号
+     * @return 作废结果摘要
+     */
+    @DeleteMapping("/audit/tickets/{ticketNo}")
+    @OperateLog(
+            module = "凭证工单",
+            type = OperateTypeEnum.DELETE,
+            description = "作废临时凭据",
+            excludeParams = {"ticketNo"}
+    )
+    public Result<Map<String, Object>> voidSecurityTicket(@PathVariable String ticketNo) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("voided", true);
+        data.put("ticketLength", ticketNo != null ? ticketNo.length() : 0);
+        return Result.success(data);
+    }
+
+    /**
+     * 吊销个人访问令牌操作审计（由 SampleOperateLogUrlCustomizer SPI 对路径尾段句柄局部保留首尾掩码）
+     *
+     * @param tokenId 个人访问令牌标识
+     * @return 吊销结果摘要
+     */
+    @DeleteMapping("/audit/tokens/{tokenId}")
+    @OperateLog(
+            module = "个人令牌",
+            type = OperateTypeEnum.DELETE,
+            description = "吊销访问令牌",
+            excludeParams = {"tokenId"}
+    )
+    public Result<Map<String, Object>> revokePersonalToken(@PathVariable String tokenId) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("revoked", true);
+        data.put("tokenLength", tokenId != null ? tokenId.length() : 0);
         return Result.success(data);
     }
 

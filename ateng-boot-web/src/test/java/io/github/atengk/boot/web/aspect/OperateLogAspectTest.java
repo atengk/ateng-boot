@@ -11,6 +11,9 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.web.annotation.OperateLog;
 import io.github.atengk.boot.web.audit.OperateLogStorageProvider;
+import io.github.atengk.boot.web.audit.OperateLogUrlContext;
+import io.github.atengk.boot.web.audit.OperateLogUrlCustomizer;
+import io.github.atengk.boot.web.audit.OperateLogUrlStrategy;
 import io.github.atengk.boot.web.properties.WebProperties;
 import io.github.atengk.boot.web.trace.TraceUtil;
 import lombok.AllArgsConstructor;
@@ -22,9 +25,12 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.aop.aspectj.annotation.AspectJProxyFactory;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
+import org.springframework.core.annotation.Order;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
+import org.springframework.web.servlet.HandlerMapping;
+import org.springframework.web.util.pattern.PathPatternParser;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -69,6 +75,7 @@ class OperateLogAspectTest {
         Result<String> updateSecurity(Map<String, Object> payload);
         Result<String> submitDtoAndArray(AuthPayloadDTO dto, List<AuthPayloadDTO> items, Object[] extras);
         Result<String> circularArg(CircularTokenNode node);
+        Result<Void> revokeSession(String sessionHandle);
     }
 
     @Data
@@ -133,6 +140,17 @@ class OperateLogAspectTest {
         @OperateLog(module = "认证中心", type = OperateTypeEnum.OTHER, description = "环引用安全降级")
         public Result<String> circularArg(CircularTokenNode node) {
             return Result.success("circular-ok");
+        }
+
+        @Override
+        @OperateLog(
+                module = "会话管理",
+                type = OperateTypeEnum.DELETE,
+                description = "注销在线会话",
+                urlStrategy = OperateLogUrlStrategy.BEST_MATCHING_PATTERN
+        )
+        public Result<Void> revokeSession(String sessionHandle) {
+            return Result.success();
         }
     }
 
@@ -472,5 +490,224 @@ class OperateLogAspectTest {
         assertThat(capturedModel.get().getUserAgent()).isNull();
         assertThat(capturedModel.get().getBrowser()).isNull();
         assertThat(capturedModel.get().getOs()).isNull();
+    }
+
+    @Test
+    @DisplayName("默认采集 RAW_URI；声明 BEST_MATCHING_PATTERN 时优先记录路由模板并在缺失时安全回退 RAW_URI")
+    void shouldCaptureBestMatchingPatternAndFallbackToRawUri() {
+        MockHttpServletRequest rawRequest = new MockHttpServletRequest("POST", "/api/users/raw-id");
+        rawRequest.setAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE, "/api/users/{id}");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(rawRequest));
+
+        targetService.createUser("alice", "pwd");
+        assertThat(capturedModel.get().getRequestUrl()).isEqualTo("/api/users/raw-id");
+
+        MockHttpServletRequest patternRequest = new MockHttpServletRequest("DELETE", "/api/sessions/opaque-handle-96chars");
+        patternRequest.setAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE, "/api/sessions/{sessionHandle}");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(patternRequest));
+
+        targetService.revokeSession("opaque-handle-96chars");
+        assertThat(capturedModel.get().getRequestUrl()).isEqualTo("/api/sessions/{sessionHandle}");
+
+        MockHttpServletRequest fallbackRequest = new MockHttpServletRequest("DELETE", "/api/sessions/fallback-handle");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(fallbackRequest));
+
+        targetService.revokeSession("fallback-handle");
+        assertThat(capturedModel.get().getRequestUrl()).isEqualTo("/api/sessions/fallback-handle");
+
+        MockHttpServletRequest blankAttrRequest = new MockHttpServletRequest("DELETE", "/api/sessions/blank-handle");
+        blankAttrRequest.setAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE, "   ");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(blankAttrRequest));
+
+        targetService.revokeSession("blank-handle");
+        assertThat(capturedModel.get().getRequestUrl()).isEqualTo("/api/sessions/blank-handle");
+    }
+
+    @OperateLog(module = "类级会话模块", urlStrategy = OperateLogUrlStrategy.BEST_MATCHING_PATTERN)
+    static class ClassLevelPatternService {
+
+        @OperateLog(type = OperateTypeEnum.DELETE, description = "继承类级策略")
+        public Result<Void> inheritClassStrategy() {
+            return Result.success();
+        }
+
+        @OperateLog(type = OperateTypeEnum.QUERY, description = "方法显式回退 RAW_URI", urlStrategy = OperateLogUrlStrategy.RAW_URI)
+        public Result<Void> overrideToRawUri() {
+            return Result.success();
+        }
+    }
+
+    @Test
+    @DisplayName("四阶优先级裁决：方法显式策略 > 类级显式策略 > 全局 templateUrls 命中 > 全局 urlStrategy")
+    void shouldResolveUrlStrategyWithFourTierPrecedence() {
+        // 1. 类级 BEST_MATCHING_PATTERN 被未显式指定策略的方法继承；方法显式 RAW_URI 覆盖类级与全局
+        WebProperties classProps = new WebProperties();
+        classProps.getOperateLog().setUrlStrategy(OperateLogUrlStrategy.RAW_URI);
+        classProps.getOperateLog().setTemplateUrls(List.of("/admin/**"));
+        OperateLogAspect classAspect = new OperateLogAspect(capturedModel::set, null, JsonUtil.getObjectMapper(), null, classProps);
+        AspectJProxyFactory classProxyFactory = new AspectJProxyFactory(new ClassLevelPatternService());
+        classProxyFactory.setProxyTargetClass(true);
+        classProxyFactory.addAspect(classAspect);
+        ClassLevelPatternService classService = classProxyFactory.getProxy();
+
+        MockHttpServletRequest req1 = new MockHttpServletRequest("DELETE", "/admin/sessions/secret-1");
+        req1.setAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE, "/admin/sessions/{id}");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(req1));
+
+        classService.inheritClassStrategy();
+        assertThat(capturedModel.get().getRequestUrl()).isEqualTo("/admin/sessions/{id}");
+
+        classService.overrideToRawUri();
+        assertThat(capturedModel.get().getRequestUrl()).isEqualTo("/admin/sessions/secret-1");
+
+        // 2. 全局 templateUrls（支持 contextPath 剥离匹配）命中时切为路由模板，未命中保持 RAW_URI
+        WebProperties ruleProps = new WebProperties();
+        ruleProps.getOperateLog().setUrlStrategy(OperateLogUrlStrategy.RAW_URI);
+        ruleProps.getOperateLog().setTemplateUrls(List.of("/admin/auth/online/**"));
+        OperateLogAspect ruleAspect = new OperateLogAspect(capturedModel::set, null, JsonUtil.getObjectMapper(), null, ruleProps);
+        AspectJProxyFactory ruleProxyFactory = new AspectJProxyFactory(new OperateLogServiceImpl());
+        ruleProxyFactory.setProxyTargetClass(true);
+        ruleProxyFactory.addAspect(ruleAspect);
+        OperateLogService ruleService = ruleProxyFactory.getProxy();
+
+        MockHttpServletRequest matchedReq = new MockHttpServletRequest("DELETE", "/api/admin/auth/online/aes96-token");
+        matchedReq.setContextPath("/api");
+        matchedReq.setAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE, "/admin/auth/online/{sessionId}");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(matchedReq));
+
+        ruleService.loginWithoutExclude("admin", Map.of("k", "v"));
+        assertThat(capturedModel.get().getRequestUrl()).isEqualTo("/admin/auth/online/{sessionId}");
+
+        MockHttpServletRequest unmatchedReq = new MockHttpServletRequest("GET", "/api/system/users/42");
+        unmatchedReq.setContextPath("/api");
+        unmatchedReq.setAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE, "/system/users/{id}");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(unmatchedReq));
+
+        ruleService.loginWithoutExclude("admin", Map.of("k", "v"));
+        assertThat(capturedModel.get().getRequestUrl()).isEqualTo("/api/system/users/42");
+
+        // 3. 全局 urlStrategy = BEST_MATCHING_PATTERN 生效；若误设为 DEFAULT 或 null 安全回退 RAW_URI
+        ruleProps.getOperateLog().setTemplateUrls(List.of());
+        ruleProps.getOperateLog().setUrlStrategy(OperateLogUrlStrategy.BEST_MATCHING_PATTERN);
+        ruleService.loginWithoutExclude("admin", Map.of("k", "v"));
+        assertThat(capturedModel.get().getRequestUrl()).isEqualTo("/system/users/{id}");
+
+        ruleProps.getOperateLog().setUrlStrategy(OperateLogUrlStrategy.DEFAULT);
+        ruleService.loginWithoutExclude("admin", Map.of("k", "v"));
+        assertThat(capturedModel.get().getRequestUrl()).isEqualTo("/api/system/users/42");
+
+        ruleProps.getOperateLog().setUrlStrategy(null);
+        ruleService.loginWithoutExclude("admin", Map.of("k", "v"));
+        assertThat(capturedModel.get().getRequestUrl()).isEqualTo("/api/system/users/42");
+
+        // 4. 请求 URI 为 null 且带 contextPath + templateUrls 时安全防御不抛 NPE
+        ruleProps.getOperateLog().setTemplateUrls(List.of("/admin/auth/online/**"));
+        MockHttpServletRequest nullUriReq = new MockHttpServletRequest();
+        nullUriReq.setRequestURI(null);
+        nullUriReq.setContextPath("/api");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(nullUriReq));
+
+        ruleService.loginWithoutExclude("admin", Map.of("k", "v"));
+        assertThat(capturedModel.get().getRequestUrl()).isEmpty();
+    }
+
+    @Order(20)
+    static class SecondOrderedUrlCustomizer implements OperateLogUrlCustomizer {
+        @Override
+        public String customize(OperateLogUrlContext context) {
+            return context.resolvedUrl() + "|order20";
+        }
+    }
+
+    @Order(10)
+    static class FirstOrderedUrlCustomizer implements OperateLogUrlCustomizer {
+        @Override
+        public String customize(OperateLogUrlContext context) {
+            return context.resolvedUrl() + "|order10";
+        }
+    }
+
+    @Test
+    @DisplayName("OperateLogUrlCustomizer 支持多定制器链式管道、Fail-Safe 异常/空值回退、控制字符净化与 PathPattern 兼容")
+    void shouldExecuteUrlCustomizerPipelineSafelyAndSanitizeControlChars() {
+        AtomicReference<OperateLogUrlContext> seenFirstCtx = new AtomicReference<>();
+        AtomicReference<OperateLogUrlContext> seenLastCtx = new AtomicReference<>();
+
+        OperateLogUrlCustomizer maskingCustomizer = ctx -> {
+            seenFirstCtx.set(ctx);
+            return ctx.resolvedUrl().replace("/secret-handle", "/***");
+        };
+        OperateLogUrlCustomizer throwingCustomizer = ctx -> {
+            throw new IllegalStateException("customizer failed");
+        };
+        OperateLogUrlCustomizer nullReturningCustomizer = ctx -> null;
+        OperateLogUrlCustomizer controlCharCustomizer = ctx -> {
+            seenLastCtx.set(ctx);
+            return ctx.resolvedUrl() + "\r\n\t\u007F/tail";
+        };
+
+        WebProperties props = new WebProperties();
+        OperateLogAspect customizerAspect = new OperateLogAspect(
+                capturedModel::set,
+                null,
+                JsonUtil.getObjectMapper(),
+                null,
+                props,
+                List.of(maskingCustomizer, throwingCustomizer, nullReturningCustomizer, controlCharCustomizer)
+        );
+        AspectJProxyFactory proxyFactory = new AspectJProxyFactory(new OperateLogServiceImpl());
+        proxyFactory.setProxyTargetClass(true);
+        proxyFactory.addAspect(customizerAspect);
+        OperateLogService service = proxyFactory.getProxy();
+
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/tokens/secret-handle");
+        req.setAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE,
+                new PathPatternParser().parse("/api/tokens/{handle}"));
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(req));
+
+        service.loginWithoutExclude("alice", Map.of("k", "v"));
+
+        assertThat(seenFirstCtx.get()).isNotNull();
+        assertThat(seenFirstCtx.get().effectiveStrategy()).isEqualTo(OperateLogUrlStrategy.RAW_URI);
+        assertThat(seenFirstCtx.get().rawUri()).isEqualTo("/api/tokens/secret-handle");
+        assertThat(seenFirstCtx.get().bestMatchingPattern()).isEqualTo("/api/tokens/{handle}");
+        assertThat(seenFirstCtx.get().resolvedUrl()).isEqualTo("/api/tokens/secret-handle");
+        assertThat(seenFirstCtx.get().method().getName()).isEqualTo("loginWithoutExclude");
+
+        // throwing 与 null 返回后均保持上一级结果，最终结果被剥离控制字符
+        assertThat(seenLastCtx.get().resolvedUrl()).isEqualTo("/api/tokens/***");
+        assertThat(capturedModel.get().getRequestUrl()).isEqualTo("/api/tokens/***/tail");
+
+        // PathPattern 对象在 BEST_MATCHING_PATTERN 模式下同样可用；无请求上下文返回空串
+        MockHttpServletRequest patternReq = new MockHttpServletRequest("DELETE", "/api/sessions/raw-96-token");
+        patternReq.setAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE,
+                new PathPatternParser().parse("/api/sessions/{sessionHandle}"));
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(patternReq));
+
+        targetService.revokeSession("raw-96-token");
+        assertThat(capturedModel.get().getRequestUrl()).isEqualTo("/api/sessions/{sessionHandle}");
+
+        RequestContextHolder.resetRequestAttributes();
+        targetService.revokeSession("no-request");
+        assertThat(capturedModel.get().getRequestUrl()).isEmpty();
+
+        // 构造器内部基于 @Order 自动排序（传入逆序 [20, 10] 仍按 10 -> 20 执行）
+        OperateLogAspect orderedAspect = new OperateLogAspect(
+                capturedModel::set,
+                null,
+                JsonUtil.getObjectMapper(),
+                null,
+                props,
+                List.of(new SecondOrderedUrlCustomizer(), new FirstOrderedUrlCustomizer())
+        );
+        AspectJProxyFactory orderedProxy = new AspectJProxyFactory(new OperateLogServiceImpl());
+        orderedProxy.setProxyTargetClass(true);
+        orderedProxy.addAspect(orderedAspect);
+        OperateLogService orderedService = orderedProxy.getProxy();
+
+        MockHttpServletRequest orderedReq = new MockHttpServletRequest("GET", "/api/orders/100");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(orderedReq));
+        orderedService.loginWithoutExclude("alice", Map.of("k", "v"));
+        assertThat(capturedModel.get().getRequestUrl()).isEqualTo("/api/orders/100|order10|order20");
     }
 }

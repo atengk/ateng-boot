@@ -19,7 +19,7 @@
 | **纯 JDK 图形验证码** | 零字体依赖 SVG/PNG 生成与一次一密受管核验 | `CaptchaTemplate`, `CaptchaResult`, `CaptchaType`, `CaptchaCharType`, `CaptchaRendererType`, `CaptchaStore`, `InMemoryCaptchaStore`, `RedisCaptchaStore`, `RedissonCaptchaStore`, `CaptchaRenderer`, `SvgCaptchaRenderer`, `PngCaptchaRenderer`, `CaptchaProperties`, `AtengCaptchaAutoConfiguration` | `ateng.boot.web.captcha.enabled`, `key-prefix`, `renderer`, `type`, `char-type`, `length`, `math-operators`, `width`, `height`, `expire`, `ignore-case`, `noise-line-count`, `noise-dot-count`, `fail-open`, `in-memory.max-capacity`, `in-memory.clean-interval` | `CaptchaTemplate.generate()`, `generate(CaptchaType)`, `verify(key, code)`, `verifyOrThrow(key, code)`, `invalidate(key)`；`CaptchaStore.save(key, answer, ttl)`, `getAndDelete(key)`, `delete(key)`；`CaptchaRenderer.render(displayText, properties)`；默认零系统字体依赖 `SvgCaptchaRenderer`（纯 `<path>` 轮廓无 `<text>` 防直读），可切 `PngCaptchaRenderer`；支持 `CHAR`（默认剔除 `0/O/o/1/I/l`）与 `MATH`；核验严格一次一密（无论成败原子 `getAndDelete` 销毁）；Redisson $\rightarrow$ Redis $\rightarrow$ InMemory 三级自适应存储，`fail-open` 默认 `false` | `CaptchaTemplateTest.java`, `AtengCaptchaAutoConfigurationTest.java`, `InMemoryCaptchaStoreTest.java`, `RedisCaptchaStoreTest.java`, `RedissonCaptchaStoreTest.java`, `SvgCaptchaRendererTest.java`, `PngCaptchaRendererTest.java`, `WebCaptchaControllerTest.java`, `WebCaptchaPngSampleTest.java` |
 | **云原生优雅停机** | K8s 就绪探针排空与在途请求感知 | `AtengGracefulShutdownHandler`, `DrainResult`, `PreStopEndpoint`, `PreStopController` | `ateng.boot.web.shutdown.enabled`, `drain-timeout`, `quiet-period`, `poll-interval`, `smart-lifecycle-enabled`, `actuator-endpoint-enabled`, `mvc-endpoint-enabled`, `mvc-endpoint-path` | `drain()`, `isDrained()`, `getInFlightRequestCount()`, 翻转 `ReadinessState.REFUSING_TRAFFIC`，两阶段自适应排空（先等待 `quiet-period` 保障路由传播，未配置时等价 `drain-timeout: 10s`；剩余窗口按 `poll-interval: 100ms` 轮询探测在途归零即提前退出），统计并返回 `inFlightRequestsAtStart` / `inFlightRequestsRemaining` 在途请求快照，`AtomicBoolean` 状态机排空幂等，支持 `/actuator/pre-stop` 与 `/pre-stop` 双模端点及 `SmartLifecycle` 兜底 | `AtengGracefulShutdownHandlerTest.java`, `PreStopEndpointTest.java`, `PreStopControllerTest.java`, `AtengGracefulShutdownAutoConfigurationTest.java`, `WebCloudLifecycleControllerTest.java` |
 | **慢请求主动告警** | 长耗时慢请求性能主动告警与长连接放行 | `SlowRequestFilter` | `ateng.boot.web.slow-request.enabled`, `threshold`, `exclude-urls` | 请求出口处计算总耗时，超过阈值（强类型 Duration）输出包含 TraceId、URI、Method、耗时与 ClientIp 的 `[SLOW_REQUEST]` 格式化 WARN 日志，自动放行 WebSocket、SSE、文件下载与异步挂起请求，支持 Ant 路径白名单 | `SlowRequestFilterTest.java`, `SlowRequestMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
-| **结构化操作审计** | 企业级操作审计切面与存储解耦 SPI | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `DefaultOperateLogStorageProvider`, `OperateLogModel`, `OperateLogEvent` | `ateng.boot.web.operate-log.enabled`, `default-exclude-params`, `collect-user-agent`, `parse-user-agent`, `user-agent-max-length` | `@OperateLog(value, module, title, type, description, saveParams, saveResult, excludeParams)`，异步派发前在请求线程同步过滤控制字符并限长采集 `User-Agent`（委托 Core `UserAgentUtil` 解析 `browser`/`os`），关联线程上下文与合并 11 项默认敏感基线递归掩码，出参自动联动 `@FieldSensitive` 视图脱敏，支持 `OperateLogStorageProvider.store(logModel)` 与 `OperateLogEvent` 事件广播 | `OperateLogAspectTest.java`, `OperateLogAutoConfigurationTest.java`, `WebObservabilityAndAuditControllerTest.java` |
+| **结构化操作审计** | 企业级操作审计切面与存储解耦 SPI | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `DefaultOperateLogStorageProvider`, `OperateLogUrlStrategy`, `OperateLogUrlContext`, `OperateLogUrlCustomizer`, `OperateLogModel`, `OperateLogEvent` | `ateng.boot.web.operate-log.enabled`, `default-exclude-params`, `collect-user-agent`, `parse-user-agent`, `user-agent-max-length`, `url-strategy`, `template-urls` | `@OperateLog(value, module, title, type, description, saveParams, saveResult, excludeParams, urlStrategy)`；`OperateLogUrlStrategy`（`DEFAULT` / `RAW_URI` / `BEST_MATCHING_PATTERN`）；`OperateLogUrlCustomizer.customize(OperateLogUrlContext)` 与 `OperateLogUrlContext(request, method, operateLog, effectiveStrategy, rawUri, bestMatchingPattern, resolvedUrl)`；异步派发前在请求线程同步过滤控制字符并限长采集 `User-Agent`（委托 Core `UserAgentUtil` 解析 `browser`/`os`），支持按四阶优先级（方法显式策略 > 类级显式策略 > `template-urls` Ant 规则 > 全局 `url-strategy`，默认 `RAW_URI`）切换路由模板并挂载 `@Order` 链式 `OperateLogUrlCustomizer` Fail-Safe 定制及控制字符净化；关联线程上下文与合并 11 项默认敏感基线递归掩码，出参自动联动 `@FieldSensitive` 视图脱敏，支持 `OperateLogStorageProvider.store(logModel)` 与 `OperateLogEvent` 事件广播 | `OperateLogAspectTest.java`, `OperateLogAutoConfigurationTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **请求体可重读管道** | 通用请求体重复多次读取与载荷防爆管道 | `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.body-cache.max-body-size`, `sign.enabled`, `payload-log.enabled` | 自动包装 POST/PUT/PATCH 请求为可重复读包装器，支持多次重复消费输入流；单次超限（DataSize）快速失败并优雅降级输出 HTTP 200 + Result 413 JSON 报文并回写 `X-Trace-Id`；自动跳过表单与文件上传 | `ContentCachingFilterTest.java`, `ContentCachingAutoConfigurationTest.java`, `ContentCachingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **载荷采样日志** | HTTP 请求/响应双向安全采样与截断防 OOM | `PayloadLoggingFilter` | `ateng.boot.web.payload-log.enabled`, `max-payload-size`, `exclude-urls` | 请求出口处单行聚合输出包含 TraceId、Method、URI、Status、Cost、ReqBody 与 RespBody 的 `[HTTP_PAYLOAD]` 日志，内建 MIME 过滤、凭据正则掩码（`***`）、强类型截断（默认 4KB）、状态自适应提升（>= 400 提升为 WARN）并在 `finally` 确定性执行 `copyBodyToResponse()` | `PayloadLoggingFilterTest.java`, `PayloadLoggingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **双向加签验签** | API 报文防篡改防重放加签验签引擎 | `@ApiSign`, `SignAlgorithm`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `Sm2Signer`, `SignKeyProvider`, `DefaultSignKeyProvider`, `SignCanonicalUtil`, `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.sign.enabled`, `algorithm`, `app-id`, `secret-key`, `public-key`, `private-key`, `rsa-public-key`, `rsa-private-key`, `sm2-public-key`, `sm2-private-key`, `expire`, `max-body-size`, `header-app-id`, `header-timestamp`, `header-nonce`, `header-signature`, `nonce-prefix`, `fail-open` | `@ApiSign(verifyRequest, signResponse, expireSeconds, message, algorithm)` 支持注解级动态路由与单应用内 HMAC_SHA256 / RSA / SM2 多算法共存；`ApiSigner.sign/verify`，`SignKeyProvider.getVerifyKey/getSignKey(appId, algorithm)`（兼容 `getSecretKey/getPublicKey/getPrivateKey`），`SignCanonicalUtil.buildRequestCanonicalString/buildResponseCanonicalString/buildSortedQueryString`，Nonce 防重放（`nonce-prefix` 与 `fail-open` 内存降级）及 Fail-Closed 出站响应加签 | `ApiSignAspectTest.java`, `ApiSignerTest.java`, `Sm2SignerTest.java`, `SignCanonicalUtilTest.java`, `AtengApiSignAutoConfigurationTest.java`, `WebSecurityAndSignControllerTest.java`, `WebSecuritySignRsaSampleTest.java`, `WebSecuritySignSm2SampleTest.java` |
@@ -1021,6 +1021,11 @@ ateng:
         parse-user-agent: true
         # 采集保存的 User-Agent 最大长度限制（默认 512，防超长恶意头污染存储）
         user-agent-max-length: 512
+        # 全局默认请求 URL 采集策略（默认 RAW_URI 保持 100% 向后兼容；可选 BEST_MATCHING_PATTERN 采集 Spring MVC 路由模板）
+        url-strategy: RAW_URI
+        # 自动启用路由模板采集的 Ant 风格路径列表（当 @OperateLog 未显式覆盖策略时，命中规则的接口自动切换为 BEST_MATCHING_PATTERN）
+        template-urls:
+          - "/sample/web/observability/audit/tickets/**"
         # 全局默认敏感排除参数基线（与 @OperateLog#excludeParams 合并并忽略大小写递归掩码）
         default-exclude-params:
           - password
@@ -1037,7 +1042,12 @@ ateng:
 ```
 
 #### 核心机制与五维生产模型
-- **声明式无侵入拦截**：通过 `@OperateLog(module, type, description, excludeParams)` 标注 Controller 即可完成审计采集；
+- **声明式无侵入拦截**：通过 `@OperateLog(module, type, description, excludeParams, urlStrategy)` 标注 Controller 类或方法即可完成审计采集；
+- **请求路由模板采集与 URL 脱敏管道（四阶优先级 + SPI）**：
+  - 默认全局策略保持 `OperateLogUrlStrategy.RAW_URI`（原样记录 `request.getRequestURI()`，100% 向后兼容）；针对路径参数（`@PathVariable`）携带高熵会话句柄或一次性令牌的接口，支持配置 `OperateLogUrlStrategy.BEST_MATCHING_PATTERN` 优先读取 `HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE`（如 `/sample/web/observability/audit/sessions/{sessionHandle}`，属性缺失或空白时安全回退 `RAW_URI`）；
+  - **四阶优先级裁决**：方法级 `@OperateLog#urlStrategy`（非 `DEFAULT`） > 类级 `@OperateLog#urlStrategy`（非 `DEFAULT`） > 全局 `template-urls` Ant 规则命中（兼容带/不带 `context-path`） > 全局 `url-strategy`（兜底 `RAW_URI`）；
+  - **轻量链式 SPI 与安全净化**：在请求线程同步阶段按 `@Order` 顺次执行容器中的 `OperateLogUrlCustomizer`（入参为不可变 `OperateLogUrlContext`，任一定制器抛异常或返回 `null` 时记录 WARN 并 Fail-Safe 回退既定 `resolvedUrl`），并对最终落库的 `requestUrl` 过滤 ASCII 控制字符防日志注入；
+  - **路径参数联动提示**：`requestParams` 默认受 `excludeParams` 与 11 项 `default-exclude-params` 控制；若需同步掩码敏感 `@PathVariable`（如 `sessionHandle`），请在对应接口将其参数名纳入 `excludeParams`；
 - **四维上下文与同步 UA 采集**：在请求线程内同步关联 $\langle\text{MDC traceId}, \text{User}, \text{TenantId}, \text{ClientIp}\rangle$，并在异步派发前经由 `ServletUtil.getUserAgent` 读取 HTTP `User-Agent` 标头，过滤控制字符（`\r`/`\n`/`\t` 防日志注入）并按 `user-agent-max-length`（默认 `512`）截断后填入 `OperateLogModel` 一等字段（`userAgent` 及按 `parse-user-agent` 开关委托 Core `UserAgentUtil` 解析出的 `browser`、`os`），确保异步存储线程不依赖已销毁的 `HttpServletRequest`；
 - **全局默认基线 + 嵌套递归脱敏**：即使 `@OperateLog` 未显式指定 `excludeParams`，也自动叠加 `ateng.boot.web.operate-log.default-exclude-params`（内建 11 项密码/令牌/密钥敏感字段基线），通过共享原语 `AuditParamSanitizer` 对方法入参、嵌套实体、`Map` 与集合执行忽略大小写递归替换为 `[EXCLUDED]` 并防御循环引用（`[CIRCULAR_REF]`）；
 - **出参动态脱敏与内存真明文守卫**：出参序列化时自动联动 Core 模块的 `@FieldSensitive` 对手机号等敏感字段掩码入库（如 `138****5678`），同时断言 JVM 内存实体中的字段 100% 保持原始真明文；
@@ -1102,6 +1112,74 @@ public Result<UserRegisterVO> getOperator(@PathVariable Long id) {
 )
 public Result<Void> triggerAuditError() {
     throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(), "操作员状态已冻结，禁止变更");
+}
+
+// 5. 强退在线会话审计（注解显式声明 BEST_MATCHING_PATTERN，requestUrl 落库为 /sample/web/observability/audit/sessions/{sessionHandle}）
+@DeleteMapping("/audit/sessions/{sessionHandle}")
+@OperateLog(
+        module = "在线会话",
+        type = OperateTypeEnum.DELETE,
+        description = "强退在线会话",
+        excludeParams = {"sessionHandle"},
+        urlStrategy = OperateLogUrlStrategy.BEST_MATCHING_PATTERN
+)
+public Result<Map<String, Object>> revokeOnlineSession(@PathVariable String sessionHandle) {
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("revoked", true);
+    data.put("handleLength", sessionHandle != null ? sessionHandle.length() : 0);
+    return Result.success(data);
+}
+
+// 6. 作废临时凭证工单审计（由全局 ateng.boot.web.operate-log.template-urls 命中自动采集路由模板）
+@DeleteMapping("/audit/tickets/{ticketNo}")
+@OperateLog(
+        module = "凭证工单",
+        type = OperateTypeEnum.DELETE,
+        description = "作废临时凭据",
+        excludeParams = {"ticketNo"}
+)
+public Result<Map<String, Object>> voidSecurityTicket(@PathVariable String ticketNo) {
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("voided", true);
+    data.put("ticketLength", ticketNo != null ? ticketNo.length() : 0);
+    return Result.success(data);
+}
+
+// 7. 吊销个人访问令牌审计（Controller 端点 + OperateLogUrlCustomizer SPI 对路径尾段局部保留首尾掩码）
+@DeleteMapping("/audit/tokens/{tokenId}")
+@OperateLog(
+        module = "个人令牌",
+        type = OperateTypeEnum.DELETE,
+        description = "吊销访问令牌",
+        excludeParams = {"tokenId"}
+)
+public Result<Map<String, Object>> revokePersonalToken(@PathVariable String tokenId) {
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("revoked", true);
+    data.put("tokenLength", tokenId != null ? tokenId.length() : 0);
+    return Result.success(data);
+}
+
+@Component
+public class SampleOperateLogUrlCustomizer implements OperateLogUrlCustomizer {
+
+    private static final String TOKEN_PATH_PREFIX = "/sample/web/observability/audit/tokens/";
+
+    @Override
+    public String customize(OperateLogUrlContext context) {
+        if (context == null) {
+            return null;
+        }
+        String rawUri = context.rawUri();
+        if (rawUri == null || !rawUri.startsWith(TOKEN_PATH_PREFIX)) {
+            return context.resolvedUrl();
+        }
+        String rawToken = rawUri.substring(TOKEN_PATH_PREFIX.length());
+        if (rawToken.isEmpty()) {
+            return context.resolvedUrl();
+        }
+        return TOKEN_PATH_PREFIX + DesensitizeUtil.maskKeepHeadTail(rawToken, 4, 2);
+    }
 }
 ```
 
@@ -2561,6 +2639,11 @@ ateng:
         parse-user-agent: true
         # 采集保存的 User-Agent 最大长度限制（默认 512，防超长恶意头污染存储）
         user-agent-max-length: 512
+        # 全局默认请求 URL 采集策略（RAW_URI 默认 / BEST_MATCHING_PATTERN 路由模板）
+        url-strategy: RAW_URI
+        # 自动启用路由模板采集的 Ant 风格路径规则列表（命中时自动采用 BEST_MATCHING_PATTERN）
+        template-urls:
+          - "/sample/web/observability/audit/tickets/**"
         # 全局默认敏感排除参数基线（11 项默认基线，与 @OperateLog#excludeParams 合并并忽略大小写递归掩码）
         default-exclude-params:
           - "password"

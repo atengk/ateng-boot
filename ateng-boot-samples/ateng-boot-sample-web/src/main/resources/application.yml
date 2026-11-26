@@ -50,6 +50,9 @@ ateng:
           - "/sample/web/observability/slow-excluded"
       operate-log:
         enabled: true
+        url-strategy: RAW_URI
+        template-urls:
+          - "/sample/web/observability/audit/tickets/**"
       body-cache:
         max-body-size: 2MB
       enum:

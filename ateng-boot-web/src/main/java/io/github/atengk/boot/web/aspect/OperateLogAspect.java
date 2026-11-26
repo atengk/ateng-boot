@@ -11,6 +11,9 @@ import io.github.atengk.boot.core.util.UserAgentUtil;
 import io.github.atengk.boot.web.annotation.OperateLog;
 import io.github.atengk.boot.web.audit.DefaultOperateLogStorageProvider;
 import io.github.atengk.boot.web.audit.OperateLogStorageProvider;
+import io.github.atengk.boot.web.audit.OperateLogUrlContext;
+import io.github.atengk.boot.web.audit.OperateLogUrlCustomizer;
+import io.github.atengk.boot.web.audit.OperateLogUrlStrategy;
 import io.github.atengk.boot.web.properties.WebProperties;
 import io.github.atengk.boot.web.trace.TraceUtil;
 import io.github.atengk.boot.web.util.IpUtil;
@@ -26,13 +29,17 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.core.Ordered;
+import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.core.annotation.AnnotationUtils;
 import org.springframework.util.StringUtils;
+import org.springframework.web.servlet.HandlerMapping;
 
 import java.lang.reflect.Method;
 import java.time.LocalDateTime;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.Executor;
 
 /**
@@ -57,25 +64,43 @@ public class OperateLogAspect implements Ordered {
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher eventPublisher;
     private final WebProperties webProperties;
+    private final List<OperateLogUrlCustomizer> urlCustomizers;
+
+    public OperateLogAspect(OperateLogStorageProvider storageProvider,
+                            ObjectProvider<Executor> taskExecutorProvider,
+                            ObjectMapper objectMapper,
+                            ApplicationEventPublisher eventPublisher,
+                            WebProperties webProperties,
+                            List<OperateLogUrlCustomizer> urlCustomizers) {
+        this.storageProvider = storageProvider != null ? storageProvider : new DefaultOperateLogStorageProvider(objectMapper);
+        this.taskExecutorProvider = taskExecutorProvider;
+        this.objectMapper = objectMapper != null ? objectMapper : JsonUtil.getObjectMapper();
+        this.eventPublisher = eventPublisher;
+        this.webProperties = webProperties != null ? webProperties : new WebProperties();
+        if (urlCustomizers != null && !urlCustomizers.isEmpty()) {
+            this.urlCustomizers = urlCustomizers.stream()
+                    .filter(Objects::nonNull)
+                    .sorted(AnnotationAwareOrderComparator.INSTANCE)
+                    .toList();
+        } else {
+            this.urlCustomizers = Collections.emptyList();
+        }
+    }
 
     public OperateLogAspect(OperateLogStorageProvider storageProvider,
                             ObjectProvider<Executor> taskExecutorProvider,
                             ObjectMapper objectMapper,
                             ApplicationEventPublisher eventPublisher,
                             WebProperties webProperties) {
-        this.storageProvider = storageProvider != null ? storageProvider : new DefaultOperateLogStorageProvider(objectMapper);
-        this.taskExecutorProvider = taskExecutorProvider;
-        this.objectMapper = objectMapper != null ? objectMapper : JsonUtil.getObjectMapper();
-        this.eventPublisher = eventPublisher;
-        this.webProperties = webProperties != null ? webProperties : new WebProperties();
+        this(storageProvider, taskExecutorProvider, objectMapper, eventPublisher, webProperties, Collections.emptyList());
     }
 
     public OperateLogAspect(OperateLogStorageProvider storageProvider) {
-        this(storageProvider, null, JsonUtil.getObjectMapper(), null, new WebProperties());
+        this(storageProvider, null, JsonUtil.getObjectMapper(), null, new WebProperties(), Collections.emptyList());
     }
 
     public OperateLogAspect() {
-        this(new DefaultOperateLogStorageProvider(), null, JsonUtil.getObjectMapper(), null, new WebProperties());
+        this(new DefaultOperateLogStorageProvider(), null, JsonUtil.getObjectMapper(), null, new WebProperties(), Collections.emptyList());
     }
 
     @Override
@@ -105,13 +130,12 @@ public class OperateLogAspect implements Ordered {
         Method specificMethod = org.springframework.aop.support.AopUtils.getMostSpecificMethod(method, targetClass);
 
         // 优先获取实现类/具体方法级注解，若无则回退至声明方法或类级注解
-        OperateLog operateLog = AnnotationUtils.findAnnotation(specificMethod, OperateLog.class);
-        if (operateLog == null) {
-            operateLog = AnnotationUtils.findAnnotation(method, OperateLog.class);
+        OperateLog methodOperateLog = AnnotationUtils.findAnnotation(specificMethod, OperateLog.class);
+        if (methodOperateLog == null) {
+            methodOperateLog = AnnotationUtils.findAnnotation(method, OperateLog.class);
         }
-        if (operateLog == null && targetClass != null) {
-            operateLog = AnnotationUtils.findAnnotation(targetClass, OperateLog.class);
-        }
+        OperateLog classOperateLog = targetClass != null ? AnnotationUtils.findAnnotation(targetClass, OperateLog.class) : null;
+        OperateLog operateLog = methodOperateLog != null ? methodOperateLog : classOperateLog;
         if (operateLog == null) {
             return joinPoint.proceed();
         }
@@ -129,7 +153,8 @@ public class OperateLogAspect implements Ordered {
         boolean isRunAsPre = UserContextHolder.isRunAs();
         String originalUserIdPre = UserContextHolder.getOriginalUserId();
         String requestMethod = request != null ? request.getMethod() : "";
-        String requestUrl = request != null ? request.getRequestURI() : "";
+        Method targetMethod = specificMethod != null ? specificMethod : method;
+        String requestUrl = resolveRequestUrl(request, targetMethod, methodOperateLog, classOperateLog);
         String clientIp = IpUtil.getClientIp(request);
 
         // 异步派发前于请求线程同步采集 User-Agent 并执行防注入净化与限长截断
@@ -268,6 +293,107 @@ public class OperateLogAspect implements Ordered {
             log.error("[OperateLog] 审计日志持久化异常: traceId={}, module={}, error={}",
                     logModel.getTraceId(), logModel.getModule(), t.getMessage(), t);
         }
+    }
+
+    private String resolveRequestUrl(HttpServletRequest request,
+                                     Method targetMethod,
+                                     OperateLog methodOperateLog,
+                                     OperateLog classOperateLog) {
+        if (request == null) {
+            return "";
+        }
+        String rawUri = request.getRequestURI() != null ? request.getRequestURI() : "";
+        OperateLog effectiveOperateLog = methodOperateLog != null ? methodOperateLog : classOperateLog;
+        OperateLogUrlStrategy strategy = resolveEffectiveUrlStrategy(request, methodOperateLog, classOperateLog);
+        String bestPattern = resolveBestMatchingPattern(request);
+        String resolvedUrl = (strategy == OperateLogUrlStrategy.BEST_MATCHING_PATTERN && StringUtils.hasText(bestPattern))
+                ? bestPattern
+                : rawUri;
+        if (!urlCustomizers.isEmpty()) {
+            OperateLogUrlContext initialContext = new OperateLogUrlContext(
+                    request, targetMethod, effectiveOperateLog, strategy, rawUri, bestPattern, resolvedUrl);
+            resolvedUrl = applyUrlCustomizers(initialContext);
+        }
+        return sanitizeControlChars(resolvedUrl);
+    }
+
+    private String applyUrlCustomizers(OperateLogUrlContext initialContext) {
+        String current = initialContext.resolvedUrl();
+        for (OperateLogUrlCustomizer customizer : urlCustomizers) {
+            OperateLogUrlContext context = current.equals(initialContext.resolvedUrl())
+                    ? initialContext
+                    : new OperateLogUrlContext(
+                            initialContext.request(),
+                            initialContext.method(),
+                            initialContext.operateLog(),
+                            initialContext.effectiveStrategy(),
+                            initialContext.rawUri(),
+                            initialContext.bestMatchingPattern(),
+                            current);
+            try {
+                String customized = customizer.customize(context);
+                if (customized != null) {
+                    current = customized;
+                } else {
+                    log.warn("[OperateLog] URL 定制器返回 null，回退既定解析结果: customizer={}, fallbackUrl={}",
+                            customizer.getClass().getName(), sanitizeControlChars(current));
+                }
+            } catch (Exception ex) {
+                log.warn("[OperateLog] URL 定制器执行异常，回退既定解析结果: customizer={}, error={}",
+                        customizer.getClass().getName(), ex.getMessage());
+            }
+        }
+        return current;
+    }
+
+    private OperateLogUrlStrategy resolveEffectiveUrlStrategy(HttpServletRequest request,
+                                                              OperateLog methodOperateLog,
+                                                              OperateLog classOperateLog) {
+        if (methodOperateLog != null && methodOperateLog.urlStrategy() != OperateLogUrlStrategy.DEFAULT) {
+            return methodOperateLog.urlStrategy();
+        }
+        if (classOperateLog != null && classOperateLog.urlStrategy() != OperateLogUrlStrategy.DEFAULT) {
+            return classOperateLog.urlStrategy();
+        }
+        WebProperties.OperateLogProperties operateLogProps = webProperties.getOperateLog();
+        if (operateLogProps != null
+                && request.getRequestURI() != null
+                && ServletUtil.matchesAnyPath(request, operateLogProps.getTemplateUrls())) {
+            return OperateLogUrlStrategy.BEST_MATCHING_PATTERN;
+        }
+        OperateLogUrlStrategy globalStrategy = operateLogProps != null ? operateLogProps.getUrlStrategy() : null;
+        return (globalStrategy != null && globalStrategy != OperateLogUrlStrategy.DEFAULT)
+                ? globalStrategy
+                : OperateLogUrlStrategy.RAW_URI;
+    }
+
+    private static String resolveBestMatchingPattern(HttpServletRequest request) {
+        Object attr = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
+        if (attr == null) {
+            return null;
+        }
+        String pattern = String.valueOf(attr);
+        return StringUtils.hasText(pattern) ? pattern : null;
+    }
+
+    private static String sanitizeControlChars(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = null;
+        int len = value.length();
+        for (int i = 0; i < len; i++) {
+            char c = value.charAt(i);
+            if (c < 0x20 || c == 0x7F) {
+                if (sb == null) {
+                    sb = new StringBuilder(len);
+                    sb.append(value, 0, i);
+                }
+            } else if (sb != null) {
+                sb.append(c);
+            }
+        }
+        return sb != null ? sb.toString() : value;
     }
 
     private Map<String, Object> extractParams(ProceedingJoinPoint joinPoint, String[] excludeParams) {

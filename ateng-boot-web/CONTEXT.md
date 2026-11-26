@@ -105,15 +105,15 @@ _Avoid_: Request Timeout, Slow Query, Latency Monitor
 _Avoid_: BodyCacheFilter, ReReadFilter, RequestWrapperFilter
 
 **OperateLog**:
-声明式企业级操作审计注解，声明于 Controller 方法上，定义模块、操作类型、业务描述与敏感参数排除（自动叠加 `ateng.boot.web.operate-log.default-exclude-params` 全局 11 项默认脱敏基线，支持嵌套对象与集合忽略大小写递归掩码）。
+声明式企业级操作审计注解，声明于 Controller 类或方法上，定义模块、操作类型、业务描述、敏感参数排除（自动叠加 `ateng.boot.web.operate-log.default-exclude-params` 全局 11 项默认脱敏基线）及请求 URL 采集策略（`urlStrategy`，默认 `OperateLogUrlStrategy.DEFAULT` 继承全局配置）。
 _Avoid_: OperationLog, SysLog, UserLog, ActionLog
 
 **OperateLogAspect**:
-基于 AOP 环绕拦截的结构化操作审计切面，在异步派发前于请求线程同步采集四维全链路上下文与净化限长后的 `User-Agent` / 解析结果（委托 Core `UserAgentUtil`，受 `OperateLogProperties` 开关与最大长度约束），并在出参联动视图脱敏（守卫 ADR-0012 内存真明文）。
+基于 AOP 环绕拦截的结构化操作审计切面，在异步派发前于请求线程同步采集四维全链路上下文、按四阶优先级（方法注解 > 类级注解 > 全局 `templateUrls` > 全局 `urlStrategy`）并经 `OperateLogUrlCustomizer` 解析后的请求 URL，以及净化限长后的 `User-Agent` / 解析结果，并在出参联动视图脱敏（守卫 ADR-0012 内存真明文）。
 _Avoid_: SysLogAspect, AuditAspect, ActionAspect
 
 **OperateLogProperties**:
-定义于 `WebProperties.OperateLogProperties`（前缀 `ateng.boot.web.operate-log`）的操作审计强类型配置属性组，统管总开关（`enabled`）、11 项默认脱敏基线（`defaultExcludeParams`）及同步客户端 UA 采集与解析防御参数（`collectUserAgent`、`parseUserAgent`、`userAgentMaxLength`）。
+定义于 `WebProperties.OperateLogProperties`（前缀 `ateng.boot.web.operate-log`）的操作审计强类型配置属性组，统管总开关（`enabled`）、11 项默认脱敏基线（`defaultExcludeParams`）、URL 采集策略与 Ant 路径模板规则（`urlStrategy`、`templateUrls`）及同步客户端 UA 采集与解析防御参数（`collectUserAgent`、`parseUserAgent`、`userAgentMaxLength`）。
 _Avoid_: AuditProperties, LogAspectProperties, OperateLogConfig
 
 **OperateLogStorageProvider**:
@@ -335,6 +335,18 @@ _Avoid_: ConsoleAuditStore, Slf4jOperateLogDao, FallbackAuditStorage
 **OperateLogEvent**:
 跨模块复用自 `io.github.atengk.boot.core.audit.OperateLogEvent` 的 Spring 应用事件载体，由 `OperateLogAspect` 在同步调用或 `@Async` 受管异步投递阶段协同发布，供进程内多个监听器按事件机制订阅消费 `OperateLogModel`。
 _Avoid_: AuditLogEvent, OperationRecordEvent, WebOperateEvent
+
+**OperateLogUrlStrategy**:
+操作审计请求 URL 采集策略枚举，定义注解继承占位（`DEFAULT`）、原始请求路径（`RAW_URI`，全局默认）与 Spring MVC 路由模板（`BEST_MATCHING_PATTERN`，缺失时安全回退 `RAW_URI`）。
+_Avoid_: UrlCollectMode, AuditUrlType, RequestUrlMode
+
+**OperateLogUrlContext**:
+传递给 `OperateLogUrlCustomizer` 的不可变 URL 定制上下文契约，承载请求对象、目标方法、`@OperateLog` 注解、生效策略、原始 URI、匹配路由模板及策略初步解析结果。
+_Avoid_: UrlSanitizeContext, AuditUrlPayload
+
+**OperateLogUrlCustomizer**:
+操作审计请求 URL 轻量后置定制 `@FunctionalInterface` SPI，支持多个 Bean 按 `@Order` 顺次链式执行，允许宿主按 `OperateLogUrlContext` 对审计 `requestUrl` 实施自定义路径参数掩码或规整；执行异常或返回 `null` 时按 Fail-Safe 原则记录告警并回退既定解析值。
+_Avoid_: OperateLogUrlSanitizer, UrlMasker, AuditUrlResolver
 
 **AuditParamSanitizer**:
 `@OperateLog` 与 `@WebLog` 切面共享的包内安全脱敏原语，负责合并全局 `default-exclude-params`（11 项默认敏感词基线）与注解级 `excludeParams`，并对嵌套实体、Map、Collection 与数组执行忽略大小写递归掩码及环引用防护（`[CIRCULAR_REF]` / `[EXCLUDED]`）。

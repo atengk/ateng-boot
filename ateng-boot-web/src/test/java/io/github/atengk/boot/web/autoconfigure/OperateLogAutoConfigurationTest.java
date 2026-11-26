@@ -1,15 +1,30 @@
 package io.github.atengk.boot.web.autoconfigure;
 
 import io.github.atengk.boot.core.audit.OperateLogModel;
+import io.github.atengk.boot.core.audit.OperateTypeEnum;
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.web.annotation.OperateLog;
 import io.github.atengk.boot.web.aspect.OperateLogAspect;
 import io.github.atengk.boot.web.aspect.WebLogAspect;
 import io.github.atengk.boot.web.audit.DefaultOperateLogStorageProvider;
 import io.github.atengk.boot.web.audit.OperateLogStorageProvider;
+import io.github.atengk.boot.web.audit.OperateLogUrlCustomizer;
+import io.github.atengk.boot.web.audit.OperateLogUrlStrategy;
 import io.github.atengk.boot.web.properties.WebProperties;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.aop.aspectj.annotation.AspectJProxyFactory;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -24,6 +39,11 @@ class OperateLogAutoConfigurationTest {
 
     private final WebApplicationContextRunner contextRunner = new WebApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(AtengWebAutoConfiguration.class));
+
+    @AfterEach
+    void tearDown() {
+        RequestContextHolder.resetRequestAttributes();
+    }
 
     @Test
     @DisplayName("默认情况下自动装配 OperateLogAspect 与 DefaultOperateLogStorageProvider")
@@ -111,5 +131,73 @@ class OperateLogAutoConfigurationTest {
                     assertThat(properties.getOperateLog().isParseUserAgent()).isFalse();
                     assertThat(properties.getOperateLog().getUserAgentMaxLength()).isEqualTo(128);
                 });
+    }
+
+    @Test
+    @DisplayName("默认 URL 采集策略为 RAW_URI，支持通过配置文件覆盖 url-strategy 与 template-urls")
+    void shouldBindOperateLogUrlStrategyProperties() {
+        contextRunner.run(context -> {
+            WebProperties properties = context.getBean(WebProperties.class);
+            assertThat(properties.getOperateLog().getUrlStrategy()).isEqualTo(OperateLogUrlStrategy.RAW_URI);
+            assertThat(properties.getOperateLog().getTemplateUrls()).isEmpty();
+        });
+
+        contextRunner.withPropertyValues(
+                        "ateng.boot.web.operate-log.url-strategy=BEST_MATCHING_PATTERN",
+                        "ateng.boot.web.operate-log.template-urls[0]=/admin/auth/online/**",
+                        "ateng.boot.web.operate-log.template-urls[1]=/api/sessions/**"
+                )
+                .run(context -> {
+                    WebProperties properties = context.getBean(WebProperties.class);
+                    assertThat(properties.getOperateLog().getUrlStrategy()).isEqualTo(OperateLogUrlStrategy.BEST_MATCHING_PATTERN);
+                    assertThat(properties.getOperateLog().getTemplateUrls())
+                            .containsExactly("/admin/auth/online/**", "/api/sessions/**");
+                });
+    }
+
+    @Test
+    @DisplayName("自动装配容器中的多个 @Order OperateLogUrlCustomizer Bean 并按序链式执行")
+    void shouldAutoWireOrderedOperateLogUrlCustomizers() {
+        AtomicReference<OperateLogModel> captured = new AtomicReference<>();
+        contextRunner
+                .withBean(OperateLogStorageProvider.class, () -> captured::set)
+                .withUserConfiguration(OrderedUrlCustomizerConfiguration.class)
+                .run(context -> {
+                    OperateLogAspect aspect = context.getBean(OperateLogAspect.class);
+                    AspectJProxyFactory proxyFactory = new AspectJProxyFactory(new SampleEndpoint());
+                    proxyFactory.setProxyTargetClass(true);
+                    proxyFactory.addAspect(aspect);
+                    SampleEndpoint proxy = proxyFactory.getProxy();
+
+                    MockHttpServletRequest request = new MockHttpServletRequest("DELETE", "/api/sessions/secret-xyz");
+                    RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+
+                    proxy.revoke();
+                    assertThat(captured.get()).isNotNull();
+                    assertThat(captured.get().getRequestUrl()).isEqualTo("/api/sessions/secret-xyz|first|second");
+                });
+    }
+
+    static class SampleEndpoint {
+        @OperateLog(module = "会话", type = OperateTypeEnum.DELETE)
+        public Result<Void> revoke() {
+            return Result.success();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class OrderedUrlCustomizerConfiguration {
+
+        @Bean
+        @Order(20)
+        OperateLogUrlCustomizer secondCustomizer() {
+            return ctx -> ctx.resolvedUrl() + "|second";
+        }
+
+        @Bean
+        @Order(10)
+        OperateLogUrlCustomizer firstCustomizer() {
+            return ctx -> ctx.resolvedUrl() + "|first";
+        }
     }
 }

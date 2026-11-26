@@ -6,6 +6,7 @@ import io.github.atengk.boot.web.aspect.OperateLogAspect;
 import io.github.atengk.boot.web.aspect.WebLogAspect;
 import io.github.atengk.boot.web.audit.DefaultOperateLogStorageProvider;
 import io.github.atengk.boot.web.audit.OperateLogStorageProvider;
+import io.github.atengk.boot.web.audit.OperateLogUrlCustomizer;
 import io.github.atengk.boot.web.filter.ContentCachingFilter;
 import io.github.atengk.boot.web.filter.PayloadLoggingFilter;
 import io.github.atengk.boot.web.filter.SecurityHeadersFilter;
@@ -343,11 +344,12 @@ public class AtengWebAutoConfiguration {
     /**
      * 注册结构化操作审计切面
      *
-     * @param storageProvider 审计存储 SPI 提供者
-     * @param taskExecutorProvider 异步任务执行器提供者
-     * @param objectMapperProvider Jackson ObjectMapper 提供者
+     * @param storageProvider        审计存储 SPI 提供者
+     * @param taskExecutorProvider   异步任务执行器提供者
+     * @param objectMapperProvider   Jackson ObjectMapper 提供者
      * @param eventPublisherProvider 事件发布者提供者
-     * @param webProperties Web 配置属性
+     * @param webProperties          Web 配置属性
+     * @param urlCustomizerProvider  可选的操作审计 URL 定制器 SPI 提供者
      * @return OperateLogAspect 实例
      */
     @Bean
@@ -358,13 +360,15 @@ public class AtengWebAutoConfiguration {
                                             @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
                                             ObjectProvider<ObjectMapper> objectMapperProvider,
                                             ObjectProvider<ApplicationEventPublisher> eventPublisherProvider,
-                                            WebProperties webProperties) {
+                                            WebProperties webProperties,
+                                            ObjectProvider<OperateLogUrlCustomizer> urlCustomizerProvider) {
         return new OperateLogAspect(
                 storageProvider,
                 taskExecutorProvider,
                 objectMapperProvider.getIfAvailable(ObjectMapper::new),
                 eventPublisherProvider.getIfAvailable(),
-                webProperties
+                webProperties,
+                urlCustomizerProvider.orderedStream().toList()
         );
     }
 

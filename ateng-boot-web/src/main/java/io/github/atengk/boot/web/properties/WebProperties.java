@@ -1,5 +1,6 @@
 package io.github.atengk.boot.web.properties;
 
+import io.github.atengk.boot.web.audit.OperateLogUrlStrategy;
 import io.github.atengk.boot.web.sign.enums.SignAlgorithm;
 import io.github.atengk.boot.web.xss.XssMode;
 import lombok.Getter;
@@ -381,6 +382,17 @@ public class WebProperties {
          * 采集保存的 User-Agent 最大长度限制（默认 512，防超长恶意头污染存储；<= 0 时回退默认上限 512）
          */
         private int userAgentMaxLength = DEFAULT_USER_AGENT_MAX_LENGTH;
+
+        /**
+         * 全局默认请求 URL 采集策略（默认 RAW_URI 保持 100% 向后兼容；设为 BEST_MATCHING_PATTERN 时全局采集 Spring MVC 路由模板）
+         */
+        private OperateLogUrlStrategy urlStrategy = OperateLogUrlStrategy.RAW_URI;
+
+        /**
+         * 自动启用路由模板采集（BEST_MATCHING_PATTERN）的 Ant 风格路径模式列表（默认空列表；
+         * 当方法或类级 @OperateLog 未显式覆写策略时，命中列表的请求自动切换为路由模板模式，兼顾零侵入脱敏与常规接口兼容）
+         */
+        private List<String> templateUrls = new ArrayList<>();
     }
 
     /**

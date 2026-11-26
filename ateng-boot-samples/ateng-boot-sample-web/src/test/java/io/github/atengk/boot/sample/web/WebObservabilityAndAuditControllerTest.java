@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -307,7 +308,50 @@ class WebObservabilityAndAuditControllerTest {
         assertThat(lastLog.getModule()).isEqualTo("权限中心");
         assertThat(lastLog.getOperateType()).isEqualTo(OperateTypeEnum.QUERY);
         assertThat(lastLog.getDescription()).isEqualTo("查询操作员详情");
+        assertThat(lastLog.getRequestUrl()).isEqualTo("/sample/web/observability/audit/operator/10086");
         assertThat(lastLog.getStatus()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("8.1 @OperateLog 请求 URL 路由模板与 SPI 脱敏：注解模板、全局 template-urls 与 OperateLogUrlCustomizer 协同生效")
+    void shouldCaptureSanitizedRequestUrlEndToEnd() throws Exception {
+        String rawSessionHandle = "aes256gcm_9f8e7d6c5b4a392817263544556677889900aabbccddeeff";
+        mockMvc.perform(delete("/sample/web/observability/audit/sessions/" + rawSessionHandle))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.revoked").value(true));
+
+        OperateLogModel sessionLog = awaitLastLog();
+        assertThat(sessionLog).isNotNull();
+        assertThat(sessionLog.getRequestUrl()).isEqualTo("/sample/web/observability/audit/sessions/{sessionHandle}");
+        assertThat(sessionLog.getRequestUrl()).doesNotContain(rawSessionHandle);
+        assertThat(sessionLog.getRequestParams()).doesNotContain(rawSessionHandle);
+
+        storageProvider.clear();
+        String rawTicketNo = "TKT_SECRET_889977665544";
+        mockMvc.perform(delete("/sample/web/observability/audit/tickets/" + rawTicketNo))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.voided").value(true));
+
+        OperateLogModel ticketLog = awaitLastLog();
+        assertThat(ticketLog).isNotNull();
+        assertThat(ticketLog.getRequestUrl()).isEqualTo("/sample/web/observability/audit/tickets/{ticketNo}");
+        assertThat(ticketLog.getRequestUrl()).doesNotContain(rawTicketNo);
+        assertThat(ticketLog.getRequestParams()).doesNotContain(rawTicketNo);
+
+        storageProvider.clear();
+        String rawTokenId = "pat_live_9876543210abcdef";
+        mockMvc.perform(delete("/sample/web/observability/audit/tokens/" + rawTokenId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.revoked").value(true));
+
+        OperateLogModel tokenLog = awaitLastLog();
+        assertThat(tokenLog).isNotNull();
+        assertThat(tokenLog.getRequestUrl()).isEqualTo("/sample/web/observability/audit/tokens/pat_*******************ef");
+        assertThat(tokenLog.getRequestUrl()).doesNotContain(rawTokenId);
+        assertThat(tokenLog.getRequestParams()).doesNotContain(rawTokenId);
     }
 
     @Test

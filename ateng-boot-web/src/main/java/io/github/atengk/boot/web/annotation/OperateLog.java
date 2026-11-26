@@ -1,6 +1,7 @@
 package io.github.atengk.boot.web.annotation;
 
 import io.github.atengk.boot.core.audit.OperateTypeEnum;
+import io.github.atengk.boot.web.audit.OperateLogUrlStrategy;
 import org.springframework.core.annotation.AliasFor;
 
 import java.lang.annotation.Documented;
@@ -74,8 +75,17 @@ public @interface OperateLog {
 
     /**
      * 需排除或掩码的敏感请求入参字段名列表（如 password、token、secret 等，不区分大小写）
+     * 提示：若接口路径变量（@PathVariable）包含敏感句柄且需一并脱敏 requestParams，请同步将其参数名加入此列表
      *
      * @return 排除入参字段清单
      */
     String[] excludeParams() default {};
+
+    /**
+     * 请求 URL 采集策略（默认 {@link OperateLogUrlStrategy#DEFAULT}，继承全局配置与路径规则；
+     * 若路径变量含敏感句柄，可设为 {@link OperateLogUrlStrategy#BEST_MATCHING_PATTERN}）
+     *
+     * @return URL 采集策略
+     */
+    OperateLogUrlStrategy urlStrategy() default OperateLogUrlStrategy.DEFAULT;
 }
