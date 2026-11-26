@@ -97,6 +97,9 @@ class SampleSaTokenIntegrationTest {
     @Autowired
     private Environment environment;
 
+    @Autowired
+    private org.springframework.context.ApplicationContext applicationContext;
+
     @AfterEach
     void cleanUpDatabaseAndRedis() {
         try {
@@ -2476,6 +2479,83 @@ class SampleSaTokenIntegrationTest {
             permissionCacheService.clearAll();
             LoginHelper.kickoutByToken("admin", adminToken);
             LoginHelper.kickoutByToken("member", memberToken);
+        }
+    }
+
+    @Test
+    @DisplayName("Issue #1176: SaBeanRegister 与 SaBeanInject 共存时默认 24h/30m TokenProperties 正确生效于 SaManager 与 StpLogic")
+    void shouldApplyBridgedTokenPropertiesAfterSaBeanInjectInFullApplication() throws Exception {
+        assertThat(applicationContext.getBean(cn.dev33.satoken.spring.SaBeanRegister.class)).isNotNull();
+        assertThat(applicationContext.getBean(cn.dev33.satoken.spring.SaBeanInject.class)).isNotNull();
+
+        cn.dev33.satoken.config.SaTokenConfig globalConfig = cn.dev33.satoken.SaManager.getConfig();
+        assertThat(globalConfig.getTimeout()).isEqualTo(86400L);
+        assertThat(globalConfig.getActiveTimeout()).isEqualTo(1800L);
+        assertThat(cn.dev33.satoken.stp.StpUtil.stpLogic.getConfigOrGlobal().getTimeout()).isEqualTo(86400L);
+        assertThat(cn.dev33.satoken.stp.StpUtil.stpLogic.getConfigOrGlobal().getActiveTimeout()).isEqualTo(1800L);
+        assertThat(LoginHelper.getStpLogic("admin").getConfigOrGlobal().getTimeout()).isEqualTo(86400L);
+        assertThat(LoginHelper.getStpLogic("admin").getConfigOrGlobal().getActiveTimeout()).isEqualTo(1800L);
+
+        String defaultToken = null;
+        String adminToken = null;
+        try {
+            LoginRequestDTO defaultReq = LoginRequestDTO.builder()
+                    .userId("117601")
+                    .username("policy_user")
+                    .tenantId("tenant-policy")
+                    .build();
+            MvcResult defaultLoginRes = mockMvc.perform(post("/sample/satoken/auth/login")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(defaultReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andReturn();
+            defaultToken = objectMapper.readTree(defaultLoginRes.getResponse().getContentAsString()).get("data").asText();
+
+            LoginRequestDTO adminReq = LoginRequestDTO.builder()
+                    .userId("117602")
+                    .username("policy_admin")
+                    .tenantId("tenant-policy")
+                    .build();
+            MvcResult adminLoginRes = mockMvc.perform(post("/sample/satoken/multi-account/admin/login")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(adminReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andReturn();
+            adminToken = objectMapper.readTree(adminLoginRes.getResponse().getContentAsString()).get("data").asText();
+
+            MvcResult defaultPolicy = mockMvc.perform(get("/sample/satoken/auth/token-policy")
+                            .header("satoken", defaultToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.loginType").value("login"))
+                    .andExpect(jsonPath("$.data.globalTimeout").value(86400))
+                    .andExpect(jsonPath("$.data.globalActiveTimeout").value(1800))
+                    .andReturn();
+            JsonNode defaultData = objectMapper.readTree(defaultPolicy.getResponse().getContentAsString()).get("data");
+            assertThat(defaultData.get("tokenTimeout").asLong()).isBetween(86380L, 86400L);
+            assertThat(defaultData.get("tokenActiveTimeout").asLong()).isBetween(1780L, 1800L);
+
+            MvcResult adminPolicy = mockMvc.perform(get("/sample/satoken/auth/token-policy")
+                            .param("loginType", "admin")
+                            .header("satoken-admin", adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.loginType").value("admin"))
+                    .andExpect(jsonPath("$.data.globalTimeout").value(86400))
+                    .andExpect(jsonPath("$.data.globalActiveTimeout").value(1800))
+                    .andReturn();
+            JsonNode adminData = objectMapper.readTree(adminPolicy.getResponse().getContentAsString()).get("data");
+            assertThat(adminData.get("tokenTimeout").asLong()).isBetween(86380L, 86400L);
+            assertThat(adminData.get("tokenActiveTimeout").asLong()).isBetween(1780L, 1800L);
+        } finally {
+            if (defaultToken != null && !defaultToken.isBlank()) {
+                LoginHelper.logoutByTokenValue(defaultToken);
+            }
+            if (adminToken != null && !adminToken.isBlank()) {
+                LoginHelper.logoutByTokenValue("admin", adminToken);
+            }
         }
     }
 }

@@ -2,12 +2,20 @@ package io.github.atengk.boot.satoken.properties;
 
 import cn.dev33.satoken.SaManager;
 import cn.dev33.satoken.config.SaTokenConfig;
+import cn.dev33.satoken.spring.SaBeanInject;
+import cn.dev33.satoken.spring.SaBeanRegister;
+import cn.dev33.satoken.stp.StpUtil;
 import io.github.atengk.boot.satoken.autoconfigure.AtengSaTokenAutoConfiguration;
+import io.github.atengk.boot.satoken.handler.SaTokenExceptionHandler;
+import io.github.atengk.boot.satoken.util.LoginHelper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 
 import java.time.Duration;
 
@@ -23,6 +31,15 @@ class SaTokenPropertiesTest {
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(AtengSaTokenAutoConfiguration.class));
+
+    private ApplicationContextRunner saBeanContextRunner() {
+        return new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        SaBeanRegister.class,
+                        SaBeanInject.class,
+                        AtengSaTokenAutoConfiguration.class
+                ));
+    }
 
     @AfterEach
     void tearDown() {
@@ -311,5 +328,238 @@ class SaTokenPropertiesTest {
                     assertThat(props.getOnlineSession().getMaxScanLimit()).isEqualTo(5000);
                     assertThat(io.github.atengk.boot.satoken.util.LoginHelper.getOnlineSessionMaxScanLimit()).isEqualTo(5000);
                 });
+    }
+
+    @Test
+    @DisplayName("Issue #1176: 同时装配 SaBeanRegister 与 SaBeanInject 且早期触发自动装配时，TokenProperties 仍生效于 SaManager 与 StpLogic")
+    void testTokenPropertiesSurviveSaBeanInjectWithEarlyConfigurationInit() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        AtengSaTokenAutoConfiguration.class,
+                        SaBeanRegister.class,
+                        SaBeanInject.class
+                ))
+                .withUserConfiguration(EarlyAtengBeanConsumerConfig.class)
+                .withPropertyValues(
+                        "ateng.boot.satoken.token.timeout=24h",
+                        "ateng.boot.satoken.token.active-timeout=30m",
+                        "ateng.boot.satoken.token.is-concurrent=false",
+                        "ateng.boot.satoken.token.is-share=false",
+                        "ateng.boot.satoken.token.max-login-count=7",
+                        "ateng.boot.satoken.token.token-style=simple-uuid"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    SaTokenConfig globalConfig = SaManager.getConfig();
+                    assertThat(globalConfig).isNotNull();
+                    assertThat(globalConfig.getTimeout()).isEqualTo(86400L);
+                    assertThat(globalConfig.getActiveTimeout()).isEqualTo(1800L);
+                    assertThat(globalConfig.getIsConcurrent()).isFalse();
+                    assertThat(globalConfig.getIsShare()).isFalse();
+                    assertThat(globalConfig.getMaxLoginCount()).isEqualTo(7);
+                    assertThat(globalConfig.getTokenStyle()).isEqualTo("simple-uuid");
+
+                    SaTokenConfig beanConfig = context.getBean(SaTokenConfig.class);
+                    assertThat(beanConfig).isSameAs(globalConfig);
+                    assertThat(StpUtil.stpLogic.getConfigOrGlobal().getTimeout()).isEqualTo(86400L);
+                    assertThat(StpUtil.stpLogic.getConfigOrGlobal().getActiveTimeout()).isEqualTo(1800L);
+                    assertThat(LoginHelper.getStpLogic("admin").getConfigOrGlobal().getTimeout()).isEqualTo(86400L);
+                    assertThat(LoginHelper.getStpLogic("admin").getConfigOrGlobal().getActiveTimeout()).isEqualTo(1800L);
+                });
+    }
+
+    @Test
+    @DisplayName("Issue #1176: 未显式配置 ateng.boot.satoken.token.* 时，默认生产基线(24h/30m/isShare=true)覆盖 SaBeanRegister 原生默认值")
+    void testDefaultTokenPropertiesOverrideSaBeanRegisterDefaults() {
+        saBeanContextRunner()
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    SaTokenConfig config = SaManager.getConfig();
+                    assertThat(config.getTimeout()).isEqualTo(86400L);
+                    assertThat(config.getActiveTimeout()).isEqualTo(1800L);
+                    assertThat(config.getIsConcurrent()).isTrue();
+                    assertThat(config.getIsShare()).isTrue();
+                    assertThat(config.getMaxLoginCount()).isEqualTo(12);
+                    assertThat(config.getTokenStyle()).isEqualTo("uuid");
+                });
+    }
+
+    @Test
+    @DisplayName("Issue #1176: 仅显式配置 sa-token.* 时保留其配置并反向双向同步回 TokenProperties")
+    void testExplicitSaTokenPropertiesPreservedAndSyncedBack() {
+        saBeanContextRunner()
+                .withPropertyValues(
+                        "sa-token.timeout=7200",
+                        "sa-token.active-timeout=600",
+                        "sa-token.is-concurrent=false",
+                        "sa-token.is-share=false",
+                        "sa-token.max-login-count=3",
+                        "sa-token.token-style=random-32"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    SaTokenConfig config = SaManager.getConfig();
+                    assertThat(config.getTimeout()).isEqualTo(7200L);
+                    assertThat(config.getActiveTimeout()).isEqualTo(600L);
+                    assertThat(config.getIsConcurrent()).isFalse();
+                    assertThat(config.getIsShare()).isFalse();
+                    assertThat(config.getMaxLoginCount()).isEqualTo(3);
+                    assertThat(config.getTokenStyle()).isEqualTo("random-32");
+
+                    SaTokenProperties.TokenProperties tokenProps = context.getBean(SaTokenProperties.class).getToken();
+                    assertThat(tokenProps.getTimeout()).isEqualTo(Duration.ofSeconds(7200));
+                    assertThat(tokenProps.getActiveTimeout()).isEqualTo(Duration.ofSeconds(600));
+                    assertThat(tokenProps.isConcurrent()).isFalse();
+                    assertThat(tokenProps.isShare()).isFalse();
+                    assertThat(tokenProps.getMaxLoginCount()).isEqualTo(3);
+                    assertThat(tokenProps.getTokenStyle()).isEqualTo("random-32");
+                });
+    }
+
+    @Test
+    @DisplayName("Issue #1176: 字段级优先级(显式 ateng.boot.satoken.token.* > 显式 sa-token.* > TokenProperties 默认值)与宽松别名绑定")
+    void testFieldLevelPrecedenceAndRelaxedBinding() {
+        saBeanContextRunner()
+                .withPropertyValues(
+                        "sa-token.timeout=7200",
+                        "sa-token.active-timeout=600",
+                        "sa-token.isShare=false",
+                        "ateng.boot.satoken.token.timeout=12h",
+                        "ateng.boot.satoken.token.concurrent=false"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    SaTokenConfig config = SaManager.getConfig();
+                    assertThat(config.getTimeout()).isEqualTo(43200L);
+                    assertThat(config.getActiveTimeout()).isEqualTo(600L);
+                    assertThat(config.getIsConcurrent()).isFalse();
+                    assertThat(config.getIsShare()).isFalse();
+                    assertThat(config.getMaxLoginCount()).isEqualTo(12);
+                    assertThat(config.getTokenStyle()).isEqualTo("uuid");
+
+                    SaTokenProperties.TokenProperties tokenProps = context.getBean(SaTokenProperties.class).getToken();
+                    assertThat(tokenProps.getActiveTimeout()).isEqualTo(Duration.ofSeconds(600));
+                    assertThat(tokenProps.isShare()).isFalse();
+                });
+    }
+
+    @Test
+    @DisplayName("Issue #1176: active-timeout <= 0 (0s / -1s) 规范化映射为 Sa-Token 原生关闭值 -1L")
+    void testNonPositiveActiveTimeoutNormalizedToDisabled() {
+        saBeanContextRunner()
+                .withPropertyValues(
+                        "ateng.boot.satoken.token.active-timeout=0s",
+                        "ateng.boot.satoken.token.timeout=-1s"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    SaTokenConfig config = SaManager.getConfig();
+                    assertThat(config.getTimeout()).isEqualTo(-1L);
+                    assertThat(config.getActiveTimeout()).isEqualTo(-1L);
+                    assertThat(StpUtil.stpLogic.isOpenCheckActiveTimeout()).isFalse();
+                });
+
+        saBeanContextRunner()
+                .withPropertyValues("sa-token.active-timeout=-1")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    SaTokenConfig config = SaManager.getConfig();
+                    assertThat(config.getActiveTimeout()).isEqualTo(-1L);
+                    assertThat(StpUtil.stpLogic.isOpenCheckActiveTimeout()).isFalse();
+                    assertThat(context.getBean(SaTokenProperties.class).getToken().getActiveTimeout())
+                            .isEqualTo(Duration.ofSeconds(-1));
+                });
+    }
+
+    @Test
+    @DisplayName("Issue #1176: ateng.boot.satoken.enabled=false 时不注册桥接处理器，原生 sa-token.* 保持生效")
+    void testDisabledAtengSaTokenLeavesNativeSaTokenConfigUntouched() {
+        saBeanContextRunner()
+                .withPropertyValues(
+                        "ateng.boot.satoken.enabled=false",
+                        "ateng.boot.satoken.token.timeout=1h"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).doesNotHaveBean(AtengSaTokenAutoConfiguration.class);
+                    assertThat(context).doesNotHaveBean("saTokenConfigBeanPostProcessor");
+                    SaTokenConfig config = SaManager.getConfig();
+                    assertThat(config.getTimeout()).isEqualTo(2592000L);
+                    assertThat(config.getActiveTimeout()).isEqualTo(-1L);
+                });
+    }
+
+    @Test
+    @DisplayName("Issue #1176: 未加载 SaBeanRegister 时仅配 sa-token.* 仍可通过 Binder 正确生效且不被默认 SaTokenConfig 污染")
+    void testExplicitSaTokenPropertiesWithoutSaBeanRegister() {
+        contextRunner
+                .withPropertyValues(
+                        "sa-token.timeout=7200",
+                        "sa-token.active-timeout=0",
+                        "sa-token.is-share=false"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    SaTokenConfig config = SaManager.getConfig();
+                    assertThat(config.getTimeout()).isEqualTo(7200L);
+                    assertThat(config.getActiveTimeout()).isEqualTo(-1L);
+                    assertThat(config.getIsShare()).isFalse();
+
+                    SaTokenProperties.TokenProperties tokenProps = context.getBean(SaTokenProperties.class).getToken();
+                    assertThat(tokenProps.getTimeout()).isEqualTo(Duration.ofSeconds(7200));
+                    assertThat(tokenProps.getActiveTimeout()).isEqualTo(Duration.ofSeconds(-1));
+                    assertThat(tokenProps.isShare()).isFalse();
+                });
+    }
+
+    @Test
+    @DisplayName("Issue #1176: 业务侧为特定 StpLogic 注册独立非主 SaTokenConfig Bean 时不被全局桥接覆写")
+    void testSecondarySaTokenConfigBeanNotMutatedByGlobalBridge() {
+        saBeanContextRunner()
+                .withUserConfiguration(SecondarySaTokenConfigHolder.class)
+                .withPropertyValues("ateng.boot.satoken.token.timeout=24h")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(SaManager.getConfig().getTimeout()).isEqualTo(86400L);
+                    SaTokenConfig secondary = context.getBean("adminSaTokenConfig", SaTokenConfig.class);
+                    assertThat(secondary.getTimeout()).isEqualTo(600L);
+                    assertThat(secondary.getActiveTimeout()).isEqualTo(120L);
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class SecondarySaTokenConfigHolder {
+
+        @Bean
+        @Primary
+        SaTokenConfig customPrimarySaTokenConfig() {
+            return new SaTokenConfig();
+        }
+
+        @Bean("adminSaTokenConfig")
+        SaTokenConfig adminSaTokenConfig() {
+            return new SaTokenConfig().setTimeout(600L).setActiveTimeout(120L);
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class EarlyAtengBeanConsumerConfig {
+
+        @Bean
+        static org.springframework.beans.factory.config.BeanPostProcessor forceEarlyAtengAutoConfigInit(
+                org.springframework.beans.factory.ObjectProvider<SaTokenExceptionHandler> handlerProvider) {
+            return new org.springframework.beans.factory.config.BeanPostProcessor() {
+                private boolean triggered;
+
+                @Override
+                public Object postProcessBeforeInitialization(Object bean, String beanName) {
+                    if (!triggered) {
+                        triggered = true;
+                        handlerProvider.getIfAvailable();
+                    }
+                    return bean;
+                }
+            };
+        }
     }
 }

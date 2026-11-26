@@ -30,6 +30,9 @@ ateng:
         enabled: true
         default-operator: SYSTEM
     satoken:
+      token:
+        timeout: 24h
+        active-timeout: 30m
       same-token:
         enabled: true
         token-value: "SATOKEN_INTERNAL_SAME_TOKEN_SECRET_987654"

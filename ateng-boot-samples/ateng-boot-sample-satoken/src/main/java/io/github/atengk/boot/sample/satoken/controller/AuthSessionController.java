@@ -1,5 +1,8 @@
 package io.github.atengk.boot.sample.satoken.controller;
 
+import cn.dev33.satoken.config.SaTokenConfig;
+import cn.dev33.satoken.stp.StpLogic;
+import cn.dev33.satoken.stp.StpUtil;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.model.Result;
@@ -10,6 +13,7 @@ import io.github.atengk.boot.sample.satoken.service.SaTokenSampleService;
 import io.github.atengk.boot.sample.satoken.vo.TempTokenTicketVO;
 import io.github.atengk.boot.sample.satoken.vo.TempTokenVO;
 import io.github.atengk.boot.sample.satoken.vo.TenantOrderVO;
+import io.github.atengk.boot.sample.satoken.vo.TokenPolicySnapshotVO;
 import io.github.atengk.boot.satoken.annotation.Anonymous;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.util.LoginHelper;
@@ -219,6 +223,32 @@ public class AuthSessionController {
         LoginHelper.checkLogin();
         LoginHelper.renewTimeout(timeout);
         return Result.success(LoginHelper.getTokenTimeout());
+    }
+
+    /**
+     * 查询当前登录会话与底层 Sa-Token 生效超时策略快照（验证 TokenProperties 桥接生效）
+     *
+     * @param loginType 可选账号体系标识，默认主体系
+     * @return 当前令牌剩余寿命与全局策略快照
+     */
+    @GetMapping("/token-policy")
+    public Result<TokenPolicySnapshotVO> getTokenPolicy(
+            @RequestParam(value = "loginType", required = false) String loginType) {
+        String resolvedLoginType = (loginType != null && !loginType.isBlank()) ? loginType.trim() : StpUtil.TYPE;
+        LoginHelper.checkLogin(resolvedLoginType);
+        StpLogic logic = LoginHelper.getStpLogic(resolvedLoginType);
+        SaTokenConfig config = logic.getConfigOrGlobal();
+        return Result.success(TokenPolicySnapshotVO.builder()
+                .loginType(resolvedLoginType)
+                .tokenTimeout(logic.getTokenTimeout())
+                .tokenActiveTimeout(logic.getTokenActiveTimeout())
+                .globalTimeout(config.getTimeout())
+                .globalActiveTimeout(config.getActiveTimeout())
+                .isConcurrent(config.getIsConcurrent())
+                .isShare(config.getIsShare())
+                .maxLoginCount(config.getMaxLoginCount())
+                .tokenStyle(config.getTokenStyle())
+                .build());
     }
 
     /**

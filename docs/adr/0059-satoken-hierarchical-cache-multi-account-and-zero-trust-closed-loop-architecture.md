@@ -97,11 +97,17 @@ flowchart TD
 ### 6. 强类型配置双向桥接与活跃空闲超时 (Config Bridging & Active Timeout)
 - 在 `SaTokenProperties` 声明 `TokenProperties` 强类型嵌套配置：
   - `timeout`（默认 `24h`，`Duration`）：绝对有效时间；
-  - `activeTimeout`（默认 `30m`，`Duration`）：活跃空闲超时（支持滑动窗口无感续期）；
+  - `activeTimeout`（默认 `30m`，`Duration`）：活跃空闲超时（支持滑动窗口无感续期，`<= 0` 表示关闭）；
   - `isConcurrent`（默认 `true`）：同一账号是否允许并发登录；
   - `isShare`（默认 `true`）：同一设备多次登录是否共享 Token；
   - `maxLoginCount`（默认 `12`）：单账号最大在线会话数；
-- 启动时自动将这些 `Duration` 桥接写入 Sa-Token 全局配置 `SaManager.getConfig()`，消除配置割裂与单位歧义。
+  - `tokenStyle`（默认 `"uuid"`）：Token 生成算法风格；
+- **防覆盖桥接时序与装配权衡（2026-11 #1176 缺陷演进）**：
+  - 官方 `sa-token-spring-boot3-starter` 的 `SaBeanRegister.getSaTokenConfig()` 未标注 `@ConditionalOnMissingBean`，且 `SaBeanInject` 在构造函数中直接执行 `SaManager.setConfig(saTokenConfig)`。由于 `AtengSaTokenAutoConfiguration` 承载被 MVC/Filter 提前引用的 `@Bean`，仅加 `@AutoConfigureAfter` 无法阻止其 `@PostConstruct` 先于 `SaBeanInject` 执行并被默认 `new SaTokenConfig()`（`timeout=2592000s`、`activeTimeout=-1`、`isShare=false`）覆盖；而另行声明 `@Bean SaTokenConfig` 又会引发 `NoUniqueBeanDefinitionException`；
+  - 最终决策：在 `@AutoConfigureAfter` 补齐 `SaBeanRegister`、`SaBeanInject` 与 `SaTokenContextRegister` 后，通过 `@Bean static BeanPostProcessor`（`saTokenConfigBeanPostProcessor`）在 `SaBeanRegister.getSaTokenConfig()` 完成 `@ConfigurationProperties("sa-token")` 绑定之后、`SaBeanInject` 调用 `SaManager.setConfig(...)` **之前**原地完成桥接，同时配合 `@PostConstruct` 与 `SmartInitializingSingleton.afterSingletonsInstantiated()` 对 `SaManager.getConfig()` 执行幂等收敛，兼顾完整 Spring Boot 容器与无 `SaBeanRegister` 的轻量单测上下文；仅定制挂载了独立 `SaTokenConfig` 的 `StpLogic` 不受全局桥接覆写；
+- **字段级优先级与关闭语义对齐**：
+  - 基于 Spring `Environment`（`Binder` 宽松绑定，兼容 `is-concurrent`/`concurrent`、`is-share`/`share`）逐字段判定配置来源：`显式配置 ateng.boot.satoken.token.* > 显式配置 sa-token.*（保留并反向回写 TokenProperties） > TokenProperties 默认生产基线`；
+  - 针对 `sa-token-core` `StpLogic.isOpenCheckActiveTimeout()` 仅识别 `activeTimeout != -1L` 的特性，桥接写入 `SaTokenConfig` 时统一将 `activeTimeout <= 0`（如 `0s`、`-1s`）规范化为 `-1L`（反向回读为 `Duration.ofSeconds(-1)`），消除 `0s` 配置误触发立即冻结隐患。
 
 ### 7. 数据库驱动的动态 URL 路径权限匹配 SPI (DynamicPathPermissionProvider)
 - 提供 `DynamicPathPermissionProvider` SPI 扩展点与 `PathPermissionRule` 规则模型（支持绑定可选 `loginType` 实施多账号路由权限隔离）；

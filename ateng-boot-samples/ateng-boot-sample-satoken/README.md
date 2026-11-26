@@ -36,6 +36,7 @@
 | **透明剥离读取用户ID** | `AuthSessionController` | `GET /sample/satoken/auth/user-id` | `curl "http://localhost:8080/sample/satoken/auth/user-id" -H "satoken: <TOKEN>"` |
 | **获取当前租户上下文** | `AuthSessionController` | `GET /sample/satoken/auth/current-tenant` | `curl "http://localhost:8080/sample/satoken/auth/current-tenant" -H "satoken: <TOKEN>"` |
 | **校验登录态** | `AuthSessionController` | `GET /sample/satoken/auth/check-login` | `curl "http://localhost:8080/sample/satoken/auth/check-login" -H "satoken: <TOKEN>"` |
+| **查询令牌生效超时策略快照** | `AuthSessionController` | `GET /sample/satoken/auth/token-policy` | `curl "http://localhost:8080/sample/satoken/auth/token-policy" -H "satoken: <TOKEN>"` |
 | **主动续期会话 Token** | `AuthSessionController` | `POST /sample/satoken/auth/renew-timeout` | `curl -X POST "http://localhost:8080/sample/satoken/auth/renew-timeout?timeoutSeconds=3600&loginType=login" -H "satoken: <TOKEN>"` |
 | **签发短效临时业务令牌** | `AuthSessionController` | `POST /sample/satoken/auth/temp-token/issue` | `curl -X POST "http://localhost:8080/sample/satoken/auth/temp-token/issue" -H "satoken: <TOKEN>" -H "Content-Type: application/json" -d '{"bizScene":"FILE_DOWNLOAD","resourceId":"doc-2026","resourceName":"季度审计报告.pdf","timeoutSeconds":300}'` |
 | **匿名核验临时业务令牌** | `AuthSessionController` | `GET /sample/satoken/auth/temp-token/verify` | `curl "http://localhost:8080/sample/satoken/auth/temp-token/verify?token=<TEMP_TOKEN>"` |

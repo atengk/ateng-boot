@@ -10,7 +10,7 @@
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **会话登录** | 强类型登录与端隔离 | `LoginHelper` | `enabled`<br>`token.timeout`<br>`token.active-timeout`<br>`token.is-concurrent`<br>`token.is-share`<br>`token.max-login-count`<br>`token.token-style` | `login(LoginUser)` / `login(loginType, LoginUser)` / `login(LoginUser, deviceType)` / `login(loginType, LoginUser, deviceType)` / `login(LoginUser, SaLoginParameter)` / `login(loginType, LoginUser, SaLoginParameter)`（自动嗅探固化 `loginIp`） | `LoginHelperTest` / `AuthSessionController` |
 | **会话注销** | 会话与设备注销 | `LoginHelper` | - | `logout([loginType])` / `logoutByTokenValue([loginType,] tokenValue)` / `logoutByDevice([loginType,] deviceType)` / `logoutByLoginId(loginId[, deviceType])` / `logoutByLoginType(loginType, loginId[, deviceType])` | `LoginHelperTest` / `AuthSessionController` |
-| **状态与续签** | 状态校验与有效期续期 | `LoginHelper` | `token.timeout`<br>`token.active-timeout` | `isLogin([loginType])` / `checkLogin([loginType])` / `getTokenValue([loginType])` / `getTokenValueByLoginId(loginId[, deviceType])` / `getTokenValueByLoginType(loginType, loginId[, deviceType])` / `getTokenTimeout([loginType])` / `getSessionTimeout([loginType])` / `getLoginDeviceType([loginType])` / `renewTimeout([loginType,] Duration)` / `renewTimeoutByToken([loginType,] tokenValue, Duration)` | `LoginHelperTest` / `AuthSessionController` |
+| **状态与续签** | 状态校验与有效期续期 | `LoginHelper` | `token.timeout`<br>`token.active-timeout` | `isLogin([loginType])` / `checkLogin([loginType])` / `getTokenValue([loginType])` / `getTokenValueByLoginId(loginId[, deviceType])` / `getTokenValueByLoginType(loginType, loginId[, deviceType])` / `getTokenTimeout([loginType])` / `getSessionTimeout([loginType])` / `getLoginDeviceType([loginType])` / `renewTimeout([loginType,] Duration)` / `renewTimeoutByToken([loginType,] tokenValue, Duration)` | `LoginHelperTest` / `SaTokenPropertiesTest` / `AuthSessionController` / `SampleSaTokenTokenPropertiesIntegrationTest` |
 | **短效凭据** | 强类型临时业务令牌 | `TempTokenHelper`<br>`LoginHelper` | - | `createTempToken(Object, Duration)` / `parseTempToken(String)` / `parseTempToken(String, Class<T>)` / `getTempTokenTimeout(String)` / `deleteTempToken(String)`（零 `@class` 纯 JSON） | `TempTokenHelperTest` / `AuthSessionController` |
 | **设备治理** | 踢人下线与同端顶替 | `LoginHelper` | `token.is-concurrent`<br>`token.is-share`<br>`token.max-login-count` | `kickout(loginId[, deviceType])` / `kickoutByLoginType(loginType, loginId[, deviceType])` / `kickoutByToken([loginType,] tokenValue)` / `kickoutDevice([loginType,] loginId, deviceType)` / `kickoutByDevice([loginType,] loginId, deviceType)` / `replaced(loginId[, deviceType])` / `replacedByLoginType(loginType, loginId[, deviceType])` | `LoginHelperOnlineUserTest` / `OnlineSessionController` |
 | **账号封禁** | 阶梯封禁与受限校验 | `LoginHelper`<br>`@SaCheckDisable` | - | `disable(loginId, [service,] Duration)` / `disableByLoginType(loginType, loginId, [service,] Duration)` / `untieDisable(loginId[, service])` / `untieDisableByLoginType(...)` / `isDisable(...)` / `isDisableByLoginType(...)` / `checkDisable(...)` / `checkDisableByLoginType(...)` / `getDisableTime(...)` / `getDisableTimeByLoginType(...)` | `LoginHelperTest` / `OnlineSessionController` |
@@ -229,7 +229,7 @@ ateng:
         token-style: uuid         # Token 生成算法风格: uuid/simple-uuid/random-32/random-64/tik (默认: uuid)
 ```
 
-> 说明：`AtengSaTokenAutoConfiguration` 启动时会把 `ateng.boot.satoken.token.*` 强类型属性双向桥接写入 Sa-Token 全局 `SaManager.getConfig()`，免除秒数换算心智负担；同时登录时自动嗅探客户端 IP 写入 `terminalExtra("loginIp")`，为在线会话监控提供真实终端溯源。
+> 说明：`AtengSaTokenAutoConfiguration` 通过 `BeanPostProcessor` + `SmartInitializingSingleton` 在官方 `SaBeanRegister` 绑定 `sa-token.*` 之后、`SaBeanInject` 注入 `SaManager` 之前完成双向桥接（避免被默认 `SaTokenConfig` 覆盖），字段级优先级遵循 **显式 `ateng.boot.satoken.token.*` > 显式 `sa-token.*`（保留并回写 `TokenProperties`） > `TokenProperties` 生产默认值**，并将 `active-timeout <= 0` 统一规范化为 Sa-Token 原生关闭值 `-1`；同时登录时自动嗅探客户端 IP 写入 `terminalExtra("loginIp")`，为在线会话监控提供真实终端溯源。
 
 ### 3.2 1:1 实战代码（源自 `AuthSessionController.java`）
 
@@ -258,6 +258,29 @@ public class AuthSessionController {
         LoginHelper.checkLogin();
         LoginHelper.renewTimeout(timeout);
         return Result.success(LoginHelper.getTokenTimeout());
+    }
+
+    /**
+     * 查询当前登录会话与底层 Sa-Token 生效超时策略快照（验证 TokenProperties 桥接生效）
+     */
+    @GetMapping("/token-policy")
+    public Result<TokenPolicySnapshotVO> getTokenPolicy(
+            @RequestParam(value = "loginType", required = false) String loginType) {
+        String resolvedLoginType = (loginType != null && !loginType.isBlank()) ? loginType.trim() : StpUtil.TYPE;
+        LoginHelper.checkLogin(resolvedLoginType);
+        StpLogic logic = LoginHelper.getStpLogic(resolvedLoginType);
+        SaTokenConfig config = logic.getConfigOrGlobal();
+        return Result.success(TokenPolicySnapshotVO.builder()
+                .loginType(resolvedLoginType)
+                .tokenTimeout(logic.getTokenTimeout())
+                .tokenActiveTimeout(logic.getTokenActiveTimeout())
+                .globalTimeout(config.getTimeout())
+                .globalActiveTimeout(config.getActiveTimeout())
+                .isConcurrent(config.getIsConcurrent())
+                .isShare(config.getIsShare())
+                .maxLoginCount(config.getMaxLoginCount())
+                .tokenStyle(config.getTokenStyle())
+                .build());
     }
 
     /**

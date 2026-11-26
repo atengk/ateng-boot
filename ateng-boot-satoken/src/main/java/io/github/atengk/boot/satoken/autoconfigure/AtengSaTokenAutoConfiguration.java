@@ -41,14 +41,22 @@ import io.github.atengk.boot.satoken.strategy.SaTokenAnnotationAutoRouteRegistra
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import java.time.Duration;
 import java.util.List;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import jakarta.annotation.PostConstruct;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springdoc.core.customizers.GlobalOpenApiCustomizer;
+import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.core.Ordered;
 import org.springframework.core.env.Environment;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.config.BeanDefinition;
+import org.springframework.beans.factory.config.BeanPostProcessor;
+import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -60,6 +68,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Role;
 import io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager;
 import io.github.atengk.boot.satoken.cluster.broadcaster.SaTokenClusterBroadcaster;
 import io.github.atengk.boot.satoken.cluster.listener.SaTokenClusterSyncListener;
@@ -84,15 +93,134 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 @AutoConfigureAfter(name = {
         "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration",
         "io.github.atengk.boot.redis.autoconfigure.AtengRedisAutoConfiguration",
-        "io.github.atengk.boot.web.autoconfigure.AtengWebAutoConfiguration"
+        "io.github.atengk.boot.web.autoconfigure.AtengWebAutoConfiguration",
+        "cn.dev33.satoken.spring.SaBeanRegister",
+        "cn.dev33.satoken.spring.SaBeanInject",
+        "cn.dev33.satoken.spring.SaTokenContextRegister"
 })
 @ConditionalOnClass(StpUtil.class)
 @EnableConfigurationProperties(SaTokenProperties.class)
 @ConditionalOnProperty(prefix = "ateng.boot.satoken", name = "enabled", havingValue = "true", matchIfMissing = true)
-@RequiredArgsConstructor
-public class AtengSaTokenAutoConfiguration {
+public class AtengSaTokenAutoConfiguration implements SmartInitializingSingleton {
 
     private final SaTokenProperties properties;
+    private final Environment environment;
+    private final ObjectProvider<cn.dev33.satoken.config.SaTokenConfig> saTokenConfigProvider;
+
+    @Autowired
+    public AtengSaTokenAutoConfiguration(
+            SaTokenProperties properties,
+            Environment environment,
+            ObjectProvider<cn.dev33.satoken.config.SaTokenConfig> saTokenConfigProvider) {
+        this.properties = properties;
+        this.environment = environment;
+        this.saTokenConfigProvider = saTokenConfigProvider;
+    }
+
+    public AtengSaTokenAutoConfiguration(SaTokenProperties properties, Environment environment) {
+        this(properties, environment, null);
+    }
+
+    public AtengSaTokenAutoConfiguration(SaTokenProperties properties) {
+        this(properties, null, null);
+    }
+
+    /**
+     * 在 SaBeanRegister 绑定 sa-token.* 之后、SaBeanInject 注入 SaManager 之前原地桥接全局主 SaTokenConfig Bean
+     *
+     * @param environment Spring 环境配置
+     * @param beanFactory Spring Bean 工厂（延迟获取 SaTokenProperties 并识别主 SaTokenConfig Bean）
+     * @return SaTokenConfig 后置处理器
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(org.springframework.aop.framework.AopInfrastructureBean.class)
+    static class AopSafeSaTokenConfigBeanPostProcessorConfiguration {
+
+        @Bean
+        @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+        @ConditionalOnMissingBean(name = "saTokenConfigBeanPostProcessor")
+        public static BeanPostProcessor saTokenConfigBeanPostProcessor(
+                Environment environment,
+                ConfigurableListableBeanFactory beanFactory) {
+            return new AopSafeSaTokenConfigBeanPostProcessor(environment, beanFactory);
+        }
+    }
+
+    @Bean
+    @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+    @ConditionalOnMissingClass("org.springframework.aop.framework.AopInfrastructureBean")
+    @ConditionalOnMissingBean(name = "saTokenConfigBeanPostProcessor")
+    public static BeanPostProcessor saTokenConfigBeanPostProcessor(
+            Environment environment,
+            ConfigurableListableBeanFactory beanFactory) {
+        return new SaTokenConfigBeanPostProcessor(environment, beanFactory);
+    }
+
+    private static class SaTokenConfigBeanPostProcessor implements BeanPostProcessor, Ordered {
+
+        private final Environment environment;
+        private final ConfigurableListableBeanFactory beanFactory;
+
+        private SaTokenConfigBeanPostProcessor(
+                Environment environment,
+                ConfigurableListableBeanFactory beanFactory) {
+            this.environment = environment;
+            this.beanFactory = beanFactory;
+        }
+
+        @Override
+        public int getOrder() {
+            return Ordered.LOWEST_PRECEDENCE;
+        }
+
+        @Override
+        public Object postProcessAfterInitialization(Object bean, String beanName) {
+            if (bean instanceof cn.dev33.satoken.config.SaTokenConfig config
+                    && isGlobalSaTokenConfigBean(beanFactory, beanName)) {
+                SaTokenProperties props = beanFactory != null
+                        ? beanFactory.getBeanProvider(SaTokenProperties.class).getIfAvailable()
+                        : null;
+                if (props != null) {
+                    applyTokenProperties(config, props.getToken(), environment, true);
+                }
+            }
+            return bean;
+        }
+    }
+
+    private static final class AopSafeSaTokenConfigBeanPostProcessor
+            extends SaTokenConfigBeanPostProcessor
+            implements org.springframework.aop.framework.AopInfrastructureBean {
+
+        private AopSafeSaTokenConfigBeanPostProcessor(
+                Environment environment,
+                ConfigurableListableBeanFactory beanFactory) {
+            super(environment, beanFactory);
+        }
+    }
+
+    private static boolean isGlobalSaTokenConfigBean(ConfigurableListableBeanFactory beanFactory, String beanName) {
+        if (beanFactory == null) {
+            return "getSaTokenConfig".equals(beanName);
+        }
+        String[] names = beanFactory.getBeanNamesForType(cn.dev33.satoken.config.SaTokenConfig.class, false, false);
+        if (names.length <= 1) {
+            return true;
+        }
+        boolean hasPrimary = false;
+        for (String name : names) {
+            if (beanFactory.containsBeanDefinition(name)) {
+                BeanDefinition def = beanFactory.getBeanDefinition(name);
+                if (def.isPrimary()) {
+                    hasPrimary = true;
+                    if (name.equals(beanName)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return !hasPrimary && "getSaTokenConfig".equals(beanName);
+    }
 
     /**
      * 初始化全局安全防火墙策略，统一错误输出为 Result 契约
@@ -142,6 +270,11 @@ public class AtengSaTokenAutoConfiguration {
         };
     }
 
+    @Override
+    public void afterSingletonsInstantiated() {
+        applyTokenProperties(properties.getToken());
+    }
+
     /**
      * 将强类型 TokenProperties 配置桥接写入底层 SaManager.getConfig()
      *
@@ -156,26 +289,179 @@ public class AtengSaTokenAutoConfiguration {
             config = new cn.dev33.satoken.config.SaTokenConfig();
             cn.dev33.satoken.SaManager.setConfig(config);
         }
-        if (tokenProps.getTimeout() != null) {
-            config.setTimeout(tokenProps.getTimeout().toSeconds());
-        } else if (config.getTimeout() > 0) {
-            tokenProps.setTimeout(Duration.ofSeconds(config.getTimeout()));
+        cn.dev33.satoken.config.SaTokenConfig beanConfig = resolveGlobalSaTokenConfigBean();
+        boolean boundSaTokenBean = beanConfig != null && beanConfig == config;
+        applyTokenProperties(config, tokenProps, environment, boundSaTokenBean);
+    }
+
+    private cn.dev33.satoken.config.SaTokenConfig resolveGlobalSaTokenConfigBean() {
+        if (saTokenConfigProvider == null) {
+            return null;
         }
-        if (tokenProps.getActiveTimeout() != null) {
-            config.setActiveTimeout(tokenProps.getActiveTimeout().toSeconds());
-        } else if (config.getActiveTimeout() > 0) {
-            tokenProps.setActiveTimeout(Duration.ofSeconds(config.getActiveTimeout()));
+        try {
+            return saTokenConfigProvider.getIfAvailable();
+        } catch (org.springframework.beans.BeansException ex) {
+            return null;
         }
-        config.setIsConcurrent(tokenProps.isConcurrent());
-        config.setIsShare(tokenProps.isShare());
-        config.setMaxLoginCount(tokenProps.getMaxLoginCount());
-        if (tokenProps.getTokenStyle() != null && !tokenProps.getTokenStyle().isBlank()) {
-            config.setTokenStyle(tokenProps.getTokenStyle());
-        } else if (config.getTokenStyle() != null && !config.getTokenStyle().isBlank()) {
-            tokenProps.setTokenStyle(config.getTokenStyle());
+    }
+
+    /**
+     * 将强类型 TokenProperties 配置桥接写入目标 SaTokenConfig 实例
+     * <p>
+     * 字段级优先级：显式配置的 {@code ateng.boot.satoken.token.*} > 显式配置的 {@code sa-token.*}（保留并反向回写至
+     * {@link SaTokenProperties.TokenProperties}） > {@code TokenProperties} 默认生产基线。
+     * 当容器未装配 {@code SaBeanRegister} 导致 {@code SaManager.getConfig()} 尚未绑定 {@code sa-token.*} 时，
+     * 对显式 {@code sa-token.*} 直接通过 {@link Binder} 解析绑定值写入，避免默认 {@code new SaTokenConfig()} 反向污染。
+     * </p>
+     *
+     * @param config           Sa-Token 配置对象
+     * @param tokenProps       强类型配置
+     * @param environment      Spring 环境配置
+     * @param boundSaTokenBean 目标 config 是否已由 Spring 完成 {@code sa-token.*} 绑定
+     */
+    private static void applyTokenProperties(
+            cn.dev33.satoken.config.SaTokenConfig config,
+            SaTokenProperties.TokenProperties tokenProps,
+            Environment environment,
+            boolean boundSaTokenBean) {
+        if (config == null || tokenProps == null) {
+            return;
         }
-        log.debug("Sa-Token 强类型配置已成功双向桥接至 SaManager.getConfig(): timeout={}s, activeTimeout={}s, maxLoginCount={}",
-                config.getTimeout(), config.getActiveTimeout(), config.getMaxLoginCount());
+        // 1. timeout
+        bridgeField(environment, boundSaTokenBean, Long.class, "sa-token.timeout",
+                new String[]{"ateng.boot.satoken.token.timeout"},
+                () -> tokenProps.getTimeout() != null ? tokenProps.getTimeout().toSeconds() : null,
+                config::setTimeout,
+                config::getTimeout,
+                seconds -> tokenProps.setTimeout(Duration.ofSeconds(seconds)));
+
+        // 2. activeTimeout：<= 0 统一规范化为 Sa-Token 原生关闭值 -1L（匹配 StpLogic != -1L 判定）
+        bridgeField(environment, boundSaTokenBean, Long.class, "sa-token.active-timeout",
+                new String[]{"ateng.boot.satoken.token.active-timeout"},
+                () -> tokenProps.getActiveTimeout() != null
+                        ? normalizeActiveTimeoutSeconds(tokenProps.getActiveTimeout().toSeconds())
+                        : null,
+                seconds -> config.setActiveTimeout(normalizeActiveTimeoutSeconds(seconds)),
+                () -> normalizeActiveTimeoutSeconds(config.getActiveTimeout()),
+                seconds -> {
+                    long normalized = normalizeActiveTimeoutSeconds(seconds);
+                    config.setActiveTimeout(normalized);
+                    tokenProps.setActiveTimeout(Duration.ofSeconds(normalized));
+                });
+
+        // 3. isConcurrent：兼容 is-concurrent 与 concurrent 宽松别名
+        bridgeField(environment, boundSaTokenBean, Boolean.class, "sa-token.is-concurrent",
+                new String[]{"ateng.boot.satoken.token.is-concurrent", "ateng.boot.satoken.token.concurrent"},
+                tokenProps::isConcurrent,
+                config::setIsConcurrent,
+                config::getIsConcurrent,
+                tokenProps::setIsConcurrent);
+
+        // 4. isShare：兼容 is-share 与 share 宽松别名
+        bridgeField(environment, boundSaTokenBean, Boolean.class, "sa-token.is-share",
+                new String[]{"ateng.boot.satoken.token.is-share", "ateng.boot.satoken.token.share"},
+                tokenProps::isShare,
+                config::setIsShare,
+                config::getIsShare,
+                tokenProps::setIsShare);
+
+        // 5. maxLoginCount
+        bridgeField(environment, boundSaTokenBean, Integer.class, "sa-token.max-login-count",
+                new String[]{"ateng.boot.satoken.token.max-login-count"},
+                tokenProps::getMaxLoginCount,
+                config::setMaxLoginCount,
+                config::getMaxLoginCount,
+                tokenProps::setMaxLoginCount);
+
+        // 6. tokenStyle
+        bridgeField(environment, boundSaTokenBean, String.class, "sa-token.token-style",
+                new String[]{"ateng.boot.satoken.token.token-style"},
+                () -> (tokenProps.getTokenStyle() != null && !tokenProps.getTokenStyle().isBlank())
+                        ? tokenProps.getTokenStyle().trim() : null,
+                config::setTokenStyle,
+                () -> (config.getTokenStyle() != null && !config.getTokenStyle().isBlank())
+                        ? config.getTokenStyle() : null,
+                tokenProps::setTokenStyle);
+
+        log.debug("Sa-Token 强类型配置已成功双向桥接至 SaTokenConfig: timeout={}s, activeTimeout={}s, isConcurrent={}, isShare={}, maxLoginCount={}, tokenStyle={}",
+                config.getTimeout(), config.getActiveTimeout(), config.getIsConcurrent(),
+                config.getIsShare(), config.getMaxLoginCount(), config.getTokenStyle());
+    }
+
+    private static <T> void bridgeField(
+            Environment environment,
+            boolean boundSaTokenBean,
+            Class<T> valueType,
+            String saTokenKey,
+            String[] atengKeys,
+            Supplier<T> atengGetter,
+            Consumer<T> saSetter,
+            Supplier<T> saBeanGetter,
+            Consumer<T> atengSetter) {
+        if (resolveConfigSource(environment, saTokenKey, atengKeys) == ConfigSource.EXPLICIT_SA_TOKEN) {
+            T value = boundSaTokenBean ? saBeanGetter.get() : bindExplicitValue(environment, saTokenKey, valueType);
+            if (value != null) {
+                saSetter.accept(value);
+                atengSetter.accept(value);
+            }
+            return;
+        }
+        T atengValue = atengGetter.get();
+        if (atengValue != null) {
+            saSetter.accept(atengValue);
+        } else {
+            T fallback = saBeanGetter.get();
+            if (fallback != null) {
+                atengSetter.accept(fallback);
+            }
+        }
+    }
+
+    private static <T> T bindExplicitValue(Environment environment, String canonicalKey, Class<T> valueType) {
+        if (environment == null || canonicalKey == null || canonicalKey.isBlank()) {
+            return null;
+        }
+        return Binder.get(environment).bind(canonicalKey, valueType).orElse(null);
+    }
+
+    private static long normalizeActiveTimeoutSeconds(long seconds) {
+        return seconds <= 0L ? -1L : seconds;
+    }
+
+    private static ConfigSource resolveConfigSource(
+            Environment environment,
+            String saTokenKey,
+            String... atengKeys) {
+        if (hasConfiguredProperty(environment, atengKeys)) {
+            return ConfigSource.EXPLICIT_ATENG;
+        }
+        if (hasConfiguredProperty(environment, saTokenKey)) {
+            return ConfigSource.EXPLICIT_SA_TOKEN;
+        }
+        return ConfigSource.DEFAULT;
+    }
+
+    private static boolean hasConfiguredProperty(Environment environment, String... canonicalKeys) {
+        if (environment == null || canonicalKeys == null || canonicalKeys.length == 0) {
+            return false;
+        }
+        Binder binder = Binder.get(environment);
+        for (String key : canonicalKeys) {
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            String value = binder.bind(key, String.class).orElse(null);
+            if (value != null && !value.isBlank()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private enum ConfigSource {
+        EXPLICIT_ATENG,
+        EXPLICIT_SA_TOKEN,
+        DEFAULT
     }
 
     /**
