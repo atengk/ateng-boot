@@ -144,4 +144,29 @@ class WebExceptionSampleControllerTest {
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.msg").value(containsString("支付通道异常 [ALIPAY]: 通道账户可用余额不足")));
     }
+
+    @Test
+    @DisplayName("9. 400 非 multipart 上传请求：向 @RequestParam 上传端点发送 JSON 触发 MultipartException 并转译为业务码 400")
+    void shouldTranslateNonMultipartRequestToBadRequest() throws Exception {
+        mockMvc.perform(post("/sample/web/contract/error/upload-param")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"file\":\"invalid\"}"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("X-Trace-Id"))
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.msg").value("文件上传请求格式不合法或内容解析失败"))
+                .andExpect(jsonPath("$.traceId").isNotEmpty());
+    }
+
+    @Test
+    @DisplayName("10. @RequestParam 文件上传正常通过并返回文件名")
+    void shouldUploadFileByParamSuccessfully() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "param-file.txt", "text/plain", "hello".getBytes());
+        mockMvc.perform(multipart("/sample/web/contract/error/upload-param").file(file))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data").value("param-file.txt"));
+    }
 }

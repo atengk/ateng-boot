@@ -9,7 +9,7 @@
 _Avoid_: LogFilter, TraceInterceptor, MDCFilter
 
 **GlobalExceptionHandler**:
-捕获控制器抛出的各类已知业务异常与未知系统异常，将其安全转译为统一 Result 结构并对内部敏感错误做生产脱敏的切面处理器。
+捕获 MVC 请求解析、路由分发与控制器执行全过程抛出的已知业务异常、协议与传输异常及未知系统异常，将其统一转译为标准 Result 结构并对内部错误做生产脱敏的全局切面处理器。
 _Avoid_: ExceptionAdvice, ErrorHandler, WebExceptionHandler
 
 **JacksonCustomizer**:

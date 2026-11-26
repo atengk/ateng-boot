@@ -24,12 +24,20 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.MultipartException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+import org.springframework.web.util.DisconnectedClientHelper;
 
+import jakarta.servlet.ServletException;
 import java.io.IOException;
+import java.nio.file.FileSystemException;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * 全局统一异常安全拦截处理器
@@ -42,6 +50,53 @@ import java.util.List;
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    private static final int MAX_CAUSE_CHAIN_DEPTH = 32;
+    private static final int MAX_ROOT_CAUSE_LOG_LENGTH = 256;
+    private static final String MSG_MULTIPART_INVALID = "文件上传请求格式不合法或内容解析失败";
+    private static final String MSG_MULTIPART_CLIENT_ABORT = "文件上传传输中断，请检查网络后重试";
+    private static final String MSG_MULTIPART_FILE_COUNT_EXCEEDED = "上传文件或表单分片数量超出限制";
+
+    private static final Set<String> CLIENT_DISCONNECT_TYPE_NAMES = Set.of(
+            "AbortedException",
+            "ClientAbortException",
+            "EOFException",
+            "EofException",
+            "AsyncRequestNotUsableException"
+    );
+
+    private static final List<String> CLIENT_DISCONNECT_MESSAGE_KEYWORDS = List.of(
+            "broken pipe",
+            "connection reset",
+            "connection was aborted",
+            "connection abort",
+            "closed by the remote host",
+            "an established connection was aborted",
+            "unexpected eof",
+            "client abort",
+            "远程主机强迫关闭了一个现有的连接"
+    );
+
+    private static final Set<String> CLIENT_MALFORMED_TYPE_NAMES = Set.of(
+            "MalformedStreamException",
+            "InvalidContentTypeException",
+            "IllegalBoundaryException",
+            "InvalidFileNameException",
+            "ParseException"
+    );
+
+    private static final List<String> SERVER_MULTIPART_CONFIG_KEYWORDS = List.of(
+            "no multipart config",
+            "no multi-part configuration"
+    );
+
+    private static final List<String> SERVER_STORAGE_IO_KEYWORDS = List.of(
+            "temporary upload location",
+            "create the upload location",
+            "no space left on device",
+            "not enough space on the disk",
+            "disk quota exceeded"
+    );
 
     private final List<GlobalExceptionCustomizer> customizers;
 
@@ -297,6 +352,46 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 拦截非体积超限的 Multipart 请求解析与上传异常 MultipartException
+     * 保持子类 {@link MaxUploadSizeExceededException}（413）优先匹配不变，并按原因链执行三轨分级：
+     * 1. 服务端容器配置缺失或磁盘/临时目录故障：保留 ERROR 堆栈与 500 生产脱敏响应，防真实故障被掩盖；
+     * 2. 客户端传输中途断连：降噪记录精简 WARN 并返回 400 传输中断提示；
+     * 3. 分片/文件数量超限或普通畸形/非 multipart 请求：记录精简 WARN 并返回 400 友好提示
+     *
+     * @param e Multipart 异常
+     * @return 400 或服务端故障脱敏 500 响应结果
+     */
+    @ExceptionHandler(MultipartException.class)
+    public Result<?> handleMultipartException(MultipartException e) {
+        Result<?> customized = tryCustomize(e);
+        if (customized != null) {
+            return customized;
+        }
+
+        CauseChain causeChain = collectCauseChain(e);
+        MultipartFailureKind failureKind = classifyMultipartFailure(e, causeChain);
+        return switch (failureKind) {
+            case SERVER_FAILURE -> {
+                String traceId = MDC.get(TraceFilter.MDC_TRACE_ID_KEY);
+                log.error("[TraceId: {}] 文件上传服务端异常: ", traceId, e);
+                yield Result.fail(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), CommonResultCode.INTERNAL_SERVER_ERROR.getMsg());
+            }
+            case CLIENT_DISCONNECTED -> {
+                log.warn("文件上传连接中断: rootCause={}", resolveRootCauseSummary(causeChain.causes()));
+                yield Result.fail(CommonResultCode.BAD_REQUEST.getCode(), MSG_MULTIPART_CLIENT_ABORT);
+            }
+            case FILE_COUNT_EXCEEDED -> {
+                log.warn("上传文件或表单分片数量超出限制: rootCause={}", resolveRootCauseSummary(causeChain.causes()));
+                yield Result.fail(CommonResultCode.BAD_REQUEST.getCode(), MSG_MULTIPART_FILE_COUNT_EXCEEDED);
+            }
+            case INVALID_FORMAT -> {
+                log.warn("文件上传请求解析失败: rootCause={}", resolveRootCauseSummary(causeChain.causes()));
+                yield Result.fail(CommonResultCode.BAD_REQUEST.getCode(), MSG_MULTIPART_INVALID);
+            }
+        };
+    }
+
+    /**
      * 拦截不支持的媒体类型异常 HttpMediaTypeNotSupportedException
      *
      * @param e 媒体类型不支持异常
@@ -370,5 +465,172 @@ public class GlobalExceptionHandler {
                 .findFirst()
                 .map(DefaultMessageSourceResolvable::getDefaultMessage)
                 .orElse(CommonResultCode.BAD_REQUEST.getMsg());
+    }
+
+    private CauseChain collectCauseChain(Throwable root) {
+        List<Throwable> causes = new ArrayList<>();
+        Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        Throwable current = root;
+        boolean acyclic = true;
+        int depth = 0;
+        while (current != null) {
+            if (!visited.add(current) || depth >= MAX_CAUSE_CHAIN_DEPTH) {
+                acyclic = false;
+                break;
+            }
+            causes.add(current);
+            current = current.getCause();
+            depth++;
+        }
+        return new CauseChain(causes, acyclic);
+    }
+
+    private MultipartFailureKind classifyMultipartFailure(MultipartException exception, CauseChain causeChain) {
+        List<Throwable> causes = causeChain.causes();
+        if (isServerMultipartFailure(causes)) {
+            return MultipartFailureKind.SERVER_FAILURE;
+        }
+        if (isClientDisconnectedMultipartFailure(exception, causeChain)) {
+            return MultipartFailureKind.CLIENT_DISCONNECTED;
+        }
+        if (isFileCountLimitExceeded(causes)) {
+            return MultipartFailureKind.FILE_COUNT_EXCEEDED;
+        }
+        return MultipartFailureKind.INVALID_FORMAT;
+    }
+
+    private boolean isServerMultipartFailure(List<Throwable> causes) {
+        for (Throwable current : causes) {
+            if (current instanceof FileSystemException) {
+                return true;
+            }
+            if (isClientMalformedType(current)) {
+                continue;
+            }
+            String lowerMsg = toLowerMessage(current);
+            if (lowerMsg.isEmpty()) {
+                continue;
+            }
+            if ((current instanceof IllegalStateException || current instanceof ServletException)
+                    && containsAnyKeyword(lowerMsg, SERVER_MULTIPART_CONFIG_KEYWORDS)) {
+                return true;
+            }
+            if (current instanceof IOException
+                    && !isFileUploadWrapperType(current)
+                    && containsAnyKeyword(lowerMsg, SERVER_STORAGE_IO_KEYWORDS)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isClientDisconnectedMultipartFailure(MultipartException exception, CauseChain causeChain) {
+        List<Throwable> causes = causeChain.causes();
+        // 畸形流截断（如 MalformedStreamException: Stream ended unexpectedly）归类为格式非法，不误判为客户端断连
+        for (Throwable current : causes) {
+            if (isClientMalformedType(current)) {
+                return false;
+            }
+        }
+        if (causeChain.acyclic() && DisconnectedClientHelper.isClientDisconnectedException(exception)) {
+            return true;
+        }
+        for (Throwable current : causes) {
+            if (CLIENT_DISCONNECT_TYPE_NAMES.contains(current.getClass().getSimpleName())) {
+                return true;
+            }
+            if ((current instanceof IOException || current instanceof ServletException)
+                    && containsAnyKeyword(toLowerMessage(current), CLIENT_DISCONNECT_MESSAGE_KEYWORDS)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isFileCountLimitExceeded(List<Throwable> causes) {
+        for (Throwable current : causes) {
+            if ("FileCountLimitExceededException".equals(current.getClass().getSimpleName())) {
+                return true;
+            }
+            if (isClientMalformedType(current)) {
+                continue;
+            }
+            String lowerMsg = toLowerMessage(current);
+            if (lowerMsg.contains("file count") || lowerMsg.contains("part count") || lowerMsg.contains("too many parts")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isClientMalformedType(Throwable throwable) {
+        return CLIENT_MALFORMED_TYPE_NAMES.contains(throwable.getClass().getSimpleName());
+    }
+
+    private boolean isFileUploadWrapperType(Throwable throwable) {
+        String simpleName = throwable.getClass().getSimpleName();
+        return "FileUploadException".equals(simpleName)
+                || "IOFileUploadException".equals(simpleName)
+                || "FileCountLimitExceededException".equals(simpleName);
+    }
+
+    private String toLowerMessage(Throwable throwable) {
+        String message = throwable.getMessage();
+        return message != null ? message.toLowerCase(Locale.ROOT) : "";
+    }
+
+    private boolean containsAnyKeyword(String lowerMessage, List<String> keywords) {
+        if (lowerMessage.isEmpty()) {
+            return false;
+        }
+        for (String keyword : keywords) {
+            if (lowerMessage.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String resolveRootCauseSummary(List<Throwable> causes) {
+        if (causes.isEmpty()) {
+            return MultipartException.class.getSimpleName();
+        }
+        for (int i = causes.size() - 1; i >= 0; i--) {
+            Throwable current = causes.get(i);
+            String msg = current.getMessage();
+            if (msg != null && !msg.isBlank()) {
+                String sanitized = sanitizeLogMessage(msg);
+                return current.getClass().getSimpleName() + ": " + sanitized;
+            }
+        }
+        return causes.get(causes.size() - 1).getClass().getSimpleName();
+    }
+
+    private String sanitizeLogMessage(String message) {
+        StringBuilder sb = new StringBuilder(Math.min(message.length(), MAX_ROOT_CAUSE_LOG_LENGTH));
+        int len = message.length();
+        for (int i = 0; i < len && sb.length() < MAX_ROOT_CAUSE_LOG_LENGTH; i++) {
+            char c = message.charAt(i);
+            if (c < 0x20 || c == 0x7F) {
+                sb.append(' ');
+            } else {
+                sb.append(c);
+            }
+        }
+        String cleaned = sb.toString().trim();
+        if (len > MAX_ROOT_CAUSE_LOG_LENGTH) {
+            return cleaned + " ... [TRUNCATED]";
+        }
+        return cleaned;
+    }
+
+    private enum MultipartFailureKind {
+        SERVER_FAILURE,
+        CLIENT_DISCONNECTED,
+        FILE_COUNT_EXCEEDED,
+        INVALID_FORMAT
+    }
+
+    private record CauseChain(List<Throwable> causes, boolean acyclic) {
     }
 }

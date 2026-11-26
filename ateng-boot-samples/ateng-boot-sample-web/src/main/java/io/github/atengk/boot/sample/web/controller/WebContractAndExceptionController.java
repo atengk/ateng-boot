@@ -216,6 +216,19 @@ public class WebContractAndExceptionController {
     }
 
     /**
+     * 演示未限制 consumes 的 @RequestParam MultipartFile 上传端点
+     * 客户端发送非 multipart 请求（如 application/json）时触发 MultipartException("Current request is not a multipart request")，
+     * 由 GlobalExceptionHandler 精细拦截并转译为业务码 400
+     *
+     * @param file 上传的文件
+     * @return 文件名
+     */
+    @PostMapping("/error/upload-param")
+    public Result<String> uploadFileByParam(@RequestParam("file") MultipartFile file) {
+        return Result.success(file.getOriginalFilename());
+    }
+
+    /**
      * 触发大文件超限异常（MaxUploadSizeExceededException，转译为 413 Payload Too Large）
      *
      * @return 业务响应契约

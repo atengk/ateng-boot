@@ -10,7 +10,7 @@
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Web 全局开关** | Web 模块总控自动装配 | `WebProperties`, `AtengWebAutoConfiguration` | `ateng.boot.web.enabled` | 总体开关控制所有 Web 过滤器、Jackson 定制与增强切面是否自动装配（默认 `true`） | `AtengWebAutoConfigurationTest.java` |
 | **链路追踪** | HTTP 链路追踪过滤器与门面 | `TraceFilter`, `TraceUtil` | `ateng.boot.web.trace.enabled`, `header` (或 `header-name`), `max-length` | `TraceUtil.getTraceId()`, `setTraceId(id)`, `clear()`, `TraceFilter.getActiveRequestCount()`；校验入站 `X-Trace-Id`（长度上限 `max-length: 64` 与安全字符集 `[a-zA-Z0-9._:-]` 防日志注入，非法时生成安全 UUID）；排除 `/pre-stop`、`/actuator/pre-stop` 与 `mvc-endpoint-path` 避免在途自计数阻塞；MDC `traceId` 注入并在 `finally` 严格清理 | `TraceFilterTest.java`, `TraceUtilTest.java`, `WebObservabilityAndAuditControllerTest.java` |
-| **全局异常防御** | 全局统一异常拦截、跨进程 `traceId` 兜底回填与生产脱敏 | `GlobalExceptionHandler`, `GlobalExceptionCustomizer` | - | 挂载 `GlobalExceptionCustomizer` SPI 链式定制，拦截 `BusinessException`（双模因果堆栈，本地 MDC 为空时自动由 `ex.getTraceId()` 兜底回填 `Result.traceId`）、`MethodArgumentNotValidException`、`HandlerMethodValidationException`、`BindException`、`ConstraintViolationException`、400/404/405/406/413/415/503/500 精细化转译与生产脱敏 | `GlobalExceptionHandlerTest.java`, `WebContractSampleControllerTest.java`, `WebExceptionSampleControllerTest.java` |
+| **全局异常防御** | 全局统一异常拦截、跨进程 `traceId` 兜底回填与生产脱敏 | `GlobalExceptionHandler`, `GlobalExceptionCustomizer` | - | 挂载 `GlobalExceptionCustomizer` SPI 链式定制，拦截 `BusinessException`（双模因果堆栈，本地 MDC 为空时自动由 `ex.getTraceId()` 兜底回填 `Result.traceId`）、`MethodArgumentNotValidException`、`HandlerMethodValidationException`、`BindException`、`ConstraintViolationException`、`MultipartException`（保留 `MaxUploadSizeExceededException` `413` 最高优先级，按 `cause` 链区分客户端畸形/断连/分片超限 `400` 与服务端配置/存储故障 `500`）及 400/404/405/406/413/415/503/500 精细化转译与生产脱敏 | `GlobalExceptionHandlerTest.java`, `WebContractSampleControllerTest.java`, `WebExceptionSampleControllerTest.java`, `WebMultipartExceptionSampleTest.java` |
 | **精度与时间规范** | 53 位雪花精度防截断、上下文数值保真、`BigDecimal` 平铺与时间序列化 | `JacksonCustomizer` | `ateng.boot.web.long-to-string`, `jackson.write-big-decimal-as-plain` | 委托 Core `ContextualLongToStringSerializer` 默认将 `Long`/`BigInteger` 序列化为 String，同时响应 `@JsonFormat(shape = NUMBER / NUMBER_INT)` 与 `NumericLongSerializer`（`Result.timestamp`、`PageResult` 等）输出 JSON `number`；`BigDecimal` 启用 `WRITE_BIGDECIMAL_AS_PLAIN`，标准 `yyyy-MM-dd HH:mm:ss` 格式化，不覆盖原生 `ObjectMapper` | `JacksonCustomizerTest.java`, `WebContractAndExceptionControllerTest.java`, `WebContractSampleControllerTest.java` |
 | **接口审计日志** | 声明式接口耗时审计与安全防 OOM | `@WebLog`, `WebLogAspect` | `ateng.boot.web.log.enabled`, `default-exclude-params` | `@WebLog(value, printParams, printResult, printCostTime, excludeParams)`（默认关闭 `enabled: false` 按需开启），自动合并全局 11 项默认敏感基线 `default-exclude-params`（嵌套对象/集合忽略大小写递归替换为 `[EXCLUDED]`），大文件 Multipart 自动占位防 OOM | `WebLogAspectTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **动态 CORS 跨域** | 动态跨域来源校验与凭证安全反射 | `CorsOriginProvider`, `DefaultCorsOriginProvider`, `DynamicCorsConfigurationSource` | `ateng.boot.web.cors.enabled`, `allowed-origins`, `allowed-methods`, `allowed-headers`, `allow-credentials`, `allow-localhost`, `exposed-headers`, `max-age` | 基于配置属性通配或 `CorsOriginProvider.isAllowed(origin)` SPI 动态扩展校验 Origin，安全反射并支持凭据传输（Cookie），放行本地 localhost 调试 | `DynamicCorsTest.java`, `WebSecurityAndSignControllerTest.java` |
@@ -430,7 +430,12 @@ public Result<DateTimeDemoVO> getDateTimeDemo() {
 2. **JSR-303 参数校验失败**：
    - 统一拦截 `MethodArgumentNotValidException`、`HandlerMethodValidationException`（Spring 6.1+）、`ConstraintViolationException` 与 `BindException`，自动提取首个不合规字段的友好提示返回 HTTP 200 + Code 400。
 3. **精细化 Web 传输层协议异常拦截**：
-   - `MaxUploadSizeExceededException` $\rightarrow$ 413 "上传文件大小超出限制"；
+   - `MaxUploadSizeExceededException` $\rightarrow$ 413 "上传文件大小超出限制"（作为 `MultipartException` 子类，优先命中并保持最高匹配优先级）；
+   - `MultipartException` $\rightarrow$ 先探测 `GlobalExceptionCustomizer` SPI，再按原因链执行白名单三轨分级防卫：
+     - **非 multipart 请求 / 缺失或非法 boundary / 截断畸形流**：记录精简 `WARN` 摘要，返回 `400` `"文件上传请求格式不合法或内容解析失败"`；
+     - **分片/文件数量超限（`FileCountLimitExceededException`）**：记录精简 `WARN` 摘要，返回 `400` `"上传文件或表单分片数量超出限制"`；
+     - **客户端中途断连（依托 `DisconnectedClientHelper` 与常见网络中断特征识别，排除 `MalformedStreamException`）**：降噪记录精简 `WARN` 摘要，返回 `400` `"文件上传传输中断，请检查网络后重试"`；
+     - **服务端 Multipart 配置缺失或磁盘/临时目录故障（`no multipart config`、`FileSystemException`、`upload location` / 磁盘满）**：保留 `ERROR` 完整堆栈与 `500` `"系统繁忙，请稍后再试"` 生产脱敏，严防真实服务端故障被掩盖；
    - `HttpMediaTypeNotSupportedException` $\rightarrow$ 415 "不支持的媒体类型"；
    - `HttpMediaTypeNotAcceptableException` $\rightarrow$ 406 直接回写 JSON 契约，彻底杜绝 MVC 内容协商次生死锁；
    - `AsyncRequestTimeoutException` $\rightarrow$ 503 "异步请求处理超时"；
@@ -479,6 +484,12 @@ public Result<Void> triggerMaxUploadSizeExceeded() {
 public Result<Void> triggerAsyncTimeout() {
     throw new AsyncRequestTimeoutException();
 }
+
+// 6. @RequestParam 文件上传端点（客户端发送非 multipart 请求或畸形 multipart 报文 -> 400）
+@PostMapping("/error/upload-param")
+public Result<String> uploadFileByParam(@RequestParam("file") MultipartFile file) {
+    return Result.success(file.getOriginalFilename());
+}
 ```
 
 #### 真实 HTTP 响应报文验证
@@ -513,6 +524,18 @@ public Result<Void> triggerAsyncTimeout() {
   "data": null,
   "success": false,
   "traceId": "b1c2d3e4f5a6b7c8"
+}
+```
+
+##### (4) 非 multipart 或畸形上传请求拦截 (`POST /sample/web/contract/error/upload-param` 或缺 boundary 请求)
+```json
+{
+  "code": 400,
+  "msg": "文件上传请求格式不合法或内容解析失败",
+  "data": null,
+  "timestamp": 1795730006721,
+  "traceId": "2c3fe02b7765675aaebdf920e8336da0",
+  "success": false
 }
 ```
 

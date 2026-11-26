@@ -48,6 +48,8 @@
 | **支付通道领域异常 (SPI 转译)** | `WebContractAndExceptionController` | `GET /sample/web/contract/error/payment` | `curl "http://localhost:8080/sample/web/contract/error/payment"` |
 | **媒体类型约束验证 (415/406)** | `WebContractAndExceptionController` | `POST /sample/web/contract/error/media-type` | `curl -X POST "http://localhost:8080/sample/web/contract/error/media-type" -H "Content-Type: text/plain" -d "invalid-type"` |
 | **分片文件上传参数缺失/正常校验** | `WebContractAndExceptionController` | `POST /sample/web/contract/error/upload` | `curl -X POST "http://localhost:8080/sample/web/contract/error/upload" -F "file=@README.md"` |
+| **畸形 Multipart 报文拦截 (缺 boundary -> 400)** | `WebContractAndExceptionController` | `POST /sample/web/contract/error/upload` | `curl -X POST "http://localhost:8080/sample/web/contract/error/upload" -H "Content-Type: multipart/form-data" -d "malformed-multipart-payload"` |
+| **非 Multipart 请求上传拦截 (`@RequestParam` -> 400)** | `WebContractAndExceptionController` | `POST /sample/web/contract/error/upload-param` | `curl -X POST "http://localhost:8080/sample/web/contract/error/upload-param" -H "Content-Type: application/json" -d "{\"file\":\"invalid\"}"` |
 | **大文件超限异常 (413 拦截)** | `WebContractAndExceptionController` | `GET /sample/web/contract/error/payload-too-large` | `curl "http://localhost:8080/sample/web/contract/error/payload-too-large"` |
 | **异步处理超时 (503 拦截)** | `WebContractAndExceptionController` | `GET /sample/web/contract/error/async-timeout` | `curl "http://localhost:8080/sample/web/contract/error/async-timeout"` |
 | **协议契约解包视图** | `WebContractAndExceptionController` | `GET /sample/web/contract/unpack` | `curl "http://localhost:8080/sample/web/contract/unpack"` |
