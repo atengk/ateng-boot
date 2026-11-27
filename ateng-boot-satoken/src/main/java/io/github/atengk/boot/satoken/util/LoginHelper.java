@@ -3292,11 +3292,54 @@ public final class LoginHelper {
      * @return 强类型 PageResult 对象
      */
     public static PageResult<OnlineUser> searchOnlineUserPage(String loginType, OnlineUserQuery query, int page, int size) {
-        if (page <= 0 || size <= 0) {
-            return PageResult.empty(Math.max(page, 1), Math.max(size, 10));
+        return searchOnlineUserPageInternal(loginType, query, page, size);
+    }
+
+    /**
+     * 分页查询当前主账号体系的在线用户 PageResult（语义对齐 searchOnlineUserPage）
+     *
+     * @param page    当前页码
+     * @param size    每页显示条数
+     * @param keyword 检索关键字
+     * @return 强类型 PageResult 对象
+     * @see #searchOnlineUserPage(String, int, int)
+     */
+    public static PageResult<OnlineUser> getOnlineUsers(long page, long size, String keyword) {
+        OnlineUserQuery query = (keyword != null && !keyword.isBlank())
+                ? OnlineUserQuery.builder().keyword(keyword).build()
+                : null;
+        return searchOnlineUserPageInternal(StpUtil.TYPE, query, page, size);
+    }
+
+    /**
+     * 分页查询指定账号体系的在线用户 PageResult
+     *
+     * @param loginType 账号体系标识
+     * @param page      当前页码
+     * @param size      每页显示条数
+     * @param keyword   检索关键字
+     * @return 强类型 PageResult 对象
+     * @see #searchOnlineUserPage(String, String, int, int)
+     */
+    public static PageResult<OnlineUser> getOnlineUsers(String loginType, long page, long size, String keyword) {
+        OnlineUserQuery query = (keyword != null && !keyword.isBlank())
+                ? OnlineUserQuery.builder().keyword(keyword).build()
+                : null;
+        return searchOnlineUserPageInternal(loginType, query, page, size);
+    }
+
+    private static PageResult<OnlineUser> searchOnlineUserPageInternal(String loginType,
+                                                                       OnlineUserQuery query,
+                                                                       long page,
+                                                                       long size) {
+        if (page <= 0L || size <= 0L) {
+            return PageResult.empty(Math.max(page, 1L), Math.max(size, 10L));
         }
-        int actualSize = Math.min(size, 100);
-        int start = (page - 1) * actualSize;
+        int actualSize = (int) Math.min(size, 100L);
+        long pageIndex = page - 1L;
+        // 先判防 long 乘法溢出，杜绝超大页码乘法回绕成负数导致 subList/get 越界异常
+        boolean offsetOverflow = pageIndex > Long.MAX_VALUE / actualSize;
+        long startOffset = offsetOverflow ? Long.MAX_VALUE : pageIndex * actualSize;
 
         String effectiveLoginType = (loginType != null && !loginType.isBlank())
                 ? loginType.trim()
@@ -3311,10 +3354,11 @@ public final class LoginHelper {
             List<String> validTokens = filterValidTokens(logic, rawTokens);
             int total = validTokens.size();
             List<OnlineUser> records;
-            if (start >= total) {
+            if (startOffset < 0L || startOffset >= total) {
                 records = Collections.emptyList();
             } else {
-                int end = Math.min(start + actualSize, total);
+                int start = (int) startOffset;
+                int end = (int) Math.min(startOffset + actualSize, total);
                 records = new ArrayList<>(end - start);
                 for (int i = start; i < end; i++) {
                     String tokenValue = validTokens.get(i);
@@ -3332,40 +3376,14 @@ public final class LoginHelper {
         List<OnlineUser> matchedList = collectOnlineUsers(logic, query);
         int total = matchedList.size();
         List<OnlineUser> records;
-        if (start >= total) {
+        if (startOffset < 0L || startOffset >= total) {
             records = Collections.emptyList();
         } else {
-            int end = Math.min(start + actualSize, total);
+            int start = (int) startOffset;
+            int end = (int) Math.min(startOffset + actualSize, total);
             records = new ArrayList<>(matchedList.subList(start, end));
         }
         return PageResult.of(records, total, page, actualSize);
-    }
-
-    /**
-     * 分页查询当前主账号体系的在线用户 PageResult（语义对齐 searchOnlineUserPage）
-     *
-     * @param page    当前页码
-     * @param size    每页显示条数
-     * @param keyword 检索关键字
-     * @return 强类型 PageResult 对象
-     * @see #searchOnlineUserPage(String, int, int)
-     */
-    public static PageResult<OnlineUser> getOnlineUsers(long page, long size, String keyword) {
-        return searchOnlineUserPage(keyword, (int) page, (int) size);
-    }
-
-    /**
-     * 分页查询指定账号体系的在线用户 PageResult
-     *
-     * @param loginType 账号体系标识
-     * @param page      当前页码
-     * @param size      每页显示条数
-     * @param keyword   检索关键字
-     * @return 强类型 PageResult 对象
-     * @see #searchOnlineUserPage(String, String, int, int)
-     */
-    public static PageResult<OnlineUser> getOnlineUsers(String loginType, long page, long size, String keyword) {
-        return searchOnlineUserPage(loginType, keyword, (int) page, (int) size);
     }
 
     private static List<String> filterValidTokens(StpLogic logic, List<String> rawTokens) {

@@ -571,4 +571,64 @@ class LoginHelperOnlineUserTest {
         assertThat(LoginHelper.logoutByTokenValueForTenant(tokenB, "tenant-b")).isFalse();
         assertThat(LoginHelper.logoutByTokenValueForTenant("non-existent-token", "tenant-b")).isFalse();
     }
+
+    @Test
+    @DisplayName("10. 极端分页参数防溢出与防回绕边界测试（#1180）")
+    void testPaginationOffsetOverflowAndLongWraparound() {
+        LoginHelper.login(LoginUser.builder()
+                .userId("9001").tenantId("tenant-overflow").userAccount("overflow_1").userName("溢出测试1").build());
+        LoginHelper.login(LoginUser.builder()
+                .userId("9002").tenantId("tenant-overflow").userAccount("overflow_2").userName("溢出测试2").build());
+
+        // 1. 无条件过滤分支：int 乘法溢出 (21474838 - 1) * 100 -> -2147483596
+        PageResult<OnlineUser> intOverflowNoFilter = LoginHelper.searchOnlineUserPage(21474838, 100);
+        assertThat(intOverflowNoFilter.getRecords()).isEmpty();
+        assertThat(intOverflowNoFilter.getTotal()).isEqualTo(2L);
+        assertThat(intOverflowNoFilter.getCurrent()).isEqualTo(21474838L);
+        assertThat(intOverflowNoFilter.getSize()).isEqualTo(100L);
+        assertThat(intOverflowNoFilter.getPages()).isEqualTo(1L);
+
+        // 2. 条件过滤分支（OnlineUserQuery）：int 乘法溢出不抛 IndexOutOfBoundsException
+        OnlineUserQuery query = OnlineUserQuery.builder().tenantId("tenant-overflow").build();
+        PageResult<OnlineUser> intOverflowQuery = LoginHelper.searchOnlineUserPage(21474838, 100, query);
+        assertThat(intOverflowQuery.getRecords()).isEmpty();
+        assertThat(intOverflowQuery.getTotal()).isEqualTo(2L);
+        assertThat(intOverflowQuery.getCurrent()).isEqualTo(21474838L);
+        assertThat(intOverflowQuery.getSize()).isEqualTo(100L);
+        assertThat(intOverflowQuery.getPages()).isEqualTo(1L);
+
+        // 3. Integer.MAX_VALUE 极端组合
+        PageResult<OnlineUser> maxIntPage = LoginHelper.searchOnlineUserPage(Integer.MAX_VALUE, Integer.MAX_VALUE);
+        assertThat(maxIntPage.getRecords()).isEmpty();
+        assertThat(maxIntPage.getTotal()).isEqualTo(2L);
+        assertThat(maxIntPage.getCurrent()).isEqualTo((long) Integer.MAX_VALUE);
+        assertThat(maxIntPage.getSize()).isEqualTo(100L);
+        assertThat(maxIntPage.getPages()).isEqualTo(1L);
+
+        PageResult<OnlineUser> maxIntQuery = LoginHelper.searchOnlineUserPage(Integer.MAX_VALUE, Integer.MAX_VALUE, query);
+        assertThat(maxIntQuery.getRecords()).isEmpty();
+        assertThat(maxIntQuery.getTotal()).isEqualTo(2L);
+        assertThat(maxIntQuery.getPages()).isEqualTo(1L);
+
+        // 4. getOnlineUsers(long, long, keyword) 防止 (int) 强转回绕为第 1 页或负数
+        PageResult<OnlineUser> wrapToOne = LoginHelper.getOnlineUsers(4294967297L, 10L, null);
+        assertThat(wrapToOne.getRecords()).isEmpty();
+        assertThat(wrapToOne.getTotal()).isEqualTo(2L);
+        assertThat(wrapToOne.getCurrent()).isEqualTo(4294967297L);
+        assertThat(wrapToOne.getSize()).isEqualTo(10L);
+        assertThat(wrapToOne.getPages()).isEqualTo(1L);
+
+        PageResult<OnlineUser> wrapNegative = LoginHelper.getOnlineUsers("login", (long) Integer.MAX_VALUE + 1L, 10L, "overflow");
+        assertThat(wrapNegative.getRecords()).isEmpty();
+        assertThat(wrapNegative.getTotal()).isEqualTo(2L);
+        assertThat(wrapNegative.getCurrent()).isEqualTo((long) Integer.MAX_VALUE + 1L);
+        assertThat(wrapNegative.getPages()).isEqualTo(1L);
+
+        PageResult<OnlineUser> maxLong = LoginHelper.getOnlineUsers(Long.MAX_VALUE, Long.MAX_VALUE, null);
+        assertThat(maxLong.getRecords()).isEmpty();
+        assertThat(maxLong.getTotal()).isEqualTo(2L);
+        assertThat(maxLong.getCurrent()).isEqualTo(Long.MAX_VALUE);
+        assertThat(maxLong.getSize()).isEqualTo(100L);
+        assertThat(maxLong.getPages()).isEqualTo(1L);
+    }
 }
