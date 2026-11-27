@@ -67,7 +67,8 @@ import java.util.concurrent.TimeUnit;
         "org.springframework.boot.actuate.autoconfigure.redis.RedisHealthContributorAutoConfiguration",
         "org.springframework.boot.actuate.autoconfigure.amqp.RabbitHealthContributorAutoConfiguration",
         "org.springframework.boot.actuate.autoconfigure.mail.MailHealthContributorAutoConfiguration",
-        "io.github.atengk.boot.search.autoconfigure.AtengSearchAutoConfiguration"
+        "io.github.atengk.boot.search.autoconfigure.AtengSearchAutoConfiguration",
+        "io.github.atengk.boot.storage.autoconfigure.AtengStorageAutoConfiguration"
 })
 @ConditionalOnClass(HealthIndicator.class)
 @ConditionalOnProperty(prefix = "ateng.boot.observability", name = "enabled", havingValue = "true", matchIfMissing = true)

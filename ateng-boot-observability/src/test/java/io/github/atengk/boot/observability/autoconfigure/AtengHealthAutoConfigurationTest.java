@@ -1,6 +1,7 @@
 package io.github.atengk.boot.observability.autoconfigure;
 
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
+import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.observability.health.AiSafeHealthIndicator;
 import io.github.atengk.boot.observability.health.DynamicDatasourceHealthIndicator;
@@ -12,12 +13,25 @@ import io.github.atengk.boot.observability.health.RedisSafeHealthIndicator;
 import io.github.atengk.boot.observability.health.RocketmqHealthIndicator;
 import io.github.atengk.boot.observability.health.SearchSafeHealthIndicator;
 import io.github.atengk.boot.observability.health.StorageHealthIndicator;
+import io.github.atengk.boot.observability.properties.ObservabilityProperties;
+import io.github.atengk.boot.storage.autoconfigure.AtengStorageAutoConfiguration;
+import io.github.atengk.boot.storage.driver.StorageDriver;
+import io.github.atengk.boot.storage.factory.StorageDriverFactory;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.AutoConfigureBefore;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -126,5 +140,134 @@ class AtengHealthAutoConfigurationTest {
                     assertThat(context).hasSingleBean(AtengHealthAutoConfiguration.class);
                     assertThat(context).doesNotHaveBean(AiSafeHealthIndicator.class);
                 });
+    }
+
+    @Test
+    @DisplayName("AtengHealthAutoConfiguration 显式声明排在 AtengStorageAutoConfiguration 之前")
+    void testAutoConfigureBeforeIncludesStorageAutoConfiguration() {
+        AutoConfigureBefore annotation = AtengHealthAutoConfiguration.class.getAnnotation(AutoConfigureBefore.class);
+        assertThat(annotation).isNotNull();
+        assertThat(annotation.name()).contains(AtengStorageAutoConfiguration.class.getName());
+    }
+
+    @Test
+    @DisplayName("与 AtengStorageAutoConfiguration 及 AtengAsyncAutoConfiguration 任意声明顺序共存时，始终优先装配防假死 StorageHealthIndicator")
+    void testCoexistenceOrderPrefersObservabilityStorageHealthIndicator(@TempDir Path tempDir) {
+        List<AutoConfigurations> orders = List.of(
+                AutoConfigurations.of(
+                        AtengStorageAutoConfiguration.class,
+                        AtengAsyncAutoConfiguration.class,
+                        AtengObservabilityAutoConfiguration.class,
+                        AtengHealthAutoConfiguration.class
+                ),
+                AutoConfigurations.of(
+                        AtengHealthAutoConfiguration.class,
+                        AtengObservabilityAutoConfiguration.class,
+                        AtengAsyncAutoConfiguration.class,
+                        AtengStorageAutoConfiguration.class
+                )
+        );
+
+        for (AutoConfigurations autoConfigurations : orders) {
+            new ApplicationContextRunner()
+                    .withConfiguration(autoConfigurations)
+                    .withPropertyValues(
+                            "ateng.boot.storage.type=local",
+                            "ateng.boot.storage.local.base-path=" + tempDir
+                    )
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        assertThat(context).hasSingleBean(StorageHealthIndicator.class);
+                        assertThat(context).doesNotHaveBean(io.github.atengk.boot.storage.health.StorageHealthIndicator.class);
+                        assertThat(context.getBean("storageHealthIndicator")).isInstanceOf(StorageHealthIndicator.class);
+
+                        Map<String, HealthIndicator> allIndicators = context.getBeansOfType(HealthIndicator.class);
+                        long storageProbeCount = allIndicators.values().stream()
+                                .filter(bean -> bean instanceof StorageHealthIndicator
+                                        || bean instanceof io.github.atengk.boot.storage.health.StorageHealthIndicator)
+                                .count();
+                        assertThat(storageProbeCount).isEqualTo(1L);
+                    });
+        }
+    }
+
+    @Test
+    @DisplayName("关闭 observability 存储探针时回退基础版；同时关闭 management.health.storage 时两者均不装配")
+    void testFallbackAndBothDisabledWithStorageAutoConfiguration(@TempDir Path tempDir) {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        AtengStorageAutoConfiguration.class,
+                        AtengAsyncAutoConfiguration.class,
+                        AtengObservabilityAutoConfiguration.class,
+                        AtengHealthAutoConfiguration.class
+                ))
+                .withPropertyValues(
+                        "ateng.boot.storage.type=local",
+                        "ateng.boot.storage.local.base-path=" + tempDir,
+                        "ateng.boot.observability.health.storage.enabled=false"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).doesNotHaveBean(StorageHealthIndicator.class);
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.storage.health.StorageHealthIndicator.class);
+                    assertThat(context.getBean("storageHealthIndicator"))
+                            .isInstanceOf(io.github.atengk.boot.storage.health.StorageHealthIndicator.class);
+                });
+
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        AtengStorageAutoConfiguration.class,
+                        AtengAsyncAutoConfiguration.class,
+                        AtengObservabilityAutoConfiguration.class,
+                        AtengHealthAutoConfiguration.class
+                ))
+                .withPropertyValues(
+                        "ateng.boot.storage.type=local",
+                        "ateng.boot.storage.local.base-path=" + tempDir,
+                        "ateng.boot.observability.health.storage.enabled=false",
+                        "management.health.storage.enabled=false"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).doesNotHaveBean(StorageHealthIndicator.class);
+                    assertThat(context).doesNotHaveBean(io.github.atengk.boot.storage.health.StorageHealthIndicator.class);
+                    assertThat(context).doesNotHaveBean("storageHealthIndicator");
+                });
+    }
+
+    @Test
+    @DisplayName("自定义 Bean 名的防假死 StorageHealthIndicator 存在且关闭内置探针时，AtengStorageAutoConfiguration 仍应让位")
+    void testStorageAutoConfigurationYieldsWhenCustomBeanNameSafeProbeRegistered(@TempDir Path tempDir) {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        AtengStorageAutoConfiguration.class,
+                        AtengAsyncAutoConfiguration.class,
+                        AtengObservabilityAutoConfiguration.class,
+                        AtengHealthAutoConfiguration.class
+                ))
+                .withUserConfiguration(CustomSafeStorageProbeConfig.class)
+                .withPropertyValues(
+                        "ateng.boot.storage.type=local",
+                        "ateng.boot.storage.local.base-path=" + tempDir,
+                        "ateng.boot.observability.health.storage.enabled=false"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasBean("customSafeStorageProbe");
+                    assertThat(context).hasSingleBean(StorageHealthIndicator.class);
+                    assertThat(context).doesNotHaveBean(io.github.atengk.boot.storage.health.StorageHealthIndicator.class);
+                    assertThat(context).doesNotHaveBean("storageHealthIndicator");
+                });
+    }
+
+    @Configuration
+    static class CustomSafeStorageProbeConfig {
+        @Bean
+        public StorageHealthIndicator customSafeStorageProbe(
+                ObjectProvider<StorageDriverFactory> driverFactoryProvider,
+                ObjectProvider<StorageDriver> defaultDriverProvider,
+                ObservabilityProperties properties) {
+            return new StorageHealthIndicator(driverFactoryProvider, defaultDriverProvider, properties);
+        }
     }
 }

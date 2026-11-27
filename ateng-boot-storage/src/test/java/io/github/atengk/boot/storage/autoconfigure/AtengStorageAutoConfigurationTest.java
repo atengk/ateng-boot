@@ -14,6 +14,7 @@ import io.github.atengk.boot.storage.controller.LocalStorageUploadController;
 import io.github.atengk.boot.storage.driver.LocalDriver;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.guard.StorageGuard;
+import io.github.atengk.boot.storage.health.StorageHealthIndicator;
 import io.github.atengk.boot.storage.properties.StorageProperties;
 import io.github.atengk.boot.storage.template.StorageOperations;
 import io.github.atengk.boot.storage.template.StorageTemplate;
@@ -23,7 +24,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.actuate.health.Health;
+import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.AutoConfigureBefore;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.FilteredClassLoader;
@@ -563,6 +567,60 @@ class AtengStorageAutoConfigurationTest {
         @Bean
         public SaTokenWhitelistProvider customBusinessWhitelistProvider() {
             return () -> Set.of("/custom/public/ping");
+        }
+    }
+
+    @Test
+    @DisplayName("AtengStorageAutoConfiguration 显式声明 @AutoConfigureAfter(AtengHealthAutoConfiguration)")
+    void testAutoConfigureAfterAtengHealthAutoConfiguration() {
+        AutoConfigureAfter annotation = AtengStorageAutoConfiguration.class.getAnnotation(AutoConfigureAfter.class);
+        assertThat(annotation).isNotNull();
+        assertThat(annotation.name())
+                .contains("io.github.atengk.boot.observability.autoconfigure.AtengHealthAutoConfiguration");
+    }
+
+    @Test
+    @DisplayName("类路径不存在 ateng-boot-observability 时，独立正常装配基础 StorageHealthIndicator 且零类加载异常")
+    void testStorageHealthIndicatorWithoutObservabilityClasspath(@TempDir Path tempDir) {
+        FilteredClassLoader withoutObservability = new FilteredClassLoader(
+                candidate -> candidate.startsWith("io.github.atengk.boot.observability."));
+
+        new ApplicationContextRunner()
+                .withClassLoader(withoutObservability)
+                .withConfiguration(AutoConfigurations.of(AtengStorageAutoConfiguration.class))
+                .withPropertyValues(
+                        "ateng.boot.storage.type=local",
+                        "ateng.boot.storage.local.base-path=" + tempDir
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(StorageHealthIndicator.class);
+                    assertThat(context).hasBean("storageHealthIndicator");
+                });
+    }
+
+    @Test
+    @DisplayName("容器已存在自定义 storageHealthIndicator Bean 时不重复覆盖装配")
+    void testCustomStorageHealthIndicatorTakesPrecedence(@TempDir Path tempDir) {
+        contextRunner
+                .withUserConfiguration(CustomStorageHealthIndicatorConfig.class)
+                .withPropertyValues(
+                        "ateng.boot.storage.type=local",
+                        "ateng.boot.storage.local.base-path=" + tempDir
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).doesNotHaveBean(StorageHealthIndicator.class);
+                    HealthIndicator indicator = context.getBean("storageHealthIndicator", HealthIndicator.class);
+                    assertThat(indicator.health().getDetails()).containsEntry("custom", true);
+                });
+    }
+
+    @Configuration
+    static class CustomStorageHealthIndicatorConfig {
+        @Bean
+        public HealthIndicator storageHealthIndicator() {
+            return () -> Health.up().withDetail("custom", true).build();
         }
     }
 }

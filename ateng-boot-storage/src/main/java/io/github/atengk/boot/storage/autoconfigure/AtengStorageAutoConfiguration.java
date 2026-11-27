@@ -20,6 +20,7 @@ import org.aspectj.lang.annotation.Aspect;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.AutoConfigureBefore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -49,6 +50,7 @@ import java.util.Map;
         value = AtengAsyncAutoConfiguration.class,
         name = "io.github.atengk.boot.satoken.autoconfigure.AtengSaTokenAutoConfiguration"
 )
+@AutoConfigureAfter(name = "io.github.atengk.boot.observability.autoconfigure.AtengHealthAutoConfiguration")
 @ConditionalOnClass(StorageDriver.class)
 @ConditionalOnProperty(prefix = "ateng.boot.storage", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(StorageProperties.class)
@@ -276,7 +278,11 @@ public class AtengStorageAutoConfiguration {
     public static class StorageHealthIndicatorConfiguration {
 
         @Bean
-        @ConditionalOnMissingBean(name = "storageHealthIndicator")
+        @ConditionalOnMissingBean(
+                value = StorageHealthIndicator.class,
+                type = "io.github.atengk.boot.observability.health.StorageHealthIndicator",
+                name = "storageHealthIndicator"
+        )
         public StorageHealthIndicator storageHealthIndicator(
                 ObjectProvider<StorageDriverFactory> driverFactoryProvider,
                 ObjectProvider<StorageDriver> defaultDriverProvider) {
