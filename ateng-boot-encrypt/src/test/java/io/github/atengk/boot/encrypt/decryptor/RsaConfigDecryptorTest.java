@@ -1,5 +1,6 @@
 package io.github.atengk.boot.encrypt.decryptor;
 
+import io.github.atengk.boot.core.util.RsaUtil;
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -131,5 +132,23 @@ class RsaConfigDecryptorTest {
                 .satisfies(ex -> {
                     assertThat(ex.getSuppressed()).isNotEmpty();
                 });
+    }
+
+    @Test
+    @DisplayName("现代填充互操作: 直接兼容 Core RsaUtil (MGF1-SHA256) 与历史 MGF1-SHA1 / PKCS1Padding 密文")
+    void testModernMgf1Sha256AndLegacyPaddingInterop() throws Exception {
+        KeyPair keyPair = RsaUtil.generateKeyPair(2048);
+        String publicKeyPem = RsaConfigDecryptor.encodePublicKeyToPem(keyPair.getPublic());
+        String privateKeyPem = RsaConfigDecryptor.encodePrivateKeyToPem(keyPair.getPrivate());
+
+        String plaintext = "interop_rsa_oaep_mgf1_sha256_secret";
+        String modernCipher = RsaUtil.encryptOaepBase64(plaintext, publicKeyPem);
+        assertThat(decryptor.decrypt(modernCipher, privateKeyPem)).isEqualTo(plaintext);
+
+        String legacyOaepCipher = RsaConfigDecryptor.encrypt(plaintext, publicKeyPem);
+        assertThat(decryptor.decrypt(legacyOaepCipher, privateKeyPem)).isEqualTo(plaintext);
+
+        String pkcs1Cipher = RsaConfigDecryptor.encrypt(plaintext, publicKeyPem, RsaConfigDecryptor.TRANSFORMATION_PKCS1);
+        assertThat(decryptor.decrypt(pkcs1Cipher, privateKeyPem)).isEqualTo(plaintext);
     }
 }

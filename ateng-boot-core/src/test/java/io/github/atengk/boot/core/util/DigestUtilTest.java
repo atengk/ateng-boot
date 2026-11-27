@@ -3,6 +3,11 @@ package io.github.atengk.boot.core.util;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
+import java.io.FilterInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -88,5 +93,90 @@ class DigestUtilTest {
         assertEquals(emptySha1, DigestUtil.sha1Hex((String) null));
         assertEquals(emptySha1, DigestUtil.sha1Hex(new byte[0]));
         assertEquals(emptySha1, DigestUtil.sha1Hex((byte[]) null));
+    }
+
+    @Test
+    @DisplayName("验证 SHA-512 标准向量与空边界摘要计算正确性 (FIPS 180-4)")
+    void testSha512StandardVectors() {
+        String emptySha512 = "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce"
+                + "47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e";
+        assertEquals(emptySha512, DigestUtil.sha512Hex(""));
+        assertEquals(emptySha512, DigestUtil.sha512Hex((String) null));
+        assertEquals(emptySha512, DigestUtil.sha512Hex(new byte[0]));
+        assertEquals(emptySha512, DigestUtil.sha512Hex((byte[]) null));
+
+        String abcSha512 = "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
+                + "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f";
+        assertEquals(abcSha512, DigestUtil.sha512Hex("abc"));
+        assertEquals(64, DigestUtil.sha512("abc").length);
+    }
+
+    @Test
+    @DisplayName("流式 InputStream 摘要：跨缓冲区大字节流一致性、不关闭外部流与异常防御")
+    void testStreamingDigestsConsistentAndDoNotCloseStream() {
+        byte[] largePayload = new byte[25_000];
+        for (int i = 0; i < largePayload.length; i++) {
+            largePayload[i] = (byte) ((i * 73 + 19) & 0xff);
+        }
+
+        class TrackingInputStream extends FilterInputStream {
+            boolean closed = false;
+
+            TrackingInputStream(InputStream in) {
+                super(in);
+            }
+
+            @Override
+            public void close() throws IOException {
+                closed = true;
+                super.close();
+            }
+        }
+
+        TrackingInputStream sha256Stream = new TrackingInputStream(new ByteArrayInputStream(largePayload));
+        assertEquals(DigestUtil.sha256Hex(largePayload), DigestUtil.sha256Hex(sha256Stream));
+        assertFalse(sha256Stream.closed);
+
+        TrackingInputStream sha512Stream = new TrackingInputStream(new ByteArrayInputStream(largePayload));
+        assertEquals(DigestUtil.sha512Hex(largePayload), DigestUtil.sha512Hex(sha512Stream));
+        assertFalse(sha512Stream.closed);
+
+        TrackingInputStream sm3Stream = new TrackingInputStream(new ByteArrayInputStream(largePayload));
+        assertEquals(DigestUtil.sm3Hex(largePayload), DigestUtil.sm3Hex(sm3Stream));
+        assertFalse(sm3Stream.closed);
+
+        // 空流边界
+        assertEquals(DigestUtil.sha256Hex(new byte[0]), DigestUtil.sha256Hex(new ByteArrayInputStream(new byte[0])));
+        assertEquals(DigestUtil.sha512Hex(new byte[0]), DigestUtil.sha512Hex(new ByteArrayInputStream(new byte[0])));
+        assertEquals(DigestUtil.sm3Hex(new byte[0]), DigestUtil.sm3Hex(new ByteArrayInputStream(new byte[0])));
+
+        // null 流抛 IllegalArgumentException；IOException 包装为 UncheckedIOException
+        assertThrows(IllegalArgumentException.class, () -> DigestUtil.sha256((InputStream) null));
+        assertThrows(IllegalArgumentException.class, () -> DigestUtil.sha512((InputStream) null));
+        assertThrows(IllegalArgumentException.class, () -> DigestUtil.sm3((InputStream) null));
+
+        InputStream failingStream = new InputStream() {
+            @Override
+            public int read() throws IOException {
+                throw new IOException("disk read error");
+            }
+        };
+        assertThrows(UncheckedIOException.class, () -> DigestUtil.sha256(failingStream));
+        assertThrows(UncheckedIOException.class, () -> DigestUtil.sm3(failingStream));
+    }
+
+    @Test
+    @DisplayName("SM3 多段增量摘要与整块拼接摘要严格一致")
+    void testSm3MultipartConsistency() {
+        byte[] p1 = "head-segment-".getBytes(StandardCharsets.UTF_8);
+        byte[] p2 = "a".repeat(130).getBytes(StandardCharsets.UTF_8);
+        byte[] p3 = "-tail-segment".getBytes(StandardCharsets.UTF_8);
+
+        byte[] combined = new byte[p1.length + p2.length + p3.length];
+        System.arraycopy(p1, 0, combined, 0, p1.length);
+        System.arraycopy(p2, 0, combined, p1.length, p2.length);
+        System.arraycopy(p3, 0, combined, p1.length + p2.length, p3.length);
+
+        assertArrayEquals(DigestUtil.sm3(combined), DigestUtil.sm3(p1, null, p2, new byte[0], p3));
     }
 }

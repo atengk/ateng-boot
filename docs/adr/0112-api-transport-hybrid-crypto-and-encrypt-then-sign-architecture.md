@@ -3,7 +3,7 @@
 - **状态 (Status)**: `Accepted`
 - **日期 (Date)**: `2026-11-27`
 - **关联模块 (Modules)**: `ateng-boot-web`、`ateng-boot-core`、`ateng-boot-samples/ateng-boot-sample-web`
-- **演进溯源 (Extends / Relates to)**: 继承并正交扩展 [ADR-0016](./0016-dual-direction-api-signature-and-anti-replay-engine.md)（`@ApiSign` 双向加验签），严格遵守 [ADR-0002](./0002-explicit-result-contract-no-response-body-advice.md)（禁止全局 `ResponseBodyAdvice`）、[ADR-0004](./0004-http-200-with-business-code-and-exception-masking.md)（默认 HTTP 200 + 业务错误码）与 [ADR-0011](./0011-zero-bloat-and-co-located-utilities.md)（100% 纯 JDK 17 零第三方加密库依赖）。
+- **演进溯源 (Extends / Relates to)**: 继承并正交扩展 [ADR-0016](./0016-dual-direction-api-signature-and-anti-replay-engine.md)（`@ApiSign` 双向加验签），严格遵守 [ADR-0002](./0002-explicit-result-contract-no-response-body-advice.md)（禁止全局 `ResponseBodyAdvice`）、[ADR-0004](./0004-http-200-with-business-code-and-exception-masking.md)（默认 HTTP 200 + 业务错误码）与 [ADR-0011](./0011-zero-bloat-and-co-located-utilities.md)（100% 纯 JDK 17 零第三方加密库依赖）；底层非对称 `RSA`/`SM2` 原语收敛与跨包解耦见 [ADR-0113](./0113-core-native-cryptography-primitives-and-cross-module-convergence-architecture.md)。
 
 ---
 

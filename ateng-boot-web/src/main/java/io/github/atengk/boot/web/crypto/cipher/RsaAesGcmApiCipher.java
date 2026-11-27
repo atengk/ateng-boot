@@ -3,6 +3,7 @@ package io.github.atengk.boot.web.crypto.cipher;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.CryptoUtil;
+import io.github.atengk.boot.core.util.RsaUtil;
 import io.github.atengk.boot.web.crypto.enums.CryptoAlgorithm;
 import io.github.atengk.boot.web.crypto.model.ApiCipherInput;
 import io.github.atengk.boot.web.crypto.model.ApiCipherResult;
@@ -10,35 +11,20 @@ import io.github.atengk.boot.web.crypto.model.ApiCryptoContext;
 import io.github.atengk.boot.web.crypto.spi.ApiCipher;
 import org.springframework.util.StringUtils;
 
-import javax.crypto.Cipher;
-import javax.crypto.spec.OAEPParameterSpec;
-import javax.crypto.spec.PSource;
-import java.security.KeyFactory;
 import java.security.PrivateKey;
 import java.security.PublicKey;
-import java.security.spec.MGF1ParameterSpec;
-import java.security.spec.PKCS8EncodedKeySpec;
-import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
 import java.util.Base64;
 
 /**
  * 基于纯 JDK 17 原生 RSA-OAEP-SHA256 与 AES-256-GCM 的混合加解密引擎
- * 零外部重型加密依赖，支持 PEM 与 Base64 格式 RSA X.509/PKCS#8 密钥及可选 AAD 附加认证数据
+ * 零外部重型加密依赖，RSA 密钥解析与 OAEP-SHA256 加解密委托至 {@link RsaUtil}，AES-GCM 委托至 {@link CryptoUtil}
  *
  * @author Ateng
  * @since 2026-11-27
  */
 public class RsaAesGcmApiCipher implements ApiCipher {
 
-    private static final String KEY_ALGORITHM = "RSA";
-    private static final String RSA_OAEP_TRANSFORMATION = "RSA/ECB/OAEPWithSHA-256AndMGF1Padding";
-    private static final OAEPParameterSpec OAEP_SHA256_SPEC = new OAEPParameterSpec(
-            "SHA-256",
-            "MGF1",
-            MGF1ParameterSpec.SHA256,
-            PSource.PSpecified.DEFAULT
-    );
     private static final int AES_KEY_BITS = 256;
     private static final int GCM_TAG_BYTES = CryptoUtil.GCM_TAG_LENGTH / 8;
 
@@ -67,7 +53,7 @@ public class RsaAesGcmApiCipher implements ApiCipher {
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "RSA+AES-GCM 响应体加密失败: " + e.getMessage(), e);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "RSA+AES-GCM 响应体加密失败", e);
         } finally {
             Arrays.fill(sessionKey, (byte) 0);
         }
@@ -146,7 +132,7 @@ public class RsaAesGcmApiCipher implements ApiCipher {
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "AES-GCM 响应体加密失败: " + e.getMessage(), e);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "AES-GCM 响应体加密失败", e);
         }
     }
 
@@ -183,19 +169,15 @@ public class RsaAesGcmApiCipher implements ApiCipher {
 
     private static byte[] rsaEncrypt(byte[] data, PublicKey publicKey) {
         try {
-            Cipher cipher = Cipher.getInstance(RSA_OAEP_TRANSFORMATION);
-            cipher.init(Cipher.ENCRYPT_MODE, publicKey, OAEP_SHA256_SPEC);
-            return cipher.doFinal(data);
+            return RsaUtil.encryptOaep(data, publicKey);
         } catch (Exception e) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "RSA-OAEP 会话密钥封装失败: " + e.getMessage(), e);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "RSA-OAEP 会话密钥封装失败", e);
         }
     }
 
     private static byte[] rsaDecrypt(byte[] wrappedKey, PrivateKey privateKey) {
         try {
-            Cipher cipher = Cipher.getInstance(RSA_OAEP_TRANSFORMATION);
-            cipher.init(Cipher.DECRYPT_MODE, privateKey, OAEP_SHA256_SPEC);
-            return cipher.doFinal(wrappedKey);
+            return RsaUtil.decryptOaep(wrappedKey, privateKey);
         } catch (Exception e) {
             throw new BusinessException(CommonResultCode.BAD_REQUEST, "请求会话密钥解封失败", e);
         }
@@ -211,40 +193,17 @@ public class RsaAesGcmApiCipher implements ApiCipher {
 
     private static PublicKey parsePublicKey(String keyPem) {
         try {
-            String clean = cleanKey(keyPem);
-            byte[] keyBytes = Base64.getDecoder().decode(clean);
-            X509EncodedKeySpec spec = new X509EncodedKeySpec(keyBytes);
-            return KeyFactory.getInstance(KEY_ALGORITHM).generatePublic(spec);
+            return RsaUtil.parsePublicKey(keyPem);
         } catch (Exception e) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "RSA 加密公钥配置格式非法: " + e.getMessage(), e);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "RSA 加密公钥配置格式非法", e);
         }
     }
 
     private static PrivateKey parsePrivateKey(String keyPem) {
-        byte[] keyBytes = null;
         try {
-            String clean = cleanKey(keyPem);
-            keyBytes = Base64.getDecoder().decode(clean);
-            PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(keyBytes);
-            return KeyFactory.getInstance(KEY_ALGORITHM).generatePrivate(spec);
+            return RsaUtil.parsePrivateKey(keyPem);
         } catch (Exception e) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "RSA 解密私钥配置格式非法: " + e.getMessage(), e);
-        } finally {
-            if (keyBytes != null) {
-                Arrays.fill(keyBytes, (byte) 0);
-            }
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "RSA 解密私钥配置格式非法", e);
         }
-    }
-
-    private static String cleanKey(String key) {
-        return key.replace("-----BEGIN RSA PUBLIC KEY-----", "")
-                .replace("-----END RSA PUBLIC KEY-----", "")
-                .replace("-----BEGIN PUBLIC KEY-----", "")
-                .replace("-----END PUBLIC KEY-----", "")
-                .replace("-----BEGIN RSA PRIVATE KEY-----", "")
-                .replace("-----END RSA PRIVATE KEY-----", "")
-                .replace("-----BEGIN PRIVATE KEY-----", "")
-                .replace("-----END PRIVATE KEY-----", "")
-                .replaceAll("\\s+", "");
     }
 }

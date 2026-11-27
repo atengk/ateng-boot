@@ -6,13 +6,17 @@ import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 import io.github.atengk.boot.core.model.Pair;
 import io.github.atengk.boot.core.model.Triple;
 import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.sample.core.dto.AsymmetricCryptoRequest;
+import io.github.atengk.boot.sample.core.dto.KdfAndStreamRequest;
 import io.github.atengk.boot.sample.core.dto.PasswordCheckRequest;
 import io.github.atengk.boot.sample.core.dto.PaymentCryptoRequest;
 import io.github.atengk.boot.sample.core.dto.SecurityCryptoRequest;
 import io.github.atengk.boot.sample.core.dto.SignAndVerifyRequest;
 import io.github.atengk.boot.sample.core.model.SampleUserDTO;
 import io.github.atengk.boot.sample.core.service.CoreSecurityScenarioService;
+import io.github.atengk.boot.sample.core.vo.AsymmetricCryptoVO;
 import io.github.atengk.boot.sample.core.vo.IdGenerateVO;
+import io.github.atengk.boot.sample.core.vo.KdfAndStreamVO;
 import io.github.atengk.boot.sample.core.vo.PasswordCheckVO;
 import io.github.atengk.boot.sample.core.vo.PaymentCryptoVO;
 import io.github.atengk.boot.sample.core.vo.SecurityCryptoVO;
@@ -272,11 +276,77 @@ class CoreSecurityScenarioServiceTest {
         assertThat(vo.isLegacyNeedsUpgrade()).isTrue();
         assertThat(vo.getUpgradedPassword()).startsWith("$pbkdf2-sha256$310000$");
         assertThat(vo.isCurrentNeedsUpgrade()).isFalse();
+        assertThat(vo.isDummyCheckRejected()).isTrue();
 
         assertThatThrownBy(() -> securityScenarioService.verifyPasswordLifecycle(null))
                 .isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> securityScenarioService.verifyPasswordLifecycle(
                 PasswordCheckRequest.builder().username("alice.chen").rawPassword("   ").build()))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    @DisplayName("测试纯 JDK RSA-OAEP-SHA256 / RSASSA-PSS 与国密 SM2 非对称加解密及签验闭环")
+    void testVerifyAsymmetricCrypto() {
+        AsymmetricCryptoRequest request = AsymmetricCryptoRequest.builder()
+                .plaintext("aesSessionKey=k-20261127-prod")
+                .signPayload("POST\n/api/settlement\n1794052800000\nnonce-9001\namount=500.00")
+                .sm2UserId("MERCHANT_APP_01")
+                .build();
+
+        AsymmetricCryptoVO vo = securityScenarioService.verifyAsymmetricCrypto(request);
+
+        assertThat(vo.isRsaKeyPemRoundTripValid()).isTrue();
+        assertThat(vo.getRsaOaepCiphertext()).isNotBlank();
+        assertThat(vo.getRsaOaepDecrypted()).isEqualTo(request.getPlaintext());
+        assertThat(vo.isRsaSha256Verified()).isTrue();
+        assertThat(vo.isRsaPssVerified()).isTrue();
+        assertThat(vo.isRsaTamperBlocked()).isTrue();
+
+        assertThat(vo.getSm2PublicKeyHex()).hasSize(130).startsWith("04");
+        assertThat(vo.getSm2C1c3c2Ciphertext()).isNotBlank();
+        assertThat(vo.getSm2DerCiphertext()).isNotBlank();
+        assertThat(vo.getSm2C1c3c2Decrypted()).isEqualTo(request.getPlaintext());
+        assertThat(vo.getSm2DerDecrypted()).isEqualTo(request.getPlaintext());
+        assertThat(vo.isSm2DerVerified()).isTrue();
+        assertThat(vo.isSm2RawVerified()).isTrue();
+        assertThat(vo.isSm2UserIdIsolated()).isTrue();
+        assertThat(vo.isSm2TamperBlocked()).isTrue();
+
+        assertThatThrownBy(() -> securityScenarioService.verifyAsymmetricCrypto(null))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    @DisplayName("测试 HKDF 密钥派生、HMAC-SHA512、流式摘要与自包含 Packed AEAD 闭环")
+    void testVerifyKdfAndStream() {
+        KdfAndStreamRequest request = KdfAndStreamRequest.builder()
+                .masterSecret("ateng-tenant-master-key-2026")
+                .salt("ateng-salt-v1")
+                .info("tenant=t001:payload-enc")
+                .payload("OrderNo=ORD20261127001&Amount=188.00")
+                .aad("tenant=t001;scene=settlement")
+                .build();
+
+        KdfAndStreamVO vo = securityScenarioService.verifyKdfAndStream(request);
+
+        assertThat(vo.getHkdfSha256KeyHex()).matches("^[0-9a-f]{64}$");
+        assertThat(vo.getHkdfSm3KeyHex()).matches("^[0-9a-f]{64}$");
+        assertThat(vo.isHkdfDomainIsolated()).isTrue();
+        assertThat(vo.getHmacSha512Hex()).matches("^[0-9a-f]{128}$");
+        assertThat(vo.isHmacSha512Verified()).isTrue();
+        assertThat(vo.getSha256StreamHex()).matches("^[0-9a-f]{64}$");
+        assertThat(vo.getSha512StreamHex()).matches("^[0-9a-f]{128}$");
+        assertThat(vo.getSm3StreamHex()).matches("^[0-9a-f]{64}$");
+        assertThat(vo.getAesGcmPackedCiphertext()).isNotBlank();
+        assertThat(vo.getAesGcmPackedDecrypted()).isEqualTo(request.getPayload());
+        assertThat(vo.getSm4GcmPackedCiphertext()).isNotBlank();
+        assertThat(vo.getSm4GcmPackedDecrypted()).isEqualTo(request.getPayload());
+        assertThat(vo.getBase64UrlToken()).doesNotContain("=").doesNotContain("+").doesNotContain("/");
+        assertThat(vo.getBase64UrlDecoded()).isEqualTo(request.getPayload());
+        assertThat(vo.isConstantTimeEqualsValid()).isTrue();
+
+        assertThatThrownBy(() -> securityScenarioService.verifyKdfAndStream(null))
                 .isInstanceOf(BusinessException.class);
     }
 }

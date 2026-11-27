@@ -4,14 +4,15 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
-import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Locale;
 import java.util.Objects;
 
 /**
  * 纯 JDK 17 原生安全散列消息认证码（HMAC）工具类
- * 提供标准 HMAC-SHA256、HMAC-SHA1、HMAC-MD5 与纯 JDK 原生国密 HmacSM3 密钥加签，并内置恒定时间安全比对防侧信道时序攻击
+ * 提供标准 HMAC-SHA256、HMAC-SHA512、HMAC-SHA1、HMAC-MD5 与纯 JDK 原生国密 HmacSM3 密钥加签，
+ * 并内置基于 {@link CryptoUtil#constantTimeEquals} 的恒定时间安全比对防侧信道时序攻击
  *
  * @author Ateng
  * @since 2026-10-27
@@ -19,6 +20,7 @@ import java.util.Objects;
 public final class HmacUtil {
 
     public static final String HMAC_SHA256 = "HmacSHA256";
+    public static final String HMAC_SHA512 = "HmacSHA512";
     public static final String HMAC_SHA1 = "HmacSHA1";
     public static final String HMAC_MD5 = "HmacMD5";
     public static final String HMAC_SM3 = "HmacSM3";
@@ -33,7 +35,7 @@ public final class HmacUtil {
     /**
      * 基于指定算法对数据进行 HMAC 加签
      *
-     * @param algorithm HMAC 算法名称（如 HmacSHA256、HmacSHA1、HmacMD5）
+     * @param algorithm HMAC 算法名称（如 HmacSHA256、HmacSHA512、HmacSHA1、HmacMD5、HmacSM3）
      * @param data      待签名源数据
      * @param key       签名密钥字节数组
      * @return 签名结果字节数组
@@ -51,7 +53,7 @@ public final class HmacUtil {
             mac.init(secretKeySpec);
             return mac.doFinal(data);
         } catch (GeneralSecurityException e) {
-            throw new IllegalArgumentException("HMAC 签名计算失败: " + e.getMessage(), e);
+            throw new IllegalArgumentException("HMAC 签名计算失败", e);
         }
     }
 
@@ -112,6 +114,102 @@ public final class HmacUtil {
         Objects.requireNonNull(data, "待签名文本 data 不能为 null");
         Objects.requireNonNull(key, "签名密钥文本 key 不能为 null");
         return hmacSha256Base64(data.getBytes(StandardCharsets.UTF_8), key.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * 使用 HMAC-SHA512 算法生成签名
+     *
+     * @param data 待签名源数据
+     * @param key  签名密钥字节数组
+     * @return 64 字节签名字节数组
+     * @throws IllegalArgumentException {@code data} 为 {@code null} 或 {@code key} 为空时抛出
+     * @throws IllegalStateException    HMAC-SHA512 算法初始化或运算失败时抛出（保留原始 {@code cause}）
+     */
+    public static byte[] hmacSha512(byte[] data, byte[] key) {
+        if (data == null) {
+            throw new IllegalArgumentException("待签名数据 data 不能为 null");
+        }
+        if (key == null || key.length == 0) {
+            throw new IllegalArgumentException("HMAC 签名密钥不能为空");
+        }
+        try {
+            Mac mac = Mac.getInstance(HMAC_SHA512);
+            SecretKeySpec secretKeySpec = new SecretKeySpec(key, HMAC_SHA512);
+            mac.init(secretKeySpec);
+            return mac.doFinal(data);
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("HMAC-SHA512 签名计算失败", e);
+        }
+    }
+
+    /**
+     * 使用 HMAC-SHA512 算法生成十六进制小写格式签名字符串
+     *
+     * @param data 待签名源数据
+     * @param key  签名密钥字节数组
+     * @return 128 位十六进制签名字符串
+     */
+    public static String hmacSha512Hex(byte[] data, byte[] key) {
+        return HexUtil.encodeHex(hmacSha512(data, key));
+    }
+
+    /**
+     * 使用 HMAC-SHA512 算法生成十六进制小写格式签名字符串
+     *
+     * @param data 待签名文本（UTF-8）
+     * @param key  签名密钥文本（UTF-8，不能为空）
+     * @return 128 位十六进制签名字符串
+     * @throws IllegalArgumentException {@code data} 为 {@code null} 或 {@code key} 为空时抛出
+     * @throws IllegalStateException    签名计算失败时抛出
+     */
+    public static String hmacSha512Hex(String data, String key) {
+        if (data == null) {
+            throw new IllegalArgumentException("待签名文本 data 不能为 null");
+        }
+        if (key == null || key.isEmpty()) {
+            throw new IllegalArgumentException("HMAC 签名密钥文本 key 不能为空");
+        }
+        byte[] keyBytes = key.getBytes(StandardCharsets.UTF_8);
+        try {
+            return hmacSha512Hex(data.getBytes(StandardCharsets.UTF_8), keyBytes);
+        } finally {
+            Arrays.fill(keyBytes, (byte) 0);
+        }
+    }
+
+    /**
+     * 使用 HMAC-SHA512 算法生成 Base64 格式签名字符串
+     *
+     * @param data 待签名源数据
+     * @param key  签名密钥字节数组
+     * @return Base64 编码签名字符串
+     */
+    public static String hmacSha512Base64(byte[] data, byte[] key) {
+        return Base64.getEncoder().encodeToString(hmacSha512(data, key));
+    }
+
+    /**
+     * 使用 HMAC-SHA512 算法生成 Base64 格式签名字符串
+     *
+     * @param data 待签名文本（UTF-8）
+     * @param key  签名密钥文本（UTF-8，不能为空）
+     * @return Base64 编码签名字符串
+     * @throws IllegalArgumentException {@code data} 为 {@code null} 或 {@code key} 为空时抛出
+     * @throws IllegalStateException    签名计算失败时抛出
+     */
+    public static String hmacSha512Base64(String data, String key) {
+        if (data == null) {
+            throw new IllegalArgumentException("待签名文本 data 不能为 null");
+        }
+        if (key == null || key.isEmpty()) {
+            throw new IllegalArgumentException("HMAC 签名密钥文本 key 不能为空");
+        }
+        byte[] keyBytes = key.getBytes(StandardCharsets.UTF_8);
+        try {
+            return hmacSha512Base64(data.getBytes(StandardCharsets.UTF_8), keyBytes);
+        } finally {
+            Arrays.fill(keyBytes, (byte) 0);
+        }
     }
 
     /**
@@ -253,17 +351,21 @@ public final class HmacUtil {
         }
         byte[] kIpad = new byte[SM3_BLOCK_SIZE];
         byte[] kOpad = new byte[SM3_BLOCK_SIZE];
+        byte[] innerHash = null;
         try {
             for (int i = 0; i < SM3_BLOCK_SIZE; i++) {
                 byte keyByte = (i < normalizedKey.length) ? normalizedKey[i] : 0;
                 kIpad[i] = (byte) (keyByte ^ SM3_IPAD);
                 kOpad[i] = (byte) (keyByte ^ SM3_OPAD);
             }
-            byte[] innerHash = DigestUtil.sm3(kIpad, data);
+            innerHash = DigestUtil.sm3(kIpad, data);
             return DigestUtil.sm3(kOpad, innerHash);
         } finally {
             Arrays.fill(kIpad, (byte) 0);
             Arrays.fill(kOpad, (byte) 0);
+            if (innerHash != null) {
+                Arrays.fill(innerHash, (byte) 0);
+            }
             if (compressedKey != null) {
                 Arrays.fill(compressedKey, (byte) 0);
             }
@@ -335,14 +437,11 @@ public final class HmacUtil {
      * @return 若完全一致返回 true，任一为 null 或内容不匹配返回 false
      */
     public static boolean verify(byte[] expected, byte[] actual) {
-        if (expected == null || actual == null) {
-            return false;
-        }
-        return MessageDigest.isEqual(expected, actual);
+        return CryptoUtil.constantTimeEquals(expected, actual);
     }
 
     /**
-     * 恒定时间安全比对两个十六进制签名字符串
+     * 恒定时间安全比对两个十六进制签名字符串（基于 {@link Locale#ROOT} 规整大小写）
      *
      * @param expectedHex 预期十六进制签名
      * @param actualHex   实际十六进制签名
@@ -353,8 +452,8 @@ public final class HmacUtil {
             return false;
         }
         return verify(
-                expectedHex.toLowerCase().getBytes(StandardCharsets.UTF_8),
-                actualHex.toLowerCase().getBytes(StandardCharsets.UTF_8)
+                expectedHex.toLowerCase(Locale.ROOT).getBytes(StandardCharsets.UTF_8),
+                actualHex.toLowerCase(Locale.ROOT).getBytes(StandardCharsets.UTF_8)
         );
     }
 

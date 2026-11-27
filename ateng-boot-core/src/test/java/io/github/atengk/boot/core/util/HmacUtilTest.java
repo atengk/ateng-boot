@@ -2,11 +2,13 @@ package io.github.atengk.boot.core.util;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -21,6 +23,16 @@ class HmacUtilTest {
 
     private static final String SECRET_KEY = "AtengBootSecretKey2026";
     private static final String PAYLOAD = "orderId=10086&amount=99.9&timestamp=1761500000";
+
+    private Locale previousLocale;
+
+    @AfterEach
+    void restoreDefaultLocale() {
+        if (previousLocale != null) {
+            Locale.setDefault(previousLocale);
+            previousLocale = null;
+        }
+    }
 
     @Test
     @DisplayName("应该支持标准的 HMAC-SHA256、HMAC-SHA1 与 HMAC-MD5 签名生成")
@@ -192,5 +204,47 @@ class HmacUtilTest {
         BusinessException ex5 = assertThrows(BusinessException.class,
                 () -> HmacUtil.hmacSm3Base64(PAYLOAD, ""));
         assertEquals(CommonResultCode.BAD_REQUEST.getCode(), ex5.getCode());
+    }
+
+    @Test
+    @DisplayName("HmacSHA512: 标准 RFC 4231 Test Case 2 向量及全重载验证")
+    void shouldMatchRfc4231TestVectorForHmacSha512() {
+        byte[] key = "Jefe".getBytes(StandardCharsets.UTF_8);
+        byte[] data = "what do ya want for nothing?".getBytes(StandardCharsets.UTF_8);
+        String expectedHex = "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea250554"
+                + "9758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737";
+
+        byte[] raw = HmacUtil.hmacSha512(data, key);
+        assertEquals(64, raw.length);
+        assertEquals(expectedHex, HmacUtil.hmacSha512Hex(data, key));
+        assertEquals(expectedHex, HmacUtil.hmacSha512Hex("what do ya want for nothing?", "Jefe"));
+        assertArrayEquals(raw, Base64.getDecoder().decode(HmacUtil.hmacSha512Base64(data, key)));
+        assertEquals(HmacUtil.hmacSha512Base64(data, key),
+                HmacUtil.hmacSha512Base64("what do ya want for nothing?", "Jefe"));
+
+        // 新增原语严格遵循 IllegalArgumentException 契约
+        assertThrows(IllegalArgumentException.class, () -> HmacUtil.hmacSha512(null, key));
+        assertThrows(IllegalArgumentException.class, () -> HmacUtil.hmacSha512(data, null));
+        assertThrows(IllegalArgumentException.class, () -> HmacUtil.hmacSha512(data, new byte[0]));
+        assertThrows(IllegalArgumentException.class, () -> HmacUtil.hmacSha512Hex((String) null, "Jefe"));
+        assertThrows(IllegalArgumentException.class, () -> HmacUtil.hmacSha512Hex("payload", ""));
+        assertThrows(IllegalArgumentException.class, () -> HmacUtil.hmacSha512Base64((String) null, "Jefe"));
+        assertThrows(IllegalArgumentException.class, () -> HmacUtil.hmacSha512Base64("payload", null));
+    }
+
+    @Test
+    @DisplayName("Locale.ROOT 防护：verifyHex 在土耳其语 (tr-TR) Locale 下仍正确忽略大小写匹配")
+    void shouldVerifyHexSafelyUnderTurkishLocale() {
+        previousLocale = Locale.getDefault();
+        Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+
+        String upperHex = "0123456789ABCDEF";
+        String lowerHex = "0123456789abcdef";
+        assertTrue(HmacUtil.verifyHex(upperHex, lowerHex));
+        assertTrue(HmacUtil.verifyHex("I_SHOULD_NOT_BREAK_IF_HEX_UPPER", "i_should_not_break_if_hex_upper"));
+
+        String sigLower = HmacUtil.hmacSha256Hex(PAYLOAD, SECRET_KEY);
+        assertTrue(HmacUtil.verifyHex(sigLower.toUpperCase(Locale.ROOT), sigLower));
+        assertTrue(HmacUtil.verify(sigLower.getBytes(StandardCharsets.UTF_8), sigLower.getBytes(StandardCharsets.UTF_8)));
     }
 }

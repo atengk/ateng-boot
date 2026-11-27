@@ -109,6 +109,7 @@ flowchart TD
    - 开发与 CI/CD 流水线仅配置公钥（Public Key）生成密文，生产环境通过受管环境变量仅注入解密私钥（Private Key），从机制上杜绝开发人员接触生产解密凭据；
 4. **金融级硬件逃生舱：`ConfigDecryptor` SPI**：
    - 定义极简 SPI 契约，支持下游企业一键无缝接入公司内网 PCI-E 硬件加密机（HSM）或公有云 KMS（阿里云/腾讯云/AWS KMS）。
+5. **演进收敛注记**：本模块 `Sm2Engine`、`RsaConfigDecryptor` 底层曲线与密钥原语已进一步收敛至 `ateng-boot-core` 的 `Sm2Util` 与 `RsaUtil`，`RsaConfigDecryptor` 保留配置长文本分段及 `OAEP(MGF1-SHA256/SHA1)`/`PKCS1Padding` 兼容链（详见 [ADR-0113](./0113-core-native-cryptography-primitives-and-cross-module-convergence-architecture.md)）。
 
 ---
 

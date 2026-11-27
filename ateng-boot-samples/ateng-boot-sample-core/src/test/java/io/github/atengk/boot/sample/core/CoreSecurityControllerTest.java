@@ -1,6 +1,5 @@
 package io.github.atengk.boot.sample.core;
 
-import io.github.atengk.boot.sample.core.dto.PaymentCryptoRequest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -8,8 +7,6 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
-
-import java.math.BigDecimal;
 
 import static org.hamcrest.Matchers.hasLength;
 import static org.hamcrest.Matchers.is;
@@ -261,7 +258,8 @@ class CoreSecurityControllerTest {
                 .andExpect(jsonPath("$.data.wrongPasswordRejected", is(true)))
                 .andExpect(jsonPath("$.data.legacyNeedsUpgrade", is(true)))
                 .andExpect(jsonPath("$.data.upgradedPassword", startsWith("$pbkdf2-sha256$310000$")))
-                .andExpect(jsonPath("$.data.currentNeedsUpgrade", is(false)));
+                .andExpect(jsonPath("$.data.currentNeedsUpgrade", is(false)))
+                .andExpect(jsonPath("$.data.dummyCheckRejected", is(true)));
     }
 
     @Test
@@ -276,6 +274,108 @@ class CoreSecurityControllerTest {
                 """;
 
         mockMvc.perform(post("/sample/core/security/password")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(400)))
+                .andExpect(jsonPath("$.success", is(false)));
+    }
+
+    @Test
+    @DisplayName("POST /sample/core/security/asymmetric-crypto - RSA-OAEP/PSS 与国密 SM2 非对称闭环")
+    void testVerifyAsymmetricCrypto_Success() throws Exception {
+        String jsonBody = """
+                {
+                  "plaintext": "aesSessionKey=k-20261127-prod",
+                  "signPayload": "POST\\n/api/settlement\\n1794052800000\\nnonce-9001",
+                  "sm2UserId": "MERCHANT_APP_01"
+                }
+                """;
+
+        mockMvc.perform(post("/sample/core/security/asymmetric-crypto")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.rsaKeyPemRoundTripValid", is(true)))
+                .andExpect(jsonPath("$.data.rsaOaepDecrypted", is("aesSessionKey=k-20261127-prod")))
+                .andExpect(jsonPath("$.data.rsaSha256Verified", is(true)))
+                .andExpect(jsonPath("$.data.rsaPssVerified", is(true)))
+                .andExpect(jsonPath("$.data.rsaTamperBlocked", is(true)))
+                .andExpect(jsonPath("$.data.sm2PublicKeyHex", matchesPattern("^04[0-9a-f]{128}$")))
+                .andExpect(jsonPath("$.data.sm2C1c3c2Decrypted", is("aesSessionKey=k-20261127-prod")))
+                .andExpect(jsonPath("$.data.sm2DerDecrypted", is("aesSessionKey=k-20261127-prod")))
+                .andExpect(jsonPath("$.data.sm2DerVerified", is(true)))
+                .andExpect(jsonPath("$.data.sm2RawVerified", is(true)))
+                .andExpect(jsonPath("$.data.sm2UserIdIsolated", is(true)))
+                .andExpect(jsonPath("$.data.sm2TamperBlocked", is(true)));
+    }
+
+    @Test
+    @DisplayName("POST /sample/core/security/asymmetric-crypto - 空明文或空签名载荷触发 JSR-303 校验拦截")
+    void testVerifyAsymmetricCrypto_ValidationFail() throws Exception {
+        String invalidJson = """
+                {
+                  "plaintext": "",
+                  "signPayload": ""
+                }
+                """;
+
+        mockMvc.perform(post("/sample/core/security/asymmetric-crypto")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(400)))
+                .andExpect(jsonPath("$.success", is(false)));
+    }
+
+    @Test
+    @DisplayName("POST /sample/core/security/kdf-and-stream - HKDF、HMAC-SHA512、流式摘要与 Packed AEAD")
+    void testVerifyKdfAndStream_Success() throws Exception {
+        String jsonBody = """
+                {
+                  "masterSecret": "ateng-tenant-master-key-2026",
+                  "salt": "ateng-salt-v1",
+                  "info": "tenant=t001:payload-enc",
+                  "payload": "OrderNo=ORD20261127001&Amount=188.00",
+                  "aad": "tenant=t001;scene=settlement"
+                }
+                """;
+
+        mockMvc.perform(post("/sample/core/security/kdf-and-stream")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.success", is(true)))
+                .andExpect(jsonPath("$.data.hkdfSha256KeyHex", hasLength(64)))
+                .andExpect(jsonPath("$.data.hkdfSm3KeyHex", hasLength(64)))
+                .andExpect(jsonPath("$.data.hkdfDomainIsolated", is(true)))
+                .andExpect(jsonPath("$.data.hmacSha512Hex", hasLength(128)))
+                .andExpect(jsonPath("$.data.hmacSha512Verified", is(true)))
+                .andExpect(jsonPath("$.data.sha256StreamHex", hasLength(64)))
+                .andExpect(jsonPath("$.data.sha512StreamHex", hasLength(128)))
+                .andExpect(jsonPath("$.data.sm3StreamHex", hasLength(64)))
+                .andExpect(jsonPath("$.data.aesGcmPackedDecrypted", is("OrderNo=ORD20261127001&Amount=188.00")))
+                .andExpect(jsonPath("$.data.sm4GcmPackedDecrypted", is("OrderNo=ORD20261127001&Amount=188.00")))
+                .andExpect(jsonPath("$.data.base64UrlDecoded", is("OrderNo=ORD20261127001&Amount=188.00")))
+                .andExpect(jsonPath("$.data.constantTimeEqualsValid", is(true)));
+    }
+
+    @Test
+    @DisplayName("POST /sample/core/security/kdf-and-stream - 空字段触发 JSR-303 校验拦截")
+    void testVerifyKdfAndStream_ValidationFail() throws Exception {
+        String invalidJson = """
+                {
+                  "masterSecret": "",
+                  "info": "",
+                  "payload": "",
+                  "aad": ""
+                }
+                """;
+
+        mockMvc.perform(post("/sample/core/security/kdf-and-stream")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(invalidJson))
                 .andExpect(status().isOk())

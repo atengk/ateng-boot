@@ -24,7 +24,7 @@
 | **安全序列化与内存深克隆** | 零 `@class` 污染高性能 Jackson 门面、上下文感知长整型转串与数值保真序列化 | `JsonUtil`, `NumericLongSerializer`, `ContextualLongToStringSerializer` | - | `toJsonString(obj)`, `toJsonStringWithLongToString(obj)`, `toJsonBytes(obj)`, `toPrettyJsonString(obj)`, `createLongToStringObjectMapper()`, `parseObject(...)`（含 `byte[]` + `TypeReference`）, `parseList(...)`（含 `byte[]`）, `parseMap(...)`（含 `byte[]`）, `reset()`, `isValidJson(json)`, `readTree(...)`, `deepClone(obj)`；`NumericLongSerializer` 保真 `Result.timestamp`、`PageResult`/`PageQuery`、审计耗时与非主键元数据为 JSON `number`，`ContextualLongToStringSerializer` 响应 `@JsonFormat(shape = NUMBER / NUMBER_INT)` 覆写 | `JsonUtilTest.java`, `JsonUtilDeepCloneTest.java`, `NumericLongSerializerTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` (`POST /sample/core/data/json-and-bean`) |
 | **敏感数据脱敏** | 15 大类敏感信息动态掩码与内存真明文防护 | `@FieldSensitive`, `DesensitizeUtil`, `SensitiveJsonSerializer`, `SensitiveType` | - | `DesensitizeUtil.mobilePhone(str)`, `idCard(str)`, `unifiedCreditCode(str)`, `secretKey(str)`, `passport(str)` 等，保证“内存真明文”防脏写 | `DesensitizeUtilTest.java`, `SensitiveJsonSerializerTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **退避指数重试** | 纯原生轻量无第三方重试与动态退避配置 | `RetryUtil`, `RetryUtil.RetryConfig`, `RetryUtil.RetryListener` | - | `execute(supplier, config, fallback)`, `executeAction(runnable, config, fallback)`; `RetryConfig.builder().maxAttempts(...).delay(...).multiplier(...).maxDelay(...).jitter(...).retryPredicate(...).onRetry(...).delayFunction(ex -> Duration)` 支持 Equal Jitter 抖动、自定义异常驱动退避函数与 Fallback 降级 | `RetryUtilTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
-| **加解密与十六进制** | 原生 AES、国密 SM4 (CBC/ECB/GCM) / SM3 与 Hex 编解码 | `CryptoUtil`, `DigestUtil`, `HexUtil` | - | `CryptoUtil`: `generateKey`, `generateSm4Key`, `generateIv`, `generateGcmIv`, `encryptGcm/decryptGcm`（含 `aad` 重载）, `encryptSm4Gcm/decryptSm4Gcm`（含 `aad` 重载）, `encryptCbc/decryptCbc`, `encryptSm4Cbc/decryptSm4Cbc`, `encryptSm4Ecb/decryptSm4Ecb` (`SM4_KEY_SIZE`, `SM4_IV_SIZE`); `DigestUtil`: `sha256Hex`, `md5Hex`, `sm3(byte[]/byte[].../String)`, `sm3Hex(byte[]/String)`; `HexUtil`: `encodeHex`, `decodeHex` | `CryptoUtilTest.java`, `DigestUtilTest.java`, `HexUtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/crypto`), `CoreSecurityScenarioServiceTest.java` |
+| **加解密、流式摘要与 Hex** | 原生 AES/SM4 (CBC/ECB/GCM/Packed)、Base64URL、流式摘要与恒定比对 | `CryptoUtil`, `DigestUtil`, `HexUtil` | - | `CryptoUtil`: `generateKey`, `generateSm4Key`, `generateIv`, `generateGcmIv`, `encodeBase64/Url`, `decodeBase64/Url`, `constantTimeEquals`（恒定时间防侧信道）, `encryptGcm/decryptGcm`（含 `aad`）, `encryptGcmPacked/decryptGcmPacked`（`12B IV + 密文 + 16B Tag` 标准 Base64 自包含封装）, `encryptCbc/decryptCbc`, `encryptSm4Cbc/decryptSm4Cbc`, `encryptSm4Ecb/decryptSm4Ecb`, `encryptSm4Gcm/decryptSm4Gcm`, `encryptSm4GcmPacked/decryptSm4GcmPacked`; `DigestUtil`: `sha256/sha512/sm3`（含 `byte[]` / `String` / 非关闭 `InputStream` 流式重载）与 `*Hex`, `md5Hex`; `HexUtil`: `encodeHex`, `decodeHex` | `CryptoUtilTest.java`, `DigestUtilTest.java`, `HexUtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/crypto`, `POST /sample/core/security/kdf-and-stream`), `CoreSecurityScenarioServiceTest.java` |
 | **安全文件与流处理** | 路径穿越防御、隐性垃圾过滤、安全有界读取与临时文件 | `FileUtil` | - | `FileUtil.cleanFilename(name)`（防御 `../` 路径穿越）, `cleanPath(path)`, `resolveSafePath(baseDir, subPath)` (安全子路径解析防逃逸), `isSystemJunkFile(path)` (过滤 .DS_Store / desktop.ini), `filterValidPaths(paths)`, `getExtName(name)`, `formatSize(bytes)`, `readNBytesSafe(stream, maxBytes)` (防 OOM 安全有界读取), `createTempFile(...)` | `FileUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **集合切片与大批量安全流转** | 零内存拷贝分批切片、函数式去重与大批量流转原语 | `CollectionUtil`, `BatchSliceUtil`, `MoreCollectors` | - | `CollectionUtil.partition(list, batchSize)`（基于 subList 视图切片，防 OOM 批量流转）, `BatchSliceUtil.slice(list, sliceSize)`, `BatchSliceUtil.forEachSlice(list, sliceSize, consumer)`, `CollectionUtil.distinctByKey(keyExtractor)`, `MoreCollectors.toSafeMap(...)`, `MoreCollectors.toDistinctList(...)` | `CollectionUtilTest.java`, `BatchSliceUtilTest.java`, `MoreCollectorsTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **树形森林装配与析取** | O(N) 线性组装、递归剪枝、展平与路径探寻 | `TreeUtil` | - | `TreeUtil.build(...)`, `buildForest(...)`, `filter(...)`, `flatten(roots, childrenGetter)` / `flattenTree(...)` (先序深度优先展平), `findPath(...)` (面包屑导航路径), `getLeafNodes(...)` (提取所有叶子终端节点) | `TreeUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
@@ -46,8 +46,11 @@
 | **纯原生有界 LRU 缓存** | 纯原生有界 LRU 缓存原语与底层防 OOM 加固 | `ConcurrentLruCache<K, V>` | - | `ConcurrentLruCache(maxCapacity, ttl)`, `get(key)`, `put(key, val)`, `computeIfAbsent(key, mappingFunc)`, `remove(key)`, `clear()`, `size()`, `containsKey(key)`, `cleanUp()` | `ConcurrentLruCacheTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **安全受限 SpEL 求值门面** | 安全受限 SpEL 表达式求值门面与受管 AST 缓存 | `SpelUtil` | `ateng.boot.core.cache.default-max-capacity`, `default-ttl` | `SpelUtil.evaluate(expr, root, vars, type)`, `SpelUtil.evaluateMethod(method, args, expr, type)`, `evaluateTrusted(...)`, `parseExpression(expr)`, `SpelUtil.configureCache(maxCapacity, ttl)` (外置配置自动绑定注入), `getCacheSize()`, `clearCache()` | `SpelUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **函数式业务管道** | 轻量函数式管道编排与中断异常隔离 | `Pipeline<C>`, `PipelineStage<C>`, `PipelineInterruptible`, `PipelineResult`, `PipelineErrorHandler` | - | `Pipeline.builder().addStage(...).build()`, `pipeline.execute(ctx)`, `result.isSuccess()`, `result.isTerminated()`, `result.orThrow()` | `PipelineTest.java`, `CorePipelineScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
-| **原生安全 HMAC 加签** | 纯原生密钥散列与国密 HmacSM3 加签及恒定时间防侧信道比对 | `HmacUtil` | - | `HmacUtil.hmacSha256Hex(data, key)`, `hmacSha256Base64`, `hmacSm3(byte[]/String)`, `hmacSm3Hex`, `hmacSm3Base64` (`HMAC_SM3`), `hmacSha1Hex`, `hmacMd5Hex`, `verifyHex(expected, actual)`, `verifyBase64(expected, actual)`（恒定时间安全比对） | `HmacUtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/sign-and-verify`), `CoreSecurityScenarioServiceTest.java` |
-| **口令慢哈希与恒定校验** | 纯 JDK 原生 `PBKDF2WithHmacSHA256` 加盐慢哈希、防时序比对与迭代升级判定 | `PasswordUtil` | -（静态常量：`DEFAULT_ITERATIONS=310000`, `MIN_ITERATIONS=10000`, `MAX_ITERATIONS=5000000`） | `PasswordUtil.hash(CharSequence/char[])`, `hash(raw, iterations)`, `matches(CharSequence/char[], encodedPassword)`, `needsUpgrade(encodedPassword[, targetIterations])` | `PasswordUtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/password`), `CoreSecurityScenarioServiceTest.java` |
+| **原生安全 HMAC 加签** | 纯原生密钥散列 (`HMAC-SHA256/512` 与国密 `HmacSM3`) 及恒定时间比对 | `HmacUtil` | - | `HmacUtil.hmacSha256/Hex/Base64`, `hmacSha512/Hex/Base64` (`HMAC_SHA512`), `hmacSm3/Hex/Base64` (`HMAC_SM3`), `hmacSha1/Hex/Base64`, `hmacMd5/Hex/Base64`, `verify(byte[], byte[])`, `verifyHex`, `verifyBase64`（底层复用 `CryptoUtil.constantTimeEquals` 恒定时间安全比对，`verifyHex` 使用 `Locale.ROOT`） | `HmacUtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/sign-and-verify`, `POST /sample/core/security/kdf-and-stream`), `CoreSecurityScenarioServiceTest.java` |
+| **口令慢哈希与防枚举** | 纯 JDK 原生 `PBKDF2WithHmacSHA256` 加盐慢哈希、防时序与防枚举校验 | `PasswordUtil` | -（静态常量：`DEFAULT_ITERATIONS=310000`, `MIN_ITERATIONS=10000`, `MAX_ITERATIONS=5000000`） | `PasswordUtil.hash(CharSequence/char[])`, `hash(raw, iterations)`, `matches(CharSequence/char[], encodedPassword)`, `needsUpgrade(encodedPassword[, targetIterations])`, `constantTimeDummyCheck(CharSequence/char[][, iterations])`（固定返回 `false`，用于“账号不存在”分支抵御时序枚举） | `PasswordUtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/password`), `CoreSecurityScenarioServiceTest.java` |
+| **原生 RSA 非对称原语** | 纯 JDK 2048/3072/4096 位 `RSA-OAEP-SHA256` 与双模数字签名 | `RsaUtil` | -（`DEFAULT_KEY_SIZE=2048`, `OAEP_SHA256_OVERHEAD=66`） | `RsaUtil.generateKeyPair([2048/3072/4096])`, `encodePublicKeyBase64/ToPem`, `encodePrivateKeyBase64/ToPem`, `parsePublicKey`, `parsePrivateKey`（仅 PKCS#8，检出 PKCS#1 立即引导转换）, `getOaepMaxPlaintextBytes`, `encryptOaep/encryptOaepBase64`, `decryptOaep/decryptOaepBase64`（显式 `MGF1-SHA256`）, `signSha256/Base64`, `verifySha256/Base64`, `signPss/Base64`, `verifyPss/Base64`（`RSASSA-PSS`, `saltLen=32`） | `RsaUtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/asymmetric-crypto`), `CoreSecurityScenarioServiceTest.java` |
+| **原生国密 SM2 原语** | 纯 JDK 雅可比坐标 GB/T 32918 国密椭圆曲线加解密与 SM2/SM3 签验 | `Sm2Util`, `Sm2Util.Sm2Point`, `Sm2Util.Sm2KeyPair` | -（推荐 256 位常量 `P/A/B/N/GX/GY/G`, `DEFAULT_USER_ID="1234567812345678"`） | `Sm2Util.generateKeyPair()`（拒绝采样 `[1, N-2]`）, `defaultUserId()`, `isValidPrivateKey`, `isOnCurve`, `add`, `multiply`, `toFixedBytes/toBytes32`, `kdf`, `parsePrivateKey`, `parsePublicKey`（Hex/压缩/Base64/PEM/DER）, `encodePublicKeyToPem/encodePrivateKeyToPem`, `encrypt/Base64/ToDer/ToDerBase64`, `decrypt/Base64`（兼容 `C1C3C2` 65B/64B 与 ASN.1 DER，恒定时间 `C3` 校验）, `derToC1c3c2/c1c3c2ToDer`（多字节 DER 长度 >64KB）, `sign/signRaw/signBase64`, `verify/verifyBase64`（兼容 DER 与 Raw 64B）, `derSignatureToRaw/rawSignatureToDer`, `computeZa` | `Sm2UtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/asymmetric-crypto`), `CoreSecurityScenarioServiceTest.java` |
+| **RFC 5869 密钥派生** | 纯原生 `HKDF-SHA256` 与国密 `HKDF-SM3` 提取-扩展多域密钥派生 | `HkdfUtil` | -（`SHA256_HASH_LEN=32`, `SM3_HASH_LEN=32`, `MAX_EXPAND_FACTOR=255`） | `HkdfUtil.extract(salt, ikm)`, `expand(prk, info, length)`, `deriveKey(ikm, salt, info, length)`, `extractSm3`, `expandSm3`, `deriveKeySm3`（空盐自动填充 32B `0x00`，所有 `PRK`/`T(i)` 瞬态数组在 `finally` 清零） | `HkdfUtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/kdf-and-stream`), `CoreSecurityScenarioServiceTest.java` |
 | **数据传输与硬件校验和** | 纯原生数据传输与硬件报文校验和计算 | `ChecksumUtil` | - | `ChecksumUtil.crc32(data)`, `crc32Hex(data)`, `crc32c(data)`, `crc32cHex(data)`, `adler32(data)`, `adler32Hex(data)`, `verifyCrc32`, `verifyCrc32c`, `verifyAdler32`，支持 `InputStream` 流式计算 | `ChecksumUtilTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **单机流量整形与限流** | 纯无锁 CAS 纳秒级平滑令牌桶限流器 | `TokenBucketLimiter` | - | `new TokenBucketLimiter(capacity, refillRatePerSecond)`, `tryAcquire()`, `tryAcquire(permits)`, `tryAcquire(permits, timeout)`, `acquire()`, `acquire(permits)`, `getAvailableTokens()` | `TokenBucketLimiterTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
 | **核心配置外置化与发号器装配** | Core 配置属性绑定、受管雪花发号器与缓存自动装配 | `CoreProperties`, `SnowflakeProperties`, `CacheProperties`, `AtengCoreAutoConfiguration`, `CoreCacheInitializer`, `CoreSnowflakeInitializer`, `Snowflake` | `ateng.boot.core.snowflake.enabled`, `worker-id`, `datacenter-id`, `epoch`, `clock-backoff-tolerance`, `ateng.boot.core.cache.default-max-capacity`, `default-ttl` | 自动装配 `@Bean Snowflake`，自适应网卡/IP推导；时钟回拨熔断转译；`CoreSnowflakeInitializer` 同步受管 `Snowflake` 至 `IdUtil` 并在销毁时对称解绑；`CoreCacheInitializer` 自动将 `cache` 配置绑定至 `SpelUtil` 与 `LambdaUtil` | `AtengCoreAutoConfigurationTest.java`, `SnowflakeTest.java`, `CoreSecurityControllerTest.java`, `CoreResilienceScenarioServiceTest.java` |
@@ -127,7 +130,7 @@ flowchart TD
     subgraph CoreAlgorithms["原生算法与数据安全防护"]
         direction TB
         ID["2026雪花发号与短码<br/>Snowflake / IdUtil"]
-        SEC["数据脱敏与安全编解码<br/>DesensitizeUtil / CryptoUtil / DigestUtil / HexUtil / HmacUtil / PasswordUtil"]
+        SEC["数据脱敏与纯原生密码学<br/>DesensitizeUtil / CryptoUtil / DigestUtil / HmacUtil / PasswordUtil / RsaUtil / Sm2Util / HkdfUtil"]
         DATA["高性能数据结构与工具集<br/>JsonUtil / TreeUtil / CollectionUtil / BatchSliceUtil / FileUtil / NetUtil"]
     end
 
@@ -885,18 +888,24 @@ public class CustomerController {
   - 基于纯 JDK 17 原生指令实现 SM4-128 轮密钥扩展与 CBC/ECB/GCM 加解密（零 Bouncy Castle 外部依赖）；
   - 推荐使用 `encryptSm4Gcm` / `decryptSm4Gcm`（AEAD 认证加密，基于 NIST SP 800-38D GHASH，支持 16 字节 `generateSm4Key()` + 12 字节 `generateGcmIv()` + 可选 `aad`）或 `encryptSm4Cbc` / `decryptSm4Cbc`（搭配 16 字节随机 IV `CryptoUtil.generateIv(CryptoUtil.SM4_IV_SIZE)`）；保留 `encryptSm4Ecb` / `decryptSm4Ecb` 用于硬件对齐兼容场景；
   - `encryptGcm` / `decryptGcm` 与 `encryptSm4Gcm` / `decryptSm4Gcm` 均支持传入 AAD 附加认证数据重载（`(plaintext, key, iv, aad)`），确保密文与关联业务上下文（如租户、订单号）强绑定不可拆包重放；
-- **安全摘要与十六进制编解码**：
-  - `DigestUtil.sha256Hex(text)` / `DigestUtil.md5Hex(text)`：纯原生高并发无锁哈希计算；
-  - `DigestUtil.sm3Hex(text)` / `DigestUtil.sm3(bytes)`：纯 JDK 17 原生国密 SM3 (GB/T 32905-2016) 256-bit 杂凑摘要；
-  - `HexUtil.encodeHex(bytes)` / `HexUtil.decodeHex(hexStr)`：高性能字节与 Hex 串双向转换。
+- **自包含 Packed AEAD、Base64URL 与恒定时间比较 (`CryptoUtil`)**：
+  - `encryptGcmPacked` / `decryptGcmPacked` 与 `encryptSm4GcmPacked` / `decryptSm4GcmPacked` 自动生成 12 字节随机 IV 并按 `12B IV || 密文 || 16B Tag` 格式紧凑封装（`String` 重载输出标准 Base64；解密强制校验最小 28 字节防截断伪造），支持可选 `aad` 参数；
+  - `encodeBase64Url` / `decodeBase64Url` 提供无填充 URL-safe Base64 编码；`constantTimeEquals`（支持 `byte[]` 与 `String`）提供恒定时间字节/字符比对防侧信道泄露；
+  - 新增与加固底层 SM4-GCM 使用基于 64 位 `long` 的无分支恒定时间 `GF(2^128)` 乘法与 GB/T 32907 标准轮常量；新引入的 Packed AEAD 与流式摘要失败分别抛 `IllegalArgumentException` / 消息脱敏 `IllegalStateException`（保留原始 `cause`）/ `UncheckedIOException`，存量重载保持既有异常类型契约并剥离底层消息细节。
+- **安全摘要、流式增量哈希与十六进制编解码 (`DigestUtil`, `HexUtil`)**：
+  - `DigestUtil.sha256Hex(text)` / `sha512Hex(text)` / `md5Hex(text)`：纯原生高并发无锁散列计算；
+  - `DigestUtil.sm3Hex(text)` / `sm3(byte[]... parts)`：纯 JDK 17 原生国密 SM3 (GB/T 32905-2016) 256-bit 杂凑摘要（内部 `Sm3State` 状态机零拼接拷贝）；
+  - `DigestUtil.sha256(InputStream)` / `sha512(InputStream)` / `sm3(InputStream)` 及其 `*Hex` 重载：固定 8KB 缓冲流式读取超大文件防 OOM，**严格不关闭调用方传入的流**；
+  - `HexUtil.encodeHex(bytes)` / `decodeHex(hexStr)`：高性能字节与 Hex 串双向转换。
 
 #### 核心代码范式
-代码锚定样例：[`PaymentCryptoRequest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/dto/PaymentCryptoRequest.java)、[`CoreSecurityController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSecurityController.java)（`POST /sample/core/security/crypto`）、[`CoreSecurityScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/service/CoreSecurityScenarioService.java)
+代码锚定样例：[`PaymentCryptoRequest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/dto/PaymentCryptoRequest.java)、[`CoreSecurityController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSecurityController.java)（`POST /sample/core/security/crypto`、`POST /sample/core/security/kdf-and-stream`）、[`CoreSecurityScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/service/CoreSecurityScenarioService.java)
 
 ```java
 import io.github.atengk.boot.core.util.CryptoUtil;
 import io.github.atengk.boot.core.util.DigestUtil;
 import io.github.atengk.boot.core.util.HexUtil;
+import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
@@ -904,37 +913,54 @@ import java.util.Arrays;
 byte[] gcmKey = CryptoUtil.generateKey(256); // 256 位高强度密钥
 byte[] gcmIv = CryptoUtil.generateGcmIv();    // 12 字节标准 GCM IV
 byte[] aadBytes = "tenant=acme&tradeNo=TX-001".getBytes(StandardCharsets.UTF_8);
-String gcmCiphertext = CryptoUtil.encryptGcm(rawPayload, gcmKey, gcmIv, aadBytes);
-String gcmDecrypted = CryptoUtil.decryptGcm(gcmCiphertext, gcmKey, gcmIv, aadBytes);
-
-// 2. AES/CBC 对称加密与解密（兼容存量三方系统）
-byte[] cbcKey = CryptoUtil.generateKey(128); // 128 位密钥
-byte[] cbcIv = CryptoUtil.generateIv();       // 16 字节 CBC IV
-String cbcCiphertext = CryptoUtil.encryptCbc(rawPayload, cbcKey, cbcIv);
-String cbcDecrypted = CryptoUtil.decryptCbc(cbcCiphertext, cbcKey, cbcIv);
-
-// 3. 纯原生国密 SM4/CBC 对称加密与解密（专用 16 字节密钥生成器与随机 16 字节 IV）
 byte[] sm4Key = CryptoUtil.generateSm4Key();
-byte[] sm4Iv = CryptoUtil.generateIv(CryptoUtil.SM4_IV_SIZE);
-String sm4CbcCiphertext = CryptoUtil.encryptSm4Cbc(rawPayload, sm4Key, sm4Iv);
-String sm4CbcDecrypted = CryptoUtil.decryptSm4Cbc(sm4CbcCiphertext, sm4Key, sm4Iv);
+try {
+    String gcmCiphertext = CryptoUtil.encryptGcm(rawPayload, gcmKey, gcmIv, aadBytes);
+    String gcmDecrypted = CryptoUtil.decryptGcm(gcmCiphertext, gcmKey, gcmIv, aadBytes);
 
-// 3b. 纯 JDK 原生国密 SM4/GCM 认证加密（支持 AAD 防篡改绑定，零第三方依赖）
-byte[] sm4GcmIv = CryptoUtil.generateGcmIv();
-String sm4GcmCiphertext = CryptoUtil.encryptSm4Gcm(rawPayload, sm4Key, sm4GcmIv, aadBytes);
-String sm4GcmDecrypted = CryptoUtil.decryptSm4Gcm(sm4GcmCiphertext, sm4Key, sm4GcmIv, aadBytes);
-// 瞬态敏感密钥材料用毕原地清零
-Arrays.fill(gcmKey, (byte) 0);
-Arrays.fill(sm4Key, (byte) 0);
+    // 1b. 自包含 Packed AEAD (内部自动生成 12B 随机 IV 并输出 "12B IV || 密文 || 16B Tag" 标准 Base64)
+    String packedAesCipher = CryptoUtil.encryptGcmPacked(rawPayload, gcmKey, aadBytes);
+    String packedAesPlain = CryptoUtil.decryptGcmPacked(packedAesCipher, gcmKey, aadBytes);
 
-// 4. 安全哈希与国密 SM3 消息摘要计算
-String sha256Hex = DigestUtil.sha256Hex(rawPayload); // 64 位十六进制散列
-String sm3Hex = DigestUtil.sm3Hex(rawPayload);       // 64 位小写国密 SM3 散列
-String md5Hex = DigestUtil.md5Hex(rawPayload);       // 32 位十六进制散列
+    // 2. AES/CBC 对称加密与解密（兼容存量三方系统）
+    byte[] cbcKey = CryptoUtil.generateKey(128); // 128 位密钥
+    try {
+        byte[] cbcIv = CryptoUtil.generateIv();       // 16 字节 CBC IV
+        String cbcCiphertext = CryptoUtil.encryptCbc(rawPayload, cbcKey, cbcIv);
+        String cbcDecrypted = CryptoUtil.decryptCbc(cbcCiphertext, cbcKey, cbcIv);
+    } finally {
+        Arrays.fill(cbcKey, (byte) 0);
+    }
 
-// 5. Hex 十六进制双向编解码
-String hexString = HexUtil.encodeHex(rawPayload.getBytes(StandardCharsets.UTF_8));
+    // 3. 纯原生国密 SM4/CBC 对称加密与解密（专用 16 字节密钥生成器与随机 16 字节 IV）
+    byte[] sm4Iv = CryptoUtil.generateIv(CryptoUtil.SM4_IV_SIZE);
+    String sm4CbcCiphertext = CryptoUtil.encryptSm4Cbc(rawPayload, sm4Key, sm4Iv);
+    String sm4CbcDecrypted = CryptoUtil.decryptSm4Cbc(sm4CbcCiphertext, sm4Key, sm4Iv);
+
+    // 3b. 纯 JDK 原生国密 SM4/GCM 与自包含 Packed SM4/GCM 认证加密
+    byte[] sm4GcmIv = CryptoUtil.generateGcmIv();
+    String sm4GcmCiphertext = CryptoUtil.encryptSm4Gcm(rawPayload, sm4Key, sm4GcmIv, aadBytes);
+    String sm4GcmDecrypted = CryptoUtil.decryptSm4Gcm(sm4GcmCiphertext, sm4Key, sm4GcmIv, aadBytes);
+    String packedSm4Cipher = CryptoUtil.encryptSm4GcmPacked(rawPayload, sm4Key, aadBytes);
+    String packedSm4Plain = CryptoUtil.decryptSm4GcmPacked(packedSm4Cipher, sm4Key, aadBytes);
+} finally {
+    // 瞬态敏感密钥材料用毕在 finally 确定性原地清零
+    Arrays.fill(gcmKey, (byte) 0);
+    Arrays.fill(sm4Key, (byte) 0);
+}
+
+// 4. 安全哈希（含 SHA-512）与非关闭流式摘要计算
+byte[] payloadBytes = rawPayload.getBytes(StandardCharsets.UTF_8);
+String sha256StreamHex = DigestUtil.sha256Hex(new ByteArrayInputStream(payloadBytes)); // 64 位散列
+String sha512StreamHex = DigestUtil.sha512Hex(new ByteArrayInputStream(payloadBytes)); // 128 位散列
+String sm3StreamHex = DigestUtil.sm3Hex(new ByteArrayInputStream(payloadBytes));       // 64 位国密散列
+String md5Hex = DigestUtil.md5Hex(rawPayload);
+
+// 5. Hex 与 Base64URL 无填充编解码、恒定时间比较
+String hexString = HexUtil.encodeHex(payloadBytes);
 byte[] decodedBytes = HexUtil.decodeHex(hexString);
+String base64UrlToken = CryptoUtil.encodeBase64Url(payloadBytes);
+boolean equalsSafe = CryptoUtil.constantTimeEquals(sha512StreamHex, sha512StreamHex);
 ```
 
 #### 预期响应 JSON 契约（含国密 SM4/CBC 与 SM3 校验）
@@ -985,16 +1011,18 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 
-// 1. HMAC-SHA256 与原生国密 HmacSM3 密钥散列加签（支持 Hex 与 Base64 输出，兼容 HMAC-SHA1 / HMAC-MD5）
+// 1. HMAC-SHA256、HMAC-SHA512 与原生国密 HmacSM3 密钥散列加签（支持 Hex 与 Base64 输出，兼容 HMAC-SHA1 / HMAC-MD5）
 String hmacHex = HmacUtil.hmacSha256Hex(rawPayload, merchantSecretKey);
 String hmacBase64 = HmacUtil.hmacSha256Base64(rawPayload, merchantSecretKey);
+String hmacSha512Hex = HmacUtil.hmacSha512Hex(payloadBytes, hmacKey);
 String hmacSm3Hex = HmacUtil.hmacSm3Hex(rawPayload, merchantSecretKey);
 String hmacSm3Base64 = HmacUtil.hmacSm3Base64(rawPayload, merchantSecretKey);
 String sha1Sign = HmacUtil.hmacSha1Hex(rawPayload, merchantSecretKey);
 String md5Sign = HmacUtil.hmacMd5Hex(rawPayload, merchantSecretKey);
 
-// 2. 恒定时间防侧信道验签（底层基于 MessageDigest.isEqual 恒定时间比对，杜绝时序攻击）
+// 2. 恒定时间防侧信道验签（底层复用 CryptoUtil.constantTimeEquals 恒定时间比对，verifyHex 强制 Locale.ROOT）
 boolean verified = HmacUtil.verifyHex(HmacUtil.hmacSha256Hex(rawPayload, merchantSecretKey), hmacHex);     // true
+boolean sha512Verified = HmacUtil.verifyHex(HmacUtil.hmacSha512Hex(payloadBytes, hmacKey), hmacSha512Hex); // true
 boolean sm3Verified = HmacUtil.verifyHex(HmacUtil.hmacSm3Hex(rawPayload, merchantSecretKey), hmacSm3Hex); // true
 boolean verifiedBase64 = HmacUtil.verifyBase64(hmacSm3Base64, hmacSm3Base64);                             // true
 
@@ -1023,7 +1051,7 @@ try (InputStream stream = new ByteArrayInputStream(rawPayload.getBytes(StandardC
 - **自描述存储格式**：`$pbkdf2-sha256$<iterations>$<base64Salt>$<base64Hash>`（采用无填充 URL-safe Base64，便于数据库存储与跨系统迁移）。
 - **默认密码学基线**：默认迭代 `310_000` 次（`DEFAULT_ITERATIONS`）、16 字节（128-bit）随机盐（`DEFAULT_SALT_LENGTH`）、32 字节（256-bit）派生密钥（`DEFAULT_KEY_LENGTH_BITS`）。
 - **生成侧 Fail-Fast 与内存擦除**：`hash(...)` 面对 `null`、空串或全空白串直接抛出 `IllegalArgumentException`，但**严格保留有效口令前后空格不裁剪**；底层临时 `char[]` 与 `PBEKeySpec` 在 `finally` 块中确定性清零（且 `char[]` 重载不篡改调用方原始数组）。
-- **校验侧安全降级与防 DoS 熔断**：`matches(...)` 与 `needsUpgrade(...)` 面对空输入、畸形段数、不支持前缀、非法 Base64 或盐/摘要字节长度异常时一律安全返回 `false`；迭代次数硬约束于 `[10_000, 5_000_000]`（`MIN_ITERATIONS` ~ `MAX_ITERATIONS`），防止恶意篡改超大迭代次数引发 CPU DoS；派生比对底层严格调用 `MessageDigest.isEqual` 保持常量时间。
+- **校验侧安全降级与防枚举/防 DoS 熔断**：`matches(...)` 与 `needsUpgrade(...)` 面对空输入、畸形段数、不支持前缀、非法 Base64 或盐/摘要字节长度异常时一律安全返回 `false`；迭代次数硬约束于 `[10_000, 5_000_000]`（`MIN_ITERATIONS` ~ `MAX_ITERATIONS`），防止恶意篡改超大迭代次数引发 CPU DoS；另提供 `constantTimeDummyCheck(...)`（固定返回 `false`），当认证流程遇到“账号不存在”时执行同等迭代成本的 PBKDF2 计算以抵御用户名时序枚举攻击。
 
 #### 核心代码范式
 代码锚定样例：[`PasswordCheckRequest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/dto/PasswordCheckRequest.java)、[`CoreSecurityController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSecurityController.java)（`POST /sample/core/security/password`）、[`CoreSecurityScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/service/CoreSecurityScenarioService.java)
@@ -1047,6 +1075,9 @@ if (PasswordUtil.matches(rawPassword, legacyEncoded) && PasswordUtil.needsUpgrad
     String upgradedPassword = PasswordUtil.hash(rawPassword);
     boolean currentNeedsUpgrade = PasswordUtil.needsUpgrade(upgradedPassword); // false
 }
+
+// 4. 账号不存在分支执行恒定时间虚拟校验，防御用户名枚举
+boolean dummyCheckRejected = !PasswordUtil.constantTimeDummyCheck(rawPassword); // true
 ```
 
 #### 预期响应 JSON 契约
@@ -1063,7 +1094,160 @@ if (PasswordUtil.matches(rawPassword, legacyEncoded) && PasswordUtil.needsUpgrad
     "wrongPasswordRejected": true,
     "legacyNeedsUpgrade": true,
     "upgradedPassword": "$pbkdf2-sha256$310000$<新随机盐>$<新派生摘要>",
-    "currentNeedsUpgrade": false
+    "currentNeedsUpgrade": false,
+    "dummyCheckRejected": true
+  },
+  "timestamp": 1794052800000,
+  "success": true,
+  "traceId": "91a0c841bb2f4e3c9c64be630c71049c"
+}
+```
+
+---
+
+### 4.6 纯 JDK 原生非对称加解密与数字签名 (`RsaUtil` & `Sm2Util`)
+
+#### 业务场景与痛点
+在网关信封加解密（混合加密会话密钥封装）、开放平台接口数字签名与信创国密改造场景中，若各业务模块自行重复编写 RSA KeyFactory 解析、SM2 椭圆曲线标量乘法与 ASN.1 DER 编解码：
+1. 极易发生密钥校验疏漏（如未校验 SM2 私钥范围 `[1, N-2]` 或公钥点是否在曲线上）及曲线常量手误（如阶常量多写位数导致标量越界）；
+2. SunJCE 对 `RSA/ECB/OAEPWithSHA-256AndMGF1Padding` 默认采用 MGF1-SHA1，易与 WebCrypto/OpenSSL（MGF1-SHA256）产生隐性不互通；
+3. SM2 加解密空明文易引发 KDF 全零判定死循环，`C3` 摘要采用普通比较存在时序风险。
+
+`RsaUtil` 与 `Sm2Util` 在 `ateng-boot-core` 统一提供纯 JDK 17 零外部依赖的非对称密码原语：
+- **`RsaUtil`**：仅支持 2048/3072/4096 位密钥与标准 X.509 公钥 / PKCS#8 私钥（检出传统 OpenSSL PKCS#1 立即抛出明确转换提示），单块 OAEP 严格锁定显式 `MGF1-SHA256`（超长自动拒绝，长文本应使用 `RSA-OAEP + AES-GCM` 混合加密），同时支持 `SHA256withRSA` 与 `RSASSA-PSS`（`MGF1-SHA256`, `saltLen=32`）；
+- **`Sm2Util`**：基于 GB/T 32918.5-2017 标准 256 位推荐参数与雅可比投影坐标系实现高效点乘，密钥生成与随机数 `k` 均采用拒绝采样，加解密强制非空明文防卫并完整兼容 `C1C3C2`（65B/64B）与 ASN.1 DER（支持大于 64KB 多字节长度），签名同时支持 DER 与裸 64 字节 `r || s` 并支持自定义 `userId`。
+
+#### 核心代码范式
+代码锚定样例：[`AsymmetricCryptoRequest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/dto/AsymmetricCryptoRequest.java)、[`CoreSecurityController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSecurityController.java)（`POST /sample/core/security/asymmetric-crypto`）、[`CoreSecurityScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/service/CoreSecurityScenarioService.java)
+
+```java
+import io.github.atengk.boot.core.util.RsaUtil;
+import io.github.atengk.boot.core.util.Sm2Util;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+
+// 1. RSA-2048 PEM 编码、OAEP-SHA256 (MGF1-SHA256) 单块加解密与双模签验
+KeyPair rsaPair = RsaUtil.generateKeyPair(2048);
+String rsaPubPem = RsaUtil.encodePublicKeyToPem(rsaPair.getPublic());
+String rsaPriPem = RsaUtil.encodePrivateKeyToPem(rsaPair.getPrivate());
+String rsaOaepCipher = RsaUtil.encryptOaepBase64("aesSessionKey=k-20261127-prod", rsaPubPem);
+String rsaOaepPlain = RsaUtil.decryptOaepBase64(rsaOaepCipher, rsaPriPem);
+
+String sha256Sig = RsaUtil.signSha256Base64("POST\n/api/settlement", rsaPriPem);
+boolean sha256Ok = RsaUtil.verifySha256Base64("POST\n/api/settlement", sha256Sig, rsaPubPem);
+String pssSig = RsaUtil.signPssBase64("POST\n/api/settlement", rsaPriPem);
+boolean pssOk = RsaUtil.verifyPssBase64("POST\n/api/settlement", pssSig, rsaPubPem);
+
+// 2. 国密 SM2 密钥对、C1C3C2 / ASN.1 DER 双向加解密与 DER / Raw 64B 签验
+Sm2Util.Sm2KeyPair sm2Pair = Sm2Util.generateKeyPair();
+byte[] customUserId = "MERCHANT_APP_01".getBytes(StandardCharsets.UTF_8);
+
+String sm2C1c3c2 = Sm2Util.encryptBase64("aesSessionKey=k-20261127-prod", sm2Pair.publicKeyHex());
+String sm2Der = Sm2Util.encryptToDerBase64("aesSessionKey=k-20261127-prod", sm2Pair.publicKeyHex());
+String plainFromC1c3c2 = Sm2Util.decryptBase64(sm2C1c3c2, sm2Pair.privateKeyHex());
+String plainFromDer = Sm2Util.decryptBase64(sm2Der, sm2Pair.privateKeyHex());
+
+String sm2DerSig = Sm2Util.signBase64("POST\n/api/settlement", sm2Pair.privateKeyHex(), customUserId);
+boolean sm2DerOk = Sm2Util.verifyBase64("POST\n/api/settlement", sm2DerSig, sm2Pair.publicKeyHex(), customUserId);
+byte[] sm2RawSig = Sm2Util.signRaw("POST\n/api/settlement".getBytes(StandardCharsets.UTF_8), sm2Pair.privateKey(), customUserId);
+boolean sm2RawOk = Sm2Util.verify("POST\n/api/settlement".getBytes(StandardCharsets.UTF_8), sm2RawSig, sm2Pair.publicKey(), customUserId);
+```
+
+#### 预期响应 JSON 契约
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "rsaKeyPemRoundTripValid": true,
+    "rsaOaepCiphertext": "Base64(RSA-OAEP-SHA256 单块密文)",
+    "rsaOaepDecrypted": "aesSessionKey=k-20261127-prod",
+    "rsaSha256Verified": true,
+    "rsaPssVerified": true,
+    "rsaTamperBlocked": true,
+    "sm2PublicKeyHex": "04<64字节X+Y十六进制公钥>",
+    "sm2C1c3c2Ciphertext": "Base64(04||C1||C3||C2密文)",
+    "sm2DerCiphertext": "Base64(ASN.1 DER密文)",
+    "sm2C1c3c2Decrypted": "aesSessionKey=k-20261127-prod",
+    "sm2DerDecrypted": "aesSessionKey=k-20261127-prod",
+    "sm2DerVerified": true,
+    "sm2RawVerified": true,
+    "sm2UserIdIsolated": true,
+    "sm2TamperBlocked": true
+  },
+  "timestamp": 1794052800000,
+  "success": true,
+  "traceId": "91a0c841bb2f4e3c9c64be630c71049c"
+}
+```
+
+---
+
+### 4.7 RFC 5869 密钥派生与域隔离实践 (`HkdfUtil`)
+
+#### 业务场景与痛点
+从共享主密钥材料（如 ECDH/SM2 协商共享秘密、租户主密钥）直接截取字节同时用于加密、HMAC 认证或审计，容易造成多用途密钥串用碰撞。`HkdfUtil` 基于 `HmacUtil` 实现 RFC 5869 Extract-and-Expand 标准密钥派生，同时提供 `HKDF-SHA256` 与国密 `HKDF-SM3`：
+- **空盐标准化与严格长度边界**：`salt` 为 `null` 或空数组时自动按 RFC 5869 §2.2 填充 32 字节全零；目标输出 `length` 硬限制于 `[1, 255 * 32]`（即 `[1, 8160]` 字节），非法入参快速失败抛出 `IllegalArgumentException`；
+- **域隔离与瞬态清零**：通过不同 `info` 上下文标签派生完全正交独立的工作子密钥（AES 密钥、SM4 密钥、HMAC 密钥、审计密钥），全部 `PRK` 与 `T(i)` 瞬态数组在 `finally` 块中确定性归零。
+
+#### 核心代码范式
+代码锚定样例：[`KdfAndStreamRequest.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/dto/KdfAndStreamRequest.java)、[`CoreSecurityController.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/controller/CoreSecurityController.java)（`POST /sample/core/security/kdf-and-stream`）、[`CoreSecurityScenarioService.java`](../ateng-boot-samples/ateng-boot-sample-core/src/main/java/io/github/atengk/boot/sample/core/service/CoreSecurityScenarioService.java)
+
+```java
+import io.github.atengk.boot.core.util.CryptoUtil;
+import io.github.atengk.boot.core.util.HkdfUtil;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+
+byte[] ikm = masterSecret.getBytes(StandardCharsets.UTF_8);
+byte[] saltBytes = "ateng-salt-v1".getBytes(StandardCharsets.UTF_8);
+byte[] aesKey = null;
+byte[] derivedSm4Key = null;
+byte[] sm4Key = null;
+byte[] auditKey = null;
+try {
+    // 1. HKDF-SHA256 与国密 HKDF-SM3 按上下文 info 派生域隔离工作密钥
+    aesKey = HkdfUtil.deriveKey(ikm, saltBytes, "tenant=t001:payload-enc", 32);
+    derivedSm4Key = HkdfUtil.deriveKeySm3(ikm, saltBytes, "tenant=t001:payload-enc:sm4", 32);
+    sm4Key = Arrays.copyOf(derivedSm4Key, CryptoUtil.SM4_KEY_SIZE);
+    auditKey = HkdfUtil.deriveKey(ikm, saltBytes, "tenant=t001:payload-enc:audit", 32);
+    boolean isolated = !Arrays.equals(aesKey, auditKey); // true
+
+    // 2. 用派生子密钥直接驱动自包含 Packed AEAD 加解密
+    byte[] aadBytes = "tenant=t001;scene=settlement".getBytes(StandardCharsets.UTF_8);
+    String packedCipher = CryptoUtil.encryptSm4GcmPacked("OrderNo=ORD20261127001&Amount=188.00", sm4Key, aadBytes);
+    String packedPlain = CryptoUtil.decryptSm4GcmPacked(packedCipher, sm4Key, aadBytes);
+} finally {
+    Arrays.fill(ikm, (byte) 0);
+    Arrays.fill(saltBytes, (byte) 0);
+    if (aesKey != null) Arrays.fill(aesKey, (byte) 0);
+    if (derivedSm4Key != null) Arrays.fill(derivedSm4Key, (byte) 0);
+    if (sm4Key != null) Arrays.fill(sm4Key, (byte) 0);
+    if (auditKey != null) Arrays.fill(auditKey, (byte) 0);
+}
+```
+
+#### 预期响应 JSON 契约
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "hkdfSha256KeyHex": "64位小写HKDF-SHA256派生子密钥",
+    "hkdfSm3KeyHex": "64位小写国密HKDF-SM3派生子密钥",
+    "hkdfDomainIsolated": true,
+    "hmacSha512Hex": "128位小写HMAC-SHA512认证标签",
+    "hmacSha512Verified": true,
+    "sha256StreamHex": "64位小写流式SHA-256摘要",
+    "sha512StreamHex": "128位小写流式SHA-512摘要",
+    "sm3StreamHex": "64位小写流式国密SM3摘要",
+    "aesGcmPackedCiphertext": "Base64(12B IV || AES-GCM密文 || 16B Tag)",
+    "aesGcmPackedDecrypted": "OrderNo=ORD20261127001&Amount=188.00",
+    "sm4GcmPackedCiphertext": "Base64(12B IV || SM4-GCM密文 || 16B Tag)",
+    "sm4GcmPackedDecrypted": "OrderNo=ORD20261127001&Amount=188.00",
+    "base64UrlToken": "无填充Base64URL编码字符串",
+    "base64UrlDecoded": "OrderNo=ORD20261127001&Amount=188.00",
+    "constantTimeEqualsValid": true
   },
   "timestamp": 1794052800000,
   "success": true,

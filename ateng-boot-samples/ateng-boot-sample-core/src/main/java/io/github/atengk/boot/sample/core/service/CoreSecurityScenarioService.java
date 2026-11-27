@@ -11,17 +11,24 @@ import io.github.atengk.boot.core.util.ChecksumUtil;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.core.util.DigestUtil;
 import io.github.atengk.boot.core.util.HexUtil;
+import io.github.atengk.boot.core.util.HkdfUtil;
 import io.github.atengk.boot.core.util.HmacUtil;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.core.util.PasswordUtil;
+import io.github.atengk.boot.core.util.RsaUtil;
+import io.github.atengk.boot.core.util.Sm2Util;
+import io.github.atengk.boot.sample.core.dto.AsymmetricCryptoRequest;
+import io.github.atengk.boot.sample.core.dto.KdfAndStreamRequest;
 import io.github.atengk.boot.sample.core.dto.PasswordCheckRequest;
 import io.github.atengk.boot.sample.core.dto.PaymentCryptoRequest;
 import io.github.atengk.boot.sample.core.dto.SecurityCryptoRequest;
 import io.github.atengk.boot.sample.core.dto.SignAndVerifyRequest;
 import io.github.atengk.boot.sample.core.model.SampleUserDTO;
+import io.github.atengk.boot.sample.core.vo.AsymmetricCryptoVO;
 import io.github.atengk.boot.sample.core.vo.CustomerPrivacyVO;
 import io.github.atengk.boot.sample.core.vo.IdGenerateVO;
+import io.github.atengk.boot.sample.core.vo.KdfAndStreamVO;
 import io.github.atengk.boot.sample.core.vo.PasswordCheckVO;
 import io.github.atengk.boot.sample.core.vo.PaymentCryptoVO;
 import io.github.atengk.boot.sample.core.vo.SecurityCryptoVO;
@@ -31,9 +38,14 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.Base64;
 
 /**
  * Core 场景二：安全加解密与脱敏服务
@@ -523,8 +535,12 @@ public class CoreSecurityScenarioService {
         String upgradedPassword = legacyNeedsUpgrade ? PasswordUtil.hash(rawPassword) : legacyEncoded;
         boolean currentNeedsUpgrade = PasswordUtil.needsUpgrade(upgradedPassword);
 
-        log.info("口令慢哈希与校验闭环完成: username={}, saltUnique={}, matched={}, legacyNeedsUpgrade={}",
-                request.getUsername(), saltUnique, matched, legacyNeedsUpgrade);
+        // 4. 账号不存在分支执行恒定时间虚拟 PBKDF2 计算，防御时序枚举
+        boolean dummyCheckRejected = !PasswordUtil.constantTimeDummyCheck(rawPassword)
+                && !PasswordUtil.constantTimeDummyCheck((CharSequence) null);
+
+        log.info("口令慢哈希与校验闭环完成: username={}, saltUnique={}, matched={}, legacyNeedsUpgrade={}, dummyCheckRejected={}",
+                request.getUsername(), saltUnique, matched, legacyNeedsUpgrade, dummyCheckRejected);
 
         return PasswordCheckVO.builder()
                 .username(request.getUsername())
@@ -536,6 +552,207 @@ public class CoreSecurityScenarioService {
                 .legacyNeedsUpgrade(legacyNeedsUpgrade)
                 .upgradedPassword(upgradedPassword)
                 .currentNeedsUpgrade(currentNeedsUpgrade)
+                .dummyCheckRejected(dummyCheckRejected)
                 .build();
+    }
+
+    /**
+     * 16. 验证纯 JDK 原生 RSA-OAEP-SHA256 / RSASSA-PSS 与国密 SM2 非对称加解密及签验闭环
+     *
+     * @param request 非对称加解密与签验请求对象
+     * @return RSA 与 SM2 加解密、多格式签名与防篡改结果视图
+     */
+    public AsymmetricCryptoVO verifyAsymmetricCrypto(AsymmetricCryptoRequest request) {
+        BusinessAssert.notNull(request, "非对称加解密请求体不能为空");
+        BusinessAssert.hasText(request.getPlaintext(), "待加密业务明文不能为空");
+        BusinessAssert.hasText(request.getSignPayload(), "待签名报文载荷不能为空");
+
+        // 1. RSA 2048 位密钥对生成、PEM 往返解析、OAEP-SHA256 单块加解密与 SHA256/PSS 签验
+        KeyPair rsaPair = RsaUtil.generateKeyPair(2048);
+        KeyPair otherRsaPair = RsaUtil.generateKeyPair(2048);
+        String rsaPubPem = RsaUtil.encodePublicKeyToPem(rsaPair.getPublic());
+        String rsaPriPem = RsaUtil.encodePrivateKeyToPem(rsaPair.getPrivate());
+        String otherRsaPriPem = RsaUtil.encodePrivateKeyToPem(otherRsaPair.getPrivate());
+
+        PublicKey parsedPub = RsaUtil.parsePublicKey(rsaPubPem);
+        PrivateKey parsedPri = RsaUtil.parsePrivateKey(rsaPriPem);
+        byte[] origPriEncoded = rsaPair.getPrivate().getEncoded();
+        byte[] parsedPriEncoded = parsedPri.getEncoded();
+        boolean rsaKeyPemRoundTripValid;
+        try {
+            rsaKeyPemRoundTripValid = Arrays.equals(rsaPair.getPublic().getEncoded(), parsedPub.getEncoded())
+                    && Arrays.equals(origPriEncoded, parsedPriEncoded);
+        } finally {
+            if (origPriEncoded != null) {
+                Arrays.fill(origPriEncoded, (byte) 0);
+            }
+            if (parsedPriEncoded != null) {
+                Arrays.fill(parsedPriEncoded, (byte) 0);
+            }
+        }
+
+        String rsaOaepCiphertext = RsaUtil.encryptOaepBase64(request.getPlaintext(), rsaPubPem);
+        String rsaOaepDecrypted = RsaUtil.decryptOaepBase64(rsaOaepCiphertext, rsaPriPem);
+
+        String rsaSha256Sig = RsaUtil.signSha256Base64(request.getSignPayload(), rsaPriPem);
+        boolean rsaSha256Verified = RsaUtil.verifySha256Base64(request.getSignPayload(), rsaSha256Sig, rsaPubPem);
+
+        String rsaPssSig = RsaUtil.signPssBase64(request.getSignPayload(), rsaPriPem);
+        boolean rsaPssVerified = RsaUtil.verifyPssBase64(request.getSignPayload(), rsaPssSig, rsaPubPem);
+
+        boolean wrongDecryptBlocked = false;
+        try {
+            RsaUtil.decryptOaepBase64(rsaOaepCiphertext, otherRsaPriPem);
+        } catch (IllegalStateException ex) {
+            wrongDecryptBlocked = ex.getCause() != null;
+        }
+        boolean rsaTamperBlocked = wrongDecryptBlocked
+                && !RsaUtil.verifyPssBase64(request.getSignPayload() + "&tamper=1", rsaPssSig, rsaPubPem);
+
+        // 2. 国密 SM2 密钥对生成、C1C3C2 / ASN.1 DER 双向加解密与 SM2/SM3 DER + Raw 64B 签验
+        Sm2Util.Sm2KeyPair sm2Pair = Sm2Util.generateKeyPair();
+        byte[] customUserId = (request.getSm2UserId() != null && !request.getSm2UserId().isBlank())
+                ? request.getSm2UserId().getBytes(StandardCharsets.UTF_8)
+                : Sm2Util.defaultUserId();
+
+        String sm2C1c3c2Ciphertext = Sm2Util.encryptBase64(request.getPlaintext(), sm2Pair.publicKeyHex());
+        String sm2DerCiphertext = Sm2Util.encryptToDerBase64(request.getPlaintext(), sm2Pair.publicKeyHex());
+        String sm2C1c3c2Decrypted = Sm2Util.decryptBase64(sm2C1c3c2Ciphertext, sm2Pair.privateKeyHex());
+        String sm2DerDecrypted = Sm2Util.decryptBase64(sm2DerCiphertext, sm2Pair.privateKeyHex());
+
+        byte[] signBytes = request.getSignPayload().getBytes(StandardCharsets.UTF_8);
+        String sm2DerSig = Sm2Util.signBase64(request.getSignPayload(), sm2Pair.privateKeyHex(), customUserId);
+        boolean sm2DerVerified = Sm2Util.verifyBase64(request.getSignPayload(), sm2DerSig, sm2Pair.publicKeyHex(), customUserId);
+
+        byte[] sm2RawSig = Sm2Util.signRaw(signBytes, sm2Pair.privateKey(), customUserId);
+        boolean sm2RawVerified = sm2RawSig.length == 64
+                && Sm2Util.verify(signBytes, sm2RawSig, sm2Pair.publicKey(), customUserId);
+
+        byte[] otherUserId = "OTHER_DOMAIN_APP".getBytes(StandardCharsets.UTF_8);
+        boolean sm2UserIdIsolated = !Sm2Util.verifyBase64(request.getSignPayload(), sm2DerSig, sm2Pair.publicKeyHex(), otherUserId);
+
+        byte[] rawCipher = Base64.getDecoder().decode(sm2C1c3c2Ciphertext);
+        rawCipher[70] ^= 0x01;
+        boolean sm2TamperBlocked = false;
+        try {
+            Sm2Util.decrypt(rawCipher, sm2Pair.privateKey());
+        } catch (IllegalStateException ex) {
+            sm2TamperBlocked = true;
+        }
+
+        log.info("非对称加解密与签验闭环完成: rsaKeyPemRoundTripValid={}, sm2DerVerified={}, sm2RawVerified={}",
+                rsaKeyPemRoundTripValid, sm2DerVerified, sm2RawVerified);
+
+        return AsymmetricCryptoVO.builder()
+                .rsaKeyPemRoundTripValid(rsaKeyPemRoundTripValid)
+                .rsaOaepCiphertext(rsaOaepCiphertext)
+                .rsaOaepDecrypted(rsaOaepDecrypted)
+                .rsaSha256Verified(rsaSha256Verified)
+                .rsaPssVerified(rsaPssVerified)
+                .rsaTamperBlocked(rsaTamperBlocked)
+                .sm2PublicKeyHex(sm2Pair.publicKeyHex())
+                .sm2C1c3c2Ciphertext(sm2C1c3c2Ciphertext)
+                .sm2DerCiphertext(sm2DerCiphertext)
+                .sm2C1c3c2Decrypted(sm2C1c3c2Decrypted)
+                .sm2DerDecrypted(sm2DerDecrypted)
+                .sm2DerVerified(sm2DerVerified)
+                .sm2RawVerified(sm2RawVerified)
+                .sm2UserIdIsolated(sm2UserIdIsolated)
+                .sm2TamperBlocked(sm2TamperBlocked)
+                .build();
+    }
+
+    /**
+     * 17. 验证 HKDF-SHA256 / HKDF-SM3 密钥派生、HMAC-SHA512、流式摘要与自包含 Packed AEAD 闭环
+     *
+     * @param request KDF 与流式摘要请求对象
+     * @return HKDF 派生密钥、HMAC-SHA512、流式摘要、Packed AEAD 往返与 Base64URL 结果视图
+     */
+    public KdfAndStreamVO verifyKdfAndStream(KdfAndStreamRequest request) {
+        BusinessAssert.notNull(request, "KDF 与流式摘要请求体不能为空");
+        BusinessAssert.hasText(request.getMasterSecret(), "主密钥材料不能为空");
+        BusinessAssert.hasText(request.getInfo(), "HKDF 上下文信息 info 不能为空");
+        BusinessAssert.hasText(request.getPayload(), "业务载荷不能为空");
+        BusinessAssert.hasText(request.getAad(), "附加认证数据 AAD 不能为空");
+
+        byte[] ikm = request.getMasterSecret().getBytes(StandardCharsets.UTF_8);
+        byte[] saltBytes = (request.getSalt() != null && !request.getSalt().isEmpty())
+                ? request.getSalt().getBytes(StandardCharsets.UTF_8)
+                : null;
+        byte[] derivedAesKey = null;
+        byte[] derivedSm4Key = null;
+        byte[] auditDomainKey = null;
+        byte[] hmacKey = null;
+        try {
+            // 1. RFC 5869 HKDF 派生子密钥与上下文域隔离
+            derivedAesKey = HkdfUtil.deriveKey(ikm, saltBytes, request.getInfo(), 32);
+            derivedSm4Key = HkdfUtil.deriveKeySm3(ikm, saltBytes, request.getInfo() + ":sm4", 32);
+            auditDomainKey = HkdfUtil.deriveKey(ikm, saltBytes, request.getInfo() + ":audit", 32);
+            boolean hkdfDomainIsolated = !Arrays.equals(derivedAesKey, auditDomainKey);
+
+            // 2. HMAC-SHA512 签验与流式 InputStream 增量摘要（验证流结果与字节数组摘要严格一致）
+            hmacKey = Arrays.copyOf(derivedAesKey, 32);
+            byte[] payloadBytes = request.getPayload().getBytes(StandardCharsets.UTF_8);
+            String hmacSha512Hex = HmacUtil.hmacSha512Hex(payloadBytes, hmacKey);
+            boolean hmacSha512Verified = HmacUtil.verifyHex(
+                    HmacUtil.hmacSha512Hex(payloadBytes, hmacKey), hmacSha512Hex);
+
+            String sha256StreamHex = DigestUtil.sha256Hex(new ByteArrayInputStream(payloadBytes));
+            String sha512StreamHex = DigestUtil.sha512Hex(new ByteArrayInputStream(payloadBytes));
+            String sm3StreamHex = DigestUtil.sm3Hex(new ByteArrayInputStream(payloadBytes));
+            BusinessAssert.isTrue(sha256StreamHex.equals(DigestUtil.sha256Hex(payloadBytes))
+                            && sha512StreamHex.equals(DigestUtil.sha512Hex(payloadBytes))
+                            && sm3StreamHex.equals(DigestUtil.sm3Hex(payloadBytes)),
+                    "流式摘要结果必须与字节数组摘要完全一致");
+
+            // 3. Packed AEAD 自包含加密往返（前 16 字节用作 SM4 密钥，32 字节派生密钥用作 AES-256 密钥）
+            byte[] aadBytes = request.getAad().getBytes(StandardCharsets.UTF_8);
+            byte[] sm4Key = Arrays.copyOf(derivedSm4Key, CryptoUtil.SM4_KEY_SIZE);
+            try {
+                String aesGcmPackedCiphertext = CryptoUtil.encryptGcmPacked(
+                        request.getPayload(), derivedAesKey, aadBytes);
+                String aesGcmPackedDecrypted = CryptoUtil.decryptGcmPacked(
+                        aesGcmPackedCiphertext, derivedAesKey, aadBytes);
+
+                String sm4GcmPackedCiphertext = CryptoUtil.encryptSm4GcmPacked(
+                        request.getPayload(), sm4Key, aadBytes);
+                String sm4GcmPackedDecrypted = CryptoUtil.decryptSm4GcmPacked(
+                        sm4GcmPackedCiphertext, sm4Key, aadBytes);
+
+                // 4. Base64URL 无填充编码与恒定时间字符串/字节比较
+                String base64UrlToken = CryptoUtil.encodeBase64Url(payloadBytes);
+                String base64UrlDecoded = new String(
+                        CryptoUtil.decodeBase64Url(base64UrlToken), StandardCharsets.UTF_8);
+                boolean constantTimeEqualsValid = CryptoUtil.constantTimeEquals(hmacSha512Hex, hmacSha512Hex)
+                        && !CryptoUtil.constantTimeEquals(hmacSha512Hex, hmacSha512Hex + "0");
+
+                return KdfAndStreamVO.builder()
+                        .hkdfSha256KeyHex(HexUtil.encodeHex(derivedAesKey))
+                        .hkdfSm3KeyHex(HexUtil.encodeHex(derivedSm4Key))
+                        .hkdfDomainIsolated(hkdfDomainIsolated)
+                        .hmacSha512Hex(hmacSha512Hex)
+                        .hmacSha512Verified(hmacSha512Verified)
+                        .sha256StreamHex(sha256StreamHex)
+                        .sha512StreamHex(sha512StreamHex)
+                        .sm3StreamHex(sm3StreamHex)
+                        .aesGcmPackedCiphertext(aesGcmPackedCiphertext)
+                        .aesGcmPackedDecrypted(aesGcmPackedDecrypted)
+                        .sm4GcmPackedCiphertext(sm4GcmPackedCiphertext)
+                        .sm4GcmPackedDecrypted(sm4GcmPackedDecrypted)
+                        .base64UrlToken(base64UrlToken)
+                        .base64UrlDecoded(base64UrlDecoded)
+                        .constantTimeEqualsValid(constantTimeEqualsValid)
+                        .build();
+            } finally {
+                Arrays.fill(sm4Key, (byte) 0);
+            }
+        } finally {
+            Arrays.fill(ikm, (byte) 0);
+            if (saltBytes != null) Arrays.fill(saltBytes, (byte) 0);
+            if (derivedAesKey != null) Arrays.fill(derivedAesKey, (byte) 0);
+            if (derivedSm4Key != null) Arrays.fill(derivedSm4Key, (byte) 0);
+            if (auditDomainKey != null) Arrays.fill(auditDomainKey, (byte) 0);
+            if (hmacKey != null) Arrays.fill(hmacKey, (byte) 0);
+        }
     }
 }

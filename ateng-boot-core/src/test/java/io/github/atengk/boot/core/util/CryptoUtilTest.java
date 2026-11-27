@@ -313,4 +313,135 @@ class CryptoUtilTest {
         assertThrows(IllegalArgumentException.class, () -> CryptoUtil.encryptSm4Gcm("x".getBytes(StandardCharsets.UTF_8), new byte[8], iv, aad));
         assertThrows(IllegalArgumentException.class, () -> CryptoUtil.encryptSm4Gcm("x".getBytes(StandardCharsets.UTF_8), key, new byte[0], aad));
     }
+
+    @Test
+    @DisplayName("无填充 Base64URL 编解码与恒定时间比对原语验证")
+    void shouldEncodeBase64UrlAndCompareConstantTime() {
+        byte[] binary = new byte[]{(byte) 0xfb, (byte) 0xff, (byte) 0x3e, (byte) 0x3f, 0x01};
+        String urlEncoded = CryptoUtil.encodeBase64Url(binary);
+        assertNotNull(urlEncoded);
+        assertFalse(urlEncoded.contains("="));
+        assertFalse(urlEncoded.contains("+"));
+        assertFalse(urlEncoded.contains("/"));
+        assertArrayEquals(binary, CryptoUtil.decodeBase64Url(urlEncoded));
+
+        assertNull(CryptoUtil.encodeBase64Url(null));
+        assertNull(CryptoUtil.decodeBase64Url(null));
+
+        assertTrue(CryptoUtil.constantTimeEquals(binary, binary.clone()));
+        assertFalse(CryptoUtil.constantTimeEquals(binary, new byte[]{1, 2}));
+        assertFalse(CryptoUtil.constantTimeEquals((byte[]) null, binary));
+        assertFalse(CryptoUtil.constantTimeEquals(binary, null));
+
+        assertTrue(CryptoUtil.constantTimeEquals("ateng-token-2026", "ateng-token-2026"));
+        assertFalse(CryptoUtil.constantTimeEquals("ateng-token-2026", "ateng-token-2027"));
+        assertFalse(CryptoUtil.constantTimeEquals((String) null, "a"));
+        assertFalse(CryptoUtil.constantTimeEquals("a", null));
+    }
+
+    @Test
+    @DisplayName("自包含封装版 Packed AEAD (AES-GCM / SM4-GCM) 往返、空明文边界、短密文与篡改拒绝")
+    void shouldEncryptDecryptPackedAeadSafely() {
+        byte[] aesKey = CryptoUtil.generateKey(256);
+        byte[] sm4Key = CryptoUtil.generateSm4Key();
+        byte[] aad = "session:web-spa|v2".getBytes(StandardCharsets.UTF_8);
+
+        // 1. 空明文边界：12B IV + 0B cipher + 16B Tag = 28 字节
+        byte[] aesEmptyPacked = CryptoUtil.encryptGcmPacked(new byte[0], aesKey, aad);
+        assertEquals(28, aesEmptyPacked.length);
+        assertArrayEquals(new byte[0], CryptoUtil.decryptGcmPacked(aesEmptyPacked, aesKey, aad));
+
+        byte[] sm4EmptyPacked = CryptoUtil.encryptSm4GcmPacked(new byte[0], sm4Key, aad);
+        assertEquals(28, sm4EmptyPacked.length);
+        assertArrayEquals(new byte[0], CryptoUtil.decryptSm4GcmPacked(sm4EmptyPacked, sm4Key, aad));
+
+        // 2. 多分组字符串往返（标准 Base64 编码）
+        String payload = "会话凭据：uid=10086&tenant=finance&nonce=9f8e7d6c5b4a";
+        String aesPackedB64 = CryptoUtil.encryptGcmPacked(payload, aesKey);
+        assertEquals(payload, CryptoUtil.decryptGcmPacked(aesPackedB64, aesKey));
+        String aesPackedAadB64 = CryptoUtil.encryptGcmPacked(payload, aesKey, aad);
+        assertEquals(payload, CryptoUtil.decryptGcmPacked(aesPackedAadB64, aesKey, aad));
+
+        String sm4PackedB64 = CryptoUtil.encryptSm4GcmPacked(payload, sm4Key);
+        assertEquals(payload, CryptoUtil.decryptSm4GcmPacked(sm4PackedB64, sm4Key));
+        String sm4PackedAadB64 = CryptoUtil.encryptSm4GcmPacked(payload, sm4Key, aad);
+        assertEquals(payload, CryptoUtil.decryptSm4GcmPacked(sm4PackedAadB64, sm4Key, aad));
+
+        // 3. 短密文 (< 28 字节) 快速失败抛出 IllegalArgumentException
+        assertThrows(IllegalArgumentException.class, () -> CryptoUtil.decryptGcmPacked(new byte[27], aesKey));
+        assertThrows(IllegalArgumentException.class, () -> CryptoUtil.decryptSm4GcmPacked(new byte[27], sm4Key));
+
+        // 4. 篡改 Tag 抛出保留 AEADBadTagException 的脱敏 IllegalStateException
+        byte[] tamperedAes = aesEmptyPacked.clone();
+        tamperedAes[tamperedAes.length - 1] ^= 0x01;
+        IllegalStateException aesEx = assertThrows(IllegalStateException.class,
+                () -> CryptoUtil.decryptGcmPacked(tamperedAes, aesKey, aad));
+        assertInstanceOf(AEADBadTagException.class, aesEx.getCause());
+        assertEquals("AES/GCM 解密或认证校验失败", aesEx.getMessage());
+
+        byte[] tamperedSm4 = sm4EmptyPacked.clone();
+        tamperedSm4[tamperedSm4.length - 1] ^= 0x01;
+        IllegalStateException sm4Ex = assertThrows(IllegalStateException.class,
+                () -> CryptoUtil.decryptSm4GcmPacked(tamperedSm4, sm4Key, aad));
+        assertInstanceOf(AEADBadTagException.class, sm4Ex.getCause());
+        assertEquals("SM4/GCM 解密或认证校验失败", sm4Ex.getMessage());
+
+        // 5. Null 安全
+        assertNull(CryptoUtil.encryptGcmPacked((byte[]) null, aesKey));
+        assertNull(CryptoUtil.decryptGcmPacked((byte[]) null, aesKey));
+        assertNull(CryptoUtil.encryptSm4GcmPacked((String) null, sm4Key));
+        assertNull(CryptoUtil.decryptSm4GcmPacked((String) null, sm4Key));
+    }
+
+    @Test
+    @DisplayName("RFC 8998 Appendix A.1 官方 SM4-GCM 测试向量与多分组加解密精确验证")
+    void shouldMatchRfc8998OfficialSm4GcmVector() {
+        byte[] key = HexUtil.decodeHex("0123456789abcdeffedcba9876543210");
+        byte[] iv = HexUtil.decodeHex("00001234567800000000abcd");
+        byte[] aad = HexUtil.decodeHex("feedfacedeadbeeffeedfacedeadbeefabaddad2");
+        byte[] plaintext = HexUtil.decodeHex(
+                "aaaaaaaaaaaaaaaabbbbbbbbbbbbbbbb"
+                        + "ccccccccccccccccdddddddddddddddd"
+                        + "eeeeeeeeeeeeeeeeffffffffffffffff"
+                        + "eeeeeeeeeeeeeeeeaaaaaaaaaaaaaaaa");
+        String expectedCipherAndTagHex =
+                "17f399f08c67d5ee19d0dc9969c4bb7d"
+                        + "5fd46fd3756489069157b282bb200735"
+                        + "d82710ca5c22f0ccfa7cbf93d496ac15"
+                        + "a56834cbcf98c397b4024a2691233b8d"
+                        + "83de3541e4c2b58177e065a9bf7b62ec";
+
+        byte[] actual = CryptoUtil.encryptSm4Gcm(plaintext, key, iv, aad);
+        assertEquals(expectedCipherAndTagHex, HexUtil.encodeHex(actual));
+        assertArrayEquals(plaintext, CryptoUtil.decryptSm4Gcm(actual, key, iv, aad));
+    }
+
+    @Test
+    @DisplayName("pkcs7Unpad 与 AEAD 异常消息脱敏：不泄露非法填充值与底层细节")
+    void shouldMaskPkcs7PaddingAndAeadExceptionMessages() {
+        byte[] sm4Key = "0123456789abcdef".getBytes(StandardCharsets.UTF_8);
+        byte[] cipherBlock = CryptoUtil.encryptSm4Ecb(new byte[]{1, 2, 3}, sm4Key);
+        byte[] corrupted = cipherBlock.clone();
+        corrupted[0] ^= 0x5A;
+
+        IllegalArgumentException padEx = assertThrows(IllegalArgumentException.class,
+                () -> CryptoUtil.decryptSm4Ecb(corrupted, sm4Key));
+        assertEquals("PKCS7 解填充失败", padEx.getMessage());
+
+        // 4 参 String 重载篡改后应脱敏错误消息，但保留 AEADBadTagException cause 链
+        byte[] aesKey = CryptoUtil.generateKey(256);
+        byte[] iv = CryptoUtil.generateGcmIv();
+        byte[] aad = "ctx=1".getBytes(StandardCharsets.UTF_8);
+        String gcmStr = CryptoUtil.encryptGcm("hello", aesKey, iv, aad);
+        BusinessException gcmBizEx = assertThrows(BusinessException.class,
+                () -> CryptoUtil.decryptGcm(gcmStr, aesKey, iv, "ctx=2".getBytes(StandardCharsets.UTF_8)));
+        assertEquals("AES/GCM 解密或认证校验失败", gcmBizEx.getMessage());
+        assertInstanceOf(AEADBadTagException.class, gcmBizEx.getCause());
+
+        String sm4Str = CryptoUtil.encryptSm4Gcm("hello", sm4Key, iv, aad);
+        BusinessException sm4BizEx = assertThrows(BusinessException.class,
+                () -> CryptoUtil.decryptSm4Gcm(sm4Str, sm4Key, iv, "ctx=2".getBytes(StandardCharsets.UTF_8)));
+        assertEquals("SM4/GCM 解密或认证校验失败", sm4BizEx.getMessage());
+        assertInstanceOf(AEADBadTagException.class, sm4BizEx.getCause());
+    }
 }

@@ -65,4 +65,9 @@ public class PasswordCheckVO implements Serializable {
      * 最新默认基线哈希串是否无需再升级
      */
     private boolean currentNeedsUpgrade;
+
+    /**
+     * 账号不存在时执行恒定时间虚拟校验是否始终安全返回 false（防时序枚举）
+     */
+    private boolean dummyCheckRejected;
 }

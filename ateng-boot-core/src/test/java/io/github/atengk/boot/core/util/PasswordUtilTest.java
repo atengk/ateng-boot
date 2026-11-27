@@ -168,4 +168,28 @@ class PasswordUtilTest {
             assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
+
+    @Test
+    @DisplayName("constantTimeDummyCheck: 账号不存在防枚举伪校验恒定返回 false 且不篡改入参")
+    void shouldExecuteConstantTimeDummyCheckSafely() {
+        assertFalse(PasswordUtil.constantTimeDummyCheck("SomePassword#2026", 10_000));
+        assertFalse(PasswordUtil.constantTimeDummyCheck((CharSequence) null, 10_000));
+        assertFalse(PasswordUtil.constantTimeDummyCheck("", 10_000));
+        assertFalse(PasswordUtil.constantTimeDummyCheck("   ", 10_000));
+
+        char[] rawChars = "DummyPass#2026".toCharArray();
+        char[] snapshot = rawChars.clone();
+        assertFalse(PasswordUtil.constantTimeDummyCheck(rawChars, 10_000));
+        assertArrayEquals(snapshot, rawChars);
+        assertFalse(PasswordUtil.constantTimeDummyCheck((char[]) null, 10_000));
+        assertFalse(PasswordUtil.constantTimeDummyCheck(new char[0], 10_000));
+
+        // 默认迭代次数重载与越界参数校验
+        assertFalse(PasswordUtil.constantTimeDummyCheck("DefaultIterPass#2026"));
+        assertFalse(PasswordUtil.constantTimeDummyCheck("DefaultIterPass#2026".toCharArray()));
+        assertThrows(IllegalArgumentException.class,
+                () -> PasswordUtil.constantTimeDummyCheck("pass", PasswordUtil.MIN_ITERATIONS - 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> PasswordUtil.constantTimeDummyCheck("pass".toCharArray(), PasswordUtil.MAX_ITERATIONS + 1));
+    }
 }

@@ -98,7 +98,7 @@ sample:
     # 缓存密码：指定多 Key 路由 [redis-cluster] 执行解密
     redis-password: ENC[redis-cluster](YbIg1S6F2964mdnyLgtvn1D4SjJ2QqxN8M45CBCnWs0VpgEJ4b5wEZyEKOJyDA==)
     # 第三方API令牌：显式指定国密 SM4-CBC 算法加解密
-    third-party-token: ENC(SM4-CBC@ODPVE+KjssNqGN6yrBqMlXcYvDKQgNYADkGV+HV6vL+/H/Juo4KFpgIuVeRMmIT+)
+    third-party-token: ENC(SM4-CBC@ODPVE+KjssNqGN6yrBqMlT50cIPZfU5+bWb2v2FAz+aa/iS8QMwVAgyVUfnAulgs)
 ```
 
 ### 1.4 业务代码透明无感使用与主密钥注入规范
@@ -240,7 +240,7 @@ flowchart TD
   sample:
     secret:
       # 显式指定国密 SM4-CBC 算法解密（格式: ENC(SM4-CBC@<base64>)）
-      third-party-token: ENC(SM4-CBC@ODPVE+KjssNqGN6yrBqMlXcYvDKQgNYADkGV+HV6vL+/H/Juo4KFpgIuVeRMmIT+)
+      third-party-token: ENC(SM4-CBC@ODPVE+KjssNqGN6yrBqMlT50cIPZfU5+bWb2v2FAz+aa/iS8QMwVAgyVUfnAulgs)
   ```
 - **业务 Java 示例**（提取自 `SampleEncryptWebControllerTest.java`）：
   ```java

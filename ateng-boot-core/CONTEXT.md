@@ -69,15 +69,15 @@ _Avoid_: SnowflakeIdWorker, SequenceGenerator, SnowflakeGenerator
 _Avoid_: IdHelper, UuidUtil, IdentifierUtil, KeyUtil, Base62, ShortIdUtil, Base62Codec
 
 **CryptoUtil**:
-纯 JDK 原生对称加解密与国密工具类，默认支持 AES/CBC/PKCS5Padding、AES/GCM/NoPadding（含附加认证数据 AAD 重载）及纯原生国密 SM4/GCM/NoPadding（12 字节 IV、128-bit GHASH 认证 Tag 与 AAD 重载）、SM4/CBC、SM4/ECB (GB/T 32907-2016) 与随机密钥生成（`generateSm4Key`），无 Bouncy Castle 重型依赖。
+纯 JDK 原生对称加解密与国密工具类，默认支持 AES/CBC/PKCS5Padding、AES/GCM/NoPadding（含附加认证数据 AAD 重载及自包含封装 `encryptGcmPacked`/`decryptGcmPacked`）与纯原生国密 SM4/GCM/NoPadding（12 字节 IV、128-bit 无分支 64 位 `GF(2^128)` GHASH 认证 Tag、AAD 及自包含封装 `encryptSm4GcmPacked`/`decryptSm4GcmPacked`，载荷 `12B IV || ciphertext || 16B Tag`）、SM4/CBC、SM4/ECB (GB/T 32907-2016，轮密钥 `finally` 清零与脱敏去填充)、无填充 Base64URL 编解码（`encodeBase64Url`/`decodeBase64Url`）、恒定时间比对（`constantTimeEquals`）、异常消息脱敏及随机密钥生成（`generateSm4Key`），无 Bouncy Castle 重型依赖。
 _Avoid_: AesUtil, EncryptionUtil, EncryptUtil, Sm4Util
 
 **DigestUtil**:
-纯 JDK 17 原生摘要算法与国密杂凑工具类，提供 SHA-256、MD5 及纯原生国密 SM3 (GB/T 32905-2016) 字节数组与十六进制摘要计算门面。
+纯 JDK 17 原生摘要算法与国密杂凑工具类，提供 SHA-256、SHA-512、SHA-1、MD5 及纯原生国密 SM3 (GB/T 32905-2016) 字节数组、十六进制、多段零整块拷贝（`sm3(byte[]...)`）与不关闭调用方流的 `InputStream` 流式增量摘要计算门面。
 _Avoid_: HashUtil, Md5Util, ShaUtil, Sm3Util
 
 **PasswordUtil**:
-纯 JDK 原生口令慢哈希与恒定时间校验工具类，基于 `PBKDF2WithHmacSHA256` 与密码学安全随机盐生成自描述存储串，并提供防时序攻击比对与迭代升级判定。
+纯 JDK 原生口令慢哈希与恒定时间校验工具类，基于 `PBKDF2WithHmacSHA256` 与密码学安全随机盐生成自描述存储串，并提供防时序攻击比对、面向“账号不存在”分支的恒定时间伪校验（`constantTimeDummyCheck`，固定返回 `false`）与迭代升级判定。
 _Avoid_: PasswordEncoder, PwdUtil, BcryptUtil, PassUtil
 
 **TreeUtil**:
@@ -326,7 +326,7 @@ _Avoid_: ErrorCodeRange, CodeSegment, StatusRange
 _Avoid_: ChainExecutor, ResponsibilityChain, HandlerChain
 
 **HmacUtil**:
-纯 JDK 原生安全散列消息认证码（HMAC）工具类，提供 HMAC-SHA256、HMAC-SHA1、HMAC-MD5 及纯原生国密 HMAC-SM3（基于 RFC 2104 与 `DigestUtil.sm3`）密钥加签与恒定时间安全比对防侧信道攻击。
+纯 JDK 原生安全散列消息认证码（HMAC）工具类，提供 HMAC-SHA256、HMAC-SHA512、HMAC-SHA1、HMAC-MD5 及纯原生国密 HMAC-SM3（基于 RFC 2104 与 `DigestUtil.sm3`）密钥加签，并依托 `Locale.ROOT` 规整与底层复用 `CryptoUtil.constantTimeEquals` 执行恒定时间安全比对防侧信道攻击。
 _Avoid_: HmacHelper, SignUtil, HmacSignature, HmacSm3Util
 
 **ChecksumUtil**:
@@ -488,6 +488,18 @@ _Avoid_: ClientInfoUtil, BrowserParser, UaDetector
 **UserAgentInfo**:
 不可变客户端 User-Agent 解析结果契约 Record，封装标准化的浏览器名称（`browser`）、浏览器版本（`browserVersion`）、操作系统（`os`）、系统版本（`osVersion`）、设备类型（`deviceType`）、移动端标记（`mobile`）及受长度约束的原始 UA 串（`rawUserAgent`）。
 _Avoid_: ClientInfo, UserAgentVO, BrowserInfo, DeviceAgent
+
+**RsaUtil**:
+纯 JDK 原生 RSA 非对称加解密与数字签名原语门面，统一提供 2048/3072/4096 密钥对生成、X.509/PKCS#8 密钥解析与 PEM 编解码、单块 `RSA-OAEP-SHA256`（`MGF1-SHA256`）加解密及 `SHA256withRSA` / `RSASSA-PSS` 签验。
+_Avoid_: RsaHelper, RsaCryptoUtil, RsaCipherUtil, AsymmetricUtil
+
+**Sm2Util**:
+纯 JDK 原生国密 SM2 (GB/T 32918) 椭圆曲线密码原语门面，基于雅可比投影坐标实现高性能点乘，提供不可变 `Sm2Point`/`Sm2KeyPair`、密钥对生成、多格式密钥解析、SM2/SM3 签验（DER / Raw 64B）与 `C1C3C2`/DER 双向加解密。
+_Avoid_: Sm2Helper, Sm2CryptoUtil, GmSm2Util, NationalSm2Util
+
+**HkdfUtil**:
+纯 JDK 原生 RFC 5869 基于 HMAC 的密钥派生原语门面，支持 `HKDF-SHA256` 与国密 `HKDF-SM3` 提取-扩展（Extract-and-Expand）及多用途子密钥域隔离派生。
+_Avoid_: KdfUtil, KeyDeriveUtil, KeyDerivationUtil, HkdfHelper
 
 
 

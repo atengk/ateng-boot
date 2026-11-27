@@ -3,12 +3,12 @@ package io.github.atengk.boot.web.crypto.cipher;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.CryptoUtil;
+import io.github.atengk.boot.core.util.Sm2Util;
 import io.github.atengk.boot.web.crypto.enums.CryptoAlgorithm;
 import io.github.atengk.boot.web.crypto.model.ApiCipherInput;
 import io.github.atengk.boot.web.crypto.model.ApiCipherResult;
 import io.github.atengk.boot.web.crypto.model.ApiCryptoContext;
 import io.github.atengk.boot.web.crypto.spi.ApiCipher;
-import io.github.atengk.boot.web.sign.signer.Sm2Signer;
 import org.springframework.util.StringUtils;
 
 import java.math.BigInteger;
@@ -17,7 +17,7 @@ import java.util.Base64;
 
 /**
  * 基于纯 JDK 17 原生国密 SM2 与 SM4-GCM 的信创混合加解密引擎
- * 零 Bouncy Castle 外部依赖，底层 SM4-GCM 复用 Core {@link CryptoUtil#encryptSm4Gcm} / {@link CryptoUtil#decryptSm4Gcm}
+ * 零 Bouncy Castle 外部依赖，SM2 会话密钥封装委托 Core {@link Sm2Util}（经由 {@link Sm2KeyCipher}），SM4-GCM 复用 Core {@link CryptoUtil}
  *
  * @author Ateng
  * @since 2026-11-27
@@ -36,11 +36,11 @@ public class Sm2Sm4GcmApiCipher implements ApiCipher {
         if (context == null || !StringUtils.hasText(context.getKey())) {
             throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "未配置响应体 SM2 加密公钥");
         }
-        Sm2Signer.ECPoint publicKey;
+        Sm2Util.Sm2Point publicKey;
         try {
             publicKey = Sm2KeyCipher.parsePublicKey(context.getKey());
         } catch (Exception e) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "SM2 加密公钥配置格式非法: " + e.getMessage(), e);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "SM2 加密公钥配置格式非法", e);
         }
 
         byte[] safePlaintext = plaintext != null ? plaintext : new byte[0];
@@ -57,7 +57,7 @@ public class Sm2Sm4GcmApiCipher implements ApiCipher {
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "SM2+SM4-GCM 响应体加密失败: " + e.getMessage(), e);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "SM2+SM4-GCM 响应体加密失败", e);
         } finally {
             Arrays.fill(sm4Key, (byte) 0);
         }
@@ -99,7 +99,7 @@ public class Sm2Sm4GcmApiCipher implements ApiCipher {
         try {
             privateKey = Sm2KeyCipher.parsePrivateKey(context.getKey());
         } catch (Exception e) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "SM2 解密私钥配置格式非法: " + e.getMessage(), e);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "SM2 解密私钥配置格式非法", e);
         }
 
         byte[] wrappedKey = decodeBase64Strict(encryptedKey, "SM2 封装会话密钥 Base64 格式非法");
@@ -149,7 +149,7 @@ public class Sm2Sm4GcmApiCipher implements ApiCipher {
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "SM4-GCM 响应体加密失败: " + e.getMessage(), e);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "SM4-GCM 响应体加密失败", e);
         }
     }
 

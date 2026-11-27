@@ -1,38 +1,45 @@
 package io.github.atengk.boot.encrypt.decryptor;
 
+import io.github.atengk.boot.core.util.RsaUtil;
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
 import io.github.atengk.boot.encrypt.parser.MultilineSecretFormatter;
 
 import javax.crypto.Cipher;
+import javax.crypto.spec.OAEPParameterSpec;
+import javax.crypto.spec.PSource;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
-import java.security.KeyFactory;
 import java.security.KeyPair;
-import java.security.KeyPairGenerator;
-import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.interfaces.RSAKey;
-import java.security.spec.PKCS8EncodedKeySpec;
-import java.security.spec.X509EncodedKeySpec;
+import java.security.spec.MGF1ParameterSpec;
 import java.util.Arrays;
 import java.util.Base64;
 
 /**
  * 纯 JDK 原生 RSA 非对称加解密器
- * 支持 2048 / 4096 位 RSA 算法，实现开发/构建持有公钥加密、生产环境仅注入私钥解密的公私钥职责绝对隔离
+ * 密钥生成、X.509/PKCS#8 解析与 PEM 编解码委托至 Core {@link RsaUtil}，
+ * 保留面向长文本配置的分段加解密能力及 {@code OAEP(MGF1-SHA256) -> OAEP(MGF1-SHA1) -> PKCS1Padding} 三级平滑兼容解密链
  *
  * @author Ateng
  * @since 2026-10-25
  */
 public class RsaConfigDecryptor implements ConfigDecryptor {
 
-    public static final String ALGORITHM_RSA = "RSA";
-    public static final String TRANSFORMATION_OAEP = "RSA/ECB/OAEPWithSHA-256AndMGF1Padding";
+    public static final String ALGORITHM_RSA = RsaUtil.ALGORITHM_RSA;
+    public static final String TRANSFORMATION_OAEP = RsaUtil.TRANSFORMATION_OAEP_SHA256;
     public static final String TRANSFORMATION_PKCS1 = "RSA/ECB/PKCS1Padding";
 
-    public static final int DEFAULT_KEY_SIZE = 2048;
+    public static final int DEFAULT_KEY_SIZE = RsaUtil.DEFAULT_KEY_SIZE;
+
+    private static final OAEPParameterSpec OAEP_SHA256_SPEC = new OAEPParameterSpec(
+            "SHA-256",
+            "MGF1",
+            MGF1ParameterSpec.SHA256,
+            PSource.PSpecified.DEFAULT
+    );
 
     @Override
     public boolean supports(EncryptAlgorithm algorithm) {
@@ -52,15 +59,20 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
 
         byte[] decryptedBytes = null;
         try {
-            // 优先采用高安全 OAEP 填充模式，若解密失败则平滑降级尝试 PKCS1Padding 模式
+            // 三级兼容探测链：现代 OAEP(MGF1-SHA256) -> 存量 JDK OAEP(MGF1-SHA1) -> PKCS1Padding
             try {
-                decryptedBytes = doSegmentedDecrypt(encryptedBytes, privateKey, TRANSFORMATION_OAEP, keyBytes);
-            } catch (Exception e) {
+                decryptedBytes = doSegmentedDecrypt(encryptedBytes, privateKey, TRANSFORMATION_OAEP, OAEP_SHA256_SPEC, keyBytes);
+            } catch (Exception oaepSha256Ex) {
                 try {
-                    decryptedBytes = doSegmentedDecrypt(encryptedBytes, privateKey, TRANSFORMATION_PKCS1, keyBytes);
-                } catch (Exception p1Ex) {
-                    p1Ex.addSuppressed(e);
-                    throw p1Ex;
+                    decryptedBytes = doSegmentedDecrypt(encryptedBytes, privateKey, TRANSFORMATION_OAEP, null, keyBytes);
+                } catch (Exception oaepLegacyEx) {
+                    try {
+                        decryptedBytes = doSegmentedDecrypt(encryptedBytes, privateKey, TRANSFORMATION_PKCS1, null, keyBytes);
+                    } catch (Exception pkcs1Ex) {
+                        pkcs1Ex.addSuppressed(oaepSha256Ex);
+                        pkcs1Ex.addSuppressed(oaepLegacyEx);
+                        throw pkcs1Ex;
+                    }
                 }
             }
             String decryptedText = new String(decryptedBytes, StandardCharsets.UTF_8);
@@ -77,9 +89,14 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
     }
 
     private static byte[] doSegmentedDecrypt(byte[] encryptedBytes, PrivateKey privateKey,
-                                             String transformation, int keyBytes) throws Exception {
+                                             String transformation, OAEPParameterSpec oaepSpec,
+                                             int keyBytes) throws Exception {
         Cipher cipher = Cipher.getInstance(transformation);
-        cipher.init(Cipher.DECRYPT_MODE, privateKey);
+        if (oaepSpec != null) {
+            cipher.init(Cipher.DECRYPT_MODE, privateKey, oaepSpec);
+        } else {
+            cipher.init(Cipher.DECRYPT_MODE, privateKey);
+        }
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] block = null;
@@ -99,7 +116,7 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
     }
 
     /**
-     * 使用公钥对明文进行加密（供开发、CI/CD 构建期与测试使用）
+     * 使用公钥对明文进行加密（保持 JDK 默认 OAEP-MGF1-SHA1 行为，保障老版本节点灰度滚发兼容）
      *
      * @param plaintext    明文字符串
      * @param publicKeyStr 公钥（X.509 PEM 或 Base64 编码字符串）
@@ -125,7 +142,7 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
             PublicKey publicKey = parsePublicKey(publicKeyStr);
             int keyBytes = getKeyLengthBytes(publicKey);
             int maxPlainBlock = TRANSFORMATION_OAEP.equalsIgnoreCase(transformation)
-                    ? (keyBytes - 66)
+                    ? (keyBytes - RsaUtil.OAEP_SHA256_OVERHEAD)
                     : (keyBytes - 11);
 
             byte[] plainBytes = plaintext.getBytes(StandardCharsets.UTF_8);
@@ -152,24 +169,18 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
                 Arrays.fill(plainBytes, (byte) 0);
             }
         } catch (Exception e) {
-            throw new IllegalStateException("RSA 公钥加密失败: " + e.getMessage(), e);
+            throw new IllegalStateException("RSA 公钥加密失败", e);
         }
     }
 
     /**
      * 生成 RSA 密钥对
      *
-     * @param keySize 密钥位长（通常为 2048 或 4096）
+     * @param keySize 密钥位长（支持 2048、3072 或 4096）
      * @return RSA 密钥对
      */
     public static KeyPair generateKeyPair(int keySize) {
-        try {
-            KeyPairGenerator generator = KeyPairGenerator.getInstance(ALGORITHM_RSA);
-            generator.initialize(keySize);
-            return generator.generateKeyPair();
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("当前 JDK 环境不支持 RSA 算法", e);
-        }
+        return RsaUtil.generateKeyPair(keySize);
     }
 
     /**
@@ -178,7 +189,7 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
      * @return RSA 密钥对
      */
     public static KeyPair generateKeyPair() {
-        return generateKeyPair(DEFAULT_KEY_SIZE);
+        return RsaUtil.generateKeyPair();
     }
 
     /**
@@ -191,8 +202,7 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
         if (publicKey == null) {
             return null;
         }
-        String base64 = Base64.getEncoder().encodeToString(publicKey.getEncoded());
-        return MultilineSecretFormatter.formatAsPem("PUBLIC KEY", base64);
+        return MultilineSecretFormatter.formatAsPem("PUBLIC KEY", RsaUtil.encodePublicKeyBase64(publicKey));
     }
 
     /**
@@ -212,13 +222,7 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
         if (privateKey == null) {
             return null;
         }
-        byte[] encoded = privateKey.getEncoded();
-        try {
-            String base64 = Base64.getEncoder().encodeToString(encoded);
-            return MultilineSecretFormatter.formatAsPem("PRIVATE KEY", base64);
-        } finally {
-            Arrays.fill(encoded, (byte) 0);
-        }
+        return MultilineSecretFormatter.formatAsPem("PRIVATE KEY", RsaUtil.encodePrivateKeyBase64(privateKey));
     }
 
     /**
@@ -238,11 +242,10 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
         if (publicKeyStr == null || publicKeyStr.trim().isEmpty()) {
             throw new IllegalArgumentException("RSA 公钥不能为空");
         }
-        String clean = cleanKeyString(publicKeyStr, "PUBLIC KEY");
-        byte[] keyBytes = Base64.getDecoder().decode(clean);
-        X509EncodedKeySpec spec = new X509EncodedKeySpec(keyBytes);
-        KeyFactory factory = KeyFactory.getInstance(ALGORITHM_RSA);
-        return factory.generatePublic(spec);
+        String normalized = MultilineSecretFormatter.isPem(publicKeyStr)
+                ? publicKeyStr
+                : MultilineSecretFormatter.cleanCiphertext(publicKeyStr);
+        return RsaUtil.parsePublicKey(normalized);
     }
 
     /**
@@ -255,24 +258,10 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
         if (privateKeyStr == null || privateKeyStr.trim().isEmpty()) {
             throw new IllegalArgumentException("RSA 私钥不能为空");
         }
-        String clean = cleanKeyString(privateKeyStr, "PRIVATE KEY");
-        byte[] keyBytes = Base64.getDecoder().decode(clean);
-        try {
-            PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(keyBytes);
-            KeyFactory factory = KeyFactory.getInstance(ALGORITHM_RSA);
-            return factory.generatePrivate(spec);
-        } finally {
-            Arrays.fill(keyBytes, (byte) 0);
-        }
-    }
-
-    private static String cleanKeyString(String keyStr, String type) {
-        String cleaned = keyStr
-                .replace("-----BEGIN RSA " + type + "-----", "")
-                .replace("-----END RSA " + type + "-----", "")
-                .replace("-----BEGIN " + type + "-----", "")
-                .replace("-----END " + type + "-----", "");
-        return MultilineSecretFormatter.cleanCiphertext(cleaned);
+        String normalized = MultilineSecretFormatter.isPem(privateKeyStr)
+                ? privateKeyStr
+                : MultilineSecretFormatter.cleanCiphertext(privateKeyStr);
+        return RsaUtil.parsePrivateKey(normalized);
     }
 
     private static int getKeyLengthBytes(Key key) {

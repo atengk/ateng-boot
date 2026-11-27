@@ -19,7 +19,8 @@ import java.util.Base64;
 
 /**
  * 纯 JDK 原生对称加密与国密工具类
- * 基于 Zero-Bloat 原则，100% 依托 JDK 原生能力实现 AES/CBC、AES/GCM 以及纯原生国密 SM4/CBC、SM4/ECB 安全加解密，无 Bouncy Castle 等外部依赖
+ * 基于 Zero-Bloat 原则，100% 依托 JDK 原生能力实现 AES/GCM、AES/CBC 以及纯原生国密 SM4/GCM、SM4/CBC、SM4/ECB 安全加解密，
+ * 并提供 Base64URL 编解码、自包含封装版 AEAD（*Packed）与恒定时间比对原语，无 Bouncy Castle 等外部依赖
  *
  * @author Ateng
  * @since 2026-10-16
@@ -38,7 +39,11 @@ public final class CryptoUtil {
     public static final int SM4_BLOCK_SIZE = 16;
     public static final int SM4_IV_SIZE = 16;
 
+    private static final int SM4_GCM_TAG_BYTES = GCM_TAG_LENGTH / 8;
+    private static final int PACKED_GCM_MIN_BYTES = DEFAULT_GCM_IV_SIZE + SM4_GCM_TAG_BYTES;
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+    private static final Base64.Encoder BASE64_URL_ENCODER = Base64.getUrlEncoder().withoutPadding();
+    private static final Base64.Decoder BASE64_URL_DECODER = Base64.getUrlDecoder();
 
     // ==================== 国密 SM4 算法常量 (GB/T 32907-2016) ====================
 
@@ -81,13 +86,13 @@ public final class CryptoUtil {
 
     private static final int[] SM4_CK = {
             0x00070e15, 0x1c232a31, 0x383f464d, 0x545b6269,
-            0x70777e85, 0x8c939a01, 0x080f161d, 0x242b3239,
-            0x40474e55, 0x5c636a71, 0x787f868d, 0x949b0209,
-            0x10171e25, 0x2c333a41, 0x484f565d, 0x646b7279,
-            0x80878e95, 0x9c030a11, 0x181f262d, 0x343b4249,
-            0x50575e65, 0x6c737a81, 0x888f969d, 0x040b1219,
-            0x20272e35, 0x3c434a51, 0x585f666d, 0x747b8289,
-            0x90979e05, 0x0c131a21, 0x282f363d, 0x444b5259
+            0x70777e85, 0x8c939aa1, 0xa8afb6bd, 0xc4cbd2d9,
+            0xe0e7eef5, 0xfc030a11, 0x181f262d, 0x343b4249,
+            0x50575e65, 0x6c737a81, 0x888f969d, 0xa4abb2b9,
+            0xc0c7ced5, 0xdce3eaf1, 0xf8ff060d, 0x141b2229,
+            0x30373e45, 0x4c535a61, 0x686f767d, 0x848b9299,
+            0xa0a7aeb5, 0xbcc3cad1, 0xd8dfe6ed, 0xf4fb0209,
+            0x10171e25, 0x2c333a41, 0x484f565d, 0x646b7279
     };
 
     private CryptoUtil() {
@@ -181,10 +186,69 @@ public final class CryptoUtil {
         return Base64.getDecoder().decode(base64Str);
     }
 
+    /**
+     * 对字节数组进行无填充 URL 安全 Base64URL 编码
+     *
+     * @param data 原始字节数组
+     * @return 无填充 Base64URL 字符串；入参为 null 时返回 null
+     */
+    public static String encodeBase64Url(byte[] data) {
+        if (data == null) {
+            return null;
+        }
+        return BASE64_URL_ENCODER.encodeToString(data);
+    }
+
+    /**
+     * 对 URL 安全 Base64URL 字符串进行解码
+     *
+     * @param base64UrlStr Base64URL 编码字符串
+     * @return 原始字节数组；入参为 null 时返回 null
+     */
+    public static byte[] decodeBase64Url(String base64UrlStr) {
+        if (base64UrlStr == null) {
+            return null;
+        }
+        return BASE64_URL_DECODER.decode(base64UrlStr);
+    }
+
+    /**
+     * 恒定时间安全比对两个字节数组（防侧信道时序攻击）
+     *
+     * @param expected 预期字节数组
+     * @param actual   实际字节数组
+     * @return 完全相等返回 {@code true}；任一为 {@code null} 或内容不匹配返回 {@code false}
+     */
+    public static boolean constantTimeEquals(byte[] expected, byte[] actual) {
+        if (expected == null || actual == null) {
+            return false;
+        }
+        return MessageDigest.isEqual(expected, actual);
+    }
+
+    /**
+     * 恒定时间安全比对两个 UTF-8 字符串（防侧信道时序攻击）
+     *
+     * @param expected 预期字符串
+     * @param actual   实际字符串
+     * @return 完全相等返回 {@code true}；任一为 {@code null} 或内容不匹配返回 {@code false}
+     */
+    public static boolean constantTimeEquals(String expected, String actual) {
+        if (expected == null || actual == null) {
+            return false;
+        }
+        return MessageDigest.isEqual(
+                expected.getBytes(StandardCharsets.UTF_8),
+                actual.getBytes(StandardCharsets.UTF_8)
+        );
+    }
+
     // ==================== AES/CBC/PKCS5Padding ====================
 
     /**
      * AES/CBC/PKCS5Padding 加密（字节数组）
+     *
+     * <p>注意：CBC 模式缺少完整性认证标签，高安全与网络传输场景优先选用 {@link #encryptGcm} 或 {@link #encryptGcmPacked}。</p>
      *
      * @param plaintext 明文字节数组
      * @param key       AES 密钥（16/24/32 字节）
@@ -203,7 +267,7 @@ public final class CryptoUtil {
             cipher.init(Cipher.ENCRYPT_MODE, keySpec, ivSpec);
             return cipher.doFinal(plaintext);
         } catch (Exception e) {
-            throw new IllegalStateException("AES/CBC 加密执行失败: " + e.getMessage(), e);
+            throw new IllegalStateException("AES/CBC 加密执行失败", e);
         }
     }
 
@@ -227,7 +291,7 @@ public final class CryptoUtil {
             cipher.init(Cipher.DECRYPT_MODE, keySpec, ivSpec);
             return cipher.doFinal(ciphertext);
         } catch (Exception e) {
-            throw new IllegalStateException("AES/CBC 解密执行失败: " + e.getMessage(), e);
+            throw new IllegalStateException("AES/CBC 解密执行失败", e);
         }
     }
 
@@ -273,6 +337,7 @@ public final class CryptoUtil {
      * @param iv        初始向量（推荐 12 字节）
      * @param aad       附加认证数据（可为 null）
      * @return 包含认证 Tag 的密文字节数组；明文为 null 时返回 null
+     * @throws IllegalStateException 底层密码引擎执行失败时抛出（保留原始 cause）
      */
     public static byte[] encryptGcm(byte[] plaintext, byte[] key, byte[] iv, byte[] aad) {
         if (plaintext == null) {
@@ -282,7 +347,7 @@ public final class CryptoUtil {
         try {
             return doGcmCipher(Cipher.ENCRYPT_MODE, plaintext, key, iv, aad);
         } catch (Exception e) {
-            throw new IllegalStateException("AES/GCM 加密执行失败: " + e.getMessage(), e);
+            throw new IllegalStateException("AES/GCM 加密执行失败", e);
         }
     }
 
@@ -306,6 +371,7 @@ public final class CryptoUtil {
      * @param iv         初始向量（与加密时一致）
      * @param aad        附加认证数据（与加密时一致，可为 null）
      * @return 明文字节数组；密文为 null 时返回 null
+     * @throws IllegalStateException 解密或认证 Tag 校验失败时抛出（保留原始 {@link AEADBadTagException} cause）
      */
     public static byte[] decryptGcm(byte[] ciphertext, byte[] key, byte[] iv, byte[] aad) {
         if (ciphertext == null) {
@@ -315,7 +381,7 @@ public final class CryptoUtil {
         try {
             return doGcmCipher(Cipher.DECRYPT_MODE, ciphertext, key, iv, aad);
         } catch (Exception e) {
-            throw new IllegalStateException("AES/GCM 解密或认证校验失败: " + e.getMessage(), e);
+            throw new IllegalStateException("AES/GCM 解密或认证校验失败", e);
         }
     }
 
@@ -371,6 +437,7 @@ public final class CryptoUtil {
      * @param iv        初始向量（推荐 12 字节）
      * @param aad       附加认证数据（可为 null）
      * @return Base64 编码密文；明文为 null 时返回 null
+     * @throws BusinessException 加密失败时抛出（保留脱敏文案与原始 cause 链）
      */
     public static String encryptGcm(String plaintext, byte[] key, byte[] iv, byte[] aad) {
         if (plaintext == null) {
@@ -381,7 +448,7 @@ public final class CryptoUtil {
             return encodeBase64(encrypted);
         } catch (Exception e) {
             Throwable rootCause = (e instanceof IllegalStateException && e.getCause() != null) ? e.getCause() : e;
-            throw new BusinessException(CommonResultCode.BAD_REQUEST, "AES/GCM 加密执行失败: " + rootCause.getMessage(), rootCause);
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "AES/GCM 加密执行失败", rootCause);
         }
     }
 
@@ -394,6 +461,7 @@ public final class CryptoUtil {
      * @param iv               初始向量（与加密时一致）
      * @param aad              附加认证数据（与加密时一致，可为 null）
      * @return UTF-8 明文字符串；密文为 null 时返回 null
+     * @throws BusinessException 解密或认证校验失败时抛出（保留脱敏文案与原始 cause 链）
      */
     public static String decryptGcm(String ciphertextBase64, byte[] key, byte[] iv, byte[] aad) {
         if (ciphertextBase64 == null) {
@@ -405,7 +473,136 @@ public final class CryptoUtil {
             return new String(decrypted, StandardCharsets.UTF_8);
         } catch (Exception e) {
             Throwable rootCause = (e instanceof IllegalStateException && e.getCause() != null) ? e.getCause() : e;
-            throw new BusinessException(CommonResultCode.BAD_REQUEST, "AES/GCM 解密或认证校验失败: " + rootCause.getMessage(), rootCause);
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "AES/GCM 解密或认证校验失败", rootCause);
+        }
+    }
+
+    // ==================== 自包含封装版 AES-GCM (12B IV || ciphertext || 16B Tag) ====================
+
+    /**
+     * 自包含封装版 AES/GCM/NoPadding 加密（自动生成 12 字节随机 IV 并输出 {@code iv || ciphertext || tag}）
+     *
+     * @param plaintext 明文字节数组
+     * @param key       AES 密钥（16/24/32 字节）
+     * @return 封装密文字节数组（总长至少 28 字节）；明文为 null 时返回 null
+     */
+    public static byte[] encryptGcmPacked(byte[] plaintext, byte[] key) {
+        return encryptGcmPacked(plaintext, key, null);
+    }
+
+    /**
+     * 自包含封装版 AES/GCM/NoPadding 加密（绑定可选 AAD，输出 {@code 12B IV || ciphertext || 16B Tag}）
+     *
+     * @param plaintext 明文字节数组
+     * @param key       AES 密钥（16/24/32 字节）
+     * @param aad       附加认证数据（可为 null）
+     * @return 封装密文字节数组（总长至少 28 字节）；明文为 null 时返回 null
+     * @throws IllegalArgumentException 密钥非法时抛出
+     * @throws IllegalStateException    底层密码引擎加密失败时抛出
+     */
+    public static byte[] encryptGcmPacked(byte[] plaintext, byte[] key, byte[] aad) {
+        if (plaintext == null) {
+            return null;
+        }
+        validateAesKey(key);
+        byte[] iv = generateGcmIv();
+        byte[] cipherAndTag = encryptGcm(plaintext, key, iv, aad);
+        byte[] packed = new byte[DEFAULT_GCM_IV_SIZE + cipherAndTag.length];
+        System.arraycopy(iv, 0, packed, 0, DEFAULT_GCM_IV_SIZE);
+        System.arraycopy(cipherAndTag, 0, packed, DEFAULT_GCM_IV_SIZE, cipherAndTag.length);
+        return packed;
+    }
+
+    /**
+     * 自包含封装版 AES/GCM/NoPadding 解密（输入 {@code 12B IV || ciphertext || 16B Tag}）
+     *
+     * @param packedCiphertext 封装密文字节数组
+     * @param key              AES 密钥（16/24/32 字节）
+     * @return 明文字节数组；密文为 null 时返回 null
+     */
+    public static byte[] decryptGcmPacked(byte[] packedCiphertext, byte[] key) {
+        return decryptGcmPacked(packedCiphertext, key, null);
+    }
+
+    /**
+     * 自包含封装版 AES/GCM/NoPadding 解密（输入 {@code 12B IV || ciphertext || 16B Tag}，支持 AAD）
+     *
+     * @param packedCiphertext 封装密文字节数组（长度必须 {@code >= 28}）
+     * @param key              AES 密钥（16/24/32 字节）
+     * @param aad              附加认证数据（可为 null）
+     * @return 明文字节数组；密文为 null 时返回 null
+     * @throws IllegalArgumentException 密钥非法或封装密文不足 28 字节时抛出
+     * @throws IllegalStateException    认证校验失败时抛出（保留 {@link AEADBadTagException} cause）
+     */
+    public static byte[] decryptGcmPacked(byte[] packedCiphertext, byte[] key, byte[] aad) {
+        if (packedCiphertext == null) {
+            return null;
+        }
+        validateAesKey(key);
+        if (packedCiphertext.length < PACKED_GCM_MIN_BYTES) {
+            throw new IllegalArgumentException("AES/GCM 封装密文长度非法，至少需要 28 字节");
+        }
+        byte[] iv = Arrays.copyOfRange(packedCiphertext, 0, DEFAULT_GCM_IV_SIZE);
+        byte[] cipherAndTag = Arrays.copyOfRange(packedCiphertext, DEFAULT_GCM_IV_SIZE, packedCiphertext.length);
+        return decryptGcm(cipherAndTag, key, iv, aad);
+    }
+
+    /**
+     * 自包含封装版 AES/GCM/NoPadding 加密字符串，返回标准 Base64 编码密文
+     *
+     * @param plaintext 明文字符串（UTF-8）
+     * @param key       AES 密钥（16/24/32 字节）
+     * @return 标准 Base64 编码封装密文；明文为 null 时返回 null
+     */
+    public static String encryptGcmPacked(String plaintext, byte[] key) {
+        return encryptGcmPacked(plaintext, key, null);
+    }
+
+    /**
+     * 自包含封装版 AES/GCM/NoPadding 加密字符串（绑定可选 AAD），返回标准 Base64 编码密文
+     *
+     * @param plaintext 明文字符串（UTF-8）
+     * @param key       AES 密钥（16/24/32 字节）
+     * @param aad       附加认证数据（可为 null）
+     * @return 标准 Base64 编码封装密文；明文为 null 时返回 null
+     */
+    public static String encryptGcmPacked(String plaintext, byte[] key, byte[] aad) {
+        if (plaintext == null) {
+            return null;
+        }
+        return encodeBase64(encryptGcmPacked(plaintext.getBytes(StandardCharsets.UTF_8), key, aad));
+    }
+
+    /**
+     * 自包含封装版 AES/GCM/NoPadding 解密标准 Base64 封装密文，返回 UTF-8 明文字符串
+     *
+     * @param packedBase64 标准 Base64 编码封装密文
+     * @param key          AES 密钥（16/24/32 字节）
+     * @return UTF-8 明文字符串；密文为 null 时返回 null
+     */
+    public static String decryptGcmPacked(String packedBase64, byte[] key) {
+        return decryptGcmPacked(packedBase64, key, null);
+    }
+
+    /**
+     * 自包含封装版 AES/GCM/NoPadding 解密标准 Base64 封装密文（绑定可选 AAD），返回 UTF-8 明文字符串
+     *
+     * @param packedBase64 标准 Base64 编码封装密文
+     * @param key          AES 密钥（16/24/32 字节）
+     * @param aad          附加认证数据（可为 null）
+     * @return UTF-8 明文字符串；密文为 null 时返回 null
+     */
+    public static String decryptGcmPacked(String packedBase64, byte[] key, byte[] aad) {
+        if (packedBase64 == null) {
+            return null;
+        }
+        byte[] decrypted = decryptGcmPacked(decodeBase64(packedBase64), key, aad);
+        try {
+            return decrypted != null ? new String(decrypted, StandardCharsets.UTF_8) : null;
+        } finally {
+            if (decrypted != null) {
+                Arrays.fill(decrypted, (byte) 0);
+            }
         }
     }
 
@@ -425,6 +622,8 @@ public final class CryptoUtil {
     /**
      * SM4/CBC/PKCS7Padding 加密（字节数组）
      *
+     * <p>注意：CBC 模式缺少完整性认证标签，高安全与网络传输场景优先选用 {@link #encryptSm4Gcm} 或 {@link #encryptSm4GcmPacked}。</p>
+     *
      * @param plaintext 明文字节数组
      * @param key       SM4 密钥（必须为 16 字节）
      * @param iv        初始向量（必须为 16 字节）
@@ -439,17 +638,23 @@ public final class CryptoUtil {
         int[] rk = sm4KeyExpansion(key);
         byte[] ciphertext = new byte[padded.length];
         byte[] currentIv = new byte[SM4_IV_SIZE];
-        System.arraycopy(iv, 0, currentIv, 0, SM4_IV_SIZE);
-
         byte[] block = new byte[SM4_BLOCK_SIZE];
-        for (int offset = 0; offset < padded.length; offset += SM4_BLOCK_SIZE) {
-            for (int i = 0; i < SM4_BLOCK_SIZE; i++) {
-                block[i] = (byte) (padded[offset + i] ^ currentIv[i]);
+        try {
+            System.arraycopy(iv, 0, currentIv, 0, SM4_IV_SIZE);
+            for (int offset = 0; offset < padded.length; offset += SM4_BLOCK_SIZE) {
+                for (int i = 0; i < SM4_BLOCK_SIZE; i++) {
+                    block[i] = (byte) (padded[offset + i] ^ currentIv[i]);
+                }
+                sm4CryptBlock(block, 0, ciphertext, offset, rk);
+                System.arraycopy(ciphertext, offset, currentIv, 0, SM4_BLOCK_SIZE);
             }
-            sm4CryptBlock(block, 0, ciphertext, offset, rk);
-            System.arraycopy(ciphertext, offset, currentIv, 0, SM4_BLOCK_SIZE);
+            return ciphertext;
+        } finally {
+            Arrays.fill(rk, 0);
+            Arrays.fill(currentIv, (byte) 0);
+            Arrays.fill(block, (byte) 0);
+            Arrays.fill(padded, (byte) 0);
         }
-        return ciphertext;
     }
 
     /**
@@ -470,23 +675,30 @@ public final class CryptoUtil {
         }
         int[] rk = sm4KeyExpansion(key);
         int[] invRk = new int[32];
-        for (int i = 0; i < 32; i++) {
-            invRk[i] = rk[31 - i];
-        }
-
         byte[] plaintextPadded = new byte[ciphertext.length];
         byte[] currentIv = new byte[SM4_IV_SIZE];
-        System.arraycopy(iv, 0, currentIv, 0, SM4_IV_SIZE);
-
         byte[] block = new byte[SM4_BLOCK_SIZE];
-        for (int offset = 0; offset < ciphertext.length; offset += SM4_BLOCK_SIZE) {
-            sm4CryptBlock(ciphertext, offset, block, 0, invRk);
-            for (int i = 0; i < SM4_BLOCK_SIZE; i++) {
-                plaintextPadded[offset + i] = (byte) (block[i] ^ currentIv[i]);
+        try {
+            for (int i = 0; i < 32; i++) {
+                invRk[i] = rk[31 - i];
             }
-            System.arraycopy(ciphertext, offset, currentIv, 0, SM4_BLOCK_SIZE);
+            System.arraycopy(iv, 0, currentIv, 0, SM4_IV_SIZE);
+
+            for (int offset = 0; offset < ciphertext.length; offset += SM4_BLOCK_SIZE) {
+                sm4CryptBlock(ciphertext, offset, block, 0, invRk);
+                for (int i = 0; i < SM4_BLOCK_SIZE; i++) {
+                    plaintextPadded[offset + i] = (byte) (block[i] ^ currentIv[i]);
+                }
+                System.arraycopy(ciphertext, offset, currentIv, 0, SM4_BLOCK_SIZE);
+            }
+            return pkcs7Unpad(plaintextPadded);
+        } finally {
+            Arrays.fill(rk, 0);
+            Arrays.fill(invRk, 0);
+            Arrays.fill(currentIv, (byte) 0);
+            Arrays.fill(block, (byte) 0);
+            Arrays.fill(plaintextPadded, (byte) 0);
         }
-        return pkcs7Unpad(plaintextPadded);
     }
 
     /**
@@ -524,6 +736,8 @@ public final class CryptoUtil {
     /**
      * SM4/ECB/PKCS7Padding 加密（字节数组）
      *
+     * <p>注意：ECB 模式不隐蔽明文数据模式且无完整性认证，仅限硬件对齐兼容场景，优先选用 {@link #encryptSm4Gcm} 或 {@link #encryptSm4GcmPacked}。</p>
+     *
      * @param plaintext 明文字节数组
      * @param key       SM4 密钥（必须为 16 字节）
      * @return 密文字节数组；明文为 null 时返回 null
@@ -536,10 +750,15 @@ public final class CryptoUtil {
         byte[] padded = pkcs7Pad(plaintext);
         int[] rk = sm4KeyExpansion(key);
         byte[] ciphertext = new byte[padded.length];
-        for (int offset = 0; offset < padded.length; offset += SM4_BLOCK_SIZE) {
-            sm4CryptBlock(padded, offset, ciphertext, offset, rk);
+        try {
+            for (int offset = 0; offset < padded.length; offset += SM4_BLOCK_SIZE) {
+                sm4CryptBlock(padded, offset, ciphertext, offset, rk);
+            }
+            return ciphertext;
+        } finally {
+            Arrays.fill(rk, 0);
+            Arrays.fill(padded, (byte) 0);
         }
-        return ciphertext;
     }
 
     /**
@@ -559,14 +778,20 @@ public final class CryptoUtil {
         }
         int[] rk = sm4KeyExpansion(key);
         int[] invRk = new int[32];
-        for (int i = 0; i < 32; i++) {
-            invRk[i] = rk[31 - i];
-        }
         byte[] plaintextPadded = new byte[ciphertext.length];
-        for (int offset = 0; offset < ciphertext.length; offset += SM4_BLOCK_SIZE) {
-            sm4CryptBlock(ciphertext, offset, plaintextPadded, offset, invRk);
+        try {
+            for (int i = 0; i < 32; i++) {
+                invRk[i] = rk[31 - i];
+            }
+            for (int offset = 0; offset < ciphertext.length; offset += SM4_BLOCK_SIZE) {
+                sm4CryptBlock(ciphertext, offset, plaintextPadded, offset, invRk);
+            }
+            return pkcs7Unpad(plaintextPadded);
+        } finally {
+            Arrays.fill(rk, 0);
+            Arrays.fill(invRk, 0);
+            Arrays.fill(plaintextPadded, (byte) 0);
         }
-        return pkcs7Unpad(plaintextPadded);
     }
 
     /**
@@ -600,8 +825,6 @@ public final class CryptoUtil {
     }
 
     // ==================== 国密 SM4/GCM/NoPadding 纯原生实现 (NIST SP 800-38D) ====================
-
-    private static final int SM4_GCM_TAG_BYTES = GCM_TAG_LENGTH / 8;
 
     /**
      * 国密 SM4/GCM/NoPadding 认证加密（字节数组，支持可选 AAD 附加认证数据）
@@ -668,6 +891,7 @@ public final class CryptoUtil {
      * @param iv         初始向量（与加密时一致）
      * @param aad        附加认证数据（与加密时一致，可为 null）
      * @return 明文字节数组；密文为 null 时返回 null
+     * @throws IllegalStateException 解密或认证标签校验失败时抛出（保留 {@link AEADBadTagException} cause）
      */
     public static byte[] decryptSm4Gcm(byte[] ciphertext, byte[] key, byte[] iv, byte[] aad) {
         if (ciphertext == null) {
@@ -675,7 +899,7 @@ public final class CryptoUtil {
         }
         validateSm4GcmKeyAndIv(key, iv);
         if (ciphertext.length < SM4_GCM_TAG_BYTES) {
-            throw new IllegalStateException("SM4/GCM 解密或认证校验失败: 密文长度不足 16 字节认证标签",
+            throw new IllegalStateException("SM4/GCM 解密或认证校验失败",
                     new AEADBadTagException("SM4/GCM ciphertext shorter than 16-byte tag"));
         }
         int cipherLen = ciphertext.length - SM4_GCM_TAG_BYTES;
@@ -697,7 +921,7 @@ public final class CryptoUtil {
             }
             System.arraycopy(ciphertext, cipherLen, providedTag, 0, SM4_GCM_TAG_BYTES);
             if (!MessageDigest.isEqual(expectedTag, providedTag)) {
-                throw new IllegalStateException("SM4/GCM 解密或认证校验失败: 认证标签校验不通过",
+                throw new IllegalStateException("SM4/GCM 解密或认证校验失败",
                         new AEADBadTagException("Tag mismatch!"));
             }
 
@@ -770,6 +994,7 @@ public final class CryptoUtil {
      * @param iv        初始向量（推荐 12 字节）
      * @param aad       附加认证数据（可为 null）
      * @return Base64 编码密文；明文为 null 时返回 null
+     * @throws BusinessException 加密失败时抛出（保留脱敏文案与原始 cause 链）
      */
     public static String encryptSm4Gcm(String plaintext, byte[] key, byte[] iv, byte[] aad) {
         if (plaintext == null) {
@@ -780,7 +1005,7 @@ public final class CryptoUtil {
             return encodeBase64(encrypted);
         } catch (Exception e) {
             Throwable rootCause = (e instanceof IllegalStateException && e.getCause() != null) ? e.getCause() : e;
-            throw new BusinessException(CommonResultCode.BAD_REQUEST, "SM4/GCM 加密执行失败: " + rootCause.getMessage(), rootCause);
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "SM4/GCM 加密执行失败", rootCause);
         }
     }
 
@@ -793,6 +1018,7 @@ public final class CryptoUtil {
      * @param iv               初始向量（与加密时一致）
      * @param aad              附加认证数据（与加密时一致，可为 null）
      * @return UTF-8 明文字符串；密文为 null 时返回 null
+     * @throws BusinessException 解密或认证校验失败时抛出（保留脱敏文案与原始 cause 链）
      */
     public static String decryptSm4Gcm(String ciphertextBase64, byte[] key, byte[] iv, byte[] aad) {
         if (ciphertextBase64 == null) {
@@ -804,7 +1030,135 @@ public final class CryptoUtil {
             return new String(decrypted, StandardCharsets.UTF_8);
         } catch (Exception e) {
             Throwable rootCause = (e instanceof IllegalStateException && e.getCause() != null) ? e.getCause() : e;
-            throw new BusinessException(CommonResultCode.BAD_REQUEST, "SM4/GCM 解密或认证校验失败: " + rootCause.getMessage(), rootCause);
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "SM4/GCM 解密或认证校验失败", rootCause);
+        }
+    }
+
+    // ==================== 自包含封装版 SM4-GCM (12B IV || ciphertext || 16B Tag) ====================
+
+    /**
+     * 自包含封装版国密 SM4/GCM/NoPadding 加密（自动生成 12 字节随机 IV，输出 {@code iv || ciphertext || tag}）
+     *
+     * @param plaintext 明文字节数组
+     * @param key       SM4 密钥（必须为 16 字节）
+     * @return 封装密文字节数组（总长至少 28 字节）；明文为 null 时返回 null
+     */
+    public static byte[] encryptSm4GcmPacked(byte[] plaintext, byte[] key) {
+        return encryptSm4GcmPacked(plaintext, key, null);
+    }
+
+    /**
+     * 自包含封装版国密 SM4/GCM/NoPadding 加密（绑定可选 AAD，输出 {@code 12B IV || ciphertext || 16B Tag}）
+     *
+     * @param plaintext 明文字节数组
+     * @param key       SM4 密钥（必须为 16 字节）
+     * @param aad       附加认证数据（可为 null）
+     * @return 封装密文字节数组（总长至少 28 字节）；明文为 null 时返回 null
+     * @throws IllegalArgumentException 密钥非法时抛出
+     */
+    public static byte[] encryptSm4GcmPacked(byte[] plaintext, byte[] key, byte[] aad) {
+        if (plaintext == null) {
+            return null;
+        }
+        validateSm4KeyAndIv(key, null, false);
+        byte[] iv = generateGcmIv();
+        byte[] cipherAndTag = encryptSm4Gcm(plaintext, key, iv, aad);
+        byte[] packed = new byte[DEFAULT_GCM_IV_SIZE + cipherAndTag.length];
+        System.arraycopy(iv, 0, packed, 0, DEFAULT_GCM_IV_SIZE);
+        System.arraycopy(cipherAndTag, 0, packed, DEFAULT_GCM_IV_SIZE, cipherAndTag.length);
+        return packed;
+    }
+
+    /**
+     * 自包含封装版国密 SM4/GCM/NoPadding 解密（输入 {@code 12B IV || ciphertext || 16B Tag}）
+     *
+     * @param packedCiphertext 封装密文字节数组
+     * @param key              SM4 密钥（必须为 16 字节）
+     * @return 明文字节数组；密文为 null 时返回 null
+     */
+    public static byte[] decryptSm4GcmPacked(byte[] packedCiphertext, byte[] key) {
+        return decryptSm4GcmPacked(packedCiphertext, key, null);
+    }
+
+    /**
+     * 自包含封装版国密 SM4/GCM/NoPadding 解密（输入 {@code 12B IV || ciphertext || 16B Tag}，支持 AAD）
+     *
+     * @param packedCiphertext 封装密文字节数组（长度必须 {@code >= 28}）
+     * @param key              SM4 密钥（必须为 16 字节）
+     * @param aad              附加认证数据（可为 null）
+     * @return 明文字节数组；密文为 null 时返回 null
+     * @throws IllegalArgumentException 密钥非法或封装密文不足 28 字节时抛出
+     * @throws IllegalStateException    认证校验失败时抛出（保留 {@link AEADBadTagException} cause）
+     */
+    public static byte[] decryptSm4GcmPacked(byte[] packedCiphertext, byte[] key, byte[] aad) {
+        if (packedCiphertext == null) {
+            return null;
+        }
+        validateSm4KeyAndIv(key, null, false);
+        if (packedCiphertext.length < PACKED_GCM_MIN_BYTES) {
+            throw new IllegalArgumentException("SM4/GCM 封装密文长度非法，至少需要 28 字节");
+        }
+        byte[] iv = Arrays.copyOfRange(packedCiphertext, 0, DEFAULT_GCM_IV_SIZE);
+        byte[] cipherAndTag = Arrays.copyOfRange(packedCiphertext, DEFAULT_GCM_IV_SIZE, packedCiphertext.length);
+        return decryptSm4Gcm(cipherAndTag, key, iv, aad);
+    }
+
+    /**
+     * 自包含封装版国密 SM4/GCM/NoPadding 加密字符串，返回标准 Base64 编码密文
+     *
+     * @param plaintext 明文字符串（UTF-8）
+     * @param key       SM4 密钥（必须为 16 字节）
+     * @return 标准 Base64 编码封装密文；明文为 null 时返回 null
+     */
+    public static String encryptSm4GcmPacked(String plaintext, byte[] key) {
+        return encryptSm4GcmPacked(plaintext, key, null);
+    }
+
+    /**
+     * 自包含封装版国密 SM4/GCM/NoPadding 加密字符串（绑定可选 AAD），返回标准 Base64 编码密文
+     *
+     * @param plaintext 明文字符串（UTF-8）
+     * @param key       SM4 密钥（必须为 16 字节）
+     * @param aad       附加认证数据（可为 null）
+     * @return 标准 Base64 编码封装密文；明文为 null 时返回 null
+     */
+    public static String encryptSm4GcmPacked(String plaintext, byte[] key, byte[] aad) {
+        if (plaintext == null) {
+            return null;
+        }
+        return encodeBase64(encryptSm4GcmPacked(plaintext.getBytes(StandardCharsets.UTF_8), key, aad));
+    }
+
+    /**
+     * 自包含封装版国密 SM4/GCM/NoPadding 解密标准 Base64 封装密文，返回 UTF-8 明文字符串
+     *
+     * @param packedBase64 标准 Base64 编码封装密文
+     * @param key          SM4 密钥（必须为 16 字节）
+     * @return UTF-8 明文字符串；密文为 null 时返回 null
+     */
+    public static String decryptSm4GcmPacked(String packedBase64, byte[] key) {
+        return decryptSm4GcmPacked(packedBase64, key, null);
+    }
+
+    /**
+     * 自包含封装版国密 SM4/GCM/NoPadding 解密标准 Base64 封装密文（绑定可选 AAD），返回 UTF-8 明文字符串
+     *
+     * @param packedBase64 标准 Base64 编码封装密文
+     * @param key          SM4 密钥（必须为 16 字节）
+     * @param aad          附加认证数据（可为 null）
+     * @return UTF-8 明文字符串；密文为 null 时返回 null
+     */
+    public static String decryptSm4GcmPacked(String packedBase64, byte[] key, byte[] aad) {
+        if (packedBase64 == null) {
+            return null;
+        }
+        byte[] decrypted = decryptSm4GcmPacked(decodeBase64(packedBase64), key, aad);
+        try {
+            return decrypted != null ? new String(decrypted, StandardCharsets.UTF_8) : null;
+        } finally {
+            if (decrypted != null) {
+                Arrays.fill(decrypted, (byte) 0);
+            }
         }
     }
 
@@ -903,30 +1257,57 @@ public final class CryptoUtil {
     }
 
     /**
-     * GF(2^128) 乘法 (NIST SP 800-38D Algorithm 1)，结果原地写回 x
+     * 基于 64 位无分支位掩码实现的恒定时间 GF(2^128) 乘法 (NIST SP 800-38D Algorithm 1)，结果原地写回 x
      */
     private static void gf128MultiplyInPlace(byte[] x, byte[] h) {
-        byte[] z = new byte[SM4_BLOCK_SIZE];
-        byte[] v = h.clone();
-        try {
-            for (int i = 0; i < 128; i++) {
-                if ((x[i >>> 3] & (0x80 >>> (i & 7))) != 0) {
-                    xorBlock(z, v);
-                }
-                boolean lsb = (v[15] & 1) != 0;
-                for (int b = 15; b > 0; b--) {
-                    v[b] = (byte) (((v[b] & 0xff) >>> 1) | ((v[b - 1] & 1) << 7));
-                }
-                v[0] = (byte) ((v[0] & 0xff) >>> 1);
-                if (lsb) {
-                    v[0] ^= (byte) 0xe1;
-                }
-            }
-            System.arraycopy(z, 0, x, 0, SM4_BLOCK_SIZE);
-        } finally {
-            Arrays.fill(z, (byte) 0);
-            Arrays.fill(v, (byte) 0);
+        long xHi = bytesToLong(x, 0);
+        long xLo = bytesToLong(x, 8);
+        long vHi = bytesToLong(h, 0);
+        long vLo = bytesToLong(h, 8);
+        long zHi = 0L;
+        long zLo = 0L;
+
+        for (int i = 0; i < 64; i++) {
+            long bitMask = -((xHi >>> (63 - i)) & 1L);
+            zHi ^= (vHi & bitMask);
+            zLo ^= (vLo & bitMask);
+            long lsbMask = -(vLo & 1L);
+            vLo = (vLo >>> 1) | ((vHi & 1L) << 63);
+            vHi = (vHi >>> 1) ^ (0xE100000000000000L & lsbMask);
         }
+        for (int i = 0; i < 64; i++) {
+            long bitMask = -((xLo >>> (63 - i)) & 1L);
+            zHi ^= (vHi & bitMask);
+            zLo ^= (vLo & bitMask);
+            long lsbMask = -(vLo & 1L);
+            vLo = (vLo >>> 1) | ((vHi & 1L) << 63);
+            vHi = (vHi >>> 1) ^ (0xE100000000000000L & lsbMask);
+        }
+
+        longToBytes(zHi, x, 0);
+        longToBytes(zLo, x, 8);
+    }
+
+    private static long bytesToLong(byte[] b, int offset) {
+        return ((b[offset] & 0xffL) << 56)
+                | ((b[offset + 1] & 0xffL) << 48)
+                | ((b[offset + 2] & 0xffL) << 40)
+                | ((b[offset + 3] & 0xffL) << 32)
+                | ((b[offset + 4] & 0xffL) << 24)
+                | ((b[offset + 5] & 0xffL) << 16)
+                | ((b[offset + 6] & 0xffL) << 8)
+                | (b[offset + 7] & 0xffL);
+    }
+
+    private static void longToBytes(long val, byte[] b, int offset) {
+        b[offset] = (byte) ((val >>> 56) & 0xff);
+        b[offset + 1] = (byte) ((val >>> 48) & 0xff);
+        b[offset + 2] = (byte) ((val >>> 40) & 0xff);
+        b[offset + 3] = (byte) ((val >>> 32) & 0xff);
+        b[offset + 4] = (byte) ((val >>> 24) & 0xff);
+        b[offset + 5] = (byte) ((val >>> 16) & 0xff);
+        b[offset + 6] = (byte) ((val >>> 8) & 0xff);
+        b[offset + 7] = (byte) (val & 0xff);
     }
 
     // ==================== SM4 内部纯原生算法实现细节 ====================
@@ -1031,24 +1412,30 @@ public final class CryptoUtil {
             throw new IllegalArgumentException("密文数据长度非法，无法解填充");
         }
         int padLen = data[data.length - 1] & 0xff;
-        if (padLen < 1 || padLen > SM4_BLOCK_SIZE) {
-            throw new IllegalArgumentException("PKCS7 解填充失败，非法填充字节: " + padLen);
+        int bad = (padLen < 1 || padLen > SM4_BLOCK_SIZE) ? 1 : 0;
+        int effectivePadLen = (bad == 0) ? padLen : 1;
+        int start = data.length - effectivePadLen;
+        for (int i = data.length - SM4_BLOCK_SIZE; i < data.length; i++) {
+            int inPad = (i >= start) ? 1 : 0;
+            bad |= inPad & (((data[i] & 0xff) ^ effectivePadLen) != 0 ? 1 : 0);
         }
-        for (int i = data.length - padLen; i < data.length; i++) {
-            if ((data[i] & 0xff) != padLen) {
-                throw new IllegalArgumentException("PKCS7 解填充失败，填充数据不一致");
-            }
+        if (bad != 0) {
+            throw new IllegalArgumentException("PKCS7 解填充失败");
         }
-        byte[] unpadded = new byte[data.length - padLen];
+        byte[] unpadded = new byte[data.length - effectivePadLen];
         System.arraycopy(data, 0, unpadded, 0, unpadded.length);
         return unpadded;
     }
 
-    private static void validateKeyAndIv(byte[] key, byte[] iv, int requiredIvLength) {
+    private static void validateAesKey(byte[] key) {
         if (key == null || (key.length != 16 && key.length != 24 && key.length != 32)) {
             int len = key != null ? key.length : 0;
             throw new IllegalArgumentException("AES 密钥字节长度必须为 16, 24 或 32（128/192/256 位），实际为: " + len);
         }
+    }
+
+    private static void validateKeyAndIv(byte[] key, byte[] iv, int requiredIvLength) {
+        validateAesKey(key);
         if (iv == null || iv.length == 0) {
             throw new IllegalArgumentException("IV 初始向量不能为空");
         }

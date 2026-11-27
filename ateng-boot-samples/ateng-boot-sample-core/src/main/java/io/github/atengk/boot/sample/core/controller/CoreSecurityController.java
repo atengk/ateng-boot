@@ -1,13 +1,17 @@
 package io.github.atengk.boot.sample.core.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.core.dto.AsymmetricCryptoRequest;
+import io.github.atengk.boot.sample.core.dto.KdfAndStreamRequest;
 import io.github.atengk.boot.sample.core.dto.PasswordCheckRequest;
 import io.github.atengk.boot.sample.core.dto.PaymentCryptoRequest;
 import io.github.atengk.boot.sample.core.dto.SecurityCryptoRequest;
 import io.github.atengk.boot.sample.core.dto.SignAndVerifyRequest;
 import io.github.atengk.boot.sample.core.service.CoreSecurityScenarioService;
+import io.github.atengk.boot.sample.core.vo.AsymmetricCryptoVO;
 import io.github.atengk.boot.sample.core.vo.CustomerPrivacyVO;
 import io.github.atengk.boot.sample.core.vo.IdGenerateVO;
+import io.github.atengk.boot.sample.core.vo.KdfAndStreamVO;
 import io.github.atengk.boot.sample.core.vo.PasswordCheckVO;
 import io.github.atengk.boot.sample.core.vo.PaymentCryptoVO;
 import io.github.atengk.boot.sample.core.vo.SecurityCryptoVO;
@@ -103,5 +107,27 @@ public class CoreSecurityController {
     @PostMapping("/password")
     public Result<PasswordCheckVO> verifyPasswordLifecycle(@RequestBody @Valid PasswordCheckRequest request) {
         return Result.success(securityScenarioService.verifyPasswordLifecycle(request));
+    }
+
+    /**
+     * 7. 纯 JDK 原生 RSA-OAEP-SHA256 / RSASSA-PSS 与国密 SM2 非对称加解密及签验端点
+     *
+     * @param request 非对称加解密与签验请求对象
+     * @return RSA 与 SM2 非对称加解密及防篡改验证响应
+     */
+    @PostMapping("/asymmetric-crypto")
+    public Result<AsymmetricCryptoVO> verifyAsymmetricCrypto(@RequestBody @Valid AsymmetricCryptoRequest request) {
+        return Result.success(securityScenarioService.verifyAsymmetricCrypto(request));
+    }
+
+    /**
+     * 8. RFC 5869 HKDF 密钥派生、HMAC-SHA512、流式摘要与自包含 Packed AEAD 端点
+     *
+     * @param request KDF 与流式摘要请求对象
+     * @return 密钥派生、流式摘要、Packed AEAD 与 Base64URL 响应
+     */
+    @PostMapping("/kdf-and-stream")
+    public Result<KdfAndStreamVO> verifyKdfAndStream(@RequestBody @Valid KdfAndStreamRequest request) {
+        return Result.success(securityScenarioService.verifyKdfAndStream(request));
     }
 }

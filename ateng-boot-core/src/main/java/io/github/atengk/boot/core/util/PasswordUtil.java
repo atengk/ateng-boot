@@ -31,6 +31,14 @@ public final class PasswordUtil {
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
     private static final Base64.Encoder BASE64_ENCODER = Base64.getUrlEncoder().withoutPadding();
     private static final Base64.Decoder BASE64_DECODER = Base64.getUrlDecoder();
+    private static final char[] DUMMY_FALLBACK_PASSWORD = "ateng-boot-dummy-password".toCharArray();
+    private static final byte[] DUMMY_SALT = new byte[DEFAULT_SALT_LENGTH];
+    private static final byte[] DUMMY_TARGET_HASH = new byte[DEFAULT_KEY_LENGTH_BYTES];
+
+    static {
+        SECURE_RANDOM.nextBytes(DUMMY_SALT);
+        SECURE_RANDOM.nextBytes(DUMMY_TARGET_HASH);
+    }
 
     private PasswordUtil() {
     }
@@ -144,15 +152,85 @@ public final class PasswordUtil {
         return parsed != null && parsed.iterations() < targetIterations;
     }
 
+    /**
+     * 在认证流程遇到“账号不存在”分支时执行同等迭代成本的恒定时间伪校验，抵御用户名枚举时序攻击
+     *
+     * @param rawPassword 待比对的原始明文口令（为空或全空白时回退占位口令照常执行 PBKDF2 计算）
+     * @return 恒定返回 {@code false}
+     */
+    public static boolean constantTimeDummyCheck(CharSequence rawPassword) {
+        return constantTimeDummyCheck(rawPassword, DEFAULT_ITERATIONS);
+    }
+
+    /**
+     * 按指定迭代次数执行恒定时间伪校验，抵御用户名枚举时序攻击
+     *
+     * @param rawPassword 待比对的原始明文口令（为空或全空白时回退占位口令）
+     * @param iterations  PBKDF2 迭代次数，必须在 [{@link #MIN_ITERATIONS}, {@link #MAX_ITERATIONS}] 区间内
+     * @return 恒定返回 {@code false}
+     */
+    public static boolean constantTimeDummyCheck(CharSequence rawPassword, int iterations) {
+        validateIterations(iterations, "iterations");
+        if (isBlank(rawPassword)) {
+            return dummyCheckInternal(DUMMY_FALLBACK_PASSWORD, iterations);
+        }
+        char[] chars = toCharArray(rawPassword);
+        try {
+            return dummyCheckInternal(chars, iterations);
+        } finally {
+            Arrays.fill(chars, '\0');
+        }
+    }
+
+    /**
+     * 在认证流程遇到“账号不存在”分支时对字符数组口令执行恒定时间伪校验（不修改调用方传入的字符数组）
+     *
+     * @param rawPassword 待比对的原始明文口令字符数组
+     * @return 恒定返回 {@code false}
+     */
+    public static boolean constantTimeDummyCheck(char[] rawPassword) {
+        return constantTimeDummyCheck(rawPassword, DEFAULT_ITERATIONS);
+    }
+
+    /**
+     * 按指定迭代次数对字符数组口令执行恒定时间伪校验（不修改调用方传入的字符数组）
+     *
+     * @param rawPassword 待比对的原始明文口令字符数组
+     * @param iterations  PBKDF2 迭代次数，必须在 [{@link #MIN_ITERATIONS}, {@link #MAX_ITERATIONS}] 区间内
+     * @return 恒定返回 {@code false}
+     */
+    public static boolean constantTimeDummyCheck(char[] rawPassword, int iterations) {
+        validateIterations(iterations, "iterations");
+        char[] effectiveChars = isBlank(rawPassword) ? DUMMY_FALLBACK_PASSWORD : rawPassword;
+        return dummyCheckInternal(effectiveChars, iterations);
+    }
+
+    private static boolean dummyCheckInternal(char[] passwordChars, int iterations) {
+        byte[] actualHash = pbkdf2(passwordChars, DUMMY_SALT, iterations, DEFAULT_KEY_LENGTH_BITS);
+        try {
+            if (MessageDigest.isEqual(DUMMY_TARGET_HASH, actualHash) && DUMMY_TARGET_HASH.length == 0) {
+                return true;
+            }
+            return false;
+        } finally {
+            Arrays.fill(actualHash, (byte) 0);
+        }
+    }
+
     private static String hashInternal(char[] passwordChars, int iterations) {
         validateIterations(iterations, "iterations");
         byte[] salt = new byte[DEFAULT_SALT_LENGTH];
         SECURE_RANDOM.nextBytes(salt);
         byte[] derived = pbkdf2(passwordChars, salt, iterations, DEFAULT_KEY_LENGTH_BITS);
-        return "$" + PREFIX_PBKDF2_SHA256
-                + "$" + iterations
-                + "$" + BASE64_ENCODER.encodeToString(salt)
-                + "$" + BASE64_ENCODER.encodeToString(derived);
+        try {
+            return "$" + PREFIX_PBKDF2_SHA256
+                    + "$" + iterations
+                    + "$" + BASE64_ENCODER.encodeToString(salt)
+                    + "$" + BASE64_ENCODER.encodeToString(derived);
+        } finally {
+            Arrays.fill(derived, (byte) 0);
+            Arrays.fill(salt, (byte) 0);
+        }
     }
 
     private static boolean matchesInternal(char[] passwordChars, String encodedPassword) {
@@ -161,7 +239,13 @@ public final class PasswordUtil {
             return false;
         }
         byte[] actualHash = pbkdf2(passwordChars, parsed.salt(), parsed.iterations(), parsed.hash().length * 8);
-        return MessageDigest.isEqual(parsed.hash(), actualHash);
+        try {
+            return MessageDigest.isEqual(parsed.hash(), actualHash);
+        } finally {
+            Arrays.fill(actualHash, (byte) 0);
+            Arrays.fill(parsed.salt(), (byte) 0);
+            Arrays.fill(parsed.hash(), (byte) 0);
+        }
     }
 
     private static ParsedHash parseEncodedHash(String encodedPassword) {
@@ -204,7 +288,7 @@ public final class PasswordUtil {
             SecretKeyFactory factory = SecretKeyFactory.getInstance(ALGORITHM_PBKDF2_SHA256);
             return factory.generateSecret(spec).getEncoded();
         } catch (GeneralSecurityException e) {
-            throw new IllegalStateException("PBKDF2 密码派生执行失败: " + e.getMessage(), e);
+            throw new IllegalStateException("PBKDF2 密码派生执行失败", e);
         } finally {
             spec.clearPassword();
         }
