@@ -70,9 +70,34 @@ flowchart LR
 - **类级注解与灰度兼容**：`@ApiDecrypt` 与 `@ApiEncrypt` 支持方法级与类级（方法级优先），支持 `enabled = false` 在类级标注下局部豁免；类级标注 `@ApiDecrypt` 时自动跳过 `GET`/`HEAD`/`OPTIONS` 无体请求；`@ApiDecrypt(required = false)` 允许缺加密头请求以明文灰度放行。
 - **载荷上限与错误码语义**：`ContentCachingCondition` 扩展纳入 `ateng.boot.web.crypto.enabled=true`，`ApiCryptoFilter` 同步执行 `crypto.max-body-size`（默认 `2MB`）二次上限防爆；超限返回 `413`（`PAYLOAD_TOO_LARGE`），缺头、未知/过期 `keyId`、损坏信封或 AEAD Tag 校验失败返回 `400`（`BAD_REQUEST`），密钥缺失/加解密引擎故障 Fail-Closed 返回 `500`；默认遵循 [ADR-0004](./0004-http-200-with-business-code-and-exception-masking.md) 返回 HTTP `200` + 明文 `Result.fail(...)`，开启 `use-http-status = true` 时输出物理 HTTP `413`/`400`/`500`；错误响应默认保持明文（`encryptError = false`）。
 
+### 2.4 纯 Web SPA 无静态私钥响应加密演进（Issue #1181 / #1182 修订）
+
+1. **出站密钥模式与显式 Fail-Closed 策略**：
+   - 新增 `CryptoResponseKeyMode` 枚举（`DEFAULT`、`CLIENT_PUBLIC_KEY`、`REQUEST_SESSION_KEY`）；
+   - 全局配置 `ateng.boot.web.crypto.response-key-mode` 默认为 `CLIENT_PUBLIC_KEY`（100% 向后兼容既有 B2B/SPI 双非对称模型）；`@ApiEncrypt(keyMode = CryptoResponseKeyMode.DEFAULT)` 支持类级与方法级显式覆写（方法级优先）；
+   - **严禁引入隐式 `AUTO` 降级**：在 `REQUEST_SESSION_KEY` 模式下，客户端缺失 `X-Encrypt-Key`（包括搭配 `@ApiDecrypt(required = false)` 的明文入站请求）严格按 Fail-Closed 返回 `400`，防止策略静默降级或暴露未加密敏感响应。
+2. **模式 A（`REQUEST_SESSION_KEY`）与无体 `GET` 密钥握手**：
+   - 支持 `@ApiDecrypt + @ApiEncrypt` 复用入站请求解封出的对称会话密钥；
+   - 同时扩展支持无请求体的 `GET`（及仅标注 `@ApiEncrypt` 的非解密端点）在请求头仅携带 `X-Encrypt-Key`（服务端使用私钥解封出一次性对称会话密钥，无需请求体与入站 IV）完成单次密钥握手，与前端 `atengk/ateng-ui#389` `RequestCipher` 统一对齐，浏览器端全程无需持有任何长期静态私钥。
+3. **线缆响应头与 AAD 契约**：
+   - `REQUEST_SESSION_KEY` 响应必须生成全新随机 12 字节 `X-Encrypt-Iv`（彻底杜绝 GCM Nonce 重用），**省略（不写入）** `X-Encrypt-Key` 响应头，使前端可无歧义判定走临时会话密钥直解路径；
+   - `X-Key-Id` 响应头回写本次请求解封时实际生效的 `effectiveKeyId`（而非固定取全局 `activeKeyId`），保障 `v1 -> v2` 密钥轮换窗口内前后端视角严格一致，并照常回写 `X-Encrypt-Alg`；
+   - 开启 `bind-aad=true` 时继续沿用统一 `appId|keyId|algorithm`（`ApiCryptoContext.buildStandardAad`），确保与 `CLIENT_PUBLIC_KEY` 模式协议统一。
+4. **运行时安全不变量**：
+   - **前置 Fail-Fast 解封**：在 `REQUEST_SESSION_KEY` 模式下，即使端点未标注 `@ApiDecrypt`（如 `GET` 或明文入参 `POST`），也在进入 Controller 之前校验并解封 `X-Encrypt-Key`，缺失/损坏/过期 `keyId` 直接返回 `400` 拦截，避免业务逻辑产生副作用后才在出站阶段失败；
+   - **`@ApiSign` 协同防 DoS**：若端点同时激活 `@ApiSign(verifyRequest = true)`（含 `GET` 场景），在 `ApiCryptoFilter` 内仍严格先执行 `ApiSignAspect#verifyInboundFromFilter` 密文验签与 Nonce 防重放，再执行私钥解封 `X-Encrypt-Key`；
+   - **栈帧作用域与内存抹零**：解封出的原始 `byte[] sessionKey` 绝不写入 `HttpServletRequest` attribute，仅作为 `ApiCryptoFilter#doFilterInternal` 栈帧局部变量持有并在 `finally` 块强制 `Arrays.fill(sessionKey, (byte) 0)` 抹零；
+   - **算法冲突快速失败**：同一端点在 `REQUEST_SESSION_KEY` 模式下若入站与出站显式声明了互相冲突的算法套件（如入站 `RSA_AES_GCM` 与出站 `SM2_SM4_GCM`），前置校验直接拦截返回 `500`。
+5. **`ApiCipher` SPI 向后兼容扩展**：
+   - 在 `ApiCipher` 接口新增 3 个带 `default` 实现的方法（默认抛出 `BusinessException(500, "当前 ApiCipher 实现不支持请求会话密钥回包模式")`），保证既有第三方 `ApiCipher` 实现零编译与二进制破坏：`unwrapSessionKey(String encryptedKey, ApiCryptoContext context)`、`decryptWithSessionKey(byte[] sessionKey, String iv, String cipherText, ApiCryptoContext context)` 与 `encryptWithSessionKey(byte[] plaintext, byte[] sessionKey, ApiCryptoContext context)`，并由 `RsaAesGcmApiCipher` 与 `Sm2Sm4GcmApiCipher` 完整实现且复用底层原语。
+6. **被拒绝的备选方案（模式 B：请求头携带临时客户端公钥）**：
+   - 放弃通过请求头（如 `X-Client-Public-Key`）动态传递客户端一次性非对称公钥的方案：现行 `SignCanonicalUtil` 待签串不包含自定义请求头，在不破坏 ADR-0016/0112 协议的前提下无法直接被 `@ApiSign` 防篡改覆盖；同时浏览器端每次请求生成非对称密钥对开销较高，且服务端解析请求头传入的任意公钥会引入弱密钥与超大 RSA 密钥 CPU DoS 校验面。
+7. **XSS 排除头协同（Issue #1182）**：
+   - 保持 `xss` 与 `crypto` 包间解耦，在 `WebProperties.XssProperties.excludeHeaders` 默认白名单中补充 `X-Encrypt-Key`、`X-Encrypt-Iv`、`X-Key-Id` 与 `X-Encrypt-Alg`（与既有 `X-Signature` 处理方式一致），防止开启 `clean-headers=true` 时对加密元数据标头产生意外改写。
+
 ---
 
 ## 3. 后果与权衡 (Consequences & Trade-offs)
 
-- **正向收益**：① 零破坏既有 [ADR-0002](./0002-explicit-result-contract-no-response-body-advice.md) 与 [ADR-0016](./0016-dual-direction-api-signature-and-anti-replay-engine.md) 契约，`SignCanonicalUtil` 协议零修改；② 100% 纯 JDK 17 实现国密 `SM2 + SM4-GCM` 与国际 `RSA-OAEP-SHA256 + AES-256-GCM` 双套件，零三方密码学依赖；③ 将 `SM4-GCM` 沉淀至 `ateng-boot-core` `CryptoUtil` 惠及全生态。
-- **妥协与约束**：① 在 `ApiCryptoFilter` 内通过 `HandlerMapping` 预解析目标 `HandlerMethod` 以避免对非加密接口缓冲响应体，要求自定义控制器映射遵循标准 Spring MVC `HandlerMapping` 规范；② 出站加密启用双非对称公钥模型时，客户端需在 `DefaultApiCryptoKeyProvider` 或自定义 `ApiCryptoKeyProvider` SPI 中维护自身接收公钥。
+- **正向收益**：① 零破坏既有 [ADR-0002](./0002-explicit-result-contract-no-response-body-advice.md) 与 [ADR-0016](./0016-dual-direction-api-signature-and-anti-replay-engine.md) 契约，`SignCanonicalUtil` 协议零修改；② 100% 纯 JDK 17 实现国密 `SM2 + SM4-GCM` 与国际 `RSA-OAEP-SHA256 + AES-256-GCM` 双套件，零三方密码学依赖；③ 将 `SM4-GCM` 沉淀至 `ateng-boot-core` `CryptoUtil` 惠及全生态；④ 通过 `CryptoResponseKeyMode.REQUEST_SESSION_KEY` 兼顾 B2B 双非对称密钥与纯 Web SPA 无静态私钥场景，一套前端 `RequestCipher` 即可统一覆盖 `POST` 双向与 `GET` 单向加密。
+- **妥协与约束**：① 在 `ApiCryptoFilter` 内通过 `HandlerMapping` 预解析目标 `HandlerMethod` 以避免对非加密接口缓冲响应体，要求自定义控制器映射遵循标准 Spring MVC `HandlerMapping` 规范；② 出站加密使用默认 `CLIENT_PUBLIC_KEY` 模式时，客户端需在 `DefaultApiCryptoKeyProvider` 或自定义 `ApiCryptoKeyProvider` SPI 中维护自身接收公钥；③ 切换为 `REQUEST_SESSION_KEY` 模式时，即便是无请求体的 `GET` 接口也要求前端在请求头携带 `X-Encrypt-Key` 完成单次会话密钥握手。

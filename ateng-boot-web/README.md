@@ -23,7 +23,7 @@
 | **请求体可重读管道** | 通用请求体重复多次读取与载荷防爆管道 | `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.body-cache.max-body-size`, `sign.enabled`, `payload-log.enabled` | 自动包装 POST/PUT/PATCH 请求为可重复读包装器，支持多次重复消费输入流；单次超限（DataSize）快速失败并优雅降级输出 HTTP 200 + Result 413 JSON 报文并回写 `X-Trace-Id`；自动跳过表单与文件上传 | `ContentCachingFilterTest.java`, `ContentCachingAutoConfigurationTest.java`, `ContentCachingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **载荷采样日志** | HTTP 请求/响应双向安全采样与截断防 OOM | `PayloadLoggingFilter` | `ateng.boot.web.payload-log.enabled`, `max-payload-size`, `exclude-urls` | 请求出口处单行聚合输出包含 TraceId、Method、URI、Status、Cost、ReqBody 与 RespBody 的 `[HTTP_PAYLOAD]` 日志，内建 MIME 过滤、凭据正则掩码（`***`）、强类型截断（默认 4KB）、状态自适应提升（>= 400 提升为 WARN）并在 `finally` 确定性执行 `copyBodyToResponse()` | `PayloadLoggingFilterTest.java`, `PayloadLoggingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **双向加签验签** | API 报文防篡改防重放加签验签引擎 | `@ApiSign`, `SignAlgorithm`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `Sm2Signer`, `SignKeyProvider`, `DefaultSignKeyProvider`, `SignCanonicalUtil`, `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.sign.enabled`, `algorithm`, `app-id`, `secret-key`, `public-key`, `private-key`, `rsa-public-key`, `rsa-private-key`, `sm2-public-key`, `sm2-private-key`, `expire`, `max-body-size`, `header-app-id`, `header-timestamp`, `header-nonce`, `header-signature`, `nonce-prefix`, `fail-open` | `@ApiSign(verifyRequest, signResponse, expireSeconds, message, algorithm)` 支持注解级动态路由与单应用内 HMAC_SHA256 / RSA / SM2 多算法共存；`ApiSigner.sign/verify`，`SignKeyProvider.getVerifyKey/getSignKey(appId, algorithm)`（兼容 `getSecretKey/getPublicKey/getPrivateKey`），`SignCanonicalUtil.buildRequestCanonicalString/buildResponseCanonicalString/buildSortedQueryString`，Nonce 防重放（`nonce-prefix` 与 `fail-open` 内存降级）及 Fail-Closed 出站响应加签 | `ApiSignAspectTest.java`, `ApiSignerTest.java`, `Sm2SignerTest.java`, `SignCanonicalUtilTest.java`, `AtengApiSignAutoConfigurationTest.java`, `WebSecurityAndSignControllerTest.java`, `WebSecuritySignRsaSampleTest.java`, `WebSecuritySignSm2SampleTest.java` |
-| **传输层混合加解密** | API 请求/响应体混合加解密与 Encrypt-then-Sign 协同 | `@ApiDecrypt`, `@ApiEncrypt`, `CryptoAlgorithm`, `CryptoProperties`, `CryptoKeyVersionProperties`, `ApiCryptoFilter`, `DecryptedBodyHttpServletRequest`, `ApiCryptoResponseWrapper`, `ApiEncryptedPayload`, `ApiCipherInput`, `ApiCipherResult`, `ApiCryptoContext`, `ApiCipher`, `RsaAesGcmApiCipher`, `Sm2Sm4GcmApiCipher`, `ApiCryptoKeyProvider`, `DefaultApiCryptoKeyProvider`, `AtengApiCryptoAutoConfiguration` | `ateng.boot.web.crypto.enabled`, `algorithm`, `app-id`, `active-key-id`, `max-body-size`, `bind-aad`, `use-http-status`, `server-private-key`, `server-public-key`, `client-public-key`, `rsa-server-private-key`, `rsa-server-public-key`, `rsa-client-public-key`, `sm2-server-private-key`, `sm2-server-public-key`, `sm2-client-public-key`, `keys.*`, `header-app-id`, `header-encrypt-key`, `header-encrypt-iv`, `header-key-id`, `header-encrypt-alg` | `@ApiDecrypt(enabled, algorithm, required, message)` 与 `@ApiEncrypt(enabled, algorithm, encryptError, message)` 支持独立与 `@ApiSign` Encrypt-then-Sign 组合（先验明密文签名防 DoS、解密后消费 `@RequestBody`/`@Valid`/`@Idempotent`/XSS，出站密文加密后延迟回签）；零 `ResponseBodyAdvice` 与流式透传防 OOM，支持纯 JDK 17 `RSA_AES_GCM`（OAEP-SHA256 + AES-256-GCM）与国密 `SM2_SM4_GCM`、`bind-aad` 防替换及多版本 `keyId` 轮换吊销 | `RsaAesGcmApiCipherTest.java`, `Sm2Sm4GcmApiCipherTest.java`, `DefaultApiCryptoKeyProviderTest.java`, `AtengApiCryptoAutoConfigurationTest.java`, `ApiCryptoFilterMockMvcTest.java`, `WebSecurityCryptoSampleTest.java` (`POST /sample/web/crypto/rsa/payment`, `/sm2/archive`, `/mixed/transfer`, `GET /report`) |
+| **传输层混合加解密** | API 请求/响应体混合加解密与 Encrypt-then-Sign 协同 | `@ApiDecrypt`, `@ApiEncrypt`, `CryptoAlgorithm`, `CryptoResponseKeyMode`, `CryptoProperties`, `CryptoKeyVersionProperties`, `ApiCryptoFilter`, `DecryptedBodyHttpServletRequest`, `ApiCryptoResponseWrapper`, `ApiEncryptedPayload`, `ApiCipherInput`, `ApiCipherResult`, `ApiCryptoContext`, `ApiCipher`, `RsaAesGcmApiCipher`, `Sm2Sm4GcmApiCipher`, `ApiCryptoKeyProvider`, `DefaultApiCryptoKeyProvider`, `AtengApiCryptoAutoConfiguration` | `ateng.boot.web.crypto.enabled`, `algorithm`, `response-key-mode`, `app-id`, `active-key-id`, `max-body-size`, `bind-aad`, `use-http-status`, `server-private-key`, `server-public-key`, `client-public-key`, `rsa-server-private-key`, `rsa-server-public-key`, `rsa-client-public-key`, `sm2-server-private-key`, `sm2-server-public-key`, `sm2-client-public-key`, `keys.*`, `header-app-id`, `header-encrypt-key`, `header-encrypt-iv`, `header-key-id`, `header-encrypt-alg` | `@ApiDecrypt(enabled, algorithm, required, message)` 与 `@ApiEncrypt(enabled, algorithm, keyMode, encryptError, message)` 支持独立与 `@ApiSign` Encrypt-then-Sign 组合（先验明密文签名防 DoS、解密后消费 `@RequestBody`/`@Valid`/`@Idempotent`/XSS，出站密文加密后延迟回签）；支持默认 `CLIENT_PUBLIC_KEY` 与面向纯 Web SPA 无静态私钥的 `REQUEST_SESSION_KEY`（复用请求会话密钥 + 全新随机 IV + 省略 `X-Encrypt-Key` + 无体 `GET` `X-Encrypt-Key` 握手 + 栈帧局部抹零 + `ApiCipher` 向后兼容 `default` SPI）；支持纯 JDK 17 `RSA_AES_GCM` 与国密 `SM2_SM4_GCM`、`bind-aad` 防替换及多版本 `keyId` 轮换 | `RsaAesGcmApiCipherTest.java`, `Sm2Sm4GcmApiCipherTest.java`, `DefaultApiCryptoKeyProviderTest.java`, `AtengApiCryptoAutoConfigurationTest.java`, `ApiCryptoFilterMockMvcTest.java`, `WebSecurityCryptoSampleTest.java` (`POST /sample/web/crypto/rsa/payment`, `/sm2/archive`, `/mixed/transfer`, `/spa/checkout`, `GET /report`, `GET /spa/profile`) |
 | **安全响应头防御** | 等保三级基线安全响应头注入与容器指纹剥离 | `SecurityHeadersFilter`, `SecurityHeadersProperties` | `ateng.boot.web.security-headers.enabled`, `content-type-options`, `frame-options`, `xss-protection`, `referrer-policy`, `content-security-policy`, `permissions-policy`, `remove-server-header` | 注入 `X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、`X-XSS-Protection: 1; mode=block`、`Referrer-Policy: strict-origin-when-cross-origin` 等基准头，剥离容器 `Server` 头，`containsHeader` 守卫防覆盖 | `SecurityHeadersFilterTest.java`, `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
 | **ETag 协商缓存** | 基于浅层哈希的内容协商缓存与 304 节省带宽 | `ShallowEtagHeaderFilter`, `EtagProperties` | `ateng.boot.web.etag.enabled`, `write-weak-etag` | 条件自动装配 Spring 原生 `ShallowEtagHeaderFilter`，自动计算内容摘要并生成 `ETag` 响应头，配合 `If-None-Match` 返回 `304 Not Modified` 节省网络带宽 | `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
 | **XSS 安全清洗与放行** | 双轨无害化清洗与字段级富文本放行 | `XssFilter`, `XssHttpServletRequestWrapper`, `XssCleaner`, `XssMode`, `XssStringDeserializer`, `@XssIgnore` | `ateng.boot.web.xss.enabled`, `mode`, `clean-headers`, `exclude-headers`, `exclude-urls` | `XssCleaner.clean(value)`, `escape(value)`, `strip(value)`，支持 `XssMode.ESCAPE`（默认 HTML 转义）与 `STRIP`（标签剔除与 `javascript:`/`vbscript:` 伪协议剥离）；拦截 Query/Form 表单参数与请求头（`getHeader`/`getHeaders`）；`XssStringDeserializer` 拦截 JSON 请求体；通过 `@XssIgnore` 声明式在字段或类级别豁免富文本，支持 Ant 白名单路径排除 | `XssCleanerTest.java`, `XssFilterTest.java`, `XssHttpServletRequestWrapperTest.java`, `XssStringDeserializerTest.java`, `WebXssSampleControllerTest.java`, `WebXssStripModeSampleTest.java`, `WebXssHeaderCleanSampleTest.java` |
@@ -2257,6 +2257,8 @@ ateng:
         enabled: true
         # 全局默认混合套件（RSA_AES_GCM | SM2_SM4_GCM，默认 RSA_AES_GCM）
         algorithm: RSA_AES_GCM
+        # 全局默认出站响应加密密钥来源模式（CLIENT_PUBLIC_KEY 默认客户端公钥 | REQUEST_SESSION_KEY 纯 Web SPA 会话密钥回包）
+        response-key-mode: CLIENT_PUBLIC_KEY
         # 默认应用标识（单应用缺省配置，默认 default）
         app-id: "demo-app"
         # 当前出站加密活跃密钥版本标识（默认 v1）
@@ -2289,7 +2291,11 @@ ateng:
 - **标准传输协议与双向非对称密钥对模型**：
   - **加密信封体**：`{"cipherText":"<Base64(CipherBytes || 16B GCM Tag)>"}`（对应 `ApiEncryptedPayload`）；
   - **加密安全头**：`X-Encrypt-Key`（经非对称公钥封装的一次性随机对称会话密钥）、`X-Encrypt-Iv`（12 字节随机 GCM IV）、`X-Key-Id`（密钥版本标识）、`X-Encrypt-Alg`（套件标识）；并已预置纳入 `CorsProperties.exposedHeaders` 默认白名单；
-  - **双向非对称密钥隔离**：入站使用服务端私钥（`serverPrivateKey`）解封，出站使用客户端公钥（`clientPublicKey`）封包，即使 `GET`/`DELETE` 无加密入参接口亦可独立加密出站响应，彻底杜绝服务端私钥签发可预测密文；
+  - **双向非对称密钥隔离（默认 `CLIENT_PUBLIC_KEY`）**：入站使用服务端私钥（`serverPrivateKey`）解封，出站使用客户端公钥（`clientPublicKey`）封包，即使 `GET`/`DELETE` 无加密入参接口亦可独立加密出站响应，彻底杜绝服务端私钥签发可预测密文；
+  - **纯 Web SPA 无静态私钥回包模式（`REQUEST_SESSION_KEY`）**：面向无长期静态私钥的浏览器 SPA 场景，可通过全局 `response-key-mode: REQUEST_SESSION_KEY` 或端点 `@ApiEncrypt(keyMode = CryptoResponseKeyMode.REQUEST_SESSION_KEY)` 显式切换（Fail-Closed，无隐式降级）：
+    - **双向与无体 `GET` 密钥握手统一支持**：既支持 `@ApiDecrypt + @ApiEncrypt` 复用入站解封出的对称会话密钥，也支持无体 `GET`（及仅标 `@ApiEncrypt` 的非解密接口）在请求头携带 `X-Encrypt-Key` 完成单次密钥握手，并在进入 Controller 前前置 Fail-Fast 解封（同时激活 `@ApiSign` 时先验签与 Nonce 防重放再解封）；
+    - **线缆响应与安全边界**：出站生成全新随机 12 字节 `X-Encrypt-Iv`（杜绝 GCM Nonce 重用），**省略（不写入）** `X-Encrypt-Key` 响应头，`X-Key-Id` 回写本次入站实际生效的 `effectiveKeyId`（保障轮换期与 `bind-aad=true` 前后端一致），解封后的会话密钥仅在过滤器栈帧局部变量持有并在 `finally` 强制抹零（不存入请求属性）；若入站与出站显式声明冲突算法或缺失 `X-Encrypt-Key`（含搭配 `required = false` 的明文请求）均在前置阶段拦截；
+    - **`ApiCipher` 向后兼容扩展**：通过 `unwrapSessionKey`、`decryptWithSessionKey`、`encryptWithSessionKey` 三个带 `default` 实现的 SPI 方法拓展支持，已有自定义 `ApiCipher` 实现保持零编译破坏；
 - **纯 JDK 17 原生双算法套件（零 Bouncy Castle 依赖）**：
   - **`RSA_AES_GCM`**：`RSA/ECB/OAEPWithSHA-256AndMGF1Padding`（显式绑定 `MGF1ParameterSpec.SHA256` 对齐前端 WebCrypto/OpenSSL）封装 256 位一次性 `AES-256-GCM` 会话密钥；
   - **`SM2_SM4_GCM`**：基于纯 JDK 原生 `Sm2KeyCipher`（兼容 C1C3C2 与 ASN.1 DER 会话密钥封包，以及 Hex/Base64/PEM 公私钥）封装 Core 原生 `CryptoUtil` 纯 JDK `SM4-GCM` 密钥（16 字节密钥 + 12 字节 IV + NIST SP 800-38D GHASH 标签）；
@@ -2373,7 +2379,31 @@ public class WebSecurityCryptoVaultController {
     }
 }
 
-// 5. 多租户/KMS 动态密钥 SPI 扩展点（替换 DefaultApiCryptoKeyProvider）
+// 5. 纯 Web SPA 无静态私钥模式：POST 双向会话密钥回包与 GET 无体密钥握手（零 clientPublicKey 配置）
+@ApiDecrypt
+@ApiEncrypt(keyMode = CryptoResponseKeyMode.REQUEST_SESSION_KEY)
+@PostMapping("/spa/checkout")
+public Result<CryptoReceiptVO> spaCheckout(@RequestBody @Valid CryptoTransferDTO dto) {
+    return Result.success(CryptoReceiptVO.builder()
+            .orderNo(dto.getOrderNo())
+            .accountNo(dto.getAccountNo())
+            .amount(dto.getAmount())
+            .remark(dto.getRemark())
+            .securityChannel("SPA_REQUEST_SESSION_KEY")
+            .build());
+}
+
+@ApiEncrypt(keyMode = CryptoResponseKeyMode.REQUEST_SESSION_KEY)
+@GetMapping("/spa/profile")
+public Result<Map<String, Object>> spaProfile(@RequestParam("memberId") String memberId) {
+    Map<String, Object> profile = new LinkedHashMap<>();
+    profile.put("memberId", memberId);
+    profile.put("tier", "VIP_BLACK");
+    profile.put("securityChannel", "SPA_REQUEST_SESSION_KEY_HANDSHAKE");
+    return Result.success(profile);
+}
+
+// 6. 多租户/KMS 动态密钥 SPI 扩展点（替换 DefaultApiCryptoKeyProvider）
 @Bean
 public ApiCryptoKeyProvider kmsApiCryptoKeyProvider() {
     return new ApiCryptoKeyProvider() {
@@ -2977,6 +3007,8 @@ ateng:
         enabled: false
         # 全局默认混合套件（RSA_AES_GCM | SM2_SM4_GCM，默认 RSA_AES_GCM；可被 @ApiDecrypt/@ApiEncrypt 覆盖）
         algorithm: RSA_AES_GCM
+        # 全局默认出站响应加密密钥来源模式（CLIENT_PUBLIC_KEY 默认客户端公钥 | REQUEST_SESSION_KEY 纯 Web SPA 无私钥回包）
+        response-key-mode: CLIENT_PUBLIC_KEY
         # 默认应用标识（默认 default）
         app-id: "default"
         # 当前出站加密默认使用的活跃密钥版本标识（默认 v1，支持多版本平滑轮换）

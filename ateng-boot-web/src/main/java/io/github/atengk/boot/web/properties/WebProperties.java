@@ -2,6 +2,7 @@ package io.github.atengk.boot.web.properties;
 
 import io.github.atengk.boot.web.audit.OperateLogUrlStrategy;
 import io.github.atengk.boot.web.crypto.enums.CryptoAlgorithm;
+import io.github.atengk.boot.web.crypto.enums.CryptoResponseKeyMode;
 import io.github.atengk.boot.web.sign.enums.SignAlgorithm;
 import io.github.atengk.boot.web.xss.XssMode;
 import lombok.Getter;
@@ -694,6 +695,11 @@ public class WebProperties {
          * 全局默认混合加密套件（默认 RSA_AES_GCM；可选国密 SM2_SM4_GCM）
          */
         private CryptoAlgorithm algorithm = CryptoAlgorithm.RSA_AES_GCM;
+
+        /**
+         * 全局默认出站响应加密密钥来源模式（默认 CLIENT_PUBLIC_KEY 保持客户端公钥封包；可选 REQUEST_SESSION_KEY 适配纯 Web SPA 无静态私钥回包）
+         */
+        private CryptoResponseKeyMode responseKeyMode = CryptoResponseKeyMode.CLIENT_PUBLIC_KEY;
 
         /**
          * 默认应用标识（单应用缺省配置，默认 default）

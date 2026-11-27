@@ -1,6 +1,7 @@
 package io.github.atengk.boot.web.crypto.annotation;
 
 import io.github.atengk.boot.web.crypto.enums.CryptoAlgorithm;
+import io.github.atengk.boot.web.crypto.enums.CryptoResponseKeyMode;
 
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
@@ -29,6 +30,12 @@ public @interface ApiEncrypt {
      * 指定当前接口使用的加解密算法（默认 {@link CryptoAlgorithm#DEFAULT} 跟随全局配置）
      */
     CryptoAlgorithm algorithm() default CryptoAlgorithm.DEFAULT;
+
+    /**
+     * 出站响应加密密钥来源模式（默认 {@link CryptoResponseKeyMode#DEFAULT} 跟随全局配置；
+     * 设为 {@link CryptoResponseKeyMode#REQUEST_SESSION_KEY} 时可适配纯 Web SPA 无静态私钥场景）
+     */
+    CryptoResponseKeyMode keyMode() default CryptoResponseKeyMode.DEFAULT;
 
     /**
      * 异常或错误响应是否也执行加密（默认 false，保留标准明文 Result 错误码便于排障）

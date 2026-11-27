@@ -14,6 +14,7 @@ import io.github.atengk.boot.sample.web.vo.CryptoReceiptVO;
 import io.github.atengk.boot.web.crypto.annotation.ApiDecrypt;
 import io.github.atengk.boot.web.crypto.annotation.ApiEncrypt;
 import io.github.atengk.boot.web.crypto.enums.CryptoAlgorithm;
+import io.github.atengk.boot.web.crypto.enums.CryptoResponseKeyMode;
 import io.github.atengk.boot.web.crypto.filter.ApiCryptoFilter;
 import io.github.atengk.boot.web.crypto.model.ApiCipherResult;
 import io.github.atengk.boot.web.crypto.model.ApiCryptoContext;
@@ -202,5 +203,34 @@ public class WebSecurityAndCryptoController {
     @PostMapping("/gray/notice")
     public Result<String> grayNotice(@RequestBody @Valid CryptoTransferDTO dto) {
         return Result.success("GRAY_ACCEPTED:" + dto.getOrderNo());
+    }
+
+    /**
+     * 7. 纯 Web SPA 无静态私钥双向加解密（复用请求一次性 AES 会话密钥 + 全新随机 IV 回包）
+     */
+    @ApiDecrypt
+    @ApiEncrypt(keyMode = CryptoResponseKeyMode.REQUEST_SESSION_KEY)
+    @PostMapping("/spa/checkout")
+    public Result<CryptoReceiptVO> spaCheckout(@RequestBody @Valid CryptoTransferDTO dto) {
+        return Result.success(CryptoReceiptVO.builder()
+                .orderNo(dto.getOrderNo())
+                .accountNo(dto.getAccountNo())
+                .amount(dto.getAmount())
+                .remark(dto.getRemark())
+                .securityChannel("SPA_REQUEST_SESSION_KEY")
+                .build());
+    }
+
+    /**
+     * 8. 纯 Web SPA 无体 GET 密钥握手响应加密（前端仅携带 X-Encrypt-Key，服务端复用该会话密钥加密响应）
+     */
+    @ApiEncrypt(keyMode = CryptoResponseKeyMode.REQUEST_SESSION_KEY)
+    @GetMapping("/spa/profile")
+    public Result<Map<String, Object>> spaProfile(@RequestParam("memberId") String memberId) {
+        Map<String, Object> profile = new LinkedHashMap<>();
+        profile.put("memberId", memberId);
+        profile.put("tier", "VIP_BLACK");
+        profile.put("securityChannel", "SPA_REQUEST_SESSION_KEY_HANDSHAKE");
+        return Result.success(profile);
     }
 }

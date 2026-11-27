@@ -6,12 +6,14 @@ import io.github.atengk.boot.web.crypto.enums.CryptoAlgorithm;
 import io.github.atengk.boot.web.crypto.model.ApiCipherInput;
 import io.github.atengk.boot.web.crypto.model.ApiCipherResult;
 import io.github.atengk.boot.web.crypto.model.ApiCryptoContext;
+import io.github.atengk.boot.web.crypto.spi.ApiCipher;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.util.Arrays;
 import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -132,6 +134,93 @@ class RsaAesGcmApiCipherTest {
         assertThatThrownBy(() -> cipher.decrypt(
                 new ApiCipherInput(enc.encryptedKey(), enc.iv(), enc.cipherText()),
                 new ApiCryptoContext(CryptoAlgorithm.RSA_AES_GCM, "app-1", "v1", null, aad)))
+                .isInstanceOf(BusinessException.class)
+                .hasFieldOrPropertyWithValue("code", CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
+    }
+
+    @Test
+    @DisplayName("会话密钥解封复用闭环：独立全新 IV、省略 encryptedKey、AAD 绑定、非法密钥长度与默认 SPI 向后兼容")
+    void shouldUnwrapAndReuseSessionKeyAndKeepSpiBackwardCompatible() throws Exception {
+        byte[] reqPlain = "{\"action\":\"checkout\"}".getBytes(StandardCharsets.UTF_8);
+        byte[] respPlain = "{\"status\":\"PAID\"}".getBytes(StandardCharsets.UTF_8);
+        byte[] aad = ApiCryptoContext.buildStandardAad("app-spa", "v1", CryptoAlgorithm.RSA_AES_GCM);
+
+        ApiCipherResult reqEnc = cipher.encrypt(reqPlain,
+                new ApiCryptoContext(CryptoAlgorithm.RSA_AES_GCM, "app-spa", "v1", PUBLIC_KEY_BASE64, aad));
+
+        byte[] sessionKey = cipher.unwrapSessionKey(reqEnc.encryptedKey(),
+                new ApiCryptoContext(CryptoAlgorithm.RSA_AES_GCM, "app-spa", "v1", PRIVATE_KEY_BASE64, null));
+        try {
+            assertThat(sessionKey).hasSize(32);
+
+            byte[] reqDec = cipher.decryptWithSessionKey(sessionKey, reqEnc.iv(), reqEnc.cipherText(),
+                    new ApiCryptoContext(CryptoAlgorithm.RSA_AES_GCM, "app-spa", "v1", null, aad));
+            assertThat(reqDec).isEqualTo(reqPlain);
+
+            ApiCipherResult respEnc = cipher.encryptWithSessionKey(respPlain, sessionKey,
+                    new ApiCryptoContext(CryptoAlgorithm.RSA_AES_GCM, "app-spa", "v1", null, aad));
+            assertThat(respEnc.encryptedKey()).isNull();
+            assertThat(respEnc.iv()).isNotBlank().isNotEqualTo(reqEnc.iv());
+
+            byte[] respDec = cipher.decryptWithSessionKey(sessionKey, respEnc.iv(), respEnc.cipherText(),
+                    new ApiCryptoContext(CryptoAlgorithm.RSA_AES_GCM, "app-spa", "v1", null, aad));
+            assertThat(respDec).isEqualTo(respPlain);
+
+            // 密文 Tag 篡改保留 AEADBadTagException 因果链
+            byte[] tamperedRaw = Base64.getDecoder().decode(respEnc.cipherText());
+            tamperedRaw[tamperedRaw.length - 1] ^= 0x01;
+            assertThatThrownBy(() -> cipher.decryptWithSessionKey(
+                    sessionKey, respEnc.iv(), Base64.getEncoder().encodeToString(tamperedRaw),
+                    new ApiCryptoContext(CryptoAlgorithm.RSA_AES_GCM, "app-spa", "v1", null, aad)))
+                    .isInstanceOf(BusinessException.class)
+                    .hasFieldOrPropertyWithValue("code", CommonResultCode.BAD_REQUEST.getCode())
+                    .hasCauseInstanceOf(javax.crypto.AEADBadTagException.class);
+        } finally {
+            Arrays.fill(sessionKey, (byte) 0);
+        }
+
+        // 非法 AES 密钥长度（如 10 字节）RSA 封装后解封应拒绝 400
+        javax.crypto.Cipher rsa = javax.crypto.Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
+        rsa.init(javax.crypto.Cipher.ENCRYPT_MODE,
+                java.security.KeyFactory.getInstance("RSA").generatePublic(
+                        new java.security.spec.X509EncodedKeySpec(Base64.getDecoder().decode(PUBLIC_KEY_BASE64))),
+                new javax.crypto.spec.OAEPParameterSpec("SHA-256", "MGF1",
+                        java.security.spec.MGF1ParameterSpec.SHA256, javax.crypto.spec.PSource.PSpecified.DEFAULT));
+        String invalidLenWrapped = Base64.getEncoder().encodeToString(rsa.doFinal(new byte[10]));
+        assertThatThrownBy(() -> cipher.unwrapSessionKey(invalidLenWrapped,
+                new ApiCryptoContext(CryptoAlgorithm.RSA_AES_GCM, "app-spa", "v1", PRIVATE_KEY_BASE64, null)))
+                .isInstanceOf(BusinessException.class)
+                .hasFieldOrPropertyWithValue("code", CommonResultCode.BAD_REQUEST.getCode());
+
+        assertThatThrownBy(() -> cipher.encryptWithSessionKey(respPlain, new byte[10],
+                new ApiCryptoContext(CryptoAlgorithm.RSA_AES_GCM, "app-spa", "v1", null, null)))
+                .isInstanceOf(BusinessException.class)
+                .hasFieldOrPropertyWithValue("code", CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
+
+        // 仅实现旧 3 方法的自定义 ApiCipher 默认抛出 500 保持源码/二进制向后兼容
+        ApiCipher legacyCustomCipher = new ApiCipher() {
+            @Override
+            public boolean supports(CryptoAlgorithm algorithm) {
+                return true;
+            }
+
+            @Override
+            public ApiCipherResult encrypt(byte[] plaintext, ApiCryptoContext context) {
+                return null;
+            }
+
+            @Override
+            public byte[] decrypt(ApiCipherInput input, ApiCryptoContext context) {
+                return new byte[0];
+            }
+        };
+        assertThatThrownBy(() -> legacyCustomCipher.unwrapSessionKey("abc", null))
+                .isInstanceOf(BusinessException.class)
+                .hasFieldOrPropertyWithValue("code", CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
+        assertThatThrownBy(() -> legacyCustomCipher.decryptWithSessionKey(new byte[32], "iv", "ct", null))
+                .isInstanceOf(BusinessException.class)
+                .hasFieldOrPropertyWithValue("code", CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
+        assertThatThrownBy(() -> legacyCustomCipher.encryptWithSessionKey(respPlain, new byte[32], null))
                 .isInstanceOf(BusinessException.class)
                 .hasFieldOrPropertyWithValue("code", CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
     }

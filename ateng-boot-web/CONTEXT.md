@@ -413,19 +413,23 @@ _Avoid_: CaptchaConfig, CaptchaAutoConfig
 _Avoid_: @DecryptBody, @RequestDecrypt, @DecryptApi
 
 **ApiEncrypt**:
-声明式 API 传输层出站响应体加密注解，可标注于 Controller 类或方法（方法级优先，支持 `enabled=false` 局部豁免、`encryptError` 错误密文化开关与注解级 `algorithm` 覆盖）。
+声明式 API 传输层出站响应体加密注解，可标注于 Controller 类或方法（方法级优先，支持 `enabled=false` 局部豁免、`encryptError` 错误密文化开关、注解级 `algorithm` 覆盖及 `keyMode` 响应密钥模式覆盖，默认 `CryptoResponseKeyMode.DEFAULT`）。
 _Avoid_: @EncryptBody, @ResponseEncrypt, @EncryptApi
 
 **CryptoAlgorithm**:
 API 传输层混合加密套件枚举，包含 `DEFAULT`（继承全局配置）、`RSA_AES_GCM`（RSA-OAEP-SHA256 + AES-256-GCM）与 `SM2_SM4_GCM`（国密 SM2 + SM4-GCM）。
 _Avoid_: EncryptAlgorithm, CipherSuite, TransportCipherType
 
+**CryptoResponseKeyMode**:
+API 传输层出站响应加密密钥来源模式枚举，包含 `DEFAULT`（注解继承全局配置）、`CLIENT_PUBLIC_KEY`（默认，基于客户端公钥封装全新会话密钥）与 `REQUEST_SESSION_KEY`（纯 Web SPA 无静态私钥场景，复用本次请求 `X-Encrypt-Key` 解封的一次性对称会话密钥配合全新随机 IV 加密响应，支持无体 `GET` 密钥握手）。
+_Avoid_: EncryptMode, SpaCryptoMode, KeyStrategy, ResponseEncryptMode
+
 **ApiCryptoFilter**:
-基于 `HandlerMethod` 按需生效的 API 传输层加解密过滤器（`ORDER = HIGHEST_PRECEDENCE + 90`），位于 `PayloadLoggingFilter` 与 `XssFilter` 之后以防日志明文泄露，严守 ADR-0002 不使用 `ResponseBodyAdvice` 并与 `ApiSignAspect` 协同实现物理级 `Encrypt-then-Sign`。
+基于 `HandlerMethod` 按需生效的 API 传输层加解密过滤器（`ORDER = HIGHEST_PRECEDENCE + 90`），位于 `PayloadLoggingFilter` 与 `XssFilter` 之后以防日志明文泄露，严守 ADR-0002 不使用 `ResponseBodyAdvice` 并与 `ApiSignAspect` 协同实现物理级 `Encrypt-then-Sign`，在 `REQUEST_SESSION_KEY` 模式下支持无体请求前置解封 Fail-Fast 与局部变量作用域内存抹零。
 _Avoid_: ApiEncryptFilter, CryptoAdvice, BodyCryptoFilter
 
 **ApiCipher**:
-API 传输层混合加密算法引擎 SPI 契约，定义会话密钥封装、AEAD 载荷加解密及算法匹配标识。
+API 传输层混合加密算法引擎 SPI 契约，定义会话密钥封装、AEAD 载荷加解密、算法匹配标识及向后兼容的 `default` 会话密钥解封与复用加解密原语契约。
 _Avoid_: CryptoEngine, TransportCipher, PayloadEncryptor
 
 **RsaAesGcmApiCipher**:

@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.web;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.util.CryptoUtil;
 import io.github.atengk.boot.core.util.DigestUtil;
 import io.github.atengk.boot.sample.web.crypto.SampleCryptoKeyConfiguration;
 import io.github.atengk.boot.web.crypto.cipher.RsaAesGcmApiCipher;
@@ -29,7 +30,14 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
+import javax.crypto.Cipher;
+import javax.crypto.spec.OAEPParameterSpec;
+import javax.crypto.spec.PSource;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyFactory;
+import java.security.spec.MGF1ParameterSpec;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.Base64;
 import java.util.Map;
 import java.util.UUID;
 
@@ -271,6 +279,94 @@ class WebSecurityCryptoSampleTest {
         assertThat(new String(dlRes.getResponse().getContentAsByteArray(), StandardCharsets.UTF_8))
                 .isEqualTo("RAW_BINARY_DATA");
         assertThat(dlRes.getResponse().getHeader(ApiCryptoFilter.HEADER_ENCRYPT_KEY)).isNull();
+    }
+
+    @Test
+    @DisplayName("5. 纯 Web SPA 无静态私钥模式：POST 双向会话回包、GET 密钥握手与缺失会话密钥 Fail-Closed 拦截")
+    void shouldSupportPureWebSpaSessionKeyEchoAndGetHandshake() throws Exception {
+        String serverPubKey = sampleKeyConfig.resolveServerPublicKey(webProperties.getCrypto(), CryptoAlgorithm.RSA_AES_GCM);
+        assertThat(serverPubKey).isNotBlank();
+
+        // 5.1 POST /sample/web/crypto/spa/checkout（浏览器内存生成一次性 256-bit AES 会话密钥，不依赖客户端非对称私钥）
+        byte[] spaCheckoutKey = CryptoUtil.generateKey(256);
+        byte[] reqIvBytes = CryptoUtil.generateGcmIv();
+        String reqIv = Base64.getEncoder().encodeToString(reqIvBytes);
+        String wrappedKey = wrapWithServerRsaPublicKey(spaCheckoutKey, serverPubKey);
+
+        byte[] plainCheckout = """
+                {
+                  "orderNo": "SPA-CHK-202601",
+                  "accountNo": "6222021000099988",
+                  "amount": 388.00,
+                  "remark": "SPA无私钥收银台结账"
+                }
+                """.getBytes(StandardCharsets.UTF_8);
+        byte[] cipherBytes = CryptoUtil.encryptGcm(plainCheckout, spaCheckoutKey, reqIvBytes, null);
+        byte[] envelopeBytes = objectMapper.writeValueAsBytes(
+                new ApiEncryptedPayload(Base64.getEncoder().encodeToString(cipherBytes)));
+
+        MvcResult checkoutRes = mockMvc.perform(post("/sample/web/crypto/spa/checkout")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header(ApiCryptoFilter.HEADER_ENCRYPT_KEY, wrappedKey)
+                        .header(ApiCryptoFilter.HEADER_ENCRYPT_IV, reqIv)
+                        .header(ApiCryptoFilter.HEADER_ENCRYPT_ALG, "RSA_AES_GCM")
+                        .content(envelopeBytes))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        assertThat(checkoutRes.getResponse().getHeader(ApiCryptoFilter.HEADER_ENCRYPT_KEY)).isNull();
+        String respIv = checkoutRes.getResponse().getHeader(ApiCryptoFilter.HEADER_ENCRYPT_IV);
+        assertThat(respIv).isNotBlank().isNotEqualTo(reqIv);
+
+        ApiEncryptedPayload respEnvelope = objectMapper.readValue(
+                checkoutRes.getResponse().getContentAsByteArray(), ApiEncryptedPayload.class);
+        byte[] decryptedCheckout = rsaCipher.decryptWithSessionKey(
+                spaCheckoutKey, respIv, respEnvelope.getCipherText(),
+                new ApiCryptoContext(CryptoAlgorithm.RSA_AES_GCM, webProperties.getCrypto().getAppId(), "v1", null, null));
+        JsonNode checkoutJson = objectMapper.readTree(decryptedCheckout);
+        assertThat(checkoutJson.get("code").asInt()).isEqualTo(200);
+        assertThat(checkoutJson.get("data").get("orderNo").asText()).isEqualTo("SPA-CHK-202601");
+        assertThat(checkoutJson.get("data").get("securityChannel").asText()).isEqualTo("SPA_REQUEST_SESSION_KEY");
+
+        // 5.2 GET /sample/web/crypto/spa/profile 无体密钥握手成功
+        byte[] spaProfileKey = CryptoUtil.generateKey(256);
+        String wrappedProfileKey = wrapWithServerRsaPublicKey(spaProfileKey, serverPubKey);
+        MvcResult profileRes = mockMvc.perform(get("/sample/web/crypto/spa/profile")
+                        .param("memberId", "MEM-9527")
+                        .header(ApiCryptoFilter.HEADER_ENCRYPT_KEY, wrappedProfileKey))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        assertThat(profileRes.getResponse().getHeader(ApiCryptoFilter.HEADER_ENCRYPT_KEY)).isNull();
+        String profileRespIv = profileRes.getResponse().getHeader(ApiCryptoFilter.HEADER_ENCRYPT_IV);
+        assertThat(profileRespIv).isNotBlank();
+        ApiEncryptedPayload profileEnvelope = objectMapper.readValue(
+                profileRes.getResponse().getContentAsByteArray(), ApiEncryptedPayload.class);
+        byte[] decryptedProfile = rsaCipher.decryptWithSessionKey(
+                spaProfileKey, profileRespIv, profileEnvelope.getCipherText(),
+                new ApiCryptoContext(CryptoAlgorithm.RSA_AES_GCM, webProperties.getCrypto().getAppId(), "v1", null, null));
+        JsonNode profileJson = objectMapper.readTree(decryptedProfile);
+        assertThat(profileJson.get("code").asInt()).isEqualTo(200);
+        assertThat(profileJson.get("data").get("memberId").asText()).isEqualTo("MEM-9527");
+        assertThat(profileJson.get("data").get("securityChannel").asText()).isEqualTo("SPA_REQUEST_SESSION_KEY_HANDSHAKE");
+
+        // 5.3 GET /sample/web/crypto/spa/profile 缺失 X-Encrypt-Key 返回 400
+        mockMvc.perform(get("/sample/web/crypto/spa/profile").param("memberId", "MEM-9527"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(CommonResultCode.BAD_REQUEST.getCode()));
+    }
+
+    private static String wrapWithServerRsaPublicKey(byte[] sessionKey, String publicKeyBase64) throws Exception {
+        String clean = publicKeyBase64
+                .replace("-----BEGIN PUBLIC KEY-----", "")
+                .replace("-----END PUBLIC KEY-----", "")
+                .replaceAll("\\s+", "");
+        byte[] keyBytes = Base64.getDecoder().decode(clean);
+        Cipher rsa = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
+        rsa.init(Cipher.ENCRYPT_MODE,
+                KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(keyBytes)),
+                new OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT));
+        return Base64.getEncoder().encodeToString(rsa.doFinal(sessionKey));
     }
 
     private JsonNode decryptResponse(MvcResult result, CryptoAlgorithm alg) throws Exception {

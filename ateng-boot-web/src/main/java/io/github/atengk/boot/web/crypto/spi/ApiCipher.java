@@ -1,5 +1,7 @@
 package io.github.atengk.boot.web.crypto.spi;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.web.crypto.enums.CryptoAlgorithm;
 import io.github.atengk.boot.web.crypto.model.ApiCipherInput;
 import io.github.atengk.boot.web.crypto.model.ApiCipherResult;
@@ -39,4 +41,45 @@ public interface ApiCipher {
      * @return 还原后的明文字节数组
      */
     byte[] decrypt(ApiCipherInput input, ApiCryptoContext context);
+
+    /**
+     * 仅使用服务端私钥解封传输层一次性对称会话密钥
+     * 调用方必须在使用完毕后对返回数组执行内存清零
+     *
+     * @param encryptedKey Base64 编码的非对称封装会话密钥
+     * @param context      解密上下文（含服务端私钥）
+     * @return 解封得到的原始对称会话密钥字节数组
+     */
+    default byte[] unwrapSessionKey(String encryptedKey, ApiCryptoContext context) {
+        throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                "当前 ApiCipher 实现不支持请求会话密钥回包模式: " + getClass().getSimpleName());
+    }
+
+    /**
+     * 使用已解封的对称会话密钥对密文载荷执行 AEAD 认证解密
+     *
+     * @param sessionKey 已解封的对称会话密钥字节数组
+     * @param iv         Base64 编码的 12 字节随机 GCM IV
+     * @param cipherText Base64 编码的对称认证密文
+     * @param context    解密上下文（含可选 AAD）
+     * @return 还原后的明文字节数组
+     */
+    default byte[] decryptWithSessionKey(byte[] sessionKey, String iv, String cipherText, ApiCryptoContext context) {
+        throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                "当前 ApiCipher 实现不支持请求会话密钥回包模式: " + getClass().getSimpleName());
+    }
+
+    /**
+     * 使用已有对称会话密钥配合全新随机 12 字节 IV 加密明文载荷
+     * 返回载体中 {@link ApiCipherResult#encryptedKey()} 应为 {@code null}
+     *
+     * @param plaintext  明文字节数组
+     * @param sessionKey 对称会话密钥字节数组
+     * @param context    加密上下文（含可选 AAD）
+     * @return 加密输出结果（不含封装密钥）
+     */
+    default ApiCipherResult encryptWithSessionKey(byte[] plaintext, byte[] sessionKey, ApiCryptoContext context) {
+        throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                "当前 ApiCipher 实现不支持请求会话密钥回包模式: " + getClass().getSimpleName());
+    }
 }

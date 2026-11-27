@@ -7,6 +7,7 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.web.crypto.annotation.ApiDecrypt;
 import io.github.atengk.boot.web.crypto.annotation.ApiEncrypt;
 import io.github.atengk.boot.web.crypto.enums.CryptoAlgorithm;
+import io.github.atengk.boot.web.crypto.enums.CryptoResponseKeyMode;
 import io.github.atengk.boot.web.crypto.model.ApiCipherInput;
 import io.github.atengk.boot.web.crypto.model.ApiCipherResult;
 import io.github.atengk.boot.web.crypto.model.ApiCryptoContext;
@@ -41,6 +42,7 @@ import org.springframework.web.util.WebUtils;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -141,62 +143,111 @@ public class ApiCryptoFilter extends OncePerRequestFilter implements Ordered {
         }
 
         int maxBodyBytes = resolveMaxBodyBytes(cryptoProps);
-        HttpServletRequest requestForChain = request;
+        CryptoResponseKeyMode responseKeyMode = spec.activeEncrypt()
+                ? resolveResponseKeyMode(spec.encrypt(), cryptoProps)
+                : CryptoResponseKeyMode.CLIENT_PUBLIC_KEY;
+        boolean useRequestSessionKey = spec.activeEncrypt()
+                && responseKeyMode == CryptoResponseKeyMode.REQUEST_SESSION_KEY;
 
-        // 1. 入站方向：优先 @ApiSign 密文验签 + Nonce 防重放，随后 @ApiDecrypt 解密换流
-        if (spec.activeDecrypt()) {
-            try {
-                requestForChain = processInboundDecryption(request, spec, cryptoProps, maxBodyBytes);
-            } catch (BusinessException e) {
-                if (CommonResultCode.INTERNAL_SERVER_ERROR.getCode().equals(e.getCode())) {
-                    log.error("API 入站加解密系统异常: uri={}, code={}, msg={}", request.getRequestURI(), e.getCode(), e.getMsg(), e);
-                } else {
-                    log.warn("API 入站加解密/验签拦截: uri={}, code={}, msg={}", request.getRequestURI(), e.getCode(), e.getMsg());
+        HttpServletRequest requestForChain = request;
+        RequestSessionKeyState sessionKeyState = null;
+
+        try {
+            // 0. REQUEST_SESSION_KEY 模式下先校验入站与出站显式算法是否冲突，Fail-Fast 拦截 500
+            if (useRequestSessionKey && spec.activeDecrypt()) {
+                CryptoAlgorithm decAnnAlg = spec.decrypt() != null ? spec.decrypt().algorithm() : CryptoAlgorithm.DEFAULT;
+                CryptoAlgorithm encAnnAlg = spec.encrypt() != null ? spec.encrypt().algorithm() : CryptoAlgorithm.DEFAULT;
+                if (decAnnAlg != null && decAnnAlg != CryptoAlgorithm.DEFAULT
+                        && encAnnAlg != null && encAnnAlg != CryptoAlgorithm.DEFAULT
+                        && decAnnAlg != encAnnAlg) {
+                    log.error("API 加解密注解配置冲突: uri={}, decryptAlg={}, encryptAlg={}",
+                            request.getRequestURI(), decAnnAlg, encAnnAlg);
+                    writeErrorResponse(response, cryptoProps, CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                            String.format("REQUEST_SESSION_KEY 模式下入站解密算法 (%s) 与出站加密算法 (%s) 不一致", decAnnAlg, encAnnAlg),
+                            true);
+                    return;
                 }
-                writeErrorResponse(response, cryptoProps, e.getCode(), e.getMsg(), isCryptoError(e));
+            }
+
+            // 1. 入站方向：优先 @ApiSign 密文验签 + Nonce 防重放，随后 @ApiDecrypt 解密换流（或 REQUEST_SESSION_KEY 无体握手解封）
+            if (spec.activeDecrypt()) {
+                try {
+                    InboundDecryptionOutcome outcome = processInboundDecryption(
+                            request, spec, cryptoProps, maxBodyBytes, useRequestSessionKey);
+                    requestForChain = outcome.request();
+                    sessionKeyState = outcome.sessionKeyState();
+                } catch (BusinessException e) {
+                    if (CommonResultCode.INTERNAL_SERVER_ERROR.getCode().equals(e.getCode())) {
+                        log.error("API 入站加解密系统异常: uri={}, code={}, msg={}", request.getRequestURI(), e.getCode(), e.getMsg(), e);
+                    } else {
+                        log.warn("API 入站加解密/验签拦截: uri={}, code={}, msg={}", request.getRequestURI(), e.getCode(), e.getMsg());
+                    }
+                    writeErrorResponse(response, cryptoProps, e.getCode(), e.getMsg(), isCryptoError(e));
+                    return;
+                }
+            } else if (useRequestSessionKey && !isResponseBodylessMethod(request.getMethod())) {
+                try {
+                    InboundDecryptionOutcome outcome = prepareRequestSessionKeyForHandshake(
+                            request, spec, cryptoProps, maxBodyBytes);
+                    requestForChain = outcome.request();
+                    sessionKeyState = outcome.sessionKeyState();
+                } catch (BusinessException e) {
+                    if (CommonResultCode.INTERNAL_SERVER_ERROR.getCode().equals(e.getCode())) {
+                        log.error("API 密钥握手系统异常: uri={}, code={}, msg={}", request.getRequestURI(), e.getCode(), e.getMsg(), e);
+                    } else {
+                        log.warn("API 密钥握手/验签拦截: uri={}, code={}, msg={}", request.getRequestURI(), e.getCode(), e.getMsg());
+                    }
+                    writeErrorResponse(response, cryptoProps, e.getCode(), e.getMsg(), isCryptoError(e));
+                    return;
+                }
+            }
+
+            if (!spec.activeEncrypt()) {
+                filterChain.doFilter(requestForChain, response);
                 return;
             }
-        }
 
-        if (!spec.activeEncrypt()) {
-            filterChain.doFilter(requestForChain, response);
-            return;
-        }
+            // 2. 出站方向：标记挂起 @ApiSign 响应加签并缓冲响应体，保证 Encrypt-then-Sign
+            requestForChain.setAttribute(ApiSignAspect.OUTBOUND_ENCRYPT_ACTIVE_ATTRIBUTE, Boolean.TRUE);
+            ApiCryptoResponseWrapper responseWrapper = new ApiCryptoResponseWrapper(response, maxBodyBytes);
+            try {
+                filterChain.doFilter(requestForChain, responseWrapper);
+            } catch (BusinessException e) {
+                if (responseWrapper.isPayloadTooLarge()) {
+                    clearCryptoAndSignHeaders(response, cryptoProps);
+                    writeErrorResponse(response, cryptoProps, CommonResultCode.PAYLOAD_TOO_LARGE.getCode(), e.getMsg(), true);
+                    return;
+                }
+                throw e;
+            } finally {
+                requestForChain.removeAttribute(ApiSignAspect.OUTBOUND_ENCRYPT_ACTIVE_ATTRIBUTE);
+            }
 
-        // 2. 出站方向：标记挂起 @ApiSign 响应加签并缓冲响应体，保证 Encrypt-then-Sign
-        requestForChain.setAttribute(ApiSignAspect.OUTBOUND_ENCRYPT_ACTIVE_ATTRIBUTE, Boolean.TRUE);
-        ApiCryptoResponseWrapper responseWrapper = new ApiCryptoResponseWrapper(response, maxBodyBytes);
-        try {
-            filterChain.doFilter(requestForChain, responseWrapper);
-        } catch (BusinessException e) {
             if (responseWrapper.isPayloadTooLarge()) {
                 clearCryptoAndSignHeaders(response, cryptoProps);
-                writeErrorResponse(response, cryptoProps, CommonResultCode.PAYLOAD_TOO_LARGE.getCode(), e.getMsg(), true);
+                writeErrorResponse(response, cryptoProps, CommonResultCode.PAYLOAD_TOO_LARGE.getCode(),
+                        "出站加密响应体大小超过允许的最大限制: " + maxBodyBytes + " 字节", true);
                 return;
             }
-            throw e;
+
+            if (requestForChain.isAsyncStarted() || responseWrapper.isPassthrough()) {
+                return;
+            }
+
+            processOutboundEncryption(requestForChain, response, responseWrapper, spec, cryptoProps,
+                    useRequestSessionKey, sessionKeyState);
         } finally {
-            requestForChain.removeAttribute(ApiSignAspect.OUTBOUND_ENCRYPT_ACTIVE_ATTRIBUTE);
+            if (sessionKeyState != null) {
+                sessionKeyState.clear();
+            }
         }
-
-        if (responseWrapper.isPayloadTooLarge()) {
-            clearCryptoAndSignHeaders(response, cryptoProps);
-            writeErrorResponse(response, cryptoProps, CommonResultCode.PAYLOAD_TOO_LARGE.getCode(),
-                    "出站加密响应体大小超过允许的最大限制: " + maxBodyBytes + " 字节", true);
-            return;
-        }
-
-        if (requestForChain.isAsyncStarted() || responseWrapper.isPassthrough()) {
-            return;
-        }
-
-        processOutboundEncryption(requestForChain, response, responseWrapper, spec, cryptoProps);
     }
 
-    private HttpServletRequest processInboundDecryption(HttpServletRequest request,
-                                                        CryptoEndpointSpec spec,
-                                                        WebProperties.CryptoProperties cryptoProps,
-                                                        int maxBodyBytes) throws IOException {
+    private InboundDecryptionOutcome processInboundDecryption(HttpServletRequest request,
+                                                            CryptoEndpointSpec spec,
+                                                            WebProperties.CryptoProperties cryptoProps,
+                                                            int maxBodyBytes,
+                                                            boolean useRequestSessionKey) throws IOException {
         if (request.getContentLengthLong() > maxBodyBytes) {
             throw new CryptoBusinessException(CommonResultCode.PAYLOAD_TOO_LARGE.getCode(),
                     "加密请求体大小超过允许的最大限制: " + maxBodyBytes + " 字节");
@@ -223,17 +274,7 @@ public class ApiCryptoFilter extends OncePerRequestFilter implements Ordered {
         }
 
         // 先对原始密文请求执行 @ApiSign 验签与 Nonce 防重放（杜绝未认证请求消耗非对称私钥解密算力）
-        ApiSign effectiveSign = spec.apiSign();
-        if (effectiveSign != null && effectiveSign.verifyRequest()) {
-            ApiSignAspect apiSignAspect = apiSignAspectProvider != null ? apiSignAspectProvider.getIfAvailable() : null;
-            if (apiSignAspect != null) {
-                try {
-                    apiSignAspect.verifyInboundFromFilter(verifyRequestTarget, effectiveSign);
-                } catch (BusinessException e) {
-                    throw new SignBusinessException(e.getCode(), e.getMsg(), e);
-                }
-            }
-        }
+        verifyInboundSignatureIfNeeded(verifyRequestTarget, spec.apiSign());
 
         String encryptKeyHeader = resolveHeaderName(cryptoProps.getHeaderEncryptKey(), HEADER_ENCRYPT_KEY);
         String encryptIvHeader = resolveHeaderName(cryptoProps.getHeaderEncryptIv(), HEADER_ENCRYPT_IV);
@@ -245,8 +286,14 @@ public class ApiCryptoFilter extends OncePerRequestFilter implements Ordered {
         boolean hasAnyEncryptHeader = StringUtils.hasText(encryptKey) || StringUtils.hasText(encryptIv);
 
         if (!hasAnyEncryptHeader && !spec.decrypt().required()) {
+            // REQUEST_SESSION_KEY 模式下坚持 Fail-Closed，不允许无会话密钥的明文请求触发会话回包
+            if (useRequestSessionKey) {
+                throw new CryptoBusinessException(CommonResultCode.BAD_REQUEST.getCode(),
+                        String.format("REQUEST_SESSION_KEY 模式下必须携带加密会话密钥请求头 (%s, %s)",
+                                encryptKeyHeader, encryptIvHeader));
+            }
             // 灰度兼容模式：未携带加密头时按明文请求体放行
-            return verifyRequestTarget;
+            return new InboundDecryptionOutcome(verifyRequestTarget, null);
         }
         if (!StringUtils.hasText(encryptKey) || !StringUtils.hasText(encryptIv)) {
             throw new CryptoBusinessException(CommonResultCode.BAD_REQUEST.getCode(),
@@ -269,7 +316,9 @@ public class ApiCryptoFilter extends OncePerRequestFilter implements Ordered {
 
         CryptoAlgorithm effectiveAlg;
         try {
-            effectiveAlg = resolveInboundAlgorithm(spec.decrypt(), request.getHeader(encryptAlgHeader), cryptoProps);
+            effectiveAlg = useRequestSessionKey
+                    ? resolveSessionKeyPairAlgorithm(spec.decrypt(), spec.encrypt(), request.getHeader(encryptAlgHeader), cryptoProps)
+                    : resolveInboundAlgorithm(spec.decrypt(), request.getHeader(encryptAlgHeader), cryptoProps);
         } catch (BusinessException e) {
             throw new CryptoBusinessException(e.getCode(), e.getMsg(), e);
         }
@@ -294,30 +343,136 @@ public class ApiCryptoFilter extends OncePerRequestFilter implements Ordered {
         ApiCryptoContext cryptoContext = new ApiCryptoContext(effectiveAlg, appId, effectiveKeyId, serverPrivateKey, aad);
         ApiCipher cipher = findCipher(effectiveAlg);
 
-        byte[] decryptedBytes;
+        if (!useRequestSessionKey) {
+            byte[] decryptedBytes;
+            try {
+                decryptedBytes = cipher.decrypt(
+                        new ApiCipherInput(encryptKey, encryptIv, envelope.getCipherText()),
+                        cryptoContext
+                );
+            } catch (BusinessException e) {
+                throw new CryptoBusinessException(e.getCode(), e.getMsg(), e);
+            }
+            if (decryptedBytes.length > maxBodyBytes) {
+                throw new CryptoBusinessException(CommonResultCode.PAYLOAD_TOO_LARGE.getCode(),
+                        "解密后明文载荷大小超过允许的最大限制: " + maxBodyBytes + " 字节");
+            }
+            // 若原有 Request 为外部多层包装（如 XssHttpServletRequestWrapper），继续保留外层 Header/Query 能力仅替换流内容
+            return new InboundDecryptionOutcome(new DecryptedBodyHttpServletRequest(verifyRequestTarget, decryptedBytes), null);
+        }
+
+        byte[] sessionKey;
         try {
-            decryptedBytes = cipher.decrypt(
-                    new ApiCipherInput(encryptKey, encryptIv, envelope.getCipherText()),
-                    cryptoContext
-            );
+            sessionKey = cipher.unwrapSessionKey(encryptKey, cryptoContext);
+        } catch (BusinessException e) {
+            throw new CryptoBusinessException(e.getCode(), e.getMsg(), e);
+        }
+        try {
+            byte[] decryptedBytes = cipher.decryptWithSessionKey(sessionKey, encryptIv, envelope.getCipherText(), cryptoContext);
+            if (decryptedBytes.length > maxBodyBytes) {
+                throw new CryptoBusinessException(CommonResultCode.PAYLOAD_TOO_LARGE.getCode(),
+                        "解密后明文载荷大小超过允许的最大限制: " + maxBodyBytes + " 字节");
+            }
+            RequestSessionKeyState state = new RequestSessionKeyState(effectiveAlg, appId, effectiveKeyId, sessionKey);
+            return new InboundDecryptionOutcome(new DecryptedBodyHttpServletRequest(verifyRequestTarget, decryptedBytes), state);
+        } catch (BusinessException e) {
+            Arrays.fill(sessionKey, (byte) 0);
+            throw new CryptoBusinessException(e.getCode(), e.getMsg(), e);
+        } catch (Throwable ex) {
+            Arrays.fill(sessionKey, (byte) 0);
+            throw ex;
+        }
+    }
+
+    private InboundDecryptionOutcome prepareRequestSessionKeyForHandshake(HttpServletRequest request,
+                                                                          CryptoEndpointSpec spec,
+                                                                          WebProperties.CryptoProperties cryptoProps,
+                                                                          int maxBodyBytes) throws IOException {
+        HttpServletRequest requestForChain = request;
+        ApiSign effectiveSign = spec.apiSign();
+        if (effectiveSign != null && effectiveSign.verifyRequest()) {
+            HttpServletRequest verifyTarget = request;
+            if (!isBodylessSignMethod(request.getMethod())
+                    && WebUtils.getNativeRequest(request, CachedBodyHttpServletRequest.class) == null) {
+                if (request.getContentLengthLong() > maxBodyBytes) {
+                    throw new CryptoBusinessException(CommonResultCode.PAYLOAD_TOO_LARGE.getCode(),
+                            "请求体大小超过允许的最大限制: " + maxBodyBytes + " 字节");
+                }
+                try {
+                    CachedBodyHttpServletRequest cachedRequest = new CachedBodyHttpServletRequest(request, maxBodyBytes);
+                    verifyTarget = cachedRequest;
+                    requestForChain = cachedRequest;
+                } catch (BusinessException e) {
+                    throw new CryptoBusinessException(e.getCode(), e.getMsg(), e);
+                }
+            }
+            // 先执行 @ApiSign 验签与 Nonce 防重放，杜绝未认证请求消耗非对称私钥解封算力
+            verifyInboundSignatureIfNeeded(verifyTarget, effectiveSign);
+        }
+
+        String encryptKeyHeader = resolveHeaderName(cryptoProps.getHeaderEncryptKey(), HEADER_ENCRYPT_KEY);
+        String keyIdHeader = resolveHeaderName(cryptoProps.getHeaderKeyId(), HEADER_KEY_ID);
+        String encryptAlgHeader = resolveHeaderName(cryptoProps.getHeaderEncryptAlg(), HEADER_ENCRYPT_ALG);
+
+        String encryptKey = request.getHeader(encryptKeyHeader);
+        if (!StringUtils.hasText(encryptKey)) {
+            throw new CryptoBusinessException(CommonResultCode.BAD_REQUEST.getCode(),
+                    String.format("REQUEST_SESSION_KEY 模式下缺少加密会话密钥请求头 (%s)", encryptKeyHeader));
+        }
+
+        CryptoAlgorithm effectiveAlg;
+        try {
+            effectiveAlg = resolveEncryptAlgorithmWithHeader(spec.encrypt(), request.getHeader(encryptAlgHeader), cryptoProps);
+        } catch (BusinessException e) {
+            throw new CryptoBusinessException(e.getCode(), e.getMsg(), e);
+        }
+        request.setAttribute(REQUEST_RESOLVED_ALG_ATTR, effectiveAlg);
+
+        String appId = resolveAppId(request, cryptoProps);
+        String rawKeyId = request.getHeader(keyIdHeader);
+        String effectiveKeyId = StringUtils.hasText(rawKeyId)
+                ? rawKeyId.trim()
+                : keyProvider.getActiveKeyId(appId, effectiveAlg);
+
+        final String serverPrivateKey;
+        try {
+            serverPrivateKey = keyProvider.getServerPrivateKey(appId, effectiveKeyId, effectiveAlg);
         } catch (BusinessException e) {
             throw new CryptoBusinessException(e.getCode(), e.getMsg(), e);
         }
 
-        if (decryptedBytes.length > maxBodyBytes) {
-            throw new CryptoBusinessException(CommonResultCode.PAYLOAD_TOO_LARGE.getCode(),
-                    "解密后明文载荷大小超过允许的最大限制: " + maxBodyBytes + " 字节");
+        ApiCryptoContext cryptoContext = new ApiCryptoContext(effectiveAlg, appId, effectiveKeyId, serverPrivateKey, null);
+        ApiCipher cipher = findCipher(effectiveAlg);
+        byte[] sessionKey;
+        try {
+            sessionKey = cipher.unwrapSessionKey(encryptKey, cryptoContext);
+        } catch (BusinessException e) {
+            throw new CryptoBusinessException(e.getCode(), e.getMsg(), e);
         }
+        return new InboundDecryptionOutcome(requestForChain,
+                new RequestSessionKeyState(effectiveAlg, appId, effectiveKeyId, sessionKey));
+    }
 
-        // 若原有 Request 为外部多层包装（如 XssHttpServletRequestWrapper），继续保留外层 Header/Query 能力仅替换流内容
-        return new DecryptedBodyHttpServletRequest(verifyRequestTarget, decryptedBytes);
+    private void verifyInboundSignatureIfNeeded(HttpServletRequest verifyRequestTarget, ApiSign effectiveSign) {
+        if (effectiveSign != null && effectiveSign.verifyRequest()) {
+            ApiSignAspect apiSignAspect = apiSignAspectProvider != null ? apiSignAspectProvider.getIfAvailable() : null;
+            if (apiSignAspect != null) {
+                try {
+                    apiSignAspect.verifyInboundFromFilter(verifyRequestTarget, effectiveSign);
+                } catch (BusinessException e) {
+                    throw new SignBusinessException(e.getCode(), e.getMsg(), e);
+                }
+            }
+        }
     }
 
     private void processOutboundEncryption(HttpServletRequest request,
                                            HttpServletResponse realResponse,
                                            ApiCryptoResponseWrapper responseWrapper,
                                            CryptoEndpointSpec spec,
-                                           WebProperties.CryptoProperties cryptoProps) throws IOException {
+                                           WebProperties.CryptoProperties cryptoProps,
+                                           boolean useRequestSessionKey,
+                                           RequestSessionKeyState sessionKeyState) throws IOException {
         byte[] plainBytes = responseWrapper.getContentAsByteArray();
         if (plainBytes.length == 0 || PayloadLoggingFilter.isBinaryOrMultipart(responseWrapper.getContentType())) {
             writeRawBytes(realResponse, plainBytes);
@@ -332,17 +487,36 @@ public class ApiCryptoFilter extends OncePerRequestFilter implements Ordered {
         }
 
         try {
-            CryptoAlgorithm effectiveAlg = resolveOutboundAlgorithm(spec.encrypt(), request, cryptoProps);
-            String appId = resolveAppId(request, cryptoProps);
-            String activeKeyId = keyProvider.getActiveKeyId(appId, effectiveAlg);
-            String clientPublicKey = keyProvider.getClientPublicKey(appId, activeKeyId, effectiveAlg);
-            byte[] aad = cryptoProps.isBindAad()
-                    ? ApiCryptoContext.buildStandardAad(appId, activeKeyId, effectiveAlg)
-                    : null;
+            final CryptoAlgorithm effectiveAlg;
+            final String effectiveKeyId;
+            final ApiCipherResult cipherResult;
+            if (useRequestSessionKey) {
+                if (sessionKeyState == null || sessionKeyState.sessionKey() == null) {
+                    throw new CryptoBusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                            "缺少请求会话密钥状态，无法执行响应加密");
+                }
+                effectiveAlg = sessionKeyState.algorithm();
+                String appId = sessionKeyState.appId();
+                effectiveKeyId = sessionKeyState.effectiveKeyId();
+                byte[] aad = cryptoProps.isBindAad()
+                        ? ApiCryptoContext.buildStandardAad(appId, effectiveKeyId, effectiveAlg)
+                        : null;
+                ApiCryptoContext cryptoContext = new ApiCryptoContext(effectiveAlg, appId, effectiveKeyId, null, aad);
+                ApiCipher cipher = findCipher(effectiveAlg);
+                cipherResult = cipher.encryptWithSessionKey(plainBytes, sessionKeyState.sessionKey(), cryptoContext);
+            } else {
+                effectiveAlg = resolveOutboundAlgorithm(spec.encrypt(), request, cryptoProps);
+                String appId = resolveAppId(request, cryptoProps);
+                effectiveKeyId = keyProvider.getActiveKeyId(appId, effectiveAlg);
+                String clientPublicKey = keyProvider.getClientPublicKey(appId, effectiveKeyId, effectiveAlg);
+                byte[] aad = cryptoProps.isBindAad()
+                        ? ApiCryptoContext.buildStandardAad(appId, effectiveKeyId, effectiveAlg)
+                        : null;
 
-            ApiCryptoContext cryptoContext = new ApiCryptoContext(effectiveAlg, appId, activeKeyId, clientPublicKey, aad);
-            ApiCipher cipher = findCipher(effectiveAlg);
-            ApiCipherResult cipherResult = cipher.encrypt(plainBytes, cryptoContext);
+                ApiCryptoContext cryptoContext = new ApiCryptoContext(effectiveAlg, appId, effectiveKeyId, clientPublicKey, aad);
+                ApiCipher cipher = findCipher(effectiveAlg);
+                cipherResult = cipher.encrypt(plainBytes, cryptoContext);
+            }
 
             byte[] envelopeBytes = objectMapper.writeValueAsBytes(new ApiEncryptedPayload(cipherResult.cipherText()));
 
@@ -355,9 +529,12 @@ public class ApiCryptoFilter extends OncePerRequestFilter implements Ordered {
                 }
             }
 
-            realResponse.setHeader(resolveHeaderName(cryptoProps.getHeaderEncryptKey(), HEADER_ENCRYPT_KEY), cipherResult.encryptedKey());
+            // REQUEST_SESSION_KEY 模式下 encryptedKey 为 null，省略 X-Encrypt-Key 响应头以便客户端直走内存会话密钥解密
+            if (StringUtils.hasText(cipherResult.encryptedKey())) {
+                realResponse.setHeader(resolveHeaderName(cryptoProps.getHeaderEncryptKey(), HEADER_ENCRYPT_KEY), cipherResult.encryptedKey());
+            }
             realResponse.setHeader(resolveHeaderName(cryptoProps.getHeaderEncryptIv(), HEADER_ENCRYPT_IV), cipherResult.iv());
-            realResponse.setHeader(resolveHeaderName(cryptoProps.getHeaderKeyId(), HEADER_KEY_ID), activeKeyId);
+            realResponse.setHeader(resolveHeaderName(cryptoProps.getHeaderKeyId(), HEADER_KEY_ID), effectiveKeyId);
             realResponse.setHeader(resolveHeaderName(cryptoProps.getHeaderEncryptAlg(), HEADER_ENCRYPT_ALG), effectiveAlg.name());
 
             realResponse.setContentType("application/json;charset=UTF-8");
@@ -490,6 +667,75 @@ public class ApiCryptoFilter extends OncePerRequestFilter implements Ordered {
         return resolveGlobalAlgorithm(cryptoProps);
     }
 
+    private CryptoAlgorithm resolveSessionKeyPairAlgorithm(ApiDecrypt decryptAnn,
+                                                            ApiEncrypt encryptAnn,
+                                                            String headerAlgValue,
+                                                            WebProperties.CryptoProperties cryptoProps) {
+        CryptoAlgorithm decAlg = (decryptAnn != null && decryptAnn.algorithm() != null)
+                ? decryptAnn.algorithm()
+                : CryptoAlgorithm.DEFAULT;
+        CryptoAlgorithm encAlg = (encryptAnn != null && encryptAnn.algorithm() != null)
+                ? encryptAnn.algorithm()
+                : CryptoAlgorithm.DEFAULT;
+        CryptoAlgorithm annAlg = decAlg != CryptoAlgorithm.DEFAULT ? decAlg : encAlg;
+        CryptoAlgorithm headerAlg = CryptoAlgorithm.fromHeader(headerAlgValue);
+        if (annAlg != CryptoAlgorithm.DEFAULT) {
+            if (headerAlg != null && headerAlg != annAlg) {
+                throw new BusinessException(CommonResultCode.BAD_REQUEST,
+                        "请求加密算法与接口声明不匹配，期望: " + annAlg + "，实际: " + headerAlg);
+            }
+            return annAlg;
+        }
+        if (headerAlg != null) {
+            return headerAlg;
+        }
+        return resolveGlobalAlgorithm(cryptoProps);
+    }
+
+    private CryptoAlgorithm resolveEncryptAlgorithmWithHeader(ApiEncrypt encryptAnn,
+                                                              String headerAlgValue,
+                                                              WebProperties.CryptoProperties cryptoProps) {
+        CryptoAlgorithm annAlg = (encryptAnn != null && encryptAnn.algorithm() != null)
+                ? encryptAnn.algorithm()
+                : CryptoAlgorithm.DEFAULT;
+        CryptoAlgorithm headerAlg = CryptoAlgorithm.fromHeader(headerAlgValue);
+        if (annAlg != CryptoAlgorithm.DEFAULT) {
+            if (headerAlg != null && headerAlg != annAlg) {
+                throw new BusinessException(CommonResultCode.BAD_REQUEST,
+                        "请求加密算法与接口声明不匹配，期望: " + annAlg + "，实际: " + headerAlg);
+            }
+            return annAlg;
+        }
+        if (headerAlg != null) {
+            return headerAlg;
+        }
+        return resolveGlobalAlgorithm(cryptoProps);
+    }
+
+    private static CryptoResponseKeyMode resolveResponseKeyMode(ApiEncrypt encryptAnn,
+                                                                WebProperties.CryptoProperties cryptoProps) {
+        if (encryptAnn != null && encryptAnn.keyMode() != null && encryptAnn.keyMode() != CryptoResponseKeyMode.DEFAULT) {
+            return encryptAnn.keyMode();
+        }
+        CryptoResponseKeyMode global = cryptoProps.getResponseKeyMode();
+        return (global != null && global != CryptoResponseKeyMode.DEFAULT)
+                ? global
+                : CryptoResponseKeyMode.CLIENT_PUBLIC_KEY;
+    }
+
+    private static boolean isResponseBodylessMethod(String method) {
+        return "HEAD".equalsIgnoreCase(method)
+                || "OPTIONS".equalsIgnoreCase(method)
+                || "TRACE".equalsIgnoreCase(method);
+    }
+
+    private static boolean isBodylessSignMethod(String method) {
+        return "GET".equalsIgnoreCase(method)
+                || "DELETE".equalsIgnoreCase(method)
+                || "HEAD".equalsIgnoreCase(method)
+                || "OPTIONS".equalsIgnoreCase(method);
+    }
+
     private CryptoAlgorithm resolveOutboundAlgorithm(ApiEncrypt encryptAnn,
                                                      HttpServletRequest request,
                                                      WebProperties.CryptoProperties cryptoProps) {
@@ -606,6 +852,49 @@ public class ApiCryptoFilter extends OncePerRequestFilter implements Ordered {
             return StringUtils.hasText(keyHeader) || StringUtils.hasText(ivHeader) || request.getContentLengthLong() > 0;
         }
         return true;
+    }
+
+    private record InboundDecryptionOutcome(HttpServletRequest request, RequestSessionKeyState sessionKeyState) {
+    }
+
+    private static final class RequestSessionKeyState {
+        private final CryptoAlgorithm algorithm;
+        private final String appId;
+        private final String effectiveKeyId;
+        private byte[] sessionKey;
+
+        private RequestSessionKeyState(CryptoAlgorithm algorithm,
+                                       String appId,
+                                       String effectiveKeyId,
+                                       byte[] sessionKey) {
+            this.algorithm = algorithm;
+            this.appId = appId;
+            this.effectiveKeyId = effectiveKeyId;
+            this.sessionKey = sessionKey;
+        }
+
+        private CryptoAlgorithm algorithm() {
+            return algorithm;
+        }
+
+        private String appId() {
+            return appId;
+        }
+
+        private String effectiveKeyId() {
+            return effectiveKeyId;
+        }
+
+        private byte[] sessionKey() {
+            return sessionKey;
+        }
+
+        private void clear() {
+            if (this.sessionKey != null) {
+                Arrays.fill(this.sessionKey, (byte) 0);
+                this.sessionKey = null;
+            }
+        }
     }
 
     private record CryptoEndpointSpec(boolean activeDecrypt,

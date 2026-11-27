@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -110,6 +111,53 @@ class Sm2Sm4GcmApiCipherTest {
                 new ApiCryptoContext(CryptoAlgorithm.SM2_SM4_GCM, "other-app", "v1", SM2_KEY_PAIR.privateKeyHex(), badAad)))
                 .isInstanceOf(BusinessException.class)
                 .hasFieldOrPropertyWithValue("code", CommonResultCode.BAD_REQUEST.getCode());
+    }
+
+    @Test
+    @DisplayName("国密 SM4 会话密钥解封复用闭环：兼容 ASN.1 DER 解封、独立随机 IV 与非法长度拦截")
+    void shouldUnwrapAndReuseSm4SessionKey() {
+        byte[] reqPlain = "{\"action\":\"gm-spa-req\"}".getBytes(StandardCharsets.UTF_8);
+        byte[] respPlain = "{\"status\":\"GM_SPA_OK\"}".getBytes(StandardCharsets.UTF_8);
+        byte[] aad = ApiCryptoContext.buildStandardAad("gm-spa", "v1", CryptoAlgorithm.SM2_SM4_GCM);
+
+        ApiCipherResult reqEnc = cipher.encrypt(reqPlain,
+                new ApiCryptoContext(CryptoAlgorithm.SM2_SM4_GCM, "gm-spa", "v1", SM2_KEY_PAIR.publicKeyHex(), aad));
+
+        // 兼容 ASN.1 DER 编码的会话密钥解封
+        byte[] derWrapped = toAsn1Der(Base64.getDecoder().decode(reqEnc.encryptedKey()));
+        byte[] sm4Key = cipher.unwrapSessionKey(Base64.getEncoder().encodeToString(derWrapped),
+                new ApiCryptoContext(CryptoAlgorithm.SM2_SM4_GCM, "gm-spa", "v1", SM2_KEY_PAIR.privateKeyHex(), null));
+        try {
+            assertThat(sm4Key).hasSize(16);
+
+            byte[] reqDec = cipher.decryptWithSessionKey(sm4Key, reqEnc.iv(), reqEnc.cipherText(),
+                    new ApiCryptoContext(CryptoAlgorithm.SM2_SM4_GCM, "gm-spa", "v1", null, aad));
+            assertThat(reqDec).isEqualTo(reqPlain);
+
+            ApiCipherResult respEnc = cipher.encryptWithSessionKey(respPlain, sm4Key,
+                    new ApiCryptoContext(CryptoAlgorithm.SM2_SM4_GCM, "gm-spa", "v1", null, aad));
+            assertThat(respEnc.encryptedKey()).isNull();
+            assertThat(respEnc.iv()).isNotBlank().isNotEqualTo(reqEnc.iv());
+
+            byte[] respDec = cipher.decryptWithSessionKey(sm4Key, respEnc.iv(), respEnc.cipherText(),
+                    new ApiCryptoContext(CryptoAlgorithm.SM2_SM4_GCM, "gm-spa", "v1", null, aad));
+            assertThat(respDec).isEqualTo(respPlain);
+        } finally {
+            Arrays.fill(sm4Key, (byte) 0);
+        }
+
+        // 非法 SM4 密钥长度拦截
+        byte[] invalidWrapped = io.github.atengk.boot.web.crypto.cipher.Sm2KeyCipher.encrypt(
+                new byte[24], io.github.atengk.boot.web.crypto.cipher.Sm2KeyCipher.parsePublicKey(SM2_KEY_PAIR.publicKeyHex()));
+        assertThatThrownBy(() -> cipher.unwrapSessionKey(Base64.getEncoder().encodeToString(invalidWrapped),
+                new ApiCryptoContext(CryptoAlgorithm.SM2_SM4_GCM, "gm-spa", "v1", SM2_KEY_PAIR.privateKeyHex(), null)))
+                .isInstanceOf(BusinessException.class)
+                .hasFieldOrPropertyWithValue("code", CommonResultCode.BAD_REQUEST.getCode());
+
+        assertThatThrownBy(() -> cipher.encryptWithSessionKey(respPlain, new byte[32],
+                new ApiCryptoContext(CryptoAlgorithm.SM2_SM4_GCM, "gm-spa", "v1", null, null)))
+                .isInstanceOf(BusinessException.class)
+                .hasFieldOrPropertyWithValue("code", CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
     }
 
     private static byte[] toAsn1Der(byte[] c1c3c2) {
