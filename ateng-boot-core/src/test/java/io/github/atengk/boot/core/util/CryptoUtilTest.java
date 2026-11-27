@@ -245,4 +245,72 @@ class CryptoUtilTest {
         assertEquals(CommonResultCode.BAD_REQUEST.getCode(), exBadKey.getCode());
         assertNotNull(exBadKey.getCause());
     }
+
+    @Test
+    @DisplayName("国密 SM4/GCM/NoPadding 字节与字符串加解密、AAD 认证、短密文与篡改校验")
+    void shouldEncryptAndDecryptSm4GcmWithAadAndTamperDetection() {
+        byte[] key = CryptoUtil.generateSm4Key();
+        byte[] iv = CryptoUtil.generateGcmIv();
+        byte[] iv16 = CryptoUtil.generateIv();
+        byte[] aad = "app=default|keyId=v1|alg=SM2_SM4_GCM".getBytes(StandardCharsets.UTF_8);
+
+        // 1. 字节级多长度（空、非对齐、多块）与非 12 字节 IV 往返验证
+        byte[][] samples = {
+                new byte[0],
+                new byte[]{0x42},
+                "1234567890abcdef".getBytes(StandardCharsets.UTF_8),
+                "国密SM4-GCM多分组明文载荷验证：orderNo=ORD_20261127_001, amount=9999.99".getBytes(StandardCharsets.UTF_8)
+        };
+        for (byte[] plainBytes : samples) {
+            byte[] cipherBytes = CryptoUtil.encryptSm4Gcm(plainBytes, key, iv, aad);
+            assertEquals(plainBytes.length + 16, cipherBytes.length);
+            assertArrayEquals(plainBytes, CryptoUtil.decryptSm4Gcm(cipherBytes, key, iv, aad));
+
+            byte[] cipherNoAad = CryptoUtil.encryptSm4Gcm(plainBytes, key, iv16);
+            assertArrayEquals(plainBytes, CryptoUtil.decryptSm4Gcm(cipherNoAad, key, iv16));
+        }
+
+        // 2. 字符串级 Base64 契约与空安全
+        String plain = "机密传输载荷：user=ateng&phone=13812345678";
+        assertNull(CryptoUtil.encryptSm4Gcm((String) null, key, iv));
+        assertNull(CryptoUtil.decryptSm4Gcm((String) null, key, iv));
+        assertNull(CryptoUtil.encryptSm4Gcm((String) null, key, iv, aad));
+        assertNull(CryptoUtil.decryptSm4Gcm((String) null, key, iv, aad));
+        assertNull(CryptoUtil.encryptSm4Gcm((byte[]) null, key, iv, aad));
+        assertNull(CryptoUtil.decryptSm4Gcm((byte[]) null, key, iv, aad));
+
+        String cipherNoAadStr = CryptoUtil.encryptSm4Gcm(plain, key, iv);
+        assertEquals(plain, CryptoUtil.decryptSm4Gcm(cipherNoAadStr, key, iv));
+
+        String cipherBase64 = CryptoUtil.encryptSm4Gcm(plain, key, iv, aad);
+        assertEquals(plain, CryptoUtil.decryptSm4Gcm(cipherBase64, key, iv, aad));
+
+        // 3. 篡改 AAD / 密文 / Tag / 密钥 / IV 均必须抛出保留 AEADBadTagException 的异常
+        byte[] tamperedAad = "app=evil|keyId=v1|alg=SM2_SM4_GCM".getBytes(StandardCharsets.UTF_8);
+        BusinessException exAad = assertThrows(BusinessException.class,
+                () -> CryptoUtil.decryptSm4Gcm(cipherBase64, key, iv, tamperedAad));
+        assertEquals(CommonResultCode.BAD_REQUEST.getCode(), exAad.getCode());
+        assertInstanceOf(AEADBadTagException.class, exAad.getCause());
+
+        byte[] rawCipher = CryptoUtil.decodeBase64(cipherBase64);
+        byte[] tamperedBody = rawCipher.clone();
+        tamperedBody[0] ^= 0x01;
+        BusinessException exBody = assertThrows(BusinessException.class,
+                () -> CryptoUtil.decryptSm4Gcm(CryptoUtil.encodeBase64(tamperedBody), key, iv, aad));
+        assertEquals(CommonResultCode.BAD_REQUEST.getCode(), exBody.getCode());
+        assertInstanceOf(AEADBadTagException.class, exBody.getCause());
+
+        byte[] tamperedTag = rawCipher.clone();
+        tamperedTag[tamperedTag.length - 1] ^= 0x01;
+        IllegalStateException exTag = assertThrows(IllegalStateException.class,
+                () -> CryptoUtil.decryptSm4Gcm(tamperedTag, key, iv, aad));
+        assertInstanceOf(AEADBadTagException.class, exTag.getCause());
+
+        // 4. 长度不足 16 字节与非法密钥/IV 参数防御
+        IllegalStateException exShort = assertThrows(IllegalStateException.class,
+                () -> CryptoUtil.decryptSm4Gcm(new byte[15], key, iv, aad));
+        assertInstanceOf(AEADBadTagException.class, exShort.getCause());
+        assertThrows(IllegalArgumentException.class, () -> CryptoUtil.encryptSm4Gcm("x".getBytes(StandardCharsets.UTF_8), new byte[8], iv, aad));
+        assertThrows(IllegalArgumentException.class, () -> CryptoUtil.encryptSm4Gcm("x".getBytes(StandardCharsets.UTF_8), key, new byte[0], aad));
+    }
 }

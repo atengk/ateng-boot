@@ -51,6 +51,11 @@ import java.util.Set;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    /**
+     * 请求属性标记：标识本次请求已由全局异常处理器产生语义化错误响应
+     */
+    public static final String ERROR_RESPONSE_ATTRIBUTE = GlobalExceptionHandler.class.getName() + ".ERROR_RESPONSE";
+
     private static final int MAX_CAUSE_CHAIN_DEPTH = 32;
     private static final int MAX_ROOT_CAUSE_LOG_LENGTH = 256;
     private static final String MSG_MULTIPART_INVALID = "文件上传请求格式不合法或内容解析失败";
@@ -115,6 +120,10 @@ public class GlobalExceptionHandler {
     }
 
     private Result<?> tryCustomize(Throwable throwable) {
+        jakarta.servlet.http.HttpServletRequest request = ServletUtil.getRequest();
+        if (request != null) {
+            request.setAttribute(ERROR_RESPONSE_ATTRIBUTE, Boolean.TRUE);
+        }
         if (customizers != null && !customizers.isEmpty()) {
             for (GlobalExceptionCustomizer customizer : customizers) {
                 try {

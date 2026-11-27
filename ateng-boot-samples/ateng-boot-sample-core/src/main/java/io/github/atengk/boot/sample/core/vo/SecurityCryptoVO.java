@@ -50,4 +50,19 @@ public class SecurityCryptoVO implements Serializable {
      * 篡改 AAD 时是否成功触发带原始 cause 的 BusinessException 认证拦截
      */
     private boolean aadTamperBlocked;
+
+    /**
+     * 国密 SM4-GCM 认证加密后的密文（含 AAD）
+     */
+    private String sm4GcmCiphertextWithAad;
+
+    /**
+     * 国密 SM4-GCM 解密还原后的明文（含 AAD）
+     */
+    private String sm4GcmDecryptedWithAad;
+
+    /**
+     * 国密 SM4-GCM AAD 篡改拦截状态
+     */
+    private boolean sm4GcmAadTamperBlocked;
 }

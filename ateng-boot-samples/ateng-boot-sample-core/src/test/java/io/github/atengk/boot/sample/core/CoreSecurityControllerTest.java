@@ -212,7 +212,10 @@ class CoreSecurityControllerTest {
                 .andExpect(jsonPath("$.data.sm4CbcDecrypted", is("CardToken-99887766")))
                 .andExpect(jsonPath("$.data.gcmCiphertextWithAad", notNullValue()))
                 .andExpect(jsonPath("$.data.gcmDecryptedWithAad", is("CardToken-99887766")))
-                .andExpect(jsonPath("$.data.aadTamperBlocked", is(true)));
+                .andExpect(jsonPath("$.data.aadTamperBlocked", is(true)))
+                .andExpect(jsonPath("$.data.sm4GcmCiphertextWithAad", notNullValue()))
+                .andExpect(jsonPath("$.data.sm4GcmDecryptedWithAad", is("CardToken-99887766")))
+                .andExpect(jsonPath("$.data.sm4GcmAadTamperBlocked", is(true)));
     }
 
     @Test

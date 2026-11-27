@@ -30,6 +30,7 @@ import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotationUtils;
 import io.github.atengk.boot.core.util.IdUtil;
 import org.springframework.util.StringUtils;
+import org.springframework.web.util.WebUtils;
 
 import java.lang.reflect.Method;
 import java.time.Duration;
@@ -59,6 +60,21 @@ public class ApiSignAspect implements Ordered, DisposableBean {
     public static final String HEADER_TIMESTAMP = "X-Timestamp";
     public static final String HEADER_NONCE = "X-Nonce";
     public static final String HEADER_SIGNATURE = "X-Signature";
+
+    /**
+     * 请求属性标记：由上游 ApiCryptoFilter 已完成入站密文验签（防止切面重复消费 Nonce）
+     */
+    public static final String INBOUND_VERIFIED_ATTRIBUTE = ApiSignAspect.class.getName() + ".INBOUND_VERIFIED";
+
+    /**
+     * 请求属性标记：当前端点已激活出站响应加密，切面需将响应加签延后至密文生成后执行 (Encrypt-then-Sign)
+     */
+    public static final String OUTBOUND_ENCRYPT_ACTIVE_ATTRIBUTE = ApiSignAspect.class.getName() + ".OUTBOUND_ENCRYPT_ACTIVE";
+
+    /**
+     * 请求属性载体：由切面挂起的出站延迟加签上下文
+     */
+    public static final String DEFERRED_OUTBOUND_SIGN_ATTRIBUTE = ApiSignAspect.class.getName() + ".DEFERRED_OUTBOUND_SIGN";
 
     private final ApiSigner apiSigner;
     private final Map<SignAlgorithm, ApiSigner> builtInSigners;
@@ -126,20 +142,69 @@ public class ApiSignAspect implements Ordered, DisposableBean {
         HttpServletRequest request = ServletUtil.getRequest();
         String appId = resolveAppId(request);
 
-        // 1. 入站请求防篡改验签与防重放校验
-        if (effectiveSign.verifyRequest() && request != null) {
+        // 1. 入站请求防篡改验签与防重放校验（若上游 ApiCryptoFilter 已完成对原始密文的验签则直接跳过避免重复消耗 Nonce）
+        boolean inboundAlreadyVerified = request != null && Boolean.TRUE.equals(request.getAttribute(INBOUND_VERIFIED_ATTRIBUTE));
+        if (effectiveSign.verifyRequest() && request != null && !inboundAlreadyVerified) {
             verifyInboundRequest(joinPoint, request, effectiveSign, effectiveAlgorithm, effectiveSigner, appId);
         }
 
         // 2. 执行目标 Controller 业务逻辑（强类型显式返回）
         Object proceedResult = joinPoint.proceed();
 
-        // 3. 出站响应数据加签回写
+        // 3. 出站响应数据加签回写（若激活了 @ApiEncrypt 则延后至响应体加密完成后对最终密文计算签名）
         if (effectiveSign.signResponse()) {
-            signOutboundResponse(request, proceedResult, effectiveAlgorithm, effectiveSigner, appId);
+            if (request != null && Boolean.TRUE.equals(request.getAttribute(OUTBOUND_ENCRYPT_ACTIVE_ATTRIBUTE))) {
+                request.setAttribute(DEFERRED_OUTBOUND_SIGN_ATTRIBUTE,
+                        new DeferredOutboundSignContext(effectiveAlgorithm, effectiveSigner, appId));
+            } else {
+                signOutboundResponse(request, proceedResult, effectiveAlgorithm, effectiveSigner, appId);
+            }
         }
 
         return proceedResult;
+    }
+
+    /**
+     * 供传输层加解密过滤器在解密前对原始密文请求执行前置验签与 Nonce 防重放校验
+     *
+     * @param request HTTP 请求（应为可重读请求体或外层包装）
+     * @param apiSign 生效的 {@link ApiSign} 注解契约
+     */
+    public void verifyInboundFromFilter(HttpServletRequest request, ApiSign apiSign) {
+        if (request == null || apiSign == null || !apiSign.verifyRequest()) {
+            return;
+        }
+        SignAlgorithm effectiveAlgorithm = resolveEffectiveAlgorithm(apiSign);
+        ApiSigner effectiveSigner = resolveEffectiveSigner(apiSign, effectiveAlgorithm);
+        String appId = resolveAppId(request);
+        verifyInboundRequest(null, request, apiSign, effectiveAlgorithm, effectiveSigner, appId);
+        request.setAttribute(INBOUND_VERIFIED_ATTRIBUTE, Boolean.TRUE);
+    }
+
+    /**
+     * 供传输层加解密过滤器在完成出站响应体加密后对最终密文载荷字节流计算并回写签名响应头
+     *
+     * @param request            HTTP 请求
+     * @param response           HTTP 响应
+     * @param encryptedBodyBytes 最终加密信封 JSON 字节流
+     * @param deferredContext    切面挂起的签名上下文
+     */
+    public void signDeferredResponse(HttpServletRequest request,
+                                     HttpServletResponse response,
+                                     byte[] encryptedBodyBytes,
+                                     Object deferredContext) {
+        if (response == null || !(deferredContext instanceof DeferredOutboundSignContext ctx)) {
+            return;
+        }
+        try {
+            byte[] safeBytes = encryptedBodyBytes != null ? encryptedBodyBytes : new byte[0];
+            String responseBodySha256 = DigestUtil.sha256Hex(safeBytes);
+            writeOutboundSignatureHeaders(request, response, ctx.algorithm(), ctx.signer(), ctx.appId(), responseBodySha256);
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "加密响应报文加签失败: " + e.getMessage(), e);
+        }
     }
 
     private void verifyInboundRequest(ProceedingJoinPoint joinPoint,
@@ -242,34 +307,42 @@ public class ApiSignAspect implements Ordered, DisposableBean {
         }
 
         try {
-            String headerTimestamp = getHeaderTimestamp();
-            String headerNonce = getHeaderNonce();
-            String headerSignature = getHeaderSignature();
-
-            String reqTimestamp = request != null ? request.getHeader(headerTimestamp) : null;
-            String reqNonce = request != null ? request.getHeader(headerNonce) : null;
-
-            String respTimestamp = StringUtils.hasText(reqTimestamp) ? reqTimestamp : String.valueOf(System.currentTimeMillis());
-            String respNonce = StringUtils.hasText(reqNonce) ? reqNonce : IdUtil.fastSimpleUUID();
-
             String responseJson = (proceedResult != null) ? objectMapper.writeValueAsString(proceedResult) : "";
             String responseBodySha256 = DigestUtil.sha256Hex(responseJson);
-
-            String responseCanonical = SignCanonicalUtil.buildResponseCanonicalString(respTimestamp, respNonce, responseBodySha256);
-            String signKey = signKeyProvider.getSignKey(appId, effectiveAlgorithm);
-            if (!StringUtils.hasText(signKey)) {
-                throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "未配置对应应用的加签密钥: " + appId);
-            }
-
-            String responseSignature = effectiveSigner.sign(responseCanonical, signKey);
-            response.setHeader(headerSignature, responseSignature);
-            response.setHeader(headerTimestamp, respTimestamp);
-            response.setHeader(headerNonce, respNonce);
+            writeOutboundSignatureHeaders(request, response, effectiveAlgorithm, effectiveSigner, appId, responseBodySha256);
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
             throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "响应报文加签失败: " + e.getMessage(), e);
         }
+    }
+
+    private void writeOutboundSignatureHeaders(HttpServletRequest request,
+                                               HttpServletResponse response,
+                                               SignAlgorithm effectiveAlgorithm,
+                                               ApiSigner effectiveSigner,
+                                               String appId,
+                                               String responseBodySha256) {
+        String headerTimestamp = getHeaderTimestamp();
+        String headerNonce = getHeaderNonce();
+        String headerSignature = getHeaderSignature();
+
+        String reqTimestamp = request != null ? request.getHeader(headerTimestamp) : null;
+        String reqNonce = request != null ? request.getHeader(headerNonce) : null;
+
+        String respTimestamp = StringUtils.hasText(reqTimestamp) ? reqTimestamp : String.valueOf(System.currentTimeMillis());
+        String respNonce = StringUtils.hasText(reqNonce) ? reqNonce : IdUtil.fastSimpleUUID();
+
+        String responseCanonical = SignCanonicalUtil.buildResponseCanonicalString(respTimestamp, respNonce, responseBodySha256);
+        String signKey = signKeyProvider.getSignKey(appId, effectiveAlgorithm);
+        if (!StringUtils.hasText(signKey)) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "未配置对应应用的加签密钥: " + appId);
+        }
+
+        String responseSignature = effectiveSigner.sign(responseCanonical, signKey);
+        response.setHeader(headerSignature, responseSignature);
+        response.setHeader(headerTimestamp, respTimestamp);
+        response.setHeader(headerNonce, respNonce);
     }
 
     private long resolveExpireSeconds(ApiSign apiSign) {
@@ -307,11 +380,16 @@ public class ApiSignAspect implements Ordered, DisposableBean {
             return DigestUtil.sha256Hex("");
         }
 
-        if (request instanceof CachedBodyHttpServletRequest cached) {
+        CachedBodyHttpServletRequest cached = WebUtils.getNativeRequest(request, CachedBodyHttpServletRequest.class);
+        if (cached != null) {
             byte[] cachedBody = cached.getCachedBody();
             if (cachedBody != null && cachedBody.length > 0) {
                 return DigestUtil.sha256Hex(cachedBody);
             }
+            return DigestUtil.sha256Hex("");
+        }
+
+        if (joinPoint == null) {
             return DigestUtil.sha256Hex("");
         }
 
@@ -390,5 +468,8 @@ public class ApiSignAspect implements Ordered, DisposableBean {
             return apiSign;
         }
         return AnnotationUtils.findAnnotation(joinPoint.getTarget().getClass(), ApiSign.class);
+    }
+
+    private record DeferredOutboundSignContext(SignAlgorithm algorithm, ApiSigner signer, String appId) {
     }
 }

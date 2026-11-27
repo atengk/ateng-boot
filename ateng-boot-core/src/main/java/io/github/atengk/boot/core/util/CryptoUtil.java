@@ -3,6 +3,7 @@ package io.github.atengk.boot.core.util;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 
+import javax.crypto.AEADBadTagException;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -10,8 +11,10 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.util.Arrays;
 import java.util.Base64;
 
 /**
@@ -596,6 +599,336 @@ public final class CryptoUtil {
         return new String(decrypted, StandardCharsets.UTF_8);
     }
 
+    // ==================== 国密 SM4/GCM/NoPadding 纯原生实现 (NIST SP 800-38D) ====================
+
+    private static final int SM4_GCM_TAG_BYTES = GCM_TAG_LENGTH / 8;
+
+    /**
+     * 国密 SM4/GCM/NoPadding 认证加密（字节数组，支持可选 AAD 附加认证数据）
+     *
+     * @param plaintext 明文字节数组
+     * @param key       SM4 密钥（必须为 16 字节）
+     * @param iv        初始向量（推荐 12 字节）
+     * @param aad       附加认证数据（可为 null）
+     * @return 末尾附带 16 字节（128-bit）GHASH 认证标签的密文字节数组；明文为 null 时返回 null
+     */
+    public static byte[] encryptSm4Gcm(byte[] plaintext, byte[] key, byte[] iv, byte[] aad) {
+        if (plaintext == null) {
+            return null;
+        }
+        validateSm4GcmKeyAndIv(key, iv);
+        int[] rk = sm4KeyExpansion(key);
+        byte[] h = new byte[SM4_BLOCK_SIZE];
+        byte[] j0 = null;
+        byte[] counter = null;
+        byte[] tagMask = new byte[SM4_BLOCK_SIZE];
+        byte[] s = null;
+        try {
+            sm4CryptBlock(new byte[SM4_BLOCK_SIZE], 0, h, 0, rk);
+            j0 = computeSm4GcmJ0(h, iv);
+            counter = j0.clone();
+            inc32(counter);
+
+            byte[] out = new byte[plaintext.length + SM4_GCM_TAG_BYTES];
+            sm4Gctr(rk, counter, plaintext, 0, plaintext.length, out, 0);
+
+            s = sm4Ghash(h, aad, out, plaintext.length);
+            sm4CryptBlock(j0, 0, tagMask, 0, rk);
+            for (int i = 0; i < SM4_GCM_TAG_BYTES; i++) {
+                out[plaintext.length + i] = (byte) (s[i] ^ tagMask[i]);
+            }
+            return out;
+        } finally {
+            Arrays.fill(rk, 0);
+            Arrays.fill(h, (byte) 0);
+            if (j0 != null) Arrays.fill(j0, (byte) 0);
+            if (counter != null) Arrays.fill(counter, (byte) 0);
+            Arrays.fill(tagMask, (byte) 0);
+            if (s != null) Arrays.fill(s, (byte) 0);
+        }
+    }
+
+    /**
+     * 国密 SM4/GCM/NoPadding 认证加密（字节数组）
+     *
+     * @param plaintext 明文字节数组
+     * @param key       SM4 密钥（必须为 16 字节）
+     * @param iv        初始向量（推荐 12 字节）
+     * @return 末尾附带 16 字节认证标签的密文字节数组
+     */
+    public static byte[] encryptSm4Gcm(byte[] plaintext, byte[] key, byte[] iv) {
+        return encryptSm4Gcm(plaintext, key, iv, null);
+    }
+
+    /**
+     * 国密 SM4/GCM/NoPadding 认证解密（字节数组，支持可选 AAD 附加认证数据校验）
+     *
+     * @param ciphertext 末尾附带 16 字节认证标签的密文字节数组
+     * @param key        SM4 密钥（必须为 16 字节）
+     * @param iv         初始向量（与加密时一致）
+     * @param aad        附加认证数据（与加密时一致，可为 null）
+     * @return 明文字节数组；密文为 null 时返回 null
+     */
+    public static byte[] decryptSm4Gcm(byte[] ciphertext, byte[] key, byte[] iv, byte[] aad) {
+        if (ciphertext == null) {
+            return null;
+        }
+        validateSm4GcmKeyAndIv(key, iv);
+        if (ciphertext.length < SM4_GCM_TAG_BYTES) {
+            throw new IllegalStateException("SM4/GCM 解密或认证校验失败: 密文长度不足 16 字节认证标签",
+                    new AEADBadTagException("SM4/GCM ciphertext shorter than 16-byte tag"));
+        }
+        int cipherLen = ciphertext.length - SM4_GCM_TAG_BYTES;
+        int[] rk = sm4KeyExpansion(key);
+        byte[] h = new byte[SM4_BLOCK_SIZE];
+        byte[] j0 = null;
+        byte[] s = null;
+        byte[] tagMask = new byte[SM4_BLOCK_SIZE];
+        byte[] expectedTag = new byte[SM4_GCM_TAG_BYTES];
+        byte[] providedTag = new byte[SM4_GCM_TAG_BYTES];
+        byte[] counter = null;
+        try {
+            sm4CryptBlock(new byte[SM4_BLOCK_SIZE], 0, h, 0, rk);
+            j0 = computeSm4GcmJ0(h, iv);
+            s = sm4Ghash(h, aad, ciphertext, cipherLen);
+            sm4CryptBlock(j0, 0, tagMask, 0, rk);
+            for (int i = 0; i < SM4_GCM_TAG_BYTES; i++) {
+                expectedTag[i] = (byte) (s[i] ^ tagMask[i]);
+            }
+            System.arraycopy(ciphertext, cipherLen, providedTag, 0, SM4_GCM_TAG_BYTES);
+            if (!MessageDigest.isEqual(expectedTag, providedTag)) {
+                throw new IllegalStateException("SM4/GCM 解密或认证校验失败: 认证标签校验不通过",
+                        new AEADBadTagException("Tag mismatch!"));
+            }
+
+            counter = j0.clone();
+            inc32(counter);
+            byte[] plaintext = new byte[cipherLen];
+            sm4Gctr(rk, counter, ciphertext, 0, cipherLen, plaintext, 0);
+            return plaintext;
+        } finally {
+            Arrays.fill(rk, 0);
+            Arrays.fill(h, (byte) 0);
+            if (j0 != null) Arrays.fill(j0, (byte) 0);
+            if (s != null) Arrays.fill(s, (byte) 0);
+            Arrays.fill(tagMask, (byte) 0);
+            Arrays.fill(expectedTag, (byte) 0);
+            Arrays.fill(providedTag, (byte) 0);
+            if (counter != null) Arrays.fill(counter, (byte) 0);
+        }
+    }
+
+    /**
+     * 国密 SM4/GCM/NoPadding 认证解密（字节数组）
+     *
+     * @param ciphertext 密文字节数组（末尾附带 16 字节认证标签）
+     * @param key        SM4 密钥（必须为 16 字节）
+     * @param iv         初始向量
+     * @return 明文字节数组
+     */
+    public static byte[] decryptSm4Gcm(byte[] ciphertext, byte[] key, byte[] iv) {
+        return decryptSm4Gcm(ciphertext, key, iv, null);
+    }
+
+    /**
+     * 国密 SM4/GCM/NoPadding 加密字符串，返回 Base64 编码密文
+     *
+     * @param plaintext 明文字符串（UTF-8）
+     * @param key       SM4 密钥（必须为 16 字节）
+     * @param iv        初始向量（推荐 12 字节）
+     * @return Base64 编码密文；明文为 null 时返回 null
+     */
+    public static String encryptSm4Gcm(String plaintext, byte[] key, byte[] iv) {
+        if (plaintext == null) {
+            return null;
+        }
+        byte[] encrypted = encryptSm4Gcm(plaintext.getBytes(StandardCharsets.UTF_8), key, iv);
+        return encodeBase64(encrypted);
+    }
+
+    /**
+     * 国密 SM4/GCM/NoPadding 解密 Base64 密文，返回明文字符串
+     *
+     * @param base64Ciphertext Base64 编码密文
+     * @param key              SM4 密钥（必须为 16 字节）
+     * @param iv               初始向量
+     * @return UTF-8 明文字符串；密文为 null 时返回 null
+     */
+    public static String decryptSm4Gcm(String base64Ciphertext, byte[] key, byte[] iv) {
+        if (base64Ciphertext == null) {
+            return null;
+        }
+        byte[] decrypted = decryptSm4Gcm(decodeBase64(base64Ciphertext), key, iv);
+        return new String(decrypted, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 国密 SM4/GCM/NoPadding 加密字符串（绑定可选 AAD 附加认证数据），返回 Base64 编码密文
+     *
+     * @param plaintext 明文字符串（UTF-8）
+     * @param key       SM4 密钥（必须为 16 字节）
+     * @param iv        初始向量（推荐 12 字节）
+     * @param aad       附加认证数据（可为 null）
+     * @return Base64 编码密文；明文为 null 时返回 null
+     */
+    public static String encryptSm4Gcm(String plaintext, byte[] key, byte[] iv, byte[] aad) {
+        if (plaintext == null) {
+            return null;
+        }
+        try {
+            byte[] encrypted = encryptSm4Gcm(plaintext.getBytes(StandardCharsets.UTF_8), key, iv, aad);
+            return encodeBase64(encrypted);
+        } catch (Exception e) {
+            Throwable rootCause = (e instanceof IllegalStateException && e.getCause() != null) ? e.getCause() : e;
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "SM4/GCM 加密执行失败: " + rootCause.getMessage(), rootCause);
+        }
+    }
+
+    /**
+     * 国密 SM4/GCM/NoPadding 解密带 AAD 认证的 Base64 密文，返回明文字符串
+     * 当密文或 AAD 遭篡改时抛出保留底层 AEAD 异常原因链的 {@link BusinessException}
+     *
+     * @param ciphertextBase64 Base64 编码密文
+     * @param key              SM4 密钥（必须为 16 字节）
+     * @param iv               初始向量（与加密时一致）
+     * @param aad              附加认证数据（与加密时一致，可为 null）
+     * @return UTF-8 明文字符串；密文为 null 时返回 null
+     */
+    public static String decryptSm4Gcm(String ciphertextBase64, byte[] key, byte[] iv, byte[] aad) {
+        if (ciphertextBase64 == null) {
+            return null;
+        }
+        try {
+            byte[] cipherBytes = decodeBase64(ciphertextBase64);
+            byte[] decrypted = decryptSm4Gcm(cipherBytes, key, iv, aad);
+            return new String(decrypted, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            Throwable rootCause = (e instanceof IllegalStateException && e.getCause() != null) ? e.getCause() : e;
+            throw new BusinessException(CommonResultCode.BAD_REQUEST, "SM4/GCM 解密或认证校验失败: " + rootCause.getMessage(), rootCause);
+        }
+    }
+
+    private static void validateSm4GcmKeyAndIv(byte[] key, byte[] iv) {
+        validateSm4KeyAndIv(key, null, false);
+        if (iv == null || iv.length == 0) {
+            throw new IllegalArgumentException("IV 初始向量不能为空");
+        }
+    }
+
+    private static byte[] computeSm4GcmJ0(byte[] h, byte[] iv) {
+        if (iv.length == DEFAULT_GCM_IV_SIZE) {
+            byte[] j0 = new byte[SM4_BLOCK_SIZE];
+            System.arraycopy(iv, 0, j0, 0, DEFAULT_GCM_IV_SIZE);
+            j0[15] = 0x01;
+            return j0;
+        }
+        byte[] y = new byte[SM4_BLOCK_SIZE];
+        ghashDataBlocks(y, h, iv, iv.length);
+        byte[] lenBlock = new byte[SM4_BLOCK_SIZE];
+        long ivBitLen = (long) iv.length * 8L;
+        for (int i = 0; i < 8; i++) {
+            lenBlock[8 + i] = (byte) ((ivBitLen >>> (56 - i * 8)) & 0xff);
+        }
+        xorBlock(y, lenBlock);
+        gf128MultiplyInPlace(y, h);
+        return y;
+    }
+
+    private static void sm4Gctr(int[] rk, byte[] counter, byte[] in, int inOffset, int len, byte[] out, int outOffset) {
+        byte[] keystream = new byte[SM4_BLOCK_SIZE];
+        try {
+            int offset = 0;
+            while (offset < len) {
+                sm4CryptBlock(counter, 0, keystream, 0, rk);
+                int blockLen = Math.min(SM4_BLOCK_SIZE, len - offset);
+                for (int i = 0; i < blockLen; i++) {
+                    out[outOffset + offset + i] = (byte) (in[inOffset + offset + i] ^ keystream[i]);
+                }
+                offset += blockLen;
+                inc32(counter);
+            }
+        } finally {
+            Arrays.fill(keystream, (byte) 0);
+        }
+    }
+
+    private static byte[] sm4Ghash(byte[] h, byte[] aad, byte[] cipher, int cipherLen) {
+        byte[] y = new byte[SM4_BLOCK_SIZE];
+        int aadLen = aad != null ? aad.length : 0;
+        if (aadLen > 0) {
+            ghashDataBlocks(y, h, aad, aadLen);
+        }
+        if (cipherLen > 0) {
+            ghashDataBlocks(y, h, cipher, cipherLen);
+        }
+        byte[] lenBlock = new byte[SM4_BLOCK_SIZE];
+        long aadBits = (long) aadLen * 8L;
+        long cipherBits = (long) cipherLen * 8L;
+        for (int i = 0; i < 8; i++) {
+            lenBlock[i] = (byte) ((aadBits >>> (56 - i * 8)) & 0xff);
+            lenBlock[8 + i] = (byte) ((cipherBits >>> (56 - i * 8)) & 0xff);
+        }
+        xorBlock(y, lenBlock);
+        gf128MultiplyInPlace(y, h);
+        return y;
+    }
+
+    private static void ghashDataBlocks(byte[] y, byte[] h, byte[] data, int dataLen) {
+        byte[] block = new byte[SM4_BLOCK_SIZE];
+        int offset = 0;
+        while (offset < dataLen) {
+            int chunk = Math.min(SM4_BLOCK_SIZE, dataLen - offset);
+            Arrays.fill(block, (byte) 0);
+            System.arraycopy(data, offset, block, 0, chunk);
+            xorBlock(y, block);
+            gf128MultiplyInPlace(y, h);
+            offset += chunk;
+        }
+    }
+
+    private static void xorBlock(byte[] target, byte[] other) {
+        for (int i = 0; i < SM4_BLOCK_SIZE; i++) {
+            target[i] ^= other[i];
+        }
+    }
+
+    private static void inc32(byte[] counter) {
+        for (int i = 15; i >= 12; i--) {
+            int next = (counter[i] & 0xff) + 1;
+            counter[i] = (byte) next;
+            if ((next & 0x100) == 0) {
+                break;
+            }
+        }
+    }
+
+    /**
+     * GF(2^128) 乘法 (NIST SP 800-38D Algorithm 1)，结果原地写回 x
+     */
+    private static void gf128MultiplyInPlace(byte[] x, byte[] h) {
+        byte[] z = new byte[SM4_BLOCK_SIZE];
+        byte[] v = h.clone();
+        try {
+            for (int i = 0; i < 128; i++) {
+                if ((x[i >>> 3] & (0x80 >>> (i & 7))) != 0) {
+                    xorBlock(z, v);
+                }
+                boolean lsb = (v[15] & 1) != 0;
+                for (int b = 15; b > 0; b--) {
+                    v[b] = (byte) (((v[b] & 0xff) >>> 1) | ((v[b - 1] & 1) << 7));
+                }
+                v[0] = (byte) ((v[0] & 0xff) >>> 1);
+                if (lsb) {
+                    v[0] ^= (byte) 0xe1;
+                }
+            }
+            System.arraycopy(z, 0, x, 0, SM4_BLOCK_SIZE);
+        } finally {
+            Arrays.fill(z, (byte) 0);
+            Arrays.fill(v, (byte) 0);
+        }
+    }
+
     // ==================== SM4 内部纯原生算法实现细节 ====================
 
     private static void validateSm4KeyAndIv(byte[] key, byte[] iv, boolean requireIv) {
@@ -635,16 +968,20 @@ public final class CryptoUtil {
 
     private static int[] sm4KeyExpansion(byte[] key) {
         int[] k = new int[36];
-        k[0] = bytesToInt(key, 0) ^ SM4_FK[0];
-        k[1] = bytesToInt(key, 4) ^ SM4_FK[1];
-        k[2] = bytesToInt(key, 8) ^ SM4_FK[2];
-        k[3] = bytesToInt(key, 12) ^ SM4_FK[3];
-        int[] rk = new int[32];
-        for (int i = 0; i < 32; i++) {
-            k[i + 4] = k[i] ^ sm4TPrime(k[i + 1] ^ k[i + 2] ^ k[i + 3] ^ SM4_CK[i]);
-            rk[i] = k[i + 4];
+        try {
+            k[0] = bytesToInt(key, 0) ^ SM4_FK[0];
+            k[1] = bytesToInt(key, 4) ^ SM4_FK[1];
+            k[2] = bytesToInt(key, 8) ^ SM4_FK[2];
+            k[3] = bytesToInt(key, 12) ^ SM4_FK[3];
+            int[] rk = new int[32];
+            for (int i = 0; i < 32; i++) {
+                k[i + 4] = k[i] ^ sm4TPrime(k[i + 1] ^ k[i + 2] ^ k[i + 3] ^ SM4_CK[i]);
+                rk[i] = k[i + 4];
+            }
+            return rk;
+        } finally {
+            Arrays.fill(k, 0);
         }
-        return rk;
     }
 
     private static void sm4CryptBlock(byte[] in, int inOffset, byte[] out, int outOffset, int[] rk) {

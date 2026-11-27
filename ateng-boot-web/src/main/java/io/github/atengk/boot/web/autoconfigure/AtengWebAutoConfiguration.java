@@ -91,8 +91,16 @@ public class AtengWebAutoConfiguration {
     @ConditionalOnMissingBean(name = "contentCachingFilterRegistration")
     public FilterRegistrationBean<ContentCachingFilter> contentCachingFilterRegistration(WebProperties webProperties) {
         DataSize maxBodySize = webProperties.getBodyCache().getMaxBodySize();
+        long maxBytes = maxBodySize != null ? maxBodySize.toBytes() : 2L * 1024 * 1024;
         if (webProperties.getSign().isEnabled() && webProperties.getSign().getMaxBodySize() != null) {
             maxBodySize = webProperties.getSign().getMaxBodySize();
+            maxBytes = maxBodySize.toBytes();
+        }
+        if (webProperties.getCrypto().isEnabled() && webProperties.getCrypto().getMaxBodySize() != null) {
+            long cryptoBytes = webProperties.getCrypto().getMaxBodySize().toBytes();
+            if (cryptoBytes > maxBytes) {
+                maxBodySize = webProperties.getCrypto().getMaxBodySize();
+            }
         }
         ContentCachingFilter filter = new ContentCachingFilter(maxBodySize);
         FilterRegistrationBean<ContentCachingFilter> registration = new FilterRegistrationBean<>(filter);

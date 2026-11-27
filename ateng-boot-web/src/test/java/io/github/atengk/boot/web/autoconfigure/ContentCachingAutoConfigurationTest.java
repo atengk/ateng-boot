@@ -55,6 +55,38 @@ class ContentCachingAutoConfigurationTest {
     }
 
     @Test
+    @DisplayName("开启 ateng.boot.web.crypto.enabled=true 时自动装配 ContentCachingFilter 且不缩减更大的 body-cache 上限")
+    void shouldLoadWhenCryptoEnabledWithoutShrinkingBodyCache() {
+        contextRunner.withPropertyValues("ateng.boot.web.crypto.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasBean("contentCachingFilterRegistration");
+                    FilterRegistrationBean<?> registration = context.getBean("contentCachingFilterRegistration", FilterRegistrationBean.class);
+                    assertThat(registration.getFilter()).isInstanceOf(ContentCachingFilter.class);
+                    assertThat(registration.getOrder()).isEqualTo(ContentCachingFilter.ORDER);
+                });
+
+        // sign.enabled=false 且 body-cache=10MB > crypto=2MB 时保留 10MB，不意外缩减
+        contextRunner.withPropertyValues(
+                "ateng.boot.web.crypto.enabled=true",
+                "ateng.boot.web.body-cache.max-body-size=10MB",
+                "ateng.boot.web.crypto.max-body-size=2MB"
+        ).run(context -> {
+            FilterRegistrationBean<?> registration = context.getBean("contentCachingFilterRegistration", FilterRegistrationBean.class);
+            assertThat(registration.getFilter()).extracting("maxBodySize").isEqualTo(10 * 1024 * 1024);
+        });
+
+        // body-cache=2MB < crypto=5MB 时自动扩容至 5MB
+        contextRunner.withPropertyValues(
+                "ateng.boot.web.crypto.enabled=true",
+                "ateng.boot.web.body-cache.max-body-size=2MB",
+                "ateng.boot.web.crypto.max-body-size=5MB"
+        ).run(context -> {
+            FilterRegistrationBean<?> registration = context.getBean("contentCachingFilterRegistration", FilterRegistrationBean.class);
+            assertThat(registration.getFilter()).extracting("maxBodySize").isEqualTo(5 * 1024 * 1024);
+        });
+    }
+
+    @Test
     @DisplayName("显式配置 sign.enabled=false 且 payload-log.enabled=false 时不装配")
     void shouldNotLoadWhenExplicitlyDisabled() {
         contextRunner.withPropertyValues(

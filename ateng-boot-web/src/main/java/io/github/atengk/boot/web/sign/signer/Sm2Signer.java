@@ -218,15 +218,16 @@ public class Sm2Signer implements ApiSigner {
 
     // ================================= 内部解析与椭圆曲线数学 =================================
 
-    private static BigInteger parsePrivateKey(String key) {
+    public static BigInteger parsePrivateKey(String key) {
         String clean = cleanKey(key);
         // 1. 64 位 Hex 私钥
         if (clean.length() == 64 && isHex(clean)) {
             return new BigInteger(clean, 16);
         }
         // 2. Base64 编码私钥 (32 字节原始私钥或 PKCS#8 格式)
+        byte[] bytes = null;
         try {
-            byte[] bytes = Base64.getDecoder().decode(clean);
+            bytes = Base64.getDecoder().decode(clean);
             if (bytes.length == 32) {
                 return new BigInteger(1, bytes);
             }
@@ -234,8 +235,12 @@ public class Sm2Signer implements ApiSigner {
             for (int i = 0; i <= bytes.length - 34; i++) {
                 if (bytes[i] == 0x04 && bytes[i + 1] == 0x20) {
                     byte[] dBytes = new byte[32];
-                    System.arraycopy(bytes, i + 2, dBytes, 0, 32);
-                    return new BigInteger(1, dBytes);
+                    try {
+                        System.arraycopy(bytes, i + 2, dBytes, 0, 32);
+                        return new BigInteger(1, dBytes);
+                    } finally {
+                        Arrays.fill(dBytes, (byte) 0);
+                    }
                 }
             }
             throw new IllegalArgumentException("不支持的 SM2 私钥字节长度: " + bytes.length);
@@ -243,10 +248,14 @@ public class Sm2Signer implements ApiSigner {
             throw e;
         } catch (Exception e) {
             throw new IllegalArgumentException("SM2 私钥解析失败: " + e.getMessage(), e);
+        } finally {
+            if (bytes != null) {
+                Arrays.fill(bytes, (byte) 0);
+            }
         }
     }
 
-    private static ECPoint parsePublicKey(String key) {
+    public static ECPoint parsePublicKey(String key) {
         String clean = cleanKey(key);
         // 1. Hex 格式公钥 (130 位非压缩 04 + X + Y、128 位裸 X + Y 或 66 位压缩格式 02/03 + X)
         if (isHex(clean)) {
@@ -432,7 +441,7 @@ public class Sm2Signer implements ApiSigner {
         return der;
     }
 
-    private static byte[] toBytes32(BigInteger n) {
+    public static byte[] toBytes32(BigInteger n) {
         byte[] b = n.toByteArray();
         if (b.length == 32) {
             return b;
@@ -624,6 +633,17 @@ public class Sm2Signer implements ApiSigner {
 
             return new JacobianPoint(x3, y3, z3);
         }
+    }
+
+    /**
+     * 对 SM2 椭圆曲线点执行标量乘法 {@code [k]P} 并返回仿射坐标点
+     *
+     * @param p 椭圆曲线点
+     * @param k 标量
+     * @return 仿射坐标点结果
+     */
+    public static ECPoint scalarMultiply(ECPoint p, BigInteger k) {
+        return multiply(p, k).toAffine();
     }
 
     private static JacobianPoint multiply(ECPoint p, BigInteger k) {

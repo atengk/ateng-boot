@@ -130,3 +130,5 @@ public interface ApiSigner {
 
 ### 妥协考量
 - 包含 POST Body 的请求需要读取请求体计算哈希，切面层需依托 Servlet 上下文的包装（或仅对 Controller 绑定的入参进行摘要序列化）。为确保与流式下载及大文件上传解耦，切面通过参数类型检测安全跳过二进制流，保障系统稳定性。
+
+> **演进注记 (Evolution Note)**：传输层报文级混合加解密（`@ApiEncrypt` / `@ApiDecrypt`）及与 `@ApiSign` 混合组合时的物理级 **Encrypt-then-Sign** 协同规范详见 [ADR-0112](./0112-api-transport-hybrid-crypto-and-encrypt-then-sign-architecture.md)；`SignCanonicalUtil` 标准化待签串协议保持 100% 向后兼容不变。

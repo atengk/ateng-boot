@@ -24,7 +24,7 @@
 | **安全序列化与内存深克隆** | 零 `@class` 污染高性能 Jackson 门面、上下文感知长整型转串与数值保真序列化 | `JsonUtil`, `NumericLongSerializer`, `ContextualLongToStringSerializer` | - | `toJsonString(obj)`, `toJsonStringWithLongToString(obj)`, `toJsonBytes(obj)`, `toPrettyJsonString(obj)`, `createLongToStringObjectMapper()`, `parseObject(...)`（含 `byte[]` + `TypeReference`）, `parseList(...)`（含 `byte[]`）, `parseMap(...)`（含 `byte[]`）, `reset()`, `isValidJson(json)`, `readTree(...)`, `deepClone(obj)`；`NumericLongSerializer` 保真 `Result.timestamp`、`PageResult`/`PageQuery`、审计耗时与非主键元数据为 JSON `number`，`ContextualLongToStringSerializer` 响应 `@JsonFormat(shape = NUMBER / NUMBER_INT)` 覆写 | `JsonUtilTest.java`, `JsonUtilDeepCloneTest.java`, `NumericLongSerializerTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` (`POST /sample/core/data/json-and-bean`) |
 | **敏感数据脱敏** | 15 大类敏感信息动态掩码与内存真明文防护 | `@FieldSensitive`, `DesensitizeUtil`, `SensitiveJsonSerializer`, `SensitiveType` | - | `DesensitizeUtil.mobilePhone(str)`, `idCard(str)`, `unifiedCreditCode(str)`, `secretKey(str)`, `passport(str)` 等，保证“内存真明文”防脏写 | `DesensitizeUtilTest.java`, `SensitiveJsonSerializerTest.java`, `CoreSecurityControllerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **退避指数重试** | 纯原生轻量无第三方重试与动态退避配置 | `RetryUtil`, `RetryUtil.RetryConfig`, `RetryUtil.RetryListener` | - | `execute(supplier, config, fallback)`, `executeAction(runnable, config, fallback)`; `RetryConfig.builder().maxAttempts(...).delay(...).multiplier(...).maxDelay(...).jitter(...).retryPredicate(...).onRetry(...).delayFunction(ex -> Duration)` 支持 Equal Jitter 抖动、自定义异常驱动退避函数与 Fallback 降级 | `RetryUtilTest.java`, `CoreResilienceScenarioServiceTest.java`, `CoreResilienceAndPipelineControllerTest.java` |
-| **加解密与十六进制** | 原生 AES、国密 SM4/SM3 与 Hex 编解码 | `CryptoUtil`, `DigestUtil`, `HexUtil` | - | `CryptoUtil`: `generateKey`, `generateSm4Key`, `generateIv`, `generateGcmIv`, `encryptGcm/decryptGcm`（含 `aad` 重载）, `encryptCbc/decryptCbc`, `encryptSm4Cbc/decryptSm4Cbc`, `encryptSm4Ecb/decryptSm4Ecb` (`SM4_KEY_SIZE`, `SM4_IV_SIZE`); `DigestUtil`: `sha256Hex`, `md5Hex`, `sm3(byte[]/byte[].../String)`, `sm3Hex(byte[]/String)`; `HexUtil`: `encodeHex`, `decodeHex` | `CryptoUtilTest.java`, `DigestUtilTest.java`, `HexUtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/crypto`), `CoreSecurityScenarioServiceTest.java` |
+| **加解密与十六进制** | 原生 AES、国密 SM4 (CBC/ECB/GCM) / SM3 与 Hex 编解码 | `CryptoUtil`, `DigestUtil`, `HexUtil` | - | `CryptoUtil`: `generateKey`, `generateSm4Key`, `generateIv`, `generateGcmIv`, `encryptGcm/decryptGcm`（含 `aad` 重载）, `encryptSm4Gcm/decryptSm4Gcm`（含 `aad` 重载）, `encryptCbc/decryptCbc`, `encryptSm4Cbc/decryptSm4Cbc`, `encryptSm4Ecb/decryptSm4Ecb` (`SM4_KEY_SIZE`, `SM4_IV_SIZE`); `DigestUtil`: `sha256Hex`, `md5Hex`, `sm3(byte[]/byte[].../String)`, `sm3Hex(byte[]/String)`; `HexUtil`: `encodeHex`, `decodeHex` | `CryptoUtilTest.java`, `DigestUtilTest.java`, `HexUtilTest.java`, `CoreSecurityControllerTest.java` (`POST /sample/core/security/crypto`), `CoreSecurityScenarioServiceTest.java` |
 | **安全文件与流处理** | 路径穿越防御、隐性垃圾过滤、安全有界读取与临时文件 | `FileUtil` | - | `FileUtil.cleanFilename(name)`（防御 `../` 路径穿越）, `cleanPath(path)`, `resolveSafePath(baseDir, subPath)` (安全子路径解析防逃逸), `isSystemJunkFile(path)` (过滤 .DS_Store / desktop.ini), `filterValidPaths(paths)`, `getExtName(name)`, `formatSize(bytes)`, `readNBytesSafe(stream, maxBytes)` (防 OOM 安全有界读取), `createTempFile(...)` | `FileUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreSystemAndAuditControllerTest.java` |
 | **集合切片与大批量安全流转** | 零内存拷贝分批切片、函数式去重与大批量流转原语 | `CollectionUtil`, `BatchSliceUtil`, `MoreCollectors` | - | `CollectionUtil.partition(list, batchSize)`（基于 subList 视图切片，防 OOM 批量流转）, `BatchSliceUtil.slice(list, sliceSize)`, `BatchSliceUtil.forEachSlice(list, sliceSize, consumer)`, `CollectionUtil.distinctByKey(keyExtractor)`, `MoreCollectors.toSafeMap(...)`, `MoreCollectors.toDistinctList(...)` | `CollectionUtilTest.java`, `BatchSliceUtilTest.java`, `MoreCollectorsTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
 | **树形森林装配与析取** | O(N) 线性组装、递归剪枝、展平与路径探寻 | `TreeUtil` | - | `TreeUtil.build(...)`, `buildForest(...)`, `filter(...)`, `flatten(roots, childrenGetter)` / `flattenTree(...)` (先序深度优先展平), `findPath(...)` (面包屑导航路径), `getLeafNodes(...)` (提取所有叶子终端节点) | `TreeUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreDataAndTreeControllerTest.java` |
@@ -882,9 +882,9 @@ public class CustomerController {
   - 采用 Cipher Block Chaining 配合 PKCS5Padding；
   - 强制严格搭配 16 字节随机初始向量 IV（`CryptoUtil.generateIv()`），严禁复用固定静态 IV；
 - **纯原生国密 SM4 对称加解密 (GB/T 32907-2016，零 BouncyCastle 依赖)**：
-  - 基于纯 JDK 17 原生指令实现 SM4-128 轮密钥扩展与 CBC/ECB 加解密；
-  - 推荐使用 `encryptSm4Cbc` / `decryptSm4Cbc` 配合 `CryptoUtil.generateSm4Key()` 专用 16 字节密钥与 16 字节随机 IV（`CryptoUtil.generateIv(CryptoUtil.SM4_IV_SIZE)`）；保留 `encryptSm4Ecb` / `decryptSm4Ecb` 用于硬件对齐兼容场景；
-  - `encryptGcm` / `decryptGcm` 支持传入 AAD 附加认证数据重载（`(plaintext, key, iv, aad)`），确保密文与关联业务上下文（如租户、订单号）强绑定不可拆包重放；
+  - 基于纯 JDK 17 原生指令实现 SM4-128 轮密钥扩展与 CBC/ECB/GCM 加解密（零 Bouncy Castle 外部依赖）；
+  - 推荐使用 `encryptSm4Gcm` / `decryptSm4Gcm`（AEAD 认证加密，基于 NIST SP 800-38D GHASH，支持 16 字节 `generateSm4Key()` + 12 字节 `generateGcmIv()` + 可选 `aad`）或 `encryptSm4Cbc` / `decryptSm4Cbc`（搭配 16 字节随机 IV `CryptoUtil.generateIv(CryptoUtil.SM4_IV_SIZE)`）；保留 `encryptSm4Ecb` / `decryptSm4Ecb` 用于硬件对齐兼容场景；
+  - `encryptGcm` / `decryptGcm` 与 `encryptSm4Gcm` / `decryptSm4Gcm` 均支持传入 AAD 附加认证数据重载（`(plaintext, key, iv, aad)`），确保密文与关联业务上下文（如租户、订单号）强绑定不可拆包重放；
 - **安全摘要与十六进制编解码**：
   - `DigestUtil.sha256Hex(text)` / `DigestUtil.md5Hex(text)`：纯原生高并发无锁哈希计算；
   - `DigestUtil.sm3Hex(text)` / `DigestUtil.sm3(bytes)`：纯 JDK 17 原生国密 SM3 (GB/T 32905-2016) 256-bit 杂凑摘要；
@@ -918,6 +918,11 @@ byte[] sm4Key = CryptoUtil.generateSm4Key();
 byte[] sm4Iv = CryptoUtil.generateIv(CryptoUtil.SM4_IV_SIZE);
 String sm4CbcCiphertext = CryptoUtil.encryptSm4Cbc(rawPayload, sm4Key, sm4Iv);
 String sm4CbcDecrypted = CryptoUtil.decryptSm4Cbc(sm4CbcCiphertext, sm4Key, sm4Iv);
+
+// 3b. 纯 JDK 原生国密 SM4/GCM 认证加密（支持 AAD 防篡改绑定，零第三方依赖）
+byte[] sm4GcmIv = CryptoUtil.generateGcmIv();
+String sm4GcmCiphertext = CryptoUtil.encryptSm4Gcm(rawPayload, sm4Key, sm4GcmIv, aadBytes);
+String sm4GcmDecrypted = CryptoUtil.decryptSm4Gcm(sm4GcmCiphertext, sm4Key, sm4GcmIv, aadBytes);
 // 瞬态敏感密钥材料用毕原地清零
 Arrays.fill(gcmKey, (byte) 0);
 Arrays.fill(sm4Key, (byte) 0);

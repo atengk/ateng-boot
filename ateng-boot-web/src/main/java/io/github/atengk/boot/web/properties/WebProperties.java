@@ -1,6 +1,7 @@
 package io.github.atengk.boot.web.properties;
 
 import io.github.atengk.boot.web.audit.OperateLogUrlStrategy;
+import io.github.atengk.boot.web.crypto.enums.CryptoAlgorithm;
 import io.github.atengk.boot.web.sign.enums.SignAlgorithm;
 import io.github.atengk.boot.web.xss.XssMode;
 import lombok.Getter;
@@ -12,7 +13,9 @@ import org.springframework.util.unit.DataSize;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Web 运行时增强模块配置属性
@@ -151,7 +154,17 @@ public class WebProperties {
         /**
          * 允许向浏览器端暴露的自定义响应头列表
          */
-        private List<String> exposedHeaders = new ArrayList<>(Arrays.asList("X-Trace-Id", "Retry-After", "X-Signature"));
+        private List<String> exposedHeaders = new ArrayList<>(Arrays.asList(
+                "X-Trace-Id",
+                "Retry-After",
+                "X-Signature",
+                "X-Timestamp",
+                "X-Nonce",
+                "X-Encrypt-Key",
+                "X-Encrypt-Iv",
+                "X-Key-Id",
+                "X-Encrypt-Alg"
+        ));
 
         /**
          * 跨域预检请求缓存有效时间（强类型 Duration，默认 3600 秒）
@@ -656,6 +669,188 @@ public class WebProperties {
          * 是否启用服务完全启动就绪 ASCII 卡片输出（默认 true）
          */
         private boolean enabled = true;
+    }
+
+    /**
+     * API 传输层混合加解密配置
+     */
+    @NestedConfigurationProperty
+    private CryptoProperties crypto = new CryptoProperties();
+
+    /**
+     * API 传输层混合加解密属性配置
+     */
+    @Getter
+    @Setter
+    public static class CryptoProperties {
+
+        /**
+         * 是否启用 API 传输层请求/响应体混合加解密引擎（默认 false，按需 Opt-in 开启）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 全局默认混合加密套件（默认 RSA_AES_GCM；可选国密 SM2_SM4_GCM）
+         */
+        private CryptoAlgorithm algorithm = CryptoAlgorithm.RSA_AES_GCM;
+
+        /**
+         * 默认应用标识（单应用缺省配置，默认 default）
+         */
+        private String appId = "default";
+
+        /**
+         * 当前出站加密默认使用的活跃密钥版本标识（默认 v1，支持多版本平滑轮换）
+         */
+        private String activeKeyId = "v1";
+
+        /**
+         * 加密请求/响应体最大允许载荷字节上限（强类型 DataSize 防爆，默认 2MB；入站超限返回 413）
+         */
+        private DataSize maxBodySize = DataSize.ofMegabytes(2);
+
+        /**
+         * 是否开启 AEAD 附加认证数据 AAD 绑定（默认 false；开启后绑定 appId|keyId|algorithm 元数据防头部替换）
+         */
+        private boolean bindAad = false;
+
+        /**
+         * 超限或解密校验失败时是否同步输出物理 HTTP 状态码（默认 false 遵守 ADR-0004 返回 HTTP 200 + 业务状态码；设为 true 时返回 HTTP 413/400/500）
+         */
+        private boolean useHttpStatus = false;
+
+        /**
+         * 通用服务端解密私钥（RSA PKCS#8 或 SM2 Hex/Base64/PEM）
+         */
+        private String serverPrivateKey;
+
+        /**
+         * 通用服务端加密公钥（供服务端自检或示例加密辅助使用，非运行时强制）
+         */
+        private String serverPublicKey;
+
+        /**
+         * 通用客户端加密公钥（RSA X.509 或 SM2 Hex/Base64/PEM，用于服务端出站响应加密封装会话密钥）
+         */
+        private String clientPublicKey;
+
+        /**
+         * RSA 算法专属服务端私钥（多算法共存优先使用，未配时回退 serverPrivateKey）
+         */
+        private String rsaServerPrivateKey;
+
+        /**
+         * RSA 算法专属服务端公钥（供示例/客户端辅助封装使用，未配时回退 serverPublicKey）
+         */
+        private String rsaServerPublicKey;
+
+        /**
+         * RSA 算法专属客户端公钥（出站响应加密优先使用，未配时回退 clientPublicKey）
+         */
+        private String rsaClientPublicKey;
+
+        /**
+         * 国密 SM2 算法专属服务端私钥（多算法共存优先使用，未配时回退 serverPrivateKey）
+         */
+        private String sm2ServerPrivateKey;
+
+        /**
+         * 国密 SM2 算法专属服务端公钥（供示例/客户端辅助封装使用，未配时回退 serverPublicKey）
+         */
+        private String sm2ServerPublicKey;
+
+        /**
+         * 国密 SM2 算法专属客户端公钥（出站响应加密优先使用，未配时回退 clientPublicKey）
+         */
+        private String sm2ClientPublicKey;
+
+        /**
+         * 多版本密钥轮换配置表（keyId -> 对应版本密钥配置，支持历史版本并行解密与下线停用）
+         */
+        private Map<String, CryptoKeyVersionProperties> keys = new LinkedHashMap<>();
+
+        /**
+         * 应用标识请求头名称（默认 X-App-Id）
+         */
+        private String headerAppId = "X-App-Id";
+
+        /**
+         * 封装会话密钥请求/响应头名称（默认 X-Encrypt-Key）
+         */
+        private String headerEncryptKey = "X-Encrypt-Key";
+
+        /**
+         * 随机 GCM IV 请求/响应头名称（默认 X-Encrypt-Iv）
+         */
+        private String headerEncryptIv = "X-Encrypt-Iv";
+
+        /**
+         * 密钥轮换版本标识请求/响应头名称（默认 X-Key-Id）
+         */
+        private String headerKeyId = "X-Key-Id";
+
+        /**
+         * 加密算法套件标识请求/响应头名称（默认 X-Encrypt-Alg）
+         */
+        private String headerEncryptAlg = "X-Encrypt-Alg";
+    }
+
+    /**
+     * 多版本加解密密钥条目配置
+     */
+    @Getter
+    @Setter
+    public static class CryptoKeyVersionProperties {
+
+        /**
+         * 当前密钥版本是否启用（设为 false 表示已过期/吊销，入站携带该 keyId 将被拒绝）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 通用服务端解密私钥
+         */
+        private String serverPrivateKey;
+
+        /**
+         * 通用服务端加密公钥
+         */
+        private String serverPublicKey;
+
+        /**
+         * 通用客户端加密公钥
+         */
+        private String clientPublicKey;
+
+        /**
+         * RSA 专属服务端解密私钥
+         */
+        private String rsaServerPrivateKey;
+
+        /**
+         * RSA 专属服务端加密公钥
+         */
+        private String rsaServerPublicKey;
+
+        /**
+         * RSA 专属客户端加密公钥
+         */
+        private String rsaClientPublicKey;
+
+        /**
+         * SM2 专属服务端解密私钥
+         */
+        private String sm2ServerPrivateKey;
+
+        /**
+         * SM2 专属服务端加密公钥
+         */
+        private String sm2ServerPublicKey;
+
+        /**
+         * SM2 专属客户端加密公钥
+         */
+        private String sm2ClientPublicKey;
     }
 
     /**

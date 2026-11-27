@@ -451,8 +451,22 @@ public class CoreSecurityScenarioService {
                 log.debug("已按预期拦截 AAD 篡改请求: {}", ex.getMessage());
             }
 
-            log.info("SM4 密钥生成与带 AAD 的 AES-GCM 闭环完成: sm4KeyLen={}, aadTamperBlocked={}",
-                    sm4Key.length, aadTamperBlocked);
+            // 3. 字符串级带 AAD 的国密 SM4/GCM 加解密与篡改防御验证
+            byte[] sm4GcmIv = CryptoUtil.generateGcmIv();
+            String sm4GcmCiphertext = CryptoUtil.encryptSm4Gcm(plaintext, sm4Key, sm4GcmIv, aadBytes);
+            String sm4GcmDecrypted = CryptoUtil.decryptSm4Gcm(sm4GcmCiphertext, sm4Key, sm4GcmIv, aadBytes);
+            BusinessAssert.isTrue(plaintext.equals(sm4GcmDecrypted), "SM4/GCM(AAD) 解密还原明文不匹配");
+
+            boolean sm4GcmAadTamperBlocked = false;
+            try {
+                CryptoUtil.decryptSm4Gcm(sm4GcmCiphertext, sm4Key, sm4GcmIv, tamperedAad);
+            } catch (BusinessException ex) {
+                sm4GcmAadTamperBlocked = ex.getCause() != null;
+                log.debug("已按预期拦截 SM4-GCM AAD 篡改请求: {}", ex.getMessage());
+            }
+
+            log.info("SM4 密钥生成与带 AAD 的 AES-GCM / SM4-GCM 闭环完成: sm4KeyLen={}, aadTamperBlocked={}, sm4GcmAadTamperBlocked={}",
+                    sm4Key.length, aadTamperBlocked, sm4GcmAadTamperBlocked);
 
             return SecurityCryptoVO.builder()
                     .sm4KeyByteLength(sm4Key.length)
@@ -461,6 +475,9 @@ public class CoreSecurityScenarioService {
                     .gcmCiphertextWithAad(gcmCiphertext)
                     .gcmDecryptedWithAad(gcmDecrypted)
                     .aadTamperBlocked(aadTamperBlocked)
+                    .sm4GcmCiphertextWithAad(sm4GcmCiphertext)
+                    .sm4GcmDecryptedWithAad(sm4GcmDecrypted)
+                    .sm4GcmAadTamperBlocked(sm4GcmAadTamperBlocked)
                     .build();
         } finally {
             Arrays.fill(sm4Key, (byte) 0);

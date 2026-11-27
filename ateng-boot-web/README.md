@@ -1,6 +1,6 @@
 # ateng-boot-web Web 运行时增强套件
 
-> 提供基于 Filter 的全链路追踪、全局统一异常安全防御拦截、Jackson 53 位精度防失真与时间格式化、自适应幂等防重、自适应限流、动态安全 CORS、双向加签验签、审计日志与安全流式文件下载辅助。
+> 提供基于 Filter 的全链路追踪、全局统一异常安全防御拦截、Jackson 53 位精度防失真与时间格式化、自适应幂等防重、自适应限流、动态安全 CORS、双向加签验签、API 传输层混合加解密与 Encrypt-then-Sign 协同、审计日志与安全流式文件下载辅助。
 
 ---
 
@@ -23,6 +23,7 @@
 | **请求体可重读管道** | 通用请求体重复多次读取与载荷防爆管道 | `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.body-cache.max-body-size`, `sign.enabled`, `payload-log.enabled` | 自动包装 POST/PUT/PATCH 请求为可重复读包装器，支持多次重复消费输入流；单次超限（DataSize）快速失败并优雅降级输出 HTTP 200 + Result 413 JSON 报文并回写 `X-Trace-Id`；自动跳过表单与文件上传 | `ContentCachingFilterTest.java`, `ContentCachingAutoConfigurationTest.java`, `ContentCachingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **载荷采样日志** | HTTP 请求/响应双向安全采样与截断防 OOM | `PayloadLoggingFilter` | `ateng.boot.web.payload-log.enabled`, `max-payload-size`, `exclude-urls` | 请求出口处单行聚合输出包含 TraceId、Method、URI、Status、Cost、ReqBody 与 RespBody 的 `[HTTP_PAYLOAD]` 日志，内建 MIME 过滤、凭据正则掩码（`***`）、强类型截断（默认 4KB）、状态自适应提升（>= 400 提升为 WARN）并在 `finally` 确定性执行 `copyBodyToResponse()` | `PayloadLoggingFilterTest.java`, `PayloadLoggingMockMvcTest.java`, `WebObservabilityAndAuditControllerTest.java` |
 | **双向加签验签** | API 报文防篡改防重放加签验签引擎 | `@ApiSign`, `SignAlgorithm`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `Sm2Signer`, `SignKeyProvider`, `DefaultSignKeyProvider`, `SignCanonicalUtil`, `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.sign.enabled`, `algorithm`, `app-id`, `secret-key`, `public-key`, `private-key`, `rsa-public-key`, `rsa-private-key`, `sm2-public-key`, `sm2-private-key`, `expire`, `max-body-size`, `header-app-id`, `header-timestamp`, `header-nonce`, `header-signature`, `nonce-prefix`, `fail-open` | `@ApiSign(verifyRequest, signResponse, expireSeconds, message, algorithm)` 支持注解级动态路由与单应用内 HMAC_SHA256 / RSA / SM2 多算法共存；`ApiSigner.sign/verify`，`SignKeyProvider.getVerifyKey/getSignKey(appId, algorithm)`（兼容 `getSecretKey/getPublicKey/getPrivateKey`），`SignCanonicalUtil.buildRequestCanonicalString/buildResponseCanonicalString/buildSortedQueryString`，Nonce 防重放（`nonce-prefix` 与 `fail-open` 内存降级）及 Fail-Closed 出站响应加签 | `ApiSignAspectTest.java`, `ApiSignerTest.java`, `Sm2SignerTest.java`, `SignCanonicalUtilTest.java`, `AtengApiSignAutoConfigurationTest.java`, `WebSecurityAndSignControllerTest.java`, `WebSecuritySignRsaSampleTest.java`, `WebSecuritySignSm2SampleTest.java` |
+| **传输层混合加解密** | API 请求/响应体混合加解密与 Encrypt-then-Sign 协同 | `@ApiDecrypt`, `@ApiEncrypt`, `CryptoAlgorithm`, `CryptoProperties`, `CryptoKeyVersionProperties`, `ApiCryptoFilter`, `DecryptedBodyHttpServletRequest`, `ApiCryptoResponseWrapper`, `ApiEncryptedPayload`, `ApiCipherInput`, `ApiCipherResult`, `ApiCryptoContext`, `ApiCipher`, `RsaAesGcmApiCipher`, `Sm2Sm4GcmApiCipher`, `ApiCryptoKeyProvider`, `DefaultApiCryptoKeyProvider`, `AtengApiCryptoAutoConfiguration` | `ateng.boot.web.crypto.enabled`, `algorithm`, `app-id`, `active-key-id`, `max-body-size`, `bind-aad`, `use-http-status`, `server-private-key`, `server-public-key`, `client-public-key`, `rsa-server-private-key`, `rsa-server-public-key`, `rsa-client-public-key`, `sm2-server-private-key`, `sm2-server-public-key`, `sm2-client-public-key`, `keys.*`, `header-app-id`, `header-encrypt-key`, `header-encrypt-iv`, `header-key-id`, `header-encrypt-alg` | `@ApiDecrypt(enabled, algorithm, required, message)` 与 `@ApiEncrypt(enabled, algorithm, encryptError, message)` 支持独立与 `@ApiSign` Encrypt-then-Sign 组合（先验明密文签名防 DoS、解密后消费 `@RequestBody`/`@Valid`/`@Idempotent`/XSS，出站密文加密后延迟回签）；零 `ResponseBodyAdvice` 与流式透传防 OOM，支持纯 JDK 17 `RSA_AES_GCM`（OAEP-SHA256 + AES-256-GCM）与国密 `SM2_SM4_GCM`、`bind-aad` 防替换及多版本 `keyId` 轮换吊销 | `RsaAesGcmApiCipherTest.java`, `Sm2Sm4GcmApiCipherTest.java`, `DefaultApiCryptoKeyProviderTest.java`, `AtengApiCryptoAutoConfigurationTest.java`, `ApiCryptoFilterMockMvcTest.java`, `WebSecurityCryptoSampleTest.java` (`POST /sample/web/crypto/rsa/payment`, `/sm2/archive`, `/mixed/transfer`, `GET /report`) |
 | **安全响应头防御** | 等保三级基线安全响应头注入与容器指纹剥离 | `SecurityHeadersFilter`, `SecurityHeadersProperties` | `ateng.boot.web.security-headers.enabled`, `content-type-options`, `frame-options`, `xss-protection`, `referrer-policy`, `content-security-policy`, `permissions-policy`, `remove-server-header` | 注入 `X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、`X-XSS-Protection: 1; mode=block`、`Referrer-Policy: strict-origin-when-cross-origin` 等基准头，剥离容器 `Server` 头，`containsHeader` 守卫防覆盖 | `SecurityHeadersFilterTest.java`, `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
 | **ETag 协商缓存** | 基于浅层哈希的内容协商缓存与 304 节省带宽 | `ShallowEtagHeaderFilter`, `EtagProperties` | `ateng.boot.web.etag.enabled`, `write-weak-etag` | 条件自动装配 Spring 原生 `ShallowEtagHeaderFilter`，自动计算内容摘要并生成 `ETag` 响应头，配合 `If-None-Match` 返回 `304 Not Modified` 节省网络带宽 | `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
 | **XSS 安全清洗与放行** | 双轨无害化清洗与字段级富文本放行 | `XssFilter`, `XssHttpServletRequestWrapper`, `XssCleaner`, `XssMode`, `XssStringDeserializer`, `@XssIgnore` | `ateng.boot.web.xss.enabled`, `mode`, `clean-headers`, `exclude-headers`, `exclude-urls` | `XssCleaner.clean(value)`, `escape(value)`, `strip(value)`，支持 `XssMode.ESCAPE`（默认 HTML 转义）与 `STRIP`（标签剔除与 `javascript:`/`vbscript:` 伪协议剥离）；拦截 Query/Form 表单参数与请求头（`getHeader`/`getHeaders`）；`XssStringDeserializer` 拦截 JSON 请求体；通过 `@XssIgnore` 声明式在字段或类级别豁免富文本，支持 Ant 白名单路径排除 | `XssCleanerTest.java`, `XssFilterTest.java`, `XssHttpServletRequestWrapperTest.java`, `XssStringDeserializerTest.java`, `WebXssSampleControllerTest.java`, `WebXssStripModeSampleTest.java`, `WebXssHeaderCleanSampleTest.java` |
@@ -123,7 +124,8 @@ flowchart TD
     SlowFilter --> SecurityFilter["7. SecurityHeadersFilter<br>(HIGHEST_PRECEDENCE + 60)<br>等保三级安全头注入与指纹剥离"]
     SecurityFilter --> EtagFilter["8. ShallowEtagHeaderFilter<br>(HIGHEST_PRECEDENCE + 70)<br>ETag 协商缓存与 304 节省带宽"]
     EtagFilter --> XssFilter["9. XssFilter<br>(HIGHEST_PRECEDENCE + 80)<br>XSS 跨站脚本双轨无害化清洗与请求头清洗"]
-    XssFilter --> Dispatcher["Spring MVC DispatcherServlet"]
+    XssFilter --> ApiCryptoFilter["10. ApiCryptoFilter<br>(HIGHEST_PRECEDENCE + 90)<br>按需解析 HandlerMethod 执行混合加解密与 Encrypt-then-Sign"]
+    ApiCryptoFilter --> Dispatcher["Spring MVC DispatcherServlet"]
 ```
 
 ### 2.2 AOP 切面防护链优先级拓扑
@@ -2197,11 +2199,17 @@ ateng:
         allow-credentials: false
         # 是否允许本地开发环境环回放行（http://localhost:* 与 http://127.0.0.1:*，默认 true）
         allow-localhost: true
-        # 允许暴露给浏览器的自定义响应头列表（默认 X-Trace-Id, Retry-After, X-Signature）
+        # 允许暴露给浏览器的自定义响应头列表（默认含 Trace、限流、加签与传输层加密响应头）
         exposed-headers:
           - "X-Trace-Id"
           - "Retry-After"
           - "X-Signature"
+          - "X-Timestamp"
+          - "X-Nonce"
+          - "X-Encrypt-Key"
+          - "X-Encrypt-Iv"
+          - "X-Key-Id"
+          - "X-Encrypt-Alg"
         # 预检请求 OPTIONS 浏览器缓存时长（强类型 Duration，默认 3600s）
         max-age: 3600s
 ```
@@ -2223,6 +2231,158 @@ public Result<String> testCorsPing() {
 public CorsOriginProvider customCorsOriginProvider() {
     Set<String> trustedTenants = Set.of("https://portal.ateng.com", "https://admin.ateng.com");
     return origin -> origin != null && trustedTenants.contains(origin);
+}
+```
+
+---
+
+### 6.7 API 传输层混合加解密与 Encrypt-then-Sign 协同 (`@ApiDecrypt` & `@ApiEncrypt`)
+
+#### 场景痛点
+1. **链路安全日志与反向代理明文暴露风险**：即便开启了外部 HTTPS，经 API 网关、CDN、SLB 卸载 TLS 后，HTTP 请求/响应明文在内部网关抓包、审计日志或前端 DevTools 中仍一览无余；而全局挂载 Spring MVC `ResponseBodyAdvice` 违反架构 `Result<T>` 显式强类型契约，且全接口拦截加密会导致普通接口或文件流产生无谓内存缓冲；
+2. **仅使用非对称加密或缺乏密文完整性防篡改**：直接用 RSA/SM2 加密大载荷 JSON 极其缓慢且受明文长度限制；若使用传统 CBC 模式则面临 Padding Oracle 与密文篡改隐患；
+3. **混用签名与加密时顺序错位引发 CPU-DoS 与签名失效**：若直接先签明文后加密，服务端被迫先消耗昂贵私钥解密后才能验签，恶意伪造包极易打满非对称解密线程池（CPU-DoS），且无法对最终出站密文包体加签。
+
+#### 专属 YAML 配置片段
+```yaml
+ateng:
+  boot:
+    web:
+      crypto:
+        # 是否启用 API 传输层混合加解密引擎（默认 false，按需开启）
+        enabled: true
+        # 全局默认混合套件（RSA_AES_GCM | SM2_SM4_GCM，默认 RSA_AES_GCM）
+        algorithm: RSA_AES_GCM
+        # 默认应用标识（单应用缺省配置，默认 default）
+        app-id: "demo-app"
+        # 当前出站加密活跃密钥版本标识（默认 v1）
+        active-key-id: "v1"
+        # 最大允许加密载荷体字节上限（强类型 DataSize，默认 2MB；入站超限返回 413）
+        max-body-size: 2MB
+        # 是否开启 AEAD AAD 元数据绑定（默认 false；开启后绑定 appId|keyId|algorithm 防头部替换）
+        bind-aad: false
+        # 加解密失败/超限时是否同步映射物理 HTTP 状态码（默认 false 遵循 HTTP 200 + Result；设为 true 输出 413/400/500）
+        use-http-status: false
+        # 顶层单应用默认公私钥（生产环境建议通过 KMS/环境变量注入，禁止硬编码）
+        rsa-server-private-key: "YOUR_RSA_SERVER_PKCS8_PRIVATE_KEY"
+        rsa-client-public-key: "YOUR_RSA_CLIENT_X509_PUBLIC_KEY"
+        sm2-server-private-key: "YOUR_SM2_SERVER_PRIVATE_KEY_HEX"
+        sm2-client-public-key: "YOUR_SM2_CLIENT_PUBLIC_KEY_HEX"
+        # 多版本密钥平滑轮换表（支持新版本加密出站与历史启用版本并行解密入站，停用版本立即拒绝）
+        keys:
+          v1:
+            enabled: true
+            rsa-server-private-key: "YOUR_RSA_V1_SERVER_PRIVATE_KEY"
+            rsa-client-public-key: "YOUR_RSA_V1_CLIENT_PUBLIC_KEY"
+          v2:
+            enabled: true
+            rsa-server-private-key: "YOUR_RSA_V2_SERVER_PRIVATE_KEY"
+            rsa-client-public-key: "YOUR_RSA_V2_CLIENT_PUBLIC_KEY"
+```
+
+#### 核心架构、双算法套件与物理 Encrypt-then-Sign 协同
+- **严格零 `ResponseBodyAdvice` 与按需介入机制**：`ApiCryptoFilter`（`Ordered.HIGHEST_PRECEDENCE + 90`）置于 `ContentCachingFilter (+30)`、`PayloadLoggingFilter (+40)` 与 `XssFilter (+80)` 之后；通过 Spring MVC `HandlerMapping` 精准解析当前请求的 `HandlerMethod`，仅对标注 `@ApiDecrypt` 或 `@ApiEncrypt`（类级或方法级，支持 `enabled = false` 覆盖）的接口缓冲与加解密，普通接口与流式下载/上传零开销透传；
+- **标准传输协议与双向非对称密钥对模型**：
+  - **加密信封体**：`{"cipherText":"<Base64(CipherBytes || 16B GCM Tag)>"}`（对应 `ApiEncryptedPayload`）；
+  - **加密安全头**：`X-Encrypt-Key`（经非对称公钥封装的一次性随机对称会话密钥）、`X-Encrypt-Iv`（12 字节随机 GCM IV）、`X-Key-Id`（密钥版本标识）、`X-Encrypt-Alg`（套件标识）；并已预置纳入 `CorsProperties.exposedHeaders` 默认白名单；
+  - **双向非对称密钥隔离**：入站使用服务端私钥（`serverPrivateKey`）解封，出站使用客户端公钥（`clientPublicKey`）封包，即使 `GET`/`DELETE` 无加密入参接口亦可独立加密出站响应，彻底杜绝服务端私钥签发可预测密文；
+- **纯 JDK 17 原生双算法套件（零 Bouncy Castle 依赖）**：
+  - **`RSA_AES_GCM`**：`RSA/ECB/OAEPWithSHA-256AndMGF1Padding`（显式绑定 `MGF1ParameterSpec.SHA256` 对齐前端 WebCrypto/OpenSSL）封装 256 位一次性 `AES-256-GCM` 会话密钥；
+  - **`SM2_SM4_GCM`**：基于纯 JDK 原生 `Sm2KeyCipher`（兼容 C1C3C2 与 ASN.1 DER 会话密钥封包，以及 Hex/Base64/PEM 公私钥）封装 Core 原生 `CryptoUtil` 纯 JDK `SM4-GCM` 密钥（16 字节密钥 + 12 字节 IV + NIST SP 800-38D GHASH 标签）；
+- **正交可独立、组合物理 Encrypt-then-Sign 协同机制**：
+  - **`@ApiSign` + `@ApiDecrypt` + `@ApiEncrypt` 组合链路**：入站阶段 `ApiCryptoFilter` 先触发 `ApiSignAspect#verifyInboundFromFilter` 对**原始密文信封字节流**验签并消费 Nonce 防重放（伪造/重放请求直接阻断，杜绝未认证请求消耗非对称私钥算力），验证通过后再解密并通过 `DecryptedBodyHttpServletRequest` 替换为明文 JSON 供下游 `@RequestBody`、`@Valid` 校验、`XssStringDeserializer` 清洗及 `@Idempotent` SpEL 取值；
+  - **出站延后加签**：`ApiSignAspect` 感知密文链路标记后挂起响应加签，待 `ApiCryptoFilter` 完成密文信封加密并写入 `X-Encrypt-*` 头后，再调用 `ApiSignAspect#signDeferredResponse` 对**最终密文信封 JSON 字节流**计算回包签名；
+  - **`PayloadLoggingFilter` 明文零泄露**：日志过滤器位于上游（`+40`），入站与出站采集到的载荷均为标准加密信封 `{"cipherText":"..."}`；
+- **防线边界与异常处理**：
+  - **类级自动豁免与流旁路**：类级 `@ApiDecrypt` 自动跳过 `GET`/`HEAD`/`OPTIONS`/`TRACE` 及无体 `DELETE`；自动识别 `multipart/*`、`application/octet-stream` 与 `text/event-stream`（SSE）并切换透传；
+  - **错误响应控制与灰度回退**：`@ApiEncrypt` 默认 `encryptError = false`（识别 `GlobalExceptionHandler.ERROR_RESPONSE_ATTRIBUTE` 保证业务异常明文排障，按需设 `true` 加密异常体）；`@ApiDecrypt(required = false)` 支持灰度期兼容未携带加密头的明文请求。
+
+#### 1:1 实测业务代码范式（摘自 Sample `WebSecurityAndCryptoController` & `WebSecurityCryptoVaultController`）
+```java
+// 1. 独立模式：RSA/AES-GCM 双向支付结算（透明解密 + @Valid + XSS 清洗 + 加密回执）
+@ApiDecrypt(algorithm = CryptoAlgorithm.RSA_AES_GCM)
+@ApiEncrypt(algorithm = CryptoAlgorithm.RSA_AES_GCM)
+@PostMapping("/rsa/payment")
+public Result<CryptoReceiptVO> rsaPayment(@RequestBody @Valid CryptoTransferDTO dto) {
+    return Result.success(CryptoReceiptVO.builder()
+            .orderNo(dto.getOrderNo())
+            .accountNo(dto.getAccountNo())
+            .amount(dto.getAmount())
+            .remark(dto.getRemark())
+            .securityChannel("RSA_AES_GCM")
+            .build());
+}
+
+// 2. 独立模式：国密 SM2 + SM4-GCM 涉密归档 + 仅响应加密 GET 报表
+@ApiDecrypt(algorithm = CryptoAlgorithm.SM2_SM4_GCM)
+@ApiEncrypt(algorithm = CryptoAlgorithm.SM2_SM4_GCM)
+@PostMapping("/sm2/archive")
+public Result<CryptoReceiptVO> sm2Archive(@RequestBody @Valid CryptoTransferDTO dto) {
+    return Result.success(CryptoReceiptVO.builder()
+            .orderNo(dto.getOrderNo())
+            .accountNo(dto.getAccountNo())
+            .amount(dto.getAmount())
+            .remark(dto.getRemark())
+            .securityChannel("SM2_SM4_GCM")
+            .build());
+}
+
+@ApiEncrypt
+@GetMapping("/report")
+public Result<String> encryptedReport(@RequestParam("bizNo") String bizNo) {
+    return Result.success("CONFIDENTIAL_REPORT:" + bizNo);
+}
+
+// 3. 混合模式（Encrypt-then-Sign）：密文前置验签 + 解密 + SpEL 幂等 + 出站密文回签
+@ApiSign
+@ApiDecrypt
+@ApiEncrypt
+@Idempotent(key = "#dto.orderNo", timeout = 30)
+@PostMapping("/mixed/transfer")
+public Result<CryptoReceiptVO> mixedTransfer(@RequestBody @Valid CryptoTransferDTO dto) {
+    return Result.success(CryptoReceiptVO.builder()
+            .orderNo(dto.getOrderNo())
+            .accountNo(dto.getAccountNo())
+            .amount(dto.getAmount())
+            .remark(dto.getRemark())
+            .securityChannel("ENCRYPT_THEN_SIGN")
+            .build());
+}
+
+// 4. 类级注解、方法覆盖与灰度兼容（GET 自动跳过解密、enabled=false 豁免、required=false 灰度放行）
+@ApiDecrypt
+@ApiEncrypt
+@RestController
+@RequestMapping("/sample/web/crypto/vault")
+public class WebSecurityCryptoVaultController {
+
+    @GetMapping("/summary")
+    public Result<String> summary() {
+        return Result.success("VAULT_CONFIDENTIAL_SUMMARY");
+    }
+
+    @ApiDecrypt(enabled = false)
+    @ApiEncrypt(enabled = false)
+    @PostMapping("/plain-ping")
+    public Result<String> plainPing(@RequestBody CryptoTransferDTO dto) {
+        return Result.success("PLAIN_PING:" + dto.getOrderNo());
+    }
+}
+
+// 5. 多租户/KMS 动态密钥 SPI 扩展点（替换 DefaultApiCryptoKeyProvider）
+@Bean
+public ApiCryptoKeyProvider kmsApiCryptoKeyProvider() {
+    return new ApiCryptoKeyProvider() {
+        @Override
+        public String getServerPrivateKey(String appId, String keyId, CryptoAlgorithm alg) {
+            return "YOUR_KMS_SERVER_PRIVATE_KEY";
+        }
+
+        @Override
+        public String getClientPublicKey(String appId, String keyId, CryptoAlgorithm alg) {
+            return "YOUR_KMS_CLIENT_PUBLIC_KEY";
+        }
+    };
 }
 ```
 
@@ -2728,11 +2888,17 @@ ateng:
         allow-credentials: false
         # 是否自动放行本地 localhost 与 127.0.0.1 跨域调试（默认 true）
         allow-localhost: true
-        # 允许暴露给浏览器的自定义响应头列表（默认 X-Trace-Id, Retry-After, X-Signature）
+        # 允许暴露给浏览器的自定义响应头列表（默认含 Trace、限流、加签与传输层加密响应头）
         exposed-headers:
           - "X-Trace-Id"
           - "Retry-After"
           - "X-Signature"
+          - "X-Timestamp"
+          - "X-Nonce"
+          - "X-Encrypt-Key"
+          - "X-Encrypt-Iv"
+          - "X-Key-Id"
+          - "X-Encrypt-Alg"
         # 跨域预检请求缓存有效时间（强类型 Duration 格式，支持 3600s, 1h 等，默认 3600s）
         max-age: 3600s
       idempotent:
@@ -2798,6 +2964,47 @@ ateng:
         header-nonce: "X-Nonce"
         # 签名串请求头/响应头名称（默认 X-Signature，支持动态定制）
         header-signature: "X-Signature"
+      crypto:
+        # 是否启用 API 传输层请求/响应体混合加解密引擎（默认 false，按需 Opt-in 开启）
+        enabled: false
+        # 全局默认混合套件（RSA_AES_GCM | SM2_SM4_GCM，默认 RSA_AES_GCM；可被 @ApiDecrypt/@ApiEncrypt 覆盖）
+        algorithm: RSA_AES_GCM
+        # 默认应用标识（默认 default）
+        app-id: "default"
+        # 当前出站加密默认使用的活跃密钥版本标识（默认 v1，支持多版本平滑轮换）
+        active-key-id: "v1"
+        # 加密请求/响应体最大允许载荷字节上限（强类型 DataSize，默认 2MB；入站超限返回 413）
+        max-body-size: 2MB
+        # 是否开启 AEAD AAD 附加认证数据绑定（默认 false；开启后绑定 appId|keyId|algorithm 防头部替换）
+        bind-aad: false
+        # 超限或加解密校验失败时是否同步输出物理 HTTP 状态码（默认 false 输出 HTTP 200 + Result；设为 true 输出 413/400/500）
+        use-http-status: false
+        # 通用服务端解密私钥（未配算法专属密钥时回退）
+        server-private-key: ""
+        # 通用服务端加密公钥（辅助生成/自检用途，非运行时强制）
+        server-public-key: ""
+        # 通用客户端加密公钥（未配算法专属公钥时回退）
+        client-public-key: ""
+        # RSA 算法专属公私钥（PKCS#8 私钥 / X.509 公钥 Base64 或 PEM）
+        rsa-server-private-key: "YOUR_RSA_SERVER_PKCS8_PRIVATE_KEY"
+        rsa-server-public-key: "YOUR_RSA_SERVER_X509_PUBLIC_KEY"
+        rsa-client-public-key: "YOUR_RSA_CLIENT_X509_PUBLIC_KEY"
+        # 国密 SM2 算法专属公私钥（Hex/Base64/PEM，多算法共存优先使用）
+        sm2-server-private-key: "YOUR_SM2_SERVER_PRIVATE_KEY_HEX"
+        sm2-server-public-key: "YOUR_SM2_SERVER_PUBLIC_KEY_HEX"
+        sm2-client-public-key: "YOUR_SM2_CLIENT_PUBLIC_KEY_HEX"
+        # 多版本密钥平滑轮换表（keyId -> 版本配置，支持历史版本并行解密与 enabled=false 即时停用）
+        keys:
+          v1:
+            enabled: true
+            rsa-server-private-key: "YOUR_RSA_V1_SERVER_PRIVATE_KEY"
+            rsa-client-public-key: "YOUR_RSA_V1_CLIENT_PUBLIC_KEY"
+        # 传输层加密自定义标头名称
+        header-app-id: "X-App-Id"
+        header-encrypt-key: "X-Encrypt-Key"
+        header-encrypt-iv: "X-Encrypt-Iv"
+        header-key-id: "X-Key-Id"
+        header-encrypt-alg: "X-Encrypt-Alg"
       ip-access-control:
         # 是否启用 IP 访问控制模块（默认 true）
         enabled: true

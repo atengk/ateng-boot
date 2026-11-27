@@ -305,7 +305,7 @@ Jackson 字符串反序列化器，在 JSON 请求体反序列化为对象属性
 _Avoid_: JsonXssCleaner, XssDeserializer, StringCleanDeserializer
 
 **ApiSignAspect**:
-基于 AOP 环绕拦截的 API 数据签名防篡改切面，解析 @ApiSign 契约，调用 ApiSigner 实施双向或单向验签与加签控制。
+基于 AOP 环绕拦截的 API 数据签名防篡改切面，解析 @ApiSign 契约，调用 ApiSigner 实施双向或单向验签与加签控制；并与 `ApiCryptoFilter` 协同支持 `Encrypt-then-Sign`（入站由过滤器前置对原始密文验签并标记防重复，出站挂起待响应加密完成后对最终密文计算签名）。
 _Avoid_: SignAspect, SignatureAspect, DataSignAspect
 
 **DocDetectionHelper**:
@@ -313,7 +313,7 @@ OpenAPI/Swagger 接口文档暴露探测辅助工具，用于应用启动就绪�
 _Avoid_: SwaggerHelper, DocUtil, OpenApiDetector
 
 **ContentCachingCondition**:
-通用请求体可重读过滤器装配条件评估器，当开启 API 加签验签（`ateng.boot.web.sign.enabled=true`）或开启 Payload 采样日志（`ateng.boot.web.payload-log.enabled=true`）时按需激活 `ContentCachingFilter`，关闭时保持零包装开销。
+通用请求体可重读过滤器装配条件评估器，当开启 API 加签验签（`ateng.boot.web.sign.enabled=true`）、开启 API 传输层加解密（`ateng.boot.web.crypto.enabled=true`）或开启 Payload 采样日志（`ateng.boot.web.payload-log.enabled=true`）时按需激活 `ContentCachingFilter`，关闭时保持零包装开销。
 _Avoid_: BodyCacheCondition, CachingSwitchCondition
 
 **DrainResult**:
@@ -407,6 +407,54 @@ _Avoid_: VerifyCodeProperties, ImageCaptchaConfig
 **AtengCaptchaAutoConfiguration**:
 图形验证码三级自适应自动装配类，按序探测并装配 `CaptchaStore`（Redisson → Redis → InMemory）、`CaptchaRenderer`（SVG / PNG）及编程式门面 `CaptchaTemplate`。
 _Avoid_: CaptchaConfig, CaptchaAutoConfig
+
+**ApiDecrypt**:
+声明式 API 传输层入站请求体解密注解，可标注于 Controller 类或方法（方法级优先，支持 `enabled=false` 局部豁免、`required=false` 灰度明文兼容与注解级 `algorithm` 覆盖）。
+_Avoid_: @DecryptBody, @RequestDecrypt, @DecryptApi
+
+**ApiEncrypt**:
+声明式 API 传输层出站响应体加密注解，可标注于 Controller 类或方法（方法级优先，支持 `enabled=false` 局部豁免、`encryptError` 错误密文化开关与注解级 `algorithm` 覆盖）。
+_Avoid_: @EncryptBody, @ResponseEncrypt, @EncryptApi
+
+**CryptoAlgorithm**:
+API 传输层混合加密套件枚举，包含 `DEFAULT`（继承全局配置）、`RSA_AES_GCM`（RSA-OAEP-SHA256 + AES-256-GCM）与 `SM2_SM4_GCM`（国密 SM2 + SM4-GCM）。
+_Avoid_: EncryptAlgorithm, CipherSuite, TransportCipherType
+
+**ApiCryptoFilter**:
+基于 `HandlerMethod` 按需生效的 API 传输层加解密过滤器（`ORDER = HIGHEST_PRECEDENCE + 90`），位于 `PayloadLoggingFilter` 与 `XssFilter` 之后以防日志明文泄露，严守 ADR-0002 不使用 `ResponseBodyAdvice` 并与 `ApiSignAspect` 协同实现物理级 `Encrypt-then-Sign`。
+_Avoid_: ApiEncryptFilter, CryptoAdvice, BodyCryptoFilter
+
+**ApiCipher**:
+API 传输层混合加密算法引擎 SPI 契约，定义会话密钥封装、AEAD 载荷加解密及算法匹配标识。
+_Avoid_: CryptoEngine, TransportCipher, PayloadEncryptor
+
+**RsaAesGcmApiCipher**:
+基于纯 JDK 原生 `RSA/ECB/OAEPWithSHA-256AndMGF1Padding` 与 `AES/GCM/NoPadding`（256-bit 会话密钥、12 字节 IV、128-bit Tag）的混合加解密默认引擎实现。
+_Avoid_: RsaAesCipher, DefaultApiCipher
+
+**Sm2Sm4GcmApiCipher**:
+基于纯 JDK 原生国密 `SM2`（`C1C3C2` 封装且解密兼容 ASN.1 DER）与 Core `CryptoUtil` `SM4-GCM`（128-bit 会话密钥、12 字节 IV、128-bit GHASH Tag）的信创国密混合加解密引擎实现，零 Bouncy Castle 依赖。
+_Avoid_: Sm2Sm4Cipher, GmApiCipher
+
+**ApiCryptoKeyProvider**:
+面向多应用（`appId`）与多密钥版本（`keyId`）平滑轮换的加解密非对称密钥检索 SPI 接口，提供服务端私钥读取、客户端公钥读取及出站活跃版本决策契约。
+_Avoid_: CryptoKeyManager, ApiKeyProvider, EncryptKeyStore
+
+**DefaultApiCryptoKeyProvider**:
+基于 `WebProperties.CryptoProperties` 全局基础公私钥及 `keys.<keyId>.*` 多版本字典加载密钥的开箱即用默认提供者实现。
+_Avoid_: SimpleCryptoKeyProvider, PropertiesKeyProvider
+
+**ApiCryptoContext**:
+API 传输层加解密单次调用不可变上下文载体，封装方向、算法、`appId`、`keyId`、可选服务端/客户端密钥及 AAD 附加认证数据绑定标记。
+_Avoid_: CryptoParams, EncryptContext
+
+**ApiEncryptedPayload**:
+HTTP 传输层统一密文信封 JSON 模型（`{"cipherText":"<Base64>"}`），与请求/响应头加密元数据协同构成标准传输契约。
+_Avoid_: CipherEnvelope, EncryptedBody, CryptoWrapper
+
+**AtengApiCryptoAutoConfiguration**:
+API 传输层混合加解密自动装配类（`ateng.boot.web.crypto.enabled=true` 时生效），条件装配 `ApiCryptoKeyProvider`、`ApiCipher` 双套件实现、`ApiCryptoFilter` 与动态 `ApiSign` 协同钩子。
+_Avoid_: ApiCryptoConfig, CryptoAutoConfig
 
 ---
 

@@ -240,6 +240,9 @@ class CoreSecurityScenarioServiceTest {
         assertThat(vo.getGcmCiphertextWithAad()).isNotBlank().isNotEqualTo(request.getPlaintext());
         assertThat(vo.getGcmDecryptedWithAad()).isEqualTo(request.getPlaintext());
         assertThat(vo.isAadTamperBlocked()).isTrue();
+        assertThat(vo.getSm4GcmCiphertextWithAad()).isNotBlank().isNotEqualTo(request.getPlaintext());
+        assertThat(vo.getSm4GcmDecryptedWithAad()).isEqualTo(request.getPlaintext());
+        assertThat(vo.isSm4GcmAadTamperBlocked()).isTrue();
 
         // 验证 Service 层 BusinessAssert 第二道防线拦截空白与 null 入参
         assertThatThrownBy(() -> securityScenarioService.signAndVerifyScenario(null))

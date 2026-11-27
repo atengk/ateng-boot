@@ -69,7 +69,7 @@ _Avoid_: SnowflakeIdWorker, SequenceGenerator, SnowflakeGenerator
 _Avoid_: IdHelper, UuidUtil, IdentifierUtil, KeyUtil, Base62, ShortIdUtil, Base62Codec
 
 **CryptoUtil**:
-纯 JDK 原生对称加解密与国密工具类，默认支持 AES/CBC/PKCS5Padding、AES/GCM/NoPadding（含附加认证数据 AAD 重载）及纯原生国密 SM4/CBC、SM4/ECB (GB/T 32907-2016) 与随机密钥生成（`generateSm4Key`），无 Bouncy Castle 重型依赖。
+纯 JDK 原生对称加解密与国密工具类，默认支持 AES/CBC/PKCS5Padding、AES/GCM/NoPadding（含附加认证数据 AAD 重载）及纯原生国密 SM4/GCM/NoPadding（12 字节 IV、128-bit GHASH 认证 Tag 与 AAD 重载）、SM4/CBC、SM4/ECB (GB/T 32907-2016) 与随机密钥生成（`generateSm4Key`），无 Bouncy Castle 重型依赖。
 _Avoid_: AesUtil, EncryptionUtil, EncryptUtil, Sm4Util
 
 **DigestUtil**:

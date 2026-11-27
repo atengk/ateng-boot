@@ -71,3 +71,12 @@ ateng:
         length: 4
         expire: 2m
         ignore-case: true
+      # API 传输层混合加解密（非 local 模式由 SampleCryptoKeyConfiguration 运行期动态生成临时内存密钥，local 模式从 application-local.yml 加载）
+      crypto:
+        enabled: true
+        algorithm: RSA_AES_GCM
+        app-id: "test-app"
+        active-key-id: "v1"
+        max-body-size: 2MB
+        bind-aad: false
+        use-http-status: false

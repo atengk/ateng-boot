@@ -62,6 +62,22 @@ ateng:
         type: CHAR
         expire: 2m
 
+      # 8. API 传输层混合加解密密钥与算法调优（本地按需填写真实 Base64/Hex/PEM 公私钥）
+      crypto:
+        enabled: true
+        algorithm: RSA_AES_GCM
+        app-id: YOUR_APP_ID
+        active-key-id: v1
+        max-body-size: 2MB
+        bind-aad: false
+        use-http-status: false
+        rsa-server-private-key: YOUR_RSA_SERVER_PKCS8_PRIVATE_KEY
+        rsa-server-public-key: YOUR_RSA_SERVER_X509_PUBLIC_KEY
+        rsa-client-public-key: YOUR_RSA_CLIENT_X509_PUBLIC_KEY
+        sm2-server-private-key: YOUR_SM2_SERVER_PRIVATE_KEY_HEX
+        sm2-server-public-key: YOUR_SM2_SERVER_PUBLIC_KEY_HEX
+        sm2-client-public-key: YOUR_SM2_CLIENT_PUBLIC_KEY_HEX
+
 # ==============================================================================
 # 分布式中间件拓展体验说明（可选）：
 # 若在 pom.xml 中引入 RedissonClient 或 StringRedisTemplate，

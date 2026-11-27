@@ -2,6 +2,7 @@ package io.github.atengk.boot.web;
 
 import io.github.atengk.boot.web.aspect.OperateLogAspect;
 import io.github.atengk.boot.web.aspect.WebLogAspect;
+import io.github.atengk.boot.web.crypto.filter.ApiCryptoFilter;
 import io.github.atengk.boot.web.filter.ContentCachingFilter;
 import io.github.atengk.boot.web.filter.PayloadLoggingFilter;
 import io.github.atengk.boot.web.filter.SecurityHeadersFilter;
@@ -29,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class WebOrderingVerificationTest {
 
     @Test
-    @DisplayName("验证 9 大 Servlet Filter 确定性递增优先级阶梯（步长 10）")
+    @DisplayName("验证 10 大 Servlet Filter 确定性递增优先级阶梯（步长 10）")
     void shouldVerifyFilterOrderLadder() {
         int traceOrder = TraceFilter.ORDER;
         int ipFilterOrder = IpAccessControlFilter.ORDER;
@@ -40,6 +41,7 @@ class WebOrderingVerificationTest {
         int securityOrder = SecurityHeadersFilter.ORDER;
         int etagOrder = TraceFilter.ORDER + 70;
         int xssOrder = XssFilter.ORDER;
+        int cryptoOrder = ApiCryptoFilter.ORDER;
 
         assertThat(traceOrder).isEqualTo(Ordered.HIGHEST_PRECEDENCE);
         assertThat(ipFilterOrder).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 10);
@@ -50,6 +52,7 @@ class WebOrderingVerificationTest {
         assertThat(securityOrder).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 60);
         assertThat(etagOrder).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 70);
         assertThat(xssOrder).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 80);
+        assertThat(cryptoOrder).isEqualTo(Ordered.HIGHEST_PRECEDENCE + 90);
 
         assertThat(traceOrder)
                 .isLessThan(ipFilterOrder)
@@ -59,7 +62,8 @@ class WebOrderingVerificationTest {
                 .isLessThan(slowOrder)
                 .isLessThan(securityOrder)
                 .isLessThan(etagOrder)
-                .isLessThan(xssOrder);
+                .isLessThan(xssOrder)
+                .isLessThan(cryptoOrder);
     }
 
     @Test
