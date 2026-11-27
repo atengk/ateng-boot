@@ -1922,6 +1922,10 @@ ateng:
           - "X-Signature"
           - "Content-Type"
           - "Accept"
+          - "X-Encrypt-Key"
+          - "X-Encrypt-Iv"
+          - "X-Key-Id"
+          - "X-Encrypt-Alg"
         # 排除白名单路径列表（Ant 匹配规则，整条路径整体跳过 XSS 清洗）
         exclude-urls:
           - "/sample/web/security/xss/excluded/**"
@@ -2785,6 +2789,10 @@ ateng:
           - "X-Signature"
           - "Content-Type"
           - "Accept"
+          - "X-Encrypt-Key"
+          - "X-Encrypt-Iv"
+          - "X-Key-Id"
+          - "X-Encrypt-Alg"
         # XSS 排除路径白名单（Ant 风格匹配）
         exclude-urls:
           - "/sample/web/security/xss/excluded/**"

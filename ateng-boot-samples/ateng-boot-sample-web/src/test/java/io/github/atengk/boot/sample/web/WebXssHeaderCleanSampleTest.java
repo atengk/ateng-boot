@@ -34,10 +34,18 @@ class WebXssHeaderCleanSampleTest {
     void shouldCleanHeadersWhenConfigured() throws Exception {
         mockMvc.perform(get("/sample/web/security/xss/header")
                         .header("X-Custom-Title", "<script>alert('header')</script>")
-                        .header("Authorization", "Bearer <secret-key>"))
+                        .header("Authorization", "Bearer <secret-key>")
+                        .header("X-Encrypt-Key", "Ab+/Cd==<probe>")
+                        .header("X-Encrypt-Iv", "Iv+/1234==&")
+                        .header("X-Key-Id", "v1<tag>")
+                        .header("X-Encrypt-Alg", "RSA_AES_GCM\"quote'"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.X-Custom-Title").value("&lt;script&gt;alert(&#39;header&#39;)&lt;/script&gt;"))
-                .andExpect(jsonPath("$.data.Authorization").value("Bearer <secret-key>"));
+                .andExpect(jsonPath("$.data.Authorization").value("Bearer <secret-key>"))
+                .andExpect(jsonPath("$.data.X-Encrypt-Key").value("Ab+/Cd==<probe>"))
+                .andExpect(jsonPath("$.data.X-Encrypt-Iv").value("Iv+/1234==&"))
+                .andExpect(jsonPath("$.data.X-Key-Id").value("v1<tag>"))
+                .andExpect(jsonPath("$.data.X-Encrypt-Alg").value("RSA_AES_GCM\"quote'"));
     }
 }

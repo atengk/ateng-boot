@@ -343,6 +343,12 @@ public class WebSecurityAndSignController {
         Map<String, String> map = new LinkedHashMap<>();
         map.put("X-Custom-Title", request.getHeader("X-Custom-Title"));
         map.put("Authorization", request.getHeader("Authorization"));
+        for (String cryptoHeader : new String[]{"X-Encrypt-Key", "X-Encrypt-Iv", "X-Key-Id", "X-Encrypt-Alg"}) {
+            String val = request.getHeader(cryptoHeader);
+            if (val != null) {
+                map.put(cryptoHeader, val);
+            }
+        }
         return Result.success(map);
     }
 

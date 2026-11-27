@@ -651,10 +651,11 @@ public class WebProperties {
         private boolean cleanHeaders = false;
 
         /**
-         * 请求头 XSS 清洗排除白名单列表（大小写不敏感匹配，默认排除常见鉴权与媒体类型标头）
+         * 请求头 XSS 清洗排除白名单列表（大小写不敏感匹配，默认排除常见鉴权、媒体类型、签名及传输层加密标头）
          */
         private List<String> excludeHeaders = new ArrayList<>(List.of(
-                "Authorization", "Cookie", "X-Signature", "Content-Type", "Accept"
+                "Authorization", "Cookie", "X-Signature", "Content-Type", "Accept",
+                "X-Encrypt-Key", "X-Encrypt-Iv", "X-Key-Id", "X-Encrypt-Alg"
         ));
     }
 

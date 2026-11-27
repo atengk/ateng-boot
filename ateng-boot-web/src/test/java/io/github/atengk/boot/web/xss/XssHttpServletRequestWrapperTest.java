@@ -1,9 +1,12 @@
 package io.github.atengk.boot.web.xss;
 
+import io.github.atengk.boot.web.properties.WebProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,5 +62,36 @@ class XssHttpServletRequestWrapperTest {
         assertThat(map).containsKeys("name", "role");
         assertThat(map.get("name")[0]).isEqualTo("&lt;b&gt;admin&lt;/b&gt;");
         assertThat(map.get("role")[0]).isEqualTo("&lt;script&gt;hack&lt;/script&gt;");
+    }
+
+    @Test
+    @DisplayName("4. cleanHeaders=true：默认白名单放行传输层加解密头（大小写不敏感）且非白名单头正常转义")
+    void shouldExcludeCryptoHeadersByDefaultWhenCleaningHeaders() {
+        WebProperties.XssProperties xssProps = new WebProperties.XssProperties();
+        xssProps.setCleanHeaders(true);
+
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader("X-Encrypt-Key", "Ab+/Cd==<probe>");
+        request.addHeader("X-Encrypt-Iv", "Iv+/1234==&");
+        request.addHeader("x-key-id", "v1<tag>");
+        request.addHeader("X-Encrypt-Alg", "RSA_AES_GCM\"quote'");
+        request.addHeader("X-Signature", "sig+=/\"123");
+        request.addHeader("X-Custom-Title", "<script>alert('hdr')</script>");
+
+        XssHttpServletRequestWrapper wrapper = new XssHttpServletRequestWrapper(request, new XssCleaner(XssMode.ESCAPE), xssProps);
+
+        assertThat(wrapper.getHeader("X-Encrypt-Key")).isEqualTo("Ab+/Cd==<probe>");
+        assertThat(wrapper.getHeader("x-encrypt-key")).isEqualTo("Ab+/Cd==<probe>");
+        assertThat(wrapper.getHeader("X-Encrypt-Iv")).isEqualTo("Iv+/1234==&");
+        assertThat(wrapper.getHeader("X-Key-Id")).isEqualTo("v1<tag>");
+        assertThat(wrapper.getHeader("X-Encrypt-Alg")).isEqualTo("RSA_AES_GCM\"quote'");
+        assertThat(wrapper.getHeader("X-Signature")).isEqualTo("sig+=/\"123");
+
+        List<String> keyHeaders = Collections.list(wrapper.getHeaders("X-Encrypt-Key"));
+        assertThat(keyHeaders).containsExactly("Ab+/Cd==<probe>");
+
+        assertThat(wrapper.getHeader("X-Custom-Title")).isEqualTo("&lt;script&gt;alert(&#39;hdr&#39;)&lt;/script&gt;");
+        List<String> customHeaders = Collections.list(wrapper.getHeaders("X-Custom-Title"));
+        assertThat(customHeaders).containsExactly("&lt;script&gt;alert(&#39;hdr&#39;)&lt;/script&gt;");
     }
 }
