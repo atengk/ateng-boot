@@ -6,7 +6,12 @@ import io.github.atengk.boot.web.shutdown.PreStopController;
 import io.github.atengk.boot.web.shutdown.PreStopEndpoint;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.actuate.autoconfigure.endpoint.EndpointAutoConfiguration;
+import org.springframework.boot.actuate.autoconfigure.endpoint.web.WebEndpointAutoConfiguration;
+import org.springframework.boot.actuate.endpoint.EndpointId;
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
+import org.springframework.boot.actuate.endpoint.web.PathMappedEndpoints;
+import org.springframework.boot.actuate.endpoint.web.PathMapper;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
@@ -113,5 +118,57 @@ class AtengGracefulShutdownAutoConfigurationTest {
             assertThat(observedInFlight.get()).isEqualTo(1L);
             assertThat(handler.getInFlightRequestCount()).isZero();
         });
+    }
+
+    @Test
+    @DisplayName("PathMapper 默认将 preStop 映射为 /actuator/pre-stop 且不破坏 Spring Boot 原生 path-mapping 与用户覆盖")
+    void shouldMapPreStopEndpointToHyphenPathAndRespectExplicitOverride() {
+        AutoConfigurations[] orders = new AutoConfigurations[]{
+                AutoConfigurations.of(
+                        EndpointAutoConfiguration.class,
+                        WebEndpointAutoConfiguration.class,
+                        AtengWebAutoConfiguration.class,
+                        AtengGracefulShutdownAutoConfiguration.class
+                ),
+                AutoConfigurations.of(
+                        AtengWebAutoConfiguration.class,
+                        AtengGracefulShutdownAutoConfiguration.class,
+                        EndpointAutoConfiguration.class,
+                        WebEndpointAutoConfiguration.class
+                )
+        };
+
+        for (AutoConfigurations autoConfigurations : orders) {
+            new WebApplicationContextRunner()
+                    .withConfiguration(autoConfigurations)
+                    .withPropertyValues(
+                            "management.endpoints.web.exposure.include=preStop,health",
+                            "management.endpoints.web.path-mapping.health=healthcheck"
+                    )
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        assertThat(context.getBeansOfType(PathMapper.class))
+                                .containsKeys("webEndpointPathMapper", "atengPreStopEndpointPathMapper");
+
+                        PathMappedEndpoints mappedEndpoints = context.getBean(PathMappedEndpoints.class);
+                        assertThat(mappedEndpoints.getRootPath(EndpointId.of("preStop"))).isEqualTo("pre-stop");
+                        assertThat(mappedEndpoints.getPath(EndpointId.of("preStop"))).isEqualTo("/actuator/pre-stop");
+                    });
+        }
+
+        for (String overrideKey : new String[]{"preStop", "pre-stop"}) {
+            new WebApplicationContextRunner()
+                    .withConfiguration(orders[0])
+                    .withPropertyValues(
+                            "management.endpoints.web.exposure.include=preStop",
+                            "management.endpoints.web.path-mapping." + overrideKey + "=custom-drain"
+                    )
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        PathMappedEndpoints mappedEndpoints = context.getBean(PathMappedEndpoints.class);
+                        assertThat(mappedEndpoints.getRootPath(EndpointId.of("preStop"))).isEqualTo("custom-drain");
+                        assertThat(mappedEndpoints.getPath(EndpointId.of("preStop"))).isEqualTo("/actuator/custom-drain");
+                    });
+        }
     }
 }

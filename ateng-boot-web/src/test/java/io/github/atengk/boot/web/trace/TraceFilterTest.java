@@ -212,7 +212,9 @@ class TraceFilterTest {
                 "/pre-stop/",
                 "/pre-stop;jsessionid=123",
                 "/actuator/pre-stop",
-                "//actuator//pre-stop;v=1/"
+                "//actuator//pre-stop;v=1/",
+                "/actuator/preStop",
+                "//actuator//preStop;v=1/"
         }) {
             MockHttpServletRequest req = new MockHttpServletRequest("GET", controlPath);
             MockHttpServletResponse resp = new MockHttpServletResponse();

@@ -48,6 +48,11 @@ public class TraceFilter extends OncePerRequestFilter implements Ordered {
     private static final String ACTUATOR_PRE_STOP_PATH = "/actuator/pre-stop";
 
     /**
+     * Actuator 优雅停机控制面原始端点标识路径（兼容显式保留或映射为驼峰路径的场景）
+     */
+    private static final String ACTUATOR_PRE_STOP_CAMEL_PATH = "/actuator/preStop";
+
+    /**
      * Spring MVC 优雅停机控制面默认路径
      */
     private static final String DEFAULT_MVC_PRE_STOP_PATH = "/pre-stop";
@@ -133,7 +138,9 @@ public class TraceFilter extends OncePerRequestFilter implements Ordered {
             return false;
         }
         String path = resolveNormalizedPath(request);
-        if (DEFAULT_MVC_PRE_STOP_PATH.equals(path) || ACTUATOR_PRE_STOP_PATH.equals(path)) {
+        if (DEFAULT_MVC_PRE_STOP_PATH.equals(path)
+                || ACTUATOR_PRE_STOP_PATH.equals(path)
+                || ACTUATOR_PRE_STOP_CAMEL_PATH.equals(path)) {
             return true;
         }
         String configuredMvcPath = shutdownProps != null ? shutdownProps.getMvcEndpointPath() : null;
