@@ -26,7 +26,7 @@
 | **短信探针** | 短信静态渠道安全健康探针（零计费、60s 防刷缓存） | `SmsSafeHealthIndicator` | `health.sms.enabled`<br>`health.sms.cache-ttl`（默认 `60s`）<br>`health.sms.probe-balance`（默认 `false`） | 仅评估 `SmsChannelRegistry` 静态注册渠道配置合法性与熔断态（跳过动态租户缓存、空静态池返回 `UNKNOWN`），可选只读余额探查，绝对禁止发送计费短信并强制脱敏密钥 | `SmsSafeHealthIndicatorTest`<br>`AtengHealthAutoConfigurationTest` |
 | **AI 探针** | AI 大模型基础设施安全健康探针（零扣费、60s 防刷缓存） | `AiSafeHealthIndicator` | `health.ai.enabled`<br>`health.ai.cache-ttl`（默认 `60s`）<br>`health.ai.probe-models`（默认 `false`） | 仅校验 `AiModelRegistry` 静态注册模型配置完整性（无密钥安全返回 `UNKNOWN`），开启 `probe-models=true` 时仅发零计费只读 `GET /models`，严禁触发扣费对话请求并对凭据自动 `******` 脱敏 | `AiSafeHealthIndicatorTest`<br>`AtengHealthAutoConfigurationTest` |
 | **CIDR 匹配器** | 直接复用 Core 底座零依赖 CIDR IP 匹配器 | `io.github.atengk.boot.core.util.CidrMatcher` | - | 基于 Core 底座 `CidrMatcher(Collection<String>)` 执行 IPv4/IPv6 网段与单 IP 位运算无锁匹配 | `ObservabilityScenarioTest` |
-| **双层安全守卫** | Actuator 端点防伪造、隐身与双层认证过滤器 | `ActuatorEndpointSecurityFilter` | `security.lockdown-enabled`<br>`security.token`<br>`security.allowed-ip-ranges`<br>`security.trust-proxy-headers`<br>`security.trusted-proxies`<br>`security.stealth-mode`<br>`security.whitelisted-endpoints`<br>`security.basic-auth.*` | 优先级 `HIGHEST_PRECEDENCE + 20`；默认采信直连 `RemoteAddr`，仅在开启 `trust-proxy-headers` 或直连命中 `trusted-proxies` 时解析代理头；白名单端点免密放行（`/actuator` 根索引始终拦截）；未授权支持 `403` 或 `404` 隐身 JSON 响应并广播 `ActuatorAccessDeniedEvent` | `ActuatorEndpointSecurityFilterTest`<br>`AtengSecurityAutoConfigurationTest`<br>`ObservabilityScenarioTest` |
+| **双层安全守卫** | Actuator 端点防伪造、隐身与双层认证过滤器 | `ActuatorEndpointSecurityFilter` | `security.lockdown-enabled`<br>`security.management-context-enabled`<br>`security.token`<br>`security.allowed-ip-ranges`<br>`security.trust-proxy-headers`<br>`security.trusted-proxies`<br>`security.stealth-mode`<br>`security.whitelisted-endpoints`<br>`security.basic-auth.*` | 优先级 `HIGHEST_PRECEDENCE + 20`；支持经 `ManagementContextConfiguration(CHILD)` 自动桥接至独立管理端口（兼容 `base-path=/`）；默认采信直连 `RemoteAddr`，仅在开启 `trust-proxy-headers` 或直连命中 `trusted-proxies` 时解析代理头；白名单端点免密放行（根索引始终拦截）；未授权支持 `403` 或 `404` 隐身 JSON 响应并广播 `ActuatorAccessDeniedEvent` | `ActuatorEndpointSecurityFilterTest`<br>`AtengSecurityAutoConfigurationTest`<br>`AtengManagementContextSecurityConfigurationTest`<br>`ObservabilityScenarioTest` |
 | **SBA 握手拦截器** | Spring Boot Admin 客户端出站握手密钥拦截器 | `AdminClientSecretHttpRequestInterceptor` | `admin-client.enabled`<br>`admin-client.client-secret`<br>`admin-client.service-url`<br>`admin-client.management-url` | `intercept(...)`：幂等向发往 SBA Server 的 HTTP 请求头附加 `X-Admin-Client-Secret`，并注入 `actuator-token` 至 `InstanceProperties` 元数据 | `AdminClientSecretHttpRequestInterceptorTest`<br>`AtengAdminClientAutoConfigurationTest`<br>`ObservabilityScenarioTest` |
 | **K8s 探针硬隔离** | 生产安全基线与 K8s 黄金探针解耦后处理器 | `ObservabilityEnvironmentPostProcessor` | `health.k8s-isolation-enabled` | 经 `META-INF/spring.factories` 装配：Liveness 仅包含 `livenessState,ping`（剥离外部依赖），Readiness 聚合外部全量组件，默认收敛高危端点暴露 | `ObservabilityEnvironmentPostProcessorTest`<br>`ObservabilityScenarioTest` |
 | **拒绝领域事件** | 线程池任务打满饱和拒绝领域事件 | `ThreadPoolRejectedEvent` | - | 携带 `poolName`、`cumulativeRejectedCount`、`taskDescription`、`corePoolSize`、`maxPoolSize`、`activeCount`、`queueSize`、`remainingQueueCapacity` | `TrackingRejectedExecutionHandlerTest`<br>`ObservabilityScenarioTest` |
@@ -674,6 +674,7 @@ ateng:
     observability:
       security:
         lockdown-enabled: true
+        management-context-enabled: true  # 双端口（management.server.port != server.port）时自动同步挂载至管理端口子上下文
         stealth-mode: false             # 设为 true 时，未授权访问返回 HTTP 404 JSON 隐身防扫描（默认 false 返回 403）
         whitelisted-endpoints:          # 免密放行的相对子路径白名单（/actuator 根索引端点始终拦截保护）
           - "health"
@@ -700,6 +701,7 @@ ateng:
   ```
   > 若配置 `stealth-mode: true`，对外返回 HTTP 状态码 `404` 及对应隐身 `Result.fail(404, ...)` 报文，隐藏端点存在特征，同时照常记录告警日志与发布 `ActuatorAccessDeniedEvent`。
 - **携带有效 Token 或 Basic Auth 访问**（`GET /actuator/env -H "X-Actuator-Token: obs-admin-secret-token"`）：正常放行（HTTP 200）；
+- **独立管理端口自动桥接（双端口隔离兼容）**：当启用 `management.server.port != server.port` 时，可通过 `ateng.boot.observability.security.management-context-enabled`（默认 `true`）自动将主上下文 `ActuatorEndpointSecurityFilter` 桥接至管理端口子上下文，兼容 `management.server.base-path` 与 `management.endpoints.web.base-path=/`；
 - **恒定时间比对防时序攻击**：凭据校验统一采用 `MessageDigest.isEqual` 进行恒定时间（Constant-Time）字节比对，杜绝侧信道推测攻击。
 
 ---
@@ -830,6 +832,7 @@ public class ObservabilityAlertEventListener {
 | `ateng.boot.observability.health.ai.cache-ttl` | `Duration` | `60s` | AI 探针专有防刷缓存 TTL（`0s` 可关闭缓存） |
 | `ateng.boot.observability.health.ai.probe-models` | `boolean` | `false` | 是否发起零 Token 计费只读 `GET /models` 探活（默认 `false` 仅检查静态注册配置完整性） |
 | `ateng.boot.observability.security.lockdown-enabled` | `boolean` | `true` | 是否启用高危敏感端点（`/env`, `/beans` 等）生产加固守卫 |
+| `ateng.boot.observability.security.management-context-enabled` | `boolean` | `true` | 是否在独立管理端口（`management.server.port != server.port`）子上下文自动桥接安全过滤器 |
 | `ateng.boot.observability.security.token` | `String` | `""` | 访问高危敏感端点所需的授权 Token 密钥（请求头：`X-Actuator-Token`） |
 | `ateng.boot.observability.security.allowed-ip-ranges` | `List<String>` | `[]` | 免密访问高危端点的内网 IP 或 CIDR 网段白名单 |
 | `ateng.boot.observability.security.trust-proxy-headers` | `boolean` | `false` | 是否无条件信任 `X-Forwarded-For` 等反向代理头（默认 `false` 防止伪造绕过） |

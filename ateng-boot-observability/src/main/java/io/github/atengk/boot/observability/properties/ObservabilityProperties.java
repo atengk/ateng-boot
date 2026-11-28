@@ -419,6 +419,13 @@ public class ObservabilityProperties {
         private boolean lockdownEnabled = true;
 
         /**
+         * 是否在独立管理端口（management.server.port != server.port）子上下文中同步挂载安全守卫过滤器（默认开启）。
+         * 开启时自动通过 ManagementContextConfiguration(CHILD) 将主上下文的 ActuatorEndpointSecurityFilter 桥接至管理端口，
+         * 确保双端口隔离部署下凭据鉴权、CIDR 白名单、404 隐身与 ActuatorAccessDeniedEvent 审计与单端口保持一致。
+         */
+        private boolean managementContextEnabled = true;
+
+        /**
          * 访问高危敏感端点（如 /actuator/env、/actuator/beans）所需的授权 Token 密钥。
          * 若为空字符串，则高危敏感端点完全禁止匿名外部访问，直接返回 403/404。
          */

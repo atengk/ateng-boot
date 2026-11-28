@@ -65,6 +65,7 @@ class ObservabilityPropertiesTest {
         // 端点安全默认配置
         assertThat(properties.getSecurity()).isNotNull();
         assertThat(properties.getSecurity().isLockdownEnabled()).isTrue();
+        assertThat(properties.getSecurity().isManagementContextEnabled()).isTrue();
         assertThat(properties.getSecurity().getToken()).isEmpty();
         assertThat(properties.getSecurity().getAllowedIpRanges()).isEmpty();
         assertThat(properties.getSecurity().isTrustProxyHeaders()).isFalse();
@@ -114,6 +115,7 @@ class ObservabilityPropertiesTest {
                         "ateng.boot.observability.health.mail.enabled=false",
                         "ateng.boot.observability.health.mail.cache-ttl=120s",
                         "ateng.boot.observability.security.lockdown-enabled=true",
+                        "ateng.boot.observability.security.management-context-enabled=false",
                         "ateng.boot.observability.security.token=SEC_TOKEN_123456",
                         "ateng.boot.observability.security.allowed-ip-ranges[0]=10.0.0.0/8",
                         "ateng.boot.observability.security.allowed-ip-ranges[1]=192.168.1.0/24",
@@ -161,6 +163,7 @@ class ObservabilityPropertiesTest {
                     assertThat(props.getHealth().getMail().getCacheTtl()).isEqualTo(Duration.ofSeconds(120));
                     assertThat(props.getHealth().getRealtime().isEnabled()).isTrue();
                     assertThat(props.getSecurity().isLockdownEnabled()).isTrue();
+                    assertThat(props.getSecurity().isManagementContextEnabled()).isFalse();
                     assertThat(props.getSecurity().getToken()).isEqualTo("SEC_TOKEN_123456");
                     assertThat(props.getSecurity().getAllowedIpRanges()).containsExactly("10.0.0.0/8", "192.168.1.0/24");
                     assertThat(props.getSecurity().isTrustProxyHeaders()).isTrue();

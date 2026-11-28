@@ -371,13 +371,19 @@ public class ActuatorEndpointSecurityFilter extends OncePerRequestFilter impleme
     }
 
     /**
-     * 规整基础路径，去除尾部多余斜杠
+     * 规整基础路径（兼容根路径 {@code /} 归一化为空串，其余路径补齐前导斜杠并去除尾部多余斜杠；空白或 null 回落默认值）
      */
     private static String normalizeBasePath(String basePath) {
         if (basePath == null || basePath.isBlank()) {
             return DEFAULT_BASE_PATH;
         }
-        String normalized = basePath.strip();
+        String normalized = MULTI_SLASH_PATTERN.matcher(basePath.strip()).replaceAll("/");
+        if ("/".equals(normalized)) {
+            return "";
+        }
+        if (!normalized.startsWith("/")) {
+            normalized = "/" + normalized;
+        }
         if (normalized.endsWith("/")) {
             normalized = normalized.substring(0, normalized.length() - 1);
         }

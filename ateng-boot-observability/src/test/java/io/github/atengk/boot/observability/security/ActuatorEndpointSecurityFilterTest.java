@@ -559,4 +559,43 @@ class ActuatorEndpointSecurityFilterTest {
         verify(chainHealth, never()).doFilter(reqHealth, resHealth);
         assertThat(resHealth.getStatus()).isEqualTo(403);
     }
+
+    @Test
+    @DisplayName("当 management.endpoints.web.base-path 设为根路径 / 时，正确放行白名单并拦截根索引与高危端点")
+    void testRootBasePathSupport() throws ServletException, IOException {
+        ObservabilityProperties props = new ObservabilityProperties();
+        props.getSecurity().setLockdownEnabled(true);
+        props.getSecurity().setToken("root-base-secret");
+
+        ActuatorEndpointSecurityFilter filter = new ActuatorEndpointSecurityFilter(props, "/");
+        assertThat(filter.getBasePath()).isEmpty();
+
+        // 1. 根路径下白名单端点免密放行
+        for (String allowedUri : new String[]{"/health", "/health/readiness", "/info", "/prometheus"}) {
+            MockHttpServletRequest req = new MockHttpServletRequest("GET", allowedUri);
+            MockHttpServletResponse res = new MockHttpServletResponse();
+            FilterChain chain = mock(FilterChain.class);
+            filter.doFilter(req, res, chain);
+            verify(chain).doFilter(req, res);
+            assertThat(res.getStatus()).isEqualTo(200);
+        }
+
+        // 2. 根索引 / 与高危端点 /env 无凭据被拦截，带有效 Token 放行
+        for (String protectedUri : new String[]{"/", "/env", "//env"}) {
+            MockHttpServletRequest reqDenied = new MockHttpServletRequest("GET", protectedUri);
+            MockHttpServletResponse resDenied = new MockHttpServletResponse();
+            FilterChain chainDenied = mock(FilterChain.class);
+            filter.doFilter(reqDenied, resDenied, chainDenied);
+            verify(chainDenied, never()).doFilter(reqDenied, resDenied);
+            assertThat(resDenied.getStatus()).isEqualTo(403);
+
+            MockHttpServletRequest reqAllowed = new MockHttpServletRequest("GET", protectedUri);
+            reqAllowed.addHeader(ActuatorEndpointSecurityFilter.ACTUATOR_TOKEN_HEADER, "root-base-secret");
+            MockHttpServletResponse resAllowed = new MockHttpServletResponse();
+            FilterChain chainAllowed = mock(FilterChain.class);
+            filter.doFilter(reqAllowed, resAllowed, chainAllowed);
+            verify(chainAllowed).doFilter(reqAllowed, resAllowed);
+            assertThat(resAllowed.getStatus()).isEqualTo(200);
+        }
+    }
 }
